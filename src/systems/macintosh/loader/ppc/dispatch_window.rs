@@ -13,14 +13,16 @@ pub(crate) const PPC_CWINDOW_STRUCTURE_RGN_OFFSET: u32 = crate::window_manager::
 pub(crate) const PPC_CWINDOW_CONTENT_RGN_OFFSET: u32 = crate::window_manager::WINDOW_CONTENT_RGN_OFFSET;
 pub(crate) const PPC_CWINDOW_UPDATE_RGN_OFFSET: u32 = crate::window_manager::WINDOW_UPDATE_RGN_OFFSET;
 pub(crate) const PPC_CWINDOW_NEXT_WINDOW_OFFSET: u32 = crate::window_manager::WINDOW_NEXT_WINDOW_OFFSET;
-pub(crate) const PPC_CWINDOW_WINDOW_PIC_OFFSET: u32 = 148;
+pub(crate) const PPC_CWINDOW_WINDOW_PIC_OFFSET: u32 = crate::window_manager::WINDOW_PIC_HANDLE_OFFSET;
 pub(crate) const PPC_CWINDOW_DEF_PROC_OFFSET: u32 = crate::window_manager::WINDOW_DEF_PROC_HANDLE_OFFSET;
 pub(crate) const PPC_CWINDOW_STATE_HANDLE_OFFSET: u32 = crate::window_manager::WINDOW_STATE_DATA_HANDLE_OFFSET;
 pub(crate) const PPC_CWINDOW_TITLE_HANDLE_OFFSET: u32 = 134;
-pub(crate) const PPC_CWINDOW_TITLE_WIDTH_OFFSET: u32 = 138;
-pub(crate) const PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET: u32 = 152;
+pub(crate) const PPC_CWINDOW_TITLE_WIDTH_OFFSET: u32 = crate::window_manager::WINDOW_TITLE_WIDTH_OFFSET;
+pub(crate) const PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET: u32 = crate::window_manager::WINDOW_REF_CON_OFFSET;
 pub(crate) const PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET: u32 = 164;
 pub(crate) const PPC_CWINDOW_CONTROL_LIST_OFFSET: u32 = 140;
+pub(crate) const PPC_LM_WINDOW_LIST_ADDR: u32 = crate::window_manager::LM_WINDOW_LIST_ADDR;
+pub(crate) const PPC_LM_AUX_WIN_HEAD_ADDR: u32 = crate::window_manager::LM_AUX_WIN_HEAD_ADDR;
 pub(super) const PPC_WINDOW_PROPERTY_NOT_FOUND_ERR: i16 =
     crate::window_manager::WINDOW_PROPERTY_NOT_FOUND_ERR;
 
@@ -263,42 +265,62 @@ pub(super) fn dispatch_window_import(
             }
             Some(PpcImportAction::Return(window))
         }
-        PpcImportDispatcherTarget::GetWRefCon => Some(PpcImportAction::Return(
-            memory
-                .read_u32_be(cpu.gpr[3].wrapping_add(PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET))
-                .unwrap_or(0),
-        )),
+        PpcImportDispatcherTarget::GetWRefCon => {
+            let window = cpu.gpr[3];
+            let ref_con = if window != 0 {
+                memory.read_u32_be(window.wrapping_add(PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET))
+            } else {
+                None
+            };
+            let result = crate::window_manager::evaluate_get_w_ref_con(window, ref_con);
+            Some(PpcImportAction::Return(result))
+        }
         PpcImportDispatcherTarget::SetWRefCon => {
-            let window_ptr = cpu.gpr[3];
+            let window = cpu.gpr[3];
             let ref_con = cpu.gpr[4];
-            if ppc_memory_can_write_bytes(
+            let can_write = ppc_memory_can_write_bytes(
                 memory,
-                window_ptr.wrapping_add(PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET),
+                window.wrapping_add(PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET),
                 4,
+            );
+            if let Ok(params) = crate::window_manager::evaluate_set_w_ref_con_parameters(
+                window, ref_con, can_write,
             ) {
                 let _ = memory.write_u32_be(
-                    window_ptr.wrapping_add(PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET),
-                    ref_con,
+                    params
+                        .window_ptr()
+                        .wrapping_add(PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET),
+                    params.ref_con(),
                 );
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::GetWindowPic => Some(PpcImportAction::Return(
-            memory
-                .read_u32_be(cpu.gpr[3].wrapping_add(PPC_CWINDOW_WINDOW_PIC_OFFSET))
-                .unwrap_or(0),
-        )),
+        PpcImportDispatcherTarget::GetWindowPic => {
+            let window = cpu.gpr[3];
+            let pic_handle = if window != 0 {
+                memory.read_u32_be(window.wrapping_add(PPC_CWINDOW_WINDOW_PIC_OFFSET))
+            } else {
+                None
+            };
+            let result = crate::window_manager::evaluate_get_window_pic(window, pic_handle);
+            Some(PpcImportAction::Return(result))
+        }
         PpcImportDispatcherTarget::SetWindowPic => {
-            let window_ptr = cpu.gpr[3];
+            let window = cpu.gpr[3];
             let pic = cpu.gpr[4];
-            if ppc_memory_can_write_bytes(
+            let can_write = ppc_memory_can_write_bytes(
                 memory,
-                window_ptr.wrapping_add(PPC_CWINDOW_WINDOW_PIC_OFFSET),
+                window.wrapping_add(PPC_CWINDOW_WINDOW_PIC_OFFSET),
                 4,
+            );
+            if let Ok(params) = crate::window_manager::evaluate_set_window_pic_parameters(
+                window, pic, can_write,
             ) {
                 let _ = memory.write_u32_be(
-                    window_ptr.wrapping_add(PPC_CWINDOW_WINDOW_PIC_OFFSET),
-                    pic,
+                    params
+                        .window_ptr()
+                        .wrapping_add(PPC_CWINDOW_WINDOW_PIC_OFFSET),
+                    params.pic_handle(),
                 );
             }
             Some(PpcImportAction::ReturnPreserve)
@@ -306,30 +328,58 @@ pub(super) fn dispatch_window_import(
         PpcImportDispatcherTarget::GetAuxWin => {
             let window_ptr = cpu.gpr[3];
             let aw_ctable_ptr = cpu.gpr[4];
-            let is_tracked = window_list.contains_window(window_ptr);
-            let color_table = ppc_window_color_table_handle(memory, window_ptr).unwrap_or(0);
-            if aw_ctable_ptr != 0 && ppc_memory_can_write_bytes(memory, aw_ctable_ptr, 4) {
-                let _ = memory.write_u32_be(aw_ctable_ptr, color_table);
+            let can_write = aw_ctable_ptr == 0
+                || ppc_memory_can_write_bytes(memory, aw_ctable_ptr, 4);
+            if let Ok(params) = crate::window_manager::evaluate_get_aux_win_parameters(
+                window_ptr,
+                aw_ctable_ptr,
+                can_write,
+            ) {
+                let is_tracked = window_list.contains_window(params.window_ptr());
+                let color_table = ppc_window_color_table_handle(memory, params.window_ptr());
+                let (ctab, success) =
+                    crate::window_manager::evaluate_get_aux_win(color_table, is_tracked);
+                if params.out_aux_ctable_ptr() != 0 {
+                    let _ = memory.write_u32_be(params.out_aux_ctable_ptr(), ctab);
+                }
+                Some(PpcImportAction::Return(if success { 1 } else { 0 }))
+            } else {
+                Some(PpcImportAction::Return(0))
             }
-            let success = if color_table != 0 || is_tracked { 1 } else { 0 };
-            Some(PpcImportAction::Return(success))
         }
         PpcImportDispatcherTarget::LMGetWindowList => {
-            let head = window_list.first().unwrap_or(0);
-            let window = if head != 0 {
-                head
-            } else {
-                memory.read_u32_be(0x09D6).unwrap_or(0)
-            };
+            let first = window_list.first();
+            let low_mem = memory.read_u32_be(PPC_LM_WINDOW_LIST_ADDR);
+            let window = crate::window_manager::evaluate_lm_get_window_list(first, low_mem);
             Some(PpcImportAction::Return(window))
         }
         PpcImportDispatcherTarget::LMSetWindowList => {
             let window = cpu.gpr[3];
-            if window != 0 {
-                window_list.bring_to_front(window);
+            let can_write = ppc_memory_can_write_bytes(memory, PPC_LM_WINDOW_LIST_ADDR, 4);
+            if let Ok(params) =
+                crate::window_manager::evaluate_lm_set_window_list_parameters(window, can_write)
+            {
+                if params.window_ptr() != 0 {
+                    window_list.bring_to_front(params.window_ptr());
+                }
+                ppc_sync_process_window_list(memory, window_list);
+                let _ = memory.write_u32_be(PPC_LM_WINDOW_LIST_ADDR, params.window_ptr());
             }
-            ppc_sync_process_window_list(memory, window_list);
-            let _ = memory.write_u32_be(0x09D6, window);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::LMGetAuxWinHead => {
+            let aux_head = memory.read_u32_be(PPC_LM_AUX_WIN_HEAD_ADDR);
+            let result = crate::window_manager::evaluate_lm_get_aux_win_head(aux_head);
+            Some(PpcImportAction::Return(result))
+        }
+        PpcImportDispatcherTarget::LMSetAuxWinHead => {
+            let aux_head = cpu.gpr[3];
+            let can_write = ppc_memory_can_write_bytes(memory, PPC_LM_AUX_WIN_HEAD_ADDR, 4);
+            if let Ok(params) =
+                crate::window_manager::evaluate_lm_set_aux_win_head_parameters(aux_head, can_write)
+            {
+                let _ = memory.write_u32_be(PPC_LM_AUX_WIN_HEAD_ADDR, params.aux_head());
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SizeWindow => {
@@ -884,12 +934,13 @@ pub(super) fn dispatch_window_import(
         }
         PpcImportDispatcherTarget::GetWVariant => {
             let window = cpu.gpr[3];
-            let variant = if window != 0 {
-                (ppc_window_proc_id(memory, window) & 0x0F) as u32
+            let proc_id = if window != 0 {
+                Some(ppc_window_proc_id(memory, window))
             } else {
-                0
+                None
             };
-            Some(PpcImportAction::Return(variant))
+            let variant = crate::window_manager::evaluate_get_w_variant(window, proc_id);
+            Some(PpcImportAction::Return(variant as u16 as u32))
         }
         PpcImportDispatcherTarget::ClipAbove => {
             let start_window = cpu.gpr[3];
@@ -3008,6 +3059,7 @@ pub enum PpcLegacyWindowOperation {
     CreateNewWindow,
     DisposeWindow,
     DragWindow,
+    GetAuxWin,
     GetNewWindow,
     GetNextWindow,
     GetPreviousWindow,
@@ -3025,6 +3077,8 @@ pub enum PpcLegacyWindowOperation {
     GetWindowIdealUserState,
     GetWindowKind,
     GetWindowModality,
+    GetWindowPic,
+    GetWindowPort,
     GetWindowPortBounds,
     GetWindowProperty,
     GetWindowPropertyAttributes,
@@ -3038,6 +3092,8 @@ pub enum PpcLegacyWindowOperation {
     GetWindowTitle,
     GetWindowUpdateRgn,
     GetWindowUserState,
+    GetWRefCon,
+    GetWVariant,
     GrowWindow,
     HighlightWindow,
     InvalWindowRect,
@@ -3048,12 +3104,17 @@ pub enum PpcLegacyWindowOperation {
     IsWindowPathSelectClick,
     IsWindowUpdatePending,
     IsWindowVisible,
+    LMGetAuxWinHead,
+    LMGetWindowList,
+    LMSetAuxWinHead,
+    LMSetWindowList,
     NewWindow,
     RemoveWindowProperty,
     RemoveWindowProxy,
     RepositionWindow,
     ReshapeCustomWindow,
     SendBehind,
+    SetPortWindowPort,
     SetUserFocusWindow,
     SetWindowBounds,
     SetWindowCancelButton,
@@ -3062,11 +3123,13 @@ pub enum PpcLegacyWindowOperation {
     SetWindowKind,
     SetWindowModality,
     SetWindowModified,
+    SetWindowPic,
     SetWindowProperty,
     SetWindowProxyIcon,
     SetWindowStandardState,
     SetWindowTitle,
     SetWindowUserState,
+    SetWRefCon,
     TrackBox,
     TrackGoAway,
     ValidWindowRect,
@@ -4741,6 +4804,153 @@ pub(super) fn ppc_dispatch_legacy_window(
                 Err(err) => Some(PpcImportAction::Return(ppc_i16_result(err))),
             }
         }
+        PpcLegacyWindowOperation::GetAuxWin => {
+            let window_ptr = cpu.gpr[3];
+            let aw_ctable_ptr = cpu.gpr[4];
+            let can_write = aw_ctable_ptr == 0
+                || ppc_memory_can_write_bytes(memory, aw_ctable_ptr, 4);
+            if let Ok(params) = crate::window_manager::evaluate_get_aux_win_parameters(
+                window_ptr,
+                aw_ctable_ptr,
+                can_write,
+            ) {
+                let is_tracked = window_list.contains_window(params.window_ptr());
+                let color_table = ppc_window_color_table_handle(memory, params.window_ptr());
+                let (ctab, success) =
+                    crate::window_manager::evaluate_get_aux_win(color_table, is_tracked);
+                if params.out_aux_ctable_ptr() != 0 {
+                    let _ = memory.write_u32_be(params.out_aux_ctable_ptr(), ctab);
+                }
+                Some(PpcImportAction::Return(if success { 1 } else { 0 }))
+            } else {
+                Some(PpcImportAction::Return(0))
+            }
+        }
+        PpcLegacyWindowOperation::GetWindowPic => {
+            let window = cpu.gpr[3];
+            let pic_handle = if window != 0 {
+                memory.read_u32_be(window.wrapping_add(PPC_CWINDOW_WINDOW_PIC_OFFSET))
+            } else {
+                None
+            };
+            let result = crate::window_manager::evaluate_get_window_pic(window, pic_handle);
+            Some(PpcImportAction::Return(result))
+        }
+        PpcLegacyWindowOperation::GetWindowPort => {
+            let window = cpu.gpr[3];
+            let port = crate::window_manager::evaluate_get_window_port(window);
+            Some(PpcImportAction::Return(port))
+        }
+        PpcLegacyWindowOperation::GetWRefCon => {
+            let window = cpu.gpr[3];
+            let ref_con = if window != 0 {
+                memory.read_u32_be(window.wrapping_add(PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET))
+            } else {
+                None
+            };
+            let result = crate::window_manager::evaluate_get_w_ref_con(window, ref_con);
+            Some(PpcImportAction::Return(result))
+        }
+        PpcLegacyWindowOperation::GetWVariant => {
+            let window = cpu.gpr[3];
+            let proc_id = if window != 0 {
+                Some(ppc_window_proc_id(memory, window))
+            } else {
+                None
+            };
+            let variant = crate::window_manager::evaluate_get_w_variant(window, proc_id);
+            Some(PpcImportAction::Return(variant as u16 as u32))
+        }
+        PpcLegacyWindowOperation::LMGetAuxWinHead => {
+            let aux_head = memory.read_u32_be(PPC_LM_AUX_WIN_HEAD_ADDR);
+            let result = crate::window_manager::evaluate_lm_get_aux_win_head(aux_head);
+            Some(PpcImportAction::Return(result))
+        }
+        PpcLegacyWindowOperation::LMGetWindowList => {
+            let first = window_list.first();
+            let low_mem = memory.read_u32_be(PPC_LM_WINDOW_LIST_ADDR);
+            let window = crate::window_manager::evaluate_lm_get_window_list(first, low_mem);
+            Some(PpcImportAction::Return(window))
+        }
+        PpcLegacyWindowOperation::LMSetAuxWinHead => {
+            let aux_head = cpu.gpr[3];
+            let can_write = ppc_memory_can_write_bytes(memory, PPC_LM_AUX_WIN_HEAD_ADDR, 4);
+            if let Ok(params) =
+                crate::window_manager::evaluate_lm_set_aux_win_head_parameters(aux_head, can_write)
+            {
+                let _ = memory.write_u32_be(PPC_LM_AUX_WIN_HEAD_ADDR, params.aux_head());
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcLegacyWindowOperation::LMSetWindowList => {
+            let window = cpu.gpr[3];
+            let can_write = ppc_memory_can_write_bytes(memory, PPC_LM_WINDOW_LIST_ADDR, 4);
+            if let Ok(params) =
+                crate::window_manager::evaluate_lm_set_window_list_parameters(window, can_write)
+            {
+                if params.window_ptr() != 0 {
+                    window_list.bring_to_front(params.window_ptr());
+                }
+                ppc_sync_process_window_list(memory, window_list);
+                let _ = memory.write_u32_be(PPC_LM_WINDOW_LIST_ADDR, params.window_ptr());
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcLegacyWindowOperation::SetPortWindowPort => {
+            let window = cpu.gpr[3];
+            let port = crate::window_manager::evaluate_set_port_window_port(window);
+            *current_gworld = port;
+            *current_gdevice =
+                ppc_gworld_device(gworlds, *current_gworld).unwrap_or(*current_gdevice);
+            ppc_register_gdevice(toolbox_startup, *current_gdevice);
+            ppc_restore_port_colors(
+                memory,
+                *current_gworld,
+                quickdraw_fore_color,
+                quickdraw_back_color,
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcLegacyWindowOperation::SetWindowPic => {
+            let window = cpu.gpr[3];
+            let pic = cpu.gpr[4];
+            let can_write = ppc_memory_can_write_bytes(
+                memory,
+                window.wrapping_add(PPC_CWINDOW_WINDOW_PIC_OFFSET),
+                4,
+            );
+            if let Ok(params) = crate::window_manager::evaluate_set_window_pic_parameters(
+                window, pic, can_write,
+            ) {
+                let _ = memory.write_u32_be(
+                    params
+                        .window_ptr()
+                        .wrapping_add(PPC_CWINDOW_WINDOW_PIC_OFFSET),
+                    params.pic_handle(),
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcLegacyWindowOperation::SetWRefCon => {
+            let window = cpu.gpr[3];
+            let ref_con = cpu.gpr[4];
+            let can_write = ppc_memory_can_write_bytes(
+                memory,
+                window.wrapping_add(PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET),
+                4,
+            );
+            if let Ok(params) = crate::window_manager::evaluate_set_w_ref_con_parameters(
+                window, ref_con, can_write,
+            ) {
+                let _ = memory.write_u32_be(
+                    params
+                        .window_ptr()
+                        .wrapping_add(PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET),
+                    params.ref_con(),
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
     }
 }
 
@@ -4937,7 +5147,6 @@ pub(super) fn ppc_materialize_window_resource_parameters(
     Some((scratch, scratch + 8))
 }
 
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn ppc_close_window(
     window: u32,

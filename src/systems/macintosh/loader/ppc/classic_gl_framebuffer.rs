@@ -1,6 +1,8 @@
 //! Pixel storage for classic OpenGL drawables. Coordinates at this boundary use
 //! OpenGL's lower-left origin; QuickDraw's guest framebuffer uses the upper-left.
 
+#![allow(dead_code)]
+
 use super::{PpcFrontBuffer, PpcSectionMem};
 
 const MAX_DRAWABLE_PIXELS: usize = 4096 * 4096;
