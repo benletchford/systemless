@@ -1446,6 +1446,8 @@ pub struct TrapDispatcher {
     pub(crate) control_def_trampoline: u32,
     /// Reusable trampoline cells for multi-control CDEF callback chains.
     pub(crate) control_def_trampoline_chain: Vec<u32>,
+    /// Active Control Manager callbacks preserve enclosing trampoline cells.
+    pub(crate) control_callback_stack: Vec<super::control::ControlCallbackFrame>,
     /// Address of the lazily-allocated trampoline used by DeferUserFn
     /// to call a callable userFunction immediately. Holds
     /// `48E7 F0F0 207C xxxx xxxx 4EB9 xxxx xxxx 4CDF 0F0F 7000 4E75`.
@@ -3718,6 +3720,7 @@ impl TrapDispatcher {
             window_def_trampoline: 0,
             control_def_trampoline: 0,
             control_def_trampoline_chain: Vec::new(),
+            control_callback_stack: Vec::new(),
             defer_user_fn_trampoline: 0,
             notification_requests: Vec::new(),
             collection_callback_stack: Vec::new(),
@@ -8097,6 +8100,9 @@ impl TrapDispatcher {
         cfm: Option<&crate::cfm::CfmState>,
         bindings: Option<&mut dyn crate::cfm::CfmSymbolBindings>,
     ) -> Result<()> {
+        if self.complete_control_callback_return(trap, cpu, bus) {
+            return Ok(());
+        }
         if crate::execution_m68k::complete_classic_manager_return(&self.guest_calls, cpu, bus)
             && (self.resume_completed_menu_bar_build(cpu, bus)
                 || self.resume_menu_tracking(cpu, bus).is_some())

@@ -16,6 +16,16 @@ fn trace_controls_enabled() -> bool {
     *TRACE_CONTROLS.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_CONTROLS").is_some())
 }
 
+/// One live Control Manager callback owns the mutable trampoline contents
+/// until it returns. A nested CDEF or action procedure may reuse the cells,
+/// but must restore the enclosing invocation before resuming guest code.
+#[derive(Debug)]
+pub(crate) struct ControlCallbackFrame {
+    return_trap_pc: u32,
+    return_slot: u32,
+    saved_trampolines: Vec<(u32, Vec<u8>)>,
+}
+
 impl super::TrapDispatcher {
     const CDEF_DRAW_CNTL_MSG: i16 = 0;
     const CDEF_TEST_CNTL_MSG: i16 = 1;
@@ -325,6 +335,16 @@ impl super::TrapDispatcher {
         tramp
     }
 
+    fn save_active_control_trampolines(&self, bus: &MacMemoryBus) -> Vec<(u32, Vec<u8>)> {
+        if self.control_callback_stack.is_empty() {
+            return Vec::new();
+        }
+        self.control_def_trampoline_chain
+            .iter()
+            .map(|&address| (address, bus.read_bytes(address, Self::CDEF_TRAMPOLINE_SIZE as usize)))
+            .collect()
+    }
+
     fn write_control_def_trampoline(
         bus: &mut MacMemoryBus,
         tramp: u32,
@@ -356,6 +376,16 @@ impl super::TrapDispatcher {
         bus.write_word(tramp + 36, 0x2017); // MOVE.L (A7),D0
         bus.write_word(tramp + 38, 0x33C0); // MOVE.W D0,abs.L
         bus.write_long(tramp + 40, result_addr);
+        if proc_addr == 0 {
+            // Interleave standard rendering with CDEF callbacks in DrawControls
+            // order instead of batching standard controls ahead of guest code.
+            // Macintosh Toolbox Essentials (1992), pp. 5-87--5-88.
+            bus.write_word(tramp + 4, 0x2F3C); // MOVE.L #theControl,-(SP)
+            bus.write_long(tramp + 6, ctrl_handle);
+            bus.write_word(tramp + 10, 0xA96D); // Draw1Control
+            bus.write_word(tramp + 12, 0x6000); // BRA.W restore-registers
+            bus.write_word(tramp + 14, 30); // (tramp + 14) + 30 = tramp + 44
+        }
         bus.write_word(tramp + 44, 0x2E7C); // MOVEA.L #savedRegsSP,A7
         bus.write_long(tramp + 46, saved_regs_sp);
         bus.write_word(tramp + 50, 0x4CDF); // MOVEM.L (SP)+,D0-D3/A0-A3
@@ -376,7 +406,7 @@ impl super::TrapDispatcher {
                 bus.write_word(tramp + 62, 0x2F3C); // MOVE.L #gdh,-(SP)
                 bus.write_long(tramp + 64, restore_gdevice);
                 bus.write_word(tramp + 68, 0xAA31); // _SetGDevice
-                bus.write_word(tramp + 70, 0x4E75); // RTS
+                bus.write_word(tramp + 70, 0xAA73); // guarded ControlDispatch callback return
             }
         }
     }
@@ -387,11 +417,27 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         calls: &[(u32, i16, u32, Option<u32>)],
     ) -> bool {
+        self.arm_control_call_chain(cpu, bus, calls, false)
+    }
+
+    fn arm_control_call_chain<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        calls: &[(u32, i16, u32, Option<u32>)],
+        include_standard_draws: bool,
+    ) -> bool {
         let callable: Vec<(u32, i16, u32, Option<u32>, i16, u32)> = calls
             .iter()
             .filter_map(|&(ctrl_handle, message, param, result_addr)| {
                 let ctrl_ptr = Self::control_record_ptr(bus, ctrl_handle);
-                if ctrl_ptr == 0 || !self.control_uses_application_def_proc(bus, ctrl_ptr) {
+                if ctrl_ptr == 0 {
+                    return None;
+                }
+                let application_def = self.control_uses_application_def_proc(bus, ctrl_ptr);
+                if !application_def
+                    && !(include_standard_draws && message == Self::CDEF_DRAW_CNTL_MSG)
+                {
                     return None;
                 }
                 let proc_id = self.control_manager.proc_id(ctrl_ptr);
@@ -401,7 +447,11 @@ impl super::TrapDispatcher {
                     param,
                     result_addr,
                     proc_id & 0xF,
-                    Self::control_def_proc_addr(bus, ctrl_ptr),
+                    if application_def {
+                        Self::control_def_proc_addr(bus, ctrl_ptr)
+                    } else {
+                        0
+                    },
                 ))
             })
             .collect();
@@ -419,6 +469,7 @@ impl super::TrapDispatcher {
         let return_pc = cpu.read_reg(Register::PC);
         let return_slot = final_sp.wrapping_sub(4);
         let saved_regs_sp = return_slot.wrapping_sub(32);
+        let saved_trampolines = self.save_active_control_trampolines(bus);
         self.get_or_create_control_def_trampoline(bus);
         while self.control_def_trampoline_chain.len() < callable.len() {
             self.control_def_trampoline_chain
@@ -450,6 +501,11 @@ impl super::TrapDispatcher {
             );
         }
 
+        self.control_callback_stack.push(ControlCallbackFrame {
+            return_trap_pc: trampolines.last().unwrap() + 72,
+            return_slot,
+            saved_trampolines,
+        });
         bus.write_long(return_slot, return_pc);
         cpu.write_reg(Register::A7, return_slot);
         cpu.write_reg(Register::PC, trampolines[0]);
@@ -489,6 +545,7 @@ impl super::TrapDispatcher {
         // arrow or page region. One callback corresponds to the initial
         // mouse-down; subsequent host events can enter TrackControl again for
         // auto-repeat. Macintosh Toolbox Essentials 1992, pp. 5-89 to 5-91.
+        let saved_trampolines = self.save_active_control_trampolines(bus);
         let trampoline = self.get_or_create_control_def_trampoline(bus);
         let return_slot = final_sp.wrapping_sub(4);
         let saved_regs_sp = return_slot.wrapping_sub(32);
@@ -504,8 +561,13 @@ impl super::TrapDispatcher {
         bus.write_long(trampoline + 22, saved_regs_sp);
         bus.write_word(trampoline + 26, 0x4CDF); // MOVEM.L (SP)+,D0-D3/A0-A3
         bus.write_word(trampoline + 28, 0x0F0F);
-        bus.write_word(trampoline + 30, 0x4E75); // RTS
+        bus.write_word(trampoline + 30, 0xAA73); // guarded ControlDispatch callback return
 
+        self.control_callback_stack.push(ControlCallbackFrame {
+            return_trap_pc: trampoline + 32,
+            return_slot,
+            saved_trampolines,
+        });
         bus.write_long(return_slot, callback_return_pc);
         cpu.write_reg(Register::A7, return_slot);
         cpu.write_reg(Register::PC, trampoline);
@@ -2676,6 +2738,32 @@ impl super::TrapDispatcher {
         bus.read_word(addr) != 0
     }
 
+    /// Complete only the registered internal return, before public trap patch
+    /// routing. Restoring the enclosing code before resuming it permits CDEFs
+    /// to call MoveControl (Macintosh Toolbox Essentials, p. 5-114).
+    pub(crate) fn complete_control_callback_return<C: CpuOps>(
+        &mut self,
+        trap: u16,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+    ) -> bool {
+        if trap != 0xAA73
+            || !self.control_callback_stack.last().is_some_and(|frame| {
+                cpu.read_reg(Register::PC) == frame.return_trap_pc
+                    && cpu.read_reg(Register::A7) == frame.return_slot
+            })
+        {
+            return false;
+        }
+        let frame = self.control_callback_stack.pop().unwrap();
+        for (address, bytes) in frame.saved_trampolines {
+            bus.write_bytes(address, &bytes);
+        }
+        cpu.write_reg(Register::PC, bus.read_long(frame.return_slot));
+        cpu.write_reg(Register::A7, frame.return_slot + 4);
+        true
+    }
+
     pub(crate) fn dispatch_control<C: CpuOps>(
         &mut self,
         is_tool: bool,
@@ -3006,28 +3094,31 @@ impl super::TrapDispatcher {
                         let width = old_right - old_left;
                         let height = old_bottom - old_top;
 
-                        // Erase the control's CURRENT screen rect before moving it. Per
-                        // IM:I I-329 (and ROM _MoveControl source) this is implemented as
-                        // HideControl + update contrlRect + ShowControl; HideControl
-                        // invalidates and erases the old location.
+                        // Visible controls are erased in their owner's port before
+                        // moving, then redrawn at the new location. Hidden controls
+                        // only change geometry. Use QuickDraw so visibility, clipping
+                        // and the owner's background pattern also apply to erasure.
+                        // Macintosh Toolbox Essentials (1992), pp. 5-97--5-98.
+                        let visible =
+                            Self::control_vis_is_visible(bus.read_byte(ctrl_ptr + 16));
                         let owner_window = bus.read_long(ctrl_ptr + 4);
-                        if owner_window != 0 {
-                            let (scr_top, scr_left, _, _) =
-                                Self::dialog_screen_bounds(bus, owner_window);
-                            let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
-                                self.get_screen_params();
-                            Self::fb_fill_rect(
+                        if visible && owner_window != 0 {
+                            let saved_port = *self.current_port;
+                            let saved_gdevice = *self.current_gdevice;
+                            self.set_current_port_state(bus, cpu, owner_window, None);
+                            self.draw_rect(
+                                cpu,
                                 bus,
-                                screen_base,
-                                row_bytes,
-                                pixel_size,
-                                screen_width,
-                                screen_height,
-                                scr_top + old_top,
-                                scr_left + old_left,
-                                scr_top + old_bottom,
-                                scr_left + old_right,
-                                false, // erase to white
+                                &Rect {
+                                    top: old_top,
+                                    left: old_left,
+                                    bottom: old_bottom,
+                                    right: old_right,
+                                },
+                                ShapeOp::Erase,
+                            );
+                            self.set_current_port_state(
+                                bus, cpu, saved_port, Some(saved_gdevice),
                             );
                         }
 
@@ -3036,6 +3127,16 @@ impl super::TrapDispatcher {
                         bus.write_word(ctrl_ptr + 12, (v + height) as u16);
                         bus.write_word(ctrl_ptr + 14, (h + width) as u16);
                         self.sync_dialog_item_rect_for_control(bus, ctrl_handle);
+                        if visible
+                            && !self.arm_control_def_messages(
+                                cpu,
+                                bus,
+                                ctrl_handle,
+                                &[(Self::CDEF_DRAW_CNTL_MSG, 0, None)],
+                            )
+                        {
+                            self.draw_control(cpu, bus, ctrl_ptr);
+                        }
                     }
                 }
                 Ok(())
@@ -3988,12 +4089,8 @@ impl super::TrapDispatcher {
             (true, 0x169) => {
                 let sp = cpu.read_reg(Register::A7);
                 let window_ptr = bus.read_long(sp);
-                let mut cdef_draw_calls = Vec::new();
-
+                cpu.write_reg(Register::A7, sp + 4);
                 if window_ptr != 0 {
-                    // The shared Control Manager owns traversal and documented
-                    // draw order; this adapter only reads live Handle fields
-                    // and executes presentation or CDEF callbacks.
                     let controls = crate::control_manager::control_draw_order(
                         bus.read_long(window_ptr + 140),
                         |ctrl_handle| {
@@ -4001,32 +4098,29 @@ impl super::TrapDispatcher {
                             (ctrl_ptr != 0).then(|| bus.read_long(ctrl_ptr))
                         },
                     );
-                    for ctrl_handle in controls {
-                        let ctrl_ptr = bus.read_long(ctrl_handle);
-                        if ctrl_ptr == 0 {
-                            continue;
+                    let controls: Vec<_> = controls
+                        .into_iter()
+                        .filter(|&handle| {
+                            let ptr = Self::control_record_ptr(bus, handle);
+                            ptr != 0 && Self::control_vis_is_visible(bus.read_byte(ptr + 16))
+                        })
+                        .collect();
+                    if controls.iter().any(|&handle| {
+                        self.control_uses_application_def_proc(
+                            bus, Self::control_record_ptr(bus, handle),
+                        )
+                    }) {
+                        let calls: Vec<_> = controls
+                            .into_iter()
+                            .map(|handle| (handle, Self::CDEF_DRAW_CNTL_MSG, 0, None))
+                            .collect();
+                        self.arm_control_call_chain(cpu, bus, &calls, true);
+                    } else {
+                        for handle in controls {
+                            self.draw_control(cpu, bus, Self::control_record_ptr(bus, handle));
                         }
-                        if self.control_uses_application_def_proc(bus, ctrl_ptr) {
-                            if Self::control_vis_is_visible(bus.read_byte(ctrl_ptr + 16)) {
-                                cdef_draw_calls.push((
-                                    ctrl_handle,
-                                    Self::CDEF_DRAW_CNTL_MSG,
-                                    0,
-                                    None,
-                                ));
-                            }
-                            continue;
-                        }
-                        // The single-control path already handles standard
-                        // popup title geometry, fixed-width clipping, live
-                        // MENU text, and inactive state. Reuse it here so
-                        // DrawControls and Draw1Control stay byte-identical.
-                        self.draw_control(cpu, bus, ctrl_ptr);
                     }
                 }
-
-                cpu.write_reg(Register::A7, sp + 4);
-                self.arm_control_def_call_chain(cpu, bus, &cdef_draw_calls);
                 Ok(())
             }
 
@@ -4491,3 +4585,6 @@ impl super::TrapDispatcher {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod drawing_tests;

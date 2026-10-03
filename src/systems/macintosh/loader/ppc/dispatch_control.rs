@@ -2809,7 +2809,7 @@ pub(super) fn ppc_draw_window_controls(
 ) -> bool {
     // Macintosh Toolbox Essentials (1992), pp. 5-87--5-88: DrawControls
     // draws every visible control in reverse order of creation. NewControl
-    // prepends to wControlList, so walking the list tail-first preserves the
+    // prepends to wControlList, so walking the list head-first preserves the
     // documented overlap order (the first-created control is frontmost).
     let head = memory
         .read_u32_be(window.wrapping_add(PPC_CWINDOW_CONTROL_LIST_OFFSET))

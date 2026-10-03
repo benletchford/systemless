@@ -428,6 +428,170 @@ fn draw_controls_redraws_visible_controls_in_a_document_window() {
 }
 
 #[test]
+fn draw_controls_draws_newest_first_with_oldest_control_frontmost() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawControls")).unwrap();
+    let mut last_mem_error = loaded.last_mem_error();
+    let mut handles = Vec::new();
+    for bounds in [(10, 20, 50, 120), (20, 40, 60, 140)] {
+        let handle = with_test_controls!(
+            loaded,
+            |controls| ppc_new_control_record_values(
+                None,
+                &mut loaded.memory,
+                test_heap_cursor!(loaded),
+                test_heap_limit!(loaded),
+                &mut last_mem_error,
+                test_handles!(loaded),
+                controls,
+                PPC_MAIN_GWORLD,
+                bounds,
+                b"",
+                true,
+                0,
+                0,
+                1,
+                0,
+                0,
+            )
+        );
+        assert_ne!(handle, 0);
+        handles.push(handle);
+    }
+    let newer_control = ppc_control_ptr(&mut loaded.memory, handles[1]).unwrap();
+    assert_eq!(
+        loaded
+            .memory
+            .read_u32_be(PPC_MAIN_GWORLD + PPC_CWINDOW_CONTROL_LIST_OFFSET),
+        Some(handles[1])
+    );
+    assert_eq!(
+        loaded
+            .memory
+            .read_u32_be(newer_control + PPC_CONTROL_NEXT_OFFSET),
+        Some(handles[0])
+    );
+    assert!(ppc_paint_rect_bounds(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PPC_MAIN_GWORLD,
+        (0, 0, 80, 160),
+        PPC_RGB_WHITE,
+        None,
+    ));
+
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    let surface =
+        ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+            .unwrap();
+    let black =
+        ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
+    let white =
+        ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_WHITE).unwrap();
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (60, 20)),
+        Some(white),
+        "the oldest button's interior must cover the newer button's top edge"
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (119, 35)),
+        Some(black),
+        "the oldest button's right edge must cover the newer button's interior"
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (139, 40)),
+        Some(black),
+        "the newer button must still draw outside the overlap"
+    );
+}
+
+#[test]
+fn move_control_redraws_at_new_bounds_only_when_visible() {
+    for visible in [true, false] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"MoveControl")).unwrap();
+        let mut last_mem_error = loaded.last_mem_error();
+        let handle = with_test_controls!(
+            loaded,
+            |controls| ppc_new_control_record_values(
+                None,
+                &mut loaded.memory,
+                test_heap_cursor!(loaded),
+                test_heap_limit!(loaded),
+                &mut last_mem_error,
+                test_handles!(loaded),
+                controls,
+                PPC_MAIN_GWORLD,
+                (10, 20, 30, 100),
+                b"",
+                visible,
+                0,
+                0,
+                1,
+                0,
+                0,
+            )
+        );
+        assert_ne!(handle, 0);
+        let control = ppc_control_ptr(&mut loaded.memory, handle).unwrap();
+        assert!(ppc_paint_rect_bounds(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            PPC_MAIN_GWORLD,
+            (0, 0, 100, 160),
+            PPC_RGB_WHITE,
+            None,
+        ));
+        // An interior marker distinguishes a hidden no-op from repainting
+        // the button's white fill at its new location.
+        assert!(ppc_paint_rect_bounds(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            PPC_MAIN_GWORLD,
+            (70, 90, 71, 91),
+            PPC_RGB_BLACK,
+            None,
+        ));
+
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = 50;
+        loaded.cpu.gpr[5] = 60;
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(
+            ppc_read_rect(&mut loaded.memory, control + PPC_CONTROL_RECT_OFFSET),
+            Some((60, 50, 80, 130)),
+            "MoveControl must preserve dimensions, visible={visible}"
+        );
+        assert_eq!(
+            loaded.memory.read_u8(control + PPC_CONTROL_VISIBLE_OFFSET),
+            Some(if visible { 0xff } else { 0 })
+        );
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap();
+        let black =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
+        let white =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_WHITE).unwrap();
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (90, 60)),
+            Some(if visible { black } else { white }),
+            "only a visible control should paint its new frame, visible={visible}"
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (90, 70)),
+            Some(if visible { white } else { black }),
+            "only a visible control should repaint its new interior, visible={visible}"
+        );
+    }
+}
+
+#[test]
 fn classic_control_hit_testing_and_disposal_follow_the_window_list() {
     let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
     let mut last_mem_error = loaded.last_mem_error();
