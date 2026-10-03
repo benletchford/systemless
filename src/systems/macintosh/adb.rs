@@ -160,6 +160,10 @@ impl AdbManager {
         self.pending_packets.pop_front()
     }
 
+    pub(crate) fn has_pending_packet(&self) -> bool {
+        !self.pending_packets.is_empty()
+    }
+
     #[cfg(test)]
     pub(crate) fn pending_packet_count(&self) -> usize {
         self.pending_packets.len()

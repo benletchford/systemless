@@ -184,6 +184,7 @@ fn resource_manager_snapshot_powerpc(
 pub mod audio;
 pub mod idle;
 pub mod interrupt;
+mod virtual_idle;
 pub mod ppc_exec;
 pub mod vfs;
 
@@ -193,6 +194,7 @@ mod debug_support;
 mod debug_support_disabled;
 
 pub(crate) use idle::*;
+pub(crate) use virtual_idle::*;
 pub(crate) use interrupt::*;
 pub(crate) use ppc_exec::*;
 pub use vfs::*;
@@ -1436,7 +1438,7 @@ const IDLE_CYCLE_SITE_SLOTS: usize = 8;
 const IDLE_COUNTER_BACKOFF_CAP_TICKS: u32 = 2048;
 
 /// Probe accounting for one exact-idle-cycle anchor site.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq)]
 struct IdleCycleSiteRecord {
     site: u32,
     /// Tick the per-tick probe counter belongs to.
@@ -1787,6 +1789,18 @@ pub struct FixtureRunner {
     /// in-progress proof, this may cross frontend slices: a second write
     /// journal plus CPU/input/event checks revoke it before any reuse.
     idle_cycle_sleep: Option<ProvenIdleCycleSleep>,
+    /// A pass being recorded for a virtual idle cycle (see `virtual_idle`).
+    pass_recorder: Option<PassRecorder>,
+    /// A recorded cycle whose passes are being skipped.
+    virtual_idle_cycle: Option<VirtualIdleCycle>,
+    /// A recording carried from the previous slice, journal armed.
+    virtual_idle_kept: Option<KeptIdleRecording>,
+    /// Recordings started at (site, tick).
+    virtual_idle_attempts: [(u32, u32, u8); IDLE_CYCLE_SITE_SLOTS],
+    /// Off, every cycle the parking prover leaves alone executes.
+    pub(crate) virtual_idle_enabled: bool,
+    /// Recorded cycles the cursor has entered.
+    pub(crate) virtual_idle_entries: u64,
     /// Tick value saved when menu tracking starts.  While set, run_steps caps
     /// its tick_override to this value so the game clock is frozen — matching
     /// the real Mac where MenuSelect blocks the application event loop.
@@ -2035,6 +2049,12 @@ impl FixtureRunner {
             idle_counter: None,
             idle_cycle_sites: [IdleCycleSiteRecord::default(); IDLE_CYCLE_SITE_SLOTS],
             idle_cycle_sleep: None,
+            pass_recorder: None,
+            virtual_idle_cycle: None,
+            virtual_idle_kept: None,
+            virtual_idle_attempts: [(0, 0, 0); IDLE_CYCLE_SITE_SLOTS],
+            virtual_idle_enabled: std::env::var_os("SYSTEMLESS_DISABLE_VIRTUAL_IDLE").is_none(),
+            virtual_idle_entries: 0,
             frozen_ticks: None,
             menu_presentation_remainder: 0,
             timer_trampoline: 0,
@@ -5065,13 +5085,23 @@ impl FixtureRunner {
     fn redraw_chrome_outside_idle_journal(&mut self) {
         let suspended = self.bus.suspend_write_probe();
         let check_parked_repaint = self.idle_cycle_sleep.is_some() && suspended.is_some();
-        if check_parked_repaint {
+        // A recording kept across the slice boundary relies on the same
+        // journal, so a repaint that changes guest memory retires it too
+        // (and only it: the parking prover's state is left alone).
+        let check_kept_repaint =
+            !check_parked_repaint && suspended.is_some() && self.virtual_idle_kept.is_some();
+        if check_parked_repaint || check_kept_repaint {
             self.bus.begin_uncapped_write_probe();
         }
         self.redraw_chrome();
-        let revoke = check_parked_repaint && !self.bus.finish_write_probe_unchanged();
+        let changed = (check_parked_repaint || check_kept_repaint)
+            && !self.bus.finish_write_probe_unchanged();
+        let revoke = check_parked_repaint && changed;
         if let Some(journal) = suspended {
             self.bus.resume_write_probe(journal);
+        }
+        if check_kept_repaint && changed {
+            self.drop_kept_idle_recording();
         }
         if revoke {
             if wait_stats_enabled() {
@@ -5380,6 +5410,8 @@ impl FixtureRunner {
     /// Cancel only a same-slice observation. A proven sleep has its own write
     /// guard and intentionally survives the frontend boundary.
     fn cancel_idle_cycle_observation(&mut self) {
+        // A recording, like an unfinished proof, never spans a slice.
+        self.cancel_pass_recording();
         if self.idle_cycle_probe.is_some() {
             self.bus.cancel_write_probe();
         }
@@ -5388,6 +5420,9 @@ impl FixtureRunner {
     }
 
     fn cancel_idle_cycle_detector(&mut self) {
+        debug_assert!(self.virtual_idle_cycle.is_none(), "materialize before executing");
+        self.pass_recorder = None;
+        self.virtual_idle_kept = None;
         self.bus.cancel_write_probe();
         self.idle_counter = None;
         self.idle_cycle_probe = None;
@@ -6638,6 +6673,17 @@ impl FixtureRunner {
                 break;
             }
 
+            if self.virtual_idle_cycle.is_some() {
+                count += self.advance_virtual_idle_cycle(max_steps - count, sound_work_only);
+                if self.virtual_idle_cycle.is_some() {
+                    // The rest of the slice was skipped.
+                    break;
+                }
+                if count >= max_steps {
+                    break;
+                }
+            }
+
             // An audio-only slice can finish a callback from a retrace without
             // draining its remaining VBL work. Resume that same finite batch
             // before any foreground instruction, without advancing its clock.
@@ -7099,6 +7145,10 @@ impl FixtureRunner {
             self.dispatcher
                 .append_pending_native_trap_return_pcs(&mut watch_buf);
             watch_buf.extend(self.debug_m68k_breakpoint_addresses());
+            if self.pass_recorder.is_some() && self.active_interrupt_callback.is_some() {
+                // Interrupt code is no part of the observed cycle.
+                self.cancel_pass_recording();
+            }
             let previous_mouse = self.bus.read_long(crate::memory::globals::addr::MOUSE_LOC2);
             if per_instruction {
                 self.bus.attribute_access_hits(AccessSource::Host);
@@ -7130,6 +7180,9 @@ impl FixtureRunner {
             if executed > 0 {
                 count += executed;
                 self.total_instructions = self.total_instructions.wrapping_add(executed as u64);
+                if let Some(recorder) = self.pass_recorder.as_mut() {
+                    recorder.executed += executed as u64;
+                }
                 if !sound_work_only {
                     let charge_units = executed as i32 - i32::from(precharged);
                     if self.charge_tick_budget(charge_units, tick_cap) {
@@ -7292,6 +7345,7 @@ impl FixtureRunner {
                             {
                                 tick_cap_reached = true;
                             }
+                            self.record_pass_trap(opcode, null_event, extra_tick_cost);
                             // The m68k CPU already advanced PC past the A-line
                             // instruction during fetch (read_imm_16 does pc += 2).
                             //
@@ -7444,6 +7498,9 @@ impl FixtureRunner {
                             {
                                 break;
                             }
+                            if null_event || is_poll_anchor_trap(opcode) {
+                                self.note_virtual_anchor_arrival(pc);
+                            }
                         }
                         Err(Error::Halted) => {
                             if matches!(opcode, 0xA9F2 | 0xA9F4)
@@ -7532,7 +7589,14 @@ impl FixtureRunner {
             }
         }
 
+        // Code outside the slice loop reads and switches the CPU (a sound
+        // callback entered between slices saves it as the context to
+        // return to), so a slice never ends with the cursor virtual: the
+        // CPU is put where the counted steps left it, and the next slice
+        // observes the cycle afresh.
+        self.drop_kept_idle_recording();
         self.cancel_idle_cycle_observation();
+        self.keep_virtual_idle_cycle_across_slice();
         if finish_frame != FrameFinalization::Deferred {
             self.finish_host_frame(
                 finish_frame,

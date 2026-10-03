@@ -1,5 +1,7 @@
 use super::*;
 use crate::cpu::Register;
+use crate::callback_manager::CallbackTaskArchitecture;
+use crate::sound::PendingDoubleBackCallback;
 
 #[test]
 fn idle_snapshot_preserves_extended_cpu_state() {
@@ -2778,4 +2780,180 @@ fn spin_fastfwd_rejects_wrong_branch_target() {
 
     assert_eq!(runner.guest_tick(), 100);
     assert_eq!(count, 0);
+}
+
+/// One arm of the virtual-cursor equivalence test: a held-button poll loop
+/// (StillDown, SetRect into a record, a load of a word the host may change)
+/// that the parking prover leaves alone, because SetRect is not on its
+/// list, plus a Time Manager task and a Sound Manager doubleback callback,
+/// both written in 68k code.
+struct VirtualIdleArm {
+    runner: FixtureRunner,
+    rect: u32,
+    watched: u32,
+    timer_marker: u32,
+    sound_marker: u32,
+    callback: u32,
+}
+
+fn virtual_idle_arm(virtual_idle: bool) -> VirtualIdleArm {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.virtual_idle_enabled = virtual_idle;
+    let base = 0x0001_0000u32;
+    let rect = 0x0003_0000u32;
+    let watched = 0x0003_0010u32;
+    let timer_marker = 0x0003_0020u32;
+    let sound_marker = 0x0003_0030u32;
+    let timer_callback = 0x0002_0000u32;
+    let sound_callback = 0x0002_0100u32;
+
+    // `watched` is read just after the anchor, so a host write to it
+    // between slices reaches the CPU only after the next arrival: only the
+    // write journal can tell a kept recording that its pass changed.
+    let mut program = vec![
+        0x554F, // SUBQ.W #2,A7
+        0xA973, // _StillDown
+        0x121F, // MOVE.B (A7)+,D1
+        0x3439, // MOVE.W watched,D2
+        (watched >> 16) as u16,
+        watched as u16,
+        0x4879, // PEA rect
+        (rect >> 16) as u16,
+        rect as u16,
+    ];
+    for coordinate in [10u16, 20, 30, 40] {
+        program.extend([0x3F3C, coordinate]); // MOVE.W #coordinate,-(A7)
+    }
+    program.extend([
+        0xA8A7, // _SetRect
+        0x60DA, // BRA.S base
+    ]);
+    for (index, word) in program.into_iter().enumerate() {
+        runner.bus.write_word(base + 2 * index as u32, word);
+    }
+    // Time Manager task: ADDQ.W #1,timer_marker; RTS.
+    for (index, word) in [
+        0x5279,
+        (timer_marker >> 16) as u16,
+        timer_marker as u16,
+        0x4E75,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        runner.bus.write_word(timer_callback + 2 * index as u32, word);
+    }
+    // Doubleback procedure: ADDQ.W #1,sound_marker; RTD #8 (two Pascal
+    // arguments).
+    for (index, word) in [
+        0x5279,
+        (sound_marker >> 16) as u16,
+        sound_marker as u16,
+        0x4E74,
+        0x0008,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        runner.bus.write_word(sound_callback + 2 * index as u32, word);
+    }
+
+    runner.m68k.cpu.write_reg(Register::PC, base);
+    runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+    runner.bus.write_long(0x016A, 100);
+    runner.set_guest_tick_for_test(100);
+    runner.set_instructions_per_tick(20_000);
+    runner.dispatcher.input_state.set_mouse_button_for_test(true);
+    runner.dispatcher.timer_tasks.push(TimerTask {
+        task_ptr: 0x0039_38C8,
+        architecture: CallbackTaskArchitecture::M68k,
+        extended: false,
+        callback: timer_callback,
+        active: true,
+        fire_at_tick: 101,
+        // Well inside tick 101, so a cursor must stop short of it.
+        fire_at_subtick: 101_437_000,
+        last_fired_tick: None,
+    });
+    VirtualIdleArm {
+        runner,
+        rect,
+        watched,
+        timer_marker,
+        sound_marker,
+        callback: sound_callback,
+    }
+}
+
+impl VirtualIdleArm {
+    /// Everything a slice boundary exposes: what the slice reported, the
+    /// clock and budget, the CPU, and all of guest RAM.
+    fn observe(&self, steps: usize, running: bool) -> (usize, bool, u32, i32, u64, CpuArchitecturalSnapshot, u64) {
+        use std::hash::{Hash, Hasher};
+        let mut ram = std::collections::hash_map::DefaultHasher::new();
+        self.runner.bus.ram_slice(0, self.runner.bus.ram_size()).hash(&mut ram);
+        (
+            steps,
+            running,
+            self.runner.guest_tick(),
+            self.runner.tick_budget,
+            self.runner.total_instructions,
+            CpuArchitecturalSnapshot::capture(&self.runner.m68k.cpu.core),
+            ram.finish(),
+        )
+    }
+}
+
+#[test]
+fn virtual_idle_cursor_is_invisible_across_fixed_slices() {
+    // The same guest runs with the virtual cursor off and on, through the
+    // same fixed slices (sizes chosen to end mid-pass), with a doubleback
+    // callback queued between two slices, a host write to the polled
+    // record and to a word the loop reads, and a Time Manager task due
+    // mid-tick. Every slice must report the same steps and leave the same
+    // tick, budget, instruction count, CPU and memory.
+    let mut plain = virtual_idle_arm(false);
+    let mut cursor = virtual_idle_arm(true);
+    let slices = [2_993usize, 4_001, 997, 6_007, 3_331, 5_003, 7_919, 1_009];
+    for round in 0..12 {
+        for (index, &slice) in slices.iter().enumerate() {
+            for arm in [&mut plain, &mut cursor] {
+                match (round, index) {
+                    (2, 3) => {
+                        arm.runner.bus.write_word(arm.rect + 2, 0x7777);
+                        arm.runner.bus.write_word(arm.watched, 0x1234);
+                    }
+                    (4, 1) | (7, 6) => {
+                        let header = 0x0020_0000;
+                        let buffer = 0x0020_1000;
+                        arm.runner.bus.write_long(header + 12, buffer);
+                        arm.runner.bus.write_long(buffer + 4, 1);
+                        arm.runner.dispatcher.sound_manager.queue_doubleback_callback(
+                            PendingDoubleBackCallback {
+                                callback_addr: arm.callback,
+                                chan_ptr: 0x0039_3000,
+                                header_ptr: header,
+                                exhausted_buffer_index: 0,
+                            },
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            let (steps, running) = plain.runner.run_steps(slice, None);
+            let expected = plain.observe(steps, running);
+            let (steps, running) = cursor.runner.run_steps(slice, None);
+            assert!(
+                expected == cursor.observe(steps, running),
+                "round {round} slice {index}: the cursor changed what the slice exposed"
+            );
+        }
+    }
+    assert_eq!(plain.runner.bus.read_word(plain.timer_marker), 1, "the timer ran");
+    assert_eq!(plain.runner.bus.read_word(plain.sound_marker), 2, "both callbacks ran");
+    assert_eq!(plain.runner.virtual_idle_entries, 0);
+    assert!(
+        cursor.runner.virtual_idle_entries > 0,
+        "the cursor must actually have skipped passes"
+    );
 }
