@@ -1587,6 +1587,229 @@ pub fn evaluate_lm_set_aux_win_head_parameters(
     Ok(LmSetAuxWinHeadParameters { aux_head })
 }
 
+/// Standard window feature attributes returned by GetWindowFeatures.
+/// Carbon/MacWindows.h:
+/// kWindowCanCollapseAttribute = (1 << 0)
+/// kWindowCanGetWindowInfoAttribute = (1 << 1)
+/// kWindowHasProxyIconAttribute = (1 << 2)
+pub const WINDOW_FEATURES_STANDARD: u32 = 0x0000_0007;
+
+/// Standard default window structure frame margins (top, left, bottom, right).
+pub const WINDOW_STRUCTURE_WIDTHS_STANDARD: (i16, i16, i16, i16) = (20, 1, 1, 1);
+
+#[allow(dead_code)]
+pub fn evaluate_is_window_modified(window_ptr: u32, is_modified: bool) -> bool {
+    window_ptr != 0 && is_modified
+}
+
+/// Architecture-neutral parameter validation for SetWindowModified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetWindowModifiedParameters {
+    window_ptr: u32,
+    modified: bool,
+}
+
+impl SetWindowModifiedParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn modified(&self) -> bool {
+        self.modified
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_set_window_modified_parameters(
+    window_ptr: u32,
+    modified: bool,
+) -> Result<SetWindowModifiedParameters, i16> {
+    if window_ptr == 0 {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(SetWindowModifiedParameters {
+        window_ptr,
+        modified,
+    })
+}
+
+/// Architecture-neutral parameter validation for GetWindowProxyIcon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetWindowProxyIconParameters {
+    window_ptr: u32,
+    out_icon_ptr: u32,
+}
+
+impl GetWindowProxyIconParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn out_icon_ptr(&self) -> u32 {
+        self.out_icon_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_window_proxy_icon_parameters(
+    window_ptr: u32,
+    out_icon_ptr: u32,
+    can_write: bool,
+) -> Result<GetWindowProxyIconParameters, i16> {
+    if window_ptr == 0 || out_icon_ptr == 0 || !can_write {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(GetWindowProxyIconParameters {
+        window_ptr,
+        out_icon_ptr,
+    })
+}
+
+/// Architecture-neutral parameter validation for SetWindowProxyIcon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetWindowProxyIconParameters {
+    window_ptr: u32,
+    icon: u32,
+}
+
+impl SetWindowProxyIconParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn icon(&self) -> u32 {
+        self.icon
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_set_window_proxy_icon_parameters(
+    window_ptr: u32,
+    icon: u32,
+) -> Result<SetWindowProxyIconParameters, i16> {
+    if window_ptr == 0 {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(SetWindowProxyIconParameters {
+        window_ptr,
+        icon,
+    })
+}
+
+/// Architecture-neutral parameter validation for RemoveWindowProxy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoveWindowProxyParameters {
+    window_ptr: u32,
+}
+
+impl RemoveWindowProxyParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_remove_window_proxy_parameters(
+    window_ptr: u32,
+) -> Result<RemoveWindowProxyParameters, i16> {
+    if window_ptr == 0 {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(RemoveWindowProxyParameters { window_ptr })
+}
+
+#[allow(dead_code)]
+pub fn evaluate_is_window_path_select_click(
+    window_ptr: u32,
+    modifiers: u16,
+    in_title_bar: bool,
+) -> bool {
+    const CMD_KEY_MASK: u16 = 0x0100;
+    window_ptr != 0 && in_title_bar && (modifiers & CMD_KEY_MASK != 0)
+}
+
+/// Architecture-neutral parameter validation for GetWindowFeatures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetWindowFeaturesParameters {
+    window_ptr: u32,
+    out_features_ptr: u32,
+}
+
+impl GetWindowFeaturesParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn out_features_ptr(&self) -> u32 {
+        self.out_features_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_window_features_parameters(
+    window_ptr: u32,
+    out_features_ptr: u32,
+    can_write: bool,
+) -> Result<GetWindowFeaturesParameters, i16> {
+    if window_ptr == 0 || out_features_ptr == 0 || !can_write {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(GetWindowFeaturesParameters {
+        window_ptr,
+        out_features_ptr,
+    })
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_window_features(window_ptr: u32) -> u32 {
+    if window_ptr != 0 {
+        WINDOW_FEATURES_STANDARD
+    } else {
+        0
+    }
+}
+
+/// Architecture-neutral parameter validation for GetWindowStructureWidths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetWindowStructureWidthsParameters {
+    window_ptr: u32,
+    out_rect_ptr: u32,
+}
+
+impl GetWindowStructureWidthsParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn out_rect_ptr(&self) -> u32 {
+        self.out_rect_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_window_structure_widths_parameters(
+    window_ptr: u32,
+    out_rect_ptr: u32,
+    can_write: bool,
+) -> Result<GetWindowStructureWidthsParameters, i16> {
+    if window_ptr == 0 || out_rect_ptr == 0 || !can_write {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(GetWindowStructureWidthsParameters {
+        window_ptr,
+        out_rect_ptr,
+    })
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_window_structure_widths(window_ptr: u32) -> (i16, i16, i16, i16) {
+    if window_ptr != 0 {
+        WINDOW_STRUCTURE_WIDTHS_STANDARD
+    } else {
+        (0, 0, 0, 0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -2294,5 +2517,105 @@ mod tests {
         let lm_aux_params = evaluate_lm_set_aux_win_head_parameters(0x6000, true).unwrap();
         assert_eq!(lm_aux_params.aux_head(), 0x6000);
     }
+
+    #[test]
+    fn window_proxy_icon_modified_features_and_structure_widths_evaluation() {
+        // Window modified
+        assert!(!evaluate_is_window_modified(0, true));
+        assert!(!evaluate_is_window_modified(0x1000, false));
+        assert!(evaluate_is_window_modified(0x1000, true));
+
+        assert_eq!(evaluate_set_window_modified_parameters(0, true), Err(-50));
+        let mod_params = evaluate_set_window_modified_parameters(0x1000, true).unwrap();
+        assert_eq!(mod_params.window_ptr(), 0x1000);
+        assert!(mod_params.modified());
+
+        // Window proxy icon
+        assert_eq!(
+            evaluate_get_window_proxy_icon_parameters(0, 0x2000, true),
+            Err(-50)
+        );
+        assert_eq!(
+            evaluate_get_window_proxy_icon_parameters(0x1000, 0, true),
+            Err(-50)
+        );
+        assert_eq!(
+            evaluate_get_window_proxy_icon_parameters(0x1000, 0x2000, false),
+            Err(-50)
+        );
+        let get_icon_params =
+            evaluate_get_window_proxy_icon_parameters(0x1000, 0x2000, true).unwrap();
+        assert_eq!(get_icon_params.window_ptr(), 0x1000);
+        assert_eq!(get_icon_params.out_icon_ptr(), 0x2000);
+
+        assert_eq!(
+            evaluate_set_window_proxy_icon_parameters(0, 0x3000),
+            Err(-50)
+        );
+        let set_icon_params =
+            evaluate_set_window_proxy_icon_parameters(0x1000, 0x3000).unwrap();
+        assert_eq!(set_icon_params.window_ptr(), 0x1000);
+        assert_eq!(set_icon_params.icon(), 0x3000);
+
+        assert_eq!(evaluate_remove_window_proxy_parameters(0), Err(-50));
+        let rem_icon_params = evaluate_remove_window_proxy_parameters(0x1000).unwrap();
+        assert_eq!(rem_icon_params.window_ptr(), 0x1000);
+
+        // Path select click
+        assert!(!evaluate_is_window_path_select_click(0, 0x0100, true));
+        assert!(!evaluate_is_window_path_select_click(0x1000, 0, true));
+        assert!(!evaluate_is_window_path_select_click(
+            0x1000, 0x0100, false
+        ));
+        assert!(evaluate_is_window_path_select_click(0x1000, 0x0100, true));
+        assert!(evaluate_is_window_path_select_click(0x1000, 0x0300, true));
+
+        // Window features
+        assert_eq!(
+            evaluate_get_window_features_parameters(0, 0x4000, true),
+            Err(-50)
+        );
+        assert_eq!(
+            evaluate_get_window_features_parameters(0x1000, 0, true),
+            Err(-50)
+        );
+        assert_eq!(
+            evaluate_get_window_features_parameters(0x1000, 0x4000, false),
+            Err(-50)
+        );
+        let feat_params =
+            evaluate_get_window_features_parameters(0x1000, 0x4000, true).unwrap();
+        assert_eq!(feat_params.window_ptr(), 0x1000);
+        assert_eq!(feat_params.out_features_ptr(), 0x4000);
+        assert_eq!(evaluate_get_window_features(0), 0);
+        assert_eq!(
+            evaluate_get_window_features(0x1000),
+            WINDOW_FEATURES_STANDARD
+        );
+
+        // Window structure widths
+        assert_eq!(
+            evaluate_get_window_structure_widths_parameters(0, 0x5000, true),
+            Err(-50)
+        );
+        assert_eq!(
+            evaluate_get_window_structure_widths_parameters(0x1000, 0, true),
+            Err(-50)
+        );
+        assert_eq!(
+            evaluate_get_window_structure_widths_parameters(0x1000, 0x5000, false),
+            Err(-50)
+        );
+        let widths_params =
+            evaluate_get_window_structure_widths_parameters(0x1000, 0x5000, true).unwrap();
+        assert_eq!(widths_params.window_ptr(), 0x1000);
+        assert_eq!(widths_params.out_rect_ptr(), 0x5000);
+        assert_eq!(evaluate_get_window_structure_widths(0), (0, 0, 0, 0));
+        assert_eq!(
+            evaluate_get_window_structure_widths(0x1000),
+            WINDOW_STRUCTURE_WIDTHS_STANDARD
+        );
+    }
 }
+
 
