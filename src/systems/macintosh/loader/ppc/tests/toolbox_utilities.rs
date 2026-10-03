@@ -1,6 +1,30 @@
 use super::*;
 
 #[test]
+fn hle_import_runner_uppercases_roman_text_within_length() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "UppercaseText"),
+        PpcImportDispatcherTarget::UppercaseText
+    );
+    let pef = synthetic_pef_with_import(b"UppercaseText");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let text = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(text, vec![b'a', b'b', 0x8a, b'z', b'!']);
+    loaded.cpu.gpr[3] = text;
+    loaded.cpu.gpr[4] = 4;
+    loaded.cpu.gpr[5] = u32::MAX; // smSystemScript
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], text);
+    for (offset, expected) in [b'A', b'B', 0x80, b'Z', b'!'].into_iter().enumerate() {
+        assert_eq!(loaded.memory.read_u8(text + offset as u32), Some(expected));
+    }
+}
+
+#[test]
 fn hle_import_runner_fills_roman_parse_table() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "FillParseTable"),

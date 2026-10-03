@@ -72,6 +72,26 @@ pub(super) fn dispatch_toolbox_import(
             let _ = memory.write_bytes(cpu.gpr[3], &[0; 256]);
             Some(PpcImportAction::Return(1))
         }
+        PpcImportDispatcherTarget::UppercaseText => {
+            // Inside Macintosh: Text, UppercaseText. The emulated system and
+            // current font scripts are Roman; a different script has no
+            // installed conversion resource.
+            let script = cpu.gpr[5] as u16 as i16;
+            if !matches!(script, -2 | -1 | 0) {
+                return None;
+            }
+            let length = cpu.gpr[4] as u16 as i16;
+            let pointer = cpu.gpr[3];
+            if length > 0 && !ppc_memory_can_write_bytes(memory, pointer, length as u32) {
+                return None;
+            }
+            for offset in 0..length.max(0) as u32 {
+                let address = pointer + offset;
+                let byte = memory.read_u8(address)?;
+                memory.write_u8(address, crate::trap::mac_roman_to_upper(byte, false))?;
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::NumToString => {
             let number = cpu.gpr[3] as i32;
             let string_ptr = cpu.gpr[4];
