@@ -7572,6 +7572,11 @@ impl TrapDispatcher {
     /// watch list. Reaching one stops the batch before the return-site
     /// instruction executes, so the runner can validate PC and SP and retire
     /// the exact invocation without single-stepping all intervening code.
+    /// Native trap patch invocations still in flight.
+    pub(crate) fn pending_native_trap_call_count(&self) -> usize {
+        self.pending_native_trap_calls.values().map(Vec::len).sum()
+    }
+
     pub(crate) fn append_pending_native_trap_return_pcs(&self, pcs: &mut Vec<u32>) {
         for call in self.pending_native_trap_calls.values().flatten() {
             if !pcs.contains(&call.return_pc) {

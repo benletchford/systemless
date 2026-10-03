@@ -774,6 +774,11 @@ pub struct MacMemoryBus {
     /// million times in a long SimCity 2000 session; reusing one map keeps
     /// the table's capacity instead of regrowing it from empty each time.
     write_probe_spare: WriteProbeJournal,
+    /// Names the armed journal: a fresh number from every
+    /// `begin_write_probe` (never reissued), restored with a suspended
+    /// journal, so an owner can tell whether the armed journal is its own.
+    write_probe_generation: u64,
+    write_probe_generations_issued: u64,
     /// An out-of-range write makes the probe unverifiable even though the
     /// normal bus retains its legacy warn-and-ignore behavior.
     write_probe_invalid: bool,
@@ -1079,7 +1084,7 @@ type WriteProbeJournal = HashMap<u32, (u32, u8), BuildHasherDefault<AddressHashe
 /// An armed write journal temporarily detached from the bus by
 /// [`MacMemoryBus::suspend_write_probe`]; hand it back with
 /// [`MacMemoryBus::resume_write_probe`].
-pub(crate) struct SuspendedWriteProbe(WriteProbeJournal);
+pub(crate) struct SuspendedWriteProbe(WriteProbeJournal, u64);
 
 /// RAM storage - either a stable owned allocation or borrowed slice.
 enum RamStorage {
@@ -1582,6 +1587,8 @@ impl MacMemoryBus {
             store_filter_presentation: None,
             store_filter_reset: false,
             write_probe_spare: WriteProbeJournal::default(),
+            write_probe_generation: 0,
+            write_probe_generations_issued: 0,
             write_probe_invalid: false,
             write_probe_overflowed: false,
             write_probe_uncapped: false,
@@ -1681,6 +1688,8 @@ impl MacMemoryBus {
             store_filter_presentation: None,
             store_filter_reset: false,
             write_probe_spare: WriteProbeJournal::default(),
+            write_probe_generation: 0,
+            write_probe_generations_issued: 0,
             write_probe_invalid: false,
             write_probe_overflowed: false,
             write_probe_uncapped: false,
@@ -1997,10 +2006,17 @@ impl MacMemoryBus {
         super::note_store_filter_event();
         let mut journal = std::mem::take(&mut self.write_probe_spare);
         journal.clear();
+        self.write_probe_generations_issued += 1;
+        self.write_probe_generation = self.write_probe_generations_issued;
         self.write_probe_original = Some(journal);
         self.write_probe_invalid = false;
         self.write_probe_overflowed = false;
         self.write_probe_uncapped = false;
+    }
+
+    /// The generation of the journal `begin_write_probe` last armed.
+    pub(crate) fn write_probe_generation(&self) -> u64 {
+        self.write_probe_generation
     }
 
     /// Begin a write probe with no entry cap. Only for host-owned drawing
@@ -2030,12 +2046,42 @@ impl MacMemoryBus {
     /// journal is armed.
     pub(crate) fn suspend_write_probe(&mut self) -> Option<SuspendedWriteProbe> {
         super::note_store_filter_event();
-        self.write_probe_original.take().map(SuspendedWriteProbe)
+        let generation = self.write_probe_generation;
+        self.write_probe_original
+            .take()
+            .map(|journal| SuspendedWriteProbe(journal, generation))
     }
 
     pub(crate) fn resume_write_probe(&mut self, suspended: SuspendedWriteProbe) {
         super::note_store_filter_event();
         self.write_probe_original = Some(suspended.0);
+        // The same journal again, whatever was armed in between.
+        self.write_probe_generation = suspended.1;
+    }
+
+    /// Every word the armed write probe has journaled, with the value it
+    /// held when first written, into `out` (cleared first). `false` when no
+    /// usable journal is armed (none, or voided by a write outside RAM).
+    pub(crate) fn write_probe_words(&self, out: &mut Vec<(u32, u32)>) -> bool {
+        out.clear();
+        match self.write_probe_original.as_ref() {
+            Some(journal) if !self.write_probe_invalid => {
+                out.extend(journal.iter().map(|(&word, &(value, _))| (word, value)));
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The RAM word at `word`, a word the write probe journaled.
+    pub(crate) fn journaled_word(&self, word: u32) -> u32 {
+        self.ram.read_long_in_bounds(word as usize)
+    }
+
+    /// Whether guest addresses in RAM are RAM offsets, so a journaled word
+    /// can be rewritten through the ordinary guest store path.
+    pub(crate) fn guest_ram_is_identity_mapped(&self) -> bool {
+        self.addressing_32_bit && self.foreign_address_space.is_none()
     }
 
     /// Report -- and clear -- whether the most recent probe's journal
