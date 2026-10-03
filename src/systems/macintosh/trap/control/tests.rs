@@ -679,7 +679,7 @@ fn newcontrol_custom_cdef_arms_init_then_draw_pascal_callbacks() {
     assert_eq!(bus.read_word(draw_tramp + 54), 0x2F3C);
     assert_eq!(bus.read_word(draw_tramp + 60), 0xA873);
     assert_eq!(bus.read_word(draw_tramp + 68), 0xAA31);
-    assert_eq!(bus.read_word(draw_tramp + 70), 0x4E75);
+    assert_eq!(bus.read_word(draw_tramp + 70), 0xAA73);
 }
 
 #[test]
@@ -1751,7 +1751,7 @@ fn track_control_scrollbar_arrow_calls_action_proc_with_part_code() {
     assert_eq!(bus.read_word(trampoline + 12), 21);
     assert_eq!(bus.read_word(trampoline + 14), 0x4EB9);
     assert_eq!(bus.read_long(trampoline + 16), action_proc);
-    assert_eq!(bus.read_word(trampoline + 30), 0x4E75);
+    assert_eq!(bus.read_word(trampoline + 30), 0xAA73);
 
     let tracking = disp.control_tracking.as_ref().unwrap();
     assert!(tracking.scrollbar_callback_pending);
@@ -2494,7 +2494,7 @@ fn drawcontrols_dispatches_visible_application_cdefs_in_control_list_draw_order(
     assert_eq!(cpu.read_reg(Register::PC), first_tramp);
     assert_eq!(cpu.read_reg(Register::A7), sp);
     assert_eq!(bus.read_long(sp), return_pc);
-    assert_eq!(bus.read_long(first_tramp + 16), first_handle);
+    assert_eq!(bus.read_long(first_tramp + 16), second_handle);
     assert_eq!(
         bus.read_word(first_tramp + 22),
         super::super::TrapDispatcher::CDEF_DRAW_CNTL_MSG as u16
@@ -2503,7 +2503,7 @@ fn drawcontrols_dispatches_visible_application_cdefs_in_control_list_draw_order(
 
     let second_tramp = bus.read_long(first_tramp + 56);
     assert_ne!(second_tramp, 0);
-    assert_eq!(bus.read_long(second_tramp + 16), second_handle);
+    assert_eq!(bus.read_long(second_tramp + 16), first_handle);
     assert_eq!(
         bus.read_word(second_tramp + 22),
         super::super::TrapDispatcher::CDEF_DRAW_CNTL_MSG as u16
@@ -2512,7 +2512,7 @@ fn drawcontrols_dispatches_visible_application_cdefs_in_control_list_draw_order(
     assert_eq!(bus.read_word(second_tramp + 54), 0x2F3C);
     assert_eq!(bus.read_word(second_tramp + 60), 0xA873);
     assert_eq!(bus.read_word(second_tramp + 68), 0xAA31);
-    assert_eq!(bus.read_word(second_tramp + 70), 0x4E75);
+    assert_eq!(bus.read_word(second_tramp + 70), 0xAA73);
 }
 
 // FindControl semantics per IM:I (1985) I-323 and MTE (1992) 5-89.
