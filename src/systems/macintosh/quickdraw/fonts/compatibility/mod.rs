@@ -1,21 +1,24 @@
 //! Logical metrics from separately licensed classic-layout data components.
 
-use super::{FONT_APPLICATION, FONT_GENEVA, FONT_MONACO};
+use super::{FONT_APPLICATION, FONT_CHICAGO, FONT_GENEVA, FONT_MONACO};
 
 pub(super) const FIRST_ASCII_CODE: u8 = 0x20;
 pub(super) const LAST_ASCII_CODE: u8 = 0x7E;
 
 static GENEVA9_ADVANCES: &[u8; 95] = include_bytes!("geneva9-advances.bin");
+// Inside Macintosh: Text (1993), p. 1-61: the Roman system font is
+// 12-point Chicago. Keep its logical UI widths when changing fallback art.
+static CHICAGO12_ADVANCES: &[u8; 95] = include_bytes!("chicago12-advances.bin");
 // Inside Macintosh: Text (1993), p. 4-91 defines FOND.ffWidMax as the
 // normalized maximum glyph width for a one-point font.
 const MONACO_MAX_ADVANCE_UNITS: i32 = 1552;
 const MONACO_UNITS_PER_EM: i32 = 2048;
 
 pub(super) fn bundled_advances(font_id: i16, size: i16) -> Option<&'static [u8; 95]> {
-    if size == 9 && matches!(font_id, FONT_APPLICATION | FONT_GENEVA) {
-        Some(GENEVA9_ADVANCES)
-    } else {
-        None
+    match (font_id, size) {
+        (FONT_CHICAGO, 12) => Some(CHICAGO12_ADVANCES),
+        (FONT_APPLICATION | FONT_GENEVA, 9) => Some(GENEVA9_ADVANCES),
+        _ => None,
     }
 }
 

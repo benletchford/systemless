@@ -9,7 +9,7 @@ Copyright 2013, 2014, 2015 by (URW)++ Design & Development.
 
 | Compatibility family | Bundled face |
 | --- | --- |
-| Chicago | Nimbus Sans Bold |
+| Chicago | Nimbus Sans Regular |
 | Application / Geneva / Helvetica | Nimbus Sans Regular |
 | Monaco / Courier | Nimbus Mono PS Regular |
 | New York / Times | Nimbus Roman Regular |
@@ -26,6 +26,10 @@ These are substitutes, not recreations of Apple's designs. In particular,
 Core 35 provides neither a London blackletter equivalent nor Cairo pictograms.
 Unmapped families retain the existing fallback. Guest-visible family names
 remain compatibility identifiers. No host font lookup or font conversion is used.
+The Chicago fallback uses the regular weight so plain system-font text in
+dialogs remains legible at small sizes. Its 12-point logical advances retain
+the previous layout, and QuickDraw still applies a requested bold face
+separately.
 
 ## SHA-256
 
