@@ -103,6 +103,7 @@ pub struct PpcToolboxStartupState {
     pub(crate) window_modality: HashMap<u32, (u32, u32)>,
     pub(crate) windows_without_updates: HashSet<u32>,
     pub(crate) window_properties: HashMap<u32, Vec<crate::window_manager::ProcessWindowProperty>>,
+    pub(crate) window_attributes: HashMap<u32, u32>,
 }
 
 impl Default for PpcToolboxStartupState {
@@ -192,6 +193,7 @@ impl Default for PpcToolboxStartupState {
             window_modality: HashMap::new(),
             windows_without_updates: HashSet::new(),
             window_properties: HashMap::new(),
+            window_attributes: HashMap::new(),
         }
     }
 }
@@ -255,6 +257,17 @@ impl PpcToolboxStartupState {
 
     pub(crate) fn remove_window_proxy_icon(&mut self, window: u32) {
         self.window_proxy_icons.remove(&window);
+    }
+
+    pub(crate) fn window_attributes(&self, window: u32) -> u32 {
+        self.window_attributes
+            .get(&window)
+            .copied()
+            .unwrap_or(crate::window_manager::WINDOW_ATTRIBUTES_STANDARD)
+    }
+
+    pub(crate) fn set_window_attributes(&mut self, window: u32, attrs: u32) {
+        self.window_attributes.insert(window, attrs);
     }
 
     pub(crate) fn retained_host_overlay_rects(&self) -> Vec<(i16, i16, i16, i16)> {
