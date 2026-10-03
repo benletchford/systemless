@@ -443,6 +443,7 @@ pub enum PpcImportDispatcherTarget {
     PBSetCatInfo,
     PBHGetVInfo,
     GetVInfo,
+    GetVRefNum,
     PBDTGetPath,
     PBDTGetCommentSync,
     PBGetFCBInfo,
@@ -3308,6 +3309,7 @@ pub(crate) fn dispatcher_target_for_import(
         | ("InterfaceLib", "PBHGetVInfoSync")
         | ("InterfaceLib", "PBHGetVInfoAsync") => PpcImportDispatcherTarget::PBHGetVInfo,
         ("InterfaceLib", "GetVInfo") => PpcImportDispatcherTarget::GetVInfo,
+        ("InterfaceLib", "GetVRefNum") => PpcImportDispatcherTarget::GetVRefNum,
         ("InterfaceLib", "PBDTGetPath") => PpcImportDispatcherTarget::PBDTGetPath,
         ("InterfaceLib", "PBDTGetCommentSync") => PpcImportDispatcherTarget::PBDTGetCommentSync,
         ("InterfaceLib", "PBGetFCBInfo")

@@ -8810,6 +8810,58 @@ fn get_v_info_reports_default_volume_and_rejects_missing_drive() {
 }
 
 #[test]
+fn get_v_ref_num_uses_open_file_references() {
+    let pef = synthetic_pef_with_import(b"GetVRefNum");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let output = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(output, vec![0; 4]);
+    loaded.push_test_open_file(PpcFileRecord {
+        ref_num: 130,
+        path: "Data File".to_string(),
+        position: 0,
+    });
+    loaded.push_resource_file(PpcResourceFileRecord {
+        ref_num: 131,
+        path: "Resource File".to_string(),
+    });
+
+    for ref_num in [130, 131] {
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ref_num;
+        loaded.cpu.gpr[4] = output;
+        loaded.memory.write_u16_be(output, 0).unwrap();
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            loaded.memory.read_u16_be(output),
+            Some(PPC_BOOT_VOLUME_REF_NUM as u16)
+        );
+    }
+
+    for ref_num in [0, 132] {
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ref_num;
+        loaded.cpu.gpr[4] = output;
+        loaded.memory.write_u16_be(output, 0x1234).unwrap();
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_RF_NUM_ERR));
+        assert_eq!(loaded.memory.read_u16_be(output), Some(0x1234));
+    }
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = 130;
+    loaded.cpu.gpr[4] = 0;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+}
+
+#[test]
 fn pbh_get_v_info_enumerates_and_selects_mounted_volumes() {
     let pef = synthetic_pef_with_import(b"PBGetVInfoSync");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -9133,6 +9185,10 @@ fn import_bindings_classify_file_manager_imports() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "PBGetFCBInfoSync"),
         PpcImportDispatcherTarget::PBGetFCBInfo
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetVRefNum"),
+        PpcImportDispatcherTarget::GetVRefNum
     );
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "GetVol"),
