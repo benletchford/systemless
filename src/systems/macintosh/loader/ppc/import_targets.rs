@@ -465,6 +465,8 @@ pub enum PpcImportDispatcherTarget {
     SetDefaultOutputVolume,
     GetVol,
     GetWDInfo,
+    OpenWD,
+    SetVol,
     HGetVol,
     HSetVol,
     FlushVol,
@@ -4095,6 +4097,8 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "GetVol") => PpcImportDispatcherTarget::GetVol,
         ("InterfaceLib", "GetWDInfo") => PpcImportDispatcherTarget::GetWDInfo,
+        ("InterfaceLib", "OpenWD") => PpcImportDispatcherTarget::OpenWD,
+        ("InterfaceLib", "SetVol") => PpcImportDispatcherTarget::SetVol,
         ("InterfaceLib", "HGetVol") => PpcImportDispatcherTarget::HGetVol,
         ("InterfaceLib", "HSetVol") => PpcImportDispatcherTarget::HSetVol,
         ("InterfaceLib", "FlushVol") => PpcImportDispatcherTarget::FlushVol,
