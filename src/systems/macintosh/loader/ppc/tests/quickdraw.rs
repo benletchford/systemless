@@ -4957,6 +4957,7 @@ fn quickdraw_compatibility_imports_pre_resolve_to_typed_operations() {
         ("Exp1to3", PpcQuickDrawCompatibilityOperation::Exp1To3),
         ("Exp1to6", PpcQuickDrawCompatibilityOperation::Exp1To6),
         ("GetCPixel", PpcQuickDrawCompatibilityOperation::GetCPixel),
+        ("GetEntryColor", PpcQuickDrawCompatibilityOperation::GetEntryColor),
         ("GetEntryUsage", PpcQuickDrawCompatibilityOperation::GetEntryUsage),
         ("GetItemIcon", PpcQuickDrawCompatibilityOperation::GetItemIcon),
         ("GetItemStyle", PpcQuickDrawCompatibilityOperation::GetItemStyle),

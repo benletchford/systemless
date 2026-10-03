@@ -5327,6 +5327,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetCPixel") => PpcImportDispatcherTarget::QuickDrawCompatibility(
             PpcQuickDrawCompatibilityOperation::GetCPixel,
         ),
+        ("InterfaceLib", "GetEntryColor") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::GetEntryColor,
+        ),
         ("InterfaceLib", "GetEntryUsage") => PpcImportDispatcherTarget::QuickDrawCompatibility(
             PpcQuickDrawCompatibilityOperation::GetEntryUsage,
         ),

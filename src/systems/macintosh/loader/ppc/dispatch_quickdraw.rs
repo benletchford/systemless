@@ -901,6 +901,7 @@ pub enum PpcQuickDrawCompatibilityOperation {
     Exp1To3,
     Exp1To6,
     GetCPixel,
+    GetEntryColor,
     GetEntryUsage,
     GetItemIcon,
     GetItemStyle,
@@ -1680,6 +1681,37 @@ pub(super) fn ppc_dispatch_quickdraw_compatibility(
         PpcQuickDrawCompatibilityOperation::CopyMask
         | PpcQuickDrawCompatibilityOperation::CopyDeepMask => {
             unreachable!("bit-transfer imports return through dispatch_bit_transfer_import")
+        }
+        PpcQuickDrawCompatibilityOperation::GetEntryColor => {
+            // GetEntryColor copies the palette entry's RGB components to the
+            // caller's RGBColor. Inside Macintosh Volume VI (1991), p. 20-25.
+            let palette_handle = cpu.gpr[3];
+            let entry = cpu.gpr[4] as u16 as i16;
+            let rgb_ptr = cpu.gpr[5];
+            if entry >= 0 && ppc_memory_can_write_bytes(memory, rgb_ptr, 6) {
+                if let Some(palette_ptr) = memory
+                    .read_u32_be(palette_handle)
+                    .filter(|palette_ptr| *palette_ptr != 0)
+                {
+                    let entry = entry as u32;
+                    if memory
+                        .read_u16_be(palette_ptr)
+                        .is_some_and(|count| entry < u32::from(count))
+                    {
+                        let info_ptr = palette_ptr + 16 + entry * 16;
+                        if let (Some(red), Some(green), Some(blue)) = (
+                            memory.read_u16_be(info_ptr),
+                            memory.read_u16_be(info_ptr + 2),
+                            memory.read_u16_be(info_ptr + 4),
+                        ) {
+                            let _ = memory.write_u16_be(rgb_ptr, red);
+                            let _ = memory.write_u16_be(rgb_ptr + 2, green);
+                            let _ = memory.write_u16_be(rgb_ptr + 4, blue);
+                        }
+                    }
+                }
+            }
+            PpcImportAction::ReturnPreserve
         }
         PpcQuickDrawCompatibilityOperation::SetEntryColor => {
             // PaletteHandle, entry index, and RGBColor pointer. Inside Macintosh

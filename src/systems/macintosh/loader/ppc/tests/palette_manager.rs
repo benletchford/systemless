@@ -3347,6 +3347,47 @@ use super::*;
     }
 
     #[test]
+    fn hle_import_runner_get_entry_color_copies_requested_rgb() {
+        let pef = synthetic_pef_with_import(b"GetEntryColor");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let palette_handle = PPC_DATA_BASE + 0x1000;
+        let palette_ptr = PPC_DATA_BASE + 0x2000;
+        let rgb_ptr = PPC_DATA_BASE + 0x3000;
+        loaded.memory.add_region(palette_handle, vec![0; 4]);
+        loaded.memory.add_region(palette_ptr, vec![0; 48]);
+        loaded.memory.add_region(rgb_ptr, vec![0; 6]);
+        loaded
+            .memory
+            .write_u32_be(palette_handle, palette_ptr)
+            .unwrap();
+        loaded.memory.write_u16_be(palette_ptr, 2).unwrap();
+        let info_ptr = palette_ptr + 32;
+        for (offset, value) in [(0, 0x1357), (2, 0x2468), (4, 0x9abc)] {
+            loaded.memory.write_u16_be(info_ptr + offset, value).unwrap();
+        }
+        loaded.cpu.gpr[3] = palette_handle;
+        loaded.cpu.gpr[4] = 1;
+        loaded.cpu.gpr[5] = rgb_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u16_be(rgb_ptr), Some(0x1357));
+        assert_eq!(loaded.memory.read_u16_be(rgb_ptr + 2), Some(0x2468));
+        assert_eq!(loaded.memory.read_u16_be(rgb_ptr + 4), Some(0x9abc));
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = palette_handle;
+        loaded.cpu.gpr[4] = 2;
+        loaded.cpu.gpr[5] = rgb_ptr;
+        loaded.memory.write_u16_be(rgb_ptr, 0xbeef).unwrap();
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u16_be(rgb_ptr), Some(0xbeef));
+    }
+
+    #[test]
     fn hle_import_runner_set_entry_color_preserves_usage_and_tolerance() {
         let pef = synthetic_pef_with_import(b"SetEntryColor");
         let mut loaded = load_pef_application(&pef).unwrap();
