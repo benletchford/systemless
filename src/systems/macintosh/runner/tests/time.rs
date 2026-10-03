@@ -438,18 +438,234 @@ fn simultaneous_vbl_callbacks_do_not_starve_later_queue_elements() {
     assert!(runner.dispatcher.vbl_tasks[1].pending);
 
     // Model the first callback rescheduling itself every retrace. The
-    // already-due second element must run before the first one can run
-    // again.
+    // already-due second element runs in the same retrace, without charging
+    // the newly rearmed first task another countdown.
     runner.bus.write_word(first_ptr + 10, 1);
     runner.active_interrupt_callback = None;
     runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
     runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
     runner.m68k.cpu.core.set_sr_noint_nosp(0x2000);
-    runner.fire_vbl_tasks();
+    assert!(runner.fire_pending_vbl_task());
 
     assert_eq!(runner.bus.read_long(runner.vbl_trampoline + 6), second_ptr);
-    assert!(runner.dispatcher.vbl_tasks[0].pending);
+    assert_eq!(runner.bus.read_word(first_ptr + 10), 1);
+    assert!(!runner.dispatcher.vbl_tasks[0].pending);
     assert!(!runner.dispatcher.vbl_tasks[1].pending);
+}
+
+const VBL_BATCH_PC: u32 = 0x0002_0000;
+const VBL_BATCH_SP: u32 = 0x007F_FFC0;
+const VBL_BATCH_MARKER: u32 = 0x0005_0000;
+const VBL_BATCH_ORDER: u32 = 0x0005_0020;
+const VBL_BATCH_FOREGROUND: u32 = 0x0005_0024;
+
+fn vbl_batch_test_runner(intervals: &[u16]) -> FixtureRunner {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    // Record the order seen by the first resumed foreground instruction, then
+    // spin without overwriting that evidence if a callback runs too late.
+    runner.bus.write_word(VBL_BATCH_PC, 0x23F9); // MOVE.L order,foreground
+    runner.bus.write_long(VBL_BATCH_PC + 2, VBL_BATCH_ORDER);
+    runner.bus.write_long(VBL_BATCH_PC + 6, VBL_BATCH_FOREGROUND);
+    runner.bus.write_word(VBL_BATCH_PC + 10, 0x60FE); // BRA.S to self
+    runner.m68k.cpu.write_reg(Register::PC, VBL_BATCH_PC);
+    runner.m68k.cpu.write_reg(Register::A7, VBL_BATCH_SP);
+    runner.m68k.cpu.core.set_sr_noint_nosp(0x2000);
+    for (index, interval) in intervals.iter().copied().enumerate() {
+        let index = index as u32;
+        let task_ptr = 0x0020_2000 + index * 0x20;
+        let callback = 0x0004_1000 + index * 0x40;
+        let words = [
+            0x52B9,
+            (VBL_BATCH_MARKER >> 16) as u16,
+            (VBL_BATCH_MARKER + index * 4) as u16, // ADDQ.L #1,calls[index]
+            0x2039,
+            (VBL_BATCH_ORDER >> 16) as u16,
+            VBL_BATCH_ORDER as u16,
+            0xE988, // LSL.L #4,D0
+            0x0000,
+            (index + 1) as u16, // ORI.B #index+1,D0
+            0x23C0,
+            (VBL_BATCH_ORDER >> 16) as u16,
+            VBL_BATCH_ORDER as u16,
+            0x317C,
+            interval,
+            10, // MOVE.W #interval,10(A0)
+            0x4E75,
+        ];
+        for (offset, word) in words.into_iter().enumerate() {
+            runner.bus.write_word(callback + offset as u32 * 2, word);
+        }
+        runner.bus.write_word(task_ptr + 4, 1);
+        runner.bus.write_long(task_ptr + 6, callback);
+        runner.bus.write_word(task_ptr + 10, interval);
+        runner.dispatcher.vbl_tasks.push(VblTask {
+            task_ptr,
+            architecture: CallbackTaskArchitecture::M68k,
+            slot: None,
+            pending: false,
+        });
+    }
+    runner
+}
+
+fn run_vbl_batch_retrace(runner: &mut FixtureRunner, order: u32) {
+    runner.bus.write_long(VBL_BATCH_ORDER, 0);
+    runner.bus.write_long(VBL_BATCH_FOREGROUND, 0);
+    runner.m68k.cpu.write_reg(Register::PC, VBL_BATCH_PC);
+    runner.advance_guest_tick();
+    let tick = runner.guest_tick();
+    let (_, running) = runner.run_steps(150, Some(tick));
+    assert!(running);
+    assert_eq!(runner.guest_tick(), tick, "callbacks must share their retrace");
+    assert_eq!(runner.bus.read_long(VBL_BATCH_ORDER), order);
+    assert_eq!(
+        runner.bus.read_long(VBL_BATCH_FOREGROUND),
+        order,
+        "all due VBL tasks must run in order before foreground work"
+    );
+    assert!(runner.active_interrupt_callback.is_none());
+    assert!(runner.dispatcher.vbl_tasks.iter().all(|task| !task.pending));
+    assert_eq!(runner.m68k.cpu.read_reg(Register::A7), VBL_BATCH_SP);
+}
+
+#[test]
+fn three_rearming_vbl_tasks_all_run_once_per_retrace() {
+    let mut runner = vbl_batch_test_runner(&[1, 1, 1]);
+    for retrace in 1..=4 {
+        run_vbl_batch_retrace(&mut runner, 0x123);
+        for index in 0..3 {
+            assert_eq!(runner.bus.read_long(VBL_BATCH_MARKER + index * 4), retrace);
+        }
+    }
+}
+
+#[test]
+fn patched_cursor_task_does_not_suppress_due_vbl_batch() {
+    let mut runner = vbl_batch_test_runner(&[1, 1, 1]);
+    let cursor_callback = 0x0004_2000;
+    runner.bus.write_word(cursor_callback, 0x23FC); // MOVE.L #9,order
+    runner.bus.write_long(cursor_callback + 2, 9);
+    runner.bus.write_long(cursor_callback + 6, VBL_BATCH_ORDER);
+    runner.bus.write_word(cursor_callback + 10, 0x4E75);
+    runner
+        .bus
+        .write_long(crate::memory::globals::addr::J_CRSR_TASK, cursor_callback);
+    for _ in 0..3 {
+        run_vbl_batch_retrace(&mut runner, 0x9123);
+    }
+}
+
+#[test]
+fn vbl_batch_drain_preserves_mixed_rearm_intervals() {
+    let mut runner = vbl_batch_test_runner(&[1, 2, 3]);
+    for (index, order) in [0x1, 0x12, 0x13, 0x12, 0x1, 0x123].into_iter().enumerate() {
+        run_vbl_batch_retrace(&mut runner, order);
+        let retrace = index as u32 + 1;
+        for (task, interval) in [1, 2, 3].into_iter().enumerate() {
+            assert_eq!(
+                runner.bus.read_long(VBL_BATCH_MARKER + task as u32 * 4),
+                retrace / interval
+            );
+        }
+    }
+}
+
+#[test]
+fn vbl_callback_can_remove_later_pending_task_without_stalling_batch() {
+    let mut runner = vbl_batch_test_runner(&[1, 1, 1]);
+    let first_callback_return = 0x0004_1000 + 30;
+    // Replace only this synthetic fixture's RTS with VRemove(second).
+    runner.bus.write_word(first_callback_return, 0x207C); // MOVEA.L #second,A0
+    runner.bus.write_long(first_callback_return + 2, 0x0020_2020);
+    runner.bus.write_word(first_callback_return + 6, 0xA034); // VRemove
+    runner.bus.write_word(first_callback_return + 8, 0x4E75);
+    run_vbl_batch_retrace(&mut runner, 0x13);
+    assert_eq!(runner.bus.read_long(VBL_BATCH_MARKER + 4), 0);
+    assert_eq!(runner.dispatcher.vbl_tasks.len(), 2);
+}
+
+#[test]
+fn null_vbl_callback_does_not_block_later_pending_task() {
+    let mut runner = vbl_batch_test_runner(&[1, 1]);
+    runner.bus.write_long(0x0020_2000 + 6, 0);
+    run_vbl_batch_retrace(&mut runner, 0x2);
+}
+
+#[test]
+fn due_timer_and_foreground_progress_after_finite_vbl_batch() {
+    let mut runner = vbl_batch_test_runner(&[1, 1, 1]);
+    let timer_callback = 0x0004_2000;
+    let timer_marker = VBL_BATCH_MARKER + 12;
+    runner.bus.write_word(timer_callback, 0x52B9); // ADDQ.L #1,timer_marker
+    runner.bus.write_long(timer_callback + 2, timer_marker);
+    runner.bus.write_word(timer_callback + 6, 0x4E75);
+    let tick = runner.guest_tick() + 1;
+    runner.dispatcher.timer_tasks.push(TimerTask {
+        task_ptr: 0x0020_2100,
+        architecture: CallbackTaskArchitecture::M68k,
+        extended: false,
+        callback: timer_callback,
+        active: true,
+        fire_at_tick: tick,
+        fire_at_subtick: u64::from(tick) * 1_000_000,
+        last_fired_tick: None,
+    });
+    run_vbl_batch_retrace(&mut runner, 0x123);
+    let (_, running) = runner.run_steps(50, Some(tick));
+    assert!(running);
+    assert_eq!(runner.guest_tick(), tick);
+    assert_eq!(runner.bus.read_long(timer_marker), 1);
+}
+
+#[test]
+fn ordinary_slice_resumes_vbl_batch_after_audio_only_callback_return() {
+    let mut runner = vbl_batch_test_runner(&[1, 1, 1]);
+    runner.advance_guest_tick();
+    let tick = runner.guest_tick();
+    let (_, running) = runner.run_pending_sound_work(100);
+    assert!(running);
+    assert_eq!(runner.guest_tick(), tick);
+    assert_eq!(runner.bus.read_long(VBL_BATCH_MARKER), 1);
+    assert_eq!(runner.bus.read_long(VBL_BATCH_MARKER + 4), 0);
+    assert_eq!(runner.bus.read_long(VBL_BATCH_FOREGROUND), 0);
+
+    let (_, running) = runner.run_steps(100, Some(tick));
+    assert!(running);
+    assert_eq!(runner.guest_tick(), tick);
+    assert_eq!(runner.bus.read_long(VBL_BATCH_ORDER), 0x123);
+    assert_eq!(runner.bus.read_long(VBL_BATCH_FOREGROUND), 0x123);
+}
+
+#[test]
+fn pending_vbl_batch_survives_audio_slice_starting_another_interrupt() {
+    let mut runner = vbl_batch_test_runner(&[1, 1, 1]);
+    let deferred_task = 0x0020_2200;
+    let deferred_callback = 0x0004_2000;
+    runner.bus.write_word(deferred_task + 4, 7);
+    runner.bus.write_long(deferred_task + 8, deferred_callback);
+    for offset in 0..30 {
+        runner.bus.write_word(deferred_callback + offset * 2, 0x4E71);
+    }
+    runner.bus.write_word(deferred_callback + 60, 0x4E75);
+    runner
+        .dispatcher
+        .enqueue_deferred_task(&mut runner.bus, deferred_task);
+    runner.advance_guest_tick();
+    let tick = runner.guest_tick();
+    let (_, running) = runner.run_pending_sound_work(13);
+    assert!(running);
+    assert_eq!(
+        runner.active_interrupt_callback.unwrap().source,
+        ActiveInterruptCallbackSource::DeferredTask
+    );
+    assert_eq!(runner.bus.read_long(VBL_BATCH_ORDER), 0x1);
+    assert_eq!(runner.bus.read_long(VBL_BATCH_FOREGROUND), 0);
+
+    let (_, running) = runner.run_steps(150, Some(tick));
+    assert!(running);
+    assert_eq!(runner.guest_tick(), tick);
+    assert_eq!(runner.bus.read_long(VBL_BATCH_ORDER), 0x123);
+    assert_eq!(runner.bus.read_long(VBL_BATCH_FOREGROUND), 0x123);
 }
 
 #[test]

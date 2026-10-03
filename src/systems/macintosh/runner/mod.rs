@@ -6638,6 +6638,13 @@ impl FixtureRunner {
                 break;
             }
 
+            // An audio-only slice can finish a callback from a retrace without
+            // draining its remaining VBL work. Resume that same finite batch
+            // before any foreground instruction, without advancing its clock.
+            if !sound_work_only && self.fire_pending_vbl_task() {
+                continue;
+            }
+
             // File Manager async completions are interrupt work. Deliver a
             // completed request before the foreground application can inspect
             // or reuse its parameter block.
@@ -6816,6 +6823,20 @@ impl FixtureRunner {
                         );
                     }
                     self.refill_foreground_budget_after_async_return();
+                    // Every task due on this retrace runs before returning to
+                    // foreground code. Drain without decrementing the counts
+                    // again: a callback that rearms itself waits for the next
+                    // retrace. Processes 1994, pp. 4-7--4-8.
+                    if !sound_work_only
+                        && !matches!(
+                            active_interrupt_callback.source,
+                            ActiveInterruptCallbackSource::DialogDrawProc
+                                | ActiveInterruptCallbackSource::DialogFilterProc
+                        )
+                        && self.fire_pending_vbl_task()
+                    {
+                        continue;
+                    }
                     if self.fire_deferred_task() {
                         continue;
                     }
@@ -10190,7 +10211,6 @@ impl FixtureRunner {
         // tasks. Games commonly drive screen/audio housekeeping from VBL, so
         // letting those callbacks run first avoids starving them behind
         // unrelated timer traffic.
-        self.fire_cursor_task();
         self.fire_vbl_tasks();
         self.fire_timer_tasks(new_tick);
         self.fire_deferred_task();
@@ -10628,7 +10648,7 @@ impl FixtureRunner {
         self.inject_interrupt_callback(ActiveInterruptCallbackSource::CursorTask, tramp);
     }
 
-    /// Fire the next due Vertical Retrace Manager task.
+    /// Begin one vertical-retrace batch, with cursor maintenance first.
     ///
     /// VBL tasks run at interrupt time with A0 pointing at the task record.
     /// Processes 1994, 4-6 to 4-7; executor src/time/vbl.cpp
@@ -10647,14 +10667,12 @@ impl FixtureRunner {
             return;
         }
 
-        // Decrement every queue element before choosing a callback. A task
-        // earlier in the queue may run every retrace; stopping at that task
-        // would starve all later elements. Preserve tasks that became due
-        // while another callback was delivered and service those first on
-        // the next opportunity.
-        let vbl_tasks = self.dispatcher.vbl_tasks.shared_handle();
-        let pending_before: Vec<bool> = vbl_tasks.iter().map(|task| task.pending).collect();
-        let due_task = vbl_tasks.with_mut(|vbl_tasks| {
+        // Count each task once per retrace, before cursor maintenance can
+        // inject a callback. Every task that reaches zero belongs to this
+        // finite interrupt batch, in installation order. A callback may
+        // rearm itself for a later retrace, but not this batch.
+        // Inside Macintosh: Processes (1994), pp. 4-7--4-8.
+        self.dispatcher.vbl_tasks.with_mut(|vbl_tasks| {
             for task in vbl_tasks
                 .iter_mut()
                 .filter(|task| task.architecture == CallbackTaskArchitecture::M68k)
@@ -10669,34 +10687,35 @@ impl FixtureRunner {
                     task.pending = true;
                 }
             }
-
-            let due_index = pending_before
-                .iter()
-                .enumerate()
-                .position(|(index, pending)| {
-                    *pending
-                        && vbl_tasks[index].architecture == CallbackTaskArchitecture::M68k
-                })
-                .or_else(|| {
-                    vbl_tasks.iter().position(|task| {
-                        task.architecture == CallbackTaskArchitecture::M68k && task.pending
-                    })
-                });
-            due_index.map(|index| {
-                let task = &mut vbl_tasks[index];
-                task.pending = false;
-                task.task_ptr
-            })
         });
+        self.fire_cursor_task();
+        self.fire_pending_vbl_task();
+    }
 
-        let Some(task_ptr) = due_task else {
-            return;
-        };
-
-        let callback_addr = self.bus.read_long(task_ptr + 6);
-        if callback_addr == 0 {
-            return;
+    /// Deliver the next member of the current retrace batch without advancing
+    /// its clock. Consult the live task list so VRemove during a preceding
+    /// callback cancels delivery of the removed task.
+    fn fire_pending_vbl_task(&mut self) -> bool {
+        if self.callback_suspends_guest_clock()
+            || (self.m68k.cpu.core.get_sr() & 0x0700) >= 0x0100
+        {
+            return false;
         }
+        let due_task = self.dispatcher.vbl_tasks.with_mut(|vbl_tasks| {
+            vbl_tasks
+                .iter_mut()
+                .filter(|task| {
+                    task.architecture == CallbackTaskArchitecture::M68k && task.pending
+                })
+                .find_map(|task| {
+                    task.pending = false;
+                    let callback_addr = self.bus.read_long(task.task_ptr + 6);
+                    (callback_addr != 0).then_some((task.task_ptr, callback_addr))
+                })
+        });
+        let Some((task_ptr, callback_addr)) = due_task else {
+            return false;
+        };
 
         if self.vbl_trampoline == 0 {
             let tramp = self.bus.alloc_synthetic(22);
@@ -10769,6 +10788,7 @@ impl FixtureRunner {
                 self.bus.read_word(task_ptr + 10) as i16
             );
         }
+        true
     }
 
     /// Fire any expired Time Manager tasks by injecting a call to their callback.
