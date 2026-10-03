@@ -8139,4 +8139,324 @@ fn window_pic_refcon_variant_port_and_low_memory_commands_dispatch_with_canonica
     }
 }
 
+#[test]
+fn import_bindings_classify_window_proxy_icon_modified_features_and_structure_widths_imports() {
+    for lib in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        // GetWindowFeatures
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowFeatures"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowFeatures)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowfeatures"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowFeatures)
+        );
+
+        // GetWindowStructureWidths
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowStructureWidths"),
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::GetWindowStructureWidths
+            )
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowstructurewidths"),
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::GetWindowStructureWidths
+            )
+        );
+
+        // IsWindowModified
+        assert_eq!(
+            dispatcher_target_for_import(lib, "IsWindowModified"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::IsWindowModified)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "iswindowmodified"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::IsWindowModified)
+        );
+
+        // SetWindowModified
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetWindowModified"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowModified)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setwindowmodified"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowModified)
+        );
+
+        // GetWindowProxyIcon
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowProxyIcon"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowProxyIcon)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowproxyicon"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowProxyIcon)
+        );
+
+        // SetWindowProxyIcon
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetWindowProxyIcon"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowProxyIcon)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setwindowproxyicon"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowProxyIcon)
+        );
+
+        // RemoveWindowProxy
+        assert_eq!(
+            dispatcher_target_for_import(lib, "RemoveWindowProxy"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::RemoveWindowProxy)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "removewindowproxy"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::RemoveWindowProxy)
+        );
+
+        // IsWindowPathSelectClick
+        assert_eq!(
+            dispatcher_target_for_import(lib, "IsWindowPathSelectClick"),
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::IsWindowPathSelectClick
+            )
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "iswindowpathselectclick"),
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::IsWindowPathSelectClick
+            )
+        );
+    }
+}
+
+#[test]
+fn window_proxy_icon_modified_features_and_structure_widths_commands_dispatch_with_canonical_evaluation(
+) {
+    for lib in [
+        b"InterfaceLib".as_slice(),
+        b"AppearanceLib".as_slice(),
+        b"CarbonLib".as_slice(),
+    ] {
+        let lib_str = std::str::from_utf8(lib).unwrap();
+        let pef = synthetic_pef_with_library_import(lib, b"GetWindowFeatures");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1400;
+        let bounds_ptr = scratch;
+        let out_features_ptr = scratch + 0x200;
+        let out_rect_ptr = scratch + 0x210;
+        let out_icon_ptr = scratch + 0x220;
+        let event_ptr = scratch + 0x230;
+        loaded.memory.add_region(scratch, vec![0; 0x1000]);
+
+        let win =
+            create_test_cwindow(&mut loaded, bounds_ptr, (40, 50, 140, 250), 0, true, u32::MAX);
+
+        // 1. GetWindowFeatures
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "GetWindowFeatures");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win;
+        loaded.cpu.gpr[4] = out_features_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+        assert_eq!(
+            loaded.memory.read_u32_be(out_features_ptr),
+            Some(0x0000_0007)
+        );
+
+        // GetWindowFeatures on NULL window -> paramErr (-50)
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = out_features_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+
+        // 2. GetWindowStructureWidths
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "GetWindowStructureWidths");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win;
+        loaded.cpu.gpr[4] = out_rect_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+        assert_eq!(
+            ppc_read_rect(&mut loaded.memory, out_rect_ptr),
+            Some((20, 1, 1, 1))
+        );
+
+        // GetWindowStructureWidths on NULL window -> paramErr (-50)
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = out_rect_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+
+        // 3. IsWindowModified & SetWindowModified
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "IsWindowModified");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "SetWindowModified");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win;
+        loaded.cpu.gpr[4] = 1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "IsWindowModified");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+
+        // Clear modified
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "SetWindowModified");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win;
+        loaded.cpu.gpr[4] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "IsWindowModified");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+
+        // SetWindowModified on NULL window -> paramErr (-50)
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "SetWindowModified");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+
+        // 4. WindowProxyIcon: GetWindowProxyIcon, SetWindowProxyIcon, RemoveWindowProxy
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "GetWindowProxyIcon");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win;
+        loaded.cpu.gpr[4] = out_icon_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_icon_ptr), Some(0));
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "SetWindowProxyIcon");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win;
+        loaded.cpu.gpr[4] = 0xABCD_1234;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "GetWindowProxyIcon");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win;
+        loaded.cpu.gpr[4] = out_icon_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_icon_ptr), Some(0xABCD_1234));
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "RemoveWindowProxy");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "GetWindowProxyIcon");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win;
+        loaded.cpu.gpr[4] = out_icon_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_icon_ptr), Some(0));
+
+        // Proxy icon operations on NULL window -> paramErr (-50)
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "GetWindowProxyIcon");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = out_icon_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "SetWindowProxyIcon");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 0xABCD_1234;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "RemoveWindowProxy");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+
+        // 5. IsWindowPathSelectClick
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "IsWindowPathSelectClick");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win;
+        loaded.cpu.gpr[4] = event_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+}
+
+
 

@@ -3935,25 +3935,43 @@ pub(super) fn ppc_dispatch_legacy_window(
         PpcLegacyWindowOperation::GetWindowFeatures => {
             let window = cpu.gpr[3];
             let out_features = cpu.gpr[4];
-            let result = if window != 0 && out_features != 0 {
-                let _ = memory.write_u32_be(out_features, 0x0000_0007);
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
+            let can_write = ppc_memory_can_write_bytes(memory, out_features, 4);
+            let result = match crate::window_manager::evaluate_get_window_features_parameters(
+                window,
+                out_features,
+                can_write,
+            ) {
+                Ok(params) => {
+                    let features =
+                        crate::window_manager::evaluate_get_window_features(params.window_ptr());
+                    let _ = memory.write_u32_be(params.out_features_ptr(), features);
+                    PPC_NO_ERR
+                }
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcLegacyWindowOperation::GetWindowStructureWidths => {
             let window = cpu.gpr[3];
             let out_rect = cpu.gpr[4];
-            let result = if window != 0 && out_rect != 0 {
-                let _ = memory.write_u16_be(out_rect, 20);
-                let _ = memory.write_u16_be(out_rect.wrapping_add(2), 1);
-                let _ = memory.write_u16_be(out_rect.wrapping_add(4), 1);
-                let _ = memory.write_u16_be(out_rect.wrapping_add(6), 1);
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
+            let can_write = ppc_memory_can_write_bytes(memory, out_rect, 8);
+            let result = match crate::window_manager::evaluate_get_window_structure_widths_parameters(
+                window,
+                out_rect,
+                can_write,
+            ) {
+                Ok(params) => {
+                    let (top, left, bottom, right) =
+                        crate::window_manager::evaluate_get_window_structure_widths(
+                            params.window_ptr(),
+                        );
+                    let _ = memory.write_u16_be(params.out_rect_ptr(), top as u16);
+                    let _ = memory.write_u16_be(params.out_rect_ptr().wrapping_add(2), left as u16);
+                    let _ = memory.write_u16_be(params.out_rect_ptr().wrapping_add(4), bottom as u16);
+                    let _ = memory.write_u16_be(params.out_rect_ptr().wrapping_add(6), right as u16);
+                    PPC_NO_ERR
+                }
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
@@ -4062,53 +4080,84 @@ pub(super) fn ppc_dispatch_legacy_window(
         }
         PpcLegacyWindowOperation::IsWindowModified => {
             let window = cpu.gpr[3];
-            let modified = window != 0 && toolbox_startup.is_window_modified(window);
+            let is_mod = toolbox_startup.is_window_modified(window);
+            let modified = crate::window_manager::evaluate_is_window_modified(window, is_mod);
             Some(PpcImportAction::Return(u32::from(modified)))
         }
         PpcLegacyWindowOperation::SetWindowModified => {
             let window = cpu.gpr[3];
-            let result = if window != 0 {
-                toolbox_startup.set_window_modified(window, cpu.gpr[4] != 0);
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
+            let modified = cpu.gpr[4] != 0;
+            let result = match crate::window_manager::evaluate_set_window_modified_parameters(
+                window,
+                modified,
+            ) {
+                Ok(params) => {
+                    toolbox_startup.set_window_modified(params.window_ptr(), params.modified());
+                    PPC_NO_ERR
+                }
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcLegacyWindowOperation::GetWindowProxyIcon => {
             let window = cpu.gpr[3];
             let out_icon = cpu.gpr[4];
-            let result = if window != 0 && out_icon != 0 {
-                let icon = toolbox_startup.window_proxy_icon(window);
-                let _ = memory.write_u32_be(out_icon, icon);
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
+            let can_write = ppc_memory_can_write_bytes(memory, out_icon, 4);
+            let result = match crate::window_manager::evaluate_get_window_proxy_icon_parameters(
+                window,
+                out_icon,
+                can_write,
+            ) {
+                Ok(params) => {
+                    let icon = toolbox_startup.window_proxy_icon(params.window_ptr());
+                    let _ = memory.write_u32_be(params.out_icon_ptr(), icon);
+                    PPC_NO_ERR
+                }
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcLegacyWindowOperation::SetWindowProxyIcon => {
             let window = cpu.gpr[3];
-            let result = if window != 0 {
-                toolbox_startup.set_window_proxy_icon(window, cpu.gpr[4]);
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
+            let icon = cpu.gpr[4];
+            let result = match crate::window_manager::evaluate_set_window_proxy_icon_parameters(
+                window,
+                icon,
+            ) {
+                Ok(params) => {
+                    toolbox_startup.set_window_proxy_icon(params.window_ptr(), params.icon());
+                    PPC_NO_ERR
+                }
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcLegacyWindowOperation::RemoveWindowProxy => {
             let window = cpu.gpr[3];
-            let result = if window != 0 {
-                toolbox_startup.remove_window_proxy_icon(window);
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
-            };
+            let result =
+                match crate::window_manager::evaluate_remove_window_proxy_parameters(window) {
+                    Ok(params) => {
+                        toolbox_startup.remove_window_proxy_icon(params.window_ptr());
+                        PPC_NO_ERR
+                    }
+                    Err(err) => err,
+                };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcLegacyWindowOperation::IsWindowPathSelectClick => {
-            Some(PpcImportAction::Return(0))
+            let window = cpu.gpr[3];
+            let in_event = cpu.gpr[4];
+            let modifiers = if in_event != 0 {
+                memory.read_u16_be(in_event.wrapping_add(14)).unwrap_or(0)
+            } else {
+                0
+            };
+            let is_path_select = crate::window_manager::evaluate_is_window_path_select_click(
+                window,
+                modifiers,
+                false,
+            );
+            Some(PpcImportAction::Return(u32::from(is_path_select)))
         }
         PpcLegacyWindowOperation::InvalWindowRect => {
             let window = cpu.gpr[3];
