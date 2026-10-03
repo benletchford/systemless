@@ -282,6 +282,7 @@ pub(crate) const PPC_CGRAF_PORT_PN_VIS_OFFSET: u32 = 66;
 pub(crate) const PPC_CGRAF_PORT_VIS_RGN_OFFSET: u32 = 24;
 pub(crate) const PPC_CGRAF_PORT_CLIP_RGN_OFFSET: u32 = 28;
 pub(crate) const PPC_CGRAF_PORT_GRAF_VARS_OFFSET: u32 = 8;
+pub(crate) const PPC_CGRAF_PORT_CH_EXTRA_OFFSET: u32 = 12;
 pub(crate) const PPC_CGRAF_PORT_RGB_FG_COLOR_OFFSET: u32 = 36;
 pub(crate) const PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET: u32 = 42;
 pub(crate) const PPC_CGRAF_PORT_BK_PIXPAT_OFFSET: u32 = 32;

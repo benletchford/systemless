@@ -592,6 +592,40 @@ pub(crate) fn ppc_current_text_font(memory: &mut PpcSectionMem, current_gworld: 
         .unwrap_or(PPC_QD_TEXT_FONT_DEFAULT)
 }
 
+pub(crate) fn ppc_port_char_extra_packed(memory: &mut PpcSectionMem, port: u32) -> i16 {
+    if port == 0
+        || !memory
+            .read_u16_be(port + 6)
+            .is_some_and(|version| version & 0xc000 == 0xc000)
+    {
+        return 0;
+    }
+    memory
+        .read_u16_be(port + PPC_CGRAF_PORT_CH_EXTRA_OFFSET)
+        .unwrap_or(0) as i16
+}
+
+pub(crate) fn ppc_char_extra_width(packed: i16, text_size: i16, bytes: &[u8]) -> i32 {
+    let nonspaces = bytes.iter().filter(|&&byte| byte != b' ').count() as i32;
+    ppc_char_extra_pixels(packed, text_size, nonspaces)
+}
+
+pub(crate) fn ppc_char_extra_pixels(packed: i16, text_size: i16, nonspaces: i32) -> i32 {
+    let effective_size = if text_size == PPC_QD_TEXT_SIZE_SYSTEM {
+        12
+    } else {
+        i32::from(text_size.max(1))
+    };
+    let scaled = i32::from(packed)
+        .saturating_mul(effective_size)
+        .saturating_mul(nonspaces);
+    if scaled >= 0 {
+        scaled.saturating_add(2048) / 4096
+    } else {
+        -scaled.saturating_neg().saturating_add(2048) / 4096
+    }
+}
+
 pub(crate) fn ppc_current_text_style(memory: &mut PpcSectionMem, current_gworld: u32) -> u8 {
     if current_gworld == 0 {
         return 0;
@@ -635,11 +669,16 @@ pub(crate) fn ppc_trunc_string(
     font: i16,
     size: i16,
     style: u8,
+    char_extra: i16,
 ) -> i16 {
     let Some(bytes) = ppc_read_pstring_bytes(memory, string) else {
         return -1;
     };
-    let measure = |text: &[u8]| ppc_text_width_bytes(font, size, style, text);
+    let measure = |text: &[u8]| {
+        (i32::from(ppc_text_width_bytes(font, size, style, text))
+            + ppc_char_extra_width(char_extra, size, text))
+        .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+    };
     if measure(&bytes) <= width {
         return 0;
     }
@@ -837,7 +876,10 @@ pub(crate) fn ppc_draw_text_bytes_clipped(
     clip_rect: Option<(i16, i16, i16, i16)>,
     bytes: &[u8],
 ) -> i16 {
-    let advance = ppc_text_bytes_advance_for_font(bytes, text_font, text_size);
+    let packed_extra = ppc_port_char_extra_packed(memory, current_gworld);
+    let advance = i32::from(ppc_text_bytes_advance_for_font(bytes, text_font, text_size))
+        .saturating_add(ppc_char_extra_width(packed_extra, text_size, bytes))
+        .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
     ppc_draw_text_chars(
         memory,
         gworlds,
@@ -910,7 +952,10 @@ pub(crate) fn ppc_draw_text_bytes_styled_clipped(
                 .unwrap_or_else(|| style.glyph_advance(6)),
         )
     });
-    let advance = ppc_scale_font_value(base_advance, numerator, denominator);
+    let packed_extra = ppc_port_char_extra_packed(memory, current_gworld);
+    let advance = i32::from(ppc_scale_font_value(base_advance, numerator, denominator))
+        .saturating_add(ppc_char_extra_width(packed_extra, text_size, bytes))
+        .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
     if style.is_plain() {
         ppc_draw_text_chars(
             memory,
@@ -979,7 +1024,10 @@ pub(crate) fn ppc_draw_text_chars(
     let (local_h, local_v) = surface.local_point((i32::from(pen.0), i32::from(pen.1)));
     let (face, numerator, denominator) = get_font_face_scale_ratio(text_font, text_size);
     let mut base_advance = 0i32;
+    let packed_extra = ppc_port_char_extra_packed(memory, current_gworld);
+    let mut nonspaces = 0i32;
     for ch in chars {
+        let local_h = local_h + ppc_char_extra_pixels(packed_extra, text_size, nonspaces);
         if let Some((glyph, data)) = get_glyph(text_font, face.size, ch) {
             if matches!(text_mode & 0x3f, 0 | 1) && numerator == denominator {
                 ppc_begin_outline_text_glyph(
@@ -1034,6 +1082,7 @@ pub(crate) fn ppc_draw_text_chars(
         } else {
             base_advance = base_advance.saturating_add(6);
         }
+        nonspaces += i32::from(ch != ' ');
     }
 }
 
@@ -1111,8 +1160,11 @@ pub(crate) fn ppc_draw_text_chars_styled(
     let (face, numerator, denominator) = get_font_face_scale_ratio(text_font, text_size);
     let metrics = get_font_metrics(text_font, face.size);
     let mut source_advance = 0i32;
+    let packed_extra = ppc_port_char_extra_packed(memory, current_gworld);
+    let mut nonspaces = 0i32;
 
     for ch in chars {
+        let local_h = local_h + ppc_char_extra_pixels(packed_extra, text_size, nonspaces);
         let (glyph_hit, synthetic_italic) = if style.italic() {
             if let Some(hit) = get_glyph_italic(text_font, face.size, ch) {
                 (Some(hit), false)
@@ -1124,6 +1176,7 @@ pub(crate) fn ppc_draw_text_chars_styled(
         };
         let Some((glyph, data)) = glyph_hit else {
             source_advance = source_advance.saturating_add(6);
+            nonspaces += i32::from(ch != ' ');
             continue;
         };
         if matches!(text_mode & 0x3f, 0 | 1) && numerator == denominator {
@@ -1266,6 +1319,7 @@ pub(crate) fn ppc_draw_text_chars_styled(
         memory.presentation().end_outline_glyph();
         source_advance =
             source_advance.saturating_add(style.glyph_advance(i32::from(glyph.advance)));
+        nonspaces += i32::from(ch != ' ');
     }
 
     if style.underline() && style.smear_max().is_none() && source_advance > 0 {

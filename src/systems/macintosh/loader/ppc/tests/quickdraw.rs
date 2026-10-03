@@ -3,6 +3,121 @@ use crate::cpu::{CpuOps, Register};
 use crate::trap::test_helpers::{setup_with_port, MockCpu, TEST_SP};
 
 #[test]
+fn char_extra_updates_color_port_and_nonspace_widths() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "CharExtra"),
+        PpcImportDispatcherTarget::CharExtra,
+    );
+    let pef = synthetic_pef_with_import(b"CharExtra");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let string = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(string, vec![0; 8]);
+    loaded.memory.write_bytes(string, b"\x03A A").unwrap();
+    loaded.quickdraw_text_size = 12;
+    loaded.cpu.gpr[3] = 1 << 16;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CharExtra);
+
+    let packed = ppc_port_char_extra_packed(&mut loaded.memory, PPC_MAIN_GWORLD);
+    assert_eq!(packed, 341);
+    assert_eq!(ppc_char_extra_width(packed, 12, b"A A"), 2);
+    assert_eq!(ppc_char_extra_width(packed, 12, b"   "), 0);
+
+    loaded.cpu.gpr[3] = string;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::StringWidth);
+    assert_eq!(
+        loaded.cpu.gpr[3],
+        (i32::from(ppc_text_width_bytes(
+            PPC_QD_TEXT_FONT_DEFAULT,
+            12,
+            0,
+            b"A A",
+        )) + 2) as u32,
+    );
+
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CharExtra);
+    let red = PpcRgbColor {
+        red: u16::MAX,
+        green: 0,
+        blue: 0,
+    };
+    let baseline_advance = ppc_draw_text_bytes_styled(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PPC_MAIN_GWORLD,
+        (20, 50),
+        PPC_QD_TEXT_FONT_DEFAULT,
+        12,
+        PPC_QD_TEXT_MODE_SRC_OR,
+        red,
+        None,
+        0,
+        b"A A",
+    );
+    loaded.cpu.gpr[3] = 1 << 16;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CharExtra);
+    let expanded_advance = ppc_draw_text_bytes_styled(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PPC_MAIN_GWORLD,
+        (20, 80),
+        PPC_QD_TEXT_FONT_DEFAULT,
+        12,
+        PPC_QD_TEXT_MODE_SRC_OR,
+        red,
+        None,
+        0,
+        b"A A",
+    );
+    assert_eq!(expanded_advance, baseline_advance + 2);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let red_pixel = u16::from(ppc_rgb_color_to_8bpp_index(red));
+    let rightmost = |memory: &mut PpcSectionMem, baseline: i32| {
+        (20..100)
+            .filter(|&x| {
+                (baseline - 12..baseline + 5)
+                    .any(|y| ppc_quickdraw_read_pixel(memory, front, (x, y)) == Some(red_pixel))
+            })
+            .max()
+            .unwrap()
+    };
+    assert_eq!(
+        rightmost(&mut loaded.memory, 80),
+        rightmost(&mut loaded.memory, 50) + 1,
+    );
+
+    loaded.cpu.gpr[3] = (-1i32 << 16) as u32;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CharExtra);
+    assert_eq!(
+        ppc_char_extra_width(
+            ppc_port_char_extra_packed(&mut loaded.memory, PPC_MAIN_GWORLD),
+            12,
+            b"A A",
+        ),
+        -2
+    );
+
+    loaded.memory.write_u16_be(PPC_MAIN_GWORLD + 6, 0).unwrap();
+    loaded.cpu.gpr[3] = 1 << 16;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CharExtra);
+    assert_eq!(
+        ppc_port_char_extra_packed(&mut loaded.memory, PPC_MAIN_GWORLD),
+        0
+    );
+
+    loaded
+        .memory
+        .write_u16_be(PPC_MAIN_GWORLD + 6, 0xc000)
+        .unwrap();
+    loaded.quickdraw_text_size = PPC_QD_TEXT_SIZE_SYSTEM;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CharExtra);
+    assert_eq!(
+        ppc_port_char_extra_packed(&mut loaded.memory, PPC_MAIN_GWORLD),
+        341
+    );
+}
+
+#[test]
 fn hle_import_runner_converts_one_bit_bitmaps_to_regions() {
     let pef = synthetic_pef_with_import(b"BitMapToRegion");
     let mut loaded = load_pef_application(&pef).unwrap();

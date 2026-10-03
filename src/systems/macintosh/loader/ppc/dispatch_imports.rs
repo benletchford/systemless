@@ -1802,7 +1802,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::TextFont
         | PpcImportDispatcherTarget::TextFace
         | PpcImportDispatcherTarget::TextMode
-        | PpcImportDispatcherTarget::TextSize => {
+        | PpcImportDispatcherTarget::TextSize
+        | PpcImportDispatcherTarget::CharExtra => {
             unreachable!("font and text imports return through dispatch_font_import")
         }
         PpcImportDispatcherTarget::PaintRect
