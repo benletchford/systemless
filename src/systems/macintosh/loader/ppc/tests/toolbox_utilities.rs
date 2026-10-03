@@ -1,6 +1,33 @@
 use super::*;
 
 #[test]
+fn hle_import_runner_reports_missing_international_resource_table() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetIntlResourceTable"),
+        PpcImportDispatcherTarget::GetIntlResourceTable
+    );
+    let pef = synthetic_pef_with_import(b"GetIntlResourceTable");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let outputs = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(outputs, vec![0xaa; 16]);
+    loaded.cpu.gpr[3] = 0; // Roman script
+    loaded.cpu.gpr[4] = 0; // word-selection table
+    loaded.cpu.gpr[5] = outputs;
+    loaded.cpu.gpr[6] = outputs + 4;
+    loaded.cpu.gpr[7] = outputs + 8;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(outputs), Some(0));
+    assert_eq!(loaded.memory.read_u32_be(outputs + 4), Some(0));
+    assert_eq!(loaded.memory.read_u32_be(outputs + 8), Some(0));
+    assert_eq!(loaded.memory.read_u32_be(outputs + 12), Some(0xaaaa_aaaa));
+}
+
+#[test]
 fn hle_import_runner_handles_legacy_bit_utilities() {
     let mut set = load_pef_application(&synthetic_pef_with_import(b"BitSet")).unwrap();
     let byte = PPC_HEAP_BASE;

@@ -2130,6 +2130,7 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::SysEnvirons
         | PpcImportDispatcherTarget::SVersion
         | PpcImportDispatcherTarget::EqualString
+        | PpcImportDispatcherTarget::GetIntlResourceTable
         | PpcImportDispatcherTarget::NumToString
         | PpcImportDispatcherTarget::StringToNum
         | PpcImportDispatcherTarget::Random
