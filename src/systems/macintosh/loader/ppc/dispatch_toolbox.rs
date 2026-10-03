@@ -54,6 +54,17 @@ pub(super) fn dispatch_toolbox_import(
                 .eq(right.into_iter().map(primary));
             Some(PpcImportAction::Return(u32::from(!equal)))
         }
+        PpcImportDispatcherTarget::GetIntlResourceTable => {
+            // Inside Macintosh: Text, GetIntlResourceTable. The current HLE has
+            // no itl2/itl4 system resources, so there is no table to return.
+            // Initialize all VAR outputs as the 68K IUGetIntlTable path does.
+            for pointer in [cpu.gpr[5], cpu.gpr[6], cpu.gpr[7]] {
+                if pointer != 0 {
+                    let _ = memory.write_u32_be(pointer, 0);
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::NumToString => {
             let number = cpu.gpr[3] as i32;
             let string_ptr = cpu.gpr[4];
