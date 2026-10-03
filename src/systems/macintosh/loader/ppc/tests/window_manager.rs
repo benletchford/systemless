@@ -7795,3 +7795,348 @@ fn window_property_management_commands_dispatch_with_canonical_evaluation() {
     }
 }
 
+#[test]
+fn import_bindings_classify_window_pic_refcon_variant_port_and_low_memory_imports() {
+    for lib in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        // GetWindowPic
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowPic"),
+            PpcImportDispatcherTarget::GetWindowPic
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowpic"),
+            PpcImportDispatcherTarget::GetWindowPic
+        );
+
+        // SetWindowPic
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetWindowPic"),
+            PpcImportDispatcherTarget::SetWindowPic
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setwindowpic"),
+            PpcImportDispatcherTarget::SetWindowPic
+        );
+
+        // GetWRefCon
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWRefCon"),
+            PpcImportDispatcherTarget::GetWRefCon
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwrefcon"),
+            PpcImportDispatcherTarget::GetWRefCon
+        );
+
+        // SetWRefCon
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetWRefCon"),
+            PpcImportDispatcherTarget::SetWRefCon
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setwrefcon"),
+            PpcImportDispatcherTarget::SetWRefCon
+        );
+
+        // GetWVariant & GetWindowVariant
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWVariant"),
+            PpcImportDispatcherTarget::GetWVariant
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwvariant"),
+            PpcImportDispatcherTarget::GetWVariant
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowVariant"),
+            PpcImportDispatcherTarget::GetWVariant
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowvariant"),
+            PpcImportDispatcherTarget::GetWVariant
+        );
+
+        // GetWindowPort
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowPort"),
+            PpcImportDispatcherTarget::GetWindowPort
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowport"),
+            PpcImportDispatcherTarget::GetWindowPort
+        );
+
+        // SetPortWindowPort
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetPortWindowPort"),
+            PpcImportDispatcherTarget::SetPortWindowPort
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setportwindowport"),
+            PpcImportDispatcherTarget::SetPortWindowPort
+        );
+
+        // GetAuxWin
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetAuxWin"),
+            PpcImportDispatcherTarget::GetAuxWin
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getauxwin"),
+            PpcImportDispatcherTarget::GetAuxWin
+        );
+
+        // LMGetWindowList
+        assert_eq!(
+            dispatcher_target_for_import(lib, "LMGetWindowList"),
+            PpcImportDispatcherTarget::LMGetWindowList
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "lmgetwindowlist"),
+            PpcImportDispatcherTarget::LMGetWindowList
+        );
+
+        // LMSetWindowList
+        assert_eq!(
+            dispatcher_target_for_import(lib, "LMSetWindowList"),
+            PpcImportDispatcherTarget::LMSetWindowList
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "lmsetwindowlist"),
+            PpcImportDispatcherTarget::LMSetWindowList
+        );
+
+        // LMGetAuxWinHead
+        assert_eq!(
+            dispatcher_target_for_import(lib, "LMGetAuxWinHead"),
+            PpcImportDispatcherTarget::LMGetAuxWinHead
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "lmgetauxwinhead"),
+            PpcImportDispatcherTarget::LMGetAuxWinHead
+        );
+
+        // LMSetAuxWinHead
+        assert_eq!(
+            dispatcher_target_for_import(lib, "LMSetAuxWinHead"),
+            PpcImportDispatcherTarget::LMSetAuxWinHead
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "lmsetauxwinhead"),
+            PpcImportDispatcherTarget::LMSetAuxWinHead
+        );
+    }
+}
+
+#[test]
+fn window_pic_refcon_variant_port_and_low_memory_commands_dispatch_with_canonical_evaluation() {
+    for lib in [
+        b"InterfaceLib".as_slice(),
+        b"AppearanceLib".as_slice(),
+        b"CarbonLib".as_slice(),
+    ] {
+        let lib_str = std::str::from_utf8(lib).unwrap();
+        let pef = synthetic_pef_with_library_import(lib, b"GetWRefCon");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1400;
+        let bounds_ptr1 = scratch;
+        let bounds_ptr2 = scratch + 0x200;
+        let out_ctable_ptr = scratch + 0x400;
+        loaded.memory.add_region(scratch, vec![0; 0x1000]);
+
+        let win1 =
+            create_test_cwindow(&mut loaded, bounds_ptr1, (40, 50, 140, 250), 0, true, u32::MAX);
+        let win2 =
+            create_test_cwindow(&mut loaded, bounds_ptr2, (60, 70, 160, 270), 19, true, u32::MAX);
+
+        // 1. GetWindowPort & SetPortWindowPort
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "GetWindowPort");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], win1);
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "SetPortWindowPort");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+
+        // 2. RefCon: GetWRefCon and SetWRefCon
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWRefCon");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetWRefCon");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        loaded.cpu.gpr[4] = 0x1234_5678;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWRefCon");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], 0x1234_5678);
+
+        // RefCon on NULL window
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+
+        // 3. WindowPic: GetWindowPic and SetWindowPic
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "GetWindowPic");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "SetWindowPic");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        loaded.cpu.gpr[4] = 0xCAFE_BABE;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "GetWindowPic");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], 0xCAFE_BABE);
+
+        // WindowPic on NULL window
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+
+        // 4. Variant: GetWVariant & GetWindowVariant
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWVariant");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win2;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], 19 & 0x0F);
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "GetWindowVariant");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win2;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], 19 & 0x0F);
+
+        // 5. AuxWin: GetAuxWin
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetAuxWin");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        loaded.cpu.gpr[4] = out_ctable_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = out_ctable_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+
+        // 6. Low-memory: LMGetWindowList and LMSetWindowList
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "LMGetWindowList");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], win2);
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "LMSetWindowList");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "LMGetWindowList");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], win1);
+
+        // 7. Low-memory: LMGetAuxWinHead and LMSetAuxWinHead
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "LMGetAuxWinHead");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        let initial_aux_head = loaded.cpu.gpr[3];
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "LMSetAuxWinHead");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0x5566_7788;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "LMGetAuxWinHead");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], 0x5566_7788);
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "LMSetAuxWinHead");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = initial_aux_head;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+    }
+}
+
+

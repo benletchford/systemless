@@ -251,6 +251,8 @@ pub enum PpcImportDispatcherTarget {
     GetAuxWin,
     LMGetWindowList,
     LMSetWindowList,
+    LMGetAuxWinHead,
+    LMSetAuxWinHead,
     SizeWindow,
     MoveWindow,
     ShowWindow,
@@ -2996,6 +2998,14 @@ pub(crate) fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::LMSetWindowList,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "LMGetAuxWinHead" | "lmgetauxwinhead",
+        ) => PpcImportDispatcherTarget::LMGetAuxWinHead,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "LMSetAuxWinHead" | "lmsetauxwinhead",
+        ) => PpcImportDispatcherTarget::LMSetAuxWinHead,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SizeWindow" | "sizewindow",
         ) => PpcImportDispatcherTarget::SizeWindow,
         (
@@ -3141,8 +3151,14 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "GetGWorld") => PpcImportDispatcherTarget::GetGWorld,
         ("InterfaceLib", "SetGWorld") => PpcImportDispatcherTarget::SetGWorld,
-        ("InterfaceLib", "GetWindowPort") => PpcImportDispatcherTarget::GetWindowPort,
-        ("InterfaceLib", "SetPortWindowPort") => PpcImportDispatcherTarget::SetPortWindowPort,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetWindowPort" | "getwindowport",
+        ) => PpcImportDispatcherTarget::GetWindowPort,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetPortWindowPort" | "setportwindowport",
+        ) => PpcImportDispatcherTarget::SetPortWindowPort,
         ("InterfaceLib", "GetGWorldDevice") => PpcImportDispatcherTarget::GetGWorldDevice,
         ("InterfaceLib", "GetGWorldPixMap") => PpcImportDispatcherTarget::GetGWorldPixMap,
         ("InterfaceLib", "OpenPort") => PpcImportDispatcherTarget::OpenPort,
@@ -3182,7 +3198,7 @@ pub(crate) fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::PinRect,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetWVariant" | "getwvariant",
+            "GetWVariant" | "getwvariant" | "GetWindowVariant" | "getwindowvariant",
         ) => PpcImportDispatcherTarget::GetWVariant,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",

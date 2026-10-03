@@ -692,9 +692,19 @@ pub const WINDOW_STATE_DATA_HANDLE_OFFSET: u32 = 130;
 #[allow(dead_code)]
 pub const WINDOW_TITLE_HANDLE_OFFSET: u32 = 134;
 #[allow(dead_code)]
+pub const WINDOW_TITLE_WIDTH_OFFSET: u32 = 138;
+#[allow(dead_code)]
 pub const WINDOW_CONTROL_LIST_OFFSET: u32 = 140;
 #[allow(dead_code)]
 pub const WINDOW_NEXT_WINDOW_OFFSET: u32 = 144;
+#[allow(dead_code)]
+pub const WINDOW_PIC_HANDLE_OFFSET: u32 = 148;
+#[allow(dead_code)]
+pub const WINDOW_REF_CON_OFFSET: u32 = 152;
+#[allow(dead_code)]
+pub const LM_WINDOW_LIST_ADDR: u32 = 0x09D6;
+#[allow(dead_code)]
+pub const LM_AUX_WIN_HEAD_ADDR: u32 = 0x0CD0;
 
 /// Canonical Mac OS WindowModality constants.
 #[allow(dead_code)]
@@ -1378,6 +1388,205 @@ pub fn evaluate_change_window_property_attributes_parameters(
     })
 }
 
+/// Architecture-neutral parameter validation for SetWindowPic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetWindowPicParameters {
+    window_ptr: u32,
+    pic_handle: u32,
+}
+
+impl SetWindowPicParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn pic_handle(&self) -> u32 {
+        self.pic_handle
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_window_pic(window_ptr: u32, pic_handle: Option<u32>) -> u32 {
+    if window_ptr == 0 {
+        0
+    } else {
+        pic_handle.unwrap_or(0)
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_set_window_pic_parameters(
+    window_ptr: u32,
+    pic_handle: u32,
+    can_write: bool,
+) -> Result<SetWindowPicParameters, i16> {
+    if window_ptr == 0 || !can_write {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(SetWindowPicParameters {
+        window_ptr,
+        pic_handle,
+    })
+}
+
+/// Architecture-neutral parameter validation for SetWRefCon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetWRefConParameters {
+    window_ptr: u32,
+    ref_con: u32,
+}
+
+impl SetWRefConParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn ref_con(&self) -> u32 {
+        self.ref_con
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_w_ref_con(window_ptr: u32, ref_con: Option<u32>) -> u32 {
+    if window_ptr == 0 {
+        0
+    } else {
+        ref_con.unwrap_or(0)
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_set_w_ref_con_parameters(
+    window_ptr: u32,
+    ref_con: u32,
+    can_write: bool,
+) -> Result<SetWRefConParameters, i16> {
+    if window_ptr == 0 || !can_write {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(SetWRefConParameters {
+        window_ptr,
+        ref_con,
+    })
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_w_variant(window_ptr: u32, proc_id: Option<i16>) -> i16 {
+    if window_ptr == 0 {
+        0
+    } else {
+        proc_id.map(|id| id & 0x0F).unwrap_or(0)
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_window_port(window_ptr: u32) -> u32 {
+    window_ptr
+}
+
+#[allow(dead_code)]
+pub fn evaluate_set_port_window_port(window_ptr: u32) -> u32 {
+    window_ptr
+}
+
+/// Architecture-neutral parameter validation for GetAuxWin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetAuxWinParameters {
+    window_ptr: u32,
+    out_aux_ctable_ptr: u32,
+}
+
+impl GetAuxWinParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn out_aux_ctable_ptr(&self) -> u32 {
+        self.out_aux_ctable_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_aux_win_parameters(
+    window_ptr: u32,
+    out_aux_ctable_ptr: u32,
+    can_write: bool,
+) -> Result<GetAuxWinParameters, i16> {
+    if window_ptr == 0 {
+        return Err(-50);
+    }
+    if out_aux_ctable_ptr != 0 && !can_write {
+        return Err(-50);
+    }
+    Ok(GetAuxWinParameters {
+        window_ptr,
+        out_aux_ctable_ptr,
+    })
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_aux_win(color_table: Option<u32>, is_tracked: bool) -> (u32, bool) {
+    let ctab = color_table.unwrap_or(0);
+    let success = ctab != 0 || is_tracked;
+    (ctab, success)
+}
+
+#[allow(dead_code)]
+pub fn evaluate_lm_get_window_list(first_window: Option<u32>, low_mem_window: Option<u32>) -> u32 {
+    first_window.filter(|&w| w != 0).or(low_mem_window).unwrap_or(0)
+}
+
+/// Architecture-neutral parameter validation for LMSetWindowList.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LmSetWindowListParameters {
+    window_ptr: u32,
+}
+
+impl LmSetWindowListParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_lm_set_window_list_parameters(
+    window_ptr: u32,
+    can_write_low_mem: bool,
+) -> Result<LmSetWindowListParameters, i16> {
+    if !can_write_low_mem {
+        return Err(-50);
+    }
+    Ok(LmSetWindowListParameters { window_ptr })
+}
+
+#[allow(dead_code)]
+pub fn evaluate_lm_get_aux_win_head(aux_head: Option<u32>) -> u32 {
+    aux_head.unwrap_or(0)
+}
+
+/// Architecture-neutral parameter validation for LMSetAuxWinHead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LmSetAuxWinHeadParameters {
+    aux_head: u32,
+}
+
+impl LmSetAuxWinHeadParameters {
+    pub const fn aux_head(&self) -> u32 {
+        self.aux_head
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_lm_set_aux_win_head_parameters(
+    aux_head: u32,
+    can_write_low_mem: bool,
+) -> Result<LmSetAuxWinHeadParameters, i16> {
+    if !can_write_low_mem {
+        return Err(-50);
+    }
+    Ok(LmSetAuxWinHeadParameters { aux_head })
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -2016,6 +2225,74 @@ mod tests {
         assert_eq!(change_params.window_ptr(), 0x1000);
         assert_eq!(change_params.to_set(), 0x10);
         assert_eq!(change_params.to_clear(), 0x01);
+    }
+
+    #[test]
+    fn window_pic_refcon_variant_port_and_low_memory_evaluation() {
+        // Window Pic evaluation
+        assert_eq!(evaluate_get_window_pic(0, Some(0x2000)), 0);
+        assert_eq!(evaluate_get_window_pic(0x1000, None), 0);
+        assert_eq!(evaluate_get_window_pic(0x1000, Some(0x2000)), 0x2000);
+
+        assert_eq!(evaluate_set_window_pic_parameters(0, 0x2000, true), Err(-50));
+        assert_eq!(evaluate_set_window_pic_parameters(0x1000, 0x2000, false), Err(-50));
+        let pic_params = evaluate_set_window_pic_parameters(0x1000, 0x2000, true).unwrap();
+        assert_eq!(pic_params.window_ptr(), 0x1000);
+        assert_eq!(pic_params.pic_handle(), 0x2000);
+
+        // Window RefCon evaluation
+        assert_eq!(evaluate_get_w_ref_con(0, Some(0x3000)), 0);
+        assert_eq!(evaluate_get_w_ref_con(0x1000, None), 0);
+        assert_eq!(evaluate_get_w_ref_con(0x1000, Some(0x3000)), 0x3000);
+
+        assert_eq!(evaluate_set_w_ref_con_parameters(0, 0x3000, true), Err(-50));
+        assert_eq!(evaluate_set_w_ref_con_parameters(0x1000, 0x3000, false), Err(-50));
+        let ref_params = evaluate_set_w_ref_con_parameters(0x1000, 0x3000, true).unwrap();
+        assert_eq!(ref_params.window_ptr(), 0x1000);
+        assert_eq!(ref_params.ref_con(), 0x3000);
+
+        // Window Variant evaluation
+        assert_eq!(evaluate_get_w_variant(0, Some(0x12)), 0);
+        assert_eq!(evaluate_get_w_variant(0x1000, None), 0);
+        assert_eq!(evaluate_get_w_variant(0x1000, Some(0x12)), 0x02);
+        assert_eq!(evaluate_get_w_variant(0x1000, Some(0x10)), 0x00);
+        assert_eq!(evaluate_get_w_variant(0x1000, Some(0x0F)), 0x0F);
+
+        // Window Port and SetPortWindowPort evaluation
+        assert_eq!(evaluate_get_window_port(0x1000), 0x1000);
+        assert_eq!(evaluate_set_port_window_port(0x1000), 0x1000);
+
+        // AuxWin evaluation
+        assert_eq!(evaluate_get_aux_win_parameters(0, 0x4000, true), Err(-50));
+        assert_eq!(evaluate_get_aux_win_parameters(0x1000, 0x4000, false), Err(-50));
+        let aux_params = evaluate_get_aux_win_parameters(0x1000, 0x4000, true).unwrap();
+        assert_eq!(aux_params.window_ptr(), 0x1000);
+        assert_eq!(aux_params.out_aux_ctable_ptr(), 0x4000);
+        let aux_nil_params = evaluate_get_aux_win_parameters(0x1000, 0, false).unwrap();
+        assert_eq!(aux_nil_params.out_aux_ctable_ptr(), 0);
+
+        assert_eq!(evaluate_get_aux_win(None, false), (0, false));
+        assert_eq!(evaluate_get_aux_win(None, true), (0, true));
+        assert_eq!(evaluate_get_aux_win(Some(0x5000), false), (0x5000, true));
+        assert_eq!(evaluate_get_aux_win(Some(0x5000), true), (0x5000, true));
+
+        // Low memory WindowList evaluation
+        assert_eq!(evaluate_lm_get_window_list(None, None), 0);
+        assert_eq!(evaluate_lm_get_window_list(None, Some(0x1000)), 0x1000);
+        assert_eq!(evaluate_lm_get_window_list(Some(0x2000), Some(0x1000)), 0x2000);
+        assert_eq!(evaluate_lm_get_window_list(Some(0), Some(0x1000)), 0x1000);
+
+        assert_eq!(evaluate_lm_set_window_list_parameters(0x1000, false), Err(-50));
+        let lm_win_params = evaluate_lm_set_window_list_parameters(0x1000, true).unwrap();
+        assert_eq!(lm_win_params.window_ptr(), 0x1000);
+
+        // Low memory AuxWinHead evaluation
+        assert_eq!(evaluate_lm_get_aux_win_head(None), 0);
+        assert_eq!(evaluate_lm_get_aux_win_head(Some(0x6000)), 0x6000);
+
+        assert_eq!(evaluate_lm_set_aux_win_head_parameters(0x6000, false), Err(-50));
+        let lm_aux_params = evaluate_lm_set_aux_win_head_parameters(0x6000, true).unwrap();
+        assert_eq!(lm_aux_params.aux_head(), 0x6000);
     }
 }
 

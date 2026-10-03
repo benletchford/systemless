@@ -84,7 +84,9 @@ pub(super) fn dispatch_gworld_import(
             // MacWindows.h: GetWindowPort(WindowRef) returns the window's
             // GrafPort. Imaging With QuickDraw (1994), pp. 3-52, 6-6:
             // the classic WindowRecord begins with that GrafPort.
-            Some(PpcImportAction::Return(cpu.gpr[3]))
+            Some(PpcImportAction::Return(
+                crate::window_manager::evaluate_get_window_port(cpu.gpr[3]),
+            ))
         }
         PpcImportDispatcherTarget::SetPort
         | PpcImportDispatcherTarget::SetPortWindowPort
@@ -93,6 +95,8 @@ pub(super) fn dispatch_gworld_import(
             // Dialogs.h: SetPortDialogPort makes the dialog port current.
             let port = if binding.dispatcher_target == PpcImportDispatcherTarget::SetPortDialogPort {
                 crate::dialog_manager::evaluate_set_port_dialog_port(cpu.gpr[3])
+            } else if binding.dispatcher_target == PpcImportDispatcherTarget::SetPortWindowPort {
+                crate::window_manager::evaluate_set_port_window_port(cpu.gpr[3])
             } else {
                 cpu.gpr[3]
             };

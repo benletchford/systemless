@@ -1101,53 +1101,52 @@ impl PpcLoadedApp {
                         cpu.gpr[3]
                     };
                     let mut callback_action = None;
-                    while !reentrant {
-                        let Some(pointer) = glm_page_free_all_queue.pop_front() else {
-                            break;
-                        };
-                        match glm_allocations.get(&pointer).copied() {
-                            Some((true, _)) => {
-                                let Some(target) = glm_callbacks[1] else {
-                                    glm_error = 3; // GLM_INVALID_OPERATION
-                                    glm_page_free_all_queue.clear();
-                                    break;
-                                };
-                                let state = PpcGlmCallbackState {
-                                    import_pc: cpu.pc,
-                                    final_pc: cpu.lr,
-                                    restore_rtoc: cpu.gpr[2],
-                                    operation: PpcGlmCallbackOperation::Free {
+                    if !reentrant {
+                        while let Some(pointer) = glm_page_free_all_queue.pop_front() {
+                            match glm_allocations.get(&pointer).copied() {
+                                Some((true, _)) => {
+                                    let Some(target) = glm_callbacks[1] else {
+                                        glm_error = 3; // GLM_INVALID_OPERATION
+                                        glm_page_free_all_queue.clear();
+                                        break;
+                                    };
+                                    let state = PpcGlmCallbackState {
+                                        import_pc: cpu.pc,
+                                        final_pc: cpu.lr,
+                                        restore_rtoc: cpu.gpr[2],
+                                        operation: PpcGlmCallbackOperation::Free {
+                                            pointer,
+                                            result: preserved,
+                                            replacement_size: None,
+                                            free_all: true,
+                                        },
+                                    };
+                                    callback_action = ppc_glm_begin_guest_callback(
+                                        cpu,
+                                        memory,
+                                        &mut glm_callback_stack,
+                                        target,
                                         pointer,
-                                        result: preserved,
-                                        replacement_size: None,
-                                        free_all: true,
-                                    },
-                                };
-                                callback_action = ppc_glm_begin_guest_callback(
-                                    cpu,
-                                    memory,
-                                    &mut glm_callback_stack,
-                                    target,
-                                    pointer,
-                                    state,
-                                );
-                                if callback_action.is_none() {
-                                    glm_error = 3; // GLM_INVALID_OPERATION
-                                    glm_page_free_all_queue.clear();
+                                        state,
+                                    );
+                                    if callback_action.is_none() {
+                                        glm_error = 3; // GLM_INVALID_OPERATION
+                                        glm_page_free_all_queue.clear();
+                                    }
+                                    break;
                                 }
-                                break;
+                                Some((false, _)) => {
+                                    process_memory_manager.dispose_native_ptr(pointer);
+                                    glm_allocations.remove(&pointer);
+                                    ppc_apply_process_native_allocator(
+                                        process_memory_manager,
+                                        memory,
+                                        &mut heap_cursor,
+                                        &mut last_mem_error,
+                                    );
+                                }
+                                None => {}
                             }
-                            Some((false, _)) => {
-                                process_memory_manager.dispose_native_ptr(pointer);
-                                glm_allocations.remove(&pointer);
-                                ppc_apply_process_native_allocator(
-                                    process_memory_manager,
-                                    memory,
-                                    &mut heap_cursor,
-                                    &mut last_mem_error,
-                                );
-                            }
-                            None => {}
                         }
                     }
                     callback_action.or(Some(PpcImportAction::Return(preserved)))
