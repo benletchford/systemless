@@ -11,7 +11,6 @@ architectures:
 - ppc
 default_architecture: 68k
 category: Strategy
-launch_enabled: false
 compatibility:
   status: boots
   verified:
@@ -23,11 +22,12 @@ compatibility:
       Optimized native public-API harness linked to the portable no-default-features
       release library only, with 68K execution explicitly asserted, an 800-by-600 8-bit
       display and 32-bit addressing. Legal human placements and Level 1 computer-white
-      replies completed a 14-stone game ending in a marked white five-in-row. Occupied,
-      off-board and post-win placements were rejected; Undo/Redo, dialog dismissal,
+      replies completed a 14-stone game ending in a marked white five-in-row.
+      Occupied, off-board and post-win placements were rejected; Undo/Redo, dialog dismissal,
       Start Over and a second 19-by-19 board worked in the covered sequence. Two clean
-      processes reproduced all 27 captures exactly. This is not a complete GUI-executable
-      or release-browser test. Browser launch remains disabled pending release-browser gameplay verification.
+      processes reproduced all 27 captures exactly. This is not a complete
+      GUI-executable or release-browser test. Browser launch remains disabled pending
+      release-browser gameplay verification.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/3976
 runtime:
@@ -39,10 +39,9 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://mirrors.nic.funet.fi/pub/mac/info-mac/game/brd/five-stones-24.hqx
-    expected_sha256: 9fe89beb7b8492a1c87fcb88cacd75bb8c8934c6f012bd8e52de5124bc9eea7b
-    expected_size: 109973
+    type: sha256
+    sha256: 9fe89beb7b8492a1c87fcb88cacd75bb8c8934c6f012bd8e52de5124bc9eea7b
+    size_bytes: 109973
   provenance:
     redistribution: permitted
     original: true
@@ -52,21 +51,22 @@ artifacts:
     permission: >-
       The bundled README_FIRST permits non-profit distribution with that document
       attached without any modifications. Distribution for other purposes, explicitly
-      including CD-ROM, requires written author permission. This complete original
-      package retains the application and unchanged README_FIRST; no permission for
-      commercial or other-purpose distribution is asserted.
+      including CD-ROM, requires written author permission. This complete original package
+      retains the application and unchanged README_FIRST; no permission for commercial
+      or other-purpose distribution is asserted.
     notes: >-
       Original 109,973-byte Info-Mac BinHex/StuffIt package. The README identifies
-      version 2.4, copyright 1993-1995, and the FAT build. Both 68K CODE resources and
-      a PowerPC code fragment are present; only 68K execution was tested. This is
+      version 2.4, copyright 1993-1995, and the FAT build. Both 68K CODE resources and a
+      PowerPC code fragment are present; only 68K execution was tested. This is
       original $10 shareware, not freeware or a registered/unlocked copy. The authentic
       shareware notice was dismissed using Not Yet, without registration or game patches.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/fivestones-24/gameplay.png
+    type: sha256
+    sha256: e3e403679514942e7e43e975a0949e0662b8b8c46ff1859d870fdec69b954cd0
+    size_bytes: 2593
   provenance:
     redistribution: permitted
     original: true
@@ -80,14 +80,15 @@ artifacts:
     notes: >-
       Authentic native framebuffer after six legal black and six white stones, with
       numbered stones enabled. Exact 320-by-320 content crop at (4,40) from the
-      800-by-600 framebuffer; no rescaling or retouching. Host framing and the Classic
-      Mac menu and window title bars are excluded. This is not a release-browser capture.
+      800-by-600 framebuffer; no rescaling or retouching. Host framing and the Classic Mac menu
+      and window title bars are excluded. This is not a release-browser capture.
 - id: win-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/fivestones-24/win.png
+    type: sha256
+    sha256: eddb7b5557b2899a23ef5ad4cfac3fd7f0dba3fd1cf68dc3f90ecc12160319b0
+    size_bytes: 2732
   provenance:
     redistribution: permitted
     original: true
@@ -110,7 +111,7 @@ references:
 
 ## Five in a row
 
-![FiveStones after native human moves and computer replies](incoming/fivestones-24/gameplay.png)
+![FiveStones after native human moves and computer replies](https://assets.systemless.org/catalogue/media/sha256/e3/e3e403679514942e7e43e975a0949e0662b8b8c46ff1859d870fdec69b954cd0.png)
 
 Choose **Game → New Game** for a 15-by-15 or 19-by-19 board. The first black
 stone is placed in the centre automatically. Click an empty intersection to
@@ -127,7 +128,7 @@ author permission.
 
 ## Verification status
 
-![FiveStones native white-computer five-in-row](incoming/fivestones-24/win.png)
+![FiveStones native white-computer five-in-row](https://assets.systemless.org/catalogue/media/sha256/ed/eddb7b5557b2899a23ef5ad4cfac3fd7f0dba3fd1cf68dc3f90ecc12160319b0.png)
 
 Native checks covered a complete game against the Level 1 white computer,
 legal placements and replies, invalid occupied and off-board clicks,
