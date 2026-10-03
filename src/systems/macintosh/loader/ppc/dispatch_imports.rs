@@ -2133,6 +2133,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::EqualString
         | PpcImportDispatcherTarget::GetIntlResourceTable
         | PpcImportDispatcherTarget::FillParseTable
+        | PpcImportDispatcherTarget::UppercaseText
         | PpcImportDispatcherTarget::NumToString
         | PpcImportDispatcherTarget::StringToNum
         | PpcImportDispatcherTarget::Random
