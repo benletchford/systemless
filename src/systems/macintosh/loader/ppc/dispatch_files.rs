@@ -509,6 +509,25 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
             }
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
+        PpcImportDispatcherTarget::GetVRefNum => {
+            // Inside Macintosh: Files (1992), p. 2-138: GetVRefNum maps an
+            // open file reference to its volume and returns rfNumErr for an
+            // unknown reference. Open data and resource forks share the VFS
+            // boot volume.
+            let ref_num = cpu.gpr[3] as u16 as i16;
+            let out = cpu.gpr[4];
+            let result = if out == 0 || !ppc_memory_can_write_bytes(memory, out, 2) {
+                PPC_PARAM_ERR
+            } else if files.iter().any(|file| file.ref_num == ref_num)
+                || resource_files.iter().any(|file| file.ref_num == ref_num)
+            {
+                let _ = memory.write_u16_be(out, PPC_BOOT_VOLUME_REF_NUM as u16);
+                PPC_NO_ERR
+            } else {
+                PPC_RF_NUM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         PpcImportDispatcherTarget::PBDTGetPath => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_pb_dt_get_path(cpu, memory, vfs_volumes),
         ))),

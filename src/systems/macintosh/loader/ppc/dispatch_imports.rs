@@ -1640,6 +1640,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::PBFlushVol
         | PpcImportDispatcherTarget::PBHGetVInfo
         | PpcImportDispatcherTarget::GetVInfo
+        | PpcImportDispatcherTarget::GetVRefNum
         | PpcImportDispatcherTarget::PBDTGetPath
         | PpcImportDispatcherTarget::PBDTGetCommentSync
         | PpcImportDispatcherTarget::PBGetFInfo
