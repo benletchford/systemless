@@ -24,6 +24,7 @@ const VISE_VERSION_36_FULL: u32 = 0x8001_0304;
 const VISE_VERSION_EARLY_EXTENDED_CATALOG: u32 = 0x8001_0306;
 const VISE_VERSION_EXTENDED_CATALOG: u32 = 0x8001_0307;
 const VISE_VERSION_PACKED_CATALOG: u32 = 0x8001_0308;
+const VISE_VERSION_LATE_PACKED_CATALOG: u32 = 0x8001_030B;
 const VISE_DIRECTORY_RECORD_LEN: usize = 78;
 const VISE_FILE_RECORD_LEN: usize = 120;
 const VISE_EXTENDED_CATALOG_PREFIX_LEN: usize = 80;
@@ -41,6 +42,13 @@ fn uncompressed_extended_catalog(version: u32) -> bool {
     matches!(
         version,
         VISE_VERSION_EARLY_EXTENDED_CATALOG | VISE_VERSION_EXTENDED_CATALOG
+    )
+}
+
+fn packed_catalog(version: u32) -> bool {
+    matches!(
+        version,
+        VISE_VERSION_PACKED_CATALOG | VISE_VERSION_LATE_PACKED_CATALOG
     )
 }
 
@@ -260,6 +268,7 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
             | VISE_VERSION_EARLY_EXTENDED_CATALOG
             | VISE_VERSION_EXTENDED_CATALOG
             | VISE_VERSION_PACKED_CATALOG
+            | VISE_VERSION_LATE_PACKED_CATALOG
     ) {
         return Err(format!("unsupported archive version 0x{version:08X}"));
     }
@@ -277,8 +286,7 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
         ));
     }
     let entry_count = read_u16(catalog, 16, "catalog entry count")? as usize;
-    let extended_catalog =
-        uncompressed_extended_catalog(version) || version == VISE_VERSION_PACKED_CATALOG;
+    let extended_catalog = uncompressed_extended_catalog(version) || packed_catalog(version);
     let mut cursor = catalog_offset + VISE_CATALOG_HEADER_LEN;
     if extended_catalog {
         let prefix = range(
@@ -292,7 +300,7 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
         }
         cursor += VISE_EXTENDED_CATALOG_PREFIX_LEN;
     }
-    let catalog_records: Cow<'_, [u8]> = if version == VISE_VERSION_PACKED_CATALOG {
+    let catalog_records: Cow<'_, [u8]> = if packed_catalog(version) {
         let packed_len = read_u32(catalog, 4, "packed catalog length")? as usize;
         let packed = range(data, cursor, packed_len, "packed catalog records")?;
         let mut swapped = packed.to_vec();
@@ -372,7 +380,7 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                     )?;
                     cursor += suffix_len;
                 } else if extended_catalog {
-                    let suffix_len = if version == VISE_VERSION_PACKED_CATALOG {
+                    let suffix_len = if packed_catalog(version) {
                         VISE_PACKED_DIRECTORY_SUFFIX_LEN
                     } else {
                         VISE_EXTENDED_DIRECTORY_SUFFIX_LEN
@@ -426,7 +434,7 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                     )?;
                     cursor += VISE_36_FULL_FILE_SUFFIX_LEN;
                 } else if extended_catalog {
-                    let suffix_len = if version == VISE_VERSION_PACKED_CATALOG {
+                    let suffix_len = if packed_catalog(version) {
                         VISE_PACKED_FILE_SUFFIX_LEN
                     } else {
                         VISE_EXTENDED_FILE_SUFFIX_LEN
@@ -546,7 +554,7 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
         }
     }
 
-    if version == VISE_VERSION_PACKED_CATALOG
+    if packed_catalog(version)
         && cursor != catalog_data.len()
         && !catalog_data[cursor..].starts_with(b"PACK")
     {
@@ -1595,6 +1603,12 @@ pub(crate) mod tests {
             decode_vise_fork(entry.data_packed, game_data.len()).unwrap(),
             game_data
         );
+
+        let mut late_archive = archive.clone();
+        late_archive[16..20].copy_from_slice(&VISE_VERSION_LATE_PACKED_CATALOG.to_be_bytes());
+        let late = parse_vise(&late_archive).unwrap().unwrap();
+        assert_eq!(late.dirs, parsed.dirs);
+        assert_eq!(late.entries, parsed.entries);
 
         let mut excessive = archive.clone();
         excessive[catalog_offset + 16..catalog_offset + 18].copy_from_slice(&0u16.to_be_bytes());
