@@ -3,7 +3,7 @@ use super::*;
 
 pub(super) fn bytes(font_id: i16) -> Option<&'static [u8]> {
     Some(match font_id {
-        FONT_CHICAGO => include_bytes!("urw/NimbusSans-Bold.ttf"),
+        FONT_CHICAGO => include_bytes!("urw/NimbusSans-Regular.ttf"),
         FONT_APPLICATION | FONT_GENEVA | FONT_HELVETICA => {
             include_bytes!("urw/NimbusSans-Regular.ttf")
         }

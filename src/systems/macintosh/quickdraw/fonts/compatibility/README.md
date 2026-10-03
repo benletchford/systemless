@@ -4,6 +4,15 @@ Systemless uses bundled URW and Coppet outlines for fallback font pixels. This d
 contains separately licensed logical metrics used where a classic-compatible
 layout is required. It does not contain Apple font software or glyph artwork.
 
+## Chicago 12 advances
+
+`chicago12-advances.bin` records 95 one-byte logical advances in Mac Roman
+ASCII order, from `0x20` through `0x7E`. They were measured at 12 pixels from
+the bundled OFL-licensed Nimbus Sans Bold face that previously supplied the
+Chicago fallback. The regular-weight visual fallback keeps these widths so
+dialog hit testing and control layout stay stable. Its SHA-256 is
+`e8113a056ddc79c23c0f24306e72ee84b587735422a1f8163dd594f9b1b5258f`.
+
 ## Geneva 9 advances
 
 `geneva9-advances.bin` contains 95 one-byte logical advances in Mac Roman ASCII
