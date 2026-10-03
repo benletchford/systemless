@@ -1,6 +1,28 @@
 use super::*;
 
 #[test]
+fn hle_import_runner_fills_roman_parse_table() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "FillParseTable"),
+        PpcImportDispatcherTarget::FillParseTable
+    );
+    let pef = synthetic_pef_with_import(b"FillParseTable");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let table = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(table, vec![0xaa; 260]);
+    loaded.cpu.gpr[3] = table;
+    loaded.cpu.gpr[4] = 0; // Roman script
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    assert!((0..256).all(|offset| loaded.memory.read_u8(table + offset) == Some(0)));
+    assert_eq!(loaded.memory.read_u32_be(table + 256), Some(0xaaaa_aaaa));
+}
+
+#[test]
 fn hle_import_runner_reports_missing_international_resource_table() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "GetIntlResourceTable"),
