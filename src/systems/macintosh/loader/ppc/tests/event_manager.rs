@@ -1505,6 +1505,42 @@ fn hle_import_runner_handles_get_keys() {
 }
 
 #[test]
+fn extended_keyboard_keys_hold_and_release_in_getkeys_and_low_memory() {
+    use crate::memory::globals::addr;
+
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetKeys")).unwrap();
+    let keys_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(keys_ptr, vec![0xaa; 16]);
+    let mut input = PpcInputSnapshot::default();
+
+    for pressed in [true, false] {
+        for key in [123u8, 124, 58, 55] {
+            let byte = usize::from(key / 8);
+            let mask = 1 << (key % 8);
+            if pressed {
+                input.key_map[byte] |= mask;
+            } else {
+                input.key_map[byte] &= !mask;
+            }
+            loaded.set_input_snapshot(input);
+            loaded.cpu.gpr[3] = keys_ptr;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::GetKeys);
+            for (offset, expected) in input.key_map.iter().copied().enumerate() {
+                assert_eq!(
+                    loaded.memory.read_u8(keys_ptr + offset as u32),
+                    Some(expected)
+                );
+                assert_eq!(
+                    loaded.memory.read_u8(addr::KEY_MAP_LM + offset as u32),
+                    Some(expected)
+                );
+            }
+            assert_eq!(loaded.memory.read_u8(addr::KBD_TYPE), Some(2));
+        }
+    }
+}
+
+#[test]
 fn hle_run_mirrors_shared_process_input_into_powerpc_low_memory() {
     use crate::memory::globals::addr;
 

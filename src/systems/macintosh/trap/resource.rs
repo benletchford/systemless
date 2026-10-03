@@ -3,7 +3,8 @@
 use crate::cpu::{CpuOps, Register};
 use crate::loader::CodeSegmentHeader;
 use crate::machine_profile::{
-    QUICKTIME_NUM_VERSION, REFERENCE_M68K_EXECUTION_CAPABILITIES, REFERENCE_MACHINE_PROFILE,
+    KEYBOARD_ENVIRON_TYPE, QUICKTIME_NUM_VERSION, REFERENCE_M68K_EXECUTION_CAPABILITIES,
+    REFERENCE_MACHINE_PROFILE,
 };
 use crate::managers::resource::ResourceFork;
 use crate::memory::globals::addr;
@@ -3901,7 +3902,7 @@ impl super::TrapDispatcher {
                     // extended-keyboard virtual input profile, including
                     // keypad aliases used by Marathon-class games.
                     b"kbd " => {
-                        cpu.write_reg(Register::A0, 4);
+                        cpu.write_reg(Register::A0, u32::from(KEYBOARD_ENVIRON_TYPE));
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltQuickdrawVersion ('qd  ') -> System 7

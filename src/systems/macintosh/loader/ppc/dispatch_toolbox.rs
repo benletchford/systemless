@@ -1,6 +1,7 @@
 //! Typed Toolbox Utilities dispatch for PowerPC imports.
 
 use super::*;
+use crate::machine_profile::KEYBOARD_ENVIRON_TYPE;
 
 pub(super) struct PpcToolboxDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
@@ -138,7 +139,7 @@ pub(crate) fn ppc_sys_environs(memory: &mut PpcSectionMem, rec_ptr: u32) -> i16 
     );
     let _ = memory.write_u8(rec_ptr + 8, u8::from(REFERENCE_MACHINE_PROFILE.has_fpu()));
     let _ = memory.write_u8(rec_ptr + 9, 1);
-    let _ = memory.write_u16_be(rec_ptr + 10, 0);
+    let _ = memory.write_u16_be(rec_ptr + 10, KEYBOARD_ENVIRON_TYPE);
     let _ = memory.write_u16_be(rec_ptr + 12, 0);
     let _ = memory.write_u16_be(rec_ptr + 14, 0);
     PPC_NO_ERR

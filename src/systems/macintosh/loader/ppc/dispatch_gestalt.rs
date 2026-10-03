@@ -1,6 +1,7 @@
 //! Typed Gestalt Manager dispatch for PowerPC imports.
 
 use super::*;
+use crate::machine_profile::KEYBOARD_ENVIRON_TYPE;
 
 pub(super) struct PpcGestaltDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
@@ -93,6 +94,7 @@ fn ppc_gestalt_response(selector: u32, physical_ram_size: u32) -> Option<(u32, i
         b"ostt" => Some((crate::trap::dispatch::OS_TRAP_TABLE_BASE, PPC_NO_ERR)),
         b"tbtt" => Some((crate::trap::dispatch::TOOLBOX_TRAP_TABLE_BASE, PPC_NO_ERR)),
         b"evnt" => Some((0x0001, PPC_NO_ERR)),
+        b"kbd " => Some((u32::from(KEYBOARD_ENVIRON_TYPE), PPC_NO_ERR)),
         b"cput" => Some((
             REFERENCE_POWERPC_EXECUTION_CAPABILITIES.native_cpu_type,
             PPC_NO_ERR,

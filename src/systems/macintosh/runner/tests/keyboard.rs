@@ -244,6 +244,43 @@ fn arrows_not_remapped_by_default() {
 }
 
 #[test]
+fn extended_keyboard_keys_hold_and_release_in_getkeys_and_low_memory() {
+    use crate::cpu::{CpuOps, Register};
+    use crate::trap::test_helpers::MockCpu;
+
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let mut cpu = MockCpu::new();
+    let sp = 0x200000;
+    let keys_ptr = sp + 0x100;
+    let mut expected = [0; 16];
+    let keys = [(123u8, 28u8), (124, 29), (58, 0), (55, 0)];
+
+    for pressed in [true, false] {
+        for (key, character) in keys {
+            if pressed {
+                runner.push_key_down(key, character);
+                expected[usize::from(key / 8)] |= 1 << (key % 8);
+            } else {
+                runner.push_key_up(key, character);
+                expected[usize::from(key / 8)] &= !(1 << (key % 8));
+            }
+            assert_eq!(runner.bus.read_bytes(addr::KEY_MAP_LM, 16), expected);
+
+            cpu.write_reg(Register::A7, sp);
+            runner.bus.write_long(sp, keys_ptr);
+            runner
+                .dispatcher
+                .dispatch_toolbox(true, 0x176, &mut cpu, &mut runner.bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(runner.bus.read_bytes(keys_ptr, 16), expected);
+            assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+            assert_eq!(runner.bus.read_byte(addr::KBD_TYPE), 2);
+        }
+    }
+}
+
+#[test]
 fn key_events_sync_low_memory_keymap() {
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
 

@@ -40,6 +40,39 @@ fn new_gestalt_value_registers_selector_and_rejects_duplicates() {
 }
 
 #[test]
+fn gestalt_keyboard_type_is_builtin_extended_adb_keyboard() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"Gestalt")).unwrap();
+    let selector = u32::from_be_bytes(*b"kbd ");
+    let response_ptr = PPC_HEAP_BASE;
+    loaded.memory.add_region(response_ptr, vec![0xaa; 4]);
+
+    loaded.cpu.gpr[3] = selector;
+    loaded.cpu.gpr[4] = response_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::Gestalt);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(response_ptr), Some(4));
+
+    loaded.cpu.gpr[3] = selector;
+    loaded.cpu.gpr[4] = 9;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewGestaltValue);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_GESTALT_DUP_SELECTOR_ERR));
+
+    loaded.cpu.gpr[3] = selector;
+    loaded.cpu.gpr[4] = response_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::Gestalt);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(response_ptr), Some(4));
+}
+
+#[test]
+fn fresh_powerpc_keyboard_type_is_a_physical_type_byte() {
+    let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+    assert_eq!(loaded.memory.read_u8(0x021e), Some(2));
+    assert_eq!(loaded.memory.read_u8(0x021d), Some(0));
+    assert_eq!(loaded.memory.read_u8(0x021f), Some(0));
+}
+
+#[test]
 fn gestalt_logical_ram_matches_physical_ram_without_virtual_memory() {
     let pef = synthetic_pef_with_import(b"Gestalt");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -257,7 +290,7 @@ fn hle_import_runner_handles_sys_environs() {
     let pef = synthetic_pef_with_import(b"SysEnvirons");
     let mut loaded = load_pef_application(&pef).unwrap();
     let sys_env_ptr = PPC_DATA_BASE + 0x1000;
-    loaded.memory.add_region(sys_env_ptr, vec![0xaa; 16]);
+    loaded.memory.add_region(sys_env_ptr - 1, vec![0xaa; 18]);
     loaded.cpu.gpr[3] = 2;
     loaded.cpu.gpr[4] = sys_env_ptr;
 
@@ -284,6 +317,11 @@ fn hle_import_runner_handles_sys_environs() {
         Some(u8::from(REFERENCE_MACHINE_PROFILE.has_fpu()))
     );
     assert_eq!(loaded.memory.read_u8(sys_env_ptr + 9), Some(1));
+    assert_eq!(loaded.memory.read_u16_be(sys_env_ptr + 10), Some(4)); // envAExtendKbd
+    assert_eq!(loaded.memory.read_u16_be(sys_env_ptr + 12), Some(0));
+    assert_eq!(loaded.memory.read_u16_be(sys_env_ptr + 14), Some(0));
+    assert_eq!(loaded.memory.read_u8(sys_env_ptr - 1), Some(0xaa));
+    assert_eq!(loaded.memory.read_u8(sys_env_ptr + 16), Some(0xaa));
 
     loaded.cpu.pc = loaded.entry_pc;
     loaded.cpu.lr = PPC_HALT_PC;

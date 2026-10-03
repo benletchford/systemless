@@ -1588,6 +1588,10 @@ impl MacMemoryBus {
             foreign_address_space: None,
         };
         bus.write_word(super::globals::addr::ROM85, 0x7FFF);
+        bus.write_byte(
+            super::globals::addr::KBD_TYPE,
+            crate::machine_profile::KEYBOARD_PHYSICAL_TYPE,
+        );
 
         // Set up ScrnBase at $0824 to point to screen memory.
         // Geometry comes from the active machine profile (800x600 8bpp by
@@ -3870,6 +3874,14 @@ impl crate::trap::gateways::TrapCodeMemory for MacMemoryBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_keyboard_type_is_a_physical_type_byte() {
+        let bus = MacMemoryBus::new(64 * 1024);
+        assert_eq!(bus.read_byte(0x021e), 2);
+        assert_eq!(bus.read_byte(0x021d), 0);
+        assert_eq!(bus.read_byte(0x021f), 0);
+    }
 
     #[test]
     fn untraced_ram_slice_rejects_nonflat_and_wrapping_ranges() {
