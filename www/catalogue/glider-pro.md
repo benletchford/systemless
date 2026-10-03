@@ -14,8 +14,23 @@ default_architecture: 68k
 category: Arcade
 launch_enabled: true
 compatibility:
-  status: boots
+  status: playable
   verified:
+  - date: "2026-10-03"
+    tester: Catalogue maintainer
+    systemless_version: "0.75.0 (published release, 707a31ec93d9)"
+    architecture: 68k
+    environment: >-
+      Published systemless.org release browser, worker-backed 68K execution at
+      25 MHz with the existing 4 MiB application partition. Game > New Game
+      opened the Demo House tutorial; Space dismissed its welcome sheet.
+      Holding Right and Left moved the plane in both directions. New Game
+      reset the spare-glider count to two after an ended attempt. In the
+      restarted game, held Right traversed from Air Vents into Some Prizes
+      and the score reached 200. The unchanged managed archive was verified
+      by SHA-256 and byte count. This check does not cover a complete house.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3935
   - date: "2026-09-23"
     tester: Catalogue maintainer
     systemless_version: "0.51.0"
@@ -81,6 +96,7 @@ artifacts:
 references:
 - https://classicmacdemos.com/glider-pro
 - https://static.classicmacdemos.com/demos/glider-pro/README.txt
+- https://github.com/benletchford/systemless/issues/3935
 ---
 
 ## Through the Demo House
@@ -97,3 +113,13 @@ the house's automatic tour before trying it themselves and explains which rooms,
 objects and house-editing features are reserved for the full version. The
 catalogue preserves the promotional StuffIt archive byte-for-byte and launches
 its original 68K application.
+
+Choose **Game > New Game** for interactive play, then press **Space** to dismiss
+the welcome sheet. Hold **Left** or **Right** to steer; without horizontal
+input the plane falls, so use floor vents for lift. **Options > Demo** is the
+automatic tour and does not test player control.
+
+A published release-browser check verified both steering directions, a new
+game after an ended attempt, and an input-controlled transition from **Air
+Vents** into **Some Prizes** with a score of 200. The rest of the house was not
+part of that check.

@@ -12,16 +12,31 @@ default_architecture: 68k
 launch_enabled: true
 category: Arcade
 compatibility:
-  status: boots
+  status: playable
   verified:
+  - date: "2026-10-03"
+    tester: Catalogue maintainer
+    systemless_version: "0.75.0 (published release, 707a31ec93d9)"
+    architecture: 68k
+    environment: >-
+      Published systemless.org release browser, worker-backed 68K execution at
+      25 MHz with an 800-by-600 Canvas2D framebuffer. Selecting START promptly
+      with Return reached the interactive jungle opening. Holding Right moved
+      Conrad across the upper-left platform; holding Left turned him and moved
+      him back toward its left edge without exiting to the title menu. The
+      unchanged managed archive was verified by SHA-256 and byte count. This
+      check covers first-scene movement, not a full level playthrough.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2660
   - date: "2026-09-24"
     tester: Catalogue maintainer
     systemless_version: "0.56.0"
     architecture: 68k
     environment: >-
       Deterministic run of the unchanged 68K Flashback Demo archive at 800 by 600.
-      The publisher splash and title menu render. Space selects Start, and a later key
-      press skips the opening cinematic to the first jungle scene. Holding Right moves
+      The publisher splash and title menu render, and a later key press skips the
+      opening cinematic to the first jungle scene. The earlier Space-to-Start note
+      is superseded by the 2026-10-03 Return verification. Holding Right moves
       Conrad across the scene. A release-mode Chrome 151 preview on 2026-09-28
       loaded the same archive once, rendered the title, accepted Start and
       cutscene-skip keys, and reached the first jungle gameplay scene at about
@@ -76,6 +91,7 @@ references:
 - https://classicmacdemos.com/flashback-the-quest-for-identity
 - https://github.com/benletchford/systemless/issues/2610
 - https://github.com/benletchford/systemless/issues/3143
+- https://github.com/benletchford/systemless/issues/2660
 ---
 
 ## The jungle opening
@@ -86,8 +102,12 @@ Conrad wakes in an alien jungle and must find a way through its platforms and
 hazards. This original Macintosh demo presents the opening sequence and a
 limited portion of the game, rather than the commercial release.
 
-Systemless reaches the title menu and first jungle scene. Press any key to
-leave the publisher splash, select Start, then press a key during the opening
-cinematic to skip ahead. Use the arrow keys to move; Shift is the action key.
-A release-mode browser preview reached the first jungle gameplay scene after
-Start and the opening sequence. Browser launch is enabled.
+Press any key to leave the publisher splash, then select **START** with
+**Return** before the title menu's roughly ten-second idle timeout. Space does
+not select a menu item. The idle **DEMO** option plays recorded input; press a
+key to leave it and return to the menu before starting an interactive game.
+
+Use the arrow keys to move; Shift is the action key. A published release-browser
+check reached the interactive jungle opening and verified Conrad moving right
+and back left across its first platform. This verifies first-scene control,
+not a complete level playthrough.
