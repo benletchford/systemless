@@ -65,6 +65,13 @@ pub(super) fn dispatch_toolbox_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::FillParseTable => {
+            // Inside Macintosh: Text, FillParseTable. The emulated Roman
+            // script uses single-byte MacRoman, so no byte starts a
+            // two-byte character. The documented Boolean result is TRUE.
+            let _ = memory.write_bytes(cpu.gpr[3], &[0; 256]);
+            Some(PpcImportAction::Return(1))
+        }
         PpcImportDispatcherTarget::NumToString => {
             let number = cpu.gpr[3] as i32;
             let string_ptr = cpu.gpr[4];
