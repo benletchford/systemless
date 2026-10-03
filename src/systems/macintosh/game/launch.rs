@@ -3105,6 +3105,38 @@ fn executable_candidate_is_better(
     candidate: &ExecutableCandidate,
     previous: &ExecutableCandidate,
 ) -> bool {
+    if candidate.version_selection_class() == previous.version_selection_class()
+        && candidate.creator == previous.creator
+        && candidate.is_documentation == previous.is_documentation
+        && candidate.is_demo == previous.is_demo
+        && is_registration_executable(&candidate.name)
+            == is_registration_executable(&previous.name)
+        && executable_name_has_role(&candidate.name, "editor")
+            == executable_name_has_role(&previous.name, "editor")
+        && candidate
+            .name
+            .rsplit_once('/')
+            .map_or("", |(parent, _)| parent)
+            .eq_ignore_ascii_case(
+                previous
+                    .name
+                    .rsplit_once('/')
+                    .map_or("", |(parent, _)| parent),
+            )
+    {
+        if let (
+            Some((candidate_family, candidate_platform)),
+            Some((previous_family, previous_platform)),
+        ) = (
+            explicit_os_platform_variant(&candidate.name),
+            explicit_os_platform_variant(&previous.name),
+        ) {
+            if candidate_family == previous_family && candidate_platform != previous_platform {
+                return candidate_platform == ClassicOsPlatform::Classic;
+            }
+        }
+    }
+
     let candidate_class = candidate.version_selection_class();
     let previous_class = previous.version_selection_class();
     if candidate_class == previous_class && same_application_family(candidate, previous) {
@@ -3119,6 +3151,28 @@ fn executable_candidate_is_better(
     }
 
     candidate.selection_key() > previous.selection_key()
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClassicOsPlatform {
+    Classic,
+    OsX,
+}
+
+fn explicit_os_platform_variant(name: &str) -> Option<(String, ClassicOsPlatform)> {
+    let application = name.rsplit('/').next()?.to_ascii_lowercase();
+    let (family, suffix) = application
+        .split_once(" for mac os ")
+        .or_else(|| application.split_once(" for os "))?;
+    let version = suffix
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .find(|word| !word.is_empty())?;
+    let platform = match version {
+        "7" | "8" | "9" => ClassicOsPlatform::Classic,
+        "x" | "10" => ClassicOsPlatform::OsX,
+        _ => return None,
+    };
+    Some((family.to_string(), platform))
 }
 
 impl ExecutableCandidate {
@@ -4846,6 +4900,72 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn executable_selection_prefers_classic_over_os_x_sibling() {
+        let rsrc = make_single_resource_fork_bytes(*b"cfrg", 0, &make_cfrg(0, 0));
+        let data = make_minimal_pef(*b"pwpc");
+        let classic = "Installer/Game/Game for OS 8 or 9 (Demo)";
+        let os_x = "Installer/Game/Game for OS X (Demo)";
+
+        for os_x_first in [false, true] {
+            let mut selected = None;
+            let mut candidates = [(classic, 1_000usize), (os_x, 2_000usize)];
+            if os_x_first {
+                candidates.reverse();
+            }
+            for (name, data_len) in candidates {
+                maybe_select_executable_with_override_and_preference(
+                    &mut selected,
+                    name,
+                    &data,
+                    &rsrc,
+                    true,
+                    data_len,
+                    *b"GAME",
+                    1,
+                    None,
+                    false,
+                );
+            }
+            assert_eq!(selected.unwrap().name, classic);
+        }
+
+        let mut selected = None;
+        for (name, data_len) in [(classic, 1_000usize), (os_x, 2_000usize)] {
+            maybe_select_executable_with_override_and_preference(
+                &mut selected,
+                name,
+                &data,
+                &rsrc,
+                true,
+                data_len,
+                *b"GAME",
+                1,
+                Some(os_x),
+                false,
+            );
+        }
+        assert_eq!(selected.unwrap().name, os_x);
+
+        let mut selected = None;
+        let classic_editor = "Installer/Game/Game for OS 9 Editor";
+        for (name, data_len) in [(os_x, 2_000usize), (classic_editor, 1_000usize)] {
+            maybe_select_executable_with_override_and_preference(
+                &mut selected,
+                name,
+                &data,
+                &rsrc,
+                true,
+                data_len,
+                *b"GAME",
+                1,
+                None,
+                false,
+            );
+        }
+        assert_eq!(selected.unwrap().name, os_x);
     }
 
     #[test]
