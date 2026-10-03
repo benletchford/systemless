@@ -21,6 +21,8 @@ pub(crate) const PPC_CWINDOW_TITLE_WIDTH_OFFSET: u32 = 138;
 pub(crate) const PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET: u32 = 152;
 pub(crate) const PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET: u32 = 164;
 pub(crate) const PPC_CWINDOW_CONTROL_LIST_OFFSET: u32 = 140;
+pub(super) const PPC_WINDOW_PROPERTY_NOT_FOUND_ERR: i16 =
+    crate::window_manager::WINDOW_PROPERTY_NOT_FOUND_ERR;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PpcGoAwayCall {
@@ -3001,6 +3003,7 @@ pub enum PpcLegacyWindowOperation {
     BringToFront,
     CalculateVisibleRegion,
     ChangeWindowAttributes,
+    ChangeWindowPropertyAttributes,
     CheckUpdate,
     CreateNewWindow,
     DisposeWindow,
@@ -3023,6 +3026,9 @@ pub enum PpcLegacyWindowOperation {
     GetWindowKind,
     GetWindowModality,
     GetWindowPortBounds,
+    GetWindowProperty,
+    GetWindowPropertyAttributes,
+    GetWindowPropertySize,
     GetWindowProxyIcon,
     GetWindowRegion,
     GetWindowSpareFlag,
@@ -3043,6 +3049,7 @@ pub enum PpcLegacyWindowOperation {
     IsWindowUpdatePending,
     IsWindowVisible,
     NewWindow,
+    RemoveWindowProperty,
     RemoveWindowProxy,
     RepositionWindow,
     ReshapeCustomWindow,
@@ -3055,6 +3062,7 @@ pub enum PpcLegacyWindowOperation {
     SetWindowKind,
     SetWindowModality,
     SetWindowModified,
+    SetWindowProperty,
     SetWindowProxyIcon,
     SetWindowStandardState,
     SetWindowTitle,
@@ -4495,6 +4503,238 @@ pub(super) fn ppc_dispatch_legacy_window(
                     toolbox_startup.window_modality.insert(
                         params.window_ptr(),
                         (params.modal_kind(), params.unavailable_window_ptr()),
+                    );
+                    Some(PpcImportAction::Return(0))
+                }
+                Err(err) => Some(PpcImportAction::Return(ppc_i16_result(err))),
+            }
+        }
+        PpcLegacyWindowOperation::ChangeWindowPropertyAttributes => {
+            let window = cpu.gpr[3];
+            let creator = cpu.gpr[4];
+            let tag = cpu.gpr[5];
+            let to_set = cpu.gpr[6];
+            let to_clear = cpu.gpr[7];
+            match crate::window_manager::evaluate_change_window_property_attributes_parameters(
+                window, creator, tag, to_set, to_clear,
+            ) {
+                Ok(params) => {
+                    let result = toolbox_startup
+                        .window_properties
+                        .get_mut(&params.window_ptr())
+                        .map_or(PPC_WINDOW_PROPERTY_NOT_FOUND_ERR, |props| {
+                            match crate::window_manager::change_window_property_attributes(
+                                props,
+                                params.creator(),
+                                params.tag(),
+                                params.to_set(),
+                                params.to_clear(),
+                            ) {
+                                Ok(_) => PPC_NO_ERR,
+                                Err(e) => e,
+                            }
+                        });
+                    Some(PpcImportAction::Return(ppc_i16_result(result)))
+                }
+                Err(err) => Some(PpcImportAction::Return(ppc_i16_result(err))),
+            }
+        }
+        PpcLegacyWindowOperation::GetWindowProperty => {
+            let window = cpu.gpr[3];
+            let creator = cpu.gpr[4];
+            let tag = cpu.gpr[5];
+            let buffer_size = cpu.gpr[6];
+            let actual_size_ptr = cpu.gpr[7];
+            let data_ptr = cpu.gpr[8];
+            let can_write_actual_size = actual_size_ptr != 0
+                && memory.write_u32_be(actual_size_ptr, 0).is_some();
+            let can_write_data = data_ptr != 0 && buffer_size > 0;
+            match crate::window_manager::evaluate_get_window_property_parameters(
+                window,
+                creator,
+                tag,
+                buffer_size,
+                actual_size_ptr,
+                data_ptr,
+                can_write_actual_size,
+                can_write_data,
+            ) {
+                Ok(params) => {
+                    let maybe_prop = toolbox_startup
+                        .window_properties
+                        .get(&params.window_ptr())
+                        .and_then(|props| {
+                            crate::window_manager::get_window_property(
+                                props,
+                                params.creator(),
+                                params.tag(),
+                            )
+                        });
+                    let result = if let Some(prop) = maybe_prop {
+                        if params.out_actual_size_ptr() != 0 {
+                            let _ = memory.write_u32_be(
+                                params.out_actual_size_ptr(),
+                                prop.data.len() as u32,
+                            );
+                        }
+                        if params.out_data_ptr() != 0 && params.buffer_size() > 0 {
+                            let copy_len = (params.buffer_size() as usize).min(prop.data.len());
+                            let _ = memory.write_bytes(
+                                params.out_data_ptr(),
+                                &prop.data[..copy_len],
+                            );
+                        }
+                        PPC_NO_ERR
+                    } else {
+                        if params.out_actual_size_ptr() != 0 {
+                            let _ = memory.write_u32_be(params.out_actual_size_ptr(), 0);
+                        }
+                        PPC_WINDOW_PROPERTY_NOT_FOUND_ERR
+                    };
+                    Some(PpcImportAction::Return(ppc_i16_result(result)))
+                }
+                Err(err) => Some(PpcImportAction::Return(ppc_i16_result(err))),
+            }
+        }
+        PpcLegacyWindowOperation::GetWindowPropertyAttributes => {
+            let window = cpu.gpr[3];
+            let creator = cpu.gpr[4];
+            let tag = cpu.gpr[5];
+            let attributes_ptr = cpu.gpr[6];
+            let can_write_attributes = attributes_ptr != 0
+                && memory.write_u32_be(attributes_ptr, 0).is_some();
+            match crate::window_manager::evaluate_get_window_property_attributes_parameters(
+                window,
+                creator,
+                tag,
+                attributes_ptr,
+                can_write_attributes,
+            ) {
+                Ok(params) => {
+                    let maybe_prop = toolbox_startup
+                        .window_properties
+                        .get(&params.window_ptr())
+                        .and_then(|props| {
+                            crate::window_manager::get_window_property(
+                                props,
+                                params.creator(),
+                                params.tag(),
+                            )
+                        });
+                    let result = if let Some(prop) = maybe_prop {
+                        if params.out_attributes_ptr() != 0 {
+                            let _ = memory
+                                .write_u32_be(params.out_attributes_ptr(), prop.attributes);
+                        }
+                        PPC_NO_ERR
+                    } else {
+                        if params.out_attributes_ptr() != 0 {
+                            let _ = memory.write_u32_be(params.out_attributes_ptr(), 0);
+                        }
+                        PPC_WINDOW_PROPERTY_NOT_FOUND_ERR
+                    };
+                    Some(PpcImportAction::Return(ppc_i16_result(result)))
+                }
+                Err(err) => Some(PpcImportAction::Return(ppc_i16_result(err))),
+            }
+        }
+        PpcLegacyWindowOperation::GetWindowPropertySize => {
+            let window = cpu.gpr[3];
+            let creator = cpu.gpr[4];
+            let tag = cpu.gpr[5];
+            let actual_size_ptr = cpu.gpr[6];
+            let can_write_actual_size = actual_size_ptr != 0
+                && memory.write_u32_be(actual_size_ptr, 0).is_some();
+            match crate::window_manager::evaluate_get_window_property_size_parameters(
+                window,
+                creator,
+                tag,
+                actual_size_ptr,
+                can_write_actual_size,
+            ) {
+                Ok(params) => {
+                    let maybe_prop = toolbox_startup
+                        .window_properties
+                        .get(&params.window_ptr())
+                        .and_then(|props| {
+                            crate::window_manager::get_window_property(
+                                props,
+                                params.creator(),
+                                params.tag(),
+                            )
+                        });
+                    let result = if let Some(prop) = maybe_prop {
+                        if params.out_actual_size_ptr() != 0 {
+                            let _ = memory.write_u32_be(
+                                params.out_actual_size_ptr(),
+                                prop.data.len() as u32,
+                            );
+                        }
+                        PPC_NO_ERR
+                    } else {
+                        if params.out_actual_size_ptr() != 0 {
+                            let _ = memory.write_u32_be(params.out_actual_size_ptr(), 0);
+                        }
+                        PPC_WINDOW_PROPERTY_NOT_FOUND_ERR
+                    };
+                    Some(PpcImportAction::Return(ppc_i16_result(result)))
+                }
+                Err(err) => Some(PpcImportAction::Return(ppc_i16_result(err))),
+            }
+        }
+        PpcLegacyWindowOperation::RemoveWindowProperty => {
+            let window = cpu.gpr[3];
+            let creator = cpu.gpr[4];
+            let tag = cpu.gpr[5];
+            match crate::window_manager::evaluate_remove_window_property_parameters(
+                window, creator, tag,
+            ) {
+                Ok(params) => {
+                    let removed = toolbox_startup
+                        .window_properties
+                        .get_mut(&params.window_ptr())
+                        .is_some_and(|props| {
+                            crate::window_manager::remove_window_property(
+                                props,
+                                params.creator(),
+                                params.tag(),
+                            )
+                        });
+                    let result = if removed {
+                        PPC_NO_ERR
+                    } else {
+                        PPC_WINDOW_PROPERTY_NOT_FOUND_ERR
+                    };
+                    Some(PpcImportAction::Return(ppc_i16_result(result)))
+                }
+                Err(err) => Some(PpcImportAction::Return(ppc_i16_result(err))),
+            }
+        }
+        PpcLegacyWindowOperation::SetWindowProperty => {
+            let window = cpu.gpr[3];
+            let creator = cpu.gpr[4];
+            let tag = cpu.gpr[5];
+            let size = cpu.gpr[6];
+            let data_ptr = cpu.gpr[7];
+            let data = if data_ptr != 0 && size > 0 {
+                ppc_memory_read_bytes(memory, data_ptr, size).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            match crate::window_manager::evaluate_set_window_property_parameters(
+                window, creator, tag, data,
+            ) {
+                Ok(params) => {
+                    let props = toolbox_startup
+                        .window_properties
+                        .entry(params.window_ptr())
+                        .or_default();
+                    crate::window_manager::set_window_property(
+                        props,
+                        params.creator(),
+                        params.tag(),
+                        0,
+                        params.into_data(),
                     );
                     Some(PpcImportAction::Return(0))
                 }
