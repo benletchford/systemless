@@ -1657,6 +1657,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::DirCreate
         | PpcImportDispatcherTarget::FSpDirCreate
         | PpcImportDispatcherTarget::FSMakeFSSpec
+        | PpcImportDispatcherTarget::PBMakeFSSpecSync
         | PpcImportDispatcherTarget::PBGetFCBInfo
         | PpcImportDispatcherTarget::FindFolder
         | PpcImportDispatcherTarget::ResolveAliasFile

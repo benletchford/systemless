@@ -435,6 +435,7 @@ pub enum PpcImportDispatcherTarget {
     DirCreate,
     FSpDirCreate,
     FSMakeFSSpec,
+    PBMakeFSSpecSync,
     PBGetFInfo,
     PBHGetFInfo,
     PBSetFInfo,
@@ -3286,6 +3287,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "DirCreate") => PpcImportDispatcherTarget::DirCreate,
         ("InterfaceLib", "FSpDirCreate") => PpcImportDispatcherTarget::FSpDirCreate,
         ("InterfaceLib", "FSMakeFSSpec") => PpcImportDispatcherTarget::FSMakeFSSpec,
+        ("InterfaceLib", "PBMakeFSSpecSync") => PpcImportDispatcherTarget::PBMakeFSSpecSync,
         ("InterfaceLib", "PBGetFInfo")
         | ("InterfaceLib", "PBGetFInfoSync")
         | ("InterfaceLib", "PBGetFInfoAsync") => PpcImportDispatcherTarget::PBGetFInfo,
