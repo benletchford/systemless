@@ -3825,6 +3825,7 @@ fn test_purge_space() {
 fn test_sys_environs_0x90() {
     let (mut dispatcher, mut cpu, mut bus) = setup();
     let buf = 0x300000u32;
+    bus.write_bytes(buf - 1, &[0xaa; 18]);
     cpu.write_reg(Register::A0, buf);
     cpu.write_reg(Register::D0, 2); // version
     let result = dispatcher.dispatch_memory(false, 0x90, &mut cpu, &mut bus);
@@ -3853,6 +3854,11 @@ fn test_sys_environs_0x90() {
         "hasFPU should be 1 (68040 has integrated FPU)"
     );
     assert_eq!(bus.read_byte(buf + 9), 1, "hasColorQD should be 1");
+    assert_eq!(bus.read_word(buf + 10), 4, "envAExtendKbd");
+    assert_eq!(bus.read_word(buf + 12), 0, "atDrvrVersNum");
+    assert_eq!(bus.read_word(buf + 14), 0, "sysVRefNum");
+    assert_eq!(bus.read_byte(buf - 1), 0xaa);
+    assert_eq!(bus.read_byte(buf + 16), 0xaa);
 }
 
 #[test]

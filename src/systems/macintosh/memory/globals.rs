@@ -50,6 +50,9 @@ pub mod addr {
     /// 3.4 LowMem.h lines 4304--4324.
     pub const UNIT_NTRY_CNT: u32 = 0x01D2;
     pub const TIME: u32 = 0x020C; // Current date/time in seconds since 1904-01-01 (long)
+    /// KbdType: physical keyboard type (byte), distinct from the Gestalt enum.
+    /// Universal Interfaces 3.4.1, Events.h: LMGetKbdType reads UInt8 at $021E.
+    pub const KBD_TYPE: u32 = 0x021E;
     /// MemErr: current value of MemError (word).
     /// Inside Macintosh Volume IV, IV-80; low-memory table IV-246.
     pub const MEM_ERR: u32 = 0x0220;

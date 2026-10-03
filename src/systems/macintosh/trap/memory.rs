@@ -6,7 +6,9 @@ use super::dispatch::{
 use super::manager::{TrapManager, TrapManagerSetError, TrapTableKind};
 use crate::callback_manager::CallbackTaskArchitecture;
 use crate::cpu::{CpuOps, Register};
-use crate::machine_profile::{REFERENCE_M68K_EXECUTION_CAPABILITIES, REFERENCE_MACHINE_PROFILE};
+use crate::machine_profile::{
+    KEYBOARD_ENVIRON_TYPE, REFERENCE_M68K_EXECUTION_CAPABILITIES, REFERENCE_MACHINE_PROFILE,
+};
 use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
 use crate::process_context::{
     ProcessHandleHeap, ProcessNewHandleBackend, ProcessNewHandleRequest, ProcessNewHandleResult,
@@ -1571,7 +1573,7 @@ impl super::TrapDispatcher {
                     u8::from(REFERENCE_M68K_EXECUTION_CAPABILITIES.fpu_type != 0),
                 );
                 bus.write_byte(rec_ptr + 9, 1); // hasColorQD
-                bus.write_word(rec_ptr + 10, 0);
+                bus.write_word(rec_ptr + 10, KEYBOARD_ENVIRON_TYPE);
                 bus.write_word(rec_ptr + 12, 0);
                 bus.write_word(rec_ptr + 14, 0);
 

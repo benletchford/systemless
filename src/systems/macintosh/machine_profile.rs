@@ -21,6 +21,19 @@ pub const APPEARANCE_MANAGER_VERSION_BCD: u16 = 0x0101;
 /// final-release `NumVersion` from its `vers` resource (4.0.3 final).
 pub(crate) const QUICKTIME_NUM_VERSION: u32 = 0x0403_8000;
 
+/// Systemless exposes a domestic (ANSI) Apple Extended virtual keyboard on
+/// both CPU architectures. Preserve the existing 68K Gestalt keyboard identity:
+/// Universal Interfaces 3.4.1, OSUtils.h `envAExtendKbd` and Gestalt.h
+/// `gestaltExtADBKbd` both use 4. Inside Macintosh: Text (1993), pp. C-5 and
+/// C-13 maps its arrows to virtual key codes 123--126, matching host input.
+pub(crate) const KEYBOARD_ENVIRON_TYPE: u16 = 4;
+
+/// The same keyboard uses physical type 2 in the byte-sized KbdType global,
+/// NOT the SysEnvirons/Gestalt enum above. Inside Macintosh: Text (1993),
+/// p. C-4, Table C-1 assigns 2 to the domestic Apple Extended Keyboard and
+/// Extended Keyboard II and describes KbdType as the low byte of that type.
+pub(crate) const KEYBOARD_PHYSICAL_TYPE: u8 = 2;
+
 /// Bag of constants describing one canonical guest machine: Gestalt
 /// selector responses, screen geometry, RAM size, VBL rate, realtime
 /// guest-advertised CPU MHz.
