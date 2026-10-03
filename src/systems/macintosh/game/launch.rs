@@ -3499,10 +3499,10 @@ fn ppc_diagnostic_vfs(
         // their native fragments run (for example, Storm's PKWARE tables).
         // Keep these records available to the native Resource Manager just
         // like the application's resources.
-        let seed_all_resources = file_type == u32::from_be_bytes(*b"shlb")
-            || app_resource_path
-                .as_ref()
-                .is_some_and(|app_path| app_path.eq_ignore_ascii_case(path));
+        let is_app_resource = app_resource_path
+            .as_ref()
+            .is_some_and(|app_path| app_path.eq_ignore_ascii_case(path));
+        let seed_all_resources = file_type == u32::from_be_bytes(*b"shlb") || is_app_resource;
         if let Some(fork) = parsed_fork.as_ref() {
             let mut sorted_resources: Vec<_> = fork.resources().values().collect();
             sorted_resources.sort_by_key(|resource| (resource.res_type, resource.id));
@@ -3511,7 +3511,15 @@ fn ppc_diagnostic_vfs(
                     continue;
                 }
                 resources.push(PpcVfsResourceRecord {
-                    ref_num: 0,
+                    // Inside Macintosh Volume I, I-103–I-105: only open resource
+                    // files participate in GetResource's search chain. The app
+                    // fork is open at launch; other forks enter the chain when
+                    // OpenResFile assigns their reference numbers.
+                    ref_num: if is_app_resource {
+                        0
+                    } else {
+                        crate::loader::ppc::PPC_CLOSED_RESOURCE_REF_NUM
+                    },
                     path: path.clone(),
                     res_type: u32::from_be_bytes(resource.res_type),
                     res_id: resource.id,
@@ -5677,6 +5685,61 @@ mod tests {
                 bytes: pef,
             }]
         );
+    }
+
+    #[test]
+    fn ppc_launch_resource_chain_excludes_unopened_shared_libraries() {
+        let mut runner = new_runner();
+        let resource_type = u32::from_be_bytes(*b"STR#");
+        insert_forks_into_vfs(
+            &mut runner,
+            "A Shared Library",
+            Vec::new(),
+            make_single_resource_fork_bytes(*b"STR#", 129, b"library"),
+            *b"shlb",
+            *b"TEST",
+            0,
+        );
+        insert_forks_into_vfs(
+            &mut runner,
+            "Main Application",
+            Vec::new(),
+            make_single_resource_fork_bytes(*b"STR#", 129, b"application"),
+            *b"APPL",
+            *b"TEST",
+            0,
+        );
+
+        let mut vfs = ppc_diagnostic_vfs(&mut runner, Some("Main Application"));
+        let index = crate::loader::ppc::ppc_vfs_resource_index(
+            &vfs.resources,
+            0,
+            resource_type,
+            129,
+            false,
+        )
+        .expect("application resource in the launch search chain");
+        assert_eq!(vfs.resources[index].path, "Main Application");
+
+        let library = vfs
+            .resources
+            .iter_mut()
+            .find(|resource| resource.path == "A Shared Library")
+            .expect("shared library resource retained for later opening");
+        assert_eq!(
+            library.ref_num,
+            crate::loader::ppc::PPC_CLOSED_RESOURCE_REF_NUM
+        );
+        library.ref_num = 135;
+        let index = crate::loader::ppc::ppc_vfs_resource_index(
+            &vfs.resources,
+            135,
+            resource_type,
+            129,
+            false,
+        )
+        .expect("opened shared library becomes current");
+        assert_eq!(vfs.resources[index].path, "A Shared Library");
     }
 
     #[test]
