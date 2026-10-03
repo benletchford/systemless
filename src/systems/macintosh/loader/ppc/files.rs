@@ -46,10 +46,71 @@ pub(super) fn ppc_fs_make_fsspec(
     vfs_resource_files: &[PpcVfsResourceFileRecord],
     default_dir_id: u32,
 ) -> i16 {
-    let requested_vref = cpu.gpr[3] as u16 as i16;
-    let requested_dir_id = cpu.gpr[4];
-    let name_ptr = cpu.gpr[5];
-    let spec_ptr = cpu.gpr[6];
+    ppc_make_fsspec(
+        memory,
+        vfs_directories,
+        vfs_files,
+        vfs_resource_files,
+        default_dir_id,
+        cpu.gpr[3] as u16 as i16,
+        cpu.gpr[4],
+        cpu.gpr[5],
+        cpu.gpr[6],
+    )
+}
+
+pub(super) fn ppc_pb_make_fsspec_sync(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &[PpcVfsFileRecord],
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
+    default_dir_id: u32,
+) -> i16 {
+    let pb = cpu.gpr[3];
+    if pb == 0 || !ppc_memory_can_write_bytes(memory, pb, 52) {
+        return PPC_PARAM_ERR;
+    }
+    // Inside Macintosh: Files, PBMakeFSSpec. HParmBlkPtr uses ioNamePtr,
+    // ioVRefNum, ioMisc (FSSpecPtr), and ioDirID.
+    let Some(name_ptr) = memory.read_u32_be(pb + 18) else {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    };
+    let Some(vref) = memory.read_u16_be(pb + 22).map(|value| value as i16) else {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    };
+    let Some(spec_ptr) = memory.read_u32_be(pb + 28) else {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    };
+    let Some(dir_id) = memory.read_u32_be(pb + 48) else {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    };
+    let result = ppc_make_fsspec(
+        memory,
+        vfs_directories,
+        vfs_files,
+        vfs_resource_files,
+        default_dir_id,
+        vref,
+        dir_id,
+        name_ptr,
+        spec_ptr,
+    );
+    ppc_complete_pb(memory, pb, result)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_make_fsspec(
+    memory: &mut PpcSectionMem,
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &[PpcVfsFileRecord],
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
+    default_dir_id: u32,
+    requested_vref: i16,
+    requested_dir_id: u32,
+    name_ptr: u32,
+    spec_ptr: u32,
+) -> i16 {
     if spec_ptr == 0 {
         return PPC_PARAM_ERR;
     }

@@ -1806,6 +1806,53 @@ fn pb_read_async_returns_from_sound_doubleback_before_its_completion() {
     }
 
     #[test]
+    fn hle_import_runner_makes_fsspec_from_parameter_block() {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "PBMakeFSSpecSync"),
+            PpcImportDispatcherTarget::PBMakeFSSpecSync
+        );
+        for (name, dir_id, expected) in [
+            (b"Preferences".as_slice(), PPC_SYSTEM_FOLDER_DIR_ID, PPC_NO_ERR),
+            (b"Missing".as_slice(), PPC_SYSTEM_FOLDER_DIR_ID, PPC_FNF_ERR),
+            (b"Missing".as_slice(), 9999, PPC_DIR_NF_ERR),
+        ] {
+            let pef = synthetic_pef_with_import(b"PBMakeFSSpecSync");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let pb = PPC_HEAP_BASE;
+            let name_ptr = pb + 64;
+            let spec_ptr = pb + 96;
+            loaded.memory.add_region(pb, vec![0xaa; 192]);
+            write_ppc_pstring(&mut loaded.memory, name_ptr, name);
+            loaded.memory.write_u32_be(pb + 18, name_ptr);
+            loaded.memory.write_u16_be(pb + 22, 0);
+            loaded.memory.write_u32_be(pb + 28, spec_ptr);
+            loaded.memory.write_u32_be(pb + 48, dir_id);
+            loaded.cpu.gpr[3] = pb;
+
+            let probe = loaded.run_with_hle_imports(64);
+
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(expected));
+            assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(expected as u16));
+            if expected == PPC_DIR_NF_ERR {
+                assert!((0..PPC_FSSPEC_SIZE as u32)
+                    .all(|offset| loaded.memory.read_u8(spec_ptr + offset) == Some(0)));
+            } else {
+                assert_eq!(
+                    loaded.memory.read_u16_be(spec_ptr),
+                    Some(PPC_BOOT_VOLUME_REF_NUM as u16)
+                );
+                assert_eq!(loaded.memory.read_u32_be(spec_ptr + 2), Some(dir_id));
+                assert_eq!(loaded.memory.read_u8(spec_ptr + 6), Some(name.len() as u8));
+                for (offset, byte) in name.iter().enumerate() {
+                    assert_eq!(loaded.memory.read_u8(spec_ptr + 7 + offset as u32), Some(*byte));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn hle_import_runner_makes_existing_directory_fsspec() {
         let pef = synthetic_pef_with_import(b"FSMakeFSSpec");
         let mut loaded = load_pef_application(&pef).unwrap();

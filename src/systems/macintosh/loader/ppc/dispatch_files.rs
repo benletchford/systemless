@@ -666,6 +666,16 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 default_dir_id,
             ))))
         }
+        PpcImportDispatcherTarget::PBMakeFSSpecSync => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_make_fsspec_sync(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                default_dir_id,
+            ))))
+        }
         PpcImportDispatcherTarget::PBGetFCBInfo => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_pb_get_fcb_info(
                 cpu,
