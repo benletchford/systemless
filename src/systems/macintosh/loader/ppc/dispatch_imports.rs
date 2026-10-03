@@ -2666,6 +2666,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GetDefaultOutputVolume
         | PpcImportDispatcherTarget::SetDefaultOutputVolume
         | PpcImportDispatcherTarget::SndNewChannel
+        | PpcImportDispatcherTarget::SetupSndHeader
         | PpcImportDispatcherTarget::SndDisposeChannel
         | PpcImportDispatcherTarget::SndPlay
         | PpcImportDispatcherTarget::SndChannelStatus

@@ -2,6 +2,156 @@ use super::*;
 use crate::sound::PendingSoundCallback;
 
     #[test]
+    fn hle_import_runner_builds_standard_sound_resource_header() {
+        let pef = synthetic_pef_with_import(b"SetupSndHeader");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let handle = PPC_HEAP_BASE;
+        let data = handle + 4;
+        let header_len = data + 64;
+        loaded.memory.add_region(handle, vec![0xA5; 128]);
+        loaded.memory.write_u32_be(handle, data).unwrap();
+        test_handles!(loaded).push(PpcHandleRecord {
+            handle,
+            ptr: data,
+            size: 64,
+            capacity: 64,
+        });
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = 1;
+        loaded.cpu.gpr[5] = 0x2B77_45D1;
+        loaded.cpu.gpr[6] = 8;
+        loaded.cpu.gpr[7] = u32::from_be_bytes(*b"NONE");
+        loaded.cpu.gpr[8] = 60;
+        loaded.cpu.gpr[9] = 4;
+        loaded.cpu.gpr[10] = header_len;
+
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u16_be(header_len), Some(42));
+        assert_eq!(loaded.memory.read_u16_be(data), Some(1));
+        assert_eq!(loaded.memory.read_u16_be(data + 2), Some(1));
+        assert_eq!(loaded.memory.read_u16_be(data + 4), Some(5));
+        assert_eq!(loaded.memory.read_u32_be(data + 6), Some(0x80));
+        assert_eq!(loaded.memory.read_u16_be(data + 10), Some(1));
+        assert_eq!(loaded.memory.read_u16_be(data + 12), Some(0x8051));
+        assert_eq!(loaded.memory.read_u32_be(data + 16), Some(20));
+        assert_eq!(loaded.memory.read_u32_be(data + 20), Some(0));
+        assert_eq!(loaded.memory.read_u32_be(data + 24), Some(4));
+        assert_eq!(loaded.memory.read_u32_be(data + 28), Some(0x2B77_45D1));
+        assert_eq!(loaded.memory.read_u8(data + 40), Some(0));
+        assert_eq!(loaded.memory.read_u8(data + 41), Some(60));
+        assert_eq!(loaded.memory.read_u8(data + 42), Some(0xA5));
+        assert_eq!(ppc_sound_header_offset(&mut loaded.memory, data), Some(20));
+    }
+
+    #[test]
+    fn setup_snd_header_rejects_short_handle_without_writing() {
+        let pef = synthetic_pef_with_import(b"SetupSndHeader");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let handle = PPC_HEAP_BASE;
+        let data = handle + 4;
+        let header_len = data + 64;
+        loaded.memory.add_region(handle, vec![0xA5; 128]);
+        loaded.memory.write_u32_be(handle, data).unwrap();
+        test_handles!(loaded).push(PpcHandleRecord {
+            handle,
+            ptr: data,
+            size: 40,
+            capacity: 40,
+        });
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = 1;
+        loaded.cpu.gpr[5] = 0x2B77_45D1;
+        loaded.cpu.gpr[6] = 8;
+        loaded.cpu.gpr[7] = u32::from_be_bytes(*b"NONE");
+        loaded.cpu.gpr[8] = 60;
+        loaded.cpu.gpr[9] = 4;
+        loaded.cpu.gpr[10] = header_len;
+
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_MEM_FULL_ERR));
+        assert_eq!(loaded.memory.read_u16_be(data), Some(0xA5A5));
+        assert_eq!(loaded.memory.read_u16_be(header_len), Some(0xA5A5));
+    }
+
+    #[test]
+    fn setup_snd_header_builds_stereo_16_bit_extended_header() {
+        let pef = synthetic_pef_with_import(b"SetupSndHeader");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let handle = PPC_HEAP_BASE;
+        let data = handle + 4;
+        let header_len = data + 100;
+        loaded.memory.add_region(handle, vec![0xA5; 128]);
+        loaded.memory.write_u32_be(handle, data).unwrap();
+        test_handles!(loaded).push(PpcHandleRecord {
+            handle,
+            ptr: data,
+            size: 96,
+            capacity: 96,
+        });
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = 2;
+        loaded.cpu.gpr[5] = 0xAC44_0000;
+        loaded.cpu.gpr[6] = 16;
+        loaded.cpu.gpr[7] = u32::from_be_bytes(*b"NONE");
+        loaded.cpu.gpr[8] = 60;
+        loaded.cpu.gpr[9] = 16;
+        loaded.cpu.gpr[10] = header_len;
+
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u16_be(header_len), Some(84));
+        assert_eq!(loaded.memory.read_u32_be(data + 6), Some(0xC0));
+        assert_eq!(loaded.memory.read_u32_be(data + 24), Some(2));
+        assert_eq!(loaded.memory.read_u32_be(data + 28), Some(0xAC44_0000));
+        assert_eq!(loaded.memory.read_u8(data + 40), Some(0xFF));
+        assert_eq!(loaded.memory.read_u32_be(data + 42), Some(4));
+        assert_eq!(loaded.memory.read_u16_be(data + 68), Some(16));
+        assert_eq!(loaded.memory.read_u8(data + 84), Some(0xA5));
+        assert!(ppc_parse_snd_header_fields(&mut loaded.memory, data, 20).is_some());
+    }
+
+    #[test]
+    fn setup_snd_header_builds_mace_3_to_1_header() {
+        let pef = synthetic_pef_with_import(b"SetupSndHeader");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let handle = PPC_HEAP_BASE;
+        let data = handle + 4;
+        let header_len = data + 100;
+        loaded.memory.add_region(handle, vec![0xA5; 128]);
+        loaded.memory.write_u32_be(handle, data).unwrap();
+        test_handles!(loaded).push(PpcHandleRecord {
+            handle,
+            ptr: data,
+            size: 96,
+            capacity: 96,
+        });
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = 1;
+        loaded.cpu.gpr[5] = 0x5622_0000;
+        loaded.cpu.gpr[6] = 8;
+        loaded.cpu.gpr[7] = u32::from_be_bytes(*b"MAC3");
+        loaded.cpu.gpr[8] = 60;
+        loaded.cpu.gpr[9] = 1000;
+        loaded.cpu.gpr[10] = header_len;
+
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u16_be(header_len), Some(84));
+        assert_eq!(loaded.memory.read_u32_be(data + 6), Some(0x380));
+        assert_eq!(loaded.memory.read_u8(data + 40), Some(0xFE));
+        assert_eq!(loaded.memory.read_u32_be(data + 42), Some(3000));
+        assert_eq!(loaded.memory.read_u32_be(data + 60), Some(u32::from_be_bytes(*b"MAC3")));
+        assert_eq!(loaded.memory.read_u16_be(data + 76), Some(u16::MAX));
+        assert_eq!(loaded.memory.read_u16_be(data + 78), Some(16));
+        assert_eq!(loaded.memory.read_u16_be(data + 82), Some(8));
+    }
+
+    #[test]
     fn hle_import_runner_handles_sound_manager_version() {
         let pef = synthetic_pef_with_import(b"SndSoundManagerVersion");
         let mut loaded = load_pef_application(&pef).unwrap();
