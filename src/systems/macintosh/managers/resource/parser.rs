@@ -288,7 +288,8 @@ impl ResourceFork {
 
             // Parse reference list for this type
             // Offset is relative to type list start
-            let ref_list = &map[type_list_offset + ref_list_offset..];
+            let ref_list_start = type_list_offset.checked_add(ref_list_offset)?;
+            let ref_list = map.get(ref_list_start..)?;
 
             for j in 0..num_resources {
                 let ref_offset = j * 12;
@@ -746,6 +747,17 @@ mod tests {
 
         assert!(!ResourceFork::has_valid_layout(&fork));
         assert!(!ResourceFork::contains_code(&fork, 0));
+    }
+
+    #[test]
+    fn parse_rejects_reference_list_past_map_end() {
+        let mut fork = make_single_resource_fork_bytes(*b"CODE", 0, &[1, 2, 3, 4]);
+        let map_offset = u32::from_be_bytes(fork[4..8].try_into().unwrap()) as usize;
+        fork[map_offset + 38..map_offset + 40].copy_from_slice(&0x8000u16.to_be_bytes());
+
+        assert!(ResourceFork::has_valid_layout(&fork));
+        assert!(!ResourceFork::contains_code(&fork, 0));
+        assert!(ResourceFork::parse(&fork).is_none());
     }
 
     #[test]
