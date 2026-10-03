@@ -23,6 +23,10 @@ const ST46_RSRC_UNPACKED_LEN_OFFSET: usize = 84;
 const ST46_DATA_UNPACKED_LEN_OFFSET: usize = 88;
 const ST46_RSRC_PACKED_LEN_OFFSET: usize = 92;
 const ST46_DATA_PACKED_LEN_OFFSET: usize = 96;
+const ST46_FOLDER_START: u8 = 32;
+const ST46_FOLDER_END: u8 = 33;
+const ST46_MAX_FOLDER_DEPTH: usize = 32;
+const ST46_MAX_FILES: usize = 100_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstallerMakerContainer<'a> {
@@ -60,11 +64,47 @@ pub fn parse_installer_maker_st46_result(
     }
 
     let entry_count = read_u32_be(data, ST46_ENTRY_COUNT_OFFSET, "entry count")? as usize;
-    let mut header_offset =
+    let header_offset =
         read_u32_be(data, ST46_FIRST_ENTRY_OFFSET_OFFSET, "first entry offset")? as usize;
-    let mut entries = Vec::with_capacity(entry_count);
+    let mut entries = Vec::new();
+    parse_st46_entries(
+        data,
+        header_offset,
+        data.len(),
+        Some(entry_count),
+        "",
+        0,
+        &mut entries,
+    )?;
+    Ok(InstallerMakerContainer { entries })
+}
 
-    for index in 0..entry_count {
+fn parse_st46_entries<'a>(
+    data: &'a [u8],
+    mut header_offset: usize,
+    end: usize,
+    count: Option<usize>,
+    prefix: &str,
+    depth: usize,
+    entries: &mut Vec<InstallerMakerEntry<'a>>,
+) -> Result<(), String> {
+    if depth > ST46_MAX_FOLDER_DEPTH || end > data.len() {
+        return Err("ST46 folder depth or bounds exceeded".to_string());
+    }
+    let mut index = 0;
+    loop {
+        if count.is_some_and(|count| index == count) {
+            break;
+        }
+        if header_offset == end {
+            return Err("ST46 folder has no end marker or entry table is truncated".to_string());
+        }
+        if header_offset
+            .checked_add(ST46_ENTRY_HEADER_LEN)
+            .is_none_or(|next| next > end)
+        {
+            return Err(format!("entry {index} header exceeds ST46 folder bounds"));
+        }
         let header = get_range(
             data,
             header_offset,
@@ -72,12 +112,26 @@ pub fn parse_installer_maker_st46_result(
             &format!("entry {index} header"),
         )?;
         let name_len = usize::from(header[ST46_NAME_LEN_OFFSET]).min(ST46_NAME_FIELD_LEN);
-        let name = decode_mac_roman(get_range(
+        let local_name = decode_mac_roman(get_range(
             header,
             ST46_NAME_OFFSET,
             name_len,
             &format!("entry {index} name"),
         )?);
+
+        let rsrc_method = header[ST46_RSRC_METHOD_OFFSET];
+        let data_method = header[ST46_DATA_METHOD_OFFSET];
+        if rsrc_method == ST46_FOLDER_END || data_method == ST46_FOLDER_END {
+            if count.is_some() || header_offset + ST46_ENTRY_HEADER_LEN != end {
+                return Err("unexpected ST46 folder end marker".to_string());
+            }
+            return Ok(());
+        }
+        let name = if prefix.is_empty() {
+            local_name
+        } else {
+            format!("{prefix}/{local_name}")
+        };
 
         let rsrc_packed_len = read_u32_be(
             header,
@@ -105,6 +159,9 @@ pub fn parse_installer_maker_st46_result(
         let next_header_offset = data_packed_offset
             .checked_add(data_packed_len)
             .ok_or_else(|| format!("entry {index} next header offset overflow"))?;
+        if next_header_offset > end {
+            return Err(format!("entry {index} exceeds ST46 folder bounds"));
+        }
 
         let rsrc_packed = get_range(
             data,
@@ -119,6 +176,26 @@ pub fn parse_installer_maker_st46_result(
             &format!("entry {index} data stream"),
         )?;
 
+        if rsrc_method == ST46_FOLDER_START || data_method == ST46_FOLDER_START {
+            if rsrc_packed_len != 0 || data_method != ST46_FOLDER_START {
+                return Err(format!("entry {index} has unsupported ST46 folder streams"));
+            }
+            parse_st46_entries(
+                data,
+                data_packed_offset,
+                next_header_offset,
+                None,
+                &name,
+                depth + 1,
+                entries,
+            )?;
+            header_offset = next_header_offset;
+            index += 1;
+            continue;
+        }
+        if entries.len() >= ST46_MAX_FILES {
+            return Err("ST46 file count limit exceeded".to_string());
+        }
         let mut file_type = [0u8; 4];
         file_type.copy_from_slice(get_range(
             header,
@@ -140,8 +217,8 @@ pub fn parse_installer_maker_st46_result(
             file_type,
             creator,
             finder_flags: read_u16_be(header, ST46_FINDER_FLAGS_OFFSET, "finder flags")?,
-            rsrc_method: header[ST46_RSRC_METHOD_OFFSET],
-            data_method: header[ST46_DATA_METHOD_OFFSET],
+            rsrc_method,
+            data_method,
             rsrc_packed_offset,
             data_packed_offset,
             rsrc_packed_len,
@@ -153,9 +230,9 @@ pub fn parse_installer_maker_st46_result(
         });
 
         header_offset = next_header_offset;
+        index += 1;
     }
-
-    Ok(InstallerMakerContainer { entries })
+    Ok(())
 }
 
 pub fn decode_installer_method14(data: &[u8], expected_len: usize) -> Result<Vec<u8>, String> {
@@ -666,5 +743,43 @@ mod tests {
         assert_eq!(entry.data_packed, b"dat");
         assert_eq!(entry.rsrc_unpacked_len, 5);
         assert_eq!(entry.data_unpacked_len, 6);
+    }
+
+    #[test]
+    fn parses_nested_st46_folders_and_rejects_missing_end_marker() {
+        let mut data = vec![0u8; 0x86];
+        data[..4].copy_from_slice(ST46_MAGIC);
+        data[ST46_ENTRY_COUNT_OFFSET..ST46_ENTRY_COUNT_OFFSET + 4]
+            .copy_from_slice(&1u32.to_be_bytes());
+        data[ST46_FIRST_ENTRY_OFFSET_OFFSET..ST46_FIRST_ENTRY_OFFSET_OFFSET + 4]
+            .copy_from_slice(&0x86u32.to_be_bytes());
+
+        let mut folder = [0u8; ST46_ENTRY_HEADER_LEN];
+        folder[ST46_DATA_METHOD_OFFSET] = ST46_FOLDER_START;
+        folder[ST46_NAME_LEN_OFFSET] = 6;
+        folder[ST46_NAME_OFFSET..ST46_NAME_OFFSET + 6].copy_from_slice(b"Folder");
+        let child_len = ST46_ENTRY_HEADER_LEN * 2 + 3;
+        folder[ST46_DATA_PACKED_LEN_OFFSET..ST46_DATA_PACKED_LEN_OFFSET + 4]
+            .copy_from_slice(&(child_len as u32).to_be_bytes());
+        data.extend_from_slice(&folder);
+
+        let mut child = [0u8; ST46_ENTRY_HEADER_LEN];
+        child[ST46_NAME_LEN_OFFSET] = 4;
+        child[ST46_NAME_OFFSET..ST46_NAME_OFFSET + 4].copy_from_slice(b"File");
+        child[ST46_DATA_PACKED_LEN_OFFSET..ST46_DATA_PACKED_LEN_OFFSET + 4]
+            .copy_from_slice(&3u32.to_be_bytes());
+        data.extend_from_slice(&child);
+        data.extend_from_slice(b"abc");
+        let end_offset = data.len();
+        let mut end = [0u8; ST46_ENTRY_HEADER_LEN];
+        end[ST46_DATA_METHOD_OFFSET] = ST46_FOLDER_END;
+        data.extend_from_slice(&end);
+
+        let parsed = parse_installer_maker_st46_result(&data).unwrap();
+        assert_eq!(parsed.entries.len(), 1);
+        assert_eq!(parsed.entries[0].name, "Folder/File");
+        assert_eq!(parsed.entries[0].data_packed, b"abc");
+        data[end_offset + ST46_DATA_METHOD_OFFSET] = 0;
+        assert!(parse_installer_maker_st46_result(&data).is_err());
     }
 }
