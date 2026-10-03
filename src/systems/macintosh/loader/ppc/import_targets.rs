@@ -1244,6 +1244,35 @@ pub(crate) fn dispatcher_target_for_import(
         // 10-29--10-30 (cos).
         ("CarbonLib", "cos" | "pow" | "round" | "sqrt") => "MathLib",
         ("CarbonLib", _) => "InterfaceLib",
+        // Director's CFM runtime exports these ISO C entry points with the
+        // same PowerPC signatures as StdCLib. Leave its private symbols
+        // unresolved until they have their own implementations.
+        (
+            "MacromediaRuntimeLib",
+            "fclose"
+            | "fopen"
+            | "fread"
+            | "fseek"
+            | "ftell"
+            | "getenv"
+            | "memcmp"
+            | "memcpy"
+            | "memmove"
+            | "memset"
+            | "qsort"
+            | "sprintf"
+            | "sscanf"
+            | "strcat"
+            | "strchr"
+            | "strcmp"
+            | "strcpy"
+            | "strlen"
+            | "strncmp"
+            | "strncpy"
+            | "strpbrk"
+            | "time"
+            | "vsprintf",
+        ) => "StdCLib",
         _ => library_name,
     };
     match (library_name, symbol_name) {
