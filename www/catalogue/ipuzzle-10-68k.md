@@ -10,6 +10,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
+launch_enabled: false
 compatibility:
   status: boots
   verified:
