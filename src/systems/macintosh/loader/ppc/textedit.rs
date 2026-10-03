@@ -1264,12 +1264,15 @@ pub(super) fn ppc_measure_text(
     text_font: i16,
     text_size: i16,
     text_face: u8,
+    char_extra: i16,
 ) {
     if count < 0 || char_locs_ptr == 0 {
         return;
     }
     let count = count as u32;
     let mut width = 0i16;
+    let mut nonspaces = 0i32;
+    let mut previous_extra = 0i32;
     let _ = memory.write_u16_be(char_locs_ptr, 0);
     for index in 0..count {
         let byte = memory.read_u8(text_ptr.saturating_add(index)).unwrap_or(0);
@@ -1279,6 +1282,12 @@ pub(super) fn ppc_measure_text(
             text_face,
             &[byte],
         ));
+        nonspaces += i32::from(byte != b' ');
+        let extra = ppc_char_extra_pixels(char_extra, text_size, nonspaces);
+        width = width.saturating_add(
+            (extra - previous_extra).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+        );
+        previous_extra = extra;
         let _ = memory.write_u16_be(
             char_locs_ptr.saturating_add((index + 1).saturating_mul(2)),
             width as u16,
@@ -2419,4 +2428,3 @@ pub(super) fn ppc_te_dispose(
         te_handle,
     );
 }
-

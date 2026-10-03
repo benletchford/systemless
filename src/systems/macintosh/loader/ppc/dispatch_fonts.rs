@@ -63,6 +63,7 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
             let count = cpu.gpr[3] as u16 as i16;
             let text_font = ppc_current_text_font(memory, current_gworld);
             let text_face = ppc_current_text_style(memory, current_gworld);
+            let char_extra = ppc_port_char_extra_packed(memory, current_gworld);
             ppc_measure_text(
                 memory,
                 count,
@@ -71,6 +72,7 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
                 text_font,
                 *quickdraw_text_size,
                 text_face,
+                char_extra,
             );
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -91,11 +93,13 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
                 text_font,
                 *quickdraw_text_size,
                 text_face,
+                current_gworld,
             )))
         }
         PpcImportDispatcherTarget::TruncString => {
             let font = ppc_current_text_font(memory, current_gworld);
             let style = ppc_current_text_style(memory, current_gworld);
+            let char_extra = ppc_port_char_extra_packed(memory, current_gworld);
             Some(PpcImportAction::Return(ppc_i16_result(ppc_trunc_string(
                 memory,
                 cpu.gpr[4],
@@ -104,6 +108,7 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
                 font,
                 *quickdraw_text_size,
                 style,
+                char_extra,
             ))))
         }
         PpcImportDispatcherTarget::StringWidth => {
@@ -111,8 +116,17 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
             let text_face = ppc_current_text_style(memory, current_gworld);
             let width = ppc_read_pascal_string(memory, cpu.gpr[3])
                 .map(|bytes| {
-                    ppc_text_width_bytes(text_font, *quickdraw_text_size, text_face, &bytes).max(0)
-                        as u32
+                    (i32::from(ppc_text_width_bytes(
+                        text_font,
+                        *quickdraw_text_size,
+                        text_face,
+                        &bytes,
+                    )) + ppc_char_extra_width(
+                        ppc_port_char_extra_packed(memory, current_gworld),
+                        *quickdraw_text_size,
+                        &bytes,
+                    ))
+                    .max(0) as u32
                 })
                 .unwrap_or(0);
             Some(PpcImportAction::Return(width))
@@ -120,13 +134,18 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
         PpcImportDispatcherTarget::CharWidth => {
             let text_font = ppc_current_text_font(memory, current_gworld);
             let text_face = ppc_current_text_style(memory, current_gworld);
+            let bytes = [(cpu.gpr[3] & 0xff) as u8];
             Some(PpcImportAction::Return(
-                ppc_text_width_bytes(
+                (i32::from(ppc_text_width_bytes(
                     text_font,
                     *quickdraw_text_size,
                     text_face,
-                    &[(cpu.gpr[3] & 0xff) as u8],
-                )
+                    &bytes,
+                )) + ppc_char_extra_width(
+                    ppc_port_char_extra_packed(memory, current_gworld),
+                    *quickdraw_text_size,
+                    &bytes,
+                ))
                 .max(0) as u32,
             ))
         }
@@ -219,7 +238,15 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
                         *quickdraw_pen_h,
                         &bytes,
                     );
-                    ppc_text_width_bytes(text_font, *quickdraw_text_size, text_style, &bytes)
+                    let base =
+                        ppc_text_width_bytes(text_font, *quickdraw_text_size, text_style, &bytes);
+                    (i32::from(base)
+                        + ppc_char_extra_width(
+                            ppc_port_char_extra_packed(memory, current_gworld),
+                            *quickdraw_text_size,
+                            &bytes,
+                        ))
+                    .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
                 } else {
                     ppc_draw_text_bytes_styled(
                         memory,
@@ -306,6 +333,30 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::CharExtra => {
+            // Inside Macintosh: Text (1993), p. 3-23: CharExtra stores the
+            // Fixed pixel amount as signed 4.12 per txSize in a CGrafPort.
+            // A monochrome GrafPort has no chExtra field.
+            if current_gworld != 0
+                && memory
+                    .read_u16_be(current_gworld + 6)
+                    .is_some_and(|version| version & 0xc000 == 0xc000)
+            {
+                let text_size = if *quickdraw_text_size == PPC_QD_TEXT_SIZE_SYSTEM {
+                    12
+                } else {
+                    i32::from((*quickdraw_text_size).max(1))
+                };
+                let packed = ((cpu.gpr[3] as i32) / (text_size * 16))
+                    .clamp(i32::from(i16::MIN), i32::from(i16::MAX))
+                    as i16;
+                let _ = memory.write_u16_be(
+                    current_gworld + PPC_CGRAF_PORT_CH_EXTRA_OFFSET,
+                    packed as u16,
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::GetFNum => {
             // Inside Macintosh: Text (1993), 4-52: GetFNum maps a Str255 font
             // family name to its ID and returns zero when no family matches.
@@ -331,6 +382,7 @@ fn ppc_text_width(
     text_font: i16,
     text_size: i16,
     text_face: u8,
+    current_gworld: u32,
 ) -> u32 {
     let text_ptr = cpu.gpr[3];
     let first_byte = cpu.gpr[4];
@@ -345,7 +397,14 @@ fn ppc_text_width(
         };
         bytes.push(memory.read_u8(addr).unwrap_or(0));
     }
-    ppc_text_width_bytes(text_font, text_size, text_face, &bytes).max(0) as u32
+    (i32::from(ppc_text_width_bytes(
+        text_font, text_size, text_face, &bytes,
+    )) + ppc_char_extra_width(
+        ppc_port_char_extra_packed(memory, current_gworld),
+        text_size,
+        &bytes,
+    ))
+    .max(0) as u32
 }
 
 fn ppc_get_font_info(memory: &mut PpcSectionMem, info_ptr: u32, text_font: i16, text_size: i16) {
