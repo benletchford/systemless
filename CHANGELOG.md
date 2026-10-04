@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.77.0](https://github.com/benletchford/systemless/compare/v0.76.1...v0.77.0) (2026-10-04)
+
+
+### Features
+
+* add Centaurian catalogue preview ([#4034](https://github.com/benletchford/systemless/issues/4034)) ([73bdf95](https://github.com/benletchford/systemless/commit/73bdf95c978e102f902015aa4cac8afa9b0ffc4e))
+* add Meteor Storm catalogue preview ([#4035](https://github.com/benletchford/systemless/issues/4035)) ([a391c23](https://github.com/benletchford/systemless/commit/a391c238a92f8cb7d39ff2fef8f4d4dad4086d14))
+* **catalogue:** add Koji the Frog shareware entry ([#4018](https://github.com/benletchford/systemless/issues/4018)) ([d51b597](https://github.com/benletchford/systemless/commit/d51b5978fbf390fa2c0e54e9a118327ab133a598))
+* **catalogue:** add Munchies shareware entry ([#4015](https://github.com/benletchford/systemless/issues/4015)) ([49a08d0](https://github.com/benletchford/systemless/commit/49a08d01d0f2af0c58fbcafcfb062ec658a3fda8))
+* **catalogue:** enable Centaurian browser play ([#4039](https://github.com/benletchford/systemless/issues/4039)) ([a56ed1f](https://github.com/benletchford/systemless/commit/a56ed1fc4b767ef667ec15e30dee05d7acaca3c6))
+* enable Munchies catalogue launch ([#4037](https://github.com/benletchford/systemless/issues/4037)) ([1070627](https://github.com/benletchford/systemless/commit/107062759595ceb1c369691fa83e9655f763d05d))
+
+
+### Performance Improvements
+
+* **presentation:** skip the offscreen detail map for pages that never held detail ([#4009](https://github.com/benletchford/systemless/issues/4009)) ([3e2fd1b](https://github.com/benletchford/systemless/commit/3e2fd1b56824bbf5ad2f1cfb5910b984f463c180))
+
 ## [0.76.1](https://github.com/benletchford/systemless/compare/v0.76.0...v0.76.1) (2026-10-04)
 
 
