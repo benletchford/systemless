@@ -276,6 +276,10 @@ pub(super) fn dispatch_mixed_mode_import(
             Some(Some(PpcImportAction::ReturnPreserve))
         }
         PpcImportDispatcherTarget::CallUniversalProc => {
+            // Inside Macintosh: PowerPC System Software (1994), pp. 2-15 and
+            // 2-42--2-43: an unwrapped UPP is normally 680x0 code; native
+            // PowerPC callbacks declare their ISA in a RoutineDescriptor.
+            let raw_isa = ppc_untyped_universal_proc_isa(memory, cpu.gpr[3]);
             let selector = match ppc_call_universal_proc_selector(cpu, memory, cpu.gpr[4]) {
                 Ok(selector) => selector,
                 Err(()) => return Some(None),
@@ -287,7 +291,7 @@ pub(super) fn dispatch_mixed_mode_import(
                     cpu.gpr[2],
                     selector,
                     GuestIsa::PowerPc,
-                    GuestIsa::PowerPc,
+                    raw_isa,
                 )
             {
                 return Some(Some(ppc_prepare_resource_call(
@@ -311,7 +315,7 @@ pub(super) fn dispatch_mixed_mode_import(
                 heap_cursor,
                 heap_limit,
                 toolbox_startup,
-                GuestIsa::PowerPc,
+                raw_isa,
             ))
         }
         PpcImportDispatcherTarget::CallOSTrapUniversalProc => {
@@ -325,6 +329,36 @@ pub(super) fn dispatch_mixed_mode_import(
             ))
         }
         _ => None,
+    }
+}
+
+fn ppc_untyped_universal_proc_isa(memory: &mut PpcSectionMem, pointer: u32) -> GuestIsa {
+    if let Some(isa) = memory.system_code_isa(pointer) {
+        return isa;
+    }
+    // PowerPC System Software (1994), p. 1-27: a native transition vector
+    // contains a code entry and a TOC pointer. Keep accepting untyped vectors
+    // when both point into mapped guest memory; otherwise the unwrapped UPP
+    // is raw 680x0 code (pp. 2-15, 2-42--2-43).
+    let native_vector = pointer
+        .checked_add(4)
+        .and_then(|rtoc_address| {
+            Some((
+                memory.read_u32_be(pointer)?,
+                memory.read_u32_be(rtoc_address)?,
+            ))
+        })
+        .is_some_and(|(entry, rtoc)| {
+            entry != pointer
+                && entry & 3 == 0
+                && rtoc != 0
+                && memory.read_u32_be(entry).is_some()
+                && memory.read_u32_be(rtoc).is_some()
+        });
+    if native_vector {
+        GuestIsa::PowerPc
+    } else {
+        GuestIsa::M68k
     }
 }
 
@@ -1738,8 +1772,7 @@ fn ppc_call_os_trap_universal_proc(
         heap_limit,
         toolbox_startup,
         // Inside Macintosh: PowerPC System Software (1994), pp. 1-67 and
-        // 2-42--2-43: unlike an ordinary native CallUniversalProc raw
-        // pointer, an OS-trap universal pointer may be direct 680x0 code.
+        // 2-42--2-43: a raw universal pointer is direct 680x0 code.
         GuestIsa::M68k,
     )
 }
