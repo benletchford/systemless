@@ -30,7 +30,10 @@ const MAX_STEPS_PER_PAINT: usize = 2_000_000;
 /// CPU batches stay short enough that long startup/loading phases re-check the
 /// browser frame budget frequently, but not so short that JS clock calls become
 /// a significant part of the rAF slice.
-const M68K_CPU_BATCH_INSTRUCTIONS: usize = 2_500;
+// Keep costly Toolbox traps interruptible within one browser frame. Koji's
+// shareware dialog runs several drawing traps close together; larger slices
+// can spend over 50 ms in a single callback before the time budget is checked.
+const M68K_CPU_BATCH_INSTRUCTIONS: usize = 64;
 /// Once a browser frame has reached its ordinary CPU budget, let 68k code
 /// finish the current trap-free drawing burst before the canvas samples RAM.
 /// This keeps direct framebuffer copies from being presented halfway through
@@ -628,7 +631,8 @@ impl Machine {
             presentation_grace_steps,
             presentation_trap_count,
             self.runner.dispatcher().trap_count,
-        ) {
+        ) && web_cpu_budget_remaining(frame_start_ms, performance_now(), cpu_budget_ms)
+        {
             let batch_steps = M68K_CPU_BATCH_INSTRUCTIONS
                 .min(M68K_PRESENTATION_GRACE_INSTRUCTIONS.saturating_sub(presentation_grace_steps));
             let (steps, still_running) = self
@@ -2004,7 +2008,7 @@ mod tests {
     #[test]
     fn browser_cpu_batches_balance_responsiveness_and_ppc_sync_overhead() {
         assert!(
-            M68K_CPU_BATCH_INSTRUCTIONS <= 2_500,
+            M68K_CPU_BATCH_INSTRUCTIONS <= 64,
             "68k browser CPU batches must stay short enough that heavy startup traps \
              cannot monopolize a whole animation frame"
         );
