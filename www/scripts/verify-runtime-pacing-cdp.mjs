@@ -281,7 +281,7 @@ function isLocalBaseUrl(baseUrl) {
   }
 }
 
-async function runtimeProbe(sampleMs, showDebug, targetGuestTick, setupActions, setupTimeoutMs) {
+async function runtimeProbe(sampleMs, showDebug, targetGuestTick, setupActions = [], setupTimeoutMs = 120_000) {
   const samples = [];
   const console = [];
 
