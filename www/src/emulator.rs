@@ -34,10 +34,8 @@ const MAX_STEPS_PER_PAINT: usize = 2_000_000;
 // shareware dialog runs several drawing traps close together; larger slices
 // can spend over 50 ms in a single callback before the time budget is checked.
 const M68K_CPU_BATCH_INSTRUCTIONS: usize = 64;
-/// Once a browser frame has reached its ordinary CPU budget, let 68k code
-/// finish the current trap-free drawing burst before the canvas samples RAM.
-/// This keeps direct framebuffer copies from being presented halfway through
-/// while preserving a strict bound on extra main-thread work.
+/// Allow a short trap-free 68k drawing burst before the canvas samples RAM,
+/// subject to the same browser time budget as ordinary CPU work.
 const M68K_PRESENTATION_GRACE_INSTRUCTIONS: usize = 100_000;
 /// PPC slices amortize the comparatively expensive framebuffer, VFS, audio,
 /// and event synchronization performed after every runner call. This matches
