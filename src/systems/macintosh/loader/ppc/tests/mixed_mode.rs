@@ -1594,6 +1594,47 @@ fn ppc_to_m68k_special_cases_build_every_classic_input_layout() {
 }
 
 #[test]
+fn hle_import_runner_call_universal_proc_executes_raw_m68k_callback() {
+    // A universal procedure pointer may be raw 680x0 code rather than a
+    // RoutineDescriptor. Inside Macintosh: PowerPC System Software (1994),
+    // pp. 2-4--2-12 and 2-42--2-43.
+    let pef = synthetic_pef_with_import(b"CallUniversalProc");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let descriptor = PPC_HEAP_BASE + 0x1000;
+    let callback_entry = PPC_HEAP_BASE + 0x2000;
+    let proc_info = test_stack_proc_info(PPC_PROCINFO_SIZE_FOUR, &[PPC_PROCINFO_SIZE_FOUR]);
+    install_test_m68k_callback(
+        &mut loaded,
+        descriptor,
+        callback_entry,
+        proc_info,
+        0,
+        &[
+            0x202f, 0x0004, // MOVE.L 4(SP),D0
+            0x5e80, // ADDQ.L #7,D0
+            0x2f40, 0x0008, // MOVE.L D0,8(SP)
+            0x4e74, 0x0004, // RTD #4
+        ],
+    );
+    loaded.cpu.gpr[3] = callback_entry;
+    loaded.cpu.gpr[4] = proc_info;
+    loaded.cpu.gpr[5] = 0x1234_5678;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    let pending = loaded.guest_calls().activate_m68k().unwrap();
+    assert_eq!(
+        loaded.memory.read_u32_be(pending.initial_sp + 4),
+        Some(0x1234_5678)
+    );
+    drain_test_m68k_guest_calls(&mut loaded);
+    assert_eq!(loaded.cpu.gpr[3], 0x1234_567f);
+    assert!(loaded.guest_calls().is_empty());
+}
+
+#[test]
 fn hle_import_runner_call_universal_proc_executes_m68k_pascal_descriptor_and_result() {
     let pef = synthetic_pef_with_import(b"CallUniversalProc");
     let mut loaded = load_pef_application(&pef).unwrap();
