@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.76.1](https://github.com/benletchford/systemless/compare/v0.76.0...v0.76.1) (2026-10-04)
+
+
+### Bug Fixes
+
+* **macintosh:** call raw 68k universal procedures correctly ([#4008](https://github.com/benletchford/systemless/issues/4008)) ([fafc942](https://github.com/benletchford/systemless/commit/fafc942f5293f7a1c3b6df1ed9c59af4678464b9))
+
 ## [0.76.0](https://github.com/benletchford/systemless/compare/v0.75.0...v0.76.0) (2026-10-03)
 
 
