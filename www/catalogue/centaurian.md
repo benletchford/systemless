@@ -1,6 +1,7 @@
 ---
 id: centaurian
 kind: game
+launch_enabled: true
 title: Centaurian 1.2.1
 summary: >-
   Fly through Zone 0, shoot enemy ships, and defend humanity in David Dobson's
@@ -14,19 +15,20 @@ architectures:
 default_architecture: 68k
 category: Arcade
 compatibility:
-  status: boots
+  status: playable
   verified:
   - date: "2026-10-05"
     tester: Catalogue maintainer
     systemless_version: 0.76.1 deterministic play runner
     architecture: 68k
     environment: >-
-      The original 1.2.1 fat application reaches the title screen and Zone 0
-      gameplay. Matched runs show Space firing and numeric keypad 4 steering. A local 0.76.1
-      Trunk browser preview using the same staged HQX reaches live Zone 0 play after New
-      Game, with no console errors observed. Sustained browser input and period
-      Macintosh comparison remain unverified.
-    status: boots
+      The original 1.2.1 fat application reaches Zone 0 gameplay. Matched runs
+      show Space firing and numeric keypad 4 steering. The 0.76.1 browser preview
+      reaches active Zone 0 play; a 20-second run with firing held advanced from
+      guest tick 1818 to 2960 at 59.7 host frames per second. Its slowest runtime
+      frame was 8 ms, the archive loaded once, and no browser errors were observed.
+      Period Macintosh comparison remains unverified.
+    status: playable
     evidence: https://github.com/benletchford/systemless/issues/4019
   - date: "2026-10-05"
     tester: Catalogue maintainer
@@ -35,10 +37,10 @@ compatibility:
     environment: >-
       Explicit native PowerPC loading reaches Zone 0 gameplay. Matched runs show
       Space firing and numeric keypad 4 steering. A local 0.76.1 Trunk browser preview
-      using the same staged HQX reaches live Zone 0 play after New Game, with no console
-      errors observed. Sustained browser input and period Macintosh comparison remain
-      unverified.
-    status: boots
+      using the same HQX reaches live Zone 0 play after New Game. Firing and steering
+      respond in the browser, with no console errors observed. Longer PowerPC play
+      and period Macintosh comparison remain unverified.
+    status: playable
     evidence: https://github.com/benletchford/systemless/issues/4019
 artifacts:
 - id: archive

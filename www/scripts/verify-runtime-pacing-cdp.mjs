@@ -3,7 +3,7 @@
 import { percentiles } from "./runtime-metrics.mjs";
 import { connect, evaluateJson } from "./runtime-cdp.mjs";
 import { spawn } from "node:child_process";
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -26,6 +26,23 @@ const baseUrl = (process.env.SYSTEMLESS_ORG_URL ?? DEFAULT_BASE_URL).replace(/\/
 const route = process.env.SYSTEMLESS_RUNTIME_ROUTE;
 const archiveUrl = process.env.SYSTEMLESS_RUNTIME_ARCHIVE_URL;
 const archivePath = process.env.SYSTEMLESS_RUNTIME_ARCHIVE_PATH;
+const setupActions = process.env.SYSTEMLESS_RUNTIME_SETUP_ACTIONS_PATH
+  ? JSON.parse(readFileSync(process.env.SYSTEMLESS_RUNTIME_SETUP_ACTIONS_PATH, "utf8"))
+  : [];
+if (!Array.isArray(setupActions)) {
+  throw new Error("SYSTEMLESS_RUNTIME_SETUP_ACTIONS_PATH must contain a JSON array");
+}
+const setupTimeoutMs = envNumber("SYSTEMLESS_RUNTIME_SETUP_TIMEOUT_MS", 120_000);
+if (!Number.isFinite(setupTimeoutMs) || setupTimeoutMs <= 0) {
+  throw new Error("SYSTEMLESS_RUNTIME_SETUP_TIMEOUT_MS must be positive and finite");
+}
+for (const action of setupActions) {
+  if (action?.type === "wait_guest_tick" && Number.isFinite(action.tick) && action.tick >= 0) continue;
+  if (action?.type === "wait_ms" && Number.isFinite(action.ms) && action.ms >= 0) continue;
+  if ((action?.type === "key_down" || action?.type === "key_up")
+      && typeof action.key === "string" && action.key.length > 0) continue;
+  throw new Error(`invalid runtime setup action: ${JSON.stringify(action)}`);
+}
 if (!route || !archiveUrl || !archivePath) {
   throw new Error("Set SYSTEMLESS_RUNTIME_ROUTE, SYSTEMLESS_RUNTIME_ARCHIVE_URL and SYSTEMLESS_RUNTIME_ARCHIVE_PATH from the catalogue entry under test");
 }
@@ -100,8 +117,8 @@ try {
 
   const probe = await evaluateJson(
     page,
-    `(${runtimeProbe.toString()})(${JSON.stringify(sampleMs)}, ${process.env.SYSTEMLESS_RUNTIME_DEBUG !== "0"}, ${JSON.stringify(targetGuestTick ?? null)})`,
-    sampleMs + 60_000,
+    `(${runtimeProbe.toString()})(${JSON.stringify(sampleMs)}, ${process.env.SYSTEMLESS_RUNTIME_DEBUG !== "0"}, ${JSON.stringify(targetGuestTick ?? null)}, ${JSON.stringify(setupActions)}, ${JSON.stringify(setupTimeoutMs)})`,
+    sampleMs + setupTimeoutMs + 60_000,
   );
   if (process.env.SYSTEMLESS_RUNTIME_SCREENSHOT_PATH) {
     const screenshot = await page.send("Page.captureScreenshot", { format: "png" });
@@ -264,12 +281,9 @@ function isLocalBaseUrl(baseUrl) {
   }
 }
 
-async function runtimeProbe(sampleMs, showDebug, targetGuestTick) {
+async function runtimeProbe(sampleMs, showDebug, targetGuestTick, setupActions, setupTimeoutMs) {
   const samples = [];
   const console = [];
-  const startedAt = performance.now();
-  let lastFrameTimestamp = startedAt;
-  let debugEnabled = false;
 
   window.addEventListener("error", (event) => {
     console.push(String(event.error?.stack || event.message || event.error || "error"));
@@ -277,6 +291,47 @@ async function runtimeProbe(sampleMs, showDebug, targetGuestTick) {
   window.addEventListener("unhandledrejection", (event) => {
     console.push(String(event.reason || "unhandled rejection"));
   });
+
+  if (setupActions.length) {
+    const deadline = performance.now() + setupTimeoutMs;
+    const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+    const canvas = () => document.querySelector("canvas.game-canvas[data-runtime-game-id]");
+    while (!canvas()) {
+      if (performance.now() >= deadline) throw new Error("runtime setup timed out waiting for the game canvas");
+      await nextFrame();
+    }
+    for (const action of setupActions) {
+      if (performance.now() >= deadline) throw new Error(`runtime setup timed out before ${JSON.stringify(action)}`);
+      if (action.type === "wait_guest_tick") {
+        while ((window.__systemlessWorkerTrace?.at(-1)?.guestTick
+          ?? window.__systemlessFrameTrace?.at(-1)?.guestTick ?? 0) < action.tick) {
+          if (performance.now() >= deadline) throw new Error(`runtime setup did not reach guest tick ${action.tick}`);
+          await nextFrame();
+        }
+      } else if (action.type === "wait_ms") {
+        const until = performance.now() + action.ms;
+        while (performance.now() < until) {
+          if (performance.now() >= deadline) throw new Error("runtime setup wait exceeded timeout");
+          await nextFrame();
+        }
+      } else if (action.type === "key_down" || action.type === "key_up") {
+        const key = action.key === "space" ? " " : action.key;
+        const code = action.key === "space" ? "Space"
+          : /^[a-z]$/i.test(action.key) ? `Key${action.key.toUpperCase()}`
+          : action.key;
+        canvas().focus();
+        canvas().dispatchEvent(new KeyboardEvent(action.type === "key_down" ? "keydown" : "keyup", {
+          key, code, bubbles: true, cancelable: true,
+        }));
+      } else {
+        throw new Error(`unsupported runtime setup action: ${JSON.stringify(action)}`);
+      }
+    }
+  }
+
+  const startedAt = performance.now();
+  let lastFrameTimestamp = startedAt;
+  let debugEnabled = false;
 
   return await new Promise((resolve) => {
     function tick(frameTimestamp) {
