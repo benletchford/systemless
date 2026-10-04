@@ -1,6 +1,7 @@
 ---
 id: munchies
 kind: game
+launch_enabled: true
 title: Munchies 1.0.7
 summary: Guide Melvin through a mouse-controlled arcade maze of food and hazards.
 developer: Michael Fan
@@ -26,6 +27,20 @@ compatibility:
       level and save flow remain unverified.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/4011
+  - date: "2026-10-05"
+    tester: Catalogue maintainer
+    systemless_version: 0.76.1 browser build from public master
+    architecture: 68k
+    environment: >-
+      The original 364,612-byte archive reached level one in a local browser
+      preview. After dismissing the shareware notice and starting a new game,
+      mouse input changed Melvin's position and the score rose to 10. No browser
+      warnings or errors were observed. A separate 20-second startup pacing probe
+      fetched the archive once and had a 41.6 ms maximum runtime frame; it
+      sampled the shareware notice, not active gameplay. Level completion remains
+      unverified.
+    status: boots
+    evidence: https://github.com/benletchford/systemless/issues/4036
 artifacts:
 - id: archive
   role: archive
