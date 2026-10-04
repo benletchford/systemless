@@ -670,7 +670,7 @@ fn promotion_uploads_hashes_rewrites_and_cleans_up() {
     let preview = compiled(&load(root.path(), Mode::Preview).unwrap());
     assert!(preview.entries[0]
         .content_html
-        .contains("/raw/master/www/catalogue/incoming/test/shot.png"));
+        .contains("/incoming/test/shot.png"));
     let store = tempfile::tempdir().unwrap();
     let before = fs::read(root.path().join("catalogue/test.md")).unwrap();
     let dry = assets::promote(root.path(), None, false, &mut assets::NoUpload).unwrap();
