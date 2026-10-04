@@ -422,12 +422,7 @@ fn validate_markdown(config: &Config, entry: &Entry, markdown: &str) -> Result<(
 fn rendered_url(config: &Config, entry: &Entry, url: &str) -> String {
     if let Some(a) = registered(config, entry, url) {
         if let AssetSource::Incoming { path } = &a.source {
-            return format!(
-                "{}/raw/{}/www/{}",
-                config.repository.trim_end_matches('/'),
-                config.branch,
-                path
-            );
+            return format!("/{}", path.strip_prefix("catalogue/").unwrap_or(path));
         }
         return artifact_url(config, a);
     }

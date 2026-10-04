@@ -47,6 +47,7 @@ Run preview validation below, then open a pull request with the entry and its
 small incoming assets. **Local R2 credentials and manual uploads are not
 required.** Keep `launch_enabled: false` until browser testing is approved. Use
 `trunk serve --port 8080` from this directory to inspect the generated route;
+incoming assets are served from the preview origin for local browser checks;
 asset promotion and browser launch approval are separate steps.
 
 ### How assets reach production storage
