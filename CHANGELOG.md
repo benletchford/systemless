@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.76.0](https://github.com/benletchford/systemless/compare/v0.75.0...v0.76.0) (2026-10-03)
+
+
+### Features
+
+* **catalogue:** add Turtle Dice 2.0 ([#3919](https://github.com/benletchford/systemless/issues/3919)) ([24969d5](https://github.com/benletchford/systemless/commit/24969d58a58cb28d9b86391b32774b72f54131de))
+* **file:** implement GetVRefNum for PowerPC ([#3979](https://github.com/benletchford/systemless/issues/3979)) ([99cb8aa](https://github.com/benletchford/systemless/commit/99cb8aa29f392fd79d2b88bf6b18580bcd41df97))
+* **installer:** traverse nested ST46 folders ([#3984](https://github.com/benletchford/systemless/issues/3984)) ([c50cbb1](https://github.com/benletchford/systemless/commit/c50cbb1a4c00fd32259525c4891fec19c354b211))
+* **palette:** support PowerPC GetEntryColor ([#3980](https://github.com/benletchford/systemless/issues/3980)) ([16f2bcc](https://github.com/benletchford/systemless/commit/16f2bcc5875b5c32a67e758c2e3d8e4aad5fd3cc))
+* **ppc:** implement working directory imports ([#3948](https://github.com/benletchford/systemless/issues/3948)) ([0924a1e](https://github.com/benletchford/systemless/commit/0924a1e5113517579103730d599a831495b1b2a6))
+* **ppc:** resolve Macromedia C runtime imports ([#3963](https://github.com/benletchford/systemless/issues/3963)) ([fc171b5](https://github.com/benletchford/systemless/commit/fc171b56ffed1ce48a2a48781d1504d27318dcb1))
+* **vise:** accept late packed catalogs ([#3985](https://github.com/benletchford/systemless/issues/3985)) ([feb5996](https://github.com/benletchford/systemless/commit/feb599649c2df87b65c737e246dcbbb4435839eb))
+
+
+### Bug Fixes
+
+* **catalogue:** verify Flashback and Glider PRO gameplay ([#3937](https://github.com/benletchford/systemless/issues/3937)) ([546e5d0](https://github.com/benletchford/systemless/commit/546e5d015eaea60ce9d8a54df9e3172685d831f4))
+* **control:** preserve draw order and redraw moved controls ([#3983](https://github.com/benletchford/systemless/issues/3983)) ([a0e8d67](https://github.com/benletchford/systemless/commit/a0e8d6730bb19dacc20e47870d2e99de0c8b797d))
+* **fonts:** lighten Chicago fallback for classic dialogs ([#4003](https://github.com/benletchford/systemless/issues/4003)) ([eb100b0](https://github.com/benletchford/systemless/commit/eb100b086890748dbeaab845865bb1ac15f2c618))
+* **input:** align keyboard metadata across guest architectures ([#3949](https://github.com/benletchford/systemless/issues/3949)) ([3053245](https://github.com/benletchford/systemless/commit/3053245f94fda59fc66a3698877cd68b3ff5b866))
+* **launch:** prefer Classic PowerPC siblings ([#3989](https://github.com/benletchford/systemless/issues/3989)) ([745d021](https://github.com/benletchford/systemless/commit/745d021acc12f50a9f0217f66f7cb3217eb2e981))
+* **mac:** bind PowerPC IntlScript to Roman script ([#3931](https://github.com/benletchford/systemless/issues/3931)) ([483e0e7](https://github.com/benletchford/systemless/commit/483e0e739b6f93c9b8d040e1fa2dc1986264037c))
+* **mac:** implement PowerPC CharExtra text spacing ([#3933](https://github.com/benletchford/systemless/issues/3933)) ([29dfc8f](https://github.com/benletchford/systemless/commit/29dfc8f9d2ef441891f32100a9824b53b332485d))
+* **mac:** implement PowerPC SetupSndHeader import ([#3936](https://github.com/benletchford/systemless/issues/3936)) ([c9ac87f](https://github.com/benletchford/systemless/commit/c9ac87f11182fd208212cbd27e28e604a99483de))
+* **mac:** parse Installer VISE 0x80010306 archives ([#3929](https://github.com/benletchford/systemless/issues/3929)) ([8288b77](https://github.com/benletchford/systemless/commit/8288b777e062c152acd733eaa4013c0509042e4b))
+* **mac:** preserve dialog edit state during window painting ([#3926](https://github.com/benletchford/systemless/issues/3926)) ([e568a95](https://github.com/benletchford/systemless/commit/e568a9502eb1e46f4015f30b4e883b7061e1a9da))
+* **ppc:** exclude unopened library resources from launch search ([#4002](https://github.com/benletchford/systemless/issues/4002)) ([6e345cf](https://github.com/benletchford/systemless/commit/6e345cf2fab26f81de6b12662f06a65cdfe2f487))
+* **resource:** reject out-of-range reference lists ([70c7095](https://github.com/benletchford/systemless/commit/70c7095867f9c8e7bbd3edc5202d4c3bce5da417))
+* **runtime:** drain all due VBL callbacks within one retrace ([#3942](https://github.com/benletchford/systemless/issues/3942)) ([2db552a](https://github.com/benletchford/systemless/commit/2db552a11d203d0c969838d1b03a26a2994f902e))
+* **text:** return missing international table outputs ([#3992](https://github.com/benletchford/systemless/issues/3992)) ([fb25a25](https://github.com/benletchford/systemless/commit/fb25a255028dd857fb82a3424220680b41ccb82f))
+
+
+### Performance Improvements
+
+* **idle:** skip proven idle passes with a virtual cursor, bit-exact to execution ([#3392](https://github.com/benletchford/systemless/issues/3392)) ([98df651](https://github.com/benletchford/systemless/commit/98df651dff747312ed4982dcbf0aff12ce9caee2))
+
+
+### Code Refactoring
+
+* **window:** centralize Window attributes, focus, buttons, and reshape evaluation ([2cb8f81](https://github.com/benletchford/systemless/commit/2cb8f81bfa8de2cb0352b045a8e1cbc082a82998))
+* **window:** centralize Window picture, refcon, variant, port, and low-memory evaluation ([bea3c56](https://github.com/benletchford/systemless/commit/bea3c56ddd4c4d635e72e49e8cd90fbd1c43672d))
+* **window:** centralize Window property management evaluation ([dc3e7bb](https://github.com/benletchford/systemless/commit/dc3e7bbcaa79ad7150b69466bd6cd787e77adfd2))
+* **window:** centralize Window proxy icon, modified, features, and structure widths evaluation ([5ce242d](https://github.com/benletchford/systemless/commit/5ce242da214d397e22b3f18e9808787d8e3e4246))
+
 ## [0.75.0](https://github.com/benletchford/systemless/compare/v0.74.0...v0.75.0) (2026-10-02)
 
 
