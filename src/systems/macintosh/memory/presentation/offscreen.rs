@@ -414,13 +414,41 @@ impl OffscreenCellMut<'_> {
 pub(super) struct OffscreenDetail {
     chunks: BTreeMap<u32, Box<Chunk>>,
     count: usize,
+    /// One bit per 64 KiB page of the address space: set once a chunk is
+    /// made in the page and never cleared, so a clear bit proves the page
+    /// holds no cell. Most copies read and write pages that never held
+    /// detail; this lets them skip the chunk map entirely.
+    pages: Vec<u64>,
 }
 
 fn split(address: u32) -> (u32, usize) {
     (address >> CHUNK_SHIFT, (address as usize) & (CHUNK_BYTES - 1))
 }
 
+const PAGE_SHIFT: u32 = 16;
+const PAGE_WORDS: usize = 1 << (32 - PAGE_SHIFT - 6);
+
 impl OffscreenDetail {
+    /// Note that the chunk `key` (an address shifted by `CHUNK_SHIFT`)
+    /// exists, before it is made.
+    fn mark_page(&mut self, key: u32) {
+        let page = (key >> (PAGE_SHIFT - CHUNK_SHIFT)) as usize;
+        if self.pages.is_empty() {
+            self.pages = vec![0; PAGE_WORDS];
+        }
+        self.pages[page / 64] |= 1 << (page % 64);
+    }
+
+    /// Whether `[from, last]` may hold a cell: false only when no chunk was
+    /// ever made in any of its pages.
+    fn may_hold_cells(&self, from: u32, last: u32) -> bool {
+        if self.pages.is_empty() {
+            return false;
+        }
+        (from >> PAGE_SHIFT..=last >> PAGE_SHIFT)
+            .any(|page| self.pages[page as usize / 64] & (1 << (page % 64)) != 0)
+    }
+
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.count
@@ -453,6 +481,7 @@ impl OffscreenDetail {
     /// same `Arc` for it until it changes.
     pub(super) fn insert(&mut self, address: u32, cell: &Arc<DetailCell>) {
         let (chunk, slot) = split(address);
+        self.mark_page(chunk);
         let chunk = self.chunks.entry(chunk).or_insert_with(|| Box::new(Chunk::new()));
         if chunk.has(slot) {
             chunk.clear(slot);
@@ -485,6 +514,9 @@ impl OffscreenDetail {
         }
         let last = (to - 1) as u32;
         let mut removed = false;
+        if !self.may_hold_cells(from, last) {
+            return removed;
+        }
         for (&key, chunk) in self.chunks.range_mut(from >> CHUNK_SHIFT..=last >> CHUNK_SHIFT) {
             let base = key << CHUNK_SHIFT;
             let first = from.saturating_sub(base).min(CHUNK_BYTES as u32) as usize;
@@ -534,6 +566,9 @@ impl OffscreenDetail {
             return;
         }
         let last = (to - 1) as u32;
+        if !self.may_hold_cells(from, last) {
+            return;
+        }
         for (&key, chunk) in self.chunks.range(from >> CHUNK_SHIFT..=last >> CHUNK_SHIFT) {
             let base = key << CHUNK_SHIFT;
             let first = from.saturating_sub(base).min(CHUNK_BYTES as u32) as usize;
@@ -569,6 +604,7 @@ impl OffscreenDetail {
     pub(super) fn store_parts(&mut self, address: u32, value: u8, indices: &[u8], ink: &mut [(u8, Ink)]) -> bool {
         assert!(indices.len() <= TILE_SAMPLES, "cell samples exceed a tile");
         let (key, slot) = split(address);
+        self.mark_page(key);
         let chunk = self.chunks.entry(key).or_insert_with(|| Box::new(Chunk::new()));
         if chunk.has(slot) {
             let start = slot * TILE_SAMPLES;
@@ -604,6 +640,7 @@ impl OffscreenDetail {
     pub(super) fn store_block(&mut self, address: u32, value: u8, indices: &[u8], ink: &CellInk) -> bool {
         assert!(indices.len() <= TILE_SAMPLES, "cell samples exceed a tile");
         let (key, slot) = split(address);
+        self.mark_page(key);
         let chunk = self.chunks.entry(key).or_insert_with(|| Box::new(Chunk::new()));
         if chunk.has(slot) {
             let start = slot * TILE_SAMPLES;
@@ -656,6 +693,7 @@ impl OffscreenDetail {
         len: usize,
     ) -> OffscreenCellMut<'_> {
         let (key, slot) = split(address);
+        self.mark_page(key);
         let chunk = self.chunks.entry(key).or_insert_with(|| Box::new(Chunk::new()));
         if chunk.insert_blank(slot, background, len) {
             self.count += 1;
@@ -688,6 +726,7 @@ impl OffscreenDetail {
             let mut pending =
                 (0..run).find_map(|i| select(offset + i).map(|selected| (i, selected)));
             if let Some((skipped, _)) = pending {
+                self.mark_page(key);
                 let chunk = self
                     .chunks
                     .entry(key)
@@ -743,6 +782,38 @@ mod tests {
         *state ^= *state >> 7;
         *state ^= *state << 17;
         *state
+    }
+
+    /// A page that never held a chunk answers every query without one,
+    /// while a query reaching across a page boundary still finds, and
+    /// removes, the cells on the populated side.
+    #[test]
+    fn untouched_pages_hold_no_cells_and_boundary_queries_still_see_them() {
+        let mut store = OffscreenDetail::default();
+        let page = 1u32 << PAGE_SHIFT;
+        assert!(store.range(0x0003_0000, 0x0003_0100).is_empty(), "an empty store");
+        let held = cell(7, &[1, 2, 3, 4], &[]);
+        store.insert(5 * page + 2, &held);
+        store.insert(5 * page - 1, &held);
+        // Pages 4 (only its last byte) and 5 hold cells; 3 and 6 never did.
+        assert!(store.range(3 * page, u64::from(4 * page)).is_empty());
+        assert!(!store.any_in(6 * page, u64::from(7 * page)));
+        assert!(!store.remove_range(6 * page, u64::from(7 * page)));
+        let across: Vec<u32> = store
+            .range(5 * page - 4, u64::from(5 * page + 4))
+            .into_iter()
+            .map(|(address, _)| address)
+            .collect();
+        assert_eq!(across, [5 * page - 1, 5 * page + 2]);
+        let mut seen = Vec::new();
+        store.visit_cells(5 * page - 4, 8, |offset, _| seen.push(offset));
+        assert_eq!(seen, [3, 6]);
+        assert!(store.all_cells_have_len(5 * page - 4, u64::from(5 * page + 4), 4));
+        assert!(store.remove_range(5 * page - 4, u64::from(5 * page + 4)));
+        assert!(store.range(4 * page, u64::from(6 * page)).is_empty());
+        // The last page of the address space, reached by a range ending at 2^32.
+        store.insert(u32::MAX, &held);
+        assert_eq!(store.range(u32::MAX - 8, 1 << 32).len(), 1);
     }
 
     /// Every operation agrees with the address-keyed map it replaced,
