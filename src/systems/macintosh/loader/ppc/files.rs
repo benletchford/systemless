@@ -12,7 +12,8 @@ pub(crate) const PPC_BOOT_VOLUME_REF_NUM: i16 = -1;
 pub(crate) const PPC_ROOT_DIR_ID: u32 = 2;
 pub(crate) const PPC_SYSTEM_FOLDER_DIR_ID: u32 = 16;
 pub(crate) const PPC_PREFERENCES_DIR_ID: u32 = 17;
-pub(crate) const PPC_FIRST_DYNAMIC_DIR_ID: u32 = 18;
+pub(crate) const PPC_EXTENSIONS_DIR_ID: u32 = 18;
+pub(crate) const PPC_FIRST_DYNAMIC_DIR_ID: u32 = 19;
 pub(crate) const PPC_DIRECTORY_FILE_TYPE: u32 = u32::from_be_bytes(*b"fold");
 pub(crate) const PPC_DIRECTORY_CREATOR: u32 = u32::from_be_bytes(*b"MACS");
 pub(crate) const PPC_FSSPEC_SIZE: usize = 70;
@@ -4801,6 +4802,15 @@ pub(super) fn initial_ppc_vfs_directories() -> Vec<PpcVfsDirectory> {
             finder_flags: 0,
             dirty: false,
         },
+        PpcVfsDirectory {
+            dir_id: PPC_EXTENSIONS_DIR_ID,
+            parent_dir_id: PPC_SYSTEM_FOLDER_DIR_ID,
+            path: "System Folder/Extensions".to_string(),
+            creator: PPC_DIRECTORY_CREATOR,
+            file_type: PPC_DIRECTORY_FILE_TYPE,
+            finder_flags: 0,
+            dirty: false,
+        },
     ]
 }
 
@@ -4910,6 +4920,8 @@ pub(super) fn ppc_fsp_dir_create(
 pub(super) fn ppc_find_folder_dir_id(folder_type: u32) -> u32 {
     if folder_type == u32::from_be_bytes(*b"pref") {
         PPC_PREFERENCES_DIR_ID
+    } else if folder_type == u32::from_be_bytes(*b"extn") {
+        PPC_EXTENSIONS_DIR_ID
     } else {
         PPC_ROOT_DIR_ID
     }

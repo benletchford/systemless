@@ -260,6 +260,7 @@ fn process_native_vfs_catalogue_is_pristine(
         ("", 2, 1),
         ("System Folder", 16, 2),
         ("System Folder/Preferences", 17, 16),
+        ("System Folder/Extensions", 18, 16),
     ];
     directories.len() <= expected.len()
         && directories.iter().all(|directory| {
@@ -280,6 +281,7 @@ fn process_vfs_directories_are_pristine(directories: &[ProcessVfsDirectory]) -> 
         ("", 2, 1),
         ("System Folder", 16, 2),
         ("System Folder/Preferences", 17, 16),
+        ("System Folder/Extensions", 18, 16),
     ];
     directories.len() <= expected.len()
         && directories.iter().all(|directory| {
@@ -10418,7 +10420,7 @@ impl ProcessContext {
         metadata.attach_to(&self.file_system.classic_vfs_metadata, HashMap::is_empty);
         locked_files.attach_to(&self.file_system.classic_locked_files, HashSet::is_empty);
         next_dir_id.attach_to(&self.file_system.next_vfs_dir_id, |value| {
-            matches!(*value, 0 | 16 | 18)
+            matches!(*value, 0 | 16 | 18 | 19)
         });
         next_file_id.attach_to(&self.file_system.classic_next_vfs_file_id, |value| {
             *value == 32

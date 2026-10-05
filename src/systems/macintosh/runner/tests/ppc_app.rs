@@ -181,7 +181,7 @@ fn ppc_loaded_app_runs_through_fixture_runner() {
                 vfs_volumes: crate::process_context::SharedProcessValue::default(),
                 vfs_directories: crate::process_context::SharedProcessValue::from_value(vec![
                     PpcVfsDirectory {
-                        dir_id: 18,
+                        dir_id: 19,
                         parent_dir_id: 17,
                         path: "System Folder/Preferences/Test App Saves".to_string(),
                         creator: u32::from_be_bytes(*b"Nano"),
@@ -190,7 +190,7 @@ fn ppc_loaded_app_runs_through_fixture_runner() {
                         dirty: true,
                     },
                 ]),
-                next_vfs_dir_id: crate::process_context::SharedProcessValue::from_value(18),
+                next_vfs_dir_id: crate::process_context::SharedProcessValue::from_value(20),
                 default_dir_id: crate::process_context::SharedProcessValue::from_value(2),
                 vfs_files: vec![PpcVfsFileRecord {
                     path: "System Folder/Preferences/Test App Prefs".to_string(),
