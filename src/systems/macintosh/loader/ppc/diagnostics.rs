@@ -330,7 +330,9 @@ pub(crate) fn ppc_import_extra_cycles_for_target(target: &PpcImportDispatcherTar
         // PICT opcode interpretation plus rasterization.
         PpcImportDispatcherTarget::DrawPicture => PPC_DRAW_PICTURE_IMPORT_EXTRA_CYCLES,
         // Rectangular bit transfers between ports and GWorlds.
-        PpcImportDispatcherTarget::CopyBits => PPC_BIT_TRANSFER_IMPORT_EXTRA_CYCLES,
+        PpcImportDispatcherTarget::CopyBits | PpcImportDispatcherTarget::StdBits => {
+            PPC_BIT_TRANSFER_IMPORT_EXTRA_CYCLES
+        }
         // Rect, region, oval and rounded-rect painting operations.
         PpcImportDispatcherTarget::PaintArc
         | PpcImportDispatcherTarget::PaintRect

@@ -2424,6 +2424,10 @@ fn import_bindings_classify_gworld_state_imports() {
         PpcImportDispatcherTarget::CopyBits
     );
     assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "StdBits"),
+        PpcImportDispatcherTarget::StdBits
+    );
+    assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "BitMapToRegion"),
         PpcImportDispatcherTarget::BitMapToRegion
     );

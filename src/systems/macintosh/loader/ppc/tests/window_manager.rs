@@ -8973,5 +8973,99 @@ fn window_attributes_focus_buttons_and_reshape_commands_dispatch_with_canonical_
     }
 }
 
+#[test]
+fn std_bits_copies_into_the_current_port_like_copy_bits() {
+    // StdBits is the CopyBits bottleneck with the current port's bits as
+    // destination; its first five arguments omit dstBits.
+    fn blit(target: PpcImportDispatcherTarget) -> (Vec<Option<u16>>, [u32; 5]) {
+        let std_bits = target == PpcImportDispatcherTarget::StdBits;
+        let pef = synthetic_pef_with_import(b"NewCWindow");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let bounds_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+        let window = create_test_cwindow(
+            &mut loaded,
+            bounds_ptr,
+            (100, 100, 260, 300),
+            0,
+            true,
+            u32::MAX,
+        );
+        let front_buffer = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        let bitmap = PPC_DATA_BASE + 0x2000;
+        let pixels = bitmap + 64;
+        loaded.memory.add_region(bitmap, vec![0; 128]);
+        loaded.memory.write_u32_be(bitmap, pixels).unwrap();
+        loaded.memory.write_u16_be(bitmap + 4, 8).unwrap();
+        ppc_write_rect(&mut loaded.memory, bitmap + 6, 0, 0, 8, 64).unwrap();
+        for row in 0..8 {
+            loaded
+                .memory
+                .write_u32_be(pixels + row * 8, 0xf0f0_0ff0)
+                .unwrap();
+        }
+        ppc_write_rect(&mut loaded.memory, bitmap + 20, 0, 0, 8, 64).unwrap();
+        ppc_write_rect(&mut loaded.memory, bitmap + 28, 50, 100, 58, 164).unwrap();
+        loaded.cpu.gpr[3] = window;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetPort);
+        let points: Vec<_> = (0..8)
+            .flat_map(|y| (0..40).map(move |x| (200 + x, 150 + y)))
+            .collect();
+        for &point in &points {
+            assert!(ppc_quickdraw_write_raw_pixel(
+                &mut loaded.memory,
+                front_buffer,
+                point,
+                0x7b,
+            ));
+        }
+        loaded.cpu.gpr[3] = bitmap;
+        if std_bits {
+            loaded.cpu.gpr[4] = bitmap + 20;
+            loaded.cpu.gpr[5] = bitmap + 28;
+            loaded.cpu.gpr[6] = 0;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = 0x1234_5678;
+        } else {
+            loaded.cpu.gpr[4] = window + 2;
+            loaded.cpu.gpr[5] = bitmap + 20;
+            loaded.cpu.gpr[6] = bitmap + 28;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = 0;
+        }
+        let arguments = [
+            loaded.cpu.gpr[4],
+            loaded.cpu.gpr[5],
+            loaded.cpu.gpr[6],
+            loaded.cpu.gpr[7],
+            loaded.cpu.gpr[8],
+        ];
+        run_test_import(&mut loaded, target);
+        let after = [
+            loaded.cpu.gpr[4],
+            loaded.cpu.gpr[5],
+            loaded.cpu.gpr[6],
+            loaded.cpu.gpr[7],
+            loaded.cpu.gpr[8],
+        ];
+        if std_bits {
+            assert_eq!(
+                after, arguments,
+                "StdBits must restore its argument registers"
+            );
+        }
+        let painted = points
+            .iter()
+            .map(|&point| ppc_quickdraw_read_pixel(&mut loaded.memory, front_buffer, point))
+            .collect();
+        (painted, arguments)
+    }
 
-
+    let (copy_bits, _) = blit(PpcImportDispatcherTarget::CopyBits);
+    let (std_bits, _) = blit(PpcImportDispatcherTarget::StdBits);
+    assert!(
+        copy_bits.iter().any(|pixel| *pixel != Some(0x7b)),
+        "the CopyBits reference must paint the destination"
+    );
+    assert_eq!(std_bits, copy_bits);
+}
