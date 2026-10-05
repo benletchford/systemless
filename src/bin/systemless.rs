@@ -7,7 +7,7 @@
 //!
 //! ```sh
 //! cargo run --release -- [--headless] [--max-instructions N] \
-//!     [--arrows-as-numpad] [--prefer-powerpc] <game>
+//!     [--arrows-as-numpad] [--prefer-classic-68k] <game>
 //! ```
 //!
 //! Disable the GUI deps with `--no-default-features` to build a
@@ -283,9 +283,13 @@ struct Cli {
     )]
     headless_start_time: Option<u32>,
 
-    /// Prefer a native PowerPC slice when a classic 68K slice is also available
-    #[arg(long, visible_alias = "prefer-ppc")]
+    /// Prefer a native PowerPC slice when a classic 68K slice is also available (the default)
+    #[arg(long, visible_alias = "prefer-ppc", conflicts_with = "prefer_classic_68k")]
     prefer_powerpc: bool,
+
+    /// Prefer the classic 68K slice of a fat application
+    #[arg(long, visible_alias = "prefer-68k", conflicts_with = "prefer_powerpc")]
+    prefer_classic_68k: bool,
 
     /// Start with classic 24-bit guest address translation
     #[arg(long)]
@@ -3645,10 +3649,15 @@ fn run_headless(
 
 fn main() {
     let cli = Cli::parse();
-    if cli.prefer_powerpc {
+    if !cli.prefer_classic_68k {
         // SAFETY: the runner has not started and no worker threads exist yet.
         unsafe { std::env::set_var("SYSTEMLESS_PREFER_POWERPC", "1") };
-        eprintln!("[SYSTEMLESS] Native PowerPC slice preferred");
+        eprintln!("[SYSTEMLESS] Native PowerPC slice preferred when available");
+    } else {
+        // An explicit CLI choice takes precedence over a preference inherited
+        // from the parent process or native application relaunch.
+        unsafe { std::env::set_var("SYSTEMLESS_PREFER_POWERPC", "0") };
+        eprintln!("[SYSTEMLESS] Classic 68K slice preferred when available");
     }
     let game_path = cli.game;
     let native_integrations = !cli.no_native_integrations;
@@ -4233,6 +4242,7 @@ mod tests {
         assert!(cli.arrows_as_numpad);
         assert!(!cli.literal_arrows);
         assert!(cli.prefer_powerpc);
+        assert!(!cli.prefer_classic_68k);
         assert!(cli.addressing_24_bit);
         assert_eq!(cli.screen_depth, Some(4));
         assert_eq!(cli.display_scale, Some(2));
@@ -4247,6 +4257,7 @@ mod tests {
         assert_eq!(cli.display_scale, None);
         assert_eq!(cli.screen_depth, None);
         assert_eq!(cli.ui_theme, UiThemeId::ClassicSystem7);
+        assert!(!cli.prefer_classic_68k);
         assert_eq!(
             guest_scaled_physical_size(800, 600, 1),
             winit::dpi::PhysicalSize::new(800, 600)
@@ -4383,6 +4394,21 @@ mod tests {
             .expect("PowerPC preference alias should parse");
 
         assert!(cli.prefer_powerpc);
+    }
+
+    #[test]
+    fn cli_can_select_classic_slice_for_fat_applications() {
+        let cli = Cli::try_parse_from(["systemless", "--prefer-68k", "game.sit"])
+            .expect("classic slice preference should parse");
+
+        assert!(cli.prefer_classic_68k);
+        assert!(Cli::try_parse_from([
+            "systemless",
+            "--prefer-68k",
+            "--prefer-powerpc",
+            "game.sit",
+        ])
+        .is_err());
     }
 
     #[test]

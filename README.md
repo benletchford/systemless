@@ -98,6 +98,10 @@ Systemless does not ship applications, games, Mac ROMs, or Apple system software
 Use legally obtained application archives.
 
 For a local checkout, use `cargo run --release -- path/to/app-or-game.sit`.
+Fat applications launch their native PowerPC slice by default. Pass
+`--prefer-68k` to run the classic slice for compatibility testing;
+`--prefer-powerpc` remains accepted for explicit PowerPC selection.
+
 Windows uses D3D11 presentation by default, with automatic software fallback if
 GPU initialization or presentation fails. Set `SYSTEMLESS_D3D11=0` before launching
 to force software presentation.
