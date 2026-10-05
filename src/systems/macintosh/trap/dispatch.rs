@@ -4020,6 +4020,9 @@ impl TrapDispatcher {
         });
         dispatcher.ensure_vfs_directory("System Folder");
         dispatcher.ensure_vfs_directory("System Folder/Preferences");
+        // System 7 includes Extensions in the System Folder at startup.
+        // Macintosh Toolbox Essentials (1992), Finder Interface, pp. 7-41–7-44.
+        dispatcher.ensure_vfs_directory("System Folder/Extensions");
         dispatcher
     }
 

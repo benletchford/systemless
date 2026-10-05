@@ -360,10 +360,10 @@ fn pb_read_async_returns_from_sound_doubleback_before_its_completion() {
         loaded.run_with_hle_imports(64);
 
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
-        assert_eq!(loaded.vfs_directories[3].dir_id, 1000);
-        assert_eq!(loaded.vfs_directories[3].path, "Airfield");
-        assert_eq!(loaded.vfs_directories[4].dir_id, 1001);
-        assert_eq!(loaded.vfs_directories[4].path, "Airfield/Logs");
+        assert_eq!(loaded.vfs_directories[4].dir_id, 1000);
+        assert_eq!(loaded.vfs_directories[4].path, "Airfield");
+        assert_eq!(loaded.vfs_directories[5].dir_id, 1001);
+        assert_eq!(loaded.vfs_directories[5].path, "Airfield/Logs");
         assert_eq!(loaded.vfs_files[0].path, "Airfield/Logs/Pilot");
         assert_eq!(
             loaded.take_deleted_vfs_file_paths(),
@@ -398,6 +398,30 @@ fn pb_read_async_returns_from_sound_doubleback_before_its_completion() {
         assert_eq!(
             loaded.memory.read_u32_be(PPC_DATA_BASE + 4),
             Some(PPC_PREFERENCES_DIR_ID)
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_finds_default_extensions_without_creating_it() {
+        let pef = synthetic_pef_with_import(b"FindFolder");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.cpu.gpr[3] = 0xffff_8000;
+        loaded.cpu.gpr[4] = u32::from_be_bytes(*b"extn");
+        loaded.cpu.gpr[5] = 0; // kDontCreateFolder
+        loaded.cpu.gpr[6] = PPC_DATA_BASE;
+        loaded.cpu.gpr[7] = PPC_DATA_BASE + 4;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            loaded.memory.read_u16_be(PPC_DATA_BASE),
+            Some(PPC_BOOT_VOLUME_REF_NUM as u16)
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_DATA_BASE + 4),
+            Some(PPC_EXTENSIONS_DIR_ID)
         );
     }
 
@@ -9019,7 +9043,7 @@ fn pbh_get_v_info_reports_default_directory_valence() {
     let mut loaded = load_pef_application(&pef).unwrap();
     let mut directories = initial_ppc_vfs_directories();
     directories.push(PpcVfsDirectory {
-        dir_id: 18,
+        dir_id: PPC_FIRST_DYNAMIC_DIR_ID,
         parent_dir_id: PPC_ROOT_DIR_ID,
         path: "Game".to_string(),
         creator: 0,
@@ -9028,15 +9052,19 @@ fn pbh_get_v_info_reports_default_directory_valence() {
         dirty: false,
     });
     directories.push(PpcVfsDirectory {
-        dir_id: 19,
-        parent_dir_id: 18,
+        dir_id: PPC_FIRST_DYNAMIC_DIR_ID + 1,
+        parent_dir_id: PPC_FIRST_DYNAMIC_DIR_ID,
         path: "Game/Levels".to_string(),
         creator: 0,
         file_type: 0,
         finder_flags: 0,
         dirty: false,
     });
-    loaded.seed_vfs_directories(directories, 18, 20);
+    loaded.seed_vfs_directories(
+        directories,
+        PPC_FIRST_DYNAMIC_DIR_ID,
+        PPC_FIRST_DYNAMIC_DIR_ID + 2,
+    );
     loaded.push_test_vfs_file(PpcVfsFileRecord {
         path: "Game/Data".to_string(),
         data: b"data".to_vec().into(),
@@ -9087,7 +9115,7 @@ fn pbh_get_v_info_reports_default_directory_valence() {
             ProcessWorkingDirectory {
                 ref_num: wd_ref_num,
                 volume_ref_num: PPC_BOOT_VOLUME_REF_NUM,
-                dir_id: 18,
+                dir_id: PPC_FIRST_DYNAMIC_DIR_ID,
                 proc_id: 0,
             },
         );

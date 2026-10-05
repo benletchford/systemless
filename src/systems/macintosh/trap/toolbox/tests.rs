@@ -14652,6 +14652,30 @@
         );
     }
 
+    #[test]
+    fn aliasdispatch_findfolder_finds_default_extensions_without_creating_it() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let found_dir_id_ptr = 0x340400u32;
+        let found_vref_ptr = 0x340500u32;
+
+        cpu.write_reg(Register::D0, 0); // FindFolder selector
+        bus.write_long(sp, found_dir_id_ptr);
+        bus.write_long(sp + 4, found_vref_ptr);
+        bus.write_word(sp + 8, 0); // kDontCreateFolder
+        bus.write_long(sp + 10, u32::from_be_bytes(*b"extn"));
+        bus.write_word(sp + 14, 0x8000); // kOnSystemDisk
+        bus.write_word(sp + 16, 0xBEEF);
+
+        assert!(disp.dispatch_toolbox(true, 0x023, &mut cpu, &mut bus).unwrap().is_ok());
+        assert_eq!(bus.read_word(sp + 16), 0);
+        assert_eq!(bus.read_word(found_vref_ptr), (-1i16) as u16);
+        assert_eq!(
+            disp.directory_path_for_id(bus.read_long(found_dir_id_ptr)),
+            Some("System Folder/Extensions")
+        );
+    }
+
     // AliasDispatch ($A823) / selector $0000 FindFolder
     // IM:VI 1991 pp. 9-42..9-44: kTemporaryFolderType ('temp') locates the
     // root-level Temporary Items folder and returns its vRefNum/dirID.
