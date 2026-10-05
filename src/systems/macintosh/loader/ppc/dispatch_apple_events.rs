@@ -289,6 +289,7 @@ pub enum PpcAppleEventCompatibilityOperation {
     CountItems,
     CreateAppleEvent,
     CreateDesc,
+    CreateList,
     DisposeDesc,
     GetAttributePtr,
     GetNthPtr,
@@ -313,6 +314,44 @@ pub(super) fn ppc_dispatch_apple_event_compatibility(
     apple_events: &mut PpcAppleEventState,
 ) -> PpcImportAction {
     let result = match operation {
+        PpcAppleEventCompatibilityOperation::CreateList => {
+            // AECreateList (Pack8 selector $0706)
+            // FUNCTION AECreateList(factoringPtr: Ptr; factoredSize: Size;
+            //   isRecord: Boolean; VAR resultList: AEDescList): OSErr;
+            // Inside Macintosh: Interapplication Communication (1993), 5-26.
+            let factoring_ptr = cpu.gpr[3];
+            let factored_size = cpu.gpr[4];
+            let result_ptr = cpu.gpr[6];
+            let _ = ppc_write_ae_desc(memory, result_ptr, 0, 0);
+            if result_ptr == 0
+                || !ppc_memory_can_write_bytes(memory, result_ptr, 8)
+                || (factored_size != 0 && factored_size != 4 && factored_size < 8)
+            {
+                PPC_PARAM_ERR
+            } else if let Some(bytes) = ppc_memory_read_bytes(memory, factoring_ptr, factored_size)
+                .or_else(|| (factored_size == 0).then(Vec::new))
+            {
+                let desc_type = if cpu.gpr[5] & 0xff != 0 {
+                    u32::from_be_bytes(*b"reco")
+                } else {
+                    u32::from_be_bytes(*b"list")
+                };
+                ppc_create_process_owned_ae_desc(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    Some(&apple_events.descriptors),
+                    result_ptr,
+                    desc_type,
+                    &bytes,
+                )
+            } else {
+                PPC_PARAM_ERR
+            }
+        }
         PpcAppleEventCompatibilityOperation::CreateDesc => {
             let data_size = cpu.gpr[5];
             let Some(bytes) = ppc_memory_read_bytes(memory, cpu.gpr[4], data_size)
