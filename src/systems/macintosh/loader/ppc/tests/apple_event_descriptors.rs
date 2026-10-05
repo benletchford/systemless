@@ -16,6 +16,10 @@ fn apple_event_compatibility_imports_pre_resolve_to_typed_operations() {
             PpcAppleEventCompatibilityOperation::CreateDesc,
         ),
         (
+            "AECreateList",
+            PpcAppleEventCompatibilityOperation::CreateList,
+        ),
+        (
             "AEDisposeDesc",
             PpcAppleEventCompatibilityOperation::DisposeDesc,
         ),
@@ -54,6 +58,117 @@ fn apple_event_compatibility_imports_pre_resolve_to_typed_operations() {
             PpcImportDispatcherTarget::AppleEventCompatibility(operation),
             "unexpected Apple Event dispatch target for {symbol}",
         );
+    }
+}
+
+#[test]
+fn native_ppc_apple_event_lists_are_countable_and_disposable() {
+    for (is_record, expected_type) in [(false, *b"list"), (true, *b"reco")] {
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(0x1000, b"TEXT".to_vec());
+        memory.add_region(0x1100, vec![0xaa; 12]);
+        let mut cpu = PpcCpu::new();
+        cpu.gpr[3] = 0x1000;
+        cpu.gpr[4] = 4;
+        cpu.gpr[5] = u32::from(is_record);
+        cpu.gpr[6] = 0x1100;
+        let mut heap_cursor = 0x3000;
+        let mut last_mem_error = PPC_NO_ERR;
+        let mut memory_manager = ProcessMemoryManager::default();
+        memory_manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: heap_cursor,
+                heap_cursor,
+                heap_limit: 0x5000,
+                last_mem_error,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[],
+            &[],
+            &[],
+        );
+        let mut handles = Vec::new();
+        let mut apple_events = PpcAppleEventState::default();
+        let mut dispatch = |operation, cpu: &mut PpcCpu| {
+            ppc_dispatch_apple_event_compatibility(
+                operation,
+                cpu,
+                &mut memory_manager,
+                &mut memory,
+                &mut heap_cursor,
+                0x5000,
+                &mut last_mem_error,
+                &mut handles,
+                &mut apple_events,
+            )
+        };
+        assert_eq!(
+            dispatch(PpcAppleEventCompatibilityOperation::CreateList, &mut cpu),
+            PpcImportAction::Return(0),
+        );
+        drop(dispatch);
+        assert_eq!(memory.read_u32_be(0x1100), Some(u32::from_be_bytes(expected_type)));
+        assert_ne!(memory.read_u32_be(0x1104), Some(0));
+
+        cpu.gpr[3] = 0x1100;
+        cpu.gpr[4] = 0x1108;
+        assert_eq!(
+            ppc_dispatch_apple_event_compatibility(
+                PpcAppleEventCompatibilityOperation::CountItems,
+                &mut cpu,
+                &mut memory_manager,
+                &mut memory,
+                &mut heap_cursor,
+                0x5000,
+                &mut last_mem_error,
+                &mut handles,
+                &mut apple_events,
+            ),
+            PpcImportAction::Return(0),
+        );
+        assert_eq!(memory.read_u32_be(0x1108), Some(0));
+
+        cpu.gpr[3] = 0x1100;
+        assert_eq!(
+            ppc_dispatch_apple_event_compatibility(
+                PpcAppleEventCompatibilityOperation::DisposeDesc,
+                &mut cpu,
+                &mut memory_manager,
+                &mut memory,
+                &mut heap_cursor,
+                0x5000,
+                &mut last_mem_error,
+                &mut handles,
+                &mut apple_events,
+            ),
+            PpcImportAction::Return(0),
+        );
+        assert_eq!(memory.read_u32_be(0x1100), Some(0));
+        assert_eq!(memory.read_u32_be(0x1104), Some(0));
+        assert!(handles.is_empty());
+
+        memory.write_bytes(0x1100, &[0xaa; 8]).unwrap();
+        cpu.gpr[3] = 0x1000;
+        cpu.gpr[4] = 5;
+        cpu.gpr[5] = u32::from(is_record);
+        cpu.gpr[6] = 0x1100;
+        assert_eq!(
+            ppc_dispatch_apple_event_compatibility(
+                PpcAppleEventCompatibilityOperation::CreateList,
+                &mut cpu,
+                &mut memory_manager,
+                &mut memory,
+                &mut heap_cursor,
+                0x5000,
+                &mut last_mem_error,
+                &mut handles,
+                &mut apple_events,
+            ),
+            PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)),
+        );
+        assert_eq!(memory.read_u32_be(0x1100), Some(0));
+        assert_eq!(memory.read_u32_be(0x1104), Some(0));
     }
 }
 
