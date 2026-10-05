@@ -13,10 +13,13 @@ pub(crate) enum NativeEngineRole {
     Companion,
 }
 
+// Adapters are boxed so checking one out and back moves a pointer: the slot
+// changes hands every slice and every audio service, and a PowerPC adapter is
+// a large value.
 enum NativeSlot<T> {
     Empty,
-    Installed(T),
-    CheckedOut(Rc<OnceCell<T>>),
+    Installed(Box<T>),
+    CheckedOut(Rc<OnceCell<Box<T>>>),
 }
 
 pub(crate) struct NativeExecution<T> {
@@ -31,8 +34,8 @@ pub(crate) struct NativeExecution<T> {
 pub(crate) struct NativeContext<T> {
     identity: Rc<()>,
     role: NativeEngineRole,
-    adapter: Option<T>,
-    return_slot: Rc<OnceCell<T>>,
+    adapter: Option<Box<T>>,
+    return_slot: Rc<OnceCell<Box<T>>>,
 }
 
 impl<T> NativeContext<T> {
@@ -56,7 +59,7 @@ impl<T> NativeSlot<T> {
     fn installed(&self) -> Option<&T> {
         match self {
             Self::Installed(adapter) => Some(adapter),
-            Self::CheckedOut(return_slot) => return_slot.get(),
+            Self::CheckedOut(return_slot) => return_slot.get().map(|adapter| &**adapter),
             Self::Empty => None,
         }
     }
@@ -138,7 +141,7 @@ impl<T> NativeExecution<T> {
         if !matches!(self.slot(role), NativeSlot::Empty) {
             return Err(adapter);
         }
-        *self.slot_mut(role) = NativeSlot::Installed(adapter);
+        *self.slot_mut(role) = NativeSlot::Installed(Box::new(adapter));
         Ok(())
     }
 
