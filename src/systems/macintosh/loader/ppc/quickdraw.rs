@@ -2521,7 +2521,7 @@ pub(crate) fn ppc_color_tables_share_index_space(
                 memory.read_u16_be(entry.checked_add(6)?)?,
             ]);
         }
-        Some((seed, colors))
+        Some(colors)
     };
     let src_identity = identity(memory, src_ctable_handle);
     let dst_identity = identity(memory, dst_ctable_handle);
@@ -2914,10 +2914,10 @@ pub(crate) fn ppc_copy_bits(
                 *color_manager_clut
             }
         });
-        // A shared nonzero ctSeed identifies a particular ColorTable instance.
-        // When two same-depth ordinary image tables also describe the same
-        // index-to-RGB space, their pixels already name the same colors and
-        // CopyBits preserves the raw indexes even if the handles differ.
+        // Separate ordinary image tables can have different ctSeeds while
+        // assigning the same RGB color to every pixel index. In that case
+        // their pixels already share an index space, so CopyBits preserves
+        // the raw indexes even if the handles and seeds differ.
         // Imaging With QuickDraw (1994), pp. 4-56--4-57 and 4-97.
         let same_indexed_ctable_identity = src_bits.depth == dst_bits.depth
             && ppc_indexed_depth_entry_count(src_bits.depth).is_some()

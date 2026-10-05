@@ -1451,7 +1451,7 @@ use super::*;
     }
 
     #[test]
-    fn hle_import_runner_copybits_4bpp_same_seed_preserves_indices() {
+    fn hle_import_runner_copybits_4bpp_preserves_matching_image_table_indices() {
         let pef = synthetic_pef_with_import(b"CopyBits");
         let mut loaded = load_pef_application(&pef).unwrap();
         let scratch = PPC_HEAP_BASE + 0x12b00;
@@ -1524,6 +1524,15 @@ use super::*;
         // even though the current main GDevice has a different inverse table.
         // The neighboring low nibble remains untouched.
         assert_eq!(loaded.memory.read_u8(dst_pixels), Some(0xea));
+
+        // Distinct seeds still name the same index space when every indexed
+        // color matches. A seed change alone must not recolor the copy.
+        loaded.memory.write_u32_be(dst_ctable, 5).unwrap();
+        assert!(ppc_color_tables_share_index_space(
+            &mut loaded.memory,
+            Some(src_ctable_handle),
+            Some(dst_ctable_handle)
+        ));
 
         loaded.memory.write_u8(src_pixels, 0x0d).unwrap();
         loaded.memory.write_u8(dst_pixels, 0xa0).unwrap();
