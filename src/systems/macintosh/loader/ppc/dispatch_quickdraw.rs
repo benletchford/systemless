@@ -483,6 +483,49 @@ pub(super) fn dispatch_quickdraw_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::MovePortTo => {
+            // MovePortTo ($A877)
+            // Changes the current port's position relative to its boundary rectangle.
+            // PROCEDURE MovePortTo (leftGlobal,topGlobal: INTEGER);
+            // Inside Macintosh: Imaging With QuickDraw (1994), pp. 2-46--2-47.
+            let port_rect_ptr = current_gworld.wrapping_add(16);
+            let Some((port_top, port_left, _, _)) = ppc_read_rect(memory, port_rect_ptr) else {
+                return Some(PpcImportAction::ReturnPreserve);
+            };
+            let is_color = memory
+                .read_u16_be(current_gworld.wrapping_add(6))
+                .is_some_and(|version| version & 0xc000 != 0);
+            let bits_rect_ptr = if is_color {
+                let pixmap_handle = memory
+                    .read_u32_be(current_gworld.wrapping_add(2))
+                    .unwrap_or(0);
+                if pixmap_handle == 0 {
+                    return Some(PpcImportAction::ReturnPreserve);
+                }
+                let pixmap = memory.read_u32_be(pixmap_handle).unwrap_or(0);
+                if pixmap == 0 {
+                    return Some(PpcImportAction::ReturnPreserve);
+                }
+                pixmap.wrapping_add(6)
+            } else {
+                current_gworld.wrapping_add(8)
+            };
+            if let Some((bits_top, bits_left, bits_bottom, bits_right)) =
+                ppc_read_rect(memory, bits_rect_ptr)
+            {
+                let new_top = port_top.wrapping_sub(cpu.gpr[4] as u16 as i16);
+                let new_left = port_left.wrapping_sub(cpu.gpr[3] as u16 as i16);
+                let _ = ppc_write_rect(
+                    memory,
+                    bits_rect_ptr,
+                    new_top,
+                    new_left,
+                    new_top.wrapping_add(bits_bottom.wrapping_sub(bits_top)),
+                    new_left.wrapping_add(bits_right.wrapping_sub(bits_left)),
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::MoveTo => {
             *quickdraw_pen_h = cpu.gpr[3] as u16 as i16;
             *quickdraw_pen_v = cpu.gpr[4] as u16 as i16;
