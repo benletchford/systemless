@@ -28,6 +28,24 @@ image, a System installation, or hardware emulation. On macOS, classic
 applications keep their own identity: guest menus appear in the native menu bar,
 while the guest application name and icon integrate with the Dock.
 
+## Try it in your browser
+
+| [Marathon](https://systemless.org/marathon) | [Escape Velocity](https://systemless.org/escape-velocity) |
+| :---: | :---: |
+| [![Marathon running in Systemless](.github/assets/marathon-gameplay.png)](https://systemless.org/marathon) | [![Escape Velocity running in Systemless](.github/assets/escape-velocity-gameplay.png)](https://systemless.org/escape-velocity) |
+| [Escape Velocity Nova](https://systemless.org/escape-velocity-nova/) | [StarCraft Demo](https://systemless.org/starcraft/) |
+| [![Escape Velocity Nova running in Systemless](https://assets.systemless.org/catalogue/media/sha256/f7/f717e2d7422ef3a59b43b09658006ddc4bec69f3a202087ed4d0780df647d067.png)](https://systemless.org/escape-velocity-nova/) | [![StarCraft Demo running in Systemless](https://assets.systemless.org/catalogue/media/sha256/ea/ea39bdae3357374fc093eb806fa6d943cc75ca97238bc59278e7a9cb9d7458a5.png)](https://systemless.org/starcraft/) |
+
+Play these and more classic Macintosh games in your browser at
+[systemless.org](https://systemless.org/).
+
+The browser frontend and its community catalogue are developed in this
+repository alongside the runtime. Website sources live in [`www/`](www/),
+catalogue entries and optional plugin collections live in
+[`www/catalogue/`](www/catalogue/), and catalogue maintenance tools live in
+[`www/tools/catalogue/`](www/tools/catalogue/). See
+[`www/README.md`](www/README.md) for local browser and catalogue workflows.
+
 ## Contributing
 
 Start with the [contribution guide](CONTRIBUTING.md). Open a public issue, then
@@ -46,22 +64,6 @@ uploads.** After approval, the incoming CI workflow promotes assets using
 repository secrets and writes immutable URLs back to eligible PR branches.
 Maintainers handle promotion for fork PRs. The local R2 commands in the website
 guide are for maintainer recovery and audits, not normal game contributions.
-
-## Try it in your browser
-
-| [Marathon](https://systemless.org/marathon) | [Escape Velocity](https://systemless.org/escape-velocity) |
-| :---: | :---: |
-| [![Marathon running in Systemless](.github/assets/marathon-gameplay.png)](https://systemless.org/marathon) | [![Escape Velocity running in Systemless](.github/assets/escape-velocity-gameplay.png)](https://systemless.org/escape-velocity) |
-
-Play these and more classic Macintosh games in your browser at
-[systemless.org](https://systemless.org/).
-
-The browser frontend and its community catalogue are developed in this
-repository alongside the runtime. Website sources live in [`www/`](www/),
-catalogue entries and optional plugin collections live in
-[`www/catalogue/`](www/catalogue/), and catalogue maintenance tools live in
-[`www/tools/catalogue/`](www/tools/catalogue/). See
-[`www/README.md`](www/README.md) for local browser and catalogue workflows.
 
 ## Quick Start
 
