@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.80.0](https://github.com/benletchford/systemless/compare/v0.79.0...v0.80.0) (2026-10-05)
+
+
+### Features
+
+* **catalogue:** enable Meteor Storm browser play ([#4074](https://github.com/benletchford/systemless/issues/4074)) ([13927f6](https://github.com/benletchford/systemless/commit/13927f683a29272c8ff6d1d7c2316ecc284a85d0))
+
+
+### Bug Fixes
+
+* **ppc:** preserve visible region when changing port origin ([#4065](https://github.com/benletchford/systemless/issues/4065)) ([5282142](https://github.com/benletchford/systemless/commit/528214274f58a97be6c1692cbfea9d72ac3f79bd))
+
+
+### Performance Improvements
+
+* **window:** cache desktop colors during PowerPC repaint ([#4073](https://github.com/benletchford/systemless/issues/4073)) ([5e5b8dc](https://github.com/benletchford/systemless/commit/5e5b8dc0ecb2f211b3a8c1d2faf00dfb05ccf243))
+
 ## [0.79.0](https://github.com/benletchford/systemless/compare/v0.78.0...v0.79.0) (2026-10-05)
 
 
