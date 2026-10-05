@@ -217,8 +217,9 @@ pub(crate) fn close_connection<M: CfmMemory>(
 }
 
 /// Export enumeration has no CPU or architectural return context.
-/// PowerPC System Software (1994), pp. 3-25–3-26: indices are one-based;
-/// symbol names are Pascal strings and symbol classes occupy one byte.
+/// PowerPC System Software (1994), pp. 3-25–3-26: symbol names are Pascal
+/// strings and symbol classes occupy one byte. Its stated one-based index
+/// differs from observed Mac OS 8.1 PowerPC behavior, which is zero-based.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum CfmSymbolQuery {
     Count {
@@ -281,9 +282,9 @@ impl CfmSymbolQuery {
                 class,
                 ..
             } => {
-                let export = index
-                    .checked_sub(1)
-                    .and_then(|index| connection.exports.get(index as usize))
+                let export = usize::try_from(index)
+                    .ok()
+                    .and_then(|index| connection.exports.get(index))
                     .ok_or(CfmSymbolError::SymbolNotFound)?;
                 let encoded = crate::mac_roman::encode_mac_roman_lossy(&export.name);
                 let encoded = &encoded[..encoded.len().min(255)];
@@ -873,11 +874,11 @@ mod tests {
                     };
                     let id = if fault == 1 { 99 } else { 7 };
                     let index = if fault == 2 {
-                        0
+                        1
                     } else if fault == 9 {
                         u32::MAX
                     } else {
-                        1
+                        0
                     };
                     let query = if count {
                         CfmSymbolQuery::Count {

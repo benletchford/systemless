@@ -753,9 +753,9 @@ fn cfm_symbol_enumeration_imports_route_aliases_and_preserve_failed_outputs() {
                 loaded.cpu.gpr[4] = if count {
                     OUTPUT
                 } else if fault == 2 {
-                    2
-                } else {
                     1
+                } else {
+                    0
                 };
                 loaded.cpu.gpr[5] = OUTPUT;
                 loaded.cpu.gpr[6] = OUTPUT + 32;
