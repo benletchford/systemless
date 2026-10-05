@@ -30,11 +30,13 @@ while the guest application name and icon integrate with the Dock.
 
 ## Try it in your browser
 
-| [Marathon](https://systemless.org/marathon) | [Escape Velocity](https://systemless.org/escape-velocity) |
+| [Marathon](https://systemless.org/marathon) (68K) | [Escape Velocity](https://systemless.org/escape-velocity) (68K) |
 | :---: | :---: |
 | [![Marathon running in Systemless](.github/assets/marathon-gameplay.png)](https://systemless.org/marathon) | [![Escape Velocity running in Systemless](.github/assets/escape-velocity-gameplay.png)](https://systemless.org/escape-velocity) |
-| [Escape Velocity Nova](https://systemless.org/escape-velocity-nova/) | [StarCraft Demo](https://systemless.org/starcraft/) |
+| [Escape Velocity Nova](https://systemless.org/escape-velocity-nova/) (PPC) | [StarCraft Demo](https://systemless.org/starcraft/) (PPC) |
 | [![Escape Velocity Nova running in Systemless](https://assets.systemless.org/catalogue/media/sha256/f7/f717e2d7422ef3a59b43b09658006ddc4bec69f3a202087ed4d0780df647d067.png)](https://systemless.org/escape-velocity-nova/) | [![StarCraft Demo running in Systemless](https://assets.systemless.org/catalogue/media/sha256/ea/ea39bdae3357374fc093eb806fa6d943cc75ca97238bc59278e7a9cb9d7458a5.png)](https://systemless.org/starcraft/) |
+
+Architecture labels show each game's default browser launch.
 
 Play these and more classic Macintosh games in your browser at
 [systemless.org](https://systemless.org/).
