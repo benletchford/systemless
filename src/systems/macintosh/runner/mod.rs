@@ -1737,6 +1737,7 @@ pub struct FixtureRunner {
     /// so an unchanged matte is not repainted on every sync.
     ppc_host_matte: Option<PpcHostMatte>,
     prefer_powerpc_executables: bool,
+    preferred_executable_path: Option<String>,
     installer_handoff_baseline: Option<BTreeSet<String>>,
     trace_buffer: std::collections::VecDeque<(u32, u16, u32, u32, u32, u32)>, // (PC, Op, A0, SP, A6, A5)
     /// Set to true when the application calls ExitToShell
@@ -2031,6 +2032,7 @@ impl FixtureRunner {
             ppc_host_matte: None,
             ppc_host_mirror_capacity: 0,
             prefer_powerpc_executables: false,
+            preferred_executable_path: None,
             installer_handoff_baseline: None,
             trace_buffer: std::collections::VecDeque::with_capacity(2000),
             halted: false,
@@ -2110,6 +2112,15 @@ impl FixtureRunner {
     /// Returns whether fat applications should prefer a PowerPC fragment.
     pub fn prefers_powerpc_executables(&self) -> bool {
         self.prefer_powerpc_executables
+    }
+
+    /// Select this exact application path when an archive contains multiple executables.
+    pub fn set_preferred_executable_path(&mut self, path: Option<&str>) {
+        self.preferred_executable_path = path.map(str::to_owned);
+    }
+
+    pub(crate) fn preferred_executable_path(&self) -> Option<&str> {
+        self.preferred_executable_path.as_deref()
     }
 
     pub(crate) fn arm_installer_handoff(&mut self) {

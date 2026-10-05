@@ -101,12 +101,13 @@ pub fn rust_games(c: &CompiledCatalogue) -> Result<String> {
         )?;
         write!(
             out,
-            "settings: GameSettings {{ worker: {}, arrows_as_numpad: {}, show_menu_bar: {}, screen_depth: {:?}, application_partition_size: {:?}, remove_paths: {}, file_mappings: &[{}], key_mappings: &[{}], launch_modifiers: &[{}], runtime_pacing: RuntimePacing {{max_ticks_per_paint: {}, reset_slack_ticks: {}, cpu_mhz: {}}},",
+            "settings: GameSettings {{ worker: {}, arrows_as_numpad: {}, show_menu_bar: {}, screen_depth: {:?}, application_partition_size: {:?}, executable_path: {:?}, remove_paths: {}, file_mappings: &[{}], key_mappings: &[{}], launch_modifiers: &[{}], runtime_pacing: RuntimePacing {{max_ticks_per_paint: {}, reset_slack_ticks: {}, cpu_mhz: {}}},",
             r.worker,
             e.controls.arrows_as_numpad,
             r.show_menu_bar,
             r.screen_depth,
             r.application_partition_size,
+            r.executable_path,
             strings(&r.remove_paths),
             r.file_mappings
                 .iter()
