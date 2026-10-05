@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.78.0](https://github.com/benletchford/systemless/compare/v0.77.0...v0.78.0) (2026-10-05)
+
+
+### Features
+
+* **catalogue:** enable Koji the Frog browser play ([#4040](https://github.com/benletchford/systemless/issues/4040)) ([e57162d](https://github.com/benletchford/systemless/commit/e57162d2446d9af0b93a24d6ec3f50d29159100a))
+* **catalogue:** launch original StuntCopter 1.2 ([#4043](https://github.com/benletchford/systemless/issues/4043)) ([be79e2e](https://github.com/benletchford/systemless/commit/be79e2eb5febc251ddfec27f93f84534632931c7))
+
+
+### Bug Fixes
+
+* **cli:** prefer native PowerPC slice for fat applications ([#4046](https://github.com/benletchford/systemless/issues/4046)) ([72c41a1](https://github.com/benletchford/systemless/commit/72c41a10758ba22246d04025d3eb50b4eaaf38f2))
+
 ## [0.77.0](https://github.com/benletchford/systemless/compare/v0.76.1...v0.77.0) (2026-10-04)
 
 
