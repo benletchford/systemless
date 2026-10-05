@@ -207,7 +207,7 @@
                     bus.write_long(STACK + 2, OUTPUT + 40);
                     bus.write_long(STACK + 6, OUTPUT + 32);
                     bus.write_long(STACK + 10, OUTPUT);
-                    bus.write_long(STACK + 14, if fault == 2 { 0 } else { 1 });
+                    bus.write_long(STACK + 14, if fault == 2 { 1 } else { 0 });
                     bus.write_long(STACK + 18, if fault == 1 { 99 } else { 7 });
                 }
                 if fault == 3 {

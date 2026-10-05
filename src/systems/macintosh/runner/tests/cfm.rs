@@ -223,7 +223,7 @@ fn cfm_symbol_enumeration_observes_native_load_and_close_from_classic_execution(
             runner.bus.write_long(STACK + 2, OUTPUT + 64);
             runner.bus.write_long(STACK + 6, OUTPUT + 60);
             runner.bus.write_long(STACK + 10, OUTPUT + 32);
-            runner.bus.write_long(STACK + 14, 1);
+            runner.bus.write_long(STACK + 14, 0);
             runner.bus.write_long(STACK + 18, id);
         }
         let (steps, running) = runner.run_steps(8, None);
