@@ -91,6 +91,23 @@ pub(super) fn dispatch_apple_event_import(
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
+        PpcImportDispatcherTarget::AEManagerInfo => {
+            // AEManagerInfo (Pack8 selector $0441)
+            // FUNCTION AEManagerInfo(keyword: AEKeyword; VAR result: LongInt): OSErr;
+            // Inside Macintosh: Interapplication Communication (1993), 4-104.
+            let value = match cpu.gpr[3] {
+                keyword if keyword == u32::from_be_bytes(*b"vers") => 0x0101_0000,
+                _ => 0,
+            };
+            let result = if cpu.gpr[4] != 0
+                && memory.write_u32_be(cpu.gpr[4], value).is_some()
+            {
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         PpcImportDispatcherTarget::AppleEventCompatibility(operation) => {
             Some(ppc_dispatch_apple_event_compatibility(
                 operation,
