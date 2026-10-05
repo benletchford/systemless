@@ -1873,7 +1873,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::SetPenState => {
             unreachable!("QuickDraw imports return through dispatch_quickdraw_import")
         }
-        PpcImportDispatcherTarget::CopyBits => {
+        PpcImportDispatcherTarget::CopyBits | PpcImportDispatcherTarget::UnpackBits => {
             unreachable!("bit-transfer imports return through dispatch_bit_transfer_import")
         }
         PpcImportDispatcherTarget::OpenPoly

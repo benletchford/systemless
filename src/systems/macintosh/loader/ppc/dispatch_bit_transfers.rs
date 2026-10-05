@@ -38,6 +38,14 @@ pub(super) fn dispatch_bit_transfer_import(
     } = context;
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::UnpackBits => {
+            // UnpackBits ($A8D0)
+            // Expands PackBits data and advances the source and destination pointer variables.
+            // PROCEDURE UnpackBits (VAR srcPtr, dstPtr: Ptr; dstBytes: INTEGER);
+            // Inside Macintosh Volume I (1985), I-470.
+            let _ = ppc_unpack_bits(memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5] as i16);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::CopyBits => {
             if let Some((_, picture_gworld, _, commands)) = toolbox_startup.open_picture.as_mut() {
                 if *picture_gworld == current_gworld {
@@ -105,4 +113,47 @@ pub(super) fn dispatch_bit_transfer_import(
         }
         _ => None,
     }
+}
+
+fn ppc_unpack_bits(
+    memory: &mut PpcSectionMem,
+    source_variable: u32,
+    destination_variable: u32,
+    destination_bytes: i16,
+) -> Option<()> {
+    if source_variable == 0 || destination_variable == 0 || destination_bytes <= 0 {
+        return Some(());
+    }
+    if !ppc_memory_can_write_bytes(memory, source_variable, 4)
+        || !ppc_memory_can_write_bytes(memory, destination_variable, 4)
+    {
+        return None;
+    }
+    let mut source = memory.read_u32_be(source_variable)?;
+    let destination = memory.read_u32_be(destination_variable)?;
+    let output_len = destination_bytes as usize;
+    let destination_end = destination.checked_add(output_len as u32)?;
+    if !ppc_memory_can_write_bytes(memory, destination, output_len as u32) {
+        return None;
+    }
+    let mut output = Vec::with_capacity(output_len);
+    while output.len() < output_len {
+        let flag = memory.read_u8(source)? as i8;
+        source = source.checked_add(1)?;
+        if flag >= 0 {
+            for _ in 0..(flag as usize + 1).min(output_len - output.len()) {
+                output.push(memory.read_u8(source)?);
+                source = source.checked_add(1)?;
+            }
+        } else if flag != -128 {
+            let value = memory.read_u8(source)?;
+            source = source.checked_add(1)?;
+            let count = ((1 - flag as i16) as usize).min(output_len - output.len());
+            output.resize(output.len() + count, value);
+        }
+    }
+    memory.write_bytes(destination, &output)?;
+    memory.write_u32_be(source_variable, source)?;
+    memory.write_u32_be(destination_variable, destination_end)?;
+    Some(())
 }
