@@ -380,12 +380,12 @@ fn compact_custom_control_does_not_paint_its_metadata_title_beside_it() {
             controls,
             PPC_MAIN_GWORLD,
             (10, 20, 26, 36),
-            b"balloon help",
+            b"Custom Control",
             true,
             0,
             0,
             1,
-            3723,
+            3000,
             0,
         )
     );
@@ -418,7 +418,7 @@ fn compact_custom_control_does_not_paint_its_metadata_title_beside_it() {
                 ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)) != Some(white)
             })
         }),
-        "compact Balloon Help control should show a help glyph"
+        "compact custom control should show a placeholder glyph"
     );
     for y in 10..26 {
         for x in 36..120 {

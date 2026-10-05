@@ -3541,15 +3541,14 @@ pub(super) fn ppc_draw_control_inner(
     let title =
         ppc_read_pstring_bytes(memory, control + PPC_CONTROL_TITLE_OFFSET).unwrap_or_default();
     if !title.is_empty() {
-        // The compact Balloon Help CDEF stores an accessibility title, but
-        // its custom 16-pixel artwork is unavailable to the fallback painter.
-        // Show the conventional help glyph inside its bounds instead of a
-        // blank box or the full title across neighboring controls.
-        let compact_help = proc_id == 3723
+        // A compact custom CDEF may store a descriptive title while drawing
+        // its own icon. When its native drawing code is unavailable, use a
+        // bounded placeholder instead of painting that title over adjacent
+        // controls. Standard control kinds retain their normal titles.
+        let compact_custom = !matches!(proc_id, 0 | 1 | 2 | 16 | 160..=166 | 1008..=1023)
             && right.saturating_sub(left) <= 20
-            && bottom.saturating_sub(top) <= 20
-            && title.eq_ignore_ascii_case(b"balloon help");
-        let title = if compact_help { b"?".to_vec() } else { title };
+            && bottom.saturating_sub(top) <= 20;
+        let title = if compact_custom { b"?".to_vec() } else { title };
         let title = title
             .into_iter()
             .flat_map(|byte| {
@@ -3574,7 +3573,7 @@ pub(super) fn ppc_draw_control_inner(
             metrics.descent,
         );
         let popup = (1008..=1023).contains(&proc_id);
-        let (title_h, title) = if compact_help {
+        let (title_h, title) = if compact_custom {
             (centered_h, title)
         } else if popup {
             // Popup CDEF labels are right-aligned immediately before the
