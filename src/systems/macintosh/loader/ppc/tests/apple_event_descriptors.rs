@@ -20,6 +20,10 @@ fn apple_event_compatibility_imports_pre_resolve_to_typed_operations() {
             PpcAppleEventCompatibilityOperation::CreateList,
         ),
         (
+            "AEPutDesc",
+            PpcAppleEventCompatibilityOperation::PutDesc,
+        ),
+        (
             "AEDisposeDesc",
             PpcAppleEventCompatibilityOperation::DisposeDesc,
         ),
@@ -59,6 +63,127 @@ fn apple_event_compatibility_imports_pre_resolve_to_typed_operations() {
             "unexpected Apple Event dispatch target for {symbol}",
         );
     }
+}
+
+#[test]
+fn native_ppc_ae_put_desc_copies_items_into_lists() {
+    let pef = synthetic_pef_with_import(b"AECreateList");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let list = scratch;
+    let source = scratch + 8;
+    let text = scratch + 0x40;
+    loaded.memory.write_bytes(text, b"cows").unwrap();
+
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = list;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::CreateList,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"TEXT");
+    loaded.cpu.gpr[4] = text;
+    loaded.cpu.gpr[5] = 4;
+    loaded.cpu.gpr[6] = source;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::CreateDesc,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+    loaded.cpu.gpr[3] = list;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = source;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::PutDesc,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+    loaded.cpu.gpr[3] = source;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::DisposeDesc,
+        ),
+    );
+    loaded.cpu.gpr[3] = list;
+    loaded.cpu.gpr[4] = scratch + 0x20;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::CountItems,
+        ),
+    );
+    assert_eq!(loaded.memory.read_u32_be(scratch + 0x20), Some(1));
+
+    loaded.cpu.gpr[3] = list;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = PPC_TYPE_WILDCARD;
+    loaded.cpu.gpr[6] = scratch + 0x24;
+    loaded.cpu.gpr[7] = scratch + 0x28;
+    loaded.cpu.gpr[8] = scratch + 0x2c;
+    loaded.cpu.gpr[9] = 4;
+    loaded.cpu.gpr[10] = scratch + 0x30;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::GetNthPtr,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(scratch + 0x24), Some(PPC_TYPE_WILDCARD));
+    assert_eq!(loaded.memory.read_u32_be(scratch + 0x28), Some(u32::from_be_bytes(*b"TEXT")));
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, scratch + 0x2c, 4),
+        Some(b"cows".to_vec()),
+    );
+    assert_eq!(loaded.memory.read_u32_be(scratch + 0x30), Some(4));
+
+    loaded.cpu.gpr[3] = list;
+    loaded.cpu.gpr[4] = 3;
+    loaded.cpu.gpr[5] = list;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::PutDesc,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_ERR_AE_ILLEGAL_INDEX));
+
+    let non_list = scratch + 0x60;
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"TEXT");
+    loaded.cpu.gpr[4] = text;
+    loaded.cpu.gpr[5] = 4;
+    loaded.cpu.gpr[6] = non_list;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::CreateDesc,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    loaded.cpu.gpr[3] = non_list;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = list;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::PutDesc,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_ERR_AE_WRONG_DATA_TYPE));
 }
 
 #[test]
