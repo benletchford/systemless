@@ -1794,6 +1794,7 @@ pub(crate) fn dispatch_supported_import(
             unreachable!("math imports return through dispatch_math_import")
         }
         PpcImportDispatcherTarget::MoveTo
+        | PpcImportDispatcherTarget::MovePortTo
         | PpcImportDispatcherTarget::Move
         | PpcImportDispatcherTarget::LineTo
         | PpcImportDispatcherTarget::Line => {

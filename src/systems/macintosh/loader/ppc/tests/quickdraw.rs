@@ -3,6 +3,38 @@ use crate::cpu::{CpuOps, Register};
 use crate::trap::test_helpers::{setup_with_port, MockCpu, TEST_SP};
 
 #[test]
+fn move_port_to_shifts_bitmap_bounds_without_moving_port_rect() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "MovePortTo"),
+        PpcImportDispatcherTarget::MovePortTo,
+    );
+    let pef = synthetic_pef_with_import(b"MovePortTo");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let port_rect = (100, 200, 220, 360);
+    ppc_write_rect(&mut loaded.memory, PPC_MAIN_GWORLD + 16, 100, 200, 220, 360).unwrap();
+    loaded.cpu.gpr[3] = 50;
+    loaded.cpu.gpr[4] = 30;
+
+    loaded.memory.write_u16_be(PPC_MAIN_GWORLD + 6, 0xc000).unwrap();
+    ppc_write_rect(&mut loaded.memory, PPC_MAIN_PIXMAP + 6, 100, 200, 220, 360).unwrap();
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MovePortTo);
+    assert_eq!(ppc_read_rect(&mut loaded.memory, PPC_MAIN_GWORLD + 16), Some(port_rect));
+    assert_eq!(
+        ppc_read_rect(&mut loaded.memory, PPC_MAIN_PIXMAP + 6),
+        Some((70, 150, 190, 310)),
+    );
+
+    loaded.memory.write_u16_be(PPC_MAIN_GWORLD + 6, 0).unwrap();
+    ppc_write_rect(&mut loaded.memory, PPC_MAIN_GWORLD + 8, 100, 200, 220, 360).unwrap();
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MovePortTo);
+    assert_eq!(ppc_read_rect(&mut loaded.memory, PPC_MAIN_GWORLD + 16), Some(port_rect));
+    assert_eq!(
+        ppc_read_rect(&mut loaded.memory, PPC_MAIN_GWORLD + 8),
+        Some((70, 150, 190, 310)),
+    );
+}
+
+#[test]
 fn char_extra_updates_color_port_and_nonspace_widths() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "CharExtra"),
