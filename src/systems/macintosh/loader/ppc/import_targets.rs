@@ -1193,6 +1193,14 @@ pub enum PpcImportDispatcherTarget {
     MathCompatibility(PpcMathCompatibilityOperation),
     StdCCompatibility(PpcStdCCompatibilityOperation),
     ObjectSupportCompatibility,
+    ObjectSupportInit,
+    ObjectSupportInstallAccessor,
+    ObjectSupportGetAccessor,
+    ObjectSupportCallAccessor,
+    ObjectSupportDisposeToken,
+    ObjectSupportRemoveAccessor,
+    ObjectSupportSetCallbacks,
+    ObjectSupportResolve,
     GlmSetMode,
     GlmSetFunc,
     GlmMalloc,
@@ -5887,6 +5895,26 @@ pub(crate) fn dispatcher_target_for_import(
         ("StdCLib", "vsprintf") => {
             PpcImportDispatcherTarget::StdCCompatibility(PpcStdCCompatibilityOperation::Vsprintf)
         }
+        ("ObjectSupportLib", "AEObjectInit") => PpcImportDispatcherTarget::ObjectSupportInit,
+        ("ObjectSupportLib", "AEInstallObjectAccessor") => {
+            PpcImportDispatcherTarget::ObjectSupportInstallAccessor
+        }
+        ("ObjectSupportLib", "AEGetObjectAccessor") => {
+            PpcImportDispatcherTarget::ObjectSupportGetAccessor
+        }
+        ("ObjectSupportLib", "AECallObjectAccessor") => {
+            PpcImportDispatcherTarget::ObjectSupportCallAccessor
+        }
+        ("ObjectSupportLib", "AEDisposeToken") => {
+            PpcImportDispatcherTarget::ObjectSupportDisposeToken
+        }
+        ("ObjectSupportLib", "AERemoveObjectAccessor") => {
+            PpcImportDispatcherTarget::ObjectSupportRemoveAccessor
+        }
+        ("ObjectSupportLib", "AESetObjectCallbacks") => {
+            PpcImportDispatcherTarget::ObjectSupportSetCallbacks
+        }
+        ("ObjectSupportLib", "AEResolve") => PpcImportDispatcherTarget::ObjectSupportResolve,
         ("ObjectSupportLib", "CreateObjSpecifier") => {
             PpcImportDispatcherTarget::ObjectSupportCompatibility
         }
