@@ -5058,6 +5058,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "AECreateList") => PpcImportDispatcherTarget::AppleEventCompatibility(
             PpcAppleEventCompatibilityOperation::CreateList,
         ),
+        ("InterfaceLib", "AEPutDesc") => PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::PutDesc,
+        ),
         ("InterfaceLib", "AEDisposeDesc") => PpcImportDispatcherTarget::AppleEventCompatibility(
             PpcAppleEventCompatibilityOperation::DisposeDesc,
         ),
