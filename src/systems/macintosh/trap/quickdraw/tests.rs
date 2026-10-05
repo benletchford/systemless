@@ -18178,6 +18178,24 @@
         assert_eq!(bus.read_word(gd + 38), 480);
         assert_eq!(bus.read_word(gd + 40), 640);
 
+        // A game may request 640x480 and then reaffirm its 8-bit depth.
+        // SetDepth must retain the selected timing rather than restoring native size.
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0A13);
+        bus.write_word(TEST_SP + 2, 1); // color
+        bus.write_word(TEST_SP + 4, 1); // gdDevType
+        bus.write_word(TEST_SP + 6, 8);
+        bus.write_long(TEST_SP + 8, main_gdh);
+        let set_depth = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+        assert!(set_depth.unwrap().is_ok());
+        assert_eq!(bus.read_word(TEST_SP + 12), 0);
+        assert_eq!(
+            (d.screen_mode.1, d.screen_mode.2, d.screen_mode.3),
+            (640, 640, 480)
+        );
+        assert_eq!(bus.read_word(screen_bits_ptr + 12), 640);
+        assert_eq!(bus.read_word(pm + 12), 640);
+
         cpu.write_reg(Register::A7, TEST_SP);
         cpu.write_reg(Register::D0, 0x0A11);
         bus.write_long(TEST_SP, 0);
