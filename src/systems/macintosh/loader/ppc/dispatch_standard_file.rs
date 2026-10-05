@@ -1333,13 +1333,16 @@ fn ppc_standard_file_get_start(
     if let Some(mut filtering) = startup.standard_file_get_filtering.take() {
         if filtering.import_pc == cpu.pc && cpu.lr == cpu.pc {
             let candidate_index = filtering.next_entry;
-            let accepted = cpu.gpr[3] & 0xff != 0;
-            if accepted {
-                filtering.next_entry = filtering.next_entry.saturating_add(1);
-            } else if candidate_index < filtering.tracking.entries.len()
+            // A CustomGetFile file filter returns TRUE to exclude an item.
+            // Inside Macintosh: Files (1992), p. 3-20.
+            let excluded = cpu.gpr[3] & 0xff != 0;
+            if excluded
+                && candidate_index < filtering.tracking.entries.len()
                 && !filtering.tracking.entries[candidate_index].is_directory
             {
                 filtering.tracking.entries.remove(candidate_index);
+            } else {
+                filtering.next_entry = filtering.next_entry.saturating_add(1);
             }
             if let Some(action) = ppc_standard_file_filter_next_action(cpu, memory, &mut filtering)
             {
@@ -1354,6 +1357,9 @@ fn ppc_standard_file_get_start(
                 filtering.filter_pb,
             );
             let tracking = filtering.tracking;
+            // The callback returned through the import stub; resume the
+            // modal call with its original caller as the link register.
+            cpu.lr = tracking.call.return_address;
             ppc_standard_file_draw_get_dialog(memory, gworlds, &tracking);
             startup.standard_file_get_tracking = Some(tracking);
             return PpcImportAction::Yield(u64::MAX);
@@ -1375,6 +1381,7 @@ fn ppc_standard_file_get_start(
             filtering.tracking.call.mode,
             filtering.tracking.call.reply,
         );
+        cpu.lr = filtering.tracking.call.return_address;
         return PpcImportAction::ReturnPreserve;
     }
     if startup.standard_file_get_tracking.is_some() {

@@ -2319,6 +2319,64 @@ fn pb_read_async_returns_from_sound_doubleback_before_its_completion() {
     }
 
     #[test]
+    fn hle_import_runner_custom_get_file_excludes_true_filter_results_and_resumes_caller() {
+        let pef = synthetic_pef_with_import(b"CustomGetFile");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let callback = PPC_DATA_BASE + 0x2000;
+        let reply = PPC_DATA_BASE + 0x2100;
+        loaded.memory.add_region(callback, vec![0; 8]);
+        loaded.memory.add_region(reply, vec![0xaa; 88]);
+        loaded.memory.write_u32_be(callback, 0x3860_0001).unwrap(); // li r3, TRUE: hide file
+        loaded.memory.write_u32_be(callback + 4, 0x4e80_0020).unwrap(); // blr
+        loaded.vfs_directories.push(PpcVfsDirectory {
+            dir_id: 42,
+            parent_dir_id: PPC_ROOT_DIR_ID,
+            path: "Visible Folder".to_string(),
+            creator: PPC_DIRECTORY_CREATOR,
+            file_type: PPC_DIRECTORY_FILE_TYPE,
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: "Hidden File".to_string(),
+            data: b"hidden".to_vec().into(),
+            creator: 0,
+            file_type: u32::from_be_bytes(*b"TEXT"),
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.cpu.gpr[3] = callback;
+        loaded.cpu.gpr[4] = u32::MAX; // all types before the callback filters them
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = reply;
+
+        let probe = loaded.run_with_hle_imports(1024);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        let tracking = loaded
+            .toolbox_startup
+            .standard_file_get_tracking
+            .as_ref()
+            .expect("CustomGetFile must remain open after the filter callback");
+        assert!(tracking.entries.iter().any(|entry| entry.is_directory));
+        assert!(tracking.entries.iter().all(|entry| entry.is_directory));
+        assert_eq!(loaded.cpu.lr, tracking.call.return_address);
+        assert_eq!(loaded.memory.read_u8(reply), Some(0xaa));
+
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 3,
+            message: u32::from(PPC_KEY_ESCAPE) << 8,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        }]);
+        let probe = loaded.run_with_hle_imports(1024);
+        assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+        assert!(loaded.toolbox_startup.standard_file_get_tracking.is_none());
+        assert_eq!(loaded.memory.read_u8(reply), Some(0));
+    }
+
+    #[test]
     fn hle_import_runner_standard_get_file_gui_navigates_and_filters_vfs_entries() {
         let pef = synthetic_pef_with_import(b"StandardGetFile");
         let mut loaded = load_pef_application(&pef).unwrap();
