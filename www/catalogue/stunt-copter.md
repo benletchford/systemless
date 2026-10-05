@@ -1,6 +1,7 @@
 ---
 id: stunt-copter
 kind: game
+launch_enabled: true
 title: StuntCopter 1.2 (Clouds)
 summary: Fly a helicopter and time a stuntman's drop into a horse-drawn cart.
 developer: Duane Blehm
@@ -22,8 +23,11 @@ compatibility:
       MacBinary container without changing its resource fork. The application opens, Begin
       enters the animated helicopter and cart playfield, and a mouse click advances the
       attempt display. The same corrected Begin input reaches the playfield in
-      BasiliskII. A successful cart landing and save behaviour remain unverified. Browser
-      validation is pending.
+      BasiliskII. A production browser build loaded a local same-origin copy of the
+      promoted archive (verified SHA-256), entered the moving playfield, and responded
+      to a drop click. The promoted URL also returned the expected archive bytes and
+      CORS headers for the production site origin. A successful cart landing and save
+      behaviour remain unverified.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/4041
 artifacts:
