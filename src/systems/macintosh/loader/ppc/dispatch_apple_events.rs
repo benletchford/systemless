@@ -163,6 +163,22 @@ fn ppc_store_ae_descriptor_semantics(
     });
 }
 
+fn ppc_put_ae_list_item(
+    items: &mut Vec<(u32, ProcessAeDescriptor)>,
+    index: u32,
+    value: ProcessAeDescriptor,
+) -> i16 {
+    let item = (PPC_TYPE_WILDCARD, value);
+    if index == 0 || index as usize == items.len() + 1 {
+        items.push(item);
+    } else if index as usize <= items.len() {
+        items[index as usize - 1] = item;
+    } else {
+        return PPC_ERR_AE_ILLEGAL_INDEX;
+    }
+    PPC_NO_ERR
+}
+
 fn ppc_sync_event_descriptor_backing(
     memory: &mut PpcSectionMem,
     state: &SharedProcessAppleEventDescriptors,
@@ -298,6 +314,7 @@ pub enum PpcAppleEventCompatibilityOperation {
     SizeOfParam,
     PutParamDesc,
     PutParamPtr,
+    PutDesc,
     Send,
 }
 
@@ -650,6 +667,51 @@ pub(super) fn ppc_dispatch_apple_event_compatibility(
                 let _ = ppc_write_ae_desc(memory, cpu.gpr[4], 0, 0);
             }
             PPC_ERR_AE_EVENT_NOT_HANDLED
+        }
+        PpcAppleEventCompatibilityOperation::PutDesc => {
+            // AEPutDesc (Pack8 selector $0609)
+            // FUNCTION AEPutDesc(theAEDescList: AEDescList; index: LongInt;
+            //   theAEDesc: AEDesc): OSErr;
+            // Inside Macintosh: Interapplication Communication (1993), 5-30.
+            if let Some(value) = ppc_ae_descriptor(memory, &apple_events.descriptors, cpu.gpr[5]) {
+                if apple_events.descriptors.events.contains_key(&cpu.gpr[3]) {
+                    let result = apple_events.descriptors.with_mut(|state| {
+                        let event = state.events.get_mut(&cpu.gpr[3]).unwrap();
+                        ppc_put_ae_list_item(&mut event.items, cpu.gpr[4], value)
+                    });
+                    if result == PPC_NO_ERR {
+                        ppc_sync_event_descriptor_backing(
+                            memory,
+                            &apple_events.descriptors,
+                            cpu.gpr[3],
+                        );
+                    }
+                    result
+                } else if let Some(mut list) =
+                    ppc_ae_descriptor(memory, &apple_events.descriptors, cpu.gpr[3])
+                {
+                    if list.desc_type != u32::from_be_bytes(*b"list")
+                        && list.desc_type != u32::from_be_bytes(*b"reco")
+                    {
+                        PPC_ERR_AE_WRONG_DATA_TYPE
+                    } else {
+                        let result = ppc_put_ae_list_item(&mut list.items, cpu.gpr[4], value);
+                        if result == PPC_NO_ERR {
+                            ppc_store_ae_descriptor_semantics(
+                                memory,
+                                &apple_events.descriptors,
+                                cpu.gpr[3],
+                                list,
+                            );
+                        }
+                        result
+                    }
+                } else {
+                    PPC_ERR_AE_DESC_NOT_FOUND
+                }
+            } else {
+                PPC_ERR_AE_DESC_NOT_FOUND
+            }
         }
         PpcAppleEventCompatibilityOperation::PutParamDesc
         | PpcAppleEventCompatibilityOperation::PutParamPtr => {
