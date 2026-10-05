@@ -1,6 +1,7 @@
 ---
 id: koji-the-frog
 kind: game
+launch_enabled: true
 title: Koji the Frog 2.0.1
 summary: Hop between lily pads, catch insects, and dodge hazards as Koji.
 developer: Slimyfrog Software
