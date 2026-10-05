@@ -3541,6 +3541,15 @@ pub(super) fn ppc_draw_control_inner(
     let title =
         ppc_read_pstring_bytes(memory, control + PPC_CONTROL_TITLE_OFFSET).unwrap_or_default();
     if !title.is_empty() {
+        // The compact Balloon Help CDEF stores an accessibility title, but
+        // its custom 16-pixel artwork is unavailable to the fallback painter.
+        // Show the conventional help glyph inside its bounds instead of a
+        // blank box or the full title across neighboring controls.
+        let compact_help = proc_id == 3723
+            && right.saturating_sub(left) <= 20
+            && bottom.saturating_sub(top) <= 20
+            && title.eq_ignore_ascii_case(b"balloon help");
+        let title = if compact_help { b"?".to_vec() } else { title };
         let title = title
             .into_iter()
             .flat_map(|byte| {
@@ -3565,7 +3574,9 @@ pub(super) fn ppc_draw_control_inner(
             metrics.descent,
         );
         let popup = (1008..=1023).contains(&proc_id);
-        let (title_h, title) = if popup {
+        let (title_h, title) = if compact_help {
+            (centered_h, title)
+        } else if popup {
             // Popup CDEF labels are right-aligned immediately before the
             // button's reserved title-width region, matching the 68K
             // draw_popup_control_label path. Keep the label out of the
@@ -3617,7 +3628,11 @@ pub(super) fn ppc_draw_control_inner(
             .foreground
             .filter(|_| active)
             .unwrap_or_else(|| ppc_theme_rgb(palette.frame_dark));
-        let _ = ppc_draw_text_bytes_styled(
+        // Control titles are confined to the control rectangle. This matters
+        // for compact custom CDEFs whose title is metadata rather than text
+        // intended to be painted beside the control.
+        let title_clip = Some((top, left, bottom, right));
+        let _ = ppc_draw_text_bytes_styled_clipped(
             memory,
             gworlds,
             owner,
@@ -3628,6 +3643,7 @@ pub(super) fn ppc_draw_control_inner(
             title_color,
             None,
             title_style.face,
+            title_clip,
             &title,
         );
     }

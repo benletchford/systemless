@@ -305,6 +305,133 @@ fn selected_checkbox_draws_indicator_and_checkmark_without_framing_title() {
 }
 
 #[test]
+fn checkbox_title_stops_at_control_right_edge() {
+    let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+    let mut last_mem_error = loaded.last_mem_error();
+    let handle = with_test_controls!(
+        loaded,
+        |controls| ppc_new_control_record_values(
+            None,
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            &mut last_mem_error,
+            test_handles!(loaded),
+            controls,
+            PPC_MAIN_GWORLD,
+            (10, 20, 30, 70),
+            b"Balloon Help",
+            true,
+            0,
+            0,
+            1,
+            1,
+            0,
+        )
+    );
+    let surface =
+        ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+            .unwrap();
+    assert!(ppc_paint_rect_bounds(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PPC_MAIN_GWORLD,
+        (0, 0, 40, 160),
+        PPC_RGB_WHITE,
+        None,
+    ));
+    assert!(ppc_draw_control(
+        &mut loaded.memory,
+        &test_handle_records!(loaded),
+        &loaded.controls.records(),
+        &loaded.gworlds,
+        &loaded.process_file_system.vfs_resources,
+        *loaded.process_file_system.current_resource_file,
+        handle,
+    ));
+
+    let front = surface.front_buffer;
+    let white =
+        ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_WHITE).unwrap();
+    for y in 10..30 {
+        for x in 70..120 {
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)),
+                Some(white),
+                "checkbox title painted outside its right edge at ({x}, {y})"
+            );
+        }
+    }
+}
+
+#[test]
+fn compact_custom_control_does_not_paint_its_metadata_title_beside_it() {
+    let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+    let mut last_mem_error = loaded.last_mem_error();
+    let handle = with_test_controls!(
+        loaded,
+        |controls| ppc_new_control_record_values(
+            None,
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            &mut last_mem_error,
+            test_handles!(loaded),
+            controls,
+            PPC_MAIN_GWORLD,
+            (10, 20, 26, 36),
+            b"balloon help",
+            true,
+            0,
+            0,
+            1,
+            3723,
+            0,
+        )
+    );
+    let surface =
+        ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+            .unwrap();
+    assert!(ppc_paint_rect_bounds(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PPC_MAIN_GWORLD,
+        (0, 0, 40, 160),
+        PPC_RGB_WHITE,
+        None,
+    ));
+    assert!(ppc_draw_control(
+        &mut loaded.memory,
+        &test_handle_records!(loaded),
+        &loaded.controls.records(),
+        &loaded.gworlds,
+        &loaded.process_file_system.vfs_resources,
+        *loaded.process_file_system.current_resource_file,
+        handle,
+    ));
+    let front = surface.front_buffer;
+    let white =
+        ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_WHITE).unwrap();
+    assert!(
+        (12..24).any(|y| {
+            (22..34).any(|x| {
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)) != Some(white)
+            })
+        }),
+        "compact Balloon Help control should show a help glyph"
+    );
+    for y in 10..26 {
+        for x in 36..120 {
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)),
+                Some(white),
+                "custom control title painted outside its bounds at ({x}, {y})"
+            );
+        }
+    }
+}
+
+#[test]
 fn selected_radio_button_draws_round_indicator_and_inner_dot() {
     let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
     let mut last_mem_error = loaded.last_mem_error();
