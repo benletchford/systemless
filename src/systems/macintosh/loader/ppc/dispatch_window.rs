@@ -1998,7 +1998,7 @@ pub(super) fn ppc_restore_window_removal_exposure(
         .into_iter()
         .filter_map(|window| {
             ppc_window_is_visible(memory, window)
-                .then(|| ppc_window_global_structure_bounds(memory, gworlds, window))
+                .then(|| ppc_window_global_content_bounds(memory, gworlds, window))
                 .flatten()
         })
         .collect::<Vec<_>>();
