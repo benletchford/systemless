@@ -26,6 +26,7 @@ const baseUrl = (process.env.SYSTEMLESS_ORG_URL ?? DEFAULT_BASE_URL).replace(/\/
 const route = process.env.SYSTEMLESS_RUNTIME_ROUTE;
 const archiveUrl = process.env.SYSTEMLESS_RUNTIME_ARCHIVE_URL;
 const archivePath = process.env.SYSTEMLESS_RUNTIME_ARCHIVE_PATH;
+const usePublicArchive = process.env.SYSTEMLESS_RUNTIME_PUBLIC_ARCHIVE === "1";
 const setupActions = process.env.SYSTEMLESS_RUNTIME_SETUP_ACTIONS_PATH
   ? JSON.parse(readFileSync(process.env.SYSTEMLESS_RUNTIME_SETUP_ACTIONS_PATH, "utf8"))
   : [];
@@ -39,12 +40,13 @@ if (!Number.isFinite(setupTimeoutMs) || setupTimeoutMs <= 0) {
 for (const action of setupActions) {
   if (action?.type === "wait_guest_tick" && Number.isFinite(action.tick) && action.tick >= 0) continue;
   if (action?.type === "wait_ms" && Number.isFinite(action.ms) && action.ms >= 0) continue;
+  if (action?.type === "click" && Number.isFinite(action.h) && Number.isFinite(action.v)) continue;
   if ((action?.type === "key_down" || action?.type === "key_up")
       && typeof action.key === "string" && action.key.length > 0) continue;
   throw new Error(`invalid runtime setup action: ${JSON.stringify(action)}`);
 }
-if (!route || !archiveUrl || !archivePath) {
-  throw new Error("Set SYSTEMLESS_RUNTIME_ROUTE, SYSTEMLESS_RUNTIME_ARCHIVE_URL and SYSTEMLESS_RUNTIME_ARCHIVE_PATH from the catalogue entry under test");
+if (!route || !archiveUrl || (!usePublicArchive && !archivePath)) {
+  throw new Error("Set SYSTEMLESS_RUNTIME_ROUTE and SYSTEMLESS_RUNTIME_ARCHIVE_URL, plus SYSTEMLESS_RUNTIME_ARCHIVE_PATH unless using the public archive");
 }
 const archiveRequestUrls = expectedArchiveRequestUrls(baseUrl, archiveUrl);
 const gpuEnabled = process.env.SYSTEMLESS_RUNTIME_GPU === "1";
@@ -61,20 +63,25 @@ const minSteadyGuestMips = envOptionalNumber("SYSTEMLESS_MIN_STEADY_GUEST_MIPS")
 const targetGuestTick = envOptionalNumber("SYSTEMLESS_RUNTIME_TARGET_TICK");
 const runtimeWarmupMs = envNumber("SYSTEMLESS_RUNTIME_WARMUP_MS", 1000);
 const expectedArchiveRequests =
-  envOptionalNumber("SYSTEMLESS_EXPECT_ARCHIVE_REQUESTS") ?? 1;
+  envOptionalNumber("SYSTEMLESS_EXPECT_ARCHIVE_REQUESTS") ?? (usePublicArchive ? 0 : 1);
+const windowSize = process.env.SYSTEMLESS_RUNTIME_WINDOW_SIZE;
+if (windowSize && !/^[1-9]\d*,[1-9]\d*$/.test(windowSize)) {
+  throw new Error("SYSTEMLESS_RUNTIME_WINDOW_SIZE must be width,height in positive pixels");
+}
 const chromePath = process.env.CHROME_BIN ?? DEFAULT_CHROME_PATHS.find(existsSync);
 
 if (!chromePath) {
   throw new Error("Set CHROME_BIN to a Chrome/Chromium executable for CDP verification");
 }
 
-const archiveServer = await serveArchive(archivePath);
+const archiveServer = usePublicArchive ? null : await serveArchive(archivePath);
 const userDataDir = await mkdtemp(join(tmpdir(), "systemless-runtime-cdp-"));
 const port = 9337 + Math.floor(Math.random() * 1000);
 const chrome = spawn(
   chromePath,
   [
     "--headless=new",
+    ...(windowSize ? [`--window-size=${windowSize}`] : []),
     `--remote-debugging-port=${port}`,
     `--user-data-dir=${userDataDir}`,
     ...(gpuEnabled ? [] : ["--disable-gpu"]),
@@ -101,18 +108,20 @@ try {
 
   const page = connect(target.webSocketDebuggerUrl);
   await page.ready;
-  page.on("Fetch.requestPaused", (params) => handleArchiveRequest(page, params));
+  if (archiveServer) page.on("Fetch.requestPaused", (params) => handleArchiveRequest(page, params));
   await page.send("Page.enable");
   await page.send("Runtime.enable");
   await page.send("Page.addScriptToEvaluateOnNewDocument", {
     source: `window.__systemlessProbePresentation = ${process.env.SYSTEMLESS_RUNTIME_PRESENTATION_DIAGNOSTICS === "1"};window.__systemlessProbeAudio = ${process.env.SYSTEMLESS_RUNTIME_AUDIO_DIAGNOSTICS === "1"};` + runtimeTracePrelude(),
   });
-  await page.send("Fetch.enable", {
-    patterns: [...archiveRequestUrls].map((url) => ({
-      urlPattern: url,
-      requestStage: "Request",
-    })),
-  });
+  if (archiveServer) {
+    await page.send("Fetch.enable", {
+      patterns: [...archiveRequestUrls].map((url) => ({
+        urlPattern: url,
+        requestStage: "Request",
+      })),
+    });
+  }
   await page.send("Page.navigate", { url: `${baseUrl}${route}` });
 
   const probe = await evaluateJson(
@@ -135,7 +144,7 @@ try {
     probe.worker_trace,
     probe.started_at,
   );
-  report.archive_server_requests = archiveServer.requests();
+  report.archive_server_requests = archiveServer?.requests() ?? 0;
   report.environment = probe.environment;
   report.browser = version.Browser;
   report.progress_endpoint = probe.progress_endpoint;
@@ -181,7 +190,7 @@ try {
   assertRuntimePacing(report);
 } finally {
   chrome.kill("SIGTERM");
-  await archiveServer.close();
+  if (archiveServer) await archiveServer.close();
   await sleep(250);
   await rmWithRetry(userDataDir);
 }
@@ -314,6 +323,18 @@ async function runtimeProbe(sampleMs, showDebug, targetGuestTick, setupActions =
           if (performance.now() >= deadline) throw new Error("runtime setup wait exceeded timeout");
           await nextFrame();
         }
+      } else if (action.type === "click") {
+        const el = canvas();
+        const rect = el.getBoundingClientRect();
+        const scale = Number(el.getAttribute("data-output-scale")) || 1;
+        const clientX = Math.round(rect.left + rect.width * action.h * scale / el.width);
+        const clientY = Math.round(rect.top + rect.height * action.v * scale / el.height);
+        const pointer = { pointerId: 1, pointerType: "mouse", isPrimary: true,
+          clientX, clientY, bubbles: true, cancelable: true };
+        el.dispatchEvent(new PointerEvent("pointermove", { ...pointer, button: -1, buttons: 0 }));
+        el.dispatchEvent(new PointerEvent("pointerdown", { ...pointer, button: 0, buttons: 1 }));
+        await nextFrame();
+        el.dispatchEvent(new PointerEvent("pointerup", { ...pointer, button: 0, buttons: 0 }));
       } else if (action.type === "key_down" || action.type === "key_up") {
         const key = action.key === "space" ? " " : action.key;
         const code = action.key === "space" ? "Space"
@@ -617,6 +638,8 @@ function buildReport(samples, console, rafTrace, longTasks, frameTrace, workerTr
     runtime_frame_run_ms: percentiles(runtimeFrames.map((entry) => entry.runMs)),
     runtime_frame_render_ms: percentiles(runtimeFrames.map((entry) => entry.renderMs)),
     runtime_frame_paint_ms: percentiles(runtimeFrames.map((entry) => entry.paintMs)),
+    runtime_visual_frames: runtimeFrames.filter((entry) => entry.visualWork).length,
+    runtime_painted_frames: runtimeFrames.filter((entry) => entry.painted).length,
     guest_progress: {
       first_tick: runtimeFrames[0]?.guestTick ?? null,
       last_tick: runtimeFrames.at(-1)?.guestTick ?? null,
