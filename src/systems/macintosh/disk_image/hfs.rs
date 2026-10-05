@@ -239,15 +239,15 @@ fn validate_allocation_area(bytes: &[u8], layout: VolumeLayout) -> Result<(), St
                 .map_err(|_| "HFS allocation block size is too large".to_string())?,
         )
         .ok_or_else(|| "HFS allocation area length overflow".to_string())?;
-    let end = start
+    start
         .checked_add(length)
         .ok_or_else(|| "HFS allocation area end overflow".to_string())?;
-    if end > bytes.len() {
-        return Err(format!(
-            "HFS allocation area ends at byte {end}, beyond volume length {}",
-            bytes.len()
-        ));
+    if start > bytes.len() {
+        return Err("HFS allocation area starts beyond volume length".into());
     }
+    // Images may omit unused allocation blocks at the tail. Do not require
+    // the entire declared area to be present: append_extent_record checks
+    // each extent we read against both the declared block count and bytes.
     Ok(())
 }
 
@@ -804,6 +804,115 @@ mod tests {
 
         let error = volume.read_data_fork(&volume.files[0]).unwrap_err();
         assert!(error.contains("exceed allocation block count 8"), "{error}");
+    }
+
+    // 3,072 bytes: MDB, two catalog nodes, one file block. The fourth
+    // declared allocation block is absent, and no read needs it.
+    fn absent_tail_fixture(file_extent: Extent) -> Vec<u8> {
+        let mut bytes = volume_fixture(
+            vec![
+                dir_record(ROOT_PARENT_CNID, b"Test", ROOT_CNID),
+                file_record(
+                    ROOT_CNID,
+                    b"Demo",
+                    20,
+                    *b"TEXT",
+                    *b"TEST",
+                    0,
+                    1,
+                    [file_extent, Extent::default(), Extent::default()],
+                    0,
+                    [Extent::default(); 3],
+                ),
+            ],
+            Vec::new(),
+            4,
+        );
+        write_allocation_block(&mut bytes, 2, b"x");
+        bytes.truncate(ALLOCATION_START + 3 * BLOCK_SIZE);
+        bytes
+    }
+
+    #[test]
+    fn extracts_image_with_absent_unreferenced_allocation_tail() {
+        let bytes = absent_tail_fixture(extent(2, 1));
+        let image = super::super::extract_dc42_or_hfs(&bytes).unwrap().unwrap();
+        assert_eq!(image.files.len(), 1);
+        assert_eq!(image.files[0].data, b"x");
+    }
+
+    #[test]
+    fn rejects_referenced_absent_tail_even_past_logical_eof() {
+        // The logical byte is present, but its full two-block extent is not.
+        for file_extent in [extent(3, 1), extent(2, 2)] {
+            let bytes = absent_tail_fixture(file_extent);
+            let volume = HfsVolume::parse(&bytes).unwrap();
+            let error = volume.read_data_fork(&volume.files[0]).unwrap_err();
+            assert!(error.contains("exceeds volume length 3072"), "{error}");
+            let error = super::super::extract_dc42_or_hfs(&bytes).unwrap_err();
+            assert!(error.contains("failed to read HFS data fork"), "{error}");
+        }
+    }
+
+    #[test]
+    fn rejects_catalog_and_bootstrap_extents_in_absent_tail() {
+        for (size_offset, extent_offset, context) in [
+            (146, 150, "read HFS catalog file"),
+            (130, 134, "cannot bootstrap HFS extents overflow file"),
+        ] {
+            let mut bytes = absent_tail_fixture(extent(2, 1));
+            put_u32(&mut bytes, MDB_OFFSET + size_offset, BLOCK_SIZE as u32);
+            put_extent(&mut bytes, MDB_OFFSET + extent_offset, extent(3, 1));
+            let error = HfsVolume::parse(&bytes).unwrap_err();
+            assert!(error.contains(context), "{error}");
+            assert!(error.contains("exceeds volume length 3072"), "{error}");
+        }
+    }
+
+    #[test]
+    fn absent_tail_does_not_bypass_invalid_allocation_metadata() {
+        for block_size in [0, 513] {
+            let mut bytes = absent_tail_fixture(extent(2, 1));
+            put_u32(&mut bytes, MDB_OFFSET + 20, block_size);
+            assert!(HfsVolume::parse(&bytes)
+                .unwrap_err()
+                .contains("invalid HFS allocation block size"));
+        }
+        let mut bytes = absent_tail_fixture(extent(2, 1));
+        put_u16(&mut bytes, MDB_OFFSET + 18, 0);
+        assert!(HfsVolume::parse(&bytes)
+            .unwrap_err()
+            .contains("no allocation blocks"));
+        put_u16(&mut bytes, MDB_OFFSET + 18, 4);
+        put_u16(&mut bytes, MDB_OFFSET + 28, 7);
+        assert!(HfsVolume::parse(&bytes)
+            .unwrap_err()
+            .contains("allocation area starts beyond volume length"));
+    }
+
+    #[test]
+    fn rejects_overflow_extent_in_absent_tail() {
+        let bytes = absent_tail_fixture(extent(2, 1));
+        let layout = VolumeLayout {
+            allocation_block_size: BLOCK_SIZE as u32,
+            allocation_block_count: 4,
+            allocation_start: ALLOCATION_START_BLOCK as u16,
+        };
+        let fork = Fork {
+            logical_size: BLOCK_SIZE as u32 + 1,
+            extents: [extent(2, 1), Extent::default(), Extent::default()],
+        };
+        let overflow = HashMap::from([(
+            ExtentKey {
+                fork_type: RESOURCE_FORK,
+                file_cnid: 20,
+                start_block: 1,
+            },
+            [extent(3, 1), Extent::default(), Extent::default()],
+        )]);
+        let error =
+            read_fork_from_parts(&bytes, layout, &overflow, 20, RESOURCE_FORK, &fork).unwrap_err();
+        assert!(error.contains("exceeds volume length 3072"), "{error}");
     }
 
     #[test]
