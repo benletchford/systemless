@@ -2696,8 +2696,8 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::SpeechCompatibility(operation) => {
             Some(ppc_dispatch_speech_compatibility(operation, cpu, memory))
         }
-        PpcImportDispatcherTarget::QuickTimeCompatibility(operation) => Some(
-            dispatch_quicktime_compatibility(
+        PpcImportDispatcherTarget::QuickTimeCompatibility(operation) => {
+            Some(dispatch_quicktime_compatibility(
                 operation,
                 cpu,
                 memory,
@@ -2711,8 +2711,8 @@ pub(crate) fn dispatch_supported_import(
                 sound,
                 files.as_slice(),
                 vfs_files.as_slice(),
-            ),
-        ),
+            ))
+        }
         PpcImportDispatcherTarget::InputSprocketCompatibility(_) => {
             unreachable!(
                 "input sprocket compatibility imports return through dispatch_inputsprocket_import"
@@ -2736,7 +2736,18 @@ pub(crate) fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
+                apple_events,
             ))
+        }
+        PpcImportDispatcherTarget::ObjectSupportInit
+        | PpcImportDispatcherTarget::ObjectSupportInstallAccessor
+        | PpcImportDispatcherTarget::ObjectSupportGetAccessor
+        | PpcImportDispatcherTarget::ObjectSupportCallAccessor
+        | PpcImportDispatcherTarget::ObjectSupportDisposeToken
+        | PpcImportDispatcherTarget::ObjectSupportRemoveAccessor
+        | PpcImportDispatcherTarget::ObjectSupportSetCallbacks
+        | PpcImportDispatcherTarget::ObjectSupportResolve => {
+            unreachable!("object support imports return through Apple Event dispatch")
         }
         PpcImportDispatcherTarget::GlideSstQueryBoards => {
             // 3Dfx Glide 2.4 Reference Manual, grSstQueryBoards: the routine
@@ -3108,10 +3119,16 @@ mod agl_choose_tests {
         let mut cpu = PpcCpu::new();
         let mut agl = PpcAglState::default();
         cpu.gpr[4] = u32::MAX;
-        assert_eq!(ppc_agl_choose_pixel_format(&cpu, &mut memory, &mut agl, &[]), 0);
+        assert_eq!(
+            ppc_agl_choose_pixel_format(&cpu, &mut memory, &mut agl, &[]),
+            0
+        );
         cpu.gpr[4] = 0;
         cpu.gpr[5] = 0;
-        assert_eq!(ppc_agl_choose_pixel_format(&cpu, &mut memory, &mut agl, &[]), 0);
+        assert_eq!(
+            ppc_agl_choose_pixel_format(&cpu, &mut memory, &mut agl, &[]),
+            0
+        );
         assert_eq!(agl.get_error(), classic_gl_agl::AGL_BAD_VALUE);
         assert_eq!(agl.get_error(), 0);
 
@@ -3125,7 +3142,10 @@ mod agl_choose_tests {
                 .collect(),
         );
         cpu.gpr[5] = 0x2000;
-        assert_eq!(ppc_agl_choose_pixel_format(&cpu, &mut memory, &mut agl, &[]), 0);
+        assert_eq!(
+            ppc_agl_choose_pixel_format(&cpu, &mut memory, &mut agl, &[]),
+            0
+        );
         assert_eq!(agl.get_error(), 0);
 
         memory.add_region(
@@ -3136,13 +3156,19 @@ mod agl_choose_tests {
                 .collect(),
         );
         cpu.gpr[5] = 0x3000;
-        assert_eq!(ppc_agl_choose_pixel_format(&cpu, &mut memory, &mut agl, &[]), 0);
+        assert_eq!(
+            ppc_agl_choose_pixel_format(&cpu, &mut memory, &mut agl, &[]),
+            0
+        );
         assert_eq!(agl.get_error(), classic_gl_agl::AGL_BAD_ATTRIBUTE);
 
         cpu.gpr[3] = 0x1000;
         cpu.gpr[4] = 1;
         cpu.gpr[5] = 0x2000;
-        assert_eq!(ppc_agl_choose_pixel_format(&cpu, &mut memory, &mut agl, &[]), 0);
+        assert_eq!(
+            ppc_agl_choose_pixel_format(&cpu, &mut memory, &mut agl, &[]),
+            0
+        );
         assert_eq!(agl.get_error(), classic_gl_agl::AGL_BAD_GDEV);
     }
 
@@ -3225,11 +3251,22 @@ fn ppc_dispatch_object_support_compatibility(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
+    apple_events: &mut PpcAppleEventState,
 ) -> PpcImportAction {
     let result_ptr = cpu.gpr[8];
     if result_ptr == 0 || !ppc_memory_can_write_bytes(memory, result_ptr, 8) {
         return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
     }
+    let Some(container) =
+        dispatch_apple_events::ppc_ae_descriptor(memory, &apple_events.descriptors, cpu.gpr[4])
+    else {
+        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+    };
+    let Some(key_data) =
+        dispatch_apple_events::ppc_ae_descriptor(memory, &apple_events.descriptors, cpu.gpr[6])
+    else {
+        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+    };
     let mut data = Vec::with_capacity(12);
     data.extend_from_slice(&cpu.gpr[3].to_be_bytes());
     data.extend_from_slice(&cpu.gpr[5].to_be_bytes());
@@ -3241,10 +3278,68 @@ fn ppc_dispatch_object_support_compatibility(
         heap_limit,
         last_mem_error,
         handles,
-        None,
+        Some(&apple_events.descriptors),
         result_ptr,
         u32::from_be_bytes(*b"obj "),
         &data,
     );
+    if result == PPC_NO_ERR {
+        let desired_class = cpu.gpr[3];
+        let key_form = cpu.gpr[5];
+        let mut fields = HashMap::new();
+        // Object specifier keywords and descriptor types follow
+        // Interapplication Communication (1993), pp. 6-75--6-77.
+        for (keyword, desc_type, value) in [
+            (u32::from_be_bytes(*b"want"), PPC_TYPE_TYPE, desired_class),
+            (u32::from_be_bytes(*b"form"), PPC_TYPE_ENUMERATED, key_form),
+        ] {
+            fields.insert(
+                keyword,
+                ProcessAeDescriptor {
+                    desc_type,
+                    data: value.to_be_bytes().to_vec(),
+                    fields: HashMap::new(),
+                    items: Vec::new(),
+                },
+            );
+        }
+        fields.insert(u32::from_be_bytes(*b"from"), container);
+        fields.insert(u32::from_be_bytes(*b"seld"), key_data);
+        let handle = memory.read_u32_be(result_ptr + 4).unwrap_or(0);
+        apple_events.descriptors.with_mut(|state| {
+            if let Some(descriptor) = state.descriptors.get_mut(&result_ptr) {
+                descriptor.fields = fields.clone();
+            }
+            if let Some(descriptor) = state.backing.get_mut(&handle) {
+                descriptor.fields = fields;
+            }
+        });
+        // CreateObjSpecifier owns its input descriptors when disposeInputs is
+        // TRUE. Inside Macintosh: Interapplication Communication (1993), 6-93.
+        if cpu.gpr[7] != 0 {
+            let mut disposed_handles = Vec::new();
+            for input in [cpu.gpr[4], cpu.gpr[6]] {
+                let handle = memory.read_u32_be(input + 4).unwrap_or(0);
+                if handle != 0 && !disposed_handles.contains(&handle) {
+                    let _ = ppc_dispose_process_native_handle(
+                        process_memory_manager,
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        handle,
+                    );
+                    disposed_handles.push(handle);
+                }
+                let _ = memory.write_u32_be(input, 0);
+                let _ = memory.write_u32_be(input + 4, 0);
+                apple_events.descriptors.with_mut(|state| {
+                    state.descriptors.remove(&input);
+                    state.events.remove(&input);
+                });
+            }
+        }
+    }
     PpcImportAction::Return(ppc_i16_result(result))
 }

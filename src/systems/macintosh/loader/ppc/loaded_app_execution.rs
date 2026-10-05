@@ -568,7 +568,53 @@ impl PpcLoadedApp {
                             .expect("native allocator registered during execution");
                         let mut heap_cursor = native_heap.heap_cursor;
                         let mut last_mem_error = native_heap.last_mem_error;
+                        let heap_limit = process_memory_manager
+                            .native_allocation_limit(native_heap.heap_limit);
                         let handles = &mut process_memory_manager.native_handle_records().to_vec();
+                        if let Some(action) = ppc_continue_ae_resolve_cleanup(
+                            cpu,
+                            guest_calls.depth(),
+                            &mut apple_events,
+                            &mut *process_memory_manager,
+                            memory,
+                            &mut heap_cursor,
+                            heap_limit,
+                            &mut last_mem_error,
+                            handles,
+                            &mut toolbox_startup,
+                        ) {
+                            process_memory_manager.set_native_mem_error(last_mem_error);
+                            return guest_calls.externalize_powerpc_action(cpu, action);
+                        }
+                        if ppc_complete_token_disposal(
+                            cpu,
+                            guest_calls.depth(),
+                            &mut apple_events,
+                            &mut *process_memory_manager,
+                            memory,
+                            &mut heap_cursor,
+                            heap_limit,
+                            &mut last_mem_error,
+                            handles,
+                        ) {
+                            process_memory_manager.set_native_mem_error(last_mem_error);
+                            return PpcImportAction::Continue;
+                        }
+                        if let Some(action) = ppc_continue_ae_resolve(
+                            cpu,
+                            guest_calls.depth(),
+                            &mut apple_events,
+                            &mut *process_memory_manager,
+                            memory,
+                            &mut heap_cursor,
+                            heap_limit,
+                            &mut last_mem_error,
+                            handles,
+                            &mut toolbox_startup,
+                        ) {
+                            process_memory_manager.set_native_mem_error(last_mem_error);
+                            return guest_calls.externalize_powerpc_action(cpu, action);
+                        }
                         ppc_complete_apple_event_dispatch(
                             &mut apple_events,
                             guest_calls.depth(),

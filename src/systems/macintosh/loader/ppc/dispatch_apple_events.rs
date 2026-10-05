@@ -10,12 +10,454 @@ pub(super) struct PpcAppleEventDispatchAllocation {
     pub(super) reply_handle: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PpcObjectAccessor {
+    pub(super) pointer: u32,
+    pub(super) refcon: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PpcAeResolveLevel {
+    pub(super) desired_class: u32,
+    pub(super) key_form: u32,
+    pub(super) key_data: ProcessAeDescriptor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PpcAeResolvePending {
+    pub(super) resume_guest_call_depth: usize,
+    pub(super) levels: Vec<PpcAeResolveLevel>,
+    pub(super) index: usize,
+    pub(super) container_class: u32,
+    pub(super) container_type: u32,
+    pub(super) container_handle: u32,
+    pub(super) token_ptr: u32,
+    pub(super) scratch_ptr: u32,
+    pub(super) owned_handles: Vec<u32>,
+    pub(super) intermediate_tokens: Vec<(u32, u32)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PpcAeResolveCleanupPending {
+    pub(super) resolution: PpcAeResolvePending,
+    pub(super) result: i16,
+    pub(super) current_token: (u32, u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PpcAeTokenDisposalPending {
+    pub(super) resume_guest_call_depth: usize,
+    pub(super) token_ptr: u32,
+}
+
+fn ppc_ae_field_u32(
+    descriptor: &ProcessAeDescriptor,
+    keyword: u32,
+    expected_type: u32,
+) -> Option<u32> {
+    let field = descriptor.fields.get(&keyword)?;
+    if field.desc_type != expected_type {
+        return None;
+    }
+    let bytes = &field.data;
+    Some(u32::from_be_bytes(bytes.get(..4)?.try_into().ok()?))
+}
+
+pub(super) fn ppc_ae_collect_resolve_levels(
+    specifier: &ProcessAeDescriptor,
+) -> Option<(ProcessAeDescriptor, Vec<PpcAeResolveLevel>)> {
+    fn collect(
+        specifier: &ProcessAeDescriptor,
+        levels: &mut Vec<PpcAeResolveLevel>,
+        depth: usize,
+    ) -> Option<ProcessAeDescriptor> {
+        // Object specifiers form a container chain. Bound traversal so a
+        // malformed guest descriptor cannot exhaust the host stack.
+        if specifier.desc_type != PPC_TYPE_OBJECT_SPECIFIER || depth >= 64 {
+            return None;
+        }
+        let container = specifier
+            .fields
+            .get(&u32::from_be_bytes(*b"from"))
+            .cloned()
+            .unwrap_or_else(|| ProcessAeDescriptor {
+                desc_type: PPC_TYPE_NULL,
+                ..Default::default()
+            });
+        let base = if container.desc_type == PPC_TYPE_OBJECT_SPECIFIER {
+            collect(&container, levels, depth + 1)?
+        } else {
+            container
+        };
+        levels.push(PpcAeResolveLevel {
+            desired_class: ppc_ae_field_u32(
+                specifier,
+                u32::from_be_bytes(*b"want"),
+                PPC_TYPE_TYPE,
+            )?,
+            key_form: ppc_ae_field_u32(
+                specifier,
+                u32::from_be_bytes(*b"form"),
+                PPC_TYPE_ENUMERATED,
+            )?,
+            key_data: specifier.fields.get(&u32::from_be_bytes(*b"seld"))?.clone(),
+        });
+        Some(base)
+    }
+
+    // Inside Macintosh: Interapplication Communication (1993), 6-75--6-77:
+    // resolve the innermost container before the outer object specifier.
+    let mut levels = Vec::new();
+    let base = collect(specifier, &mut levels, 0)?;
+    Some((base, levels))
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PpcAppleEventState {
     pub(crate) apple_event_launch_state: SharedProcessAppleEventLaunchState,
     pub(super) handlers: SharedProcessAppleEventHandlers,
     pub(super) descriptors: SharedProcessAppleEventDescriptors,
     pub(super) pending_dispatches: Vec<PpcAppleEventDispatchAllocation>,
+    pub(super) pending_resolutions: Vec<PpcAeResolvePending>,
+    pub(super) pending_resolve_cleanups: Vec<PpcAeResolveCleanupPending>,
+    pub(super) pending_token_disposals: Vec<PpcAeTokenDisposalPending>,
+    pub(super) object_support_initialized: bool,
+    pub(super) object_accessors: HashMap<(bool, u32, u32), PpcObjectAccessor>,
+    pub(super) object_callbacks: HashMap<u32, u32>,
+}
+
+impl PpcAppleEventState {
+    pub(super) fn object_accessor_exact(
+        &self,
+        desired_class: u32,
+        container_type: u32,
+    ) -> Option<PpcObjectAccessor> {
+        [false, true]
+            .into_iter()
+            .find_map(|system| {
+                self.object_accessors
+                    .get(&(system, desired_class, container_type))
+            })
+            .copied()
+    }
+
+    pub(super) fn object_accessor_for(
+        &self,
+        desired_class: u32,
+        container_type: u32,
+    ) -> Option<PpcObjectAccessor> {
+        // Search the application table before the system table, then prefer
+        // exact entries over wildcards (IAC 1993, pp. 6-21--6-24).
+        for is_sys_handler in [false, true] {
+            for (desired, container) in [
+                (desired_class, container_type),
+                (desired_class, PPC_TYPE_WILDCARD),
+                (PPC_TYPE_WILDCARD, container_type),
+                (PPC_TYPE_WILDCARD, PPC_TYPE_WILDCARD),
+            ] {
+                if let Some(accessor) =
+                    self.object_accessors
+                        .get(&(is_sys_handler, desired, container))
+                {
+                    return Some(*accessor);
+                }
+            }
+        }
+        None
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_start_object_accessor(
+    cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    toolbox_startup: &mut PpcToolboxStartupState,
+    accessor: PpcObjectAccessor,
+    arguments: [u32; 9],
+) -> PpcImportAction {
+    let Some(procedure) = resolve_guest_procedure(
+        memory,
+        accessor.pointer,
+        cpu.gpr[2],
+        None,
+        GuestIsa::PowerPc,
+        GuestIsa::PowerPc,
+    ) else {
+        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+    };
+    let mapped = match procedure.isa {
+        GuestIsa::PowerPc => memory.read_u32_be(procedure.entry).is_some(),
+        GuestIsa::M68k => memory.read_u16_be(procedure.entry).is_some(),
+    };
+    if !mapped {
+        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+    }
+    match procedure.isa {
+        GuestIsa::PowerPc => {
+            if install_powerpc_call_arguments(cpu, memory, &arguments).is_none() {
+                PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR))
+            } else {
+                GuestCallEffect::call_guest(
+                    GuestCallRequest::new(GuestCallTarget {
+                        isa: GuestIsa::PowerPc,
+                        entry: procedure.entry,
+                        rtoc: procedure.rtoc,
+                    }),
+                    GuestCallContinuation::to_powerpc(
+                        PPC_GUEST_CALL_RETURN_PC,
+                        cpu.lr,
+                        cpu.gpr[2],
+                        PpcNativeReturnGpr3::Preserve,
+                    ),
+                )
+                .into_ppc_import_action()
+                .expect("validated accessor must be native PowerPC")
+            }
+        }
+        GuestIsa::M68k if procedure.proc_info != 0 => {
+            let saved_mixed_mode_m68k = toolbox_startup.mixed_mode_m68k.snapshot();
+            ppc_begin_m68k_universal_proc(
+                cpu,
+                Some(process_memory_manager),
+                memory,
+                heap_cursor,
+                heap_limit,
+                toolbox_startup,
+                procedure,
+                procedure.proc_info,
+                None,
+                arguments.to_vec(),
+                cpu.lr,
+                PpcNativeReturnGpr3::Preserve,
+            )
+            .unwrap_or_else(|| {
+                toolbox_startup
+                    .mixed_mode_m68k
+                    .restore_snapshot(saved_mixed_mode_m68k);
+                PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR))
+            })
+        }
+        GuestIsa::M68k => PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_start_token_disposal_callback(
+    cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    toolbox_startup: &mut PpcToolboxStartupState,
+    pointer: u32,
+    token_ptr: u32,
+) -> PpcImportAction {
+    let Some(procedure) = resolve_guest_procedure(
+        memory,
+        pointer,
+        cpu.gpr[2],
+        None,
+        GuestIsa::PowerPc,
+        GuestIsa::PowerPc,
+    ) else {
+        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+    };
+    let mapped = match procedure.isa {
+        GuestIsa::PowerPc => memory.read_u32_be(procedure.entry).is_some(),
+        GuestIsa::M68k => memory.read_u16_be(procedure.entry).is_some(),
+    };
+    if !mapped {
+        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+    }
+    match procedure.isa {
+        GuestIsa::PowerPc => {
+            if install_powerpc_call_arguments(cpu, memory, &[token_ptr]).is_none() {
+                PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR))
+            } else {
+                GuestCallEffect::call_guest(
+                    GuestCallRequest::new(GuestCallTarget {
+                        isa: GuestIsa::PowerPc,
+                        entry: procedure.entry,
+                        rtoc: procedure.rtoc,
+                    }),
+                    GuestCallContinuation::to_powerpc(
+                        PPC_GUEST_CALL_RETURN_PC,
+                        cpu.lr,
+                        cpu.gpr[2],
+                        PpcNativeReturnGpr3::Preserve,
+                    ),
+                )
+                .into_ppc_import_action()
+                .expect("validated token disposal callback must be native PowerPC")
+            }
+        }
+        GuestIsa::M68k if procedure.proc_info != 0 => {
+            let saved_mixed_mode_m68k = toolbox_startup.mixed_mode_m68k.snapshot();
+            ppc_begin_m68k_universal_proc(
+                cpu,
+                Some(process_memory_manager),
+                memory,
+                heap_cursor,
+                heap_limit,
+                toolbox_startup,
+                procedure,
+                procedure.proc_info,
+                None,
+                vec![token_ptr],
+                cpu.lr,
+                PpcNativeReturnGpr3::Preserve,
+            )
+            .unwrap_or_else(|| {
+                toolbox_startup
+                    .mixed_mode_m68k
+                    .restore_snapshot(saved_mixed_mode_m68k);
+                PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR))
+            })
+        }
+        GuestIsa::M68k => PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_resolve_value_handle(
+    descriptor: &ProcessAeDescriptor,
+    apple_events: &mut PpcAppleEventState,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+) -> Result<u32, i16> {
+    if descriptor.desc_type == PPC_TYPE_NULL && descriptor.data.is_empty() {
+        return Ok(0);
+    }
+    let handle = process_memory_manager.copy_bytes_to_new_native_handle(memory, &descriptor.data);
+    if handle == 0 {
+        let error = process_memory_manager
+            .native_heap_state()
+            .map_or(PPC_MEM_FULL_ERR, |heap| heap.last_mem_error);
+        ppc_apply_process_native_allocator(
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            last_mem_error,
+        );
+        return Err(error);
+    }
+    ppc_apply_process_native_allocator(process_memory_manager, memory, heap_cursor, last_mem_error);
+    ppc_apply_process_native_handle(process_memory_manager, handles, handle);
+    apple_events.descriptors.with_mut(|state| {
+        state.backing.insert(handle, descriptor.clone());
+    });
+    Ok(handle)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_finish_ae_resolve(
+    pending: PpcAeResolvePending,
+    error: i16,
+    apple_events: &mut PpcAppleEventState,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+) {
+    let final_handle = if error == PPC_NO_ERR {
+        memory.read_u32_be(pending.token_ptr + 4).unwrap_or(0)
+    } else {
+        0
+    };
+    if error != PPC_NO_ERR {
+        let _ = ppc_write_ae_desc(memory, pending.token_ptr, PPC_TYPE_NULL, 0);
+    }
+    let mut disposable = pending.owned_handles;
+    disposable.sort_unstable();
+    disposable.dedup();
+    for handle in disposable {
+        if handle == final_handle {
+            continue;
+        }
+        apple_events.descriptors.with_mut(|state| {
+            state.backing.remove(&handle);
+        });
+        let _ = process_memory_manager.dispose_native_handle(memory, handle);
+        handles.retain(|record| record.handle != handle);
+    }
+    if pending.scratch_ptr != 0 {
+        apple_events.descriptors.with_mut(|state| {
+            state.descriptors.remove(&pending.scratch_ptr);
+        });
+        let _ = process_memory_manager.dispose_native_ptr(pending.scratch_ptr);
+    }
+    ppc_apply_process_native_allocator(process_memory_manager, memory, heap_cursor, last_mem_error);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_dispatch_ae_resolve_level(
+    pending: &mut PpcAeResolvePending,
+    cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    apple_events: &mut PpcAppleEventState,
+    toolbox_startup: &mut PpcToolboxStartupState,
+) -> Result<PpcImportAction, i16> {
+    let level = &pending.levels[pending.index];
+    let accessor = apple_events
+        .object_accessor_for(level.desired_class, pending.container_type)
+        .ok_or(PPC_ERR_AE_ACCESSOR_NOT_FOUND)?;
+    let key_handle = ppc_resolve_value_handle(
+        &level.key_data,
+        apple_events,
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+        handles,
+    )?;
+    if key_handle != 0 {
+        pending.owned_handles.push(key_handle);
+    }
+    let output = if pending.index + 1 == pending.levels.len() {
+        pending.token_ptr
+    } else {
+        pending.scratch_ptr
+    };
+    if !ppc_write_ae_desc(memory, output, PPC_TYPE_NULL, 0) {
+        return Err(PPC_PARAM_ERR);
+    }
+    let arguments = [
+        level.desired_class,
+        pending.container_type,
+        pending.container_handle,
+        pending.container_class,
+        level.key_form,
+        level.key_data.desc_type,
+        key_handle,
+        output,
+        accessor.refcon,
+    ];
+    let action = ppc_start_object_accessor(
+        cpu,
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        heap_limit,
+        toolbox_startup,
+        accessor,
+        arguments,
+    );
+    match action {
+        PpcImportAction::Return(error) => Err(error as u16 as i16),
+        action => Ok(action),
+    }
 }
 
 pub(super) struct PpcAppleEventDispatchContext<'a> {
@@ -48,6 +490,312 @@ pub(super) fn dispatch_apple_event_import(
     } = context;
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::ObjectSupportInit => {
+            // AEObjectInit initializes the object support dispatch tables.
+            // FUNCTION AEObjectInit: OSErr;
+            // Inside Macintosh: Interapplication Communication (1993), 6-77.
+            apple_events.object_support_initialized = true;
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
+        PpcImportDispatcherTarget::ObjectSupportInstallAccessor => {
+            // AEInstallObjectAccessor registers or replaces an accessor.
+            // FUNCTION AEInstallObjectAccessor(desiredClass, containerType:
+            //   DescType; theAccessor: AccessorProcPtr; accessorRefcon:
+            //   LongInt; isSysHandler: Boolean): OSErr;
+            // Inside Macintosh: Interapplication Communication (1993), 6-78.
+            let pointer = cpu.gpr[5];
+            let result =
+                if !apple_events.object_support_initialized || pointer == 0 || pointer & 1 != 0 {
+                    PPC_PARAM_ERR
+                } else {
+                    let key = (cpu.gpr[7] != 0, cpu.gpr[3], cpu.gpr[4]);
+                    apple_events.object_accessors.insert(
+                        key,
+                        PpcObjectAccessor {
+                            pointer,
+                            refcon: cpu.gpr[6],
+                        },
+                    );
+                    PPC_NO_ERR
+                };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::ObjectSupportGetAccessor => {
+            // AEGetObjectAccessor reads an exact entry from the selected
+            // application or system table without removing it.
+            // FUNCTION AEGetObjectAccessor(desiredClass, containerType:
+            //   DescType; VAR theAccessor: AccessorProcPtr;
+            //   VAR accessorRefcon: LongInt; isSysHandler: Boolean): OSErr;
+            // Inside Macintosh: Interapplication Communication (1993), 6-82--6-83.
+            let pointer_out = cpu.gpr[5];
+            let refcon_out = cpu.gpr[6];
+            let result = if !apple_events.object_support_initialized
+                || !ppc_memory_can_write_bytes(memory, pointer_out, 4)
+                || !ppc_memory_can_write_bytes(memory, refcon_out, 4)
+            {
+                PPC_PARAM_ERR
+            } else {
+                let key = (cpu.gpr[7] != 0, cpu.gpr[3], cpu.gpr[4]);
+                if let Some(accessor) = apple_events.object_accessors.get(&key) {
+                    let _ = memory.write_u32_be(pointer_out, accessor.pointer);
+                    let _ = memory.write_u32_be(refcon_out, accessor.refcon);
+                    PPC_NO_ERR
+                } else {
+                    let _ = memory.write_u32_be(pointer_out, 0);
+                    let _ = memory.write_u32_be(refcon_out, 0);
+                    PPC_ERR_AE_ACCESSOR_NOT_FOUND
+                }
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::ObjectSupportCallAccessor => {
+            // AECallObjectAccessor passes two AEDesc values by value. Their
+            // type and handle occupy two words each; the registered refcon is
+            // appended as the ninth word of the accessor's native PPC call.
+            // FUNCTION AECallObjectAccessor(desiredClass: DescType;
+            //   containerToken: AEDesc; containerClass, keyForm: DescType;
+            //   keyData: AEDesc; VAR theToken: AEDesc): OSErr;
+            // Inside Macintosh: Interapplication Communication (1993), 6-83;
+            // PowerPC System Software (1994), 1-47--1-50.
+            let token = cpu.gpr[10];
+            let action = if !ppc_write_ae_desc(memory, token, PPC_TYPE_NULL, 0)
+                || !apple_events.object_support_initialized
+            {
+                PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR))
+            } else if let Some(accessor) =
+                apple_events.object_accessor_exact(cpu.gpr[3], cpu.gpr[4])
+            {
+                let arguments = [
+                    cpu.gpr[3],
+                    cpu.gpr[4],
+                    cpu.gpr[5],
+                    cpu.gpr[6],
+                    cpu.gpr[7],
+                    cpu.gpr[8],
+                    cpu.gpr[9],
+                    token,
+                    accessor.refcon,
+                ];
+                ppc_start_object_accessor(
+                    cpu,
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    toolbox_startup,
+                    accessor,
+                    arguments,
+                )
+            } else {
+                PpcImportAction::Return(ppc_i16_result(PPC_ERR_AE_ACCESSOR_NOT_FOUND))
+            };
+            Some(action)
+        }
+        PpcImportDispatcherTarget::ObjectSupportDisposeToken => {
+            // AEDisposeToken first calls the application's token-disposal
+            // callback, then falls back to AEDisposeDesc when absent or when
+            // the callback returns errAEEventNotHandled.
+            // FUNCTION AEDisposeToken(VAR theToken: AEDesc): OSErr;
+            // Inside Macintosh: Interapplication Communication (1993), 6-86--6-87.
+            let token_ptr = cpu.gpr[3];
+            if !apple_events.object_support_initialized
+                || ppc_ae_descriptor(memory, &apple_events.descriptors, token_ptr).is_none()
+            {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            if let Some(pointer) = apple_events
+                .object_callbacks
+                .get(&u32::from_be_bytes(*b"xtok"))
+            {
+                let depth = toolbox_startup.execution.calls().depth();
+                let action = ppc_start_token_disposal_callback(
+                    cpu,
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    toolbox_startup,
+                    *pointer,
+                    token_ptr,
+                );
+                if !matches!(action, PpcImportAction::Return(_)) {
+                    apple_events
+                        .pending_token_disposals
+                        .push(PpcAeTokenDisposalPending {
+                            resume_guest_call_depth: depth,
+                            token_ptr,
+                        });
+                }
+                Some(action)
+            } else {
+                Some(ppc_dispatch_apple_event_compatibility(
+                    PpcAppleEventCompatibilityOperation::DisposeDesc,
+                    cpu,
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    apple_events,
+                ))
+            }
+        }
+        PpcImportDispatcherTarget::ObjectSupportRemoveAccessor => {
+            // AERemoveObjectAccessor removes a matching entry; a non-NIL
+            // procedure pointer must match the registered accessor.
+            // FUNCTION AERemoveObjectAccessor(desiredClass, containerType:
+            //   DescType; theAccessor: AccessorProcPtr; isSysHandler: Boolean): OSErr;
+            // Inside Macintosh: Interapplication Communication (1993), 6-84.
+            let key = (cpu.gpr[6] != 0, cpu.gpr[3], cpu.gpr[4]);
+            let result = if !apple_events.object_support_initialized {
+                PPC_PARAM_ERR
+            } else if apple_events
+                .object_accessors
+                .get(&key)
+                .is_none_or(|accessor| cpu.gpr[5] != 0 && accessor.pointer != cpu.gpr[5])
+            {
+                PPC_ERR_AE_ACCESSOR_NOT_FOUND
+            } else {
+                apple_events.object_accessors.remove(&key);
+                PPC_NO_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::ObjectSupportSetCallbacks => {
+            // AESetObjectCallbacks installs the seven application callbacks.
+            // FUNCTION AESetObjectCallbacks(myCompareProc, myCountProc,
+            //   myDisposeTokenProc, myGetMarkTokenProc, myMarkProc,
+            //   myAdjustMarksProc, myGetErrDescProc: ProcPtr): OSErr;
+            // Inside Macintosh: Interapplication Communication (1993), 6-79--6-80.
+            let callbacks = [
+                (u32::from_be_bytes(*b"cmpr"), cpu.gpr[3]),
+                (u32::from_be_bytes(*b"cont"), cpu.gpr[4]),
+                (u32::from_be_bytes(*b"xtok"), cpu.gpr[5]),
+                (u32::from_be_bytes(*b"mkid"), cpu.gpr[6]),
+                (u32::from_be_bytes(*b"mark"), cpu.gpr[7]),
+                (u32::from_be_bytes(*b"adjm"), cpu.gpr[8]),
+                (u32::from_be_bytes(*b"indc"), cpu.gpr[9]),
+            ];
+            let result = if !apple_events.object_support_initialized
+                || callbacks.iter().any(|(_, pointer)| pointer & 1 != 0)
+            {
+                PPC_PARAM_ERR
+            } else {
+                for (function_class, pointer) in callbacks {
+                    if pointer != 0 {
+                        apple_events
+                            .object_callbacks
+                            .insert(function_class, pointer);
+                    }
+                }
+                PPC_NO_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::ObjectSupportResolve => {
+            // AEResolve first validates the object specifier and clears the
+            // token on error. Inside Macintosh: Interapplication Communication
+            // (1993), 6-85.
+            let token = cpu.gpr[5];
+            let result = if !ppc_write_ae_desc(memory, token, PPC_TYPE_NULL, 0) {
+                PPC_PARAM_ERR
+            } else if !apple_events.object_support_initialized {
+                PPC_PARAM_ERR
+            } else {
+                match ppc_ae_descriptor(memory, &apple_events.descriptors, cpu.gpr[3])
+                    .and_then(|descriptor| ppc_ae_collect_resolve_levels(&descriptor))
+                {
+                    None => PPC_ERR_AE_NOT_AN_OBJECT_SPEC,
+                    Some((base, levels))
+                        if apple_events
+                            .object_accessor_for(levels[0].desired_class, base.desc_type)
+                            .is_none() =>
+                    {
+                        PPC_ERR_AE_ACCESSOR_NOT_FOUND
+                    }
+                    Some((base, levels)) => {
+                        let scratch_ptr = if levels.len() > 1 {
+                            process_memory_manager.new_native_ptr(memory, 8, true)
+                        } else {
+                            0
+                        };
+                        if levels.len() > 1 && scratch_ptr == 0 {
+                            PPC_MEM_FULL_ERR
+                        } else {
+                            ppc_apply_process_native_allocator(
+                                process_memory_manager,
+                                memory,
+                                heap_cursor,
+                                last_mem_error,
+                            );
+                            let base_handle = ppc_resolve_value_handle(
+                                &base,
+                                apple_events,
+                                process_memory_manager,
+                                memory,
+                                heap_cursor,
+                                last_mem_error,
+                                handles,
+                            );
+                            let mut pending = PpcAeResolvePending {
+                                resume_guest_call_depth: toolbox_startup.execution.calls().depth(),
+                                levels,
+                                index: 0,
+                                container_class: base.desc_type,
+                                container_type: base.desc_type,
+                                container_handle: 0,
+                                token_ptr: token,
+                                scratch_ptr,
+                                owned_handles: Vec::new(),
+                                intermediate_tokens: Vec::new(),
+                            };
+                            let action = match base_handle {
+                                Ok(handle) => {
+                                    pending.container_handle = handle;
+                                    if handle != 0 {
+                                        pending.owned_handles.push(handle);
+                                    }
+                                    ppc_dispatch_ae_resolve_level(
+                                        &mut pending,
+                                        cpu,
+                                        process_memory_manager,
+                                        memory,
+                                        heap_cursor,
+                                        heap_limit,
+                                        last_mem_error,
+                                        handles,
+                                        apple_events,
+                                        toolbox_startup,
+                                    )
+                                }
+                                Err(error) => Err(error),
+                            };
+                            match action {
+                                Ok(action) => {
+                                    apple_events.pending_resolutions.push(pending);
+                                    return Some(action);
+                                }
+                                Err(error) => {
+                                    ppc_finish_ae_resolve(
+                                        pending,
+                                        error,
+                                        apple_events,
+                                        process_memory_manager,
+                                        memory,
+                                        heap_cursor,
+                                        last_mem_error,
+                                        handles,
+                                    );
+                                    error
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         PpcImportDispatcherTarget::AEInstallEventHandler => {
             Some(ppc_install_apple_event_handler(cpu, memory, apple_events))
         }
@@ -137,7 +885,7 @@ fn ppc_write_ae_desc(
         && memory.write_u32_be(result + 4, data_handle).is_some()
 }
 
-fn ppc_ae_descriptor(
+pub(super) fn ppc_ae_descriptor(
     memory: &mut PpcSectionMem,
     state: &SharedProcessAppleEventDescriptors,
     address: u32,
@@ -152,17 +900,27 @@ fn ppc_ae_descriptor(
         descriptor.desc_type = desc_type;
         return Some(descriptor);
     }
-    state.descriptors.get(&address).cloned().or_else(|| {
-        state
-            .events
-            .contains_key(&address)
-            .then_some(ProcessAeDescriptor {
+    state
+        .descriptors
+        .get(&address)
+        .cloned()
+        .or_else(|| {
+            state
+                .events
+                .contains_key(&address)
+                .then_some(ProcessAeDescriptor {
+                    desc_type,
+                    data: Vec::new(),
+                    fields: HashMap::new(),
+                    items: Vec::new(),
+                })
+        })
+        .or_else(|| {
+            (handle == 0).then_some(ProcessAeDescriptor {
                 desc_type,
-                data: Vec::new(),
-                fields: HashMap::new(),
-                items: Vec::new(),
+                ..Default::default()
             })
-    })
+        })
 }
 
 fn ppc_store_ae_descriptor_semantics(
@@ -1097,4 +1855,314 @@ pub(super) fn ppc_complete_apple_event_dispatch(
     }
     let _ = process_memory_manager.dispose_native_ptr(dispatch.descriptors);
     ppc_apply_process_native_allocator(process_memory_manager, memory, heap_cursor, last_mem_error);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_complete_token_disposal(
+    cpu: &mut PpcCpu,
+    guest_call_depth: usize,
+    apple_events: &mut PpcAppleEventState,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+) -> bool {
+    if apple_events
+        .pending_token_disposals
+        .last()
+        .is_none_or(|pending| pending.resume_guest_call_depth != guest_call_depth)
+    {
+        return false;
+    }
+    let pending = apple_events.pending_token_disposals.pop().unwrap();
+    if cpu.gpr[3] as u16 as i16 == PPC_ERR_AE_EVENT_NOT_HANDLED {
+        cpu.gpr[3] = pending.token_ptr;
+        if let PpcImportAction::Return(result) = ppc_dispatch_apple_event_compatibility(
+            PpcAppleEventCompatibilityOperation::DisposeDesc,
+            cpu,
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            apple_events,
+        ) {
+            cpu.gpr[3] = result;
+        }
+    }
+    true
+}
+
+fn ppc_dispose_intermediate_token_fallback(
+    token: (u32, u32),
+    apple_events: &mut PpcAppleEventState,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    handles: &mut Vec<PpcHandleRecord>,
+) {
+    let handle = token.1;
+    if handle == 0 {
+        return;
+    }
+    apple_events.descriptors.with_mut(|state| {
+        state.backing.remove(&handle);
+    });
+    let _ = process_memory_manager.dispose_native_handle(memory, handle);
+    handles.retain(|record| record.handle != handle);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_begin_ae_resolve_cleanup(
+    mut pending: PpcAeResolvePending,
+    mut result: i16,
+    cpu: &mut PpcCpu,
+    apple_events: &mut PpcAppleEventState,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    toolbox_startup: &mut PpcToolboxStartupState,
+) -> PpcImportAction {
+    while let Some(token) = pending.intermediate_tokens.pop() {
+        if !ppc_write_ae_desc(memory, pending.scratch_ptr, token.0, token.1) {
+            result = PPC_PARAM_ERR;
+            ppc_dispose_intermediate_token_fallback(
+                token,
+                apple_events,
+                process_memory_manager,
+                memory,
+                handles,
+            );
+            continue;
+        }
+        if let Some(pointer) = apple_events.object_callbacks.get(&u32::from_be_bytes(*b"xtok")) {
+            let action = ppc_start_token_disposal_callback(
+                cpu,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                toolbox_startup,
+                *pointer,
+                pending.scratch_ptr,
+            );
+            match action {
+                PpcImportAction::Return(error) => {
+                    let error = error as u16 as i16;
+                    if error != PPC_ERR_AE_EVENT_NOT_HANDLED && error != PPC_NO_ERR {
+                        result = error;
+                    }
+                    ppc_dispose_intermediate_token_fallback(
+                        token,
+                        apple_events,
+                        process_memory_manager,
+                        memory,
+                        handles,
+                    );
+                }
+                action => {
+                    apple_events
+                        .pending_resolve_cleanups
+                        .push(PpcAeResolveCleanupPending {
+                            resolution: pending,
+                            result,
+                            current_token: token,
+                        });
+                    return action;
+                }
+            }
+        } else {
+            ppc_dispose_intermediate_token_fallback(
+                token,
+                apple_events,
+                process_memory_manager,
+                memory,
+                handles,
+            );
+        }
+    }
+    ppc_finish_ae_resolve(
+        pending,
+        result,
+        apple_events,
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+        handles,
+    );
+    cpu.gpr[3] = ppc_i16_result(result);
+    PpcImportAction::Continue
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_continue_ae_resolve_cleanup(
+    cpu: &mut PpcCpu,
+    guest_call_depth: usize,
+    apple_events: &mut PpcAppleEventState,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    toolbox_startup: &mut PpcToolboxStartupState,
+) -> Option<PpcImportAction> {
+    if apple_events
+        .pending_resolve_cleanups
+        .last()
+        .is_none_or(|cleanup| cleanup.resolution.resume_guest_call_depth != guest_call_depth)
+    {
+        return None;
+    }
+    let cleanup = apple_events.pending_resolve_cleanups.pop().unwrap();
+    let callback_error = cpu.gpr[3] as u16 as i16;
+    let mut result = cleanup.result;
+    if callback_error != PPC_NO_ERR && callback_error != PPC_ERR_AE_EVENT_NOT_HANDLED {
+        result = callback_error;
+    }
+    if callback_error != PPC_NO_ERR
+        || (cleanup.current_token.1 != 0
+            && process_memory_manager
+                .native_allocation(cleanup.current_token.1)
+                .is_some())
+    {
+        ppc_dispose_intermediate_token_fallback(
+            cleanup.current_token,
+            apple_events,
+            process_memory_manager,
+            memory,
+            handles,
+        );
+    } else if cleanup.current_token.1 != 0 {
+        apple_events.descriptors.with_mut(|state| {
+            state.backing.remove(&cleanup.current_token.1);
+        });
+    }
+    Some(ppc_begin_ae_resolve_cleanup(
+        cleanup.resolution,
+        result,
+        cpu,
+        apple_events,
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        toolbox_startup,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_continue_ae_resolve(
+    cpu: &mut PpcCpu,
+    guest_call_depth: usize,
+    apple_events: &mut PpcAppleEventState,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    toolbox_startup: &mut PpcToolboxStartupState,
+) -> Option<PpcImportAction> {
+    if apple_events
+        .pending_resolutions
+        .last()
+        .is_none_or(|pending| pending.resume_guest_call_depth != guest_call_depth)
+    {
+        return None;
+    }
+    let mut pending = apple_events.pending_resolutions.pop().unwrap();
+    let error = cpu.gpr[3] as u16 as i16;
+    if error != PPC_NO_ERR || pending.index + 1 == pending.levels.len() {
+        if error != PPC_NO_ERR {
+            let output = if pending.index + 1 == pending.levels.len() {
+                pending.token_ptr
+            } else {
+                pending.scratch_ptr
+            };
+            let token_type = memory.read_u32_be(output).unwrap_or(PPC_TYPE_NULL);
+            let handle = memory.read_u32_be(output + 4).unwrap_or(0);
+            if token_type != PPC_TYPE_NULL || handle != 0 {
+                pending.intermediate_tokens.push((token_type, handle));
+            }
+        }
+        return Some(ppc_begin_ae_resolve_cleanup(
+            pending,
+            error,
+            cpu,
+            apple_events,
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            toolbox_startup,
+        ));
+    }
+
+    let Some(container) = ppc_ae_descriptor(memory, &apple_events.descriptors, pending.scratch_ptr)
+    else {
+        return Some(ppc_begin_ae_resolve_cleanup(
+            pending,
+            PPC_ERR_AE_DESC_NOT_FOUND,
+            cpu,
+            apple_events,
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            toolbox_startup,
+        ));
+    };
+    let handle = memory.read_u32_be(pending.scratch_ptr + 4).unwrap_or(0);
+    if container.desc_type != PPC_TYPE_NULL || handle != 0 {
+        pending.intermediate_tokens.push((container.desc_type, handle));
+    }
+    pending.container_class = pending.levels[pending.index].desired_class;
+    pending.container_type = container.desc_type;
+    pending.container_handle = handle;
+    pending.index += 1;
+    match ppc_dispatch_ae_resolve_level(
+        &mut pending,
+        cpu,
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        apple_events,
+        toolbox_startup,
+    ) {
+        Ok(action) => {
+            apple_events.pending_resolutions.push(pending);
+            Some(action)
+        }
+        Err(error) => {
+            Some(ppc_begin_ae_resolve_cleanup(
+                pending,
+                error,
+                cpu,
+                apple_events,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                toolbox_startup,
+            ))
+        }
+    }
 }
