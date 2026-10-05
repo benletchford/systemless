@@ -19815,12 +19815,15 @@ impl super::TrapDispatcher {
         depth: u16,
         is_color: bool,
     ) -> bool {
+        // SetDepth changes pixel depth and color personality on the current
+        // device; a prior Display Manager timing switch remains active.
+        // Imaging With QuickDraw (1994), pp. 5-34--5-35.
         self.do_setdepth_with_geometry_and_personality(
             cpu,
             bus,
             depth,
-            self.native_screen_geometry.0,
-            self.native_screen_geometry.1,
+            self.screen_mode.2,
+            self.screen_mode.3,
             is_color,
         )
     }
