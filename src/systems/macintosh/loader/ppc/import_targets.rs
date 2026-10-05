@@ -254,6 +254,7 @@ pub enum PpcImportDispatcherTarget {
     GetAuxWin,
     LMGetWindowList,
     LMSetWindowList,
+    LMSetCurActivate,
     LMGetAuxWinHead,
     LMSetAuxWinHead,
     SizeWindow,
@@ -3045,6 +3046,7 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "LMSetWindowList" | "lmsetwindowlist",
         ) => PpcImportDispatcherTarget::LMSetWindowList,
+        ("InterfaceLib", "LMSetCurActivate") => PpcImportDispatcherTarget::LMSetCurActivate,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "LMGetAuxWinHead" | "lmgetauxwinhead",

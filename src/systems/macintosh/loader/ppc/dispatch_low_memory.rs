@@ -30,6 +30,13 @@ pub(super) fn dispatch_low_memory_import(
             let _ = memory.write_u32_be(0x0a30, cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::LMSetCurActivate => {
+            // CurActivate is the pointer to the window awaiting an activate
+            // event. Inside Macintosh Volume I (1985), I-280; Volume III,
+            // low-memory globals, $A64.
+            let _ = memory.write_u32_be(crate::memory::globals::addr::CUR_ACTIVATE, cpu.gpr[3]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::LMGetMenuFlash => Some(PpcImportAction::Return(ppc_i16_result(
             memory
                 .read_u16_be(crate::memory::globals::addr::MENU_FLASH)

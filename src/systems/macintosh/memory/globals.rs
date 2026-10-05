@@ -167,6 +167,9 @@ pub mod addr {
     /// frontmost, even when it is first in the Window Manager list.
     /// Inside Macintosh Volume I, I-287; Volume III, low-memory globals table.
     pub const GHOST_WINDOW: u32 = 0x0A84;
+    /// CurActivate: window scheduled to receive an activate event.
+    /// Inside Macintosh Volume I (1985), I-280; Volume III, low-memory globals.
+    pub const CUR_ACTIVATE: u32 = 0x0A64;
 
     // Mouse position globals (Points are 4 bytes: v word, h word)
     // Reference: Executor docs/globals.cpp

@@ -71,6 +71,32 @@ pub(crate) fn test_wind_resource(
 }
 
 #[test]
+fn lm_set_cur_activate_updates_pending_activation_global() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "LMSetCurActivate"),
+        PpcImportDispatcherTarget::LMSetCurActivate
+    );
+    let pef = synthetic_pef_with_import(b"LMSetCurActivate");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = 0x0123_4568;
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LMSetCurActivate);
+
+    assert_eq!(
+        loaded.memory.read_u32_be(crate::memory::globals::addr::CUR_ACTIVATE),
+        Some(0x0123_4568)
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0x0123_4568);
+
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LMSetCurActivate);
+    assert_eq!(
+        loaded.memory.read_u32_be(crate::memory::globals::addr::CUR_ACTIVATE),
+        Some(0)
+    );
+}
+
+#[test]
 fn front_window_transition_coalesces_pending_activation_pair() {
     let mut memory = PpcSectionMem::new();
     memory.add_region(0, vec![0; 0x1000]);
