@@ -526,6 +526,26 @@ pub(super) fn dispatch_quickdraw_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::PortSize => {
+            // PortSize ($A876)
+            // Resizes the current port rectangle without moving its upper-left corner.
+            // PROCEDURE PortSize (width,height: INTEGER);
+            // Inside Macintosh: Imaging With QuickDraw (1994), p. 2-46.
+            let port_rect_ptr = current_gworld.wrapping_add(16);
+            if let Some((top, left, _, _)) = ppc_read_rect(memory, port_rect_ptr) {
+                let width = cpu.gpr[3] as u16 as i16;
+                let height = cpu.gpr[4] as u16 as i16;
+                let _ = ppc_write_rect(
+                    memory,
+                    port_rect_ptr,
+                    top,
+                    left,
+                    top.wrapping_add(height),
+                    left.wrapping_add(width),
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::MoveTo => {
             *quickdraw_pen_h = cpu.gpr[3] as u16 as i16;
             *quickdraw_pen_v = cpu.gpr[4] as u16 as i16;

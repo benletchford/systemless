@@ -1795,6 +1795,7 @@ pub(crate) fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::MoveTo
         | PpcImportDispatcherTarget::MovePortTo
+        | PpcImportDispatcherTarget::PortSize
         | PpcImportDispatcherTarget::Move
         | PpcImportDispatcherTarget::LineTo
         | PpcImportDispatcherTarget::Line => {
