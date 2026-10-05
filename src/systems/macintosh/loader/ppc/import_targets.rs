@@ -743,6 +743,7 @@ pub enum PpcImportDispatcherTarget {
     EqualString,
     IUEqualPString,
     GetIntlResourceTable,
+    FillParseTable,
     NumToString,
     StringToNum,
     Random,
@@ -3993,6 +3994,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetIntlResourceTable") => {
             PpcImportDispatcherTarget::GetIntlResourceTable
         }
+        ("InterfaceLib", "FillParseTable") => PpcImportDispatcherTarget::FillParseTable,
         ("InterfaceLib", "NumToString") => PpcImportDispatcherTarget::NumToString,
         ("InterfaceLib", "StringToNum") => PpcImportDispatcherTarget::StringToNum,
         ("InterfaceLib", "Random") => PpcImportDispatcherTarget::Random,
