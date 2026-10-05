@@ -38,6 +38,7 @@ compatibility:
     evidence: https://github.com/benletchford/systemless/pull/2858
 runtime:
   worker: true
+  show_menu_bar: true
 artifacts:
 - id: archive
   role: archive
