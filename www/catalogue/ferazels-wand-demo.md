@@ -10,6 +10,7 @@ architectures:
 - ppc
 default_architecture: ppc
 category: Arcade
+launch_enabled: true
 compatibility:
   status: boots
   verified:
@@ -20,7 +21,7 @@ compatibility:
     environment: >-
       The original StuffIt demo installer opens its display prompt and New Game menu,
       then reaches the first playfield. Holding keypad 6 visibly moves Ferazel.
-      Browser launch and further gameplay remain unverified.
+      Further gameplay remains unverified.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/4054
   - date: "2026-10-05"
@@ -31,8 +32,9 @@ compatibility:
       A temporary same-origin copy of the exact archive loaded in the browser, passed
       the display prompt and New Game menu, and rendered the first stage. Repeated
       right-arrow input visibly moved Ferazel through the configured arrow-to-keypad
-      mapping. No browser warnings or errors appeared. The public hosted archive URL and
-      later levels remain unverified.
+      mapping. No browser warnings or errors appeared. The promoted archive responds to
+      a GET request from https://systemless.org with the expected size and browser access
+      header. Later levels remain unverified.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/4054
 controls:
@@ -97,4 +99,4 @@ Ambrosia's original demo. The full commercial game is not included.
 
 The bundled manual assigns keypad 4 and 6 to walking, Option to jumping, and
 Command to the selected spell or item. This entry sends arrow keys as their
-numeric keypad counterparts. Browser launch is awaiting verification.
+numeric keypad counterparts.
