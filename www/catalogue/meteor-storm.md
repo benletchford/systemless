@@ -1,6 +1,7 @@
 ---
 id: meteor-storm
 kind: game
+launch_enabled: true
 title: Meteor Storm 1.4
 summary: >-
   Defend your ship against waves of enemies in Z Sculpt Entertainment's
@@ -17,15 +18,16 @@ compatibility:
   verified:
   - date: "2026-10-05"
     tester: Catalogue maintainer
-    systemless_version: 0.76.1 deterministic play runner
+    systemless_version: 0.79.0 + desktop repaint fix
     architecture: ppc
     environment: >-
       The original Info-Mac 1.4 package starts its native PowerPC code, accepts the
-      640x480 display change, reaches the main menu, and starts Wave 1. Command enters
-      the first player into gameplay with a visible ship and HUD. A local browser
-      preview of the same archive reaches the shareware notice and main menu, but the canvas
-      remains black after Start Game. Sustained play and period Macintosh comparison
-      remain open.
+      640x480 display change, reaches the main menu, and starts Wave 1. A production
+      browser build loaded the exact archive from a local same-origin copy, dismissed
+      registration, and reached Wave 1. Command joined player one; A moved the visible
+      ship left while enemies and projectiles continued to move. The promoted archive
+      returned the expected length and CORS headers for the production site origin.
+      Sustained play and period Macintosh comparison remain open.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/4021
 artifacts:
