@@ -203,6 +203,7 @@ fn pack_payload_files_for_web(file_entries: Vec<PayloadFile>) -> Result<Vec<u8>,
 }
 
 fn pack_payload_for_web(mut payload: Payload) -> Result<Vec<u8>, String> {
+    stage_bbkr_installer_files(&mut payload);
     place_installer_outputs_on_boot_volume(&mut payload);
     if payload.volumes.is_empty() {
         return pack_payload_files_for_web(payload.files);
@@ -1315,7 +1316,7 @@ extern "C" {
     ) -> isize;
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Payload {
     dirs: Vec<String>,
     files: Vec<PayloadFile>,
@@ -1344,7 +1345,7 @@ fn merge_payload(target: &mut Payload, source: Payload) {
         .extend(source.skipped_disk_image_errors);
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct PayloadFile {
     name: String,
     data: Vec<u8>,
@@ -2546,11 +2547,131 @@ fn place_installer_outputs_on_boot_volume(payload: &mut Payload) {
     }
 }
 
+/// Classic Installer scripts of type `bbkr` list Pascal paths for files copied
+/// from several source disks. Stage those files together on the boot volume so
+/// relative opens from the installed application resolve as they do on a Mac.
+/// Only accept a complete, unambiguous manifest with an application entry.
+fn stage_bbkr_installer_files(payload: &mut Payload) {
+    let mut staged_files = Vec::new();
+    let mut staged_roots = Vec::new();
+    for manifest in payload
+        .files
+        .iter()
+        .filter(|file| file.file_type == *b"bbkr")
+    {
+        let mut destinations = Vec::new();
+        for offset in 0..manifest.rsrc.len() {
+            let len = manifest.rsrc[offset] as usize;
+            if len < 3 || offset + 1 + len > manifest.rsrc.len() {
+                continue;
+            }
+            let text = &manifest.rsrc[offset + 1..offset + 1 + len];
+            if text.first() != Some(&b':')
+                || text.iter().filter(|&&byte| byte == b':').count() < 2
+                || !text
+                    .iter()
+                    .all(|&byte| byte.is_ascii_graphic() || byte == b' ')
+            {
+                continue;
+            }
+            let Some(components) = std::str::from_utf8(text).ok().map(|text| {
+                text.split(':')
+                    .filter(|component| !component.is_empty())
+                    .collect::<Vec<_>>()
+            }) else {
+                continue;
+            };
+            if components.len() < 2
+                || components.iter().any(|component| {
+                    *component == "."
+                        || *component == ".."
+                        || component.contains('/')
+                        || component.contains('\\')
+                })
+            {
+                continue;
+            }
+            let destination = components.join("/");
+            if !destinations.contains(&destination) {
+                destinations.push(destination);
+            }
+        }
+        if destinations.len() < 3 {
+            continue;
+        }
+
+        let Some((install_volume, install_root)) = destinations.iter().find_map(|destination| {
+            let (root, name) = destination.split_once('/')?;
+            if name.contains('/') {
+                return None;
+            }
+            payload.files.iter().find_map(|file| {
+                if file.file_type == *b"APPL" && file.name.rsplit('/').next() == Some(name) {
+                    file.name
+                        .split('/')
+                        .next()
+                        .map(|volume| (volume.to_owned(), root.to_owned()))
+                } else {
+                    None
+                }
+            })
+        }) else {
+            continue;
+        };
+        if !payload
+            .volumes
+            .iter()
+            .any(|(volume, _)| volume.eq_ignore_ascii_case(&install_volume))
+        {
+            continue;
+        }
+
+        let mut installed = Vec::new();
+        let mut complete = true;
+        for destination in destinations
+            .iter()
+            .filter(|destination| destination.split('/').next() == Some(install_root.as_str()))
+        {
+            let Some(name) = destination.rsplit('/').next() else {
+                continue;
+            };
+            let matches = payload
+                .files
+                .iter()
+                .filter(|file| file.name.rsplit('/').next() == Some(name))
+                .collect::<Vec<_>>();
+            if matches.len() != 1 {
+                complete = false;
+                break;
+            }
+            let mut file = matches[0].clone();
+            file.name = format!("{install_volume}/{destination}");
+            file.executable_priority = file.executable_priority.saturating_add(1);
+            installed.push(file);
+        }
+        if !complete || installed.len() < 3 {
+            continue;
+        }
+        if crate::runner::trace_load_enabled() {
+            eprintln!(
+                "[LOAD] Staging {} installer files from {} on boot volume",
+                installed.len(),
+                manifest.name
+            );
+        }
+        staged_roots.push(format!("{install_volume}/{install_root}"));
+        staged_files.extend(installed);
+    }
+    payload.installer_roots.extend(staged_roots);
+    payload.files.extend(staged_files);
+}
+
 fn insert_payload_into_vfs(
     runner: &mut FixtureRunner,
     mut payload: Payload,
     executable_entry: &mut Option<ExecutableCandidate>,
 ) {
+    stage_bbkr_installer_files(&mut payload);
     place_installer_outputs_on_boot_volume(&mut payload);
     for dir in payload.dirs {
         let normalized = crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(&dir);
@@ -3922,6 +4043,84 @@ mod tests {
             installer_roots: vec!["Disk 1/Install".into()],
             skipped_disk_image_errors: Vec::new(),
         }
+    }
+
+    #[test]
+    fn bbkr_manifest_stages_multidisk_resources_beside_installed_application() {
+        let file = |name: &str, file_type: [u8; 4]| PayloadFile {
+            name: name.into(),
+            data: name.as_bytes().to_vec(),
+            rsrc: vec![1, 2, 3],
+            file_type,
+            creator: *b"TEST",
+            finder_flags: 0,
+            executable_priority: 1,
+        };
+        let mut script = file("Install Disk/Copy Script", *b"bbkr");
+        script.rsrc.clear();
+        for destination in [
+            b":Color Playroom:PlayRoom".as_slice(),
+            b":Color Playroom:PR Resources:MainPlayRoom.rsrc",
+            b":Color Playroom:PR Resources:Other.rsrc",
+        ] {
+            script.rsrc.push(destination.len() as u8);
+            script.rsrc.extend_from_slice(destination);
+        }
+        let mut payload = Payload {
+            dirs: Vec::new(),
+            files: vec![
+                file("Install Disk/Color Playroom/PlayRoom", *b"APPL"),
+                file("Disk 2/Color Playroom/MainPlayRoom.rsrc", *b"PLR2"),
+                file("Disk 1/Color Playroom/Other.rsrc", *b"PLR2"),
+                script,
+            ],
+            volumes: ["Install Disk", "Disk 1", "Disk 2"]
+                .into_iter()
+                .map(|name| {
+                    (
+                        name.into(),
+                        crate::disk_image::DiskImageVolumeInfo {
+                            attributes: 0x0080,
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect(),
+            installer_roots: Vec::new(),
+            skipped_disk_image_errors: Vec::new(),
+        };
+        let web_payload = payload.clone();
+        stage_bbkr_installer_files(&mut payload);
+        assert_eq!(payload.files.len(), 7);
+        place_installer_outputs_on_boot_volume(&mut payload);
+        assert!(payload.files.iter().any(|file| {
+            file.name
+                == "Installed Applications/Install Disk/Color Playroom/PR Resources/MainPlayRoom.rsrc"
+                && file.rsrc == [1, 2, 3]
+        }));
+        assert!(payload.files.iter().any(|file| {
+            file.name == "Installed Applications/Install Disk/Color Playroom/PlayRoom"
+                && file.executable_priority == 2
+        }));
+        assert!(payload
+            .files
+            .iter()
+            .any(|file| { file.name == "Disk 2/Color Playroom/MainPlayRoom.rsrc" }));
+
+        let pack = pack_payload_for_web(web_payload).unwrap();
+        let mut runner = new_runner();
+        let mut loader = WebPackLoader::new(&mut runner, &pack).unwrap().unwrap();
+        while !loader.load_next_chunk(&mut runner, 1024).unwrap() {}
+        let installed = runner
+            .vfs_file_snapshot(
+                "Installed Applications/Install Disk/Color Playroom/PR Resources/MainPlayRoom.rsrc",
+            )
+            .unwrap();
+        assert_eq!(installed.resource_fork, [1, 2, 3]);
+        assert!(!runner.dispatcher().vfs_path_is_read_only(&installed.path));
+        assert!(runner
+            .dispatcher()
+            .vfs_path_is_read_only("Disk 2/Color Playroom/MainPlayRoom.rsrc"));
     }
 
     #[test]
