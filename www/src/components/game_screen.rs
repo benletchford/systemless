@@ -358,6 +358,7 @@ fn GameRuntime(
         let show_menu_bar = game.settings.show_menu_bar;
         let screen_depth = game.settings.screen_depth;
         let application_partition_size = game.settings.application_partition_size;
+        let executable_path = game.settings.executable_path;
         let remove_paths = game.settings.remove_paths;
         let file_mappings = game.settings.file_mappings;
         let runtime_pacing = game.settings.runtime_pacing;
@@ -531,6 +532,7 @@ fn GameRuntime(
                 show_menu_bar,
                 screen_depth,
                 application_partition_size,
+                executable_path,
                 remove_paths,
                 file_mappings,
                 runtime_pacing,
@@ -2466,6 +2468,7 @@ async fn boot_catalogue_worker(
         "show_menu_bar": game.settings.show_menu_bar,
         "screen_depth": game.settings.screen_depth,
         "application_partition_size": game.settings.application_partition_size,
+        "executable_path": game.settings.executable_path,
         "remove_paths": game.settings.remove_paths,
         "file_mappings": game.settings.file_mappings,
         "runtime_pacing": game.settings.runtime_pacing,

@@ -731,6 +731,7 @@ impl<'a> WebPackLoader<'a> {
                     pending.creator_code,
                     1,
                     runner.prefers_powerpc_executables() || prefer_powerpc(),
+                    runner.preferred_executable_path(),
                 );
                 insert_forks_into_vfs(
                     runner,
@@ -2587,6 +2588,7 @@ fn insert_payload_into_vfs(
             file.creator,
             file.executable_priority,
             runner.prefers_powerpc_executables() || prefer_powerpc(),
+            runner.preferred_executable_path(),
         );
         insert_forks_into_vfs(
             runner,
@@ -2604,6 +2606,11 @@ fn load_selected_executable(
     runner: &mut FixtureRunner,
     executable: &ExecutableCandidate,
 ) -> Result<LoadedApp, String> {
+    if let Some(expected) = runner.preferred_executable_path() {
+        if executable.name != expected {
+            return Err(format!("Preferred executable not found in archive: {expected}"));
+        }
+    }
     if executable.is_installer {
         runner.arm_installer_handoff();
     }
@@ -2880,6 +2887,7 @@ fn maybe_select_executable(
         creator,
         executable_priority,
         prefer_powerpc(),
+        None,
     );
 }
 
@@ -2893,8 +2901,11 @@ fn maybe_select_executable_with_preference(
     creator: [u8; 4],
     executable_priority: u8,
     prefer_powerpc: bool,
+    preferred_executable_path: Option<&str>,
 ) {
-    let executable_override = executable_name_override();
+    let executable_override = preferred_executable_path
+        .map(str::to_owned)
+        .or_else(executable_name_override);
     maybe_select_executable_with_override_and_preference(
         executable_entry,
         name,
@@ -5110,6 +5121,60 @@ mod tests {
     }
 
     #[test]
+    fn preferred_executable_path_selects_smaller_application_in_archive() {
+        let rsrc = make_versioned_code_resource_fork([0x01, 0x00, 0x80, 0x00]);
+        for game_first in [false, true] {
+            let mut selected = None;
+            let mut candidates = [
+                ("Bundle/Catalog", 1_000_000usize),
+                ("Bundle/Game", 100_000usize),
+            ];
+            if game_first {
+                candidates.reverse();
+            }
+            for (name, data_len) in candidates {
+                maybe_select_executable_with_preference(
+                    &mut selected,
+                    name,
+                    &[0],
+                    &rsrc,
+                    true,
+                    data_len,
+                    *b"GAME",
+                    1,
+                    false,
+                    Some("Bundle/Game"),
+                );
+            }
+            assert_eq!(selected.unwrap().name, "Bundle/Game");
+        }
+    }
+
+    #[test]
+    fn missing_preferred_executable_path_rejects_fallback() {
+        let rsrc = make_versioned_code_resource_fork([0x01, 0x00, 0x80, 0x00]);
+        let mut selected = None;
+        maybe_select_executable_with_preference(
+            &mut selected,
+            "Bundle/Catalog",
+            &[0],
+            &rsrc,
+            true,
+            1_000_000,
+            *b"GAME",
+            1,
+            false,
+            Some("Bundle/Missing"),
+        );
+        let mut runner = new_runner();
+        runner.set_preferred_executable_path(Some("Bundle/Missing"));
+        let error = load_selected_executable(&mut runner, &selected.unwrap())
+            .err()
+            .expect("missing preferred path must fail");
+        assert!(error.contains("Preferred executable not found"));
+    }
+
+    #[test]
     fn executable_selection_does_not_compare_versions_across_creators() {
         let full_rsrc = make_versioned_code_resource_fork([0x01, 0x00, 0x80, 0x00]);
         let demo_rsrc = make_versioned_code_resource_fork([0x09, 0x00, 0x80, 0x00]);
@@ -6087,6 +6152,7 @@ mod tests {
             *b"TEST",
             1,
             true,
+            None,
         );
 
         assert!(matches!(

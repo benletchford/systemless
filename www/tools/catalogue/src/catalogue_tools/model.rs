@@ -205,6 +205,8 @@ pub struct Runtime {
     pub screen_depth: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub application_partition_size: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub executable_path: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub remove_paths: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -220,6 +222,7 @@ impl Default for Runtime {
             show_menu_bar: false,
             screen_depth: None,
             application_partition_size: None,
+            executable_path: None,
             remove_paths: Vec::new(),
             file_mappings: BTreeMap::new(),
             runtime_pacing: RuntimePacing::default(),

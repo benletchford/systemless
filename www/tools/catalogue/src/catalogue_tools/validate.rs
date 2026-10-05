@@ -319,6 +319,9 @@ pub fn entry(e: &Entry) -> Result<()> {
             .is_none_or(|n| n >= 128 * 1024),
         "application_partition_size must be at least 128 KiB"
     );
+    if let Some(path) = &e.runtime.executable_path {
+        relative_path(path)?;
+    }
     let mut paths = BTreeSet::new();
     for path in &e.runtime.remove_paths {
         relative_path(path)?;

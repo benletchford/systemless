@@ -13,6 +13,8 @@ struct BootConfig {
     show_menu_bar: bool,
     screen_depth: Option<u16>,
     application_partition_size: Option<u32>,
+    #[serde(default)]
+    executable_path: Option<String>,
     remove_paths: Vec<String>,
     #[serde(default)]
     file_mappings: Vec<(String, String)>,
@@ -128,6 +130,7 @@ impl WorkerMachine {
             config.show_menu_bar,
             config.screen_depth,
             config.application_partition_size,
+            config.executable_path.as_deref(),
             &paths,
             &mappings,
             config.runtime_pacing,

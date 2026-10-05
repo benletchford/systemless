@@ -341,6 +341,7 @@ impl Machine {
         show_menu_bar: bool,
         screen_depth: Option<u16>,
         application_partition_size: Option<u32>,
+        executable_path: Option<&str>,
         remove_paths: &[&str],
         file_mappings: &[(&str, &str)],
         runtime_pacing: RuntimePacing,
@@ -357,6 +358,7 @@ impl Machine {
         runner.set_prefer_powerpc_executables(architecture == GameArchitecture::PowerPc);
         runner.set_app_start_time(current_mac_epoch_seconds());
         runner.set_application_partition_size(application_partition_size);
+        runner.set_preferred_executable_path(executable_path);
         runner.set_menu_bar_policy(if show_menu_bar {
             MenuBarPolicy::GuestControlled
         } else {
