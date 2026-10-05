@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.79.0](https://github.com/benletchford/systemless/compare/v0.78.0...v0.79.0) (2026-10-05)
+
+
+### Features
+
+* **catalogue:** stage Ferazel’s Wand demo ([#4057](https://github.com/benletchford/systemless/issues/4057)) ([7573af5](https://github.com/benletchford/systemless/commit/7573af5ab478dcb04e163bb73a5f1b0666cb4e9e))
+
+
+### Bug Fixes
+
+* **display:** preserve resolution when setting screen depth ([#4063](https://github.com/benletchford/systemless/issues/4063)) ([317637d](https://github.com/benletchford/systemless/commit/317637d8ed4aef55a19c8e632bca87dcb033f4e6))
+* generalize compact PPC control fallback ([#4067](https://github.com/benletchford/systemless/issues/4067)) ([583c9b5](https://github.com/benletchford/systemless/commit/583c9b5ee216990fa0bf9e2f208df488f2e19785))
+* **quickdraw:** preserve matching indexed color spaces across table seeds ([#4047](https://github.com/benletchford/systemless/issues/4047)) ([2eb168e](https://github.com/benletchford/systemless/commit/2eb168e6dc1f53ceb03fb7e2ca32277e4a1d515e))
+* restore StarCraft showcase and readable startup dialog ([#4064](https://github.com/benletchford/systemless/issues/4064)) ([30db352](https://github.com/benletchford/systemless/commit/30db352eb3e3135ca7578cdcfc175330983d6a41))
+* **standard-file:** preserve PowerPC filter callback semantics ([#4050](https://github.com/benletchford/systemless/issues/4050)) ([3526ba7](https://github.com/benletchford/systemless/commit/3526ba74ea26514a28701401f6008967b5633c4b))
+
 ## [0.78.0](https://github.com/benletchford/systemless/compare/v0.77.0...v0.78.0) (2026-10-05)
 
 
