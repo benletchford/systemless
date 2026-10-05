@@ -1363,6 +1363,60 @@ fn ppc_window_removal_exposure_uses_pattern_when_host_hides_menu_bar() {
 }
 
 #[test]
+fn ppc_window_geometry_exposure_preserves_newly_covered_pixels() {
+    let pef = synthetic_pef_with_import(b"NewCWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 32]);
+    ppc_write_rect(&mut loaded.memory, scratch, 20, 20, 80, 80).unwrap();
+    ppc_write_pstring_bytes(&mut loaded.memory, scratch + 8, b"Window");
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = scratch;
+    loaded.cpu.gpr[5] = scratch + 8;
+    loaded.cpu.gpr[6] = 1;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = u32::MAX;
+    loaded.cpu.gpr[9] = 1;
+    loaded.cpu.gpr[10] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewCWindow);
+    assert_ne!(loaded.cpu.gpr[3], 0);
+
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    assert!(ppc_quickdraw_write_raw_pixel(
+        &mut loaded.memory,
+        front,
+        (40, 40),
+        17,
+    ));
+    let mut event_queue = VecDeque::new();
+    ppc_restore_window_removal_exposure(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        &loaded.window_list,
+        Some((0, 0, 100, 100)),
+        true,
+        &mut event_queue,
+        0,
+        PpcInputSnapshot::default(),
+    );
+
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (40, 40)),
+        Some(17),
+    );
+    let desktop = ppc_physical_screen_color_pixel(
+        front,
+        ppc_standard_desktop_color(&loaded.gworlds, 0, 0),
+        &loaded.screen_clut,
+    )
+    .unwrap();
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 0)),
+        Some(desktop),
+    );
+}
+
+#[test]
 fn hle_import_runner_track_go_away_retains_restores_and_uses_release_point() {
     for depth in [1, 2, 4, 8, 16] {
         let pef = synthetic_pef_with_import(b"NewCWindow");
@@ -8892,7 +8946,6 @@ fn window_attributes_focus_buttons_and_reshape_commands_dispatch_with_canonical_
         assert_eq!(loaded.cpu.gpr[3], 0);
     }
 }
-
 
 
 

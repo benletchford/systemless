@@ -64,7 +64,22 @@ pub(super) fn ppc_set_port_origin(memory: &mut PpcSectionMem, port: u32, h: i16,
         h,
         v.wrapping_add(port_height),
         h.wrapping_add(port_width),
-    )
+    )?;
+    // Imaging With QuickDraw (1994), p. 2-45: SetOrigin preserves the
+    // visible region's position on screen while leaving clipRgn in its old
+    // local coordinates. Move visRgn with the port's coordinate system.
+    let vis_rgn = memory.read_u32_be(port + PPC_CGRAF_PORT_VIS_RGN_OFFSET)?;
+    if vis_rgn != 0
+        && ppc_offset_rgn(
+            memory,
+            vis_rgn,
+            h.wrapping_sub(port_left),
+            v.wrapping_sub(port_top),
+        ) != PPC_NO_ERR
+    {
+        return None;
+    }
+    Some(())
 }
 
 pub(super) fn ppc_open_region_include_point(startup: &mut PpcToolboxStartupState, h: i16, v: i16) {
@@ -1522,4 +1537,3 @@ pub(super) fn ppc_map_rect(memory: &mut PpcSectionMem, rect_ptr: u32, src_ptr: u
         map_h(right),
     );
 }
-

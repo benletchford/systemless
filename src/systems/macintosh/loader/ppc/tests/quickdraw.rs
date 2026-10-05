@@ -5108,3 +5108,38 @@ fn hle_import_runner_handles_text_width() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], 42);
 }
+
+#[test]
+fn set_origin_keeps_visible_screen_pixels_inside_the_port_region() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SetOrigin")).unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let clip_before = ppc_read_rgn_bbox(&mut loaded.memory, PPC_MAIN_CLIP_RGN_HANDLE);
+    assert!(ppc_quickdraw_write_raw_pixel(
+        &mut loaded.memory,
+        front,
+        (0, 0),
+        0x7fff,
+    ));
+
+    ppc_set_port_origin(&mut loaded.memory, PPC_MAIN_GWORLD, -80, -60).unwrap();
+    assert_eq!(
+        ppc_read_rgn_bbox(&mut loaded.memory, PPC_MAIN_VIS_RGN_HANDLE),
+        Some((-60, -80, 540, 720)),
+    );
+    assert_eq!(
+        ppc_read_rgn_bbox(&mut loaded.memory, PPC_MAIN_CLIP_RGN_HANDLE),
+        clip_before,
+    );
+    assert!(ppc_paint_rect_bounds(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PPC_MAIN_GWORLD,
+        (-60, -80, 540, 720),
+        PPC_RGB_BLACK,
+        None,
+    ));
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 0)),
+        Some(255)
+    );
+}

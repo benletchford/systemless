@@ -1993,9 +1993,26 @@ pub(super) fn ppc_restore_window_removal_exposure(
         exposed.2.min(ppc_main_screen_height() as i16),
         exposed.3.min(ppc_main_screen_width() as i16),
     );
+    let covered = window_list
+        .windows()
+        .into_iter()
+        .filter_map(|window| {
+            ppc_window_is_visible(memory, window)
+                .then(|| ppc_window_global_content_bounds(memory, gworlds, window))
+                .flatten()
+        })
+        .collect::<Vec<_>>();
     if paint.0 < paint.2 && paint.1 < paint.3 {
         for v in i32::from(paint.0)..i32::from(paint.2) {
             for h in i32::from(paint.1)..i32::from(paint.3) {
+                if covered.iter().any(|&(top, left, bottom, right)| {
+                    i32::from(top) <= v
+                        && v < i32::from(bottom)
+                        && i32::from(left) <= h
+                        && h < i32::from(right)
+                }) {
+                    continue;
+                }
                 let color = ppc_standard_desktop_color(gworlds, h, v);
                 let _ = ppc_quickdraw_write_pixel(memory, front_buffer, (h, v), color);
             }
