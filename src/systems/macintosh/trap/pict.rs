@@ -4485,6 +4485,113 @@ pub(crate) fn closest_clut_index(r: u16, g: u16, b: u16, clut: &[[u16; 3]; 256])
     best_idx
 }
 
+// DirectBitsRect can contain hundreds of thousands of true-colour pixels.
+// Searching the entire destination CTable for every pixel stalls the browser
+// while a picture is drawn. A 3D k-d tree gives the same full-precision
+// nearest colour (including the lowest-index tie break) with far fewer
+// comparisons. The endpoint and grayscale rules stay in closest_clut_index.
+struct DirectColorMatcher<'a> {
+    clut: &'a [[u16; 3]; 256],
+    nodes: Vec<ColorNode>,
+    root: usize,
+    gray: [u8; 256],
+}
+
+struct ColorNode {
+    index: u8,
+    axis: usize,
+    left: Option<usize>,
+    right: Option<usize>,
+}
+
+impl<'a> DirectColorMatcher<'a> {
+    fn new(clut: &'a [[u16; 3]; 256]) -> Self {
+        fn build(
+            indices: &mut [u8],
+            depth: usize,
+            clut: &[[u16; 3]; 256],
+            nodes: &mut Vec<ColorNode>,
+        ) -> Option<usize> {
+            if indices.is_empty() {
+                return None;
+            }
+            let axis = depth % 3;
+            indices.sort_unstable_by_key(|&index| (clut[index as usize][axis], index));
+            let mid = indices.len() / 2;
+            let node = nodes.len();
+            nodes.push(ColorNode {
+                index: indices[mid],
+                axis,
+                left: None,
+                right: None,
+            });
+            let (left, rest) = indices.split_at_mut(mid);
+            let (_, right) = rest.split_first_mut().unwrap();
+            nodes[node].left = build(left, depth + 1, clut, nodes);
+            nodes[node].right = build(right, depth + 1, clut, nodes);
+            Some(node)
+        }
+
+        let mut nodes = Vec::with_capacity(256);
+        let mut indices: [u8; 256] = std::array::from_fn(|index| index as u8);
+        let root = build(&mut indices, 0, clut, &mut nodes).unwrap();
+        let gray = std::array::from_fn(|value| {
+            let channel = value as u16 * 257;
+            closest_clut_index(channel, channel, channel, clut)
+        });
+        Self {
+            clut,
+            nodes,
+            root,
+            gray,
+        }
+    }
+
+    #[inline]
+    fn match_rgb(&self, r: u8, g: u8, b: u8) -> u8 {
+        if r == g && g == b {
+            return self.gray[r as usize];
+        }
+        let rgb = [r as u16 * 257, g as u16 * 257, b as u16 * 257];
+        if rgb == self.clut[255] {
+            return 255;
+        }
+        if rgb == self.clut[0] {
+            return 0;
+        }
+        let mut best = (i64::MAX, u8::MAX);
+        self.search(self.root, rgb, &mut best);
+        best.1
+    }
+
+    fn search(&self, node_index: usize, rgb: [u16; 3], best: &mut (i64, u8)) {
+        let node = &self.nodes[node_index];
+        let color = self.clut[node.index as usize];
+        let dr = i64::from(rgb[0]) - i64::from(color[0]);
+        let dg = i64::from(rgb[1]) - i64::from(color[1]);
+        let db = i64::from(rgb[2]) - i64::from(color[2]);
+        let candidate = (dr * dr + dg * dg + db * db, node.index);
+        if candidate < *best {
+            *best = candidate;
+        }
+
+        let delta = i64::from(rgb[node.axis]) - i64::from(color[node.axis]);
+        let (near, far) = if delta < 0 {
+            (node.left, node.right)
+        } else {
+            (node.right, node.left)
+        };
+        if let Some(near) = near {
+            self.search(near, rgb, best);
+        }
+        if delta * delta <= best.0 {
+            if let Some(far) = far {
+                self.search(far, rgb, best);
+            }
+        }
+    }
+}
+
 /// Build a 256-entry mapping table from source CLUT indices to device CLUT indices.
 /// For each source palette entry, finds the closest match in the device CLUT.
 /// This is the core of CopyBits color translation for indexed pixmaps.
@@ -6876,6 +6983,8 @@ fn parse_direct_bits_rect(
         screen_mode.4,
     );
     let dst_clut = indexed_destination_clut(device_clut, scrn_ps);
+    let direct_matcher = (scrn_ps != 16 && !clut_match_itable_enabled())
+        .then(|| DirectColorMatcher::new(&dst_clut));
 
     for row in 0..height {
         // Per PixMap.packType (Imaging With QuickDraw 1994, 4-29):
@@ -6944,11 +7053,16 @@ fn parse_direct_bits_rect(
                             let r = (((pixel >> 10) & 0x1F) * 255 / 31) as u8;
                             let g = (((pixel >> 5) & 0x1F) * 255 / 31) as u8;
                             let b = ((pixel & 0x1F) * 255 / 31) as u8;
-                            let idx = closest_clut_index(
-                                r as u16 * 257,
-                                g as u16 * 257,
-                                b as u16 * 257,
-                                &dst_clut,
+                            let idx = direct_matcher.as_ref().map_or_else(
+                                || {
+                                    closest_clut_index(
+                                        r as u16 * 257,
+                                        g as u16 * 257,
+                                        b as u16 * 257,
+                                        &dst_clut,
+                                    )
+                                },
+                                |matcher| matcher.match_rgb(r, g, b),
                             );
                             write_pixel_clipped(
                                 bus,
@@ -7011,11 +7125,17 @@ fn parse_direct_bits_rect(
                                 dst_clip,
                             );
                         } else {
-                            let ci = closest_clut_index(
-                                row_data[ri] as u16 * 257,
-                                row_data[gi] as u16 * 257,
-                                row_data[bi] as u16 * 257,
-                                &dst_clut,
+                            let (r, g, b) = (row_data[ri], row_data[gi], row_data[bi]);
+                            let ci = direct_matcher.as_ref().map_or_else(
+                                || {
+                                    closest_clut_index(
+                                        r as u16 * 257,
+                                        g as u16 * 257,
+                                        b as u16 * 257,
+                                        &dst_clut,
+                                    )
+                                },
+                                |matcher| matcher.match_rgb(r, g, b),
                             );
                             write_pixel_clipped(
                                 bus,

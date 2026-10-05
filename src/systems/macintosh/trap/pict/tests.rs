@@ -9,6 +9,40 @@ use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::trap::dispatch::TrapDispatcher;
 
 #[test]
+fn direct_color_matcher_preserves_full_scan_results() {
+    if super::clut_match_itable_enabled() {
+        return;
+    }
+    let mut palettes = [TrapDispatcher::standard_mac_8bpp_clut(), [[0u16; 3]; 256]];
+    let mut seed = 0x5EED_1234u32;
+    for entry in &mut palettes[1] {
+        for channel in entry {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *channel = (seed >> 16) as u16;
+        }
+    }
+    for clut in &palettes {
+        let matcher = super::DirectColorMatcher::new(clut);
+        for gray in 0..=255u8 {
+            let channel = gray as u16 * 257;
+            assert_eq!(
+                matcher.match_rgb(gray, gray, gray),
+                super::closest_clut_index(channel, channel, channel, clut)
+            );
+        }
+        for _ in 0..5_000 {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let [r, g, b, _] = seed.to_be_bytes();
+            assert_eq!(
+                matcher.match_rgb(r, g, b),
+                super::closest_clut_index(r as u16 * 257, g as u16 * 257, b as u16 * 257, clut),
+                "RGB ({r}, {g}, {b})"
+            );
+        }
+    }
+}
+
+#[test]
 fn extended_v2_header_maps_source_rect_into_draw_picture_destination() {
     let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
     let pic = 0x10_0000u32;
