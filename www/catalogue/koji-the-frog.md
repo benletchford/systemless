@@ -28,6 +28,19 @@ compatibility:
       below 7 ms. Level completion and save behaviour remain unverified.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/4012
+  - date: "2026-10-05"
+    tester: Catalogue maintainer
+    systemless_version: Browser build from dev/4038-koji-startup
+    architecture: 68k
+    environment: >-
+      The exact immutable 2.0.1 archive loaded in a production-style browser
+      preview. Later dismissed the shareware notice, Play entered the level-one
+      arena, and holding J moved Koji left. Three focused 20-second startup
+      probes with bounded 68k CPU slices had maximum runtime frames below 35 ms
+      with advancing guest ticks and no browser console errors. Level completion
+      and save behaviour remain unverified.
+    status: boots
+    evidence: https://github.com/benletchford/systemless/issues/4038
 artifacts:
 - id: archive
   role: archive
