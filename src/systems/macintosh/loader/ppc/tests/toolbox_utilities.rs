@@ -1,6 +1,62 @@
 use super::*;
 
 #[test]
+fn hle_import_runner_unpacks_packbits_and_advances_pointer_variables() {
+    let pef = synthetic_pef_with_import(b"UnpackBits");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    assert!(matches!(
+        loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::UnpackBits
+    ));
+    let base = PPC_DATA_BASE + 0x7000;
+    let source_variable = base;
+    let destination_variable = base + 4;
+    let source = base + 16;
+    let destination = base + 64;
+    loaded.memory.add_region(base, vec![0; 128]);
+    loaded.memory.write_u32_be(source_variable, source).unwrap();
+    loaded.memory.write_u32_be(destination_variable, destination).unwrap();
+    // Three literals, three repeated bytes, a no-op, then two literals.
+    loaded.memory.write_bytes(source, &[2, b'A', b'B', b'C', 0xfe, b'X', 0x80, 1, b'Y', b'Z']).unwrap();
+    loaded.cpu.gpr[3] = source_variable;
+    loaded.cpu.gpr[4] = destination_variable;
+    loaded.cpu.gpr[5] = 8;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(ppc_memory_read_bytes(&mut loaded.memory, destination, 8), Some(b"ABCXXXYZ".to_vec()));
+    assert_eq!(loaded.memory.read_u32_be(source_variable), Some(source + 10));
+    assert_eq!(loaded.memory.read_u32_be(destination_variable), Some(destination + 8));
+}
+
+#[test]
+fn hle_import_runner_unpackbits_rejects_unreadable_input_without_advancing() {
+    let pef = synthetic_pef_with_import(b"UnpackBits");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let base = PPC_DATA_BASE + 0x7000;
+    let source_variable = base;
+    let destination_variable = base + 4;
+    let source = base + 127;
+    let destination = base + 64;
+    loaded.memory.add_region(base, vec![0; 128]);
+    loaded.memory.write_u32_be(source_variable, source).unwrap();
+    loaded.memory.write_u32_be(destination_variable, destination).unwrap();
+    loaded.memory.write_u8(source, 0).unwrap();
+    loaded.cpu.gpr[3] = source_variable;
+    loaded.cpu.gpr[4] = destination_variable;
+    loaded.cpu.gpr[5] = 1;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.memory.read_u32_be(source_variable), Some(source));
+    assert_eq!(loaded.memory.read_u32_be(destination_variable), Some(destination));
+    assert_eq!(loaded.memory.read_u8(destination), Some(0));
+}
+
+#[test]
 fn hle_import_runner_reports_missing_international_resource_table() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "GetIntlResourceTable"),

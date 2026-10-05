@@ -11419,15 +11419,7 @@ impl super::TrapDispatcher {
             // Expands data previously compressed by PackBits.
             // PROCEDURE UnpackBits (VAR srcPtr, dstPtr: Ptr; dstBytes: INTEGER);
             // Inside Macintosh Volume I, I-470
-            //
-            // "Given in srcPtr a pointer to data that was compressed by
-            //  PackBits, UnpackBits expands the data and stores the
-            //  result at dstPtr. DstBytes is the length that the
-            //  expanded data will be."
-            //
             // Stack: SP+0=dstBytes(2), SP+2=dstPtr_ptr(4), SP+6=srcPtr_ptr(4). Pop 10.
-            //
-            // UnpackBits ($A8D0): Expands PackBits-compressed data into dstBytes; advances VAR srcPtr/dstPtr; per IM:I I-470
             (true, 0x0D0) => {
                 let sp = cpu.read_reg(Register::A7);
                 let dst_bytes = bus.read_word(sp) as i16 as i32;
