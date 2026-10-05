@@ -598,6 +598,93 @@ pub(crate) fn ppc_open_cport(
     true
 }
 
+pub(crate) fn ppc_init_cport(
+    memory: &mut PpcSectionMem,
+    gworlds: &mut Vec<PpcGWorldRecord>,
+    port: u32,
+    current_gdevice: u32,
+) {
+    // InitCPort ($AA01)
+    // Initializes an existing CGrafPort without allocating storage; leaves a basic GrafPort unchanged.
+    // PROCEDURE InitCPort (port: CGrafPtr);
+    // Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-64–4-66.
+    if !ppc_memory_can_write_bytes(memory, port, PPC_CGRAF_PORT_SIZE)
+        || memory.read_u16_be(port + 6) != Some(0xc000)
+    {
+        return;
+    }
+    let Some(pixmap_handle) = memory.read_u32_be(port + 2) else {
+        return;
+    };
+    let Some(pixmap) = memory.read_u32_be(pixmap_handle).filter(|ptr| *ptr != 0) else {
+        return;
+    };
+    let Some(device) = memory.read_u32_be(current_gdevice).filter(|ptr| *ptr != 0) else {
+        return;
+    };
+    let Some(device_pixmap_handle) = memory.read_u32_be(device + 22) else {
+        return;
+    };
+    let Some(device_pixmap) = memory.read_u32_be(device_pixmap_handle).filter(|ptr| *ptr != 0) else {
+        return;
+    };
+    let Some(bits) = ppc_read_pixmap_handle_bits(memory, device_pixmap_handle) else {
+        return;
+    };
+    let color_table = memory.read_u32_be(device_pixmap + 42).unwrap_or(0);
+    let vis_rgn = memory.read_u32_be(port + PPC_CGRAF_PORT_VIS_RGN_OFFSET).unwrap_or(0);
+    let clip_rgn = memory.read_u32_be(port + PPC_CGRAF_PORT_CLIP_RGN_OFFSET).unwrap_or(0);
+    if vis_rgn == 0 || clip_rgn == 0 {
+        return;
+    }
+    if ppc_write_pixmap(
+        memory,
+        pixmap,
+        bits.base_addr,
+        bits.row_bytes,
+        bits.top,
+        bits.left,
+        bits.bottom,
+        bits.right,
+        bits.depth,
+    )
+    .is_none()
+        || memory.write_u32_be(pixmap + 42, color_table).is_none()
+        || ppc_write_gworld_port(
+            memory,
+            port,
+            pixmap_handle,
+            bits.top,
+            bits.left,
+            bits.bottom,
+            bits.right,
+        )
+        .is_none()
+        || ppc_write_rgn_bbox(
+            memory,
+            vis_rgn,
+            bits.top,
+            bits.left,
+            bits.bottom,
+            bits.right,
+        )
+        .is_none()
+        || ppc_write_rgn_bbox(memory, clip_rgn, i16::MIN, i16::MIN, i16::MAX, i16::MAX).is_none()
+    {
+        return;
+    }
+    if let Some(gworld) = gworlds.iter_mut().find(|gworld| gworld.port == port) {
+        gworld.pixmap_handle = pixmap_handle;
+        gworld.pixmap = pixmap;
+        gworld.base_addr = bits.base_addr;
+        gworld.gdevice = current_gdevice;
+        (gworld.width, gworld.height) =
+            ppc_rect_dimensions(bits.top, bits.left, bits.bottom, bits.right);
+        gworld.depth = bits.depth;
+        gworld.row_bytes = bits.row_bytes;
+    }
+}
+
 pub(crate) fn ppc_close_cport(
     port: u32,
     gworlds: &mut Vec<PpcGWorldRecord>,
