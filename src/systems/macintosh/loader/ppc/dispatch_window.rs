@@ -1926,6 +1926,30 @@ pub(super) fn ppc_standard_desktop_color(
     )
 }
 
+fn ppc_standard_desktop_pixels(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    front_buffer: PpcFrontBuffer,
+) -> Option<(u16, u16)> {
+    let ink = ppc_standard_desktop_color(gworlds, 0, 0);
+    let paper = ppc_standard_desktop_color(gworlds, 1, 0);
+    // Color2Index depends on the destination ColorTable (Inside Macintosh:
+    // Imaging With QuickDraw, 1994, pp. 4-81--4-82). Resolve the two desktop
+    // pattern colors once per repaint instead of re-reading the table for
+    // every exposed pixel.
+    let surface = PpcQuickDrawSurface {
+        front_buffer,
+        top: 0,
+        left: 0,
+        ctable_handle: (front_buffer.base_addr == PPC_MAIN_SCREEN_BASE)
+            .then_some(PPC_MAIN_CTABLE_HANDLE),
+    };
+    Some((
+        ppc_quickdraw_surface_color_pixel(memory, surface, ink)?,
+        ppc_quickdraw_surface_color_pixel(memory, surface, paper)?,
+    ))
+}
+
 pub(super) fn ppc_repaint_window_geometry_transition(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -2003,18 +2027,24 @@ pub(super) fn ppc_restore_window_removal_exposure(
         })
         .collect::<Vec<_>>();
     if paint.0 < paint.2 && paint.1 < paint.3 {
-        for v in i32::from(paint.0)..i32::from(paint.2) {
-            for h in i32::from(paint.1)..i32::from(paint.3) {
-                if covered.iter().any(|&(top, left, bottom, right)| {
-                    i32::from(top) <= v
-                        && v < i32::from(bottom)
-                        && i32::from(left) <= h
-                        && h < i32::from(right)
-                }) {
-                    continue;
+        if let Some((ink, paper)) = ppc_standard_desktop_pixels(memory, gworlds, front_buffer) {
+            for v in i32::from(paint.0)..i32::from(paint.2) {
+                for h in i32::from(paint.1)..i32::from(paint.3) {
+                    if covered.iter().any(|&(top, left, bottom, right)| {
+                        i32::from(top) <= v
+                            && v < i32::from(bottom)
+                            && i32::from(left) <= h
+                            && h < i32::from(right)
+                    }) {
+                        continue;
+                    }
+                    let pixel = if crate::window_manager::standard_desktop_pattern_is_ink(h, v) {
+                        ink
+                    } else {
+                        paper
+                    };
+                    let _ = ppc_quickdraw_write_raw_pixel(memory, front_buffer, (h, v), pixel);
                 }
-                let color = ppc_standard_desktop_color(gworlds, h, v);
-                let _ = ppc_quickdraw_write_pixel(memory, front_buffer, (h, v), color);
             }
         }
     }
@@ -2861,18 +2891,28 @@ pub(super) fn ppc_paint_behind(
         );
         if paint.0 < paint.2 && paint.1 < paint.3 {
             if let Some(front_buffer) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) {
-                for v in i32::from(paint.0)..i32::from(paint.2) {
-                    for h in i32::from(paint.1)..i32::from(paint.3) {
-                        if covered.iter().any(|&(top, left, bottom, right)| {
-                            i32::from(top) <= v
-                                && v < i32::from(bottom)
-                                && i32::from(left) <= h
-                                && h < i32::from(right)
-                        }) {
-                            continue;
+                if let Some((ink, paper)) =
+                    ppc_standard_desktop_pixels(memory, gworlds, front_buffer)
+                {
+                    for v in i32::from(paint.0)..i32::from(paint.2) {
+                        for h in i32::from(paint.1)..i32::from(paint.3) {
+                            if covered.iter().any(|&(top, left, bottom, right)| {
+                                i32::from(top) <= v
+                                    && v < i32::from(bottom)
+                                    && i32::from(left) <= h
+                                    && h < i32::from(right)
+                            }) {
+                                continue;
+                            }
+                            let pixel =
+                                if crate::window_manager::standard_desktop_pattern_is_ink(h, v) {
+                                    ink
+                                } else {
+                                    paper
+                                };
+                            let _ =
+                                ppc_quickdraw_write_raw_pixel(memory, front_buffer, (h, v), pixel);
                         }
-                        let color = ppc_standard_desktop_color(gworlds, h, v);
-                        let _ = ppc_quickdraw_write_pixel(memory, front_buffer, (h, v), color);
                     }
                 }
             }
