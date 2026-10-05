@@ -1940,6 +1940,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GetGWorldPixMap
         | PpcImportDispatcherTarget::OpenPort
         | PpcImportDispatcherTarget::OpenCPort
+        | PpcImportDispatcherTarget::InitCPort
         | PpcImportDispatcherTarget::CloseCPort
         | PpcImportDispatcherTarget::SetPortBits { .. }
         | PpcImportDispatcherTarget::GetPixBaseAddr

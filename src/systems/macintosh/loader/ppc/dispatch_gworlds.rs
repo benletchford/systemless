@@ -476,6 +476,10 @@ pub(super) fn dispatch_gworld_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::InitCPort => {
+            ppc_init_cport(memory, gworlds, cpu.gpr[3], *current_gdevice);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::CloseCPort => {
             let port = cpu.gpr[3];
             let closed_pixmap_handle = gworlds

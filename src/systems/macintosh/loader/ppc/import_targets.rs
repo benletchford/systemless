@@ -378,6 +378,7 @@ pub enum PpcImportDispatcherTarget {
     GetGWorldPixMap,
     OpenPort,
     OpenCPort,
+    InitCPort,
     CloseCPort,
     SetPortBits { color: bool },
     GetPixBaseAddr,
@@ -3196,6 +3197,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetGWorldPixMap") => PpcImportDispatcherTarget::GetGWorldPixMap,
         ("InterfaceLib", "OpenPort") => PpcImportDispatcherTarget::OpenPort,
         ("InterfaceLib", "OpenCPort") => PpcImportDispatcherTarget::OpenCPort,
+        ("InterfaceLib", "InitCPort") => PpcImportDispatcherTarget::InitCPort,
         ("InterfaceLib", "ClosePort") | ("InterfaceLib", "CloseCPort") => {
             PpcImportDispatcherTarget::CloseCPort
         }

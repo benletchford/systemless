@@ -1,6 +1,41 @@
 use super::*;
 
 #[test]
+fn hle_import_runner_init_cport_reuses_storage_and_current_device_clut() {
+    let pef = synthetic_pef_with_import(b"InitCPort");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    assert!(matches!(
+        loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::InitCPort
+    ));
+    let port = PPC_DATA_BASE + 0x7000;
+    loaded.memory.add_region(port, vec![0; PPC_CGRAF_PORT_SIZE as usize]);
+    loaded.cpu.gpr[3] = port;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::OpenCPort);
+    let pixmap_handle = loaded.memory.read_u32_be(port + 2).unwrap();
+    let pixmap = loaded.memory.read_u32_be(pixmap_handle).unwrap();
+    let vis_rgn = loaded.memory.read_u32_be(port + PPC_CGRAF_PORT_VIS_RGN_OFFSET).unwrap();
+    let clip_rgn = loaded.memory.read_u32_be(port + PPC_CGRAF_PORT_CLIP_RGN_OFFSET).unwrap();
+    let heap_before = loaded.heap_cursor();
+
+    loaded.memory.write_u32_be(pixmap + 42, 0).unwrap();
+    loaded.memory.write_u16_be(port + PPC_CGRAF_PORT_PN_MODE_OFFSET, 7).unwrap();
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InitCPort);
+
+    assert_eq!(loaded.heap_cursor(), heap_before);
+    assert_eq!(loaded.memory.read_u32_be(port + 2), Some(pixmap_handle));
+    assert_eq!(loaded.memory.read_u32_be(port + PPC_CGRAF_PORT_VIS_RGN_OFFSET), Some(vis_rgn));
+    assert_eq!(loaded.memory.read_u32_be(port + PPC_CGRAF_PORT_CLIP_RGN_OFFSET), Some(clip_rgn));
+    assert_eq!(loaded.memory.read_u32_be(pixmap + 42), Some(PPC_MAIN_CTABLE_HANDLE));
+    assert_eq!(loaded.memory.read_u16_be(port + PPC_CGRAF_PORT_PN_MODE_OFFSET), Some(PPC_QD_PEN_MODE_PAT_COPY as u16));
+
+    loaded.memory.write_u16_be(port + 6, 0).unwrap();
+    loaded.memory.write_u16_be(port + PPC_CGRAF_PORT_PN_MODE_OFFSET, 7).unwrap();
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InitCPort);
+    assert_eq!(loaded.memory.read_u16_be(port + PPC_CGRAF_PORT_PN_MODE_OFFSET), Some(7));
+}
+
+#[test]
 fn hle_import_runner_handles_test_device_attribute() {
     let pef = synthetic_pef_with_import(b"TestDeviceAttribute");
     let mut loaded = load_pef_application(&pef).unwrap();
