@@ -2561,11 +2561,12 @@ impl super::TrapDispatcher {
         let (window_top, window_left, window_bottom, window_right) =
             self.window_global_port_rect(bus, window_ptr);
         let (_, _, screen_width, screen_height, _) = self.screen_mode;
-        let exact_fullscreen = window_top <= 0
+        let exact_fullscreen_plain = self.window_proc_id(window_ptr) == 2
+            && window_top <= 0
             && window_left <= 0
             && window_bottom >= screen_height as i16
             && window_right >= screen_width as i16;
-        if mbar_h > 0 && !self.menu_bar_hidden && !exact_fullscreen {
+        if mbar_h > 0 && !self.menu_bar_hidden && !exact_fullscreen_plain {
             if let Some((top, left, bottom, right)) = Self::region_handle_rect(bus, vis_handle) {
                 if top < mbar_h {
                     let clipped = (top.max(mbar_h), left, bottom, right);
@@ -3061,8 +3062,8 @@ impl super::TrapDispatcher {
         }
     }
 
-    /// Resizes a tracked window port's visRgn to match its current `portRect`.
-    /// No-op when it already matches, or when the port is not a window we track.
+    /// Rebuild a tracked window's regions when its `portRect` was edited directly.
+    /// No-op when its content region already covers the same global rectangle.
     ///
     /// `PortChanged` ($AB1D selector 9) is how an application tells QuickDraw
     /// that it edited a port's fields behind its back (Imaging With QuickDraw
@@ -3083,43 +3084,14 @@ impl super::TrapDispatcher {
         if the_window == 0 || !self.window_list.contains(&the_window) {
             return;
         }
-        let h = bus.read_word(the_window + 20) as i16;
-        let w = bus.read_word(the_window + 22) as i16;
-        if h <= 0 || w <= 0 {
+        let (top, left, bottom, right) = self.window_port_rect(bus, the_window);
+        if top >= bottom || left >= right {
             return;
         }
-
-        let vis_rgn_handle = bus.read_long(the_window + 24);
-        let vis_rgn = if vis_rgn_handle != 0 {
-            bus.read_long(vis_rgn_handle)
-        } else {
-            0
-        };
-        if vis_rgn != 0
-            && bus.read_word(vis_rgn + 6) as i16 == h
-            && bus.read_word(vis_rgn + 8) as i16 == w
-        {
+        let global_content = self.window_global_port_rect(bus, the_window);
+        if self.window_content_global_rect(bus, the_window) == Some(global_content) {
             return;
         }
-
-        if vis_rgn != 0 {
-            // Keep a positive existing top, which is the menu bar clipping the
-            // window; clamp a negative one away. A visRgn starting above the
-            // port's own origin is left over from geometry the port no longer
-            // has, and it would let the application draw outside its portRect.
-            let vis_top = (bus.read_word(vis_rgn + 2) as i16).max(0);
-            bus.write_word(vis_rgn + 2, vis_top as u16);
-            bus.write_word(vis_rgn + 4, 0u16);
-            bus.write_word(vis_rgn + 6, h as u16);
-            bus.write_word(vis_rgn + 8, w as u16);
-        }
-
-        // Anchor the content region on the port's own origin. Carrying over the
-        // previous local top would keep the window's content region offset from
-        // the rect the port actually addresses, and everything derived from it —
-        // the visRgn ShowHide recomputes included — would inherit the skew.
-        let content_rect = (0, 0, h, w);
-        let global_content = self.window_local_rect_to_global(bus, the_window, content_rect);
         let global_structure =
             self.window_structure_global_rect_for_window(bus, the_window, global_content);
         Self::write_region_handle_rect(
@@ -3134,6 +3106,11 @@ impl super::TrapDispatcher {
         );
         if the_window == self.front_window {
             self.window_bounds = global_content;
+        }
+        if self.window_visible(bus, the_window)
+            && !self.saved_vis_regions.contains_key(&the_window)
+        {
+            let _ = self.calc_window_vis_region(bus, the_window);
         }
     }
 
@@ -3604,6 +3581,7 @@ impl super::TrapDispatcher {
         // which lost the first row of every one of them.
         // Inside Macintosh Volume I, I-273 (content region);
         // Inside Macintosh Volume V, V-245 (visRgn excludes the menu bar).
+        self.window_proc_ids.insert(window_ptr, wind_proc_id);
         self.init_window_manager_fields(
             bus,
             window_ptr,
@@ -3661,7 +3639,6 @@ impl super::TrapDispatcher {
         self.window_title = wind_title.to_string();
         self.window_bounds = (wind_top, wind_left, wind_bottom, wind_right);
         self.window_proc_id = wind_proc_id;
-        self.window_proc_ids.insert(window_ptr, wind_proc_id);
         self.ensure_window_aux_record(bus, window_ptr, gd_ctab_handle);
         self.go_away_flag = go_away_flag;
 
@@ -4462,6 +4439,10 @@ impl super::TrapDispatcher {
                 if the_window != 0 {
                     let was_visible = self.window_visible(bus, the_window);
                     let was_front = self.frontmost_tracked_window(bus) == the_window;
+                    // A hidden window may have had its portRect edited directly.
+                    // The Window Manager derives its content region from the
+                    // current port rectangle when revealing it (IM:I I-284, I-289).
+                    self.resync_window_geometry_from_port_rect(bus, the_window);
                     bus.write_byte(the_window + Self::WINDOW_VISIBLE_OFFSET, 0xFF);
                     self.set_window_vis_from_content(bus, the_window, true);
                     if !was_visible {
