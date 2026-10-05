@@ -1,6 +1,31 @@
 use super::*;
 
 #[test]
+fn ae_manager_info_returns_version_and_recorder_count() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "AEManagerInfo"),
+        PpcImportDispatcherTarget::AEManagerInfo,
+    );
+    let pef = synthetic_pef_with_import(b"AEManagerInfo");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let output = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(output, vec![0xff; 4]);
+    loaded.cpu.gpr[4] = output;
+
+    for (keyword, expected) in [(b"vers", 0x0101_0000), (b"recr", 0)] {
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*keyword);
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::AEManagerInfo);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u32_be(output), Some(expected));
+    }
+
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"vers");
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AEManagerInfo);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+}
+
+#[test]
 fn ppc_launch_size_resource_enables_open_application_apple_event() {
     let pef = synthetic_pef_with_import(b"WaitNextEvent");
     let mut loaded = load_pef_application(&pef).unwrap();

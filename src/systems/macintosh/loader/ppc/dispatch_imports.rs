@@ -2152,7 +2152,8 @@ pub(crate) fn dispatch_supported_import(
             unreachable!("Font Manager imports return through dispatch_font_import")
         }
         PpcImportDispatcherTarget::AESetInteractionAllowed
-        | PpcImportDispatcherTarget::AEGetInteractionAllowed => {
+        | PpcImportDispatcherTarget::AEGetInteractionAllowed
+        | PpcImportDispatcherTarget::AEManagerInfo => {
             unreachable!("Apple Event imports return through dispatch_apple_event_import")
         }
         PpcImportDispatcherTarget::StdMemset

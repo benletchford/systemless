@@ -721,6 +721,7 @@ pub enum PpcImportDispatcherTarget {
     GetIntlResource,
     AESetInteractionAllowed,
     AEGetInteractionAllowed,
+    AEManagerInfo,
     LMGetCurDirStore,
     LMSetCurDirStore,
     LMGetSFSaveDisk,
@@ -3993,6 +3994,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "AEGetInteractionAllowed") => {
             PpcImportDispatcherTarget::AEGetInteractionAllowed
         }
+        ("InterfaceLib", "AEManagerInfo") => PpcImportDispatcherTarget::AEManagerInfo,
         ("InterfaceLib", "SVersion") => PpcImportDispatcherTarget::SVersion,
         ("InterfaceLib", "EqualString") => PpcImportDispatcherTarget::EqualString,
         ("InterfaceLib", "IUEqualPString") => PpcImportDispatcherTarget::IUEqualPString,
