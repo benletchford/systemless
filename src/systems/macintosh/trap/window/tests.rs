@@ -856,6 +856,77 @@ fn hidden_window_setorigin_preserves_global_regions_before_showwindow() {
 }
 
 #[test]
+fn hidden_window_showwindow_uses_directly_expanded_port_rect_after_setorigin() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let screen_base = bus.alloc(800 * 600);
+    bus.write_long(0x0824, screen_base);
+    disp.screen_mode = (screen_base, 800, 800, 600, 8);
+    bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+    let window = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus,
+        &mut cpu,
+        window,
+        screen_base,
+        46,
+        42,
+        388,
+        554,
+        "",
+        3,
+        false,
+        false,
+        false,
+        0,
+    );
+    disp.move_window_to_global(&mut bus, window, 0, 0, false);
+    let current_gdevice = *disp.current_gdevice;
+    disp.set_current_port_state(&mut bus, &mut cpu, window, Some(current_gdevice));
+
+    let sp = TEST_SP - 4;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_word(sp, (-139i16) as u16);
+    bus.write_word(sp + 2, (-143i16) as u16);
+    assert!(disp
+        .dispatch_quickdraw(true, 0x078, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+
+    // The application writes the screen-sized bottom-right directly. A Mac OS
+    // 8.1 oracle showed ShowWindow rebuilding the content region from this
+    // rectangle before CopyBits, while the hidden visRgn was still empty.
+    bus.write_word(window + 20, 461);
+    bus.write_word(window + 22, 657);
+    assert_eq!(read_window_region_rect(&bus, window, 24), (-139, -143, -139, -143));
+
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, window);
+    assert!(dispatch(&mut disp, 0x115, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+
+    assert_eq!(disp.window_port_rect(&bus, window), (-139, -143, 461, 657));
+    assert_eq!(
+        read_window_region_rect(
+            &bus,
+            window,
+            super::super::TrapDispatcher::WINDOW_CONT_RGN_OFFSET
+        ),
+        (0, 0, 600, 800)
+    );
+    assert_eq!(read_window_region_rect(&bus, window, 24), (-119, -143, 461, 657));
+    assert_eq!(
+        read_window_region_rect(
+            &bus,
+            window,
+            super::super::TrapDispatcher::WINDOW_UPDATE_RGN_OFFSET
+        ),
+        (0, 0, 600, 800)
+    );
+}
+
+#[test]
 fn init_cgraf_window_custom_wdef_installs_window_def_proc_handle() {
     let (mut disp, mut cpu, mut bus) = setup();
     let wdef_proc = install_wdef_resource(&mut disp, &mut bus, 200);
