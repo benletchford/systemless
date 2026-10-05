@@ -43,13 +43,14 @@ artifacts:
   format: sit
   source:
     type: url
-    url: https://www.macintoshrepository.org/download.php?id=7047
+    url: https://archive.org/download/tucows_205573_Ferazel_s_Wand/ferazelswand.sit
     expected_sha256: 7c9b8ee0d911bfdf33d1dd21b08df45f9fd505e1a165272c6a4cfc1185110dbb
     expected_size: 22675042
   provenance:
     redistribution: permitted
     original: true
     sources:
+    - https://archive.org/details/tucows_205573_Ferazel_s_Wand
     - https://www.macintoshrepository.org/4577-ferazel-s-wand
     license: Ferazel's Wand Demo License
     rights_holder: Ambrosia Software, Inc.
@@ -60,7 +61,8 @@ artifacts:
       written permission.
     notes: >-
       Original 22,675,042-byte StuffIt demo installer. Its SHA-1 is
-      1da584be9db05cd2cd5eabfd6a8ab4eebee4c495, matching the public demo listing;
+      1da584be9db05cd2cd5eabfd6a8ab4eebee4c495, matching both the Internet
+      Archive's Tucows file and the Macintosh Repository demo listing;
       its SHA-256 is 7c9b8ee0d911bfdf33d1dd21b08df45f9fd505e1a165272c6a4cfc1185110dbb.
       The licence and three-level demo description were checked inside this exact installer.
 - id: gameplay-screenshot
@@ -84,6 +86,7 @@ artifacts:
       0e594031ce426232d642eefbc01ee96c8914ac0a8e12583c60858626b0cf5d36;
       374,287 bytes.
 references:
+- https://archive.org/details/tucows_205573_Ferazel_s_Wand
 - https://www.macintoshrepository.org/4577-ferazel-s-wand
 ---
 
