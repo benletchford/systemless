@@ -1106,11 +1106,11 @@ pub(super) fn dispatch_dialog_import(
             let dialog = dialog.unwrap();
             *current_gworld = dialog;
             *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
-            let mut modal_cpu = cpu.clone();
-            modal_cpu.gpr[3] = params.filter_proc();
-            modal_cpu.gpr[4] = dialog + DIALOG_ALERT_HIT_OFFSET;
+            let caller_registers = PpcCallerRegisters::capture(cpu);
+            cpu.gpr[3] = params.filter_proc();
+            cpu.gpr[4] = dialog + DIALOG_ALERT_HIT_OFFSET;
             let action = ppc_modal_dialog(
-                &mut modal_cpu,
+                cpu,
                 process_memory_manager,
                 memory,
                 heap_cursor,
@@ -1130,6 +1130,7 @@ pub(super) fn dispatch_dialog_import(
                 vfs_resources,
                 current_resource_refnum,
             );
+            caller_registers.restore(cpu);
             if matches!(action, PpcImportAction::ReturnPreserve) {
                 let hit = memory
                     .read_u16_be(dialog + DIALOG_ALERT_HIT_OFFSET)
@@ -1263,15 +1264,17 @@ pub(super) fn dispatch_dialog_import(
             let dialog = dialog.unwrap();
             *current_gworld = dialog;
             *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
-            let mut modal_cpu = cpu.clone();
-            modal_cpu.gpr[3] = if params.alert_param_ptr() == 0 {
+            let caller_registers = PpcCallerRegisters::capture(cpu);
+            cpu.gpr[3] = if params.alert_param_ptr() == 0 {
                 0
             } else {
-                memory.read_u32_be(params.alert_param_ptr() + 2).unwrap_or(0)
+                memory
+                    .read_u32_be(params.alert_param_ptr() + 2)
+                    .unwrap_or(0)
             };
-            modal_cpu.gpr[4] = dialog + DIALOG_ALERT_HIT_OFFSET;
+            cpu.gpr[4] = dialog + DIALOG_ALERT_HIT_OFFSET;
             let action = ppc_modal_dialog(
-                &mut modal_cpu,
+                cpu,
                 process_memory_manager,
                 memory,
                 heap_cursor,
@@ -1291,6 +1294,7 @@ pub(super) fn dispatch_dialog_import(
                 vfs_resources,
                 current_resource_refnum,
             );
+            caller_registers.restore(cpu);
             if matches!(action, PpcImportAction::ReturnPreserve) {
                 let hit = memory
                     .read_u16_be(dialog + DIALOG_ALERT_HIT_OFFSET)
@@ -4687,6 +4691,65 @@ fn ppc_dialog_cancel_item(
             .map(|item| (item.item_type, ppc_dialog_item_title(memory, handles, item))),
     )
     .to_u16()
+}
+
+/// The caller's PowerPC registers, saved while an alert reuses ModalDialog's
+/// register arguments. ModalDialog runs host code only: it reads its
+/// arguments and stages callback arguments in registers, and guest callbacks
+/// leave as actions the run loop starts after the restore. Restoring the
+/// registers therefore discards those writes exactly as a private copy of the
+/// CPU would, without copying its instruction caches on every idle pass.
+#[derive(Clone, Copy)]
+struct PpcCallerRegisters {
+    gpr: [u32; 32],
+    fpr: [u64; 32],
+    cr: u32,
+    lr: u32,
+    ctr: u32,
+    xer: u32,
+    fpscr: u32,
+    msr: u32,
+    pc: u32,
+    alignment_policy: PpcAlignmentPolicy,
+    time_base: u64,
+    reservation: Option<u32>,
+}
+
+impl PpcCallerRegisters {
+    fn capture(cpu: &PpcCpu) -> Self {
+        Self {
+            gpr: cpu.gpr,
+            fpr: cpu.fpr,
+            cr: cpu.cr,
+            lr: cpu.lr,
+            ctr: cpu.ctr,
+            xer: cpu.xer,
+            fpscr: cpu.fpscr,
+            msr: cpu.msr,
+            pc: cpu.pc,
+            alignment_policy: cpu.alignment_policy,
+            time_base: cpu.time_base(),
+            reservation: cpu.reservation_address(),
+        }
+    }
+
+    fn restore(self, cpu: &mut PpcCpu) {
+        debug_assert_eq!(
+            (cpu.time_base(), cpu.reservation_address()),
+            (self.time_base, self.reservation),
+            "host dialog code must not execute guest instructions"
+        );
+        cpu.gpr = self.gpr;
+        cpu.fpr = self.fpr;
+        cpu.cr = self.cr;
+        cpu.lr = self.lr;
+        cpu.ctr = self.ctr;
+        cpu.xer = self.xer;
+        cpu.fpscr = self.fpscr;
+        cpu.msr = self.msr;
+        cpu.pc = self.pc;
+        cpu.alignment_policy = self.alignment_policy;
+    }
 }
 
 fn ppc_modal_dialog(
