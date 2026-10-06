@@ -4099,6 +4099,29 @@ impl super::TrapDispatcher {
             return;
         }
 
+        // SetPortBits can temporarily make a basic window's GrafPort draw
+        // into a scratch BitMap. The Window Manager still presents only the
+        // window's original screen backing; the application transfers pixels
+        // from scratch explicitly with CopyBits. Imaging With QuickDraw
+        // (1994), pp. 4-86..4-87.
+        if !is_cgraf_port {
+            if let Some(&original_handle) = self.window_original_pixmaps.get(&port) {
+                let original_pixmap = bus.read_long(original_handle);
+                if original_pixmap != 0 {
+                    let original_base = Self::offscreen_pixmap_base_ptr(bus, original_pixmap);
+                    if original_base != 0 && port_base != original_base {
+                        if trace {
+                            eprintln!(
+                                "[BLIT] skip: GrafPort portBits swapped original=${:08X} current=${:08X}",
+                                original_base, port_base
+                            );
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+
         // If the window already draws directly to the screen, no blit needed
         if port_base == screen_base || port_base == 0 {
             if trace {
@@ -10278,6 +10301,44 @@ mod redraw_chrome_tests {
             bus.read_byte(screen_base + 8 * 64 + 8),
             0x11,
             "the original tracked window backing PixMap should still be presented"
+        );
+    }
+
+    #[test]
+    fn redraw_chrome_blit_skips_tracked_basic_window_swapped_to_scratch_bitmap() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(64 * 64);
+        disp.screen_mode = (screen_base, 64, 64, 64, 8);
+        bus.write_long(0x0824, screen_base);
+        let gdevice_handle = disp.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, gdevice_handle);
+        bus.write_long(0x0CC8, gdevice_handle);
+
+        let clut = TrapDispatcher::standard_mac_8bpp_clut();
+        let ctab_handle = make_ctab_handle(&mut bus, &clut, 8);
+        let original_pixmap =
+            install_8bpp_cgrafport(&mut bus, screen_base, 64, 64, 64, ctab_handle);
+        disp.window_original_pixmaps.insert(PORT_PTR, original_pixmap);
+
+        let scratch_base = bus.alloc(8 * 64);
+        bus.fill_bytes(scratch_base, 8 * 64, 0xFF);
+        bus.write_long(PORT_PTR + 2, scratch_base);
+        bus.write_word(PORT_PTR + 6, 8);
+        bus.write_word(PORT_PTR + 8, 0);
+        bus.write_word(PORT_PTR + 10, 0);
+        bus.write_word(PORT_PTR + 12, 64);
+        bus.write_word(PORT_PTR + 14, 64);
+
+        let screen_pixel = screen_base + 8 * 64 + 8;
+        bus.write_byte(screen_pixel, 0xAA);
+        disp.front_window = PORT_PTR;
+        disp.blit_window_to_screen(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(screen_pixel),
+            0xAA,
+            "SetPortBits scratch pixels must stay offscreen until an explicit CopyBits"
         );
     }
 
