@@ -14625,6 +14625,81 @@
     }
 
     #[test]
+    fn append_ditl_expands_window_for_buttons_below_original_dialog() {
+        let (mut disp, _, mut bus) = setup_with_port();
+        let screen = bus.alloc(640 * 480);
+        bus.write_bytes(screen, &vec![0x2A; 640 * 480]);
+        bus.write_long(0x0824, screen);
+        disp.screen_mode = (screen, 640, 640, 480, 8);
+        let dialog = bus.alloc(170);
+        let old_ditl = build_test_ditl_items(&[(8, (140, 100, 176, 409), b"Registered")]);
+        let old_ptr = bus.alloc(old_ditl.len() as u32);
+        bus.write_bytes(old_ptr, &old_ditl);
+        let items_handle = bus.alloc(4);
+        bus.write_long(items_handle, old_ptr);
+        bus.write_long(dialog + 156, items_handle);
+        bus.write_word(dialog + 8, (-40i16) as u16);
+        bus.write_word(dialog + 10, (-60i16) as u16);
+        bus.write_word(dialog + 20, 188);
+        bus.write_word(dialog + 22, 450);
+        bus.write_byte(dialog + 110, 0xFF);
+        for (offset, rect) in [
+            (24, (0, 0, 188, 450)),
+            (28, (0, 0, 188, 450)),
+            (118, (40, 60, 228, 510)),
+            (114, (39, 59, 229, 511)),
+        ] {
+            let handle = alloc_region_handle(&mut bus, Some(rect));
+            bus.write_long(dialog + offset, handle);
+        }
+        disp.window_list.push(dialog);
+        disp.front_window = dialog;
+        disp.window_bounds = (40, 60, 228, 510);
+        let old_bounds = (40, 60, 228, 510);
+        let saved = disp.save_dialog_pixels(&bus, old_bounds);
+        disp.dialog_saved_pixels.insert(dialog, saved);
+        bus.write_byte(screen + 100 * 640 + 100, 0x77);
+        bus.write_byte(screen + 240 * 640 + 100, 0x33);
+        assert_eq!(bus.read_byte(screen + 240 * 640 + 100), 0x33);
+
+        let buttons = build_test_ditl_items(&[(4, (188, 330, 208, 409), b"Try it")]);
+        let buttons_ptr = bus.alloc(buttons.len() as u32);
+        bus.write_bytes(buttons_ptr, &buttons);
+        let buttons_handle = bus.alloc(4);
+        bus.write_long(buttons_handle, buttons_ptr);
+
+        assert_eq!(
+            disp.append_ditl_to_dialog(&mut bus, dialog, buttons_handle, 0),
+            2
+        );
+        assert_eq!(bus.read_word(dialog + 20), 208);
+        assert_eq!(
+            TrapDispatcher::dialog_screen_bounds(&bus, dialog),
+            (40, 60, 248, 510)
+        );
+        assert_eq!(disp.window_bounds, (40, 60, 248, 510));
+        let vis = bus.read_long(bus.read_long(dialog + 24));
+        assert_eq!(bus.read_word(vis + 6), 208);
+        let new_bounds = (40, 60, 248, 510);
+        let saved_rect = TrapDispatcher::dialog_saved_pixel_rect(new_bounds);
+        let saved = disp.dialog_saved_pixels.get(&dialog).unwrap();
+        let offset = |y: i16, x: i16| {
+            (y - saved_rect.0) as usize * (saved_rect.3 - saved_rect.1) as usize
+                + (x - saved_rect.1) as usize
+        };
+        assert_eq!(
+            saved[offset(100, 100)],
+            0x2A,
+            "old saved-under must survive growth"
+        );
+        assert_eq!(
+            saved[offset(240, 100)],
+            0x33,
+            "new strip must capture its background"
+        );
+    }
+
+    #[test]
     fn shorten_ditl_erases_removed_retained_item_rects_without_wiping_header_pixels() {
         let (mut disp, _cpu, mut bus) = setup();
         let screen_base = bus.alloc((400 * 300) as u32);

@@ -3837,6 +3837,42 @@ impl super::TrapDispatcher {
 
         all_items.extend(appended_items);
         let new_count = all_items.len();
+        // Inside Macintosh: Macintosh Toolbox Essentials, p. 6-128:
+        // AppendDITL expands the dialog box to accommodate appended items.
+        // The legacy CommToolbox selector and AppendDialogItemList share this
+        // routine, so both must update the WindowRecord geometry.
+        let (old_height, old_width) = Self::dialog_local_size(bus, dialog_ptr);
+        let (_, _, new_height, new_width) = evaluate_appended_dialog_bounds(
+            (0, 0, old_height, old_width),
+            all_items.iter().map(|item| item.rect),
+        );
+        if new_height > old_height || new_width > old_width {
+            let old_bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
+            let new_bounds = (
+                old_bounds.0,
+                old_bounds.1,
+                old_bounds.0.saturating_add(new_height),
+                old_bounds.1.saturating_add(new_width),
+            );
+            self.grow_dialog_saved_under(bus, dialog_ptr, old_bounds, new_bounds);
+            if self.window_list.contains(&dialog_ptr) {
+                let saved_under = self.dialog_saved_pixels.remove(&dialog_ptr);
+                self.grow_dialog_window(bus, dialog_ptr, new_height, new_width);
+                if let Some(saved_under) = saved_under {
+                    self.dialog_saved_pixels.insert(dialog_ptr, saved_under);
+                }
+            } else {
+                bus.write_word(dialog_ptr + 20, new_height as u16);
+                bus.write_word(dialog_ptr + 22, new_width as u16);
+            }
+            if let Some(tracking) = self.dialog_tracking.as_mut() {
+                if tracking.dialog_ptr == dialog_ptr {
+                    tracking.bounds.2 = tracking.bounds.0.saturating_add(new_height);
+                    tracking.bounds.3 = tracking.bounds.1.saturating_add(new_width);
+                    tracking.rendered_pixels_final = false;
+                }
+            }
+        }
         let max_index = if new_count == 0 {
             0xFFFF
         } else {
@@ -5390,6 +5426,51 @@ impl super::TrapDispatcher {
         }
         let background = self.save_dialog_pixels(bus, bounds);
         self.dialog_saved_pixels.insert(dialog_ptr, background);
+    }
+
+    fn grow_dialog_saved_under(
+        &mut self,
+        bus: &MacMemoryBus,
+        dialog_ptr: u32,
+        old_bounds: (i16, i16, i16, i16),
+        new_bounds: (i16, i16, i16, i16),
+    ) {
+        let Some(old_saved) = self.dialog_saved_pixels.remove(&dialog_ptr) else {
+            return;
+        };
+        let mut expanded = self.save_dialog_pixels(bus, new_bounds);
+        let old_rect = Self::dialog_saved_pixel_rect(old_bounds);
+        let new_rect = Self::dialog_saved_pixel_rect(new_bounds);
+        let (_, row_bytes, _, screen_height, pixel_size) = self.get_screen_params();
+        let row_len = |rect: (i16, i16, i16, i16), y: i16| -> usize {
+            if pixel_size == 8 {
+                return rect.3.saturating_sub(rect.1) as usize;
+            }
+            if y < 0 || y >= screen_height {
+                return 0;
+            }
+            Self::packed_row_byte_bounds(rect.1, rect.3, row_bytes, pixel_size)
+                .map(|(left, right, _)| (right - left) as usize)
+                .unwrap_or(0)
+        };
+        let mut old_offset = 0usize;
+        let mut new_offset = 0usize;
+        for y in new_rect.0..new_rect.2 {
+            let new_len = row_len(new_rect, y);
+            if y >= old_rect.0 && y < old_rect.2 {
+                let old_len = row_len(old_rect, y);
+                if old_len > 0
+                    && old_offset + old_len <= old_saved.len()
+                    && new_offset + old_len <= expanded.len()
+                {
+                    let row = old_saved.slice(old_offset..old_offset + old_len);
+                    expanded.replace_snapshot_range(new_offset, &row);
+                }
+                old_offset += old_len;
+            }
+            new_offset += new_len;
+        }
+        self.dialog_saved_pixels.insert(dialog_ptr, expanded);
     }
 
     pub(crate) fn ensure_dialog_background_saved_for_screen_port(
@@ -17245,34 +17326,6 @@ impl super::TrapDispatcher {
                                             ditl_handle,
                                             params.method(),
                                         );
-                                        if let Some(items) = self.dialog_items.get(&params.dialog_ptr()) {
-                                            let old_bottom = if bus.get_alloc_size(params.dialog_ptr()).unwrap_or(0) >= 24 {
-                                                bus.read_word(params.dialog_ptr() + 20) as i16
-                                            } else {
-                                                0
-                                            };
-                                            let old_right = if bus.get_alloc_size(params.dialog_ptr()).unwrap_or(0) >= 24 {
-                                                bus.read_word(params.dialog_ptr() + 22) as i16
-                                            } else {
-                                                0
-                                            };
-                                            let new_bounds = evaluate_appended_dialog_bounds(
-                                                (0, 0, old_bottom, old_right),
-                                                items.iter().map(|item| item.rect),
-                                            );
-                                            if bus.get_alloc_size(params.dialog_ptr()).unwrap_or(0) >= 24 {
-                                                bus.write_word(params.dialog_ptr() + 20, new_bounds.2 as u16);
-                                                bus.write_word(params.dialog_ptr() + 22, new_bounds.3 as u16);
-                                            }
-                                            if let Some(tracking) = self.dialog_tracking.as_mut() {
-                                                if tracking.dialog_ptr == params.dialog_ptr() {
-                                                    tracking.bounds = evaluate_appended_dialog_bounds(
-                                                        tracking.bounds,
-                                                        items.iter().map(|item| item.rect),
-                                                    );
-                                                }
-                                            }
-                                        }
                                         crate::dialog_manager::DIALOG_NO_ERR
                                     } else {
                                         bus.write_word(0x0A60, Self::RES_NOT_FOUND as u16);

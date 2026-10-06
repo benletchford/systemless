@@ -699,6 +699,58 @@ impl super::TrapDispatcher {
         self.draw_single_window_chrome_inline(bus, window, window == self.front_window);
     }
 
+    /// Grow a Dialog Manager window after AppendDITL adds items beyond its
+    /// current portRect. Keep the window regions in step with the port so
+    /// drawing, hit testing, and ModalDialog all see the new area.
+    pub(super) fn grow_dialog_window(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        window: u32,
+        height: i16,
+        width: i16,
+    ) {
+        let old_structure = self
+            .window_visible(bus, window)
+            .then(|| self.window_structure_rect(bus, window))
+            .flatten();
+        let old_content = self.window_content_rect(bus, window);
+        bus.write_word(window + 20, height as u16);
+        bus.write_word(window + 22, width as u16);
+
+        let content_top = old_content.map(|rect| rect.0).unwrap_or(0);
+        let local_content = (content_top, 0, height, width);
+        let global_content = self.window_local_rect_to_global(bus, window, local_content);
+        let global_structure =
+            self.window_structure_global_rect_for_window(bus, window, global_content);
+        Self::write_region_handle_rect(
+            bus,
+            bus.read_long(window + Self::WINDOW_CONT_RGN_OFFSET),
+            Some(global_content),
+        );
+        Self::write_region_handle_rect(
+            bus,
+            bus.read_long(window + Self::WINDOW_STRUC_RGN_OFFSET),
+            Some(global_structure),
+        );
+        for offset in [24, 28] {
+            let handle = bus.read_long(window + offset);
+            if handle != 0 {
+                let region = bus.read_long(handle);
+                if region != 0 {
+                    bus.write_word(region + 6, height as u16);
+                    bus.write_word(region + 8, width as u16);
+                }
+            }
+        }
+        self.recalculate_window_vis_regions(bus);
+        if window == self.front_window {
+            self.window_bounds = Self::dialog_screen_bounds(bus, window);
+        }
+        if let Some(previous) = old_structure {
+            self.repaint_resize_exposure(bus, window, previous, global_structure);
+        }
+    }
+
     fn rect_difference_bbox(
         src: (i16, i16, i16, i16),
         cut: (i16, i16, i16, i16),
