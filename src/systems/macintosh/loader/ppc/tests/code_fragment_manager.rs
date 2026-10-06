@@ -190,6 +190,7 @@ fn cfm_load_resumes_after_initialization_and_failed_loads_can_retry() {
                         &mut next_connection,
                         &mut import_run_state,
                         None,
+                        None,
                     )
                 } else {
                     ppc_get_shared_library(
@@ -1810,4 +1811,58 @@ fn hle_import_runner_loads_and_runs_a_memory_fragment_with_dynamic_imports() {
     let cycle_limit = loaded.run_with_hle_imports(0);
     assert_eq!(cycle_limit.result, PpcRunResult::CycleLimit { cycles: 0 });
     assert_registry(&loaded);
+}
+
+#[test]
+fn nameless_disk_find_uses_container_name_to_find_loaded_fragment() {
+    let fragment = synthetic_pef_with_import(b"TestImport");
+    let calls = SharedGuestCallStack::default();
+    let owner = PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_HEAP_BASE + 0x10000);
+    let mut manager = owner.0.borrow_mut();
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(0x5000, fragment.clone());
+    memory.add_region(0x6000, vec![0; 0x200]);
+    let mut cpu = PpcCpu::new();
+    cpu.gpr[3] = 0x5000;
+    cpu.gpr[4] = fragment.len() as u32;
+    cpu.gpr[5] = 0;
+    cpu.gpr[6] = PPC_CFM_FIND_LIB;
+    cpu.gpr[7] = 0x6000;
+    cpu.gpr[8] = 0x6004;
+    cpu.gpr[9] = 0x6010;
+    let mut connections = vec![PpcCfmConnection {
+        id: PPC_FIRST_CFM_CONNECTION_ID,
+        library_name: "Example App".to_string(),
+        main_addr: 0x1234,
+        init_addr: 0,
+        term_addr: 0,
+        exports: Vec::new(),
+    }];
+    let mut next_connection = PPC_FIRST_CFM_CONNECTION_ID + 1;
+    let mut import_run_state = PpcImportRunState::from_parts(Vec::new(), 0, ppc_import_layout());
+    let mut cursor = PPC_HEAP_BASE;
+
+    assert_eq!(
+        ppc_get_mem_fragment(
+            &mut cpu,
+            &calls,
+            &mut manager,
+            &mut memory,
+            &mut cursor,
+            PPC_HEAP_BASE + 0x10000,
+            PPC_STACK_BASE,
+            &mut connections,
+            &mut next_connection,
+            &mut import_run_state,
+            Some(fragment.len() as u32),
+            Some("Example App"),
+        ),
+        PpcImportAction::Return(0),
+    );
+    assert_eq!(
+        memory.read_u32_be(0x6000),
+        Some(PPC_FIRST_CFM_CONNECTION_ID)
+    );
+    assert_eq!(memory.read_u32_be(0x6004), Some(0x1234));
+    assert_eq!(connections.len(), 1);
 }
