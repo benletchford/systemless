@@ -122,7 +122,7 @@ impl<'a> HfsVolume<'a> {
             allocation_block_count,
             allocation_start,
         };
-        validate_allocation_area(bytes, layout)?;
+        validate_allocation_start(bytes, layout)?;
 
         let volume_name = pascal_name(mdb, 36, 27, "volume name")?;
         let extents_fork = Fork {
@@ -229,22 +229,16 @@ impl<'a> HfsVolume<'a> {
     }
 }
 
-fn validate_allocation_area(bytes: &[u8], layout: VolumeLayout) -> Result<(), String> {
+fn validate_allocation_start(bytes: &[u8], layout: VolumeLayout) -> Result<(), String> {
     let start = usize::from(layout.allocation_start)
         .checked_mul(512)
         .ok_or_else(|| "HFS allocation area offset overflow".to_string())?;
-    let length = usize::from(layout.allocation_block_count)
-        .checked_mul(
-            usize::try_from(layout.allocation_block_size)
-                .map_err(|_| "HFS allocation block size is too large".to_string())?,
-        )
-        .ok_or_else(|| "HFS allocation area length overflow".to_string())?;
-    let end = start
-        .checked_add(length)
-        .ok_or_else(|| "HFS allocation area end overflow".to_string())?;
-    if end > bytes.len() {
+    // The MDB describes the formatted volume, which can extend beyond an
+    // archived image's data fork. Inside Macintosh: Files, pp. 2-59–2-60.
+    // Validate each file extent when it is read, so absent bytes still fail.
+    if start >= bytes.len() {
         return Err(format!(
-            "HFS allocation area ends at byte {end}, beyond volume length {}",
+            "HFS allocation area starts at byte {start}, beyond volume length {}",
             bytes.len()
         ));
     }
@@ -345,8 +339,10 @@ fn append_extent_record(
         let extent_len = usize::from(extent.block_count)
             .checked_mul(block_size)
             .ok_or_else(|| "HFS extent length overflow".to_string())?;
+        let remaining = logical_size - output.len();
+        let required_len = extent_len.min(remaining);
         let end = start
-            .checked_add(extent_len)
+            .checked_add(required_len)
             .ok_or_else(|| "HFS extent end overflow".to_string())?;
         let extent_bytes = bytes.get(start..end).ok_or_else(|| {
             format!(
@@ -354,8 +350,7 @@ fn append_extent_record(
                 bytes.len()
             )
         })?;
-        let remaining = logical_size - output.len();
-        output.extend_from_slice(&extent_bytes[..extent_bytes.len().min(remaining)]);
+        output.extend_from_slice(extent_bytes);
     }
     Ok(())
 }
@@ -780,6 +775,38 @@ mod tests {
             HfsVolume::parse(&bytes).unwrap_err(),
             "invalid classic HFS signature"
         );
+    }
+
+    #[test]
+    fn reads_complete_forks_from_shortened_volume() {
+        let records = vec![
+            dir_record(ROOT_PARENT_CNID, b"Test", ROOT_CNID),
+            file_record(
+                ROOT_CNID,
+                b"Demo",
+                20,
+                *b"APPL",
+                *b"TEST",
+                0,
+                5,
+                [extent(2, 2), Extent::default(), Extent::default()],
+                0,
+                [Extent::default(); 3],
+            ),
+        ];
+        let mut bytes = volume_fixture(records, Vec::new(), 8);
+        write_allocation_block(&mut bytes, 2, b"hello");
+        let file_start = ALLOCATION_START + 2 * BLOCK_SIZE;
+        bytes.truncate(file_start + 5);
+
+        let image = super::super::extract_dc42_or_hfs(&bytes)
+            .expect("all logical fork bytes are present")
+            .expect("HFS signature should be detected");
+        assert_eq!(image.files[0].data, b"hello");
+
+        bytes.truncate(file_start + 4);
+        let error = super::super::extract_dc42_or_hfs(&bytes).unwrap_err();
+        assert!(error.contains("HFS extent byte range"), "{error}");
     }
 
     #[test]
