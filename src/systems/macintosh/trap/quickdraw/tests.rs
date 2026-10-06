@@ -17242,6 +17242,28 @@
     }
 
     #[test]
+    fn setpalette_boolean_ignores_the_unused_stack_byte() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let window = 0x0020_3000u32;
+        let palette_handle = bus.alloc(4);
+        let palette_ptr = bus.alloc(16);
+        bus.write_long(palette_handle, palette_ptr);
+        bus.write_long(TEST_SP + 2, palette_handle);
+        bus.write_long(TEST_SP + 6, window);
+
+        // A 68K MOVE.B #1,-(SP) writes the Boolean byte but leaves the
+        // other byte in its word-aligned slot untouched.
+        bus.write_word(TEST_SP, 0x01D6);
+        assert!(d.dispatch_quickdraw(true, 0x295, &mut cpu, &mut bus).unwrap().is_ok());
+        assert_eq!(d.palette_update_mode(palette_handle), super::PM_ALL_UPDATES);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0x00D6);
+        assert!(d.dispatch_quickdraw(true, 0x295, &mut cpu, &mut bus).unwrap().is_ok());
+        assert_eq!(d.palette_update_mode(palette_handle), super::PM_NO_UPDATES);
+    }
+
+    #[test]
     fn nsetpalette_default_palette_window_installs_the_palette_on_the_device_immediately() {
         // A dstWindow of (WindowPtr)-1 addresses the default palette — the
         // colour environment used when no window supplies one — rather than any
@@ -17309,7 +17331,7 @@
     }
 
     #[test]
-    fn activatepalette_without_window_or_default_palette_restores_system_colors() {
+    fn activatepalette_without_window_or_default_palette_preserves_device_colors() {
         let (mut d, mut cpu, mut bus) = setup();
         let window = 0x0020_4080u32;
         d.front_window = window;
@@ -17324,11 +17346,8 @@
 
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
-        assert_eq!(d.device_clut, TrapDispatcher::standard_mac_8bpp_clut());
-        assert_eq!(
-            d.color_manager_clut,
-            TrapDispatcher::standard_mac_8bpp_clut()
-        );
+        assert_eq!(d.device_clut[42], [0x1234, 0x5678, 0x9ABC]);
+        assert_eq!(d.color_manager_clut[42], [0x1234, 0x5678, 0x9ABC]);
     }
 
     #[test]
