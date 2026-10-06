@@ -5461,7 +5461,19 @@ impl super::TrapDispatcher {
             // association or touch device state when dstWindow is NIL.
             (true, 0x295) => {
                 let sp = cpu.read_reg(Register::A7);
-                let updates = bus.read_word(sp) as i16;
+                let raw_updates = bus.read_word(sp) as i16;
+                // SetPalette and NSetPalette share $AA95. A Pascal Boolean is
+                // pushed as a byte in a word-aligned stack slot, leaving the
+                // other byte unspecified; NSetPalette passes a full Integer.
+                // Inside Macintosh Volume VI (1991), pp. 20-20–20-21.
+                let updates = match raw_updates {
+                    PM_NO_UPDATES | PM_BK_UPDATES | PM_FG_UPDATES | PM_ALL_UPDATES => raw_updates,
+                    _ => match bus.read_byte(sp) {
+                        0 => PM_NO_UPDATES,
+                        1 => PM_ALL_UPDATES,
+                        _ => raw_updates,
+                    },
+                };
                 let palette = bus.read_long(sp + 2);
                 let window = bus.read_long(sp + 6);
                 if trace_palette_enabled() {
@@ -17727,28 +17739,6 @@ impl super::TrapDispatcher {
         );
     }
 
-    fn restore_system_palette_for_window(&mut self, bus: &mut MacMemoryBus, window: u32) {
-        let current_clut = *self.device_clut;
-        let mut restored_clut = Self::standard_mac_8bpp_clut();
-
-        // Removing a window palette releases its ordinary allocations, but
-        // protected and reserved cells remain owned until their corresponding
-        // Color Manager operation releases them. This matches the native PPC
-        // Palette Manager path and Inside Macintosh: Advanced Color Imaging,
-        // pp. 1-8 and 1-14.
-        for index in 0..256 {
-            if self.clut_protected[index] || self.clut_reserved[index] {
-                restored_clut[index] = current_clut[index];
-            }
-        }
-
-        let color_environment_changed = restored_clut != current_clut;
-        self.install_application_clut(bus, restored_clut);
-        if color_environment_changed {
-            self.invalidate_windows_for_palette_change(bus, window);
-        }
-    }
-
     /// Trap-facing activation path that requires an exact window-to-palette
     /// association instead of falling back to the default-window palette.
     pub(crate) fn activate_associated_palette_for_window(
@@ -17768,14 +17758,12 @@ impl super::TrapDispatcher {
             return;
         }
         if palette_handle == 0 {
-            // With neither a window palette nor an application-default
-            // palette, Palette Manager restores the System palette. This is
-            // also what the native PPC adapter does. Keep the exact lookup:
-            // an application-default palette is not silently substituted by
-            // this trap-facing path.
-            if self.window_palette_handle_exact(PALETTE_DEFAULT_WINDOW) == 0 {
-                self.restore_system_palette_for_window(bus, window);
-            }
+            // A window without an associated palette supplies no new color
+            // requests. The default palette keeps basic colors available,
+            // but activation does not replace every device cell with the
+            // standard 256-color table: those cells may still display pixels
+            // drawn by other windows. Inside Macintosh Volume V (1986),
+            // V-160–V-162; Volume VI (1991), 20-15–20-16.
             return;
         }
         self.apply_palette_to_active_device(
