@@ -18453,6 +18453,32 @@
         assert_eq!(bus.read_word(sp + 12), 0);
     }
 
+    #[test]
+    fn quicktime_set_identity_matrix_writes_fixed_and_fract_diagonal() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let matrix = sp + 0x40;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x15);
+        bus.write_long(sp, matrix);
+        for index in 0..9 {
+            bus.write_long(matrix + index * 4, 0xDEAD_BEEF);
+        }
+
+        let result = disp.dispatch_toolbox(true, 0x3C2, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        for index in 0..9 {
+            let expected = match index {
+                0 | 4 => 0x0001_0000,
+                8 => 0x4000_0000,
+                _ => 0,
+            };
+            assert_eq!(bus.read_long(matrix + index * 4), expected);
+        }
+    }
+
     // Image Compression Manager Dispatch ($AAA3)
     #[test]
     fn image_compression_align_screen_rect_uses_eight_bit_grid() {

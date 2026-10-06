@@ -14378,6 +14378,32 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
+            // ========== QuickTime Matrix Dispatch ($ABC2) ==========
+            (true, 0x3C2) => {
+                let sp = cpu.read_reg(Register::A7);
+                let selector = cpu.read_reg(Register::D0) as u16;
+                match selector {
+                    // SetIdentityMatrix(MatrixRecord *matrix), selector $15.
+                    // Inside Macintosh: QuickTime (1993), pp. 2-26, 2-340.
+                    0x15 => {
+                        let matrix = bus.read_long(sp);
+                        if matrix != 0 {
+                            for index in 0..9 {
+                                let value = match index {
+                                    0 | 4 => 0x0001_0000, // Fixed 1.0
+                                    8 => 0x4000_0000,     // Fract 1.0
+                                    _ => 0,
+                                };
+                                bus.write_long(matrix + index * 4, value);
+                            }
+                        }
+                        cpu.write_reg(Register::A7, sp + 4);
+                        Ok(())
+                    }
+                    _ => Err(Error::Halted),
+                }
+            }
+
             // ========== Image Compression Manager Dispatch ($AAA3) ==========
             (true, 0x2A3) => {
                 let sp = cpu.read_reg(Register::A7);

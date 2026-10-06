@@ -1219,7 +1219,7 @@
     DefaultTrapRoute::new(0xABBF, TrapAdapterId::Nonterminal.mask()),
     DefaultTrapRoute::new(0xABC0, TrapAdapterId::Nonterminal.mask()),
     DefaultTrapRoute::new(0xABC1, TrapAdapterId::Nonterminal.mask()),
-    DefaultTrapRoute::new(0xABC2, TrapAdapterId::Nonterminal.mask()),
+    DefaultTrapRoute::new(0xABC2, TrapAdapterId::Toolbox.mask()),
     DefaultTrapRoute::new(0xABC3, TrapAdapterId::QuickDraw.mask()),
     DefaultTrapRoute::new(0xABC4, TrapAdapterId::Nonterminal.mask()),
     DefaultTrapRoute::new(0xABC5, TrapAdapterId::Nonterminal.mask()),
