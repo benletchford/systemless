@@ -1745,6 +1745,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::PtInRect
         | PpcImportDispatcherTarget::OffsetRect
         | PpcImportDispatcherTarget::MapRect
+        | PpcImportDispatcherTarget::MapPt
         | PpcImportDispatcherTarget::InsetRect => {
             unreachable!("QuickDraw imports return through dispatch_quickdraw_import")
         }

@@ -1492,6 +1492,50 @@ pub(super) fn ppc_offset_rect(memory: &mut PpcSectionMem, rect_ptr: u32, dh: i16
     )
 }
 
+pub(super) fn ppc_map_pt(memory: &mut PpcSectionMem, point_ptr: u32, src_ptr: u32, dst_ptr: u32) {
+    // MapPt (InterfaceLib / $A8F9)
+    // Maps a point proportionally between two rectangles.
+    // PROCEDURE MapPt(VAR pt: Point; srcRect,dstRect: Rect);
+    // Inside Macintosh: Imaging With QuickDraw (1994), p. 3-106.
+    let (
+        Some(vertical),
+        Some(horizontal),
+        Some((src_top, src_left, src_bottom, src_right)),
+        Some((dst_top, dst_left, dst_bottom, dst_right)),
+    ) = (
+        memory.read_u16_be(point_ptr).map(|value| value as i16),
+        memory.read_u16_be(point_ptr + 2).map(|value| value as i16),
+        ppc_read_rect(memory, src_ptr),
+        ppc_read_rect(memory, dst_ptr),
+    )
+    else {
+        return;
+    };
+    if !ppc_memory_can_write_bytes(memory, point_ptr, 4) {
+        return;
+    }
+    let src_width = i64::from(src_right) - i64::from(src_left);
+    let src_height = i64::from(src_bottom) - i64::from(src_top);
+    let dst_width = i64::from(dst_right) - i64::from(dst_left);
+    let dst_height = i64::from(dst_bottom) - i64::from(dst_top);
+    let mapped_horizontal = if src_width == 0 {
+        horizontal
+    } else {
+        (i64::from(dst_left)
+            + (i64::from(horizontal) - i64::from(src_left)) * dst_width / src_width)
+            as i16
+    };
+    let mapped_vertical = if src_height == 0 {
+        vertical
+    } else {
+        (i64::from(dst_top)
+            + (i64::from(vertical) - i64::from(src_top)) * dst_height / src_height)
+            as i16
+    };
+    let _ = memory.write_u16_be(point_ptr, mapped_vertical as u16);
+    let _ = memory.write_u16_be(point_ptr + 2, mapped_horizontal as u16);
+}
+
 pub(super) fn ppc_map_rect(memory: &mut PpcSectionMem, rect_ptr: u32, src_ptr: u32, dst_ptr: u32) {
     // Inside Macintosh Volume I (1985), p. I-197: MapRect maps all four
     // coordinates proportionally from srcRect's coordinate space into

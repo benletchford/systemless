@@ -3598,6 +3598,73 @@ fn hle_import_runner_handles_map_rect() {
 }
 
 #[test]
+fn hle_import_runner_maps_points_between_rectangles() {
+    // Inside Macintosh: Imaging With QuickDraw (1994), p. 3-106:
+    // MapPt also extrapolates points outside the source rectangle.
+    for (point, source, destination, expected) in [
+        (
+            (20, 25),
+            (10, 20, 110, 120),
+            (-30, 200, 170, 600),
+            (-10, 220),
+        ),
+        (
+            (120, 150),
+            (10, 20, 110, 120),
+            (-30, 200, 170, 600),
+            (190, 720),
+        ),
+        (
+            (45, 66),
+            (10, 20, 10, 20),
+            (-30, 200, 170, 600),
+            (45, 66),
+        ),
+    ] {
+        let pef = synthetic_pef_with_import(b"MapPt");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let point_ptr = PPC_HEAP_BASE;
+        let src_ptr = point_ptr + 4;
+        let dst_ptr = src_ptr + 8;
+        loaded.memory.add_region(point_ptr, vec![0; 20]);
+        loaded
+            .memory
+            .write_u16_be(point_ptr, point.0 as u16)
+            .unwrap();
+        loaded
+            .memory
+            .write_u16_be(point_ptr + 2, point.1 as u16)
+            .unwrap();
+        ppc_write_rect(&mut loaded.memory, src_ptr, source.0, source.1, source.2, source.3)
+            .unwrap();
+        ppc_write_rect(
+            &mut loaded.memory,
+            dst_ptr,
+            destination.0,
+            destination.1,
+            destination.2,
+            destination.3,
+        )
+        .unwrap();
+        loaded.cpu.gpr[3] = point_ptr;
+        loaded.cpu.gpr[4] = src_ptr;
+        loaded.cpu.gpr[5] = dst_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(
+            loaded.memory.read_u16_be(point_ptr).map(|v| v as i16),
+            Some(expected.0)
+        );
+        assert_eq!(
+            loaded.memory.read_u16_be(point_ptr + 2).map(|v| v as i16),
+            Some(expected.1)
+        );
+    }
+}
+
+#[test]
 fn hle_import_runner_quickdraw_outputs_are_all_or_nothing() {
     let pef = synthetic_pef_with_import(b"GetForeColor");
     let mut loaded = load_pef_application(&pef).unwrap();
