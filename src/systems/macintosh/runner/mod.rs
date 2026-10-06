@@ -8080,6 +8080,39 @@ impl FixtureRunner {
             self.halted_pc = Some(pc);
             self.halted_sp = Some(sp);
             self.halted_d0 = Some(gpr3);
+            // A PowerPC fault otherwise ends emulation silently unless load
+            // tracing is on, which reads like a clean exit. A return from the
+            // entry point (halt pc with no link) and stops inside 68K code
+            // reached through Mixed Mode are not reported here.
+            let lr = ppc_app.cpu.lr;
+            let ppc_fault = mixed_mode.is_none()
+                && !exited_via_ppc_exit_to_shell
+                && (unsupported_import_index.is_some()
+                    || !matches!(probe.result, PpcRunResult::Halted { pc: 0, .. })
+                    || lr != 0);
+            if ppc_fault && !trace_load_enabled() {
+                match unsupported_import_index {
+                    Some(index) => {
+                        let name = ppc_app
+                            .imports
+                            .iter()
+                            .find(|binding| binding.symbol_index == index)
+                            .map_or_else(
+                                || format!("#{index}"),
+                                |binding| {
+                                    format!("{}:{}", binding.library_name, binding.symbol_name)
+                                },
+                            );
+                        eprintln!(
+                            "[PPC] stopped at unsupported import {name} pc=${pc:08X} sp=${sp:08X} lr=${lr:08X}"
+                        );
+                    }
+                    None => eprintln!(
+                        "[PPC] stopped after {:?} pc=${pc:08X} sp=${sp:08X} lr=${lr:08X}",
+                        probe.result
+                    ),
+                }
+            }
             if trace_load_enabled() {
                 let word = ppc_app.memory.read_u32_be(pc);
                 let word_text = word
