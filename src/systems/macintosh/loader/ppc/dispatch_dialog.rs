@@ -126,6 +126,7 @@ pub(crate) struct PpcDialogCallbackState {
     pub(super) next_callback: usize,
     pub(super) final_pc: u32,
     pub(super) restore_rtoc: u32,
+    pub(super) import_args: [u32; 8],
     pub(super) completion: PpcDialogCallbackCompletion,
 }
 
@@ -4018,6 +4019,11 @@ fn ppc_next_dialog_callback(
             let state = dialog_callback_stack.pop().unwrap();
             cpu.lr = state.final_pc;
             cpu.gpr[2] = state.restore_rtoc;
+            // Guest user-item callbacks may overwrite volatile argument registers.
+            // Resume the Toolbox import with its original arguments so ModalDialog
+            // writes itemHit through the caller's pointer.
+            // Inside Macintosh Volume I, I-414–I-415.
+            cpu.gpr[3..11].copy_from_slice(&state.import_args);
             return match state.completion {
                 PpcDialogCallbackCompletion::ReturnPreserve => PpcImportAction::ReturnPreserve,
                 PpcDialogCallbackCompletion::Return(value) => PpcImportAction::Return(value),
@@ -4085,6 +4091,7 @@ fn ppc_begin_dialog_callbacks(
         next_callback: 0,
         final_pc: cpu.lr,
         restore_rtoc: cpu.gpr[2],
+        import_args: cpu.gpr[3..11].try_into().unwrap(),
         completion,
     });
     ppc_next_dialog_callback(cpu, memory, dialog_callback_stack)
