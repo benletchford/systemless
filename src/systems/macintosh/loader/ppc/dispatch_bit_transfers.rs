@@ -37,6 +37,23 @@ pub(super) fn dispatch_bit_transfer_import(
         toolbox_startup,
     } = context;
 
+    // StdBits(srcBits, srcRect, dstRect, mode, maskRgn) is the CopyBits
+    // bottleneck: CopyBits with the current port's bits as destination, as
+    // the 68k $A8EB handler implements it. Shift its arguments into CopyBits'
+    // register layout and restore the caller's argument registers after.
+    let std_bits_arguments = matches!(
+        binding.dispatcher_target,
+        PpcImportDispatcherTarget::StdBits
+    )
+    .then(|| {
+        let saved = [cpu.gpr[4], cpu.gpr[5], cpu.gpr[6], cpu.gpr[7], cpu.gpr[8]];
+        cpu.gpr[8] = saved[3];
+        cpu.gpr[7] = saved[2];
+        cpu.gpr[6] = saved[1];
+        cpu.gpr[5] = saved[0];
+        cpu.gpr[4] = current_gworld.wrapping_add(2);
+        saved
+    });
     match binding.dispatcher_target {
         PpcImportDispatcherTarget::UnpackBits => {
             // UnpackBits ($A8D0)
@@ -46,7 +63,7 @@ pub(super) fn dispatch_bit_transfer_import(
             let _ = ppc_unpack_bits(memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5] as i16);
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::CopyBits => {
+        PpcImportDispatcherTarget::CopyBits | PpcImportDispatcherTarget::StdBits => {
             if let Some((_, picture_gworld, _, commands)) = toolbox_startup.open_picture.as_mut() {
                 if *picture_gworld == current_gworld {
                     let _ = ppc_record_copy_bits(cpu, memory, gworlds, commands);
@@ -96,6 +113,9 @@ pub(super) fn dispatch_bit_transfer_import(
                         index,
                     );
                 }
+            }
+            if let Some(saved) = std_bits_arguments {
+                cpu.gpr[4..=8].copy_from_slice(&saved);
             }
             Some(PpcImportAction::ReturnPreserve)
         }
