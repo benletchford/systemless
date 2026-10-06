@@ -292,6 +292,21 @@ fn hle_import_runner_keeps_resource_alert_modal_until_default_item() {
         Some(alert_id as u16)
     );
     assert!(ppc_window_is_visible(&mut loaded.memory, dialog));
+    // Idle passes reuse ModalDialog's register arguments; the caller's
+    // registers, including Alert's own arguments, must survive each one.
+    let caller = (loaded.cpu.gpr, loaded.cpu.lr, loaded.cpu.ctr, loaded.cpu.cr);
+    assert_eq!(caller.0[3..5], [alert_id as u16 as u32, 0]);
+    let window_count = loaded.window_list.len();
+    loaded.run_with_hle_imports(128);
+    assert_eq!(
+        (loaded.cpu.gpr, loaded.cpu.lr, loaded.cpu.ctr, loaded.cpu.cr),
+        caller
+    );
+    assert_eq!(
+        loaded.window_list.len(),
+        window_count,
+        "waiting must reuse the alert"
+    );
 
     loaded.set_event_queue([PpcQueuedEvent {
         what: 3,

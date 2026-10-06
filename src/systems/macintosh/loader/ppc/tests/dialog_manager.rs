@@ -79,11 +79,18 @@ fn standard_alert_waits_for_input_then_disposes_the_dialog() {
             == Some(b"Video setup?")
     ));
     let window_count = loaded.window_list.len();
+    let caller = (loaded.cpu.gpr, loaded.cpu.lr, loaded.cpu.ctr, loaded.cpu.cr);
+    assert_eq!(caller.0[3..8], [3, base + 32, 0, 0, base]);
     loaded.run_with_hle_imports(128);
     assert_eq!(
         loaded.window_list.len(),
         window_count,
         "waiting must reuse the alert"
+    );
+    assert_eq!(
+        (loaded.cpu.gpr, loaded.cpu.lr, loaded.cpu.ctr, loaded.cpu.cr),
+        caller,
+        "an idle pass must leave the caller's registers intact"
     );
 
     loaded.set_event_queue([PpcQueuedEvent {
