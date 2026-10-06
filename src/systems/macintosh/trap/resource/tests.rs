@@ -3034,7 +3034,7 @@ fn get1_named_resource_miss_returns_nil_in_a0() {
 }
 
 #[test]
-fn get1_named_resource_absent_type_returns_nil_without_error() {
+fn get1_named_resource_absent_type_returns_res_not_found() {
     let (mut disp, mut cpu, mut bus) = setup();
     setup_resources(&mut disp, &mut bus, b"VPIC", 500, b"other type");
     let name_addr = 0x200000u32;
@@ -3047,7 +3047,7 @@ fn get1_named_resource_absent_type_returns_nil_without_error() {
 
     assert_eq!(cpu.read_reg(Register::A0), 0);
     assert_eq!(bus.read_long(TEST_SP + 8), 0);
-    assert_eq!(bus.read_word(0x0A60), 0);
+    assert_eq!(bus.read_word(0x0A60) as i16, super::RES_NOT_FOUND_ERR);
 }
 
 #[test]

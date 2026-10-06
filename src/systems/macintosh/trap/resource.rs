@@ -2733,9 +2733,10 @@ impl super::TrapDispatcher {
             // FUNCTION Get1NamedResource(theType: ResType; name: Str255): Handle;
             // Inside Macintosh Volume VI, VI-13
             //
-            // More Macintosh Toolbox 1993, 1-77--1-78: an absent type
-            // returns NIL with noErr; a missing resource of a present type
-            // returns resNotFound.
+            // More Macintosh Toolbox 1993, 1-77--1-78 documents NIL with
+            // noErr for an absent type. A Mac OS 8.1 fixture instead returns
+            // resNotFound for both an absent type and a missing resource of
+            // a present type.
             (true, 0x020) => {
                 let sp = cpu.read_reg(Register::A7);
                 let name_ptr = bus.read_long(sp);
@@ -2771,12 +2772,7 @@ impl super::TrapDispatcher {
                     bus.write_long(sp + 8, 0);
                     cpu.write_reg(Register::A7, sp + 8);
                     cpu.write_reg(Register::D0, 0);
-                    let has_type =
-                        self.resource_file_contains_type(self.current_resource_refnum(), res_type);
-                    bus.write_word(
-                        0x0A60,
-                        if has_type { RES_NOT_FOUND_ERR as u16 } else { 0 },
-                    );
+                    bus.write_word(0x0A60, RES_NOT_FOUND_ERR as u16);
                 }
                 Ok(())
             }
