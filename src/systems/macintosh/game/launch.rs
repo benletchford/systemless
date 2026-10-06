@@ -3177,7 +3177,7 @@ fn maybe_select_executable_with_override_and_preference(
         override_rank > prev_override_rank
     } else {
         match executable_entry.as_ref() {
-            Some(prev) => executable_candidate_is_better(&candidate, prev),
+            Some(prev) => executable_candidate_is_better(&candidate, prev, prefer_powerpc),
             None => true,
         }
     };
@@ -3259,6 +3259,7 @@ struct ExecutableCandidate {
 impl ExecutableCandidate {
     fn selection_key(
         &self,
+        prefer_powerpc: bool,
     ) -> (
         u8,
         bool,
@@ -3269,7 +3270,7 @@ impl ExecutableCandidate {
         bool,
         bool,
         bool,
-        bool,
+        u8,
         bool,
         usize,
     ) {
@@ -3286,7 +3287,12 @@ impl ExecutableCandidate {
                 .rsplit_once('/')
                 .and_then(|(parent, app)| parent.rsplit('/').next().map(|folder| (folder, app)))
                 .is_some_and(|(folder, app)| folder.eq_ignore_ascii_case(app)),
-            self.kind.is_powerpc(),
+            // A PowerPC app may contain a 68K compatibility stub.
+            match explicit_cpu_variant(&self.name) {
+                Some(powerpc) if powerpc == prefer_powerpc => 4,
+                Some(_) => 0,
+                None => 2,
+            } + u8::from(self.kind.is_powerpc() == prefer_powerpc),
             self.has_data_fork,
             self.score,
         )
@@ -3296,6 +3302,7 @@ impl ExecutableCandidate {
 fn executable_candidate_is_better(
     candidate: &ExecutableCandidate,
     previous: &ExecutableCandidate,
+    prefer_powerpc: bool,
 ) -> bool {
     if candidate.version_selection_class() == previous.version_selection_class()
         && candidate.creator == previous.creator
@@ -3341,13 +3348,27 @@ fn executable_candidate_is_better(
         }
     }
 
-    candidate.selection_key() > previous.selection_key()
+    candidate.selection_key(prefer_powerpc) > previous.selection_key(prefer_powerpc)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ClassicOsPlatform {
     Classic,
     OsX,
+}
+
+fn explicit_cpu_variant(name: &str) -> Option<bool> {
+    let application = name.rsplit('/').next()?.to_ascii_lowercase();
+    if ["(powerpc)", "(ppc)"].iter().any(|suffix| application.ends_with(suffix)) {
+        Some(true)
+    } else if ["(68040)", "(68030)", "(68020)", "(68k)", "(680x0)"]
+        .iter()
+        .any(|suffix| application.ends_with(suffix))
+    {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 fn explicit_os_platform_variant(name: &str) -> Option<(String, ClassicOsPlatform)> {
@@ -6493,6 +6514,88 @@ mod tests {
             Some(ExecutableKind::PowerPcPef { .. })
         ));
     }
+
+    #[test]
+    fn executable_selection_matches_requested_architecture_across_separate_apps() {
+        let classic_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let powerpc_rsrc = make_fat_application_resource_fork(make_cfrg(0, 0));
+        let powerpc_data = make_minimal_pef(*b"pwpc");
+
+        for prefer_powerpc in [false, true] {
+            for powerpc_first in [false, true] {
+                let mut selected = None;
+                for is_powerpc in [powerpc_first, !powerpc_first] {
+                    let (name, data, rsrc) = if is_powerpc {
+                        (
+                            "Afterlife/Afterlife Demo (PowerPC)",
+                            powerpc_data.as_slice(),
+                            powerpc_rsrc.as_slice(),
+                        )
+                    } else {
+                        (
+                            "Afterlife/Afterlife Demo (68040)",
+                            &[][..],
+                            classic_rsrc.as_slice(),
+                        )
+                    };
+                    maybe_select_executable_with_preference(
+                        &mut selected,
+                        name,
+                        data,
+                        rsrc,
+                        true,
+                        data.len(),
+                        *b"Aftr",
+                        1,
+                        prefer_powerpc,
+                        None,
+                    );
+                }
+
+                assert_eq!(
+                    selected.expect("expected an executable candidate").name,
+                    if prefer_powerpc {
+                        "Afterlife/Afterlife Demo (PowerPC)"
+                    } else {
+                        "Afterlife/Afterlife Demo (68040)"
+                    }
+                );
+            }
+        }
+
+        let mut selected = None;
+        for (name, data, rsrc) in [
+            (
+                "Afterlife/Afterlife Demo (PowerPC)",
+                powerpc_data.as_slice(),
+                powerpc_rsrc.as_slice(),
+            ),
+            (
+                "Afterlife/Afterlife Demo (68040)",
+                &[][..],
+                classic_rsrc.as_slice(),
+            ),
+        ] {
+            maybe_select_executable_with_preference(
+                &mut selected,
+                name,
+                data,
+                rsrc,
+                true,
+                data.len(),
+                *b"Aftr",
+                1,
+                false,
+                Some("Afterlife/Afterlife Demo (PowerPC)"),
+            );
+        }
+        assert_eq!(
+            selected.expect("expected an executable candidate").name,
+            "Afterlife/Afterlife Demo (PowerPC)"
+        );
+    }
+
+
 
     #[test]
     fn executable_selection_uses_nonzero_cfrg_data_fork_offset() {
