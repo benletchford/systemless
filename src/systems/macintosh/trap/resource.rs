@@ -6906,13 +6906,17 @@ impl super::TrapDispatcher {
                         if let Some(vfs_name) =
                             self.find_vfs_file_for_hfs_lookup(vref, dir_id, &filename)
                         {
-                            // IM:Files 1992, 2-326: fsWrPerm=2,
-                            // fsRdWrPerm=3, fsRdWrShPerm=4. Systemless keeps
-                            // the BasiliskII/extfs noErr open behavior, but
-                            // still records which access paths requested write
-                            // permission.
+                            // Inside Macintosh: Files (1992), pp. 1-10–1-11:
+                            // fsCurPerm grants read/write access when no other
+                            // access path is open, or read-only access otherwise.
                             let read_only = self.vfs_path_is_read_only(&vfs_name);
-                            let wants_write = matches!(permission, 2 | 3 | 4);
+                            let current_write = permission == 0
+                                && !read_only
+                                && !self
+                                    .open_files
+                                    .iter()
+                                    .any(|open| open.path.eq_ignore_ascii_case(&vfs_name));
+                            let wants_write = current_write || matches!(permission, 2 | 3 | 4);
                             if wants_write && read_only {
                                 bus.write_word(sp + 10, (-44i16) as u16); // wPrErr
                                 cpu.write_reg(Register::A7, sp + 10);
@@ -6950,7 +6954,6 @@ impl super::TrapDispatcher {
                         let filename = read_fsspec_name(bus, spec_ptr);
                         let vref = bus.read_word(spec_ptr) as i16;
                         let dir_id = bus.read_long(spec_ptr + 2);
-                        let wants_write = matches!(permission, 2 | 3 | 4);
                         eprintln!(
                             "[TRAP] FSpOpenRF(\"{}\", perm={}) ref_num_ptr=${:08X}",
                             filename, permission, ref_num_ptr
@@ -6975,14 +6978,24 @@ impl super::TrapDispatcher {
                             return Some(Ok(()));
                         };
 
-                        if wants_write && self.vfs_path_is_read_only(&vfs_key) {
+                        // Inside Macintosh: Files (1992), pp. 1-10–1-11.
+                        let rsrc_key = format!("__rsrc__{vfs_key}");
+                        let read_only = self.vfs_path_is_read_only(&vfs_key);
+                        let current_write = permission == 0
+                            && !read_only
+                            && !self
+                                .open_files
+                                .iter()
+                                .any(|open| open.path.eq_ignore_ascii_case(&rsrc_key));
+                        let wants_write = current_write || matches!(permission, 2 | 3 | 4);
+
+                        if wants_write && read_only {
                             bus.write_word(sp + 10, (-44i16) as u16); // wPrErr
                             cpu.write_reg(Register::A7, sp + 10);
                             return Some(Ok(()));
                         }
 
                         let rsrc_data = self.vfs_rsrc.get(&vfs_key).cloned().unwrap_or_default();
-                        let rsrc_key = format!("__rsrc__{vfs_key}");
                         self.vfs.insert_if_absent(rsrc_key.clone(), rsrc_data);
                         let refnum = self.allocate_process_file_refnum();
                         self.open_files.insert(refnum, rsrc_key.clone());
