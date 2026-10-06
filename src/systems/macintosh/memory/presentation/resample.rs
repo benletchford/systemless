@@ -268,6 +268,11 @@ mod tests {
                         }
                     }
                     p.text_cell_count = p.text_cells.iter().filter(|&&text| text).count();
+                    p.text_row_counts = p
+                        .text_cells
+                        .chunks(p.width as usize)
+                        .map(|row| row.iter().filter(|&&text| text).count() as u32)
+                        .collect();
                     p.revision += 1;
                 }
                 let guest = vec![0xff123456; 35];

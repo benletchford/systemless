@@ -903,6 +903,9 @@ pub(crate) struct Presentation {
     /// Number of entries set in `text_cells`; maintained on every transition so
     /// `has_visible_outline_detail` does not rescan the whole screen.
     text_cell_count: usize,
+    /// Entries set in each screen row of `text_cells`, kept in step with
+    /// them, so a row with none needs no scan.
+    text_row_counts: Vec<u32>,
     detail_cache: std::cell::RefCell<Vec<Option<Arc<DetailCell>>>>,
     /// Bit `i` of `ink_mask[cell]` is set exactly when the cell's tile holds
     /// ink for sample `i` (screen ink lives with the tile, in `samples`).
@@ -1549,6 +1552,9 @@ impl Presentation {
         if end_x > self.width {
             return false;
         }
+        if self.text_row_counts[y as usize] == 0 {
+            return true;
+        }
         let start = (y * self.width + x) as usize;
         !self.text_cells[start..start + len].iter().any(|&set| set)
     }
@@ -1833,7 +1839,14 @@ impl Presentation {
             &self.direct_palettes[(x % self.bytes_per_pixel()) as usize]
         };
         let (samples, mut ink) = self.samples.ensure_with_ink(index);
-        Self::set_text_cell(&mut self.text_cells, &mut self.text_cell_count, index, true);
+        Self::set_text_cell(
+            &mut self.text_cells,
+            &mut self.text_cell_count,
+            &mut self.text_row_counts,
+            self.width,
+            index,
+            true,
+        );
         self.detail_cache.get_mut()[index] = Some(cell.clone());
         self.guest_values[index] = cell.value.into();
         let len = (self.scale * self.scale) as usize;
@@ -1873,16 +1886,31 @@ impl Presentation {
     fn set_text_cell(
         text_cells: &mut [bool],
         text_cell_count: &mut usize,
+        text_row_counts: &mut [u32],
+        width: u32,
         cell: usize,
         text: bool,
     ) {
         if text_cells[cell] != text {
             text_cells[cell] = text;
-            *text_cell_count = if text {
-                *text_cell_count + 1
+            let y = cell / width as usize;
+            let row = &mut text_row_counts[y];
+            if text {
+                *text_cell_count += 1;
+                *row += 1;
             } else {
-                *text_cell_count - 1
-            };
+                *text_cell_count -= 1;
+                *row -= 1;
+            }
+            let width = width as usize;
+            debug_assert_eq!(
+                text_cells[y * width..(y + 1) * width]
+                    .iter()
+                    .filter(|&&text| text)
+                    .count(),
+                *row as usize,
+                "text_row_counts must track text_cells"
+            );
         }
     }
 
@@ -1897,7 +1925,14 @@ impl Presentation {
             samples.indices.fill(index);
             samples.rgb.fill(color);
         }
-        Self::set_text_cell(&mut self.text_cells, &mut self.text_cell_count, cell, true);
+        Self::set_text_cell(
+            &mut self.text_cells,
+            &mut self.text_cell_count,
+            &mut self.text_row_counts,
+            self.width,
+            cell,
+            true,
+        );
     }
 
     /// The mask invariant: bits exactly mirror the ink map's keys.
@@ -2034,7 +2069,14 @@ impl Presentation {
     /// `sync_screen_row_over_text`.
     fn clear_text_cell(&mut self, cell: usize, x: u32, value: u8) {
         self.detail_cache.get_mut()[cell] = None;
-        Self::set_text_cell(&mut self.text_cells, &mut self.text_cell_count, cell, false);
+        Self::set_text_cell(
+            &mut self.text_cells,
+            &mut self.text_cell_count,
+            &mut self.text_row_counts,
+            self.width,
+            cell,
+            false,
+        );
         let color = self.palette_at(x)[value as usize];
         let (samples, mut ink) = self.samples.get_mut_with_ink(cell);
         for i in 0..(self.scale * self.scale) as usize {
@@ -2042,7 +2084,14 @@ impl Presentation {
             // A following character's opaque background must not shave off
             // an outline overhang already painted by this same text run.
             if self.erasing_text && self.run_ink.contains(&offset) {
-                Self::set_text_cell(&mut self.text_cells, &mut self.text_cell_count, cell, true);
+                Self::set_text_cell(
+                    &mut self.text_cells,
+                    &mut self.text_cell_count,
+                    &mut self.text_row_counts,
+                    self.width,
+                    cell,
+                    true,
+                );
                 continue;
             }
             if !self.run_ink.is_empty() {
@@ -2385,7 +2434,14 @@ impl Presentation {
                 &self.direct_palettes[(x % self.bytes_per_pixel()) as usize]
             };
             let (tile, mut held) = self.samples.ensure_with_ink(cell);
-            Self::set_text_cell(&mut self.text_cells, &mut self.text_cell_count, cell, true);
+            Self::set_text_cell(
+                &mut self.text_cells,
+                &mut self.text_cell_count,
+                &mut self.text_row_counts,
+                self.width,
+                cell,
+                true,
+            );
             self.detail_cache.get_mut()[cell] = None;
             self.guest_values[cell] = u16::from(value);
             tile.indices[..samples].copy_from_slice(&copied.indices[..samples]);
@@ -3534,6 +3590,13 @@ impl MacMemoryBus {
             p.text_cells.iter().filter(|&&text| text).count(),
             "text_cell_count must track text_cells"
         );
+        debug_assert!(
+            p.text_cells
+                .chunks(p.width.max(1) as usize)
+                .zip(&p.text_row_counts)
+                .all(|(row, &count)| row.iter().filter(|&&text| text).count() == count as usize),
+            "text_row_counts must track text_cells"
+        );
         p.text_cell_count != 0
     }
 
@@ -3774,6 +3837,7 @@ impl MacMemoryBus {
             guest_values: vec![256; width as usize * height as usize],
             text_cells: vec![false; width as usize * height as usize],
             text_cell_count: 0,
+            text_row_counts: vec![0; height as usize],
             detail_cache: std::cell::RefCell::new(vec![None; width as usize * height as usize]),
             ink_mask: vec![0; width as usize * height as usize],
             run_ink: HashSet::default(),
