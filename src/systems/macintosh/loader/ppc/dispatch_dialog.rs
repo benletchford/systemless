@@ -128,7 +128,51 @@ pub(crate) struct PpcDialogCallbackState {
     pub(super) restore_rtoc: u32,
     pub(super) import_args: [u32; 8],
     pub(super) completion: PpcDialogCallbackCompletion,
+    /// Set while ModalDialog waits for the application's filter proc.
+    pub(super) modal_filter: Option<PpcModalFilterCall>,
 }
+
+/// One ModalDialog filter call in flight: the event handed to the filter
+/// (`None` for a null event), its EventRecord in the call frame, and the
+/// caller's stack pointer to restore when the filter returns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PpcModalFilterCall {
+    pub(super) event: Option<PpcQueuedEvent>,
+    pub(super) event_ptr: u32,
+    pub(super) caller_sp: u32,
+}
+
+/// A ModalDialog filter call prepared by one ModalDialog pass. The frame
+/// below the caller's stack pointer already holds the EventRecord; the
+/// registers are staged by `ppc_call_modal_filter` once the caller's
+/// registers are final, because the alert paths restore theirs after the
+/// pass.
+#[derive(Debug)]
+struct PpcModalFilterLaunch {
+    target: PpcCallbackTarget,
+    dialog: u32,
+    item_hit_ptr: u32,
+    frame_sp: u32,
+    event: Option<PpcQueuedEvent>,
+}
+
+/// What the application's filter did with the event it was offered.
+#[derive(Debug)]
+struct PpcModalFilterResult {
+    handled: bool,
+    event: Option<PpcQueuedEvent>,
+}
+
+/// The outcome of one ModalDialog pass.
+enum PpcModalDialogPass {
+    Done(PpcImportAction),
+    CallFilter(PpcModalFilterLaunch),
+}
+
+/// Linkage area (24 bytes), eight parameter words, and the EventRecord,
+/// rounded to a 16-byte stack frame.
+const PPC_MODAL_FILTER_FRAME_SIZE: u32 = 80;
+const PPC_MODAL_FILTER_EVENT_OFFSET: u32 = 56;
 
 pub(super) struct PpcDialogDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
@@ -981,27 +1025,38 @@ pub(super) fn dispatch_dialog_import(
                 _ => PpcImportAction::ReturnPreserve,
             })
         }
-        PpcImportDispatcherTarget::ModalDialog => Some(ppc_modal_dialog(
-            cpu,
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            controls,
-            gworlds,
-            current_gworld,
-            current_gdevice,
-            screen_clut,
-            *quickdraw_fore_color,
-            quickdraw_fore_indices,
-            input,
-            event_queue,
-            dialog_callback_stack,
-            vfs_resources,
-            current_resource_refnum,
-        )),
+        PpcImportDispatcherTarget::ModalDialog => {
+            let filter_result = ppc_finish_modal_filter(cpu, memory, dialog_callback_stack);
+            let pass = ppc_modal_dialog(
+                cpu,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                controls,
+                gworlds,
+                current_gworld,
+                current_gdevice,
+                screen_clut,
+                *quickdraw_fore_color,
+                quickdraw_fore_indices,
+                input,
+                tick_count,
+                event_queue,
+                dialog_callback_stack,
+                vfs_resources,
+                current_resource_refnum,
+                filter_result,
+            );
+            Some(match pass {
+                PpcModalDialogPass::Done(action) => action,
+                PpcModalDialogPass::CallFilter(launch) => {
+                    ppc_call_modal_filter(cpu, memory, dialog_callback_stack, launch)
+                }
+            })
+        }
         PpcImportDispatcherTarget::SelectDialogItemText => {
             if let Some(params) = evaluate_select_dialog_item_text_parameters(
                 cpu.gpr[3],
@@ -1040,6 +1095,9 @@ pub(super) fn dispatch_dialog_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::AlertReturnDefault(kind) => {
+            // Returning from the alert's filter restores the caller's
+            // registers, so the alert finds its own arguments again.
+            let filter_result = ppc_finish_modal_filter(cpu, memory, dialog_callback_stack);
             let alert_id = cpu.gpr[3] as u16 as i16;
             let filter_proc = cpu.gpr[4];
             let params = evaluate_alert_parameters(alert_id, filter_proc, kind);
@@ -1110,7 +1168,7 @@ pub(super) fn dispatch_dialog_import(
             let caller_registers = PpcCallerRegisters::capture(cpu);
             cpu.gpr[3] = params.filter_proc();
             cpu.gpr[4] = dialog + DIALOG_ALERT_HIT_OFFSET;
-            let action = ppc_modal_dialog(
+            let pass = ppc_modal_dialog(
                 cpu,
                 process_memory_manager,
                 memory,
@@ -1126,12 +1184,27 @@ pub(super) fn dispatch_dialog_import(
                 *quickdraw_fore_color,
                 quickdraw_fore_indices,
                 input,
+                tick_count,
                 event_queue,
                 dialog_callback_stack,
                 vfs_resources,
                 current_resource_refnum,
+                filter_result,
             );
             caller_registers.restore(cpu);
+            let action = match pass {
+                PpcModalDialogPass::Done(action) => action,
+                // Stage the filter's arguments only now: the restore above
+                // would discard them.
+                PpcModalDialogPass::CallFilter(launch) => {
+                    return Some(ppc_call_modal_filter(
+                        cpu,
+                        memory,
+                        dialog_callback_stack,
+                        launch,
+                    ));
+                }
+            };
             if matches!(action, PpcImportAction::ReturnPreserve) {
                 let hit = memory
                     .read_u16_be(dialog + DIALOG_ALERT_HIT_OFFSET)
@@ -1191,6 +1264,7 @@ pub(super) fn dispatch_dialog_import(
             // OSErr StandardAlert(AlertType, ConstStr255Param, ConstStr255Param,
             //                     const AlertStdAlertParamRec *, SInt16 *);
             // Apple Dialog Manager Reference, pp. 65, 75–76, 82–83.
+            let filter_result = ppc_finish_modal_filter(cpu, memory, dialog_callback_stack);
             let output = cpu.gpr[7];
             let can_write = ppc_memory_can_write_bytes(memory, output, 2);
             let params = match evaluate_standard_alert_parameters(
@@ -1274,7 +1348,7 @@ pub(super) fn dispatch_dialog_import(
                     .unwrap_or(0)
             };
             cpu.gpr[4] = dialog + DIALOG_ALERT_HIT_OFFSET;
-            let action = ppc_modal_dialog(
+            let pass = ppc_modal_dialog(
                 cpu,
                 process_memory_manager,
                 memory,
@@ -1290,12 +1364,27 @@ pub(super) fn dispatch_dialog_import(
                 *quickdraw_fore_color,
                 quickdraw_fore_indices,
                 input,
+                tick_count,
                 event_queue,
                 dialog_callback_stack,
                 vfs_resources,
                 current_resource_refnum,
+                filter_result,
             );
             caller_registers.restore(cpu);
+            let action = match pass {
+                PpcModalDialogPass::Done(action) => action,
+                // Stage the filter's arguments only now: the restore above
+                // would discard them.
+                PpcModalDialogPass::CallFilter(launch) => {
+                    return Some(ppc_call_modal_filter(
+                        cpu,
+                        memory,
+                        dialog_callback_stack,
+                        launch,
+                    ));
+                }
+            };
             if matches!(action, PpcImportAction::ReturnPreserve) {
                 let hit = memory
                     .read_u16_be(dialog + DIALOG_ALERT_HIT_OFFSET)
@@ -4097,6 +4186,7 @@ fn ppc_begin_dialog_callbacks(
         restore_rtoc: cpu.gpr[2],
         import_args: cpu.gpr[3..11].try_into().unwrap(),
         completion,
+        modal_filter: None,
     });
     ppc_next_dialog_callback(cpu, memory, dialog_callback_stack)
 }
@@ -4759,6 +4849,163 @@ impl PpcCallerRegisters {
     }
 }
 
+/// Prepare a call of the application's ModalDialog filter for `event`. The
+/// EventRecord lives in a stack frame below the caller's stack pointer, as it
+/// would in ModalDialog's own frame, so an idle dialog that offers the filter
+/// a null event on every pass allocates nothing. Returns `None`, leaving
+/// ModalDialog to handle the event itself, when there is no native filter or
+/// the frame cannot be written.
+fn ppc_prepare_modal_filter(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    dialog: u32,
+    filter_proc: u32,
+    item_hit_ptr: u32,
+    event: Option<PpcQueuedEvent>,
+    input: PpcInputSnapshot,
+    tick_count: u32,
+) -> Option<PpcModalFilterLaunch> {
+    if filter_proc == 0 {
+        return None;
+    }
+    let target = ppc_resolve_callback_target(memory, filter_proc, cpu.gpr[2], None)?;
+    memory.read_u32_be(target.entry)?;
+    let caller_sp = cpu.gpr[1];
+    let frame_sp = caller_sp.checked_sub(PPC_MODAL_FILTER_FRAME_SIZE)? & !0xF;
+    if !memory.preflight_writable_range(frame_sp, caller_sp - frame_sp) {
+        return None;
+    }
+    // A null event carries the current tick count, mouse location, and
+    // modifiers, with btnState set while the mouse button is up.
+    let (what, message, when, where_v, where_h, modifiers) = match event.as_ref() {
+        Some(event) => (
+            event.what,
+            event.message,
+            event.when,
+            event.where_v,
+            event.where_h,
+            event.modifiers,
+        ),
+        None => (
+            0,
+            0,
+            tick_count,
+            input.mouse_v,
+            input.mouse_h,
+            ppc_current_event_modifiers(input),
+        ),
+    };
+    let event_ptr = frame_sp + PPC_MODAL_FILTER_EVENT_OFFSET;
+    // Back chain to the caller's frame.
+    memory.write_u32_be(frame_sp, caller_sp)?;
+    ppc_write_event_record(
+        memory, event_ptr, what, message, when, where_v, where_h, modifiers,
+    )
+    .then_some(PpcModalFilterLaunch {
+        target,
+        dialog,
+        item_hit_ptr,
+        frame_sp,
+        event,
+    })
+}
+
+/// Enter the application's filter as filter(dialog, &event, &itemHit). The
+/// CPU must hold the registers of the import's caller: they are what
+/// `ppc_finish_modal_filter` restores when the filter returns, so an alert
+/// that re-dispatches afterwards reads its own arguments again.
+fn ppc_call_modal_filter(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    dialog_callback_stack: &mut Vec<PpcDialogCallbackState>,
+    launch: PpcModalFilterLaunch,
+) -> PpcImportAction {
+    let event_ptr = launch.frame_sp + PPC_MODAL_FILTER_EVENT_OFFSET;
+    let caller_sp = cpu.gpr[1];
+    dialog_callback_stack.push(PpcDialogCallbackState {
+        import_pc: cpu.pc,
+        dialog: launch.dialog,
+        callbacks: Vec::new(),
+        next_callback: 0,
+        final_pc: cpu.lr,
+        restore_rtoc: cpu.gpr[2],
+        import_args: cpu.gpr[3..11].try_into().unwrap(),
+        completion: PpcDialogCallbackCompletion::ReturnPreserve,
+        modal_filter: Some(PpcModalFilterCall {
+            event: launch.event,
+            event_ptr,
+            caller_sp,
+        }),
+    });
+    cpu.gpr[1] = launch.frame_sp;
+    install_powerpc_call_arguments(
+        cpu,
+        memory,
+        &[launch.dialog, event_ptr, launch.item_hit_ptr],
+    )
+    .expect("ModalDialog preflighted the filter frame");
+    // The filter returns a Boolean in the low byte of r3.
+    GuestCallEffect::call_guest(
+        GuestCallRequest::new(GuestCallTarget {
+            isa: GuestIsa::PowerPc,
+            entry: launch.target.entry,
+            rtoc: launch.target.rtoc,
+        }),
+        GuestCallContinuation::to_powerpc(
+            PPC_GUEST_CALL_RETURN_PC,
+            cpu.pc,
+            cpu.gpr[2],
+            PpcNativeReturnGpr3::Mask(0xff),
+        ),
+    )
+    .into_ppc_import_action()
+    .expect("resolved modal filter must be native PowerPC")
+}
+
+/// When the import is re-dispatched because the filter returned, restore
+/// the caller's stack pointer, link register, TOC, and argument registers,
+/// and report the filter's Boolean together with the event as the filter
+/// left it in the record.
+fn ppc_finish_modal_filter(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    dialog_callback_stack: &mut Vec<PpcDialogCallbackState>,
+) -> Option<PpcModalFilterResult> {
+    if cpu.lr != cpu.pc
+        || !dialog_callback_stack
+            .last()
+            .is_some_and(|state| state.import_pc == cpu.pc && state.modal_filter.is_some())
+    {
+        return None;
+    }
+    let state = dialog_callback_stack.pop().unwrap();
+    let call = state.modal_filter.unwrap();
+    let handled = cpu.gpr[3] & 0xff != 0;
+    // The filter may rewrite the record; ModalDialog continues with the event
+    // the record now holds, a null event if its `what` is now nullEvent.
+    let event_ptr = call.event_ptr;
+    let event = ppc_read_event_record(memory, event_ptr)
+        .map_or(call.event, |event| (event.what != 0).then_some(event));
+    cpu.gpr[1] = call.caller_sp;
+    cpu.lr = state.final_pc;
+    cpu.gpr[2] = state.restore_rtoc;
+    cpu.gpr[3..11].copy_from_slice(&state.import_args);
+    Some(PpcModalFilterResult { handled, event })
+}
+
+fn ppc_read_event_record(memory: &mut PpcSectionMem, event_ptr: u32) -> Option<PpcQueuedEvent> {
+    Some(PpcQueuedEvent {
+        what: memory.read_u16_be(event_ptr)?,
+        message: memory.read_u32_be(event_ptr + 2)?,
+        when: memory.read_u32_be(event_ptr + 6)?,
+        where_v: memory.read_u16_be(event_ptr + 10)? as i16,
+        where_h: memory.read_u16_be(event_ptr + 12)? as i16,
+        modifiers: memory.read_u16_be(event_ptr + 14)?,
+    })
+}
+
+/// One ModalDialog pass. `filter_result` is what the application's filter
+/// did with the event of the previous pass, when this pass resumes after it.
 fn ppc_modal_dialog(
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
@@ -4775,19 +5022,41 @@ fn ppc_modal_dialog(
     fore_color: PpcRgbColor,
     fore_indices: &HashMap<u32, u8>,
     input: PpcInputSnapshot,
+    tick_count: u32,
     event_queue: &mut VecDeque<PpcQueuedEvent>,
     dialog_callback_stack: &mut Vec<PpcDialogCallbackState>,
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
-) -> PpcImportAction {
-    if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {
-        return action;
+    filter_result: Option<PpcModalFilterResult>,
+) -> PpcModalDialogPass {
+    use PpcModalDialogPass::Done;
+    if filter_result.is_none() {
+        if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {
+            return Done(action);
+        }
     }
     let filter_proc = cpu.gpr[3];
     let item_hit_ptr = cpu.gpr[4];
     let can_write = ppc_memory_can_write_bytes(memory, item_hit_ptr, 2);
     let Some(params) = evaluate_modal_dialog_parameters(filter_proc, item_hit_ptr, can_write) else {
-        return PpcImportAction::ReturnPreserve;
+        return Done(PpcImportAction::ReturnPreserve);
+    };
+    let event = match filter_result {
+        // A filter that returns true has handled the event and stored the
+        // item number through itemHit; ModalDialog returns without looking
+        // at the event.
+        Some(PpcModalFilterResult { handled: true, .. }) => {
+            if ppc_hle_trace_enabled() {
+                eprintln!(
+                    "[PPC-TRACE] ModalDialog filter=${:08X} handled -> item {}",
+                    params.filter_proc(),
+                    memory.read_u16_be(params.item_hit_ptr()).unwrap_or(0)
+                );
+            }
+            return Done(PpcImportAction::ReturnPreserve);
+        }
+        Some(PpcModalFilterResult { event, .. }) => Some(event),
+        None => None,
     };
     let dialog = if memory.read_u16_be(current_gworld.wrapping_add(PPC_CWINDOW_WINDOW_KIND_OFFSET))
         == Some(2)
@@ -4806,14 +5075,35 @@ fn ppc_modal_dialog(
             .unwrap_or(0)
     };
     let Some(bounds) = ppc_dialog_global_bounds(memory, gworlds, dialog) else {
-        return PpcImportAction::ReturnPreserve;
+        return Done(PpcImportAction::ReturnPreserve);
     };
     let Some(items) = ppc_dialog_items_for_dialog(memory, handles, dialog) else {
-        return PpcImportAction::ReturnPreserve;
+        return Done(PpcImportAction::ReturnPreserve);
     };
     *current_gworld = dialog;
     *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
-    let event = event_queue.pop_front();
+    let event = match event {
+        // The filter has seen this event and declined it.
+        Some(event) => event,
+        None => {
+            // ModalDialog offers every event, null events included, to the
+            // application's filter before handling it itself.
+            let event = event_queue.pop_front();
+            if let Some(launch) = ppc_prepare_modal_filter(
+                cpu,
+                memory,
+                dialog,
+                params.filter_proc(),
+                params.item_hit_ptr(),
+                event,
+                input,
+                tick_count,
+            ) {
+                return PpcModalDialogPass::CallFilter(launch);
+            }
+            event
+        }
+    };
     let mut handled_edit_event = false;
     let hit = match event.as_ref().map(|event| event.what) {
         Some(1) => event.as_ref().and_then(|event| {
@@ -5003,7 +5293,7 @@ fn ppc_modal_dialog(
                 current_resource_refnum,
                 dialog,
             );
-            return ppc_begin_dialog_callbacks(
+            return Done(ppc_begin_dialog_callbacks(
                 cpu,
                 memory,
                 dialog_callback_stack,
@@ -5011,7 +5301,7 @@ fn ppc_modal_dialog(
                 &items,
                 bounds,
                 PpcDialogCallbackCompletion::Yield,
-            );
+            ));
         }
         _ => None,
     };
@@ -5023,7 +5313,7 @@ fn ppc_modal_dialog(
                 params.filter_proc(), hit
             );
         }
-        PpcImportAction::ReturnPreserve
+        Done(PpcImportAction::ReturnPreserve)
     } else {
         if handled_edit_event && ppc_hle_trace_enabled() {
             let text = memory
@@ -5038,6 +5328,6 @@ fn ppc_modal_dialog(
         // ModalDialog is synchronous. Keep the PC at the import until a host
         // event selects an enabled item; returning item 0 makes guest code
         // spin and advances its state contrary to the Toolbox contract.
-        PpcImportAction::Yield(u64::MAX)
+        Done(PpcImportAction::Yield(u64::MAX))
     }
 }
