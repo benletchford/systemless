@@ -4905,6 +4905,10 @@ fn import_bindings_classify_menu_bar_imports() {
             PpcImportDispatcherTarget::HMIsBalloon
         );
         assert_eq!(
+            dispatcher_target_for_import(lib, "HMSetBalloons"),
+            PpcImportDispatcherTarget::HMSetBalloons
+        );
+        assert_eq!(
             dispatcher_target_for_import(lib, "InitMenus"),
             PpcImportDispatcherTarget::InitMenus
         );
@@ -5465,6 +5469,21 @@ fn hm_get_help_menu_handle_clears_output_and_returns_not_initialized() {
         loaded.cpu.gpr[3],
         ppc_i16_result(PPC_HM_HELP_MANAGER_NOT_INITED)
     );
+}
+
+#[test]
+fn hm_set_balloons_updates_powerpc_help_setting() {
+    // Inside Macintosh Volume VI (1991), chapter 11, pp. 11-65--11-66.
+    let pef = synthetic_pef_with_import(b"HMSetBalloons");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    for (requested, expected) in [(1, 1), (0, 0)] {
+        loaded.cpu.gpr[3] = requested;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::HMSetBalloons);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::HMGetBalloons);
+        assert_eq!(loaded.cpu.gpr[3], expected);
+    }
 }
 
 #[test]

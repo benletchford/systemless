@@ -672,7 +672,17 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
         PpcImportDispatcherTarget::HMGetBalloons => {
             // HMGetBalloons returns whether Balloon Help is enabled.
             // Inside Macintosh VI (1991), chapter 11, pp. 11-65–11-66.
-            Some(PpcImportAction::Return(0))
+            Some(PpcImportAction::Return(u32::from(
+                toolbox_startup.help_balloons_enabled,
+            )))
+        }
+        PpcImportDispatcherTarget::HMSetBalloons => {
+            // HMSetBalloons (InterfaceLib)
+            // Updates the modeled Balloon Help setting.
+            // FUNCTION HMSetBalloons(flag: Boolean): OSErr;
+            // Inside Macintosh Volume VI (1991), chapter 11, p. 11-65.
+            toolbox_startup.help_balloons_enabled = cpu.gpr[3] & 0xff != 0;
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
         PpcImportDispatcherTarget::HMIsBalloon => {
             // HMIsBalloon (InterfaceLib)
