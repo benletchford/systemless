@@ -410,6 +410,7 @@ pub enum PpcImportDispatcherTarget {
     PtInRect,
     SetOrigin,
     OffsetRect,
+    MapPt,
     MapRect,
     InsetRect,
     FindWindow,
@@ -3251,6 +3252,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "SetOrigin") => PpcImportDispatcherTarget::SetOrigin,
         ("InterfaceLib", "OffsetRect") => PpcImportDispatcherTarget::OffsetRect,
         ("InterfaceLib", "MapRect") => PpcImportDispatcherTarget::MapRect,
+        ("InterfaceLib", "MapPt") => PpcImportDispatcherTarget::MapPt,
         ("InterfaceLib", "InsetRect") => PpcImportDispatcherTarget::InsetRect,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
