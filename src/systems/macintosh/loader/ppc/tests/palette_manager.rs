@@ -421,6 +421,36 @@ use super::*;
             loaded.memory.read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET),
             Some(items)
         );
+
+        let palette_ptr = PPC_DATA_BASE + 0x4000;
+        loaded.memory.add_region(palette, vec![0; 4]);
+        loaded.memory.add_region(palette_ptr, vec![0; 32]);
+        loaded.memory.write_u32_be(palette, palette_ptr).unwrap();
+        loaded.memory.write_u16_be(palette_ptr, 1).unwrap();
+        ppc_write_rgb_color(
+            &mut loaded.memory,
+            palette_ptr + 16,
+            PpcRgbColor {
+                red: 0x1234,
+                green: 0x5678,
+                blue: 0x9abc,
+            },
+        )
+        .unwrap();
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = dialog);
+        loaded.cpu.gpr[3] = 0;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::PmForeColor;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PmForeColor);
+        assert_eq!(
+            loaded.quickdraw_fore_color,
+            PpcRgbColor {
+                red: 0x1234,
+                green: 0x5678,
+                blue: 0x9abc,
+            }
+        );
         assert_eq!(
             loaded.toolbox_startup.dialog_palettes.get(&dialog),
             Some(&(palette, 1))
