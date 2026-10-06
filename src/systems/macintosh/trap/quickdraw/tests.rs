@@ -108,6 +108,31 @@
     }
 
     #[test]
+    fn theme_menu_item_extra_matches_platinum_metrics_and_pascal_frame() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let height = TEST_SP + 0x40;
+        let width = TEST_SP + 0x42;
+        for (item_type, expected_width) in [(0, 4), (1, 28)] {
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, 0x20);
+            bus.write_long(TEST_SP, width);
+            bus.write_long(TEST_SP + 4, height);
+            bus.write_word(TEST_SP + 8, item_type);
+            bus.write_long(TEST_SP + 10, 0xDEAD_BEEF);
+            bus.write_word(height, 0xFFFF);
+            bus.write_word(width, 0xFFFF);
+
+            d.dispatch_quickdraw(true, 0x274, &mut cpu, &mut bus)
+                .expect("GetThemeMenuItemExtra")
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+            assert_eq!(bus.read_long(TEST_SP + 10), 0);
+            assert_eq!(bus.read_word(height), 0);
+            assert_eq!(bus.read_word(width), expected_width);
+        }
+    }
+
+    #[test]
     fn qd_extensions_generated_routes_preserve_exact_long_values() {
         assert_eq!(super::QD_EXTENSIONS_OPERATION_ROUTES.len(), 23);
         assert!(super::QD_EXTENSIONS_OPERATION_ROUTES
