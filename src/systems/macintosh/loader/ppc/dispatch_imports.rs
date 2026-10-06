@@ -1964,6 +1964,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GetDeviceList
         | PpcImportDispatcherTarget::GetMainDevice
         | PpcImportDispatcherTarget::GetMaxDevice
+        | PpcImportDispatcherTarget::DeviceLoop
         | PpcImportDispatcherTarget::GetNextDevice
         | PpcImportDispatcherTarget::TestDeviceAttribute
         | PpcImportDispatcherTarget::SetDeviceAttribute

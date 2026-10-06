@@ -2233,6 +2233,74 @@ fn hle_import_runner_handles_get_device_list() {
 }
 
 #[test]
+fn hle_import_runner_device_loop_calls_intersecting_device_with_depth_and_data() {
+    // Inside Macintosh: Imaging With QuickDraw (1994), pp. 5-29--5-30,
+    // 5-35: allDevices bypasses the region; the drawing callback receives
+    // depth, flags, device handle, and caller data in that order.
+    for (bbox, flags, should_call) in [
+        ((10, 10, 100, 100), 0, true),
+        ((900, 900, 950, 950), 0, false),
+        ((900, 900, 950, 950), 1 << 2, true),
+    ] {
+        let pef = synthetic_pef_with_import(b"DeviceLoop");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let callback = PPC_DATA_BASE + 0x2000;
+        let region_handle = PPC_DATA_BASE + 0x2100;
+        let region_data = PPC_DATA_BASE + 0x2200;
+        let results = PPC_DATA_BASE + 0x2300;
+        loaded.memory.add_region(callback, vec![0; 20]);
+        loaded.memory.add_region(region_handle, vec![0; 4]);
+        loaded.memory.add_region(region_data, vec![0; 10]);
+        loaded.memory.add_region(results, vec![0; 16]);
+        for (offset, instruction) in [
+            0x9066_0000, // stw r3, 0(r6): depth
+            0x9086_0004, // stw r4, 4(r6): device flags
+            0x90a6_0008, // stw r5, 8(r6): GDHandle
+            0x90c6_000c, // stw r6, 12(r6): userData
+            0x4e80_0020, // blr
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            loaded
+                .memory
+                .write_u32_be(callback + (offset as u32) * 4, instruction)
+                .unwrap();
+        }
+        loaded.memory.write_u32_be(region_handle, region_data).unwrap();
+        ppc_write_rgn_bbox(&mut loaded.memory, region_handle, bbox.0, bbox.1, bbox.2, bbox.3)
+            .unwrap();
+        loaded.cpu.gpr[3] = region_handle;
+        loaded.cpu.gpr[4] = callback;
+        loaded.cpu.gpr[5] = results;
+        loaded.cpu.gpr[6] = flags;
+
+        let probe = loaded.run_with_hle_imports(128);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        if should_call {
+            let pixmap_handle = loaded.memory.read_u32_be(PPC_MAIN_GDEVICE_RECORD + 22).unwrap();
+            let pixmap = loaded.memory.read_u32_be(pixmap_handle).unwrap();
+            assert_eq!(
+                loaded.memory.read_u32_be(results),
+                loaded.memory.read_u16_be(pixmap + 32).map(u32::from)
+            );
+            assert_eq!(
+                loaded.memory.read_u32_be(results + 4),
+                loaded
+                    .memory
+                    .read_u16_be(PPC_MAIN_GDEVICE_RECORD + 20)
+                    .map(u32::from)
+            );
+            assert_eq!(loaded.memory.read_u32_be(results + 8), Some(PPC_MAIN_GDEVICE));
+            assert_eq!(loaded.memory.read_u32_be(results + 12), Some(results));
+        } else {
+            assert_eq!(loaded.memory.read_u32_be(results), Some(0));
+        }
+    }
+}
+
+#[test]
 fn hle_import_runner_handles_get_gdevice() {
     let pef = synthetic_pef_with_import(b"GetGDevice");
     let mut loaded = load_pef_application(&pef).unwrap();

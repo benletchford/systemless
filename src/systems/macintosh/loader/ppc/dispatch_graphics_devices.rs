@@ -64,6 +64,71 @@ pub(super) fn dispatch_graphics_device_import(
             Some(PpcImportAction::Return(device))
         }
         PpcImportDispatcherTarget::GetNextDevice => Some(PpcImportAction::Return(0)),
+        PpcImportDispatcherTarget::DeviceLoop => {
+            // DeviceLoop (InterfaceLib)
+            // Visits each distinct video device intersecting the drawing region.
+            // PROCEDURE DeviceLoop(drawingRgn: RgnHandle;
+            //   drawingProc: DeviceLoopDrawingProcPtr; userData: LongInt;
+            //   flags: DeviceLoopFlags);
+            // Inside Macintosh: Imaging With QuickDraw (1994), pp. 5-29--5-30, 5-35.
+            let region = cpu.gpr[3];
+            let drawing_proc = cpu.gpr[4];
+            let user_data = cpu.gpr[5];
+            let all_devices = cpu.gpr[6] & (1 << 2) != 0;
+            let device_handle = if *current_gdevice == 0 {
+                PPC_MAIN_GDEVICE
+            } else {
+                *current_gdevice
+            };
+            let device = memory.read_u32_be(device_handle).filter(|&ptr| ptr != 0);
+            let intersects = device
+                .and_then(|ptr| ppc_read_rect(memory, ptr + 34))
+                .zip(ppc_read_rgn_bbox(memory, region))
+                .is_some_and(|(device_rect, region_rect)| {
+                    device_rect.0 < region_rect.2
+                        && device_rect.1 < region_rect.3
+                        && device_rect.2 > region_rect.0
+                        && device_rect.3 > region_rect.1
+                });
+            if drawing_proc == 0 || device.is_none() || (!all_devices && !intersects) {
+                return Some(PpcImportAction::ReturnPreserve);
+            }
+            let device = device?;
+            let pixmap = memory
+                .read_u32_be(device + 22)
+                .and_then(|handle| memory.read_u32_be(handle));
+            let depth = pixmap
+                .and_then(|ptr| memory.read_u16_be(ptr + 32))
+                .unwrap_or(0);
+            let device_flags = memory.read_u16_be(device + 20).unwrap_or(0);
+            let callback = ppc_resolve_callback_target(memory, drawing_proc, cpu.gpr[2], None)?;
+            let final_pc = cpu.lr;
+            let restore_rtoc = cpu.gpr[2];
+            install_powerpc_call_arguments(
+                cpu,
+                memory,
+                &[
+                    u32::from(depth),
+                    u32::from(device_flags),
+                    device_handle,
+                    user_data,
+                ],
+            )?;
+            GuestCallEffect::call_guest(
+                GuestCallRequest::new(GuestCallTarget {
+                    isa: GuestIsa::PowerPc,
+                    entry: callback.entry,
+                    rtoc: callback.rtoc,
+                }),
+                GuestCallContinuation::to_powerpc(
+                    PPC_GUEST_CALL_RETURN_PC,
+                    final_pc,
+                    restore_rtoc,
+                    PpcNativeReturnGpr3::Preserve,
+                ),
+            )
+            .into_ppc_import_action()
+        }
         PpcImportDispatcherTarget::TestDeviceAttribute => Some(PpcImportAction::Return(
             ppc_test_device_attribute(cpu, memory),
         )),
