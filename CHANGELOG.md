@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.81.2](https://github.com/benletchford/systemless/compare/v0.81.1...v0.81.2) (2026-10-06)
+
+
+### Bug Fixes
+
+* **cfm:** find nameless disk fragments by container name ([#4143](https://github.com/benletchford/systemless/issues/4143)) ([2b52ee6](https://github.com/benletchford/systemless/commit/2b52ee6eebe6ffce019a83110242ee39776826eb))
+* **files:** resolve single-colon catalog directory lookup ([#4153](https://github.com/benletchford/systemless/issues/4153)) ([48f0112](https://github.com/benletchford/systemless/commit/48f011262fb19737859a80291c3106379d99fdf5))
+* **macintosh:** decode QuickTime JPEG images for KPT gallery ([#4150](https://github.com/benletchford/systemless/issues/4150)) ([70f98de](https://github.com/benletchford/systemless/commit/70f98dea49f359e2e03f3c4968f36d6c667b6e2e))
+* **macintosh:** grow dialogs when appending items ([#4133](https://github.com/benletchford/systemless/issues/4133)) ([2011fa5](https://github.com/benletchford/systemless/commit/2011fa56bebaf7a0f248f8722ec666d180671b22))
+* **macintosh:** preserve caller stack for empty TextEdit rectangles ([#4155](https://github.com/benletchford/systemless/issues/4155)) ([f955737](https://github.com/benletchford/systemless/commit/f95573781579c5f5a9476e14a1090a321b3e089f))
+* **mac:** select archive app for requested architecture ([#4159](https://github.com/benletchford/systemless/issues/4159)) ([f4a202b](https://github.com/benletchford/systemless/commit/f4a202ba8bc0863d9a7be123b9b984a961733281))
+* **ppc:** implement MathLib double classification ([#4148](https://github.com/benletchford/systemless/issues/4148)) ([35d1bb6](https://github.com/benletchford/systemless/commit/35d1bb67d0208fe9b9c3724285a3a0b16f4c167f))
+* **ppc:** report why a PowerPC context stopped ([#4160](https://github.com/benletchford/systemless/issues/4160)) ([4a6454e](https://github.com/benletchford/systemless/commit/4a6454ebd3ab7988832fc26d17bb9cb8fa9d250a))
+* **ppc:** resolve single-colon catalog directory lookup ([#4154](https://github.com/benletchford/systemless/issues/4154)) ([40d3c1d](https://github.com/benletchford/systemless/commit/40d3c1d4ad0db8f8092e26ac200bf64d02076ac0))
+* **ppc:** route InterfaceLib StdBits through CopyBits ([#4145](https://github.com/benletchford/systemless/issues/4145)) ([ba99f29](https://github.com/benletchford/systemless/commit/ba99f29699ae5933c464fe29daa3200d0027d717))
+* **resources:** report missing named types on Mac OS 8.1 ([#4165](https://github.com/benletchford/systemless/issues/4165)) ([dff4e72](https://github.com/benletchford/systemless/commit/dff4e727b9976746ed08ba29abb8dd5b7ee4b69c))
+* **sound:** handle PowerPC SndControl queries ([#4139](https://github.com/benletchford/systemless/issues/4139)) ([7eac58d](https://github.com/benletchford/systemless/commit/7eac58de1aca82849b926a0f16a57b13e868874a))
+* **systemless:** reject filter suites without a selected host ([#4138](https://github.com/benletchford/systemless/issues/4138)) ([784e27d](https://github.com/benletchford/systemless/commit/784e27dcb1768883638b9347af32d648e2fd2dce))
+
+
+### Performance Improvements
+
+* **native:** box native adapters so checkout and return move a pointer ([#4135](https://github.com/benletchford/systemless/issues/4135)) ([a0e17c4](https://github.com/benletchford/systemless/commit/a0e17c4fae91336118708d0b2c29d42b3795db63))
+* **ppc:** reuse the caller's CPU for alert modal passes ([#4134](https://github.com/benletchford/systemless/issues/4134)) ([cc61a35](https://github.com/benletchford/systemless/commit/cc61a35e3f32bc96b5511d078f9be5af798b3b5e))
+* **ppc:** skip re-installing an unchanged screen color table ([#4156](https://github.com/benletchford/systemless/issues/4156)) ([fb46d70](https://github.com/benletchford/systemless/commit/fb46d70ded45c88812070ade8c4ce54a587d33f8))
+* **presentation:** count retained-text cells per screen row ([#4137](https://github.com/benletchford/systemless/issues/4137)) ([b1b619f](https://github.com/benletchford/systemless/commit/b1b619feda31fe47099b6266ecf1b585d073310a))
+* **renderer:** reuse compact WebGL textures ([#4162](https://github.com/benletchford/systemless/issues/4162)) ([138a2df](https://github.com/benletchford/systemless/commit/138a2df0e50515035bba7b42ca4ec0fbb170b475))
+* skip redundant guest-memory cache scans ([eaada3d](https://github.com/benletchford/systemless/commit/eaada3df7e9647561d2ab5418e376bbb430359ff))
+
 ## [0.81.1](https://github.com/benletchford/systemless/compare/v0.81.0...v0.81.1) (2026-10-06)
 
 

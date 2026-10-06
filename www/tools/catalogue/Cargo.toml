@@ -1,6 +1,6 @@
 [package]
 name = "systemless-catalogue-tools"
-version = "0.81.1"
+version = "0.81.2"
 edition = "2021"
 rust-version = "1.89"
 publish = false
