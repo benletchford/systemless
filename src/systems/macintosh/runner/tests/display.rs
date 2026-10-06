@@ -257,6 +257,33 @@ fn ppc_host_clut_sync_grows_a_lower_depth_main_color_table() {
 }
 
 #[test]
+fn ppc_host_clut_sync_restores_a_changed_table_and_keeps_an_unchanged_one() {
+    let config = FixtureRunnerConfig::default()
+        .with_screen_depth(8)
+        .expect("8bpp mode");
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, config);
+    let (mut clut, _) = TrapDispatcher::standard_mac_indexed_clut(8).expect("8bpp CLUT");
+    clut[200] = [0x1234, 0x5678, 0x9abc];
+    assert!(runner.sync_ppc_host_indexed_color_table(8, &clut));
+    let gdevice_handle = runner.dispatcher.ensure_main_gdevice(&mut runner.bus);
+    let gdevice = runner.bus.read_long(gdevice_handle);
+    let pixmap = runner.bus.read_long(runner.bus.read_long(gdevice + 22));
+    let color_table = runner.bus.read_long(runner.bus.read_long(pixmap + 42));
+    let installed = runner.bus.read_bytes(color_table, 8 + 256 * 8);
+
+    // A repeated sync over an unchanged table leaves it byte for byte.
+    assert!(runner.sync_ppc_host_indexed_color_table(8, &clut));
+    assert_eq!(runner.bus.read_bytes(color_table, 8 + 256 * 8), installed);
+
+    // Guest changes to the header or a ColorSpec are overwritten again.
+    runner.bus.write_word(color_table + 8 + 200 * 8 + 4, 0);
+    runner.bus.write_word(color_table + 4, 0);
+    assert!(runner.sync_ppc_host_indexed_color_table(8, &clut));
+    assert_eq!(runner.bus.read_bytes(color_table, 8 + 256 * 8), installed);
+    assert_eq!(runner.dispatcher.device_clut, clut);
+}
+
+#[test]
 fn ppc_host_sync_restores_indexed_pm_table_across_direct_color_transitions() {
     const WIDTH: u32 = 8;
     const HEIGHT: u32 = 1;

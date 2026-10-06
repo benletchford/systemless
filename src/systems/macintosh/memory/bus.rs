@@ -2533,6 +2533,39 @@ impl MacMemoryBus {
         Some(self.ram_slice(start, u32::try_from(len).ok()?))
     }
 
+    /// True when RAM at `address` already holds `data` and storing `data`
+    /// there word by word would take the unobserved fast path of
+    /// `write_word`/`write_long`, so the store would change nothing. Learns
+    /// the store-filter pages that path would have learned. Any diagnostic,
+    /// probe, presentation observer, protection or non-flat routing answers
+    /// false so callers fall back to their ordinary writes.
+    pub(crate) fn ram_already_holds_unobserved(&mut self, address: u32, data: &[u8]) -> bool {
+        let len = data.len();
+        if len == 0
+            || mem_write_trace_active()
+            || fb_write_trace_range().is_some()
+            || self.write_probe_original.is_some()
+            || watchpoint_armed()
+            || self.presentation_observes(address, len)
+        {
+            return false;
+        }
+        let Some(translated) = self.range_translates_contiguously(address, len) else {
+            return false;
+        };
+        if self.readonly_code_overlaps(translated, len as u32)
+            || self.foreign_ordinary_sparse_overlaps(translated, len)
+            || self.untraced_ram_slice(address, len) != Some(data)
+        {
+            return false;
+        }
+        let last = translated + (len as u32 - 1);
+        for page in (translated >> STORE_FILTER_PAGE_SHIFT)..=(last >> STORE_FILTER_PAGE_SHIFT) {
+            self.learn_store_page(page << STORE_FILTER_PAGE_SHIFT);
+        }
+        true
+    }
+
     /// Copy a plain presentation row while retaining the single revision and
     /// guest-value update that ordinary presentation writes would perform.
     /// Diagnostics and protected ranges deliberately use the routed fallback.
@@ -3927,6 +3960,29 @@ mod tests {
         assert_eq!(bus.read_byte(0x021e), 2);
         assert_eq!(bus.read_byte(0x021d), 0);
         assert_eq!(bus.read_byte(0x021f), 0);
+    }
+
+    #[test]
+    fn ram_already_holds_unobserved_only_for_identical_unobserved_ram() {
+        let mut bus = MacMemoryBus::new(0x0200_0000);
+        bus.write_bytes(0x1000, &[1, 2, 3, 4]);
+        assert!(bus.ram_already_holds_unobserved(0x1000, &[1, 2, 3, 4]));
+        assert!(!bus.ram_already_holds_unobserved(0x1000, &[1, 2, 3, 5]));
+        assert!(!bus.ram_already_holds_unobserved(0x1000, &[]));
+        assert!(!bus.ram_already_holds_unobserved(0x01ff_ffff, &[0, 0]));
+
+        // A write probe journals ordinary stores, so the caller must store.
+        bus.begin_uncapped_write_probe();
+        assert!(!bus.ram_already_holds_unobserved(0x1000, &[1, 2, 3, 4]));
+        assert!(bus.finish_write_probe_unchanged());
+
+        // Bytes owned by a sparse foreign mapping are not this RAM.
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(0x1002, vec![3, 4]);
+        bus.attach_guest_address_space(memory.shared_view());
+        assert!(!bus.ram_already_holds_unobserved(0x1000, &[1, 2, 3, 4]));
+        bus.detach_guest_address_space();
+        assert!(bus.ram_already_holds_unobserved(0x1000, &[1, 2, 3, 4]));
     }
 
     #[test]

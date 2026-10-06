@@ -9565,16 +9565,33 @@ impl FixtureRunner {
         // An indexed screen PixMap's pmTable is the live mapping from pixel
         // values to RGB colors. Imaging With QuickDraw (1994), pp. 4-10--4-11
         // and 4-56--4-57.
-        self.bus.write_long(color_table, u32::from(depth));
-        self.bus.write_word(color_table + 4, 0x8000);
-        self.bus.write_word(color_table + 6, entry_count as u16 - 1);
-        for index in 0..entry_count {
-            let entry = color_table + 8 + index * 8;
-            let rgb = clut[index as usize];
-            self.bus.write_word(entry, 0);
-            self.bus.write_word(entry + 2, rgb[0]);
-            self.bus.write_word(entry + 4, rgb[1]);
-            self.bus.write_word(entry + 6, rgb[2]);
+        let mut image = [0u8; 8 + 256 * 8];
+        let len = 8 + entry_count as usize * 8;
+        image[0..4].copy_from_slice(&u32::from(depth).to_be_bytes());
+        image[4..6].copy_from_slice(&0x8000u16.to_be_bytes());
+        image[6..8].copy_from_slice(&(entry_count as u16 - 1).to_be_bytes());
+        for (entry, rgb) in image[8..len].chunks_exact_mut(8).zip(clut) {
+            for (channel, value) in entry[2..].chunks_exact_mut(2).zip(rgb) {
+                channel.copy_from_slice(&value.to_be_bytes());
+            }
+        }
+        // Every sync re-installs the table; when RAM already holds it the
+        // per-word stores below would change nothing.
+        if !self
+            .bus
+            .ram_already_holds_unobserved(color_table, &image[..len])
+        {
+            self.bus.write_long(color_table, u32::from(depth));
+            self.bus.write_word(color_table + 4, 0x8000);
+            self.bus.write_word(color_table + 6, entry_count as u16 - 1);
+            for index in 0..entry_count {
+                let entry = color_table + 8 + index * 8;
+                let rgb = clut[index as usize];
+                self.bus.write_word(entry, 0);
+                self.bus.write_word(entry + 2, rgb[0]);
+                self.bus.write_word(entry + 4, rgb[1]);
+                self.bus.write_word(entry + 6, rgb[2]);
+            }
         }
         // The renderer reads the device palette directly; keep it in step
         // with the screen PixMap table installed above.
