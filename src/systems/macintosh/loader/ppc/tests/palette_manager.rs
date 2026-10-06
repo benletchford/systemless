@@ -393,6 +393,49 @@ use super::*;
     }
 
     #[test]
+    fn dialog_palette_association_preserves_its_item_list() {
+        let pef = synthetic_pef_with_import(b"NSetPalette");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let dialog = PPC_DATA_BASE + 0x1000;
+        let items = PPC_DATA_BASE + 0x2000;
+        let palette = PPC_DATA_BASE + 0x3000;
+        loaded
+            .memory
+            .add_region(dialog, vec![0; crate::dialog_manager::DIALOG_RECORD_SIZE as usize]);
+        loaded
+            .memory
+            .write_u16_be(
+                dialog + PPC_CWINDOW_WINDOW_KIND_OFFSET,
+                crate::dialog_manager::DIALOG_WINDOW_KIND,
+            )
+            .unwrap();
+        loaded
+            .memory
+            .write_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET, items)
+            .unwrap();
+        loaded.cpu.gpr[3] = dialog;
+        loaded.cpu.gpr[4] = palette;
+        loaded.cpu.gpr[5] = 1;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::NSetPalette);
+        assert_eq!(
+            loaded.memory.read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET),
+            Some(items)
+        );
+        assert_eq!(
+            loaded.toolbox_startup.dialog_palettes.get(&dialog),
+            Some(&(palette, 1))
+        );
+
+        loaded.cpu.gpr[3] = dialog;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPalette);
+        assert_eq!(loaded.cpu.gpr[3], palette);
+        assert_eq!(
+            loaded.memory.read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET),
+            Some(items)
+        );
+    }
+
+    #[test]
     fn application_default_palette_round_trips_and_colors_unassigned_front_window() {
         let pef = synthetic_pef_with_import(b"NSetPalette");
         let mut loaded = load_pef_application(&pef).unwrap();
