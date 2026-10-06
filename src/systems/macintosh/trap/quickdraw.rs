@@ -2760,6 +2760,38 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
+            (true, 0x274) if cpu.read_reg(Register::D0) as u16 == 0x20 => {
+                // GetThemeMenuItemExtra ($AA74, selector $0020)
+                // Reports the theme's extra space around a menu item.
+                // OSStatus GetThemeMenuItemExtra(ThemeMenuItemType inItemType,
+                //     SInt16 *outHeight, SInt16 *outWidth);
+                // Apple, Appearance.h (Universal Interfaces 3.4), line 1939;
+                // Mac OS 8.1 Platinum Appearance Manager measurements.
+                let sp = cpu.read_reg(Register::A7);
+                let out_width = bus.read_long(sp);
+                let out_height = bus.read_long(sp + 4);
+                let item_type = bus.read_word(sp + 8);
+                let width = match item_type {
+                    0 => Some(4),  // kThemeMenuItemPlain
+                    1 => Some(28), // kThemeMenuItemHierarchical
+                    _ => None,
+                };
+                let status = if let Some(width) = width {
+                    if out_width == 0 || out_height == 0 {
+                        -50i32 // paramErr
+                    } else {
+                        bus.write_word(out_width, width);
+                        bus.write_word(out_height, 0);
+                        0
+                    }
+                } else {
+                    -50i32 // paramErr
+                };
+                bus.write_long(sp + 10, status as u32);
+                cpu.write_reg(Register::A7, sp + 10);
+                Ok(())
+            }
+
             // ========== Shape Drawing Commands ==========
 
             // FrameRect ($A8A1)
