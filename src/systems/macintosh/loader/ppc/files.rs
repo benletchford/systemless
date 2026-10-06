@@ -1041,7 +1041,9 @@ pub(super) fn ppc_catalog_entry_for_lookup(
             is_directory: true,
         });
     }
-    if name_bytes.is_empty() {
+    // A single-colon partial pathname names the selected directory itself.
+    // Inside Macintosh: Files (1992), pp. 2-27 to 2-29.
+    if name_bytes.is_empty() || name_bytes == b":" {
         let directory = vfs_directories
             .iter()
             .find(|directory| directory.dir_id == dir_id)?;
