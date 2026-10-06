@@ -1444,6 +1444,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::TEDispose
         | PpcImportDispatcherTarget::TEActivate { .. }
         | PpcImportDispatcherTarget::TESetSelect
+        | PpcImportDispatcherTarget::TESetClickLoop
         | PpcImportDispatcherTarget::TESetText
         | PpcImportDispatcherTarget::TECalText
         | PpcImportDispatcherTarget::TEInsert { .. }

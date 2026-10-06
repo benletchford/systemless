@@ -623,6 +623,7 @@ pub enum PpcImportDispatcherTarget {
     TEGetText,
     TEDispose,
     TEActivate { active: bool },
+    TESetClickLoop,
     TESetSelect,
     TESetText,
     TECalText,
@@ -3820,6 +3821,7 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::TEActivate { active: false }
         }
         ("InterfaceLib", "TESetSelect") => PpcImportDispatcherTarget::TESetSelect,
+        ("InterfaceLib", "TESetClickLoop") => PpcImportDispatcherTarget::TESetClickLoop,
         ("InterfaceLib", "TESetText") => PpcImportDispatcherTarget::TESetText,
         ("InterfaceLib", "TECalText") => PpcImportDispatcherTarget::TECalText,
         ("InterfaceLib", "TEInsert") => PpcImportDispatcherTarget::TEInsert { styled: false },

@@ -14,6 +14,7 @@ pub(crate) const PPC_TE_SEL_POINT_OFFSET: u32 = 0x1c;
 pub(crate) const PPC_TE_SEL_START_OFFSET: u32 = 0x20;
 pub(crate) const PPC_TE_SEL_END_OFFSET: u32 = 0x22;
 pub(crate) const PPC_TE_ACTIVE_OFFSET: u32 = 0x24;
+pub(crate) const PPC_TE_CLIK_LOOP_OFFSET: u32 = 0x2a;
 pub(crate) const PPC_TE_CLICK_TIME_OFFSET: u32 = 0x2e;
 pub(crate) const PPC_TE_CLICK_LOC_OFFSET: u32 = 0x32;
 pub(crate) const PPC_TE_CARET_TIME_OFFSET: u32 = 0x34;
