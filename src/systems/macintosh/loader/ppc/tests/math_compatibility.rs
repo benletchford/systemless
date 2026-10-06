@@ -349,6 +349,28 @@ fn native_ppc_math_fabs_clears_the_sign_bit() {
 }
 
 #[test]
+fn native_ppc_math_fpclassifyd_distinguishes_all_ieee_double_classes() {
+    let mut memory = PpcSectionMem::new();
+    let mut cpu = PpcCpu::new();
+    for (bits, class) in [
+        (0x7ff0_0000_0000_0001_u64, 0), // signaling NaN
+        (f64::NAN.to_bits(), 1),
+        (f64::NEG_INFINITY.to_bits(), 2),
+        ((-0.0_f64).to_bits(), 3),
+        ((-2.5_f64).to_bits(), 4),
+        (1_u64, 5), // smallest subnormal
+    ] {
+        cpu.fpr[1] = bits;
+        assert_eq!(
+            ppc_dispatch_math_compatibility(math_operation("__fpclassifyd"), &mut cpu, &mut memory),
+            PpcImportAction::ReturnPreserve
+        );
+        assert_eq!(cpu.gpr[3], class, "input bits {bits:016X}");
+        assert_eq!(cpu.fpr[1], bits);
+    }
+}
+
+#[test]
 fn native_ppc_math_ldexp_reads_the_exponent_after_the_double_gpr_slots() {
     let mut memory = PpcSectionMem::new();
     let mut cpu = PpcCpu::new();
@@ -650,6 +672,10 @@ fn powerpc_decimal_read_handles_special_values_and_rejects_oversized_significand
 
 #[test]
 fn import_bindings_classify_mathlib_imports() {
+    assert_eq!(
+        dispatcher_target_for_import("MathLib", "__fpclassifyd"),
+        PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::FpClassifyD)
+    );
     assert_eq!(
         dispatcher_target_for_import("MathLib", "ceil"),
         PpcImportDispatcherTarget::MathCeil

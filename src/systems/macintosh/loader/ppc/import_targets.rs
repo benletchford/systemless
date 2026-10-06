@@ -2138,6 +2138,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("MathLib", "fmod") => PpcImportDispatcherTarget::MathFmod,
         ("MathLib", "log") => PpcImportDispatcherTarget::MathLog,
         ("MathLib", "log10") => PpcImportDispatcherTarget::MathLog10,
+        ("MathLib", "__fpclassifyd") => {
+            PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::FpClassifyD)
+        }
         ("MathLib", "nan") => {
             PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::Nan)
         }
