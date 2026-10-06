@@ -1208,6 +1208,21 @@ pub(super) fn ppc_empty_rgn(memory: &mut PpcSectionMem, rgn_handle: u32) -> bool
     bottom <= top || right <= left
 }
 
+pub(super) fn ppc_equal_rgn(memory: &mut PpcSectionMem, first: u32, second: u32) -> bool {
+    // EqualRgn ($A8E3)
+    // Compares region size, shape, and location; any two empty regions are equal.
+    // FUNCTION EqualRgn(rgnA, rgnB: RgnHandle): Boolean;
+    // Inside Macintosh: Imaging With QuickDraw (1994), p. 3-98.
+    let Some(first_storage) = ppc_region_storage(memory, first) else {
+        return false;
+    };
+    let Some(second_storage) = ppc_region_storage(memory, second) else {
+        return false;
+    };
+    (ppc_empty_rgn(memory, first) && ppc_empty_rgn(memory, second))
+        || first_storage == second_storage
+}
+
 pub(super) fn ppc_point_in_region(memory: &mut PpcSectionMem, rgn_handle: u32, v: i16, h: i16) -> bool {
     let Some(storage) = ppc_region_storage(memory, rgn_handle) else {
         return false;

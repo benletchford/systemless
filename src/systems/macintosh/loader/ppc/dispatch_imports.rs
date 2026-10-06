@@ -1863,6 +1863,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::RectRgn
         | PpcImportDispatcherTarget::OffsetRgn
         | PpcImportDispatcherTarget::EmptyRgn
+        | PpcImportDispatcherTarget::EqualRgn
         | PpcImportDispatcherTarget::PtInRgn
         | PpcImportDispatcherTarget::RectInRgn => {
             unreachable!("Region Manager imports return through dispatch_region_import")
