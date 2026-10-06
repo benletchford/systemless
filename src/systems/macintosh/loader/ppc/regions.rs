@@ -1134,6 +1134,14 @@ pub(super) fn ppc_offset_rgn(memory: &mut PpcSectionMem, rgn_handle: u32, dh: i1
     if bottom <= top || right <= left {
         return PPC_NO_ERR;
     }
+    // The full-coordinate rectangle stands in for an unbounded clip region.
+    // Moving it cannot change what it clips; wrapping either edge would turn
+    // it into an empty rectangle after even a one-pixel offset.
+    if size == 10
+        && (top, left, bottom, right) == (i16::MIN, i16::MIN, i16::MAX, i16::MAX)
+    {
+        return PPC_NO_ERR;
+    }
     if ppc_write_rect(
         memory,
         ptr + 2,

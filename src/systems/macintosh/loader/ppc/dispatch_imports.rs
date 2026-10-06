@@ -1729,6 +1729,7 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::InitGraf
         | PpcImportDispatcherTarget::GetForeColor
         | PpcImportDispatcherTarget::GetBackColor
+        | PpcImportDispatcherTarget::GetGray
         | PpcImportDispatcherTarget::ForeColor
         | PpcImportDispatcherTarget::BackColor
         | PpcImportDispatcherTarget::RGBForeColor

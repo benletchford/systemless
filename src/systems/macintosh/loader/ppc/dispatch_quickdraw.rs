@@ -77,6 +77,36 @@ pub(super) fn dispatch_quickdraw_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::GetGray => {
+            // GetGray(device, background, foreground) chooses a color between
+            // the two supplied RGBColors that the device can display.
+            let device = if cpu.gpr[3] == 0 {
+                current_gdevice
+            } else {
+                cpu.gpr[3]
+            };
+            let result = ppc_read_rgb_color(memory, cpu.gpr[4]).and_then(|background| {
+                let foreground = ppc_read_rgb_color(memory, cpu.gpr[5])?;
+                let midpoint = PpcRgbColor {
+                    red: ((u32::from(background.red) + u32::from(foreground.red)) / 2) as u16,
+                    green: ((u32::from(background.green) + u32::from(foreground.green)) / 2) as u16,
+                    blue: ((u32::from(background.blue) + u32::from(foreground.blue)) / 2) as u16,
+                };
+                let background_index =
+                    ppc_color_to_index(memory, device, color_manager_clut, background);
+                let foreground_index =
+                    ppc_color_to_index(memory, device, color_manager_clut, foreground);
+                let midpoint_index =
+                    ppc_color_to_index(memory, device, color_manager_clut, midpoint);
+                (midpoint_index != background_index && midpoint_index != foreground_index)
+                    .then(|| {
+                        ppc_index_to_color(memory, device, color_manager_clut, midpoint_index)
+                    })
+            });
+            Some(PpcImportAction::Return(u32::from(
+                result.is_some_and(|color| ppc_write_rgb_color(memory, cpu.gpr[5], color).is_some()),
+            )))
+        }
         PpcImportDispatcherTarget::ForeColor => {
             quickdraw_fore_indices.remove(&current_gworld);
             *quickdraw_fore_color = ppc_legacy_qd_color_to_rgb(cpu.gpr[3]);

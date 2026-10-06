@@ -5349,6 +5349,26 @@ fn hle_import_runner_gets_and_sets_gray_region_low_memory_handle() {
 }
 
 #[test]
+fn hle_get_gray_returns_representable_intermediate_color() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetGray")).unwrap();
+    let background = PPC_DATA_BASE + 0x1000;
+    let foreground = PPC_DATA_BASE + 0x1010;
+    loaded.memory.add_region(background, vec![0; 6]);
+    loaded.memory.add_region(foreground, vec![0; 6]);
+    ppc_write_rgb_color(&mut loaded.memory, background, PPC_RGB_WHITE).unwrap();
+    ppc_write_rgb_color(&mut loaded.memory, foreground, PPC_RGB_BLACK).unwrap();
+    loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
+    loaded.cpu.gpr[4] = background;
+    loaded.cpu.gpr[5] = foreground;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    let gray = ppc_read_rgb_color(&mut loaded.memory, foreground).unwrap();
+    assert_ne!(gray, PPC_RGB_BLACK);
+    assert_ne!(gray, PPC_RGB_WHITE);
+}
+
+#[test]
 fn hle_import_runner_handles_get_fore_color() {
     let pef = synthetic_pef_with_import(b"GetForeColor");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -5398,6 +5418,16 @@ fn hle_import_runner_handles_text_width() {
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], 42);
+}
+
+#[test]
+fn offset_full_clip_region_preserves_unbounded_extent() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"OffsetRgn")).unwrap();
+    let full = Some((i16::MIN, i16::MIN, i16::MAX, i16::MAX));
+    assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, PPC_MAIN_CLIP_RGN_HANDLE), full);
+    assert_eq!(ppc_offset_rgn(&mut loaded.memory, PPC_MAIN_CLIP_RGN_HANDLE, -2, -2), PPC_NO_ERR);
+    assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, PPC_MAIN_CLIP_RGN_HANDLE), full);
+    assert!(!ppc_empty_rgn(&mut loaded.memory, PPC_MAIN_CLIP_RGN_HANDLE));
 }
 
 #[test]
