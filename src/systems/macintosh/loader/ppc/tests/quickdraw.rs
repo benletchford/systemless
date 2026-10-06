@@ -606,6 +606,56 @@ fn hle_import_runner_handles_rect_rgn() {
 }
 
 #[test]
+fn hle_import_runner_equal_rgn_compares_complete_shape_and_empty_regions() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "EqualRgn"),
+        PpcImportDispatcherTarget::EqualRgn,
+    );
+    let pef = synthetic_pef_with_import(b"EqualRgn");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let first_ptr = PPC_DATA_BASE + 0x1000;
+    let first_handle = PPC_DATA_BASE + 0x1100;
+    let second_ptr = PPC_DATA_BASE + 0x1200;
+    let second_handle = PPC_DATA_BASE + 0x1300;
+    let region = [0, 16, 0, 1, 0, 2, 0, 20, 0, 30, 0, 3, 0, 10, 0x7f, 0xff];
+    loaded.memory.add_region(first_ptr, region.to_vec());
+    loaded.memory.add_region(second_ptr, region.to_vec());
+    loaded.memory.add_region(first_handle, vec![0; 4]);
+    loaded.memory.add_region(second_handle, vec![0; 4]);
+    loaded.memory.write_u32_be(first_handle, first_ptr).unwrap();
+    loaded.memory.write_u32_be(second_handle, second_ptr).unwrap();
+
+    loaded.memory.write_u16_be(first_ptr, 10).unwrap();
+    loaded.memory.write_u16_be(second_ptr, 10).unwrap();
+    loaded.cpu.gpr[3] = first_handle;
+    loaded.cpu.gpr[4] = second_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::EqualRgn);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+
+    loaded.memory.write_u16_be(first_ptr, 16).unwrap();
+    loaded.memory.write_u16_be(second_ptr, 16).unwrap();
+    loaded.cpu.gpr[3] = first_handle;
+    loaded.cpu.gpr[4] = second_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::EqualRgn);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+
+    loaded.memory.write_u16_be(second_ptr + 12, 12).unwrap();
+    loaded.cpu.gpr[3] = first_handle;
+    loaded.cpu.gpr[4] = second_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::EqualRgn);
+    assert_eq!(loaded.cpu.gpr[3], 0, "matching bounds do not imply equal shapes");
+
+    loaded.memory.write_u16_be(first_ptr, 10).unwrap();
+    loaded.memory.write_u16_be(second_ptr, 10).unwrap();
+    ppc_write_rect(&mut loaded.memory, first_ptr + 2, 0, 0, 0, 0).unwrap();
+    ppc_write_rect(&mut loaded.memory, second_ptr + 2, 5, 4, 5, 9).unwrap();
+    loaded.cpu.gpr[3] = first_handle;
+    loaded.cpu.gpr[4] = second_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::EqualRgn);
+    assert_eq!(loaded.cpu.gpr[3], 1, "any two empty regions are equal");
+}
+
+#[test]
 fn hle_import_runner_copies_complete_region_storage() {
     let pef = synthetic_pef_with_import(b"NewRgn");
     let mut loaded = load_pef_application(&pef).unwrap();

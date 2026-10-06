@@ -224,6 +224,9 @@ pub(super) fn dispatch_region_import(
                 0
             },
         )),
+        PpcImportDispatcherTarget::EqualRgn => Some(PpcImportAction::Return(u32::from(
+            ppc_equal_rgn(memory, cpu.gpr[3], cpu.gpr[4]),
+        ))),
         PpcImportDispatcherTarget::PtInRgn => {
             let v = (cpu.gpr[3] >> 16) as u16 as i16;
             let h = cpu.gpr[3] as u16 as i16;
