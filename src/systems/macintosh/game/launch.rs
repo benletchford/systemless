@@ -441,6 +441,7 @@ fn load_stuffit(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedAp
             .extend(entry_payload.skipped_disk_image_errors);
     }
     let payload = expand_split_vise_payloads(payload)?;
+    reject_filter_suite_without_host(&payload, runner)?;
     skipped_disk_image_errors.extend(payload.skipped_disk_image_errors.iter().cloned());
     insert_payload_into_vfs(runner, payload, &mut executable_entry);
 
@@ -526,6 +527,7 @@ fn load_macbinary(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<Loaded
 fn load_zip(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedApp, String> {
     let mut executable = None;
     let payload = collect_zip_payload(file_data)?;
+    reject_filter_suite_without_host(&payload, runner)?;
     let skipped_disk_image_errors = payload.skipped_disk_image_errors.clone();
     insert_payload_into_vfs(runner, payload, &mut executable);
     log_vfs(runner);
@@ -550,11 +552,9 @@ fn load_disk_image(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<Loade
         .ok_or_else(|| "Not a DC42/raw HFS disk image".to_string())?;
 
     let mut executable_entry: Option<ExecutableCandidate> = None;
-    insert_payload_into_vfs(
-        runner,
-        payload_from_disk_image(image, 1)?,
-        &mut executable_entry,
-    );
+    let payload = payload_from_disk_image(image, 1)?;
+    reject_filter_suite_without_host(&payload, runner)?;
+    insert_payload_into_vfs(runner, payload, &mut executable_entry);
     log_vfs(runner);
 
     let executable = executable_entry.ok_or("No executable found in disk image")?;
@@ -585,6 +585,7 @@ pub struct WebPackLoader<'a> {
     pending: Option<WebPackPendingEntry>,
     remove_paths: Vec<String>,
     has_finder_metadata: bool,
+    filter_suite: FilterSuiteContents,
 }
 
 impl<'a> WebPackLoader<'a> {
@@ -664,6 +665,7 @@ impl<'a> WebPackLoader<'a> {
             loaded_entries: 0,
             executable_entry: None,
             pending: None,
+            filter_suite: FilterSuiteContents::default(),
             has_finder_metadata,
             remove_paths: remove_paths
                 .iter()
@@ -722,6 +724,8 @@ impl<'a> WebPackLoader<'a> {
                 .is_some_and(WebPackPendingEntry::is_complete)
             {
                 let pending = self.pending.take().expect("complete web-pack entry");
+                self.filter_suite
+                    .record(pending.file_type_code, pending.creator_code);
                 maybe_select_executable_with_preference(
                     &mut self.executable_entry,
                     &pending.name,
@@ -757,6 +761,7 @@ impl<'a> WebPackLoader<'a> {
             return Err("Web pack load is not complete".to_string());
         }
 
+        self.filter_suite.reject_without_host(runner)?;
         log_vfs(runner);
 
         let executable = self
@@ -1354,6 +1359,50 @@ struct PayloadFile {
     creator: [u8; 4],
     finder_flags: u16,
     executable_priority: u8,
+}
+
+/// A filter suite can also contain registration tools, previewers, and sample
+/// applications. An APPL from another publisher is not evidence that the
+/// filter suite itself is a standalone application.
+#[derive(Default)]
+struct FilterSuiteContents {
+    filter_creators: std::collections::BTreeMap<[u8; 4], usize>,
+    application_creators: std::collections::BTreeSet<[u8; 4]>,
+}
+
+impl FilterSuiteContents {
+    fn record(&mut self, file_type: [u8; 4], creator: [u8; 4]) {
+        if file_type == *b"8BFM" {
+            *self.filter_creators.entry(creator).or_default() += 1;
+        } else if file_type == *b"APPL" {
+            self.application_creators.insert(creator);
+        }
+    }
+
+    fn reject_without_host(&self, runner: &FixtureRunner) -> Result<(), String> {
+        if runner.preferred_executable_path().is_some() || executable_name_override().is_some() {
+            return Ok(());
+        }
+        let plugin_suite_without_host = self
+            .filter_creators
+            .iter()
+            .any(|(creator, count)| *count >= 2 && !self.application_creators.contains(creator));
+        if plugin_suite_without_host {
+            return Err("Archive contains Photoshop-compatible filters but no standalone application for the suite; open the filters with a compatible image editor".to_string());
+        }
+        Ok(())
+    }
+}
+
+fn reject_filter_suite_without_host(
+    payload: &Payload,
+    runner: &FixtureRunner,
+) -> Result<(), String> {
+    let mut contents = FilterSuiteContents::default();
+    for file in &payload.files {
+        contents.record(file.file_type, file.creator);
+    }
+    contents.reject_without_host(runner)
 }
 
 fn collect_zip_payload(file_data: &[u8]) -> Result<Payload, String> {
@@ -4902,6 +4951,53 @@ mod tests {
             no_executable_archive_error(&errors),
             "No executable found in archive; skipped nested disk image: Disk image Extras/Unsupported.img data fork: Image is HFS+, not HFS"
         );
+    }
+
+    #[test]
+    fn filter_suite_does_not_auto_launch_unrelated_companion_app() {
+        let mut runner = new_runner();
+        let mut payload = Payload {
+            dirs: Vec::new(),
+            files: Vec::new(),
+            volumes: Vec::new(),
+            installer_roots: Vec::new(),
+            skipped_disk_image_errors: Vec::new(),
+        };
+        for name in ["Suite/Filter One", "Suite/Filter Two"] {
+            payload.files.push(PayloadFile {
+                name: name.into(),
+                data: Vec::new(),
+                rsrc: Vec::new(),
+                file_type: *b"8BFM",
+                creator: *b"FILT",
+                finder_flags: 0,
+                executable_priority: 1,
+            });
+        }
+        payload.files.push(PayloadFile {
+            name: "Suite/Art Gallery/Viewer".into(),
+            data: Vec::new(),
+            rsrc: Vec::new(),
+            file_type: *b"APPL",
+            creator: *b"VIEW",
+            finder_flags: 0,
+            executable_priority: 1,
+        });
+
+        assert!(reject_filter_suite_without_host(&payload, &runner)
+            .unwrap_err()
+            .contains("Photoshop-compatible filters"));
+        let packed = pack_payload_for_web(payload.clone()).unwrap();
+        let packed_error = match load_game(&mut runner, &packed) {
+            Ok(_) => panic!("web pack incorrectly launched a companion application"),
+            Err(error) => error,
+        };
+        assert!(packed_error.contains("Photoshop-compatible filters"));
+        payload.files.last_mut().unwrap().creator = *b"FILT";
+        assert!(reject_filter_suite_without_host(&payload, &runner).is_ok());
+        payload.files.last_mut().unwrap().creator = *b"VIEW";
+        runner.set_preferred_executable_path(Some("Suite/Art Gallery/Viewer"));
+        assert!(reject_filter_suite_without_host(&payload, &runner).is_ok());
     }
 
     #[test]
