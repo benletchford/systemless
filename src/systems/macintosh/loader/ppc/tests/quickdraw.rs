@@ -3,6 +3,45 @@ use crate::cpu::{CpuOps, Register};
 use crate::trap::test_helpers::{setup_with_port, MockCpu, TEST_SP};
 
 #[test]
+fn host_chrome_text_ignores_and_restores_application_screen_clip() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawString")).unwrap();
+    let clip = loaded
+        .memory
+        .read_u32_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_CLIP_RGN_OFFSET)
+        .unwrap();
+    ppc_write_rgn_bbox(&mut loaded.memory, clip, 0x7ffe, 0x7ffe, 0x7ffd, 0x7ffd).unwrap();
+    let clip_ptr = ppc_rgn_ptr(&mut loaded.memory, clip).unwrap();
+    let saved = ppc_memory_read_bytes(&mut loaded.memory, clip_ptr, 10).unwrap();
+    let front = ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    for y in 2..16 {
+        for x in 40..72 {
+            ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, y), 255);
+        }
+    }
+    let draw = |memory: &mut PpcSectionMem| {
+        ppc_draw_text_bytes(
+            memory,
+            &loaded.gworlds,
+            PPC_MAIN_GWORLD,
+            (42, 14),
+            PPC_QD_TEXT_FONT_DEFAULT,
+            PPC_QD_TEXT_SIZE_SYSTEM,
+            PPC_QD_TEXT_MODE_SRC_OR,
+            PPC_RGB_BLACK,
+            Some(0),
+            b"File",
+        )
+    };
+    draw(&mut loaded.memory);
+    assert_eq!(ppc_quickdraw_read_pixel(&mut loaded.memory, front, (42, 8)), Some(255));
+    ppc_with_unclipped_screen_port(&mut loaded.memory, draw);
+    assert!((2..16).any(|y| (40..72).any(|x| {
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)) != Some(255)
+    })));
+    assert_eq!(ppc_memory_read_bytes(&mut loaded.memory, clip_ptr, 10), Some(saved));
+}
+
+#[test]
 fn inset_rgn_contracts_and_expands_rectangular_bounds() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewRgn")).unwrap();
     run_test_import(&mut loaded, PpcImportDispatcherTarget::NewRgn);

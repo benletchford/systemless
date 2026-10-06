@@ -4433,7 +4433,7 @@ pub(super) fn ppc_draw_dialog_text(
         if baseline >= rect.2 {
             break;
         }
-        let _ = ppc_draw_text_bytes(
+        let _ = ppc_with_unclipped_screen_port(memory, |memory| ppc_draw_text_bytes(
             memory,
             gworlds,
             PPC_MAIN_GWORLD,
@@ -4444,7 +4444,7 @@ pub(super) fn ppc_draw_dialog_text(
             color,
             None,
             line,
-        );
+        ));
     }
 }
 

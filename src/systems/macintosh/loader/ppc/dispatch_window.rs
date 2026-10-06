@@ -1602,7 +1602,7 @@ pub(super) fn ppc_draw_standard_window_frame(
     }
 
     if !title.is_empty() {
-        let _ = ppc_draw_text_bytes(
+        let _ = ppc_with_unclipped_screen_port(memory, |memory| ppc_draw_text_bytes(
             memory,
             gworlds,
             PPC_MAIN_GWORLD,
@@ -1613,7 +1613,7 @@ pub(super) fn ppc_draw_standard_window_frame(
             ppc_theme_rgb(palette.frame_dark),
             None,
             &title,
-        );
+        ));
     }
 }
 

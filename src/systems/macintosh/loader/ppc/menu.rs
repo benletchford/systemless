@@ -2965,7 +2965,7 @@ pub(crate) fn ppc_draw_tracked_menu(
             } else {
                 char::from(mark)
             };
-            ppc_draw_text_chars(
+            ppc_with_unclipped_screen_port(memory, |memory| ppc_draw_text_chars(
                 memory,
                 gworlds,
                 PPC_MAIN_GWORLD,
@@ -2977,7 +2977,7 @@ pub(crate) fn ppc_draw_tracked_menu(
                 mark_index,
                 None,
                 std::iter::once(mark_char),
-            );
+            ));
         }
 
         if let Some(icon) = appearance.and_then(|appearance| appearance.icon.as_ref()) {
@@ -2993,7 +2993,7 @@ pub(crate) fn ppc_draw_tracked_menu(
         }
 
         let mode = PPC_QD_TEXT_MODE_SRC_OR;
-        let _ = ppc_draw_text_bytes_styled(
+        let _ = ppc_with_unclipped_screen_port(memory, |memory| ppc_draw_text_bytes_styled(
             memory,
             gworlds,
             PPC_MAIN_GWORLD,
@@ -3005,7 +3005,7 @@ pub(crate) fn ppc_draw_tracked_menu(
             name_index,
             style,
             &text,
-        );
+        ));
 
         if is_hierarchical {
             for_each_standard_hierarchy_indicator_pixel(
@@ -3021,7 +3021,7 @@ pub(crate) fn ppc_draw_tracked_menu(
                 },
             );
         } else if has_command_key {
-            ppc_draw_text_chars(
+            ppc_with_unclipped_screen_port(memory, |memory| ppc_draw_text_chars(
                 memory,
                 gworlds,
                 PPC_MAIN_GWORLD,
@@ -3033,7 +3033,7 @@ pub(crate) fn ppc_draw_tracked_menu(
                 command_index,
                 None,
                 ['\u{2318}', char::from(command)],
-            );
+            ));
         }
 
         // On a one-bit device the standard MDEF dims the complete item with
@@ -5549,7 +5549,7 @@ pub(crate) fn ppc_draw_menu_bar_with_colors(
             };
             let explicit_index = ppc_indexed_depth_entry_count(front_buffer.depth)
                 .and_then(|_| u8::try_from(title_ink_pixel).ok());
-            ppc_draw_text_bytes(
+            ppc_with_unclipped_screen_port(memory, |memory| ppc_draw_text_bytes(
                 memory,
                 gworlds,
                 PPC_MAIN_GWORLD,
@@ -5560,7 +5560,7 @@ pub(crate) fn ppc_draw_menu_bar_with_colors(
                 title_ink,
                 explicit_index,
                 &title,
-            );
+            ));
         }
         let highlighted = pending_highlight.is_none()
             && highlighted_menu_id != 0
@@ -5776,4 +5776,3 @@ pub(crate) fn ppc_menu_item(memory: &mut PpcSectionMem, menu_handle: u32, item: 
     }
     None
 }
-

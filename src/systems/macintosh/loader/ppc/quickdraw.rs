@@ -833,6 +833,29 @@ pub(crate) fn ppc_apply_text_pixel(
     }
 }
 
+/// Host-drawn chrome belongs to the screen, not to the application's current
+/// QuickDraw clip. Preserve the complete region header (including a complex
+/// region's size) while drawing menu, window, and dialog labels.
+pub(crate) fn ppc_with_unclipped_screen_port<R>(
+    memory: &mut PpcSectionMem,
+    draw: impl FnOnce(&mut PpcSectionMem) -> R,
+) -> R {
+    let saved = memory
+        .read_u32_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_CLIP_RGN_OFFSET)
+        .and_then(|handle| ppc_rgn_ptr(memory, handle).map(|ptr| (handle, ptr)))
+        .and_then(|(handle, ptr)| {
+            ppc_memory_read_bytes(memory, ptr, 10).map(|bytes| (handle, ptr, bytes))
+        });
+    if let Some((handle, _, _)) = &saved {
+        let _ = ppc_write_rgn_bbox(memory, *handle, i16::MIN, i16::MIN, i16::MAX, i16::MAX);
+    }
+    let result = draw(memory);
+    if let Some((_, ptr, bytes)) = saved {
+        let _ = memory.write_bytes(ptr, &bytes);
+    }
+    result
+}
+
 pub(crate) fn ppc_draw_text_bytes(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
