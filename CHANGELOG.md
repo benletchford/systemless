@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.81.1](https://github.com/benletchford/systemless/compare/v0.81.0...v0.81.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* **dialog:** preserve PPC import arguments across user callbacks ([#4130](https://github.com/benletchford/systemless/issues/4130)) ([2795abf](https://github.com/benletchford/systemless/commit/2795abf768f83edda76dd970ed1100e9eb79e008))
+* **macintosh:** implement theme menu item metrics ([17ec980](https://github.com/benletchford/systemless/commit/17ec9808ee16c42a8fd0d6fb816d1711e89d0a65))
+
+
+### Performance Improvements
+
+* adapt EV Nova PPC browser clock to guest progress ([263c686](https://github.com/benletchford/systemless/commit/263c686a5bc2bc152208c390f72ad5377b07e7ec))
+
 ## [0.81.0](https://github.com/benletchford/systemless/compare/v0.80.0...v0.81.0) (2026-10-06)
 
 
