@@ -228,16 +228,11 @@ pub(crate) fn ppc_get_named_resource(
                     record.ref_num != PPC_CLOSED_RESOURCE_REF_NUM
                 }
         });
-        let current_map_is_empty = current_only
-            && !vfs_resources
-                .iter()
-                .any(|record| record.ref_num == current_resource_refnum);
-        // More Macintosh Toolbox (1993), pp. 1-75--1-76: a missing name
-        // reports resNotFound, while an absent resource type in a populated
-        // map returns NIL with noErr. Mac OS 8.1 reports resNotFound for a
-        // newly created, wholly empty resource map; classic applications use
-        // that result to distinguish first-run initialization from failure.
-        *last_resource_error = if type_exists || current_map_is_empty {
+        // More Macintosh Toolbox (1993), pp. 1-77--1-78 documents noErr
+        // for an absent type. A Mac OS 8.1 Get1NamedResource fixture
+        // instead reports resNotFound even when the current map contains
+        // another resource type.
+        *last_resource_error = if current_only || type_exists {
             PPC_RES_NOT_FOUND_ERR
         } else {
             PPC_NO_ERR

@@ -8386,6 +8386,36 @@ fn pb_read_async_returns_from_sound_doubleback_before_its_completion() {
     }
 
     #[test]
+    fn get1_named_resource_reports_not_found_for_absent_type_in_populated_map() {
+        let pef = synthetic_pef_with_import(b"Get1NamedResource");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let name_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(name_ptr, vec![0; 256]);
+        write_ppc_pstring(&mut loaded.memory, name_ptr, b"Missing Type");
+        loaded.process_file_system.extend_vfs_resources([PpcVfsResourceRecord {
+            ref_num: 128,
+            path: "Current".to_string(),
+            res_type: u32::from_be_bytes(*b"CODE"),
+            res_id: 1,
+            name: b"Existing".to_vec(),
+            data: vec![1],
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        }]);
+        loaded.set_current_resource_refnum(128);
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"zzzz");
+        loaded.cpu.gpr[4] = name_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.test_resource_error(), PPC_RES_NOT_FOUND_ERR);
+    }
+
+    #[test]
     fn get_icon_suite_loads_only_selected_family_members() {
         assert_eq!(
             dispatcher_target_for_import("InterfaceLib", "GetIconSuite"),
