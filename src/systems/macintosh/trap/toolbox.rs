@@ -5524,7 +5524,175 @@ impl super::TrapDispatcher {
         }
     }
 
-    #[cfg(test)]
+    fn fdecompress_jpeg_image(&mut self, bus: &mut MacMemoryBus, sp: u32) -> i16 {
+        // FDecompressImage's Pascal arguments are stacked right to left.
+        // Inside Macintosh: QuickTime (1993), pp. 3-79--3-82.
+        let in_ram = |address: u32, length: u32| {
+            address
+                .checked_add(length)
+                .is_some_and(|end| end <= bus.ram_size())
+        };
+        let data_ptr = bus.read_long(sp + 50);
+        let desc_handle = bus.read_long(sp + 46);
+        let dst_handle = bus.read_long(sp + 42);
+        let src_rect_ptr = bus.read_long(sp + 38);
+        let matrix_ptr = bus.read_long(sp + 34);
+        let mode = bus.read_word(sp + 32);
+        let mask = bus.read_long(sp + 28);
+        let matte = bus.read_long(sp + 24);
+        let matte_rect = bus.read_long(sp + 20);
+        let codec = bus.read_long(sp + 12);
+        let data_proc = bus.read_long(sp + 4);
+        let progress_proc = bus.read_long(sp);
+        if data_ptr == 0
+            || desc_handle == 0
+            || dst_handle == 0
+            || !matches!(mode, 0 | 64)
+            || mask != 0
+            || matte != 0
+            || matte_rect != 0
+            || codec != 0
+            || data_proc != 0
+            || progress_proc != 0
+        {
+            return -50; // paramErr: this path cannot honor these options.
+        }
+
+        let desc = bus.read_long(desc_handle);
+        let dst = bus.read_long(dst_handle);
+        if !in_ram(desc, 86) || !in_ram(dst, 46) {
+            return -50;
+        }
+        if bus.read_long(desc + 4) != u32::from_be_bytes(*b"jpeg") {
+            return -8961; // noCodecErr
+        }
+        let width = u32::from(bus.read_word(desc + 32));
+        let height = u32::from(bus.read_word(desc + 34));
+        let data_size = bus.read_long(desc + 44);
+        if width == 0
+            || height == 0
+            || width > 8192
+            || height > 8192
+            || width.saturating_mul(height) > 16 * 1024 * 1024
+            || data_size == 0
+            || data_size > 16 * 1024 * 1024
+            || !in_ram(data_ptr, data_size)
+        {
+            return -50;
+        }
+        let compressed = bus.read_bytes(data_ptr, data_size as usize);
+        let Ok(decoded) = image::load_from_memory_with_format(&compressed, image::ImageFormat::Jpeg)
+        else {
+            return -8966; // codecSpoolErr
+        };
+        if decoded.width() != width || decoded.height() != height {
+            return -8966;
+        }
+        let pixels = decoded.to_rgb8().into_raw();
+
+        let (src_top, src_left, src_bottom, src_right) = if src_rect_ptr == 0 {
+            (0, 0, height as i32, width as i32)
+        } else if in_ram(src_rect_ptr, 8) {
+            (
+                i32::from(bus.read_word(src_rect_ptr) as i16),
+                i32::from(bus.read_word(src_rect_ptr + 2) as i16),
+                i32::from(bus.read_word(src_rect_ptr + 4) as i16),
+                i32::from(bus.read_word(src_rect_ptr + 6) as i16),
+            )
+        } else {
+            return -50;
+        };
+        if src_top < 0
+            || src_left < 0
+            || src_bottom > height as i32
+            || src_right > width as i32
+            || src_top >= src_bottom
+            || src_left >= src_right
+        {
+            return -50;
+        }
+
+        let (scale_x, scale_y, offset_x, offset_y) = if matrix_ptr == 0 {
+            (65536_i64, 65536_i64, 0_i64, 0_i64)
+        } else {
+            if !in_ram(matrix_ptr, 36)
+                || bus.read_long(matrix_ptr + 4) != 0
+                || bus.read_long(matrix_ptr + 8) != 0
+                || bus.read_long(matrix_ptr + 12) != 0
+                || bus.read_long(matrix_ptr + 20) != 0
+                || bus.read_long(matrix_ptr + 32) != 0x4000_0000
+            {
+                return -50;
+            }
+            (
+                i64::from(bus.read_long(matrix_ptr) as i32),
+                i64::from(bus.read_long(matrix_ptr + 16) as i32),
+                i64::from(bus.read_long(matrix_ptr + 24) as i32),
+                i64::from(bus.read_long(matrix_ptr + 28) as i32),
+            )
+        };
+        if scale_x <= 0 || scale_y <= 0 {
+            return -50;
+        }
+
+        let row_bytes = u32::from(bus.read_word(dst + 4) & 0x3FFF);
+        let dst_top = i32::from(bus.read_word(dst + 6) as i16);
+        let dst_left = i32::from(bus.read_word(dst + 8) as i16);
+        let dst_bottom = i32::from(bus.read_word(dst + 10) as i16);
+        let dst_right = i32::from(bus.read_word(dst + 12) as i16);
+        let pixel_size = bus.read_word(dst + 32);
+        if dst_top >= dst_bottom
+            || dst_left >= dst_right
+            || !matches!(pixel_size, 16 | 32)
+            || row_bytes < (dst_right - dst_left) as u32 * u32::from(pixel_size) / 8
+        {
+            return -50;
+        }
+        let base = Self::offscreen_pixmap_base_ptr(bus, dst);
+        let Some(buffer_size) = row_bytes.checked_mul((dst_bottom - dst_top) as u32) else {
+            return -50;
+        };
+        if !in_ram(base, buffer_size) {
+            return -50;
+        }
+
+        let transform = |coord: i32, scale: i64, offset: i64| -> i32 {
+            ((i64::from(coord) * scale + offset) / 65536) as i32
+        };
+        let draw_top = transform(src_top, scale_y, offset_y).max(dst_top);
+        let draw_left = transform(src_left, scale_x, offset_x).max(dst_left);
+        let draw_bottom = transform(src_bottom, scale_y, offset_y).min(dst_bottom);
+        let draw_right = transform(src_right, scale_x, offset_x).min(dst_right);
+        for y in draw_top..draw_bottom {
+            let source_y = ((i64::from(y) * 65536 - offset_y) / scale_y) as i32;
+            if !(src_top..src_bottom).contains(&source_y) {
+                continue;
+            }
+            for x in draw_left..draw_right {
+                let source_x = ((i64::from(x) * 65536 - offset_x) / scale_x) as i32;
+                if !(src_left..src_right).contains(&source_x) {
+                    continue;
+                }
+                let source = ((source_y as u32 * width + source_x as u32) * 3) as usize;
+                let r = u32::from(pixels[source]);
+                let g = u32::from(pixels[source + 1]);
+                let b = u32::from(pixels[source + 2]);
+                let destination = base
+                    + (y - dst_top) as u32 * row_bytes
+                    + (x - dst_left) as u32 * u32::from(pixel_size / 8);
+                if pixel_size == 32 {
+                    bus.write_long(destination, (r << 16) | (g << 8) | b);
+                } else {
+                    bus.write_word(
+                        destination,
+                        (((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3)) as u16,
+                    );
+                }
+            }
+        }
+        0
+    }
+
     pub(crate) fn dispatch_toolbox<C: CpuOps>(
         &mut self,
         is_tool: bool,
@@ -14411,6 +14579,21 @@ impl super::TrapDispatcher {
                 let arg_bytes = dispatch >> 16;
                 let selector = dispatch as u16;
                 match selector {
+                    // FDecompressImage ($AAA3, selector $0009)
+                    // Decompresses one image through the Image Compression Manager.
+                    // pascal OSErr FDecompressImage(Ptr data, ImageDescriptionHandle desc,
+                    //     PixMapHandle dst, const Rect *srcRect, MatrixRecordPtr matrix,
+                    //     short mode, RgnHandle mask, PixMapHandle matte,
+                    //     const Rect *matteRect, CodecQ accuracy,
+                    //     DecompressorComponent codec, long bufferSize,
+                    //     DataProcRecordPtr dataProc, ProgressProcRecordPtr progressProc);
+                    // Inside Macintosh: QuickTime (1993), pp. 3-79--3-82.
+                    0x0009 if arg_bytes == 0 => {
+                        let result = self.fdecompress_jpeg_image(bus, sp);
+                        bus.write_word(sp + 54, result as u16);
+                        cpu.write_reg(Register::A7, sp + 54);
+                        cpu.write_reg(Register::D0, result as u16 as u32);
+                    }
                     // AlignScreenRect ($AAA3, selector $004C)
                     // Aligns a global rectangle to the strictest intersecting screen.
                     // pascal void AlignScreenRect(Rect *rp, AlignmentProcRecordPtr alignmentProc);
