@@ -5088,6 +5088,104 @@ fn hlfs_dispatch_fspopendf() {
 }
 
 #[test]
+fn hlfs_dispatch_fspopendf_current_permission_writes_when_available() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.vfs.insert("History".to_string(), vec![0; 4]);
+    let spec_ptr = 0x300000u32;
+    let ref_num_ptr = 0x300200u32;
+    write_fsspec(
+        &mut bus,
+        spec_ptr,
+        super::super::dispatch::BOOT_VOLUME_REF_NUM as u16,
+        2,
+        b"History",
+    );
+    bus.write_long(TEST_SP, ref_num_ptr);
+    bus.write_word(TEST_SP + 4, 0); // fsCurPerm
+    bus.write_long(TEST_SP + 6, spec_ptr);
+    cpu.write_reg(Register::D0, 2); // FSpOpenDF
+    call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+
+    let refnum = bus.read_word(ref_num_ptr);
+    assert_eq!(bus.read_word(cpu.read_reg(Register::A7)), 0);
+    assert!(disp.write_refnums.contains(&refnum));
+
+    let pb = 0x300400u32;
+    let source = 0x300500u32;
+    bus.write_byte(source, 0xA5);
+    bus.write_word(pb + 24, refnum);
+    bus.write_long(pb + 32, source);
+    bus.write_long(pb + 36, 1);
+    cpu.write_reg(Register::A0, pb);
+    call(&mut disp, false, 0x03, &mut cpu, &mut bus).unwrap();
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+    assert_eq!(disp.vfs.get("History").unwrap()[0], 0xA5);
+
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, ref_num_ptr);
+    bus.write_word(TEST_SP + 4, 0);
+    bus.write_long(TEST_SP + 6, spec_ptr);
+    cpu.write_reg(Register::D0, 2);
+    call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+    assert_eq!(bus.read_word(cpu.read_reg(Register::A7)), 0);
+    assert!(!disp.write_refnums.contains(&bus.read_word(ref_num_ptr)));
+}
+
+#[test]
+fn hlfs_dispatch_fspopendf_current_permission_falls_back_on_locked_volume() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let (volume_ref, root_dir_id) = mount_read_only_test_volume(&mut disp, "Archive Disk");
+    disp.vfs
+        .insert("Archive Disk/History".to_string(), vec![1, 2, 3]);
+    let spec_ptr = 0x300000u32;
+    let ref_num_ptr = 0x300200u32;
+    write_fsspec(&mut bus, spec_ptr, volume_ref as u16, root_dir_id, b"History");
+    bus.write_long(TEST_SP, ref_num_ptr);
+    bus.write_word(TEST_SP + 4, 0); // fsCurPerm
+    bus.write_long(TEST_SP + 6, spec_ptr);
+    cpu.write_reg(Register::D0, 2); // FSpOpenDF
+    call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+
+    assert_eq!(bus.read_word(cpu.read_reg(Register::A7)), 0);
+    assert!(!disp.write_refnums.contains(&bus.read_word(ref_num_ptr)));
+}
+
+#[test]
+fn hlfs_dispatch_fspopenrf_current_permission_writes_resource_fork() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.vfs_rsrc.insert("Prefs".to_string(), vec![0; 4]);
+    let spec_ptr = 0x300000u32;
+    let ref_num_ptr = 0x300200u32;
+    write_fsspec(
+        &mut bus,
+        spec_ptr,
+        super::super::dispatch::BOOT_VOLUME_REF_NUM as u16,
+        2,
+        b"Prefs",
+    );
+    bus.write_long(TEST_SP, ref_num_ptr);
+    bus.write_word(TEST_SP + 4, 0); // fsCurPerm
+    bus.write_long(TEST_SP + 6, spec_ptr);
+    cpu.write_reg(Register::D0, 3); // FSpOpenRF
+    call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+
+    let refnum = bus.read_word(ref_num_ptr);
+    assert_eq!(bus.read_word(cpu.read_reg(Register::A7)), 0);
+    assert!(disp.write_refnums.contains(&refnum));
+
+    let pb = 0x300400u32;
+    let source = 0x300500u32;
+    bus.write_byte(source, 0x5A);
+    bus.write_word(pb + 24, refnum);
+    bus.write_long(pb + 32, source);
+    bus.write_long(pb + 36, 1);
+    cpu.write_reg(Register::A0, pb);
+    call(&mut disp, false, 0x03, &mut cpu, &mut bus).unwrap();
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+    assert_eq!(disp.vfs.get("__rsrc__Prefs").unwrap()[0], 0x5A);
+}
+
+#[test]
 fn hlfs_dispatch_fspopenrf_opens_resource_fork_access_path() {
     let (mut disp, mut cpu, mut bus) = setup();
 
