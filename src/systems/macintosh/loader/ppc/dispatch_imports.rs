@@ -2745,6 +2745,30 @@ pub(crate) fn dispatch_supported_import(
                 apple_events,
             ))
         }
+        PpcImportDispatcherTarget::ObjectSupportCreateOffsetDescriptor => {
+            // CreateOffsetDescriptor (ObjectSupportLib)
+            // Creates a signed offset as a typeLongInteger descriptor.
+            // FUNCTION CreateOffsetDescriptor(theOffset: LongInt; VAR theDescriptor: AEDesc): OSErr;
+            // Inside Macintosh: Interapplication Communication (1993), pp. 6-72, 6-88.
+            let result_ptr = cpu.gpr[4];
+            let result = if result_ptr == 0 || !ppc_memory_can_write_bytes(memory, result_ptr, 8) {
+                PPC_PARAM_ERR
+            } else {
+                ppc_create_process_owned_ae_desc(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    Some(&apple_events.descriptors),
+                    result_ptr,
+                    u32::from_be_bytes(*b"long"),
+                    &cpu.gpr[3].to_be_bytes(),
+                )
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         PpcImportDispatcherTarget::ObjectSupportInit
         | PpcImportDispatcherTarget::ObjectSupportInstallAccessor
         | PpcImportDispatcherTarget::ObjectSupportGetAccessor
