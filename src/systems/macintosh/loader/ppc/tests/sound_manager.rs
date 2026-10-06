@@ -170,6 +170,39 @@ use crate::sound::PendingSoundCallback;
     }
 
     #[test]
+    fn hle_snd_control_reports_documented_synth_queries() {
+        let pef = synthetic_pef_with_import(b"SndControl");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let command = PPC_HEAP_BASE;
+        loaded.memory.add_region(command, vec![0; 8]);
+
+        for (synth, number, options, expected_param1, expected_param2) in [
+            (5, crate::sound::cmd::AVAILABLE, 0, 1, 0),
+            (5, crate::sound::cmd::AVAILABLE, 1, 0, 1),
+            (2, crate::sound::cmd::AVAILABLE, 0, 0, 0),
+            (5, crate::sound::cmd::VERSION, 0, 0, 0x0003_0000),
+            (2, crate::sound::cmd::VERSION, 0, 0, 0),
+            (5, crate::sound::cmd::TOTAL_LOAD, 42, 0, 42),
+        ] {
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = synth;
+            loaded.cpu.gpr[4] = command;
+            loaded.memory.write_u16_be(command, number).unwrap();
+            loaded.memory.write_u16_be(command + 2, 9).unwrap();
+            loaded.memory.write_u32_be(command + 4, options).unwrap();
+
+            let probe = loaded.run_with_hle_imports(64);
+
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+            assert_eq!(loaded.memory.read_u16_be(command + 2), Some(expected_param1));
+            assert_eq!(loaded.memory.read_u32_be(command + 4), Some(expected_param2));
+        }
+    }
+
+    #[test]
     fn hle_import_runner_handles_unsigned_fixed_mul_div() {
         let pef = synthetic_pef_with_import(b"UnsignedFixedMulDiv");
         let mut loaded = load_pef_application(&pef).unwrap();

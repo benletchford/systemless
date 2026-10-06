@@ -485,6 +485,7 @@ pub enum PpcImportDispatcherTarget {
     FlushVol,
     PBFlushVol,
     SndNewChannel,
+    SndControl,
     SetupSndHeader,
     SndDisposeChannel,
     SndPlay,
@@ -4185,6 +4186,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "SetDefaultOutputVolume") => {
             PpcImportDispatcherTarget::SetDefaultOutputVolume
         }
+        ("InterfaceLib", "SndControl") => PpcImportDispatcherTarget::SndControl,
         ("InterfaceLib", "GetVol") => PpcImportDispatcherTarget::GetVol,
         ("InterfaceLib", "GetWDInfo") => PpcImportDispatcherTarget::GetWDInfo,
         ("InterfaceLib", "OpenWD") => PpcImportDispatcherTarget::OpenWD,
