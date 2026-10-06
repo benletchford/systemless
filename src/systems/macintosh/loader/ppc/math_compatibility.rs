@@ -345,6 +345,7 @@ pub enum PpcMathCompatibilityOperation {
     Fabs,
     FeClearExcept,
     FeTestExcept,
+    FpClassifyD,
     Floor,
     Ldexp,
     LdToX80,
@@ -360,6 +361,25 @@ pub(super) fn ppc_dispatch_math_compatibility(
     memory: &mut PpcSectionMem,
 ) -> PpcImportAction {
     match operation {
+        PpcMathCompatibilityOperation::FpClassifyD => {
+            // __fpclassifyd(double) returns FP_SNAN through FP_SUBNORMAL
+            // (0..=5). Inspect the IEEE double bits so signaling and quiet
+            // NaNs remain distinct without performing floating-point math.
+            // Inside Macintosh: PowerPC Numerics (1994), pp. 7-4--7-5,
+            // Appendix C, fp.h C-9.
+            let bits = cpu.fpr[1];
+            let exponent = (bits >> 52) & 0x7ff;
+            let fraction = bits & ((1_u64 << 52) - 1);
+            cpu.gpr[3] = match (exponent, fraction) {
+                (0x7ff, 0) => 2,
+                (0x7ff, fraction) if fraction & (1_u64 << 51) == 0 => 0,
+                (0x7ff, _) => 1,
+                (0, 0) => 3,
+                (0, _) => 5,
+                _ => 4,
+            };
+            PpcImportAction::ReturnPreserve
+        }
         PpcMathCompatibilityOperation::LdToX80 => {
             // PowerPC Numerics (1994), Appendix E: long double is a
             // double-double pair. Convert its head and tail to the 80-bit
