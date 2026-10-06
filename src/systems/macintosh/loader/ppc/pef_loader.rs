@@ -8,6 +8,60 @@ pub struct PpcLoadConfig {
     pub screen_depth: u32,
 }
 
+pub(crate) struct PpcDiskFragment<'a> {
+    pub vref: i16,
+    pub dir_id: u32,
+    pub filename: &'a [u8],
+    pub offset: u32,
+    pub length: u32,
+}
+
+pub(crate) struct PpcDiskLibraryFragment {
+    pub name: String,
+    pub vref: i16,
+    pub dir_id: u32,
+    pub filename: Vec<u8>,
+    pub offset: u32,
+    pub length: u32,
+}
+
+impl PpcDiskLibraryFragment {
+    fn locator(&self) -> PpcDiskFragment<'_> {
+        PpcDiskFragment {
+            vref: self.vref,
+            dir_id: self.dir_id,
+            filename: &self.filename,
+            offset: self.offset,
+            length: self.length,
+        }
+    }
+}
+
+fn ppc_create_disk_fragment_init_block(
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    connection_id: u32,
+    disk: PpcDiskFragment<'_>,
+    fragment_name: &str,
+) -> Result<u32, PpcLoadError> {
+    let block = crate::cfm::CfmInitBlock::on_disk_flat(
+        CfmLoadId(connection_id),
+        disk.vref,
+        disk.dir_id,
+        disk.filename,
+        disk.offset,
+        disk.length,
+        fragment_name,
+    )
+    .ok_or(PpcLoadError::AddressOverflow)?;
+    let address = ppc_heap_alloc(memory, heap_cursor, heap_limit, block.size(), true);
+    if address == 0 || block.publish(memory, address).is_err() {
+        return Err(PpcLoadError::AddressOverflow);
+    }
+    Ok(address)
+}
+
 impl PpcLoadConfig {
     pub fn from_cfrg_app_stack_size(app_stack_size: u32) -> Self {
         if app_stack_size == 0 {
@@ -319,34 +373,23 @@ pub(crate) fn load_pef_application_with_config_and_system_reservation(
     )
 }
 
-pub(crate) fn load_pef_application_with_config_and_system_reservation_and_libraries(
+pub(crate) fn load_pef_application_with_disk_fragment_and_libraries(
     data: &[u8],
     config: PpcLoadConfig,
     system_reservation: (u32, u32),
     library_fragments: Vec<PpcCfmLibraryFragment>,
+    fragment_name: Option<&str>,
+    disk_fragment: PpcDiskFragment<'_>,
+    disk_libraries: &[PpcDiskLibraryFragment],
 ) -> Result<PpcLoadedApp, PpcLoadError> {
-    load_pef_application_with_config_and_optional_system_reservation(
+    load_pef_application_with_optional_disk_fragment(
         data,
         config,
         Some(system_reservation),
         library_fragments,
-        None,
-    )
-}
-
-pub(crate) fn load_pef_application_with_named_fragment_and_libraries(
-    data: &[u8],
-    config: PpcLoadConfig,
-    system_reservation: (u32, u32),
-    library_fragments: Vec<PpcCfmLibraryFragment>,
-    fragment_name: &str,
-) -> Result<PpcLoadedApp, PpcLoadError> {
-    load_pef_application_with_config_and_optional_system_reservation(
-        data,
-        config,
-        Some(system_reservation),
-        library_fragments,
-        Some(fragment_name),
+        fragment_name,
+        Some(disk_fragment),
+        disk_libraries,
     )
 }
 
@@ -356,6 +399,26 @@ pub(crate) fn load_pef_application_with_config_and_optional_system_reservation(
     system_reservation: Option<(u32, u32)>,
     library_fragments: Vec<PpcCfmLibraryFragment>,
     application_fragment_name: Option<&str>,
+) -> Result<PpcLoadedApp, PpcLoadError> {
+    load_pef_application_with_optional_disk_fragment(
+        data,
+        config,
+        system_reservation,
+        library_fragments,
+        application_fragment_name,
+        None,
+        &[],
+    )
+}
+
+fn load_pef_application_with_optional_disk_fragment(
+    data: &[u8],
+    config: PpcLoadConfig,
+    system_reservation: Option<(u32, u32)>,
+    library_fragments: Vec<PpcCfmLibraryFragment>,
+    application_fragment_name: Option<&str>,
+    application_disk_fragment: Option<PpcDiskFragment<'_>>,
+    disk_libraries: &[PpcDiskLibraryFragment],
 ) -> Result<PpcLoadedApp, PpcLoadError> {
     if !matches!(config.screen_depth, 1 | 2 | 4 | 8 | 16) {
         return Err(PpcLoadError::ScreenDepthOutOfRange {
@@ -785,20 +848,33 @@ pub(crate) fn load_pef_application_with_config_and_optional_system_reservation(
         launch_partition_storage.outside_partition = launch_partition_storage
             .outside_partition
             .saturating_add(fragment_size);
-        let init_block = ppc_create_mem_fragment_init_block(
-            None,
-            &mut memory,
-            &mut heap_cursor,
-            stack_base,
-            connection.id,
-            fragment_addr,
-            fragment_size,
-            &library.library_name,
-        )
-        .map_err(|error| PpcLoadError::BundledLibraryLoad {
-            library_name: library.library_name.clone(),
-            error,
-        })?;
+        let init_block = if let Some(disk) = disk_libraries.iter().find(|disk| {
+            disk.name.eq_ignore_ascii_case(&library.library_name)
+        }) {
+            ppc_create_disk_fragment_init_block(
+                &mut memory,
+                &mut heap_cursor,
+                stack_base,
+                connection.id,
+                disk.locator(),
+                &library.library_name,
+            )?
+        } else {
+            ppc_create_mem_fragment_init_block(
+                None,
+                &mut memory,
+                &mut heap_cursor,
+                stack_base,
+                connection.id,
+                fragment_addr,
+                fragment_size,
+                &library.library_name,
+            )
+            .map_err(|error| PpcLoadError::BundledLibraryLoad {
+                library_name: library.library_name.clone(),
+                error,
+            })?
+        };
         startup_initializers.push((connection.init_addr, init_block));
     }
     let library_initializer_count = startup_initializers.len();
@@ -807,8 +883,8 @@ pub(crate) fn load_pef_application_with_config_and_optional_system_reservation(
     if let Some((init_addr, init_entry, init_rtoc)) = init_tvector {
         // Inside Macintosh: PowerPC System Software (1994), pp. 3-15--3-18
         // requires CFM to call a fragment initializer before its main routine.
-        // Keep a guest-visible copy of the PEF as an in-memory fragment locator
-        // so the initializer receives the documented InitBlock contract.
+        // Retain a guest-visible PEF copy for direct in-memory loads. File-backed
+        // launches receive the documented disk locator in their InitBlock.
         let fragment_size = u32::try_from(data.len()).map_err(|_| PpcLoadError::AddressOverflow)?;
         let fragment_addr = ppc_heap_alloc(
             &mut memory,
@@ -823,17 +899,28 @@ pub(crate) fn load_pef_application_with_config_and_optional_system_reservation(
         launch_partition_storage.outside_partition = launch_partition_storage
             .outside_partition
             .saturating_add(fragment_size);
-        let init_block = ppc_create_mem_fragment_init_block(
-            None,
-            &mut memory,
-            &mut heap_cursor,
-            stack_base,
-            next_cfm_connection_id,
-            fragment_addr,
-            fragment_size,
-            application_fragment_name.unwrap_or("application"),
-        )
-        .map_err(|_| PpcLoadError::AddressOverflow)?;
+        let init_block = if let Some(disk) = application_disk_fragment {
+            ppc_create_disk_fragment_init_block(
+                &mut memory,
+                &mut heap_cursor,
+                stack_base,
+                next_cfm_connection_id,
+                disk,
+                application_fragment_name.unwrap_or("application"),
+            )?
+        } else {
+            ppc_create_mem_fragment_init_block(
+                None,
+                &mut memory,
+                &mut heap_cursor,
+                stack_base,
+                next_cfm_connection_id,
+                fragment_addr,
+                fragment_size,
+                application_fragment_name.unwrap_or("application"),
+            )
+            .map_err(|_| PpcLoadError::AddressOverflow)?
+        };
         application_startup = Some((init_addr, init_entry, init_rtoc, init_block));
     }
 

@@ -247,8 +247,9 @@ pub(crate) use dispatch_imports::{dispatch_supported_import, PpcDispatchContext}
 pub(crate) use import_targets::dispatcher_target_for_import;
 pub use import_targets::PpcImportDispatcherTarget;
 pub(crate) use pef_loader::{
-    align_up, load_pef_application_with_config_and_system_reservation_and_libraries,
-    load_pef_application_with_named_fragment_and_libraries,
+    align_up,
+    load_pef_application_with_disk_fragment_and_libraries, PpcDiskFragment,
+    PpcDiskLibraryFragment,
 };
 pub use pef_loader::{
     load_pef_application, load_pef_application_with_config, PpcLoadConfig, PpcLoadError,

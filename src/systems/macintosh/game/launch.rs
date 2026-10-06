@@ -2729,7 +2729,9 @@ fn load_selected_executable(
 ) -> Result<LoadedApp, String> {
     if let Some(expected) = runner.preferred_executable_path() {
         if executable.name != expected {
-            return Err(format!("Preferred executable not found in archive: {expected}"));
+            return Err(format!(
+                "Preferred executable not found in archive: {expected}"
+            ));
         }
     }
     if executable.is_installer {
@@ -2848,7 +2850,8 @@ fn load_powerpc_executable(
             executable.name
         )
     })?;
-    let library_fragments = discover_ppc_cfm_library_fragments(&ppc_vfs);
+    let (library_fragments, disk_libraries) =
+        discover_ppc_cfm_library_fragments_with_locations(&ppc_vfs);
     let fragment_name = runner
         .dispatcher()
         .vfs_rsrc
@@ -2866,22 +2869,30 @@ fn load_powerpc_executable(
                 })
                 .map(|(fragment, _)| fragment.name.clone())
         });
-    let mut loaded = if let Some(name) = fragment_name.as_deref().filter(|name| !name.is_empty()) {
-        crate::loader::ppc::load_pef_application_with_named_fragment_and_libraries(
-            pef,
-            ppc_config,
-            system_reservation,
-            library_fragments,
-            name,
-        )
-    } else {
-        crate::loader::ppc::load_pef_application_with_config_and_system_reservation_and_libraries(
-            pef,
-            ppc_config,
-            system_reservation,
-            library_fragments,
-        )
-    }
+    let path = crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(&executable.name);
+    let (parent, filename) = path.rsplit_once('/').unwrap_or(("", &path));
+    let dir_id = ppc_vfs
+        .directories
+        .iter()
+        .find(|directory| directory.path.eq_ignore_ascii_case(parent))
+        .map(|directory| directory.dir_id)
+        .ok_or_else(|| format!("PowerPC executable parent directory missing: {parent}"))?;
+    let filename = crate::mac_roman::encode_mac_roman_lossy(filename);
+    let mut loaded = crate::loader::ppc::load_pef_application_with_disk_fragment_and_libraries(
+        pef,
+        ppc_config,
+        system_reservation,
+        library_fragments,
+        fragment_name.as_deref().filter(|name| !name.is_empty()),
+        crate::loader::ppc::PpcDiskFragment {
+            vref: -1,
+            dir_id,
+            filename: &filename,
+            offset: fragment_offset,
+            length: fragment_length,
+        },
+        &disk_libraries,
+    )
     .map_err(|error| {
         format!(
             "PowerPC PEF executable \"{}\" selected, but PPC loading failed: {error:?}",
@@ -3241,8 +3252,7 @@ fn executable_candidate_is_better(
         && candidate.creator == previous.creator
         && candidate.is_documentation == previous.is_documentation
         && candidate.is_demo == previous.is_demo
-        && is_registration_executable(&candidate.name)
-            == is_registration_executable(&previous.name)
+        && is_registration_executable(&candidate.name) == is_registration_executable(&previous.name)
         && executable_name_has_role(&candidate.name, "editor")
             == executable_name_has_role(&previous.name, "editor")
         && candidate
@@ -3438,6 +3448,8 @@ struct PpcCfmLibraryCandidate {
     fragment_index: usize,
     name: String,
     bytes: Vec<u8>,
+    offset: u32,
+    length: u32,
 }
 
 /// Discover native CFM libraries from complete data/resource fork pairs.
@@ -3447,7 +3459,14 @@ struct PpcCfmLibraryCandidate {
 /// logical name in their `'cfrg'` resource, not by their filesystem name. Keep
 /// this scan independent of any application or archive layout and validate the
 /// advertised flat data-fork range before handing bytes to the PEF loader.
+#[cfg(test)]
 fn discover_ppc_cfm_library_fragments(ppc_vfs: &PpcDiagnosticVfs) -> Vec<PpcCfmLibraryFragment> {
+    discover_ppc_cfm_library_fragments_with_locations(ppc_vfs).0
+}
+
+fn discover_ppc_cfm_library_fragments_with_locations(
+    ppc_vfs: &PpcDiagnosticVfs,
+) -> (Vec<PpcCfmLibraryFragment>, Vec<crate::loader::ppc::PpcDiskLibraryFragment>) {
     let mut resource_files: Vec<_> = ppc_vfs.resource_files.iter().collect();
     resource_files.sort_by_key(|file| vfs_path_sort_key(&file.path));
 
@@ -3487,6 +3506,12 @@ fn discover_ppc_cfm_library_fragments(ppc_vfs: &PpcDiagnosticVfs) -> Vec<PpcCfmL
             let Some(range) = fragment.data_fork_range(data_file.data.len()) else {
                 continue;
             };
+            let Some(offset) = u32::try_from(range.start).ok() else {
+                continue;
+            };
+            let Some(length) = u32::try_from(range.len()).ok() else {
+                continue;
+            };
             let Some(bytes) = data_file.data.get(range) else {
                 continue;
             };
@@ -3501,6 +3526,8 @@ fn discover_ppc_cfm_library_fragments(ppc_vfs: &PpcDiagnosticVfs) -> Vec<PpcCfmL
                 fragment_index,
                 name: fragment.name,
                 bytes: bytes.to_vec(),
+                offset,
+                length,
             });
         }
     }
@@ -3519,18 +3546,30 @@ fn discover_ppc_cfm_library_fragments(ppc_vfs: &PpcDiagnosticVfs) -> Vec<PpcCfmL
     });
 
     let mut fragments = Vec::new();
+    let mut disk_libraries = Vec::new();
     for candidate in candidates {
         if fragments.iter().any(|fragment: &PpcCfmLibraryFragment| {
             fragment.name.eq_ignore_ascii_case(&candidate.name)
         }) {
             continue;
         }
-        fragments.push(PpcCfmLibraryFragment {
-            name: candidate.name,
-            bytes: candidate.bytes,
-        });
+        let (parent, filename) = candidate.path.rsplit_once('/').unwrap_or(("", &candidate.path));
+        if let Some(dir_id) = ppc_vfs.directories.iter()
+            .find(|directory| directory.path.eq_ignore_ascii_case(parent))
+            .map(|directory| directory.dir_id)
+        {
+            disk_libraries.push(crate::loader::ppc::PpcDiskLibraryFragment {
+                name: candidate.name.clone(),
+                vref: -1,
+                dir_id,
+                filename: crate::mac_roman::encode_mac_roman_lossy(filename),
+                offset: candidate.offset,
+                length: candidate.length,
+            });
+        }
+        fragments.push(PpcCfmLibraryFragment { name: candidate.name, bytes: candidate.bytes });
     }
-    fragments
+    (fragments, disk_libraries)
 }
 
 fn vfs_path_sort_key(path: &str) -> (String, String) {
@@ -4352,8 +4391,7 @@ mod tests {
             .expect("packed disk-image root should remain a mounted volume");
         assert_eq!(mounted.file_count, volume_info.file_count);
         assert_eq!(
-            mounted.attributes,
-            volume_info.attributes,
+            mounted.attributes, volume_info.attributes,
             "packed disk images preserve source lock state"
         );
         assert_eq!(
