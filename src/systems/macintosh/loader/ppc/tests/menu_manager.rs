@@ -4901,6 +4901,10 @@ fn import_bindings_classify_menu_bar_imports() {
             PpcImportDispatcherTarget::HMGetBalloons
         );
         assert_eq!(
+            dispatcher_target_for_import(lib, "HMIsBalloon"),
+            PpcImportDispatcherTarget::HMIsBalloon
+        );
+        assert_eq!(
             dispatcher_target_for_import(lib, "InitMenus"),
             PpcImportDispatcherTarget::InitMenus
         );
@@ -8311,6 +8315,14 @@ fn menu_bar_lifecycle_and_lowmem_commands_dispatch_with_canonical_evaluation() {
             let mut loaded = load_pef_application(&pef).unwrap();
             let probe = loaded.run_with_hle_imports(64);
             assert_eq!(probe.handled_import_count, 1);
+
+            let pef = synthetic_pef_with_library_import(lib, b"HMIsBalloon");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = 1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
         }
     }
 }

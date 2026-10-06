@@ -674,6 +674,14 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             // Inside Macintosh VI (1991), chapter 11, pp. 11-65–11-66.
             Some(PpcImportAction::Return(0))
         }
+        PpcImportDispatcherTarget::HMIsBalloon => {
+            // HMIsBalloon (InterfaceLib)
+            // Reports whether a help balloon is currently displayed.
+            // FUNCTION HMIsBalloon: Boolean;
+            // Inside Macintosh Volume VI (1991), chapter 11, p. 11-66.
+            // The 68k Pack14 path has the same no-balloon state.
+            Some(PpcImportAction::Return(0))
+        }
         PpcImportDispatcherTarget::HiliteMenu => {
             // HiliteMenu first restores the currently highlighted title, then
             // highlights the requested title; zero or an unknown menu ID
