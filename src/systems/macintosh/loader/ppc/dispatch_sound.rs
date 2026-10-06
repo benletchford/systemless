@@ -171,6 +171,37 @@ pub(super) fn dispatch_sound_import(
                 sound,
             ),
         ))),
+        PpcImportDispatcherTarget::SndControl => {
+            // SndControl obtains information about a sound data type.
+            // FUNCTION SndControl (id: Integer; VAR cmd: SndCommand): OSErr;
+            // Inside Macintosh: Sound (1994), pp. 2-134–2-135.
+            let synth = cpu.gpr[3] as u16 as i16;
+            let command = cpu.gpr[4];
+            if command == 0 || !ppc_memory_can_write_bytes(memory, command, 8) {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)));
+            }
+            let number = memory.read_u16_be(command).unwrap_or(0);
+            let options = memory.read_u32_be(command + 4).unwrap_or(0);
+            let supported = matches!(
+                synth,
+                PPC_SQUARE_WAVE_SYNTH_ID | PPC_WAVE_TABLE_SYNTH_ID | PPC_SAMPLED_SYNTH_ID
+            );
+            match number {
+                crate::sound::cmd::AVAILABLE => {
+                    let _ = memory.write_u16_be(command + 2, u16::from(supported && options == 0));
+                }
+                crate::sound::cmd::VERSION => {
+                    let _ = memory.write_u16_be(command + 2, 0);
+                    let _ =
+                        memory.write_u32_be(command + 4, if supported { 0x0003_0000 } else { 0 });
+                }
+                crate::sound::cmd::TOTAL_LOAD | crate::sound::cmd::LOAD => {
+                    let _ = memory.write_u16_be(command + 2, 0);
+                }
+                _ => {}
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
         PpcImportDispatcherTarget::SetupSndHeader => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_setup_snd_header(cpu, memory, handles),
         ))),
