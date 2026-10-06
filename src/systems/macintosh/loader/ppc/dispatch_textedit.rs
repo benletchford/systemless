@@ -750,6 +750,24 @@ pub(super) fn dispatch_textedit_import(
                 .set_feature_bit(cpu.gpr[4], 0, cpu.gpr[3] != 0);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::TEFeatureFlag => {
+            // TEFeatureFlag tests or updates a feature and returns its prior state.
+            // FUNCTION TEFeatureFlag(feature: Integer; action: Integer;
+            //                        hTE: TEHandle): Integer;
+            // Inside Macintosh: Text (1993), pp. 2-107--2-109.
+            let feature = cpu.gpr[3] as u16;
+            let action = cpu.gpr[4] as u16 as i16;
+            let te_handle = cpu.gpr[5];
+            let was_set = scrap.text_edit.feature_bit(te_handle, feature);
+            if feature <= 4 {
+                match action {
+                    0 => scrap.text_edit.set_feature_bit(te_handle, feature, false),
+                    1 => scrap.text_edit.set_feature_bit(te_handle, feature, true),
+                    _ => {}
+                }
+            }
+            Some(PpcImportAction::Return(u32::from(was_set)))
+        }
         PpcImportDispatcherTarget::TECopy { cut, dialog } => {
             let te_handle = if dialog {
                 let dialog_ptr = cpu.gpr[3];

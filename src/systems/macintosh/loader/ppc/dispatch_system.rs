@@ -5,6 +5,7 @@ pub enum PpcSystemCompatibilityOperation {
     BuildDdPwds,
     CtbGetCtbVersion,
     CallComponentUpp,
+    CharByte,
     DiBadMount,
     DiLoad,
     DiUnload,
@@ -13,10 +14,12 @@ pub enum PpcSystemCompatibilityOperation {
     Enqueue,
     FindNextComponent,
     GetNextProcess,
+    GetEvQHdr,
     GetScript,
     GetScriptManagerVariable,
     GetScriptVariable,
     GetSysBeepVolume,
+    GetSysDirection,
     IuCompString,
     IuDateString,
     IuEqualString,
@@ -349,6 +352,28 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             // when the font script is unavailable. This guest installs only
             // the Roman script (smRoman = 0).
             PpcImportAction::Return(0)
+        }
+        PpcSystemCompatibilityOperation::CharByte => {
+            // CharByte identifies a byte's place in a multibyte character.
+            // The installed Roman script uses only single-byte characters.
+            // FUNCTION CharByte(textBuf: Ptr; textOffset: Integer): Integer;
+            // Inside Macintosh Volume V (1986), V-306.
+            PpcImportAction::Return(0)
+        }
+        PpcSystemCompatibilityOperation::GetSysDirection => {
+            // GetSysDirection returns the SysDirection global: zero for
+            // left-to-right or -1 for right-to-left text.
+            // FUNCTION GetSysDirection: Integer;
+            // Inside Macintosh: Text (1993), pp. 6-10 and 6-76.
+            PpcImportAction::Return(ppc_i16_result(
+                memory.read_u16_be(0x0BAC).unwrap_or(0) as i16,
+            ))
+        }
+        PpcSystemCompatibilityOperation::GetEvQHdr => {
+            // GetEvQHdr returns the address of the EventQueue low-memory QHdr.
+            // FUNCTION GetEvQHdr: QHdrPtr;
+            // Inside Macintosh Volume II (1985), II-71; Volume III, low-memory globals.
+            PpcImportAction::Return(0x014A)
         }
         PpcSystemCompatibilityOperation::GetScriptManagerVariable
         | PpcSystemCompatibilityOperation::GetScriptVariable

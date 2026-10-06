@@ -1464,6 +1464,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::TEGetPoint
         | PpcImportDispatcherTarget::TEScroll { .. }
         | PpcImportDispatcherTarget::TEAutoView
+        | PpcImportDispatcherTarget::TEFeatureFlag
         | PpcImportDispatcherTarget::TECopy { .. }
         | PpcImportDispatcherTarget::TEPaste { .. }
         | PpcImportDispatcherTarget::TETransferScrap { .. }
@@ -2688,7 +2689,7 @@ pub(crate) fn dispatch_supported_import(
             dispatch_appletalk::ppc_dispatch_appletalk_compatibility(operation, cpu, memory),
         ),
         PpcImportDispatcherTarget::PrintingCompatibility(operation) => Some(
-            dispatch_printing::ppc_dispatch_printing_compatibility(operation),
+            dispatch_printing::ppc_dispatch_printing_compatibility(operation, cpu, memory, toolbox_startup),
         ),
         PpcImportDispatcherTarget::SlotCompatibility => {
             Some(ppc_dispatch_slot_compatibility(binding, cpu, memory))

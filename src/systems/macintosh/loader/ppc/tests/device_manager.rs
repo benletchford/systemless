@@ -89,6 +89,9 @@ fn import_bindings_classify_printing_imports() {
         ("PrCloseDoc", PpcPrintingCompatibilityOperation::PrCloseDoc),
         ("PrClosePage", PpcPrintingCompatibilityOperation::PrClosePage),
         ("PrError", PpcPrintingCompatibilityOperation::PrError),
+        ("PrGeneral", PpcPrintingCompatibilityOperation::PrGeneral),
+        ("PrSetError", PpcPrintingCompatibilityOperation::PrSetError),
+        ("PrValidate", PpcPrintingCompatibilityOperation::PrValidate),
         ("PrJobDialog", PpcPrintingCompatibilityOperation::PrJobDialog),
         ("PrOpen", PpcPrintingCompatibilityOperation::PrOpen),
         ("PrOpenDoc", PpcPrintingCompatibilityOperation::PrOpenDoc),
@@ -106,24 +109,28 @@ fn import_bindings_classify_printing_imports() {
 
 #[test]
 fn printing_compatibility_dispatch_returns_expected_actions() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PrError")).unwrap();
+    let mut dispatch = |op| ppc_dispatch_printing_compatibility(
+        op, &loaded.cpu, &mut loaded.memory, &mut loaded.toolbox_startup,
+    );
     assert_eq!(
-        ppc_dispatch_printing_compatibility(PpcPrintingCompatibilityOperation::PrJobDialog),
+        dispatch(PpcPrintingCompatibilityOperation::PrJobDialog),
         PpcImportAction::Return(0)
     );
     assert_eq!(
-        ppc_dispatch_printing_compatibility(PpcPrintingCompatibilityOperation::PrStlDialog),
+        dispatch(PpcPrintingCompatibilityOperation::PrStlDialog),
         PpcImportAction::Return(0)
     );
     assert_eq!(
-        ppc_dispatch_printing_compatibility(PpcPrintingCompatibilityOperation::PrOpenDoc),
+        dispatch(PpcPrintingCompatibilityOperation::PrOpenDoc),
         PpcImportAction::Return(0)
     );
     assert_eq!(
-        ppc_dispatch_printing_compatibility(PpcPrintingCompatibilityOperation::PrError),
+        dispatch(PpcPrintingCompatibilityOperation::PrError),
         PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
     );
     assert_eq!(
-        ppc_dispatch_printing_compatibility(PpcPrintingCompatibilityOperation::PrintDefault),
+        dispatch(PpcPrintingCompatibilityOperation::PrintDefault),
         PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
     );
     for op in [
@@ -135,10 +142,45 @@ fn printing_compatibility_dispatch_returns_expected_actions() {
         PpcPrintingCompatibilityOperation::PrPicFile,
     ] {
         assert_eq!(
-            ppc_dispatch_printing_compatibility(op),
+            dispatch(op),
             PpcImportAction::ReturnPreserve
         );
     }
+    drop(dispatch);
+    loaded.cpu.gpr[3] = ppc_i16_result(-128);
+    assert_eq!(
+        ppc_dispatch_printing_compatibility(
+            PpcPrintingCompatibilityOperation::PrSetError,
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.toolbox_startup,
+        ),
+        PpcImportAction::ReturnPreserve,
+    );
+    assert_eq!(
+        ppc_dispatch_printing_compatibility(
+            PpcPrintingCompatibilityOperation::PrError,
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.toolbox_startup,
+        ),
+        PpcImportAction::Return(ppc_i16_result(-128)),
+    );
+    let general_data = PPC_DATA_BASE + 0x1800;
+    loaded.memory.add_region(general_data, vec![0; 8]);
+    loaded.cpu.gpr[3] = general_data;
+    assert_eq!(loaded.memory.write_u16_be(general_data, 8), Some(()));
+    assert_eq!(
+        ppc_dispatch_printing_compatibility(
+            PpcPrintingCompatibilityOperation::PrGeneral,
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.toolbox_startup,
+        ),
+        PpcImportAction::ReturnPreserve,
+    );
+    assert_eq!(loaded.memory.read_u16_be(general_data + 2), Some(2));
+    assert_eq!(loaded.toolbox_startup.printing_error, 2);
 }
 
 #[test]

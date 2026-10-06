@@ -652,6 +652,7 @@ pub enum PpcImportDispatcherTarget {
     TEGetPoint,
     TEScroll { pinned: bool },
     TEAutoView,
+    TEFeatureFlag,
     TECopy { cut: bool, dialog: bool },
     TEPaste { dialog: bool },
     TETransferScrap { from_desktop: bool },
@@ -3882,6 +3883,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "TEScroll") => PpcImportDispatcherTarget::TEScroll { pinned: false },
         ("InterfaceLib", "TEPinScroll") => PpcImportDispatcherTarget::TEScroll { pinned: true },
         ("InterfaceLib", "TEAutoView") => PpcImportDispatcherTarget::TEAutoView,
+        ("InterfaceLib", "TEFeatureFlag") => PpcImportDispatcherTarget::TEFeatureFlag,
         ("InterfaceLib", "TECopy") => PpcImportDispatcherTarget::TECopy {
             cut: false,
             dialog: false,
@@ -5561,6 +5563,15 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "IUEqualString") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::IuEqualString,
         ),
+        ("InterfaceLib", "CharByte") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::CharByte,
+        ),
+        ("InterfaceLib", "GetSysDirection") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::GetSysDirection,
+        ),
+        ("InterfaceLib", "GetEvQHdr") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::GetEvQHdr,
+        ),
         ("InterfaceLib", "InitCRM") => {
             PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::InitCrm)
         }
@@ -5728,6 +5739,15 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         ("InterfaceLib", "PrError") => PpcImportDispatcherTarget::PrintingCompatibility(
             PpcPrintingCompatibilityOperation::PrError,
+        ),
+        ("InterfaceLib", "PrGeneral") => PpcImportDispatcherTarget::PrintingCompatibility(
+            PpcPrintingCompatibilityOperation::PrGeneral,
+        ),
+        ("InterfaceLib", "PrSetError") => PpcImportDispatcherTarget::PrintingCompatibility(
+            PpcPrintingCompatibilityOperation::PrSetError,
+        ),
+        ("InterfaceLib", "PrValidate") => PpcImportDispatcherTarget::PrintingCompatibility(
+            PpcPrintingCompatibilityOperation::PrValidate,
         ),
         ("InterfaceLib", "PrJobDialog") => PpcImportDispatcherTarget::PrintingCompatibility(
             PpcPrintingCompatibilityOperation::PrJobDialog,
