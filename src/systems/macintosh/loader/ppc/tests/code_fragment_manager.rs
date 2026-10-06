@@ -1006,6 +1006,48 @@ fn initial_bundled_library_initializer_runs_before_application_main() {
 }
 
 #[test]
+fn disk_backed_bundled_library_initializer_receives_file_locator() {
+    let application = synthetic_pef_with_library_import(b"BundledInitializer", b"Missing");
+    let library = synthetic_pef_with_initializer();
+    let bus = MacMemoryBus::new(128 * 1024 * 1024);
+    let mut loaded = load_pef_application_with_disk_fragment_and_libraries(
+        &application,
+        PpcLoadConfig::default(),
+        bus.synthetic_reservation_range().unwrap(),
+        vec![PpcCfmLibraryFragment {
+            name: "BundledInitializer".to_string(),
+            bytes: library.clone(),
+        }],
+        None,
+        PpcDiskFragment {
+            vref: -1,
+            dir_id: 2,
+            filename: b"Application",
+            offset: 0,
+            length: application.len() as u32,
+        },
+        &[PpcDiskLibraryFragment {
+            name: "BundledInitializer".to_string(),
+            vref: -1,
+            dir_id: 42,
+            filename: b"Library".to_vec(),
+            offset: 128,
+            length: library.len() as u32,
+        }],
+    )
+    .unwrap();
+
+    loaded.run_with_hle_imports(2);
+    let block = loaded.cpu.gpr[3];
+    assert_eq!(loaded.memory.read_u32_be(block + 12), Some(1));
+    assert_eq!(loaded.memory.read_u32_be(block + 24), Some(library.len() as u32));
+    let spec = loaded.memory.read_u32_be(block + 16).unwrap();
+    assert_eq!(loaded.memory.read_u16_be(spec), Some(u16::MAX));
+    assert_eq!(loaded.memory.read_u32_be(spec + 2), Some(42));
+    assert_eq!(loaded.memory.read_u8(spec + 6), Some(7));
+}
+
+#[test]
 fn cfm_reifies_real_pef_exports_with_section_absolute_and_reexported_addresses() {
     let fragment = synthetic_pef_with_exports();
     let mapped = vec![MappedSection {

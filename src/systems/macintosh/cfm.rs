@@ -31,6 +31,7 @@ pub(crate) const CFM_INIT_BLOCK_SIZE: u32 = 48;
 /// alignment and points to a Pascal fragment name; kInMem has selector zero.
 pub(crate) struct CfmInitBlock {
     bytes: Vec<u8>,
+    file_spec_offset: Option<u32>,
 }
 
 impl CfmInitBlock {
@@ -43,7 +44,38 @@ impl CfmInitBlock {
         bytes[20..24].copy_from_slice(&length.to_be_bytes());
         bytes[CFM_INIT_BLOCK_SIZE as usize] = name.len() as u8;
         bytes[CFM_INIT_BLOCK_SIZE as usize + 1..].copy_from_slice(name);
-        Self { bytes }
+        Self {
+            bytes,
+            file_spec_offset: None,
+        }
+    }
+
+    /// Inside Macintosh: PowerPC System Software (1994), pp. 3-15–3-16:
+    /// a fragment in a file's data fork uses kOnDiskFlat and a DiskFragment.
+    pub(crate) fn on_disk_flat(
+        connection: CfmLoadId,
+        vref: i16,
+        dir_id: u32,
+        filename: &[u8],
+        offset: u32,
+        length: u32,
+        fragment_name: &str,
+    ) -> Option<Self> {
+        if filename.len() > 63 {
+            return None;
+        }
+        let mut block = Self::in_memory(connection, 0, 0, fragment_name);
+        let spec_offset = (block.bytes.len() + 1) & !1;
+        block.bytes.resize(spec_offset + 70, 0);
+        block.bytes[12..16].copy_from_slice(&1u32.to_be_bytes());
+        block.bytes[20..24].copy_from_slice(&offset.to_be_bytes());
+        block.bytes[24..28].copy_from_slice(&length.to_be_bytes());
+        block.bytes[spec_offset..spec_offset + 2].copy_from_slice(&vref.to_be_bytes());
+        block.bytes[spec_offset + 2..spec_offset + 6].copy_from_slice(&dir_id.to_be_bytes());
+        block.bytes[spec_offset + 6] = filename.len() as u8;
+        block.bytes[spec_offset + 7..spec_offset + 7 + filename.len()].copy_from_slice(filename);
+        block.file_spec_offset = Some(spec_offset as u32);
+        Some(block)
     }
 
     pub(crate) fn size(&self) -> u32 {
@@ -62,6 +94,12 @@ impl CfmInitBlock {
             .checked_add(CFM_INIT_BLOCK_SIZE)
             .ok_or(CfmLoadError::InvalidOutputs)?;
         self.bytes[28..32].copy_from_slice(&name.to_be_bytes());
+        if let Some(offset) = self.file_spec_offset {
+            let spec = address
+                .checked_add(offset)
+                .ok_or(CfmLoadError::InvalidOutputs)?;
+            self.bytes[16..20].copy_from_slice(&spec.to_be_bytes());
+        }
         if !memory.publish_cfm_outputs(&[(address, &self.bytes)]) {
             return Err(CfmLoadError::InvalidOutputs);
         }
@@ -603,6 +641,37 @@ impl CfmLoadOperation {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn disk_fragment_initializer_points_to_its_file_specification() {
+        let block =
+            CfmInitBlock::on_disk_flat(CfmLoadId(7), -1, 42, b"Demo", 128, 4096, "Demo PPC")
+                .unwrap();
+        let size = block.size();
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(OUTPUT, vec![0; size as usize]);
+        block.publish(&mut memory, OUTPUT).unwrap();
+        let read_u32 = |memory: &mut GuestAddressSpace, offset| {
+            u32::from_be_bytes(std::array::from_fn(|index| {
+                memory
+                    .procedure_read_u8(OUTPUT + offset + index as u32)
+                    .unwrap()
+            }))
+        };
+        assert_eq!(read_u32(&mut memory, 12), 1);
+        assert_eq!(read_u32(&mut memory, 20), 128);
+        assert_eq!(read_u32(&mut memory, 24), 4096);
+        let spec = read_u32(&mut memory, 16);
+        assert_eq!(spec & 1, 0);
+        assert_eq!(memory.procedure_read_u8(spec), Some(0xff));
+        assert_eq!(memory.procedure_read_u8(spec + 1), Some(0xff));
+        assert_eq!(read_u32(&mut memory, spec - OUTPUT + 2), 42);
+        assert_eq!(memory.procedure_read_u8(spec + 6), Some(4));
+        assert_eq!(memory.procedure_read_u8(spec + 7), Some(b'D'));
+        assert!(
+            CfmInitBlock::on_disk_flat(CfmLoadId(7), -1, 42, &[b'A'; 64], 0, 0, "Demo").is_none()
+        );
+    }
+
     use super::*;
     use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
 
