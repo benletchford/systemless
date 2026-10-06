@@ -1,6 +1,38 @@
 use super::*;
 
 #[test]
+fn hle_import_runner_sets_textedit_click_loop_procedure() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "TESetClickLoop"),
+        PpcImportDispatcherTarget::TESetClickLoop,
+    );
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TENew")).unwrap();
+    let rects = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(rects, vec![0; 16]);
+    ppc_write_rect(&mut loaded.memory, rects, 0, 0, 100, 200).unwrap();
+    ppc_write_rect(&mut loaded.memory, rects + 8, 0, 0, 100, 200).unwrap();
+    loaded.cpu.gpr[3] = rects;
+    loaded.cpu.gpr[4] = rects + 8;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TENew);
+    let te_handle = loaded.cpu.gpr[3];
+    let te_ptr = loaded.memory.read_u32_be(te_handle).unwrap();
+
+    loaded.cpu.gpr[3] = 0x0123_4568;
+    loaded.cpu.gpr[4] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetClickLoop);
+    assert_eq!(
+        loaded.memory.read_u32_be(te_ptr + PPC_TE_CLIK_LOOP_OFFSET),
+        Some(0x0123_4568),
+    );
+    assert_eq!(loaded.memory.read_u32_be(te_ptr + PPC_TE_CLICK_TIME_OFFSET), Some(0));
+
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetClickLoop);
+    assert_eq!(loaded.memory.read_u32_be(te_ptr + PPC_TE_CLIK_LOOP_OFFSET), Some(0));
+}
+
+#[test]
 fn hle_import_runner_creates_and_disposes_native_styled_textedit_records() {
     let pef = synthetic_pef_with_import(b"TEStyleNew");
     let mut loaded = load_pef_application(&pef).unwrap();

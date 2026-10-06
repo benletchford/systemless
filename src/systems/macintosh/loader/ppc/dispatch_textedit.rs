@@ -310,6 +310,16 @@ pub(super) fn dispatch_textedit_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::TESetClickLoop => {
+            // TESetClickLoop (InterfaceLib)
+            // Installs the application click-loop procedure in the edit record.
+            // PROCEDURE TESetClickLoop(clickProc: ProcPtr; hTE: TEHandle);
+            // Inside Macintosh: Text (1993), p. 2-117.
+            if let Some(te_ptr) = ppc_te_record_ptr(memory, cpu.gpr[4]) {
+                let _ = memory.write_u32_be(te_ptr + PPC_TE_CLIK_LOOP_OFFSET, cpu.gpr[3]);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::TESetSelect => {
             // Text (1993), pp. 2-51–2-52: native parameters are start, end,
             // TEHandle; the public TERec stores the clamped offsets as words.
