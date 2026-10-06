@@ -447,6 +447,8 @@ fn draw_dialog_calls_native_user_item_procedure_with_dialog_and_item_number() {
         d_form_u(24, 5, 5, result as u16),         // ori r5, r5, result@l
         d_form_u(36, 3, 5, 0),                     // stw r3, 0(r5)
         d_form_u(36, 4, 5, 4),                     // stw r4, 4(r5)
+        d_form_u(14, 3, 0, 0x1234),                // overwrite volatile argument registers
+        d_form_u(14, 4, 0, 0x5678),
         BLR,
     ] {
         callback_code.extend_from_slice(&word.to_be_bytes());
@@ -459,6 +461,7 @@ fn draw_dialog_calls_native_user_item_procedure_with_dialog_and_item_number() {
     loaded.cpu.pc = loaded.entry_pc;
     loaded.cpu.lr = PPC_HALT_PC;
     loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = 0xcafe_babe;
     loaded
         .current_gworld
         .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
@@ -468,8 +471,39 @@ fn draw_dialog_calls_native_user_item_procedure_with_dialog_and_item_number() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.memory.read_u32_be(result), Some(dialog));
     assert_eq!(loaded.memory.read_u32_be(result + 4), Some(1));
+    assert_eq!(loaded.cpu.gpr[3], dialog);
+    assert_eq!(loaded.cpu.gpr[4], 0xcafe_babe);
     assert_eq!(*loaded.current_gworld, dialog);
     assert!(loaded.dialog_callback_stack.is_empty());
+
+    // ModalDialog must retain its itemHit pointer across the same callback.
+    let item_hit_ptr = PPC_DATA_BASE + 0x1100;
+    loaded.memory.add_region(item_hit_ptr, vec![0; 2]);
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ModalDialog;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = item_hit_ptr;
+    loaded.set_event_queue([PpcQueuedEvent {
+        what: 6,
+        message: dialog,
+        when: 1,
+        where_v: 0,
+        where_h: 0,
+        modifiers: 0,
+    }]);
+    loaded.run_with_hle_imports(128);
+    assert_eq!(loaded.cpu.gpr[4], item_hit_ptr);
+    loaded.set_event_queue([PpcQueuedEvent {
+        what: 3,
+        message: 0x0d,
+        when: 2,
+        where_v: 0,
+        where_h: 0,
+        modifiers: 0,
+    }]);
+    loaded.run_with_hle_imports(128);
+    assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(1));
 }
 
 #[test]
