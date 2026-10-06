@@ -502,6 +502,9 @@ pub(super) fn dispatch_window_import(
                 toolbox_startup.host_menu_bar_hidden,
             );
             if !was_visible {
+                if let Some(port_rect) = ppc_read_rect(memory, window.wrapping_add(16)) {
+                    ppc_invalidate_window_local_rect(memory, window, port_rect);
+                }
                 // Macintosh Toolbox Essentials (1992), Window Manager,
                 // PaintOne: newly exposed content uses its window color table.
                 let content_color = ppc_window_color_table_handle(memory, window)

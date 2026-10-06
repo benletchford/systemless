@@ -2642,8 +2642,20 @@ fn hle_import_runner_handles_get_new_cwindow() {
     );
     assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
 
+    let update_rgn = loaded
+        .memory
+        .read_u32_be(storage_ptr + PPC_CWINDOW_UPDATE_RGN_OFFSET)
+        .unwrap();
+    assert_eq!(
+        ppc_read_rgn_bbox(&mut loaded.memory, update_rgn),
+        Some((0, 0, 0, 0))
+    );
     loaded.cpu.gpr[3] = storage_ptr;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::ShowWindow);
+    assert_eq!(
+        ppc_read_rgn_bbox(&mut loaded.memory, update_rgn),
+        Some((0, 0, 200, 300))
+    );
     let surface =
         ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, storage_ptr).unwrap();
     let black =
