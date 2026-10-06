@@ -8337,6 +8337,26 @@ fn fsdispatch_pbgetcatinfo_prefers_exact_directory_over_file_fallback() {
 }
 
 #[test]
+fn fsdispatch_pbgetcatinfo_single_colon_names_selected_directory() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let app_dir_id = disp.ensure_vfs_directory("Game Folder");
+    let pb = 0x300000u32;
+    let name_ptr = setup_param_block(&mut bus, &mut cpu, pb, b":");
+    bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+    bus.write_word(pb + 28, 0); // ioFDirIndex
+    bus.write_long(pb + 48, app_dir_id);
+    cpu.write_reg(Register::D0, 9); // HFSDispatch selector: PBGetCatInfo
+
+    call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+    assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+    assert_eq!(bus.read_word(pb + 16) as i16, 0);
+    assert_eq!(bus.read_pstring(name_ptr), b"Game Folder".to_vec());
+    assert_eq!(bus.read_byte(pb + 30), 0x10);
+    assert_eq!(bus.read_long(pb + 48), app_dir_id);
+}
+
+#[test]
 fn fsdispatch_pbgetcatinfo_resolves_full_boot_volume_directory_path() {
     // Files 1992, 2-27 to 2-28: a pathname that starts with a volume name
     // is complete and identifies its target independently of ioDirID.
