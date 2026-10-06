@@ -8961,9 +8961,10 @@ impl super::TrapDispatcher {
         }
 
         // PBGetCatInfo with ioFDirIndex = 0 selects ioNamePtr. System 7.5.3
-        // treats an empty name as the directory selected by ioDirID rather than
-        // as a missing child. Files 1992, 2-190 to 2-192.
-        if filename.is_empty() {
+        // treats an empty name or a single-colon partial pathname as the
+        // directory selected by ioDirID. Inside Macintosh: Files (1992),
+        // pp. 2-27 to 2-29 and 2-190 to 2-192.
+        if filename.is_empty() || filename == ":" {
             let directory = self.directory_entry_for_id(dir_id)?;
             let path = self.directory_path_for_id(dir_id)?.to_string();
             return Some(super::dispatch::VfsCatalogEntry {
