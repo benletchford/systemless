@@ -273,6 +273,7 @@ impl WorkerMachine {
         set_number(&result, "ticksBehind", counters.ticks_behind as f64);
         set_number(&result, "lastSteps", counters.last_steps as f64);
         set_number(&result, "cpuBudgetMs", counters.cpu_budget_ms);
+        set_number(&result, "cpuMhz", counters.cpu_mhz as f64);
         if let Some(queue_ms) = counters.audio_queue_ms {
             set_number(&result, "audioQueueMs", queue_ms);
         }

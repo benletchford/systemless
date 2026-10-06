@@ -307,6 +307,12 @@ pub fn entry(e: &Entry) -> Result<()> {
             && (4..=120).contains(&pacing.cpu_mhz),
         "runtime pacing requires 1–4 paint ticks, paint ticks–12 slack ticks, and 4–120 MHz"
     );
+    if let Some(min_cpu_mhz) = pacing.adaptive_min_cpu_mhz {
+        ensure!(
+            (4..pacing.cpu_mhz).contains(&min_cpu_mhz),
+            "adaptive minimum CPU MHz must be at least 4 and below CPU MHz"
+        );
+    }
     ensure!(
         e.runtime
             .screen_depth

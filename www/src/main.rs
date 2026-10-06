@@ -1,3 +1,4 @@
+mod adaptive_clock;
 mod app;
 mod bench;
 mod browser_bridge;

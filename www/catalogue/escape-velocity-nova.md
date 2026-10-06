@@ -27,6 +27,9 @@ compatibility:
     evidence: https://github.com/benletchford/systemless.org/pull/99
 runtime:
   worker: true
+  runtime_pacing:
+    cpu_mhz: 60
+    adaptive_min_cpu_mhz: 25
 controls:
   mobile:
     button_groups:
