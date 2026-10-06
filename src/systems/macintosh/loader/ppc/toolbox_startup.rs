@@ -23,6 +23,7 @@ pub struct PpcToolboxStartupState {
     /// whenever native PowerPC enters classic code through Mixed Mode.
     pub(crate) mixed_mode_m68k: SharedProcessMixedModeM68kState,
     pub(super) system_allocations: PpcSystemAllocationPool,
+    pub(super) kchr_cache_ptr: u32,
     pub(super) cf_strings: dispatch_core_foundation::PpcCfStringState,
     pub(super) icon_refs: dispatch_icon_services::PpcIconRefState,
     pub(crate) go_away_tracking: Option<PpcGoAwayTrackingState>,
@@ -128,6 +129,7 @@ impl Default for PpcToolboxStartupState {
             execution: ExecutionMenuViews::detached(),
             mixed_mode_m68k: SharedProcessMixedModeM68kState::default(),
             system_allocations: PpcSystemAllocationPool::default(),
+            kchr_cache_ptr: 0,
             cf_strings: dispatch_core_foundation::PpcCfStringState::default(),
             icon_refs: dispatch_icon_services::PpcIconRefState::default(),
             go_away_tracking: None,
