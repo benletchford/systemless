@@ -115,9 +115,9 @@ impl LookupCache {
             .copied()
     }
 
-    /// The ledger answer covering `[start, end)`, reusing a resident entry when
-    /// one already does. Always worth storing back: the answer describes an
-    /// interval either way.
+    /// The ledger answer covering `[start, end)` and whether it needs storing.
+    /// A resident answer already occupies the cache, so scanning all entries
+    /// again in `store` would repeat work on every scalar access.
     #[inline]
     fn resolve(
         &self,
@@ -125,9 +125,11 @@ impl LookupCache {
         address: u32,
         start: u64,
         end: u64,
-    ) -> SharedLookup {
-        self.covering(start, end)
-            .unwrap_or_else(|| shared_lookup_at(state, address))
+    ) -> (SharedLookup, bool) {
+        match self.covering(start, end) {
+            Some(lookup) => (lookup, false),
+            None => (shared_lookup_at(state, address), true),
+        }
     }
 
     #[inline]
@@ -2025,8 +2027,10 @@ impl PpcMemory for GuestAddressSpace {
         };
         let state = self.state_mut();
         let start = u64::from(addr);
-        let lookup = state.data_lookup.resolve(state, addr, start, end);
-        state.data_lookup.store(lookup);
+        let (lookup, needs_store) = state.data_lookup.resolve(state, addr, start, end);
+        if needs_store {
+            state.data_lookup.store(lookup);
+        }
         if lookup.covers(start, end) {
             return match lookup {
                 SharedLookup::Gap { .. } => PpcMemory::read_u16_be(&mut state.regions, addr),
@@ -2060,8 +2064,10 @@ impl PpcMemory for GuestAddressSpace {
         };
         let state = self.state_mut();
         let start = u64::from(addr);
-        let lookup = state.data_lookup.resolve(state, addr, start, end);
-        state.data_lookup.store(lookup);
+        let (lookup, needs_store) = state.data_lookup.resolve(state, addr, start, end);
+        if needs_store {
+            state.data_lookup.store(lookup);
+        }
         if lookup.covers(start, end) {
             return match lookup {
                 SharedLookup::Gap { .. } => PpcMemory::read_u32_be(&mut state.regions, addr),
@@ -2122,8 +2128,10 @@ impl PpcMemory for GuestAddressSpace {
         let start = u64::from(addr);
         // Prove where this word lives once per interval, not per fetch. A
         // `Gap` is the `!overlaps_shared` early-out below, without the walk.
-        let lookup = state.instruction_lookup.resolve(state, addr, start, end);
-        state.instruction_lookup.store(lookup);
+        let (lookup, needs_store) = state.instruction_lookup.resolve(state, addr, start, end);
+        if needs_store {
+            state.instruction_lookup.store(lookup);
+        }
         if lookup.covers(start, end) {
             return match lookup {
                 SharedLookup::Gap { .. } => state.regions.read_instruction_u32_be(addr),
@@ -2183,8 +2191,10 @@ impl PpcMemory for GuestAddressSpace {
         let state = self.state_mut();
         let start = u64::from(addr);
         let bytes = value.to_be_bytes();
-        let lookup = state.data_lookup.resolve(state, addr, start, end);
-        state.data_lookup.store(lookup);
+        let (lookup, needs_store) = state.data_lookup.resolve(state, addr, start, end);
+        if needs_store {
+            state.data_lookup.store(lookup);
+        }
         if lookup.covers(start, end) {
             return match lookup {
                 SharedLookup::Gap { .. } => {
@@ -2222,8 +2232,10 @@ impl PpcMemory for GuestAddressSpace {
         let state = self.state_mut();
         let start = u64::from(addr);
         let bytes = value.to_be_bytes();
-        let lookup = state.data_lookup.resolve(state, addr, start, end);
-        state.data_lookup.store(lookup);
+        let (lookup, needs_store) = state.data_lookup.resolve(state, addr, start, end);
+        if needs_store {
+            state.data_lookup.store(lookup);
+        }
         if lookup.covers(start, end) {
             return match lookup {
                 SharedLookup::Gap { .. } => {
