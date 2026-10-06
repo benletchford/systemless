@@ -693,6 +693,17 @@ impl<T> SavedPixels<T> {
         }
         self.values[offset..end].clone_from_slice(values);
     }
+
+    /// Replace a span with another snapshot, retaining its subpixel detail.
+    pub(crate) fn replace_snapshot_range(&mut self, offset: usize, snapshot: &Self)
+    where
+        T: Clone,
+    {
+        self.replace_range(offset, &snapshot.values);
+        for (&index, cell) in &snapshot.detail {
+            self.detail.insert(offset + index, cell.clone());
+        }
+    }
 }
 
 // These tables use only host-generated offsets into bounded presentation
