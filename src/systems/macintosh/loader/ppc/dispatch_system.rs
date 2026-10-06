@@ -19,6 +19,7 @@ pub enum PpcSystemCompatibilityOperation {
     GetSysBeepVolume,
     IuCompString,
     IuDateString,
+    IuEqualString,
     InitCrm,
     InitCtbUtilities,
     IntlScript,
@@ -234,6 +235,20 @@ pub(crate) fn ppc_dispatch_system_compatibility(
                 std::cmp::Ordering::Greater => 1,
             };
             PpcImportAction::Return(ppc_i16_result(ordering))
+        }
+        PpcSystemCompatibilityOperation::IuEqualString => {
+            // IUEqualString compares Pascal strings using primary ordering:
+            // case and diacritic differences do not matter, and it returns
+            // zero for equality. Inside Macintosh I (1985), p. I-506.
+            // FUNCTION IUEqualString(aStr,bStr: Str255): INTEGER;
+            let lhs = ppc_read_pstring_bytes(memory, cpu.gpr[3]).unwrap_or_default();
+            let rhs = ppc_read_pstring_bytes(memory, cpu.gpr[4]).unwrap_or_default();
+            let primary = |byte| crate::trap::mac_roman_to_upper(byte, true);
+            let equal = lhs
+                .into_iter()
+                .map(primary)
+                .eq(rhs.into_iter().map(primary));
+            PpcImportAction::Return(u32::from(!equal))
         }
         PpcSystemCompatibilityOperation::TruncText => {
             let width = usize::from(cpu.gpr[3] as u16);

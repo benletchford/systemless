@@ -5558,6 +5558,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "IUDateString") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::IuDateString,
         ),
+        ("InterfaceLib", "IUEqualString") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::IuEqualString,
+        ),
         ("InterfaceLib", "InitCRM") => {
             PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::InitCrm)
         }

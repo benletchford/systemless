@@ -1836,6 +1836,7 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
         ("GetSysBeepVolume", PpcSystemCompatibilityOperation::GetSysBeepVolume),
         ("IUCompString", PpcSystemCompatibilityOperation::IuCompString),
         ("IUDateString", PpcSystemCompatibilityOperation::IuDateString),
+        ("IUEqualString", PpcSystemCompatibilityOperation::IuEqualString),
         ("InitCRM", PpcSystemCompatibilityOperation::InitCrm),
         ("InitCTBUtilities", PpcSystemCompatibilityOperation::InitCtbUtilities),
         ("IntlScript", PpcSystemCompatibilityOperation::IntlScript),
@@ -1864,4 +1865,35 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
             PpcImportDispatcherTarget::SystemCompatibility(operation),
         );
     }
+}
+
+#[test]
+fn iu_equal_string_uses_primary_mac_roman_ordering() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"IUEqualString")).unwrap();
+    let left = PPC_DATA_BASE + 0x1000;
+    let right = PPC_DATA_BASE + 0x1040;
+    loaded.memory.add_region(left, vec![0; 64]);
+    loaded.memory.add_region(right, vec![0; 64]);
+    write_ppc_pstring(&mut loaded.memory, left, b"Rose");
+    write_ppc_pstring(&mut loaded.memory, right, b"ros\x8e");
+    loaded.cpu.gpr[3] = left;
+    loaded.cpu.gpr[4] = right;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::IuEqualString,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    write_ppc_pstring(&mut loaded.memory, right, b"Rope");
+    loaded.cpu.gpr[3] = left;
+    loaded.cpu.gpr[4] = right;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::IuEqualString,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 1);
 }
