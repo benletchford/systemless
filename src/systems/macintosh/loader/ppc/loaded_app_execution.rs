@@ -387,6 +387,7 @@ impl PpcLoadedApp {
         let mut idle_poll_counts = HashMap::<u32, u32>::new();
         let mut tick_count_idle_poll = PpcTickCountIdlePollState::default();
         let needs_fetch_observer = trace_fetches || trace_ppc || trace_pc_range.is_some();
+        let mut interrupt_return_work = None;
         let mut fetch_observer = PpcHleFetchObserver {
             histogram: if trace_fetches {
                 Some(&mut fetch_histogram)
@@ -2199,6 +2200,45 @@ impl PpcLoadedApp {
                 total_cycles = total_cycles.saturating_add(ppc_run_result_cycles(step_result));
 
                 match step_result {
+                    // A parked callback returned on its own frame:
+                    // resume the code it interrupted. Exception handlers and
+                    // the interrupted code's own returns hold a different r1.
+                    PpcRunResult::Halted { pc, .. }
+                        if pc == self.halt_pc
+                            && self
+                                .parked_interrupt_callback
+                                .as_ref()
+                                .is_some_and(|parked| {
+                                    parked.callback_sp == self.cpu.gpr[1]
+                                        && parked.task == guest_calls.current_task()
+                                }) =>
+                    {
+                        let parked = self
+                            .parked_interrupt_callback
+                            .take()
+                            .expect("matched a parked callback");
+                        if ppc_hle_trace_enabled() {
+                            eprintln!(
+                                "[PPC-TRACE] parked callback returned: callback_sp=${:08X} resume_pc=${:08X}",
+                                parked.callback_sp,
+                                parked.interrupted.architectural().pc,
+                            );
+                        }
+                        self.cpu.install_execution_context(parked.interrupted);
+                        if let Some(refnum) = parked.interrupted_refnum {
+                            self.set_current_resource_refnum(refnum);
+                        }
+                        // VBL and sound records are out of `self` until the
+                        // slice ends; finish their work once they are back.
+                        interrupt_return_work = Some(parked.on_return);
+                        // The interrupted code was itself waiting on a 68K
+                        // call: hand the slice back so the runner resumes it.
+                        if guest_calls.has_m68k_execution() {
+                            break PpcRunResult::CycleLimit {
+                                cycles: total_cycles,
+                            };
+                        }
+                    }
                     PpcRunResult::Exception { pc, exception, .. }
                         if native_exception_handler.get() != 0
                             && ppc_native_exception_kind(exception).is_some() =>
@@ -2336,6 +2376,9 @@ impl PpcLoadedApp {
         self.list_manager = list_manager;
         self.event_queue = event_queue;
         self.draw_sprocket = draw_sprocket;
+        if let Some(work) = interrupt_return_work {
+            self.finish_interrupt_return_work(work);
+        }
         if trace_recent_on_halt && !matches!(result, PpcRunResult::CycleLimit { .. }) {
             let indirect = self.cpu.gpr[12];
             eprintln!(

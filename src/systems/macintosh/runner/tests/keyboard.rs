@@ -95,6 +95,8 @@ fn ppc_getkeys_reads_runner_key_map_with_classic_packed_bit_order() {
         collection_callback_stack: Vec::new(),
         pending_file_completions: VecDeque::new(),
         file_completion_context: None,
+        parked_interrupt_callback: None,
+        interrupt_callback_parks: 0,
         apple_events: Default::default(),
         cfm: Some(crate::cfm::CfmState::default()),
         controls: Default::default(),

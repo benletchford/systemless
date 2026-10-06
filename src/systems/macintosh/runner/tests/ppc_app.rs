@@ -121,6 +121,8 @@ fn ppc_loaded_app_runs_through_fixture_runner() {
         collection_callback_stack: Vec::new(),
         pending_file_completions: VecDeque::new(),
         file_completion_context: None,
+        parked_interrupt_callback: None,
+        interrupt_callback_parks: 0,
         apple_events: Default::default(),
         cfm: Some(crate::cfm::CfmState::default()),
         controls: Default::default(),

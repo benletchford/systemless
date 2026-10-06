@@ -898,6 +898,22 @@ impl SoundManager {
         }
     }
 
+    /// The doubleback for this exhausted buffer has returned, so the buffer
+    /// may be queued for its next refill.
+    pub(crate) fn clear_doubleback_pending(&mut self, doubleback: &PendingProcessSoundDoubleBack) {
+        let buffer_bit = 1u8 << (doubleback.exhausted_buffer_index.min(1) as u8);
+        if let Some(playback) = self
+            .double_buffer_playbacks
+            .iter_mut()
+            .rev()
+            .find(|playback| {
+                playback.channel == doubleback.channel && playback.header == doubleback.header
+            })
+        {
+            playback.callback_pending_mask &= !buffer_bit;
+        }
+    }
+
     pub(crate) fn stop_double_buffer_playbacks(&mut self, guest_ptr: u32) {
         for playback in self
             .double_buffer_playbacks

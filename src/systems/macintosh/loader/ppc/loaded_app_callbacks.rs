@@ -154,6 +154,161 @@ impl PpcLoadedApp {
         Some(frame_sp)
     }
 
+    /// Whether interrupt-level delivery (VBL, DrawSprocket VBL, Time
+    /// Manager, sound and File Manager completions) waits for a parked
+    /// callback. A parked interrupt-level callback masks it until it returns,
+    /// as the real interrupt handler would. A parked event-loop timer runs at
+    /// task level, so interrupts still arrive while its 68K call is pending,
+    /// as they do over foreground code waiting on a 68K call. Once that call
+    /// has returned, the timer's continuation holds the CPU: an interrupt
+    /// fired then would save the continuation as its interrupted context and
+    /// could not itself park, so it waits until the timer returns.
+    pub(crate) fn interrupts_masked(&self) -> bool {
+        self.parked_interrupt_callback
+            .as_ref()
+            .is_some_and(|parked| match parked.level {
+                PpcCallbackLevel::Interrupt => true,
+                PpcCallbackLevel::Task => self
+                    .toolbox_startup
+                    .execution
+                    .calls()
+                    .task_top_call_id(parked.task)
+                    .is_none_or(|call| call < parked.awaited_call),
+            })
+    }
+
+    /// Event-loop timers wait for any parked callback, so a timer is never
+    /// re-entered and never runs over a parked callback's registers.
+    pub(crate) fn event_loop_timers_masked(&self) -> bool {
+        self.parked_interrupt_callback.is_some()
+    }
+
+    /// The parked callback's 68K call has returned, so `cpu` holds the
+    /// callback's continuation. It runs before any other 68K frame on its
+    /// task; a later call the continuation submits has a larger ID and runs
+    /// first.
+    pub(crate) fn interrupt_continuation_ready(&self) -> bool {
+        let calls = self.toolbox_startup.execution.calls();
+        self.parked_interrupt_callback
+            .as_ref()
+            .is_some_and(|parked| {
+                parked.task == calls.current_task()
+                    && calls
+                        .top_call_id()
+                        .is_none_or(|call| call < parked.awaited_call)
+            })
+    }
+
+    fn interrupt_entry(&self) -> PpcInterruptEntry {
+        let calls = self.toolbox_startup.execution.calls();
+        PpcInterruptEntry {
+            task: calls.current_task(),
+            top_call: calls.top_call_id(),
+            // A callback that interrupts code already inside, or waiting on,
+            // a 68K call keeps the old restore path: its own 68K call would
+            // share that call's 68K registers and stack. Only one callback
+            // is parked at a time.
+            may_park: self.parked_interrupt_callback.is_none()
+                && calls.current_native_task_owns_cpu()
+                && !calls.current_task_has_m68k_frames(),
+        }
+    }
+
+    /// A callback that stopped on a 68K Mixed Mode call it submitted stays
+    /// installed: that call captures the callback's registers when it starts
+    /// and resumes the callback when it returns. Park what it interrupted
+    /// until the callback returns to `halt_pc`. Returns true when parked; the
+    /// caller then skips its restore.
+    ///
+    /// A parked callback behaves like an interrupt handler that has not
+    /// returned yet, not like a callback slice:
+    /// - Its continuation runs in the foreground's native slices, without
+    ///   the per-callback cycle cap.
+    /// - A fault after its 68K call halts the application, where an
+    ///   unparked callback that faults is abandoned and the interrupted
+    ///   context restored.
+    /// - If the 68K callee yields to another thread, interrupt-level
+    ///   delivery stays masked until the owning task resumes and the
+    ///   callback returns.
+    #[allow(clippy::too_many_arguments)]
+    fn park_interrupt_callback_if_awaiting_m68k(
+        &mut self,
+        level: PpcCallbackLevel,
+        entry: PpcInterruptEntry,
+        callback_sp: Option<u32>,
+        probe: &PpcHleRunProbe,
+        interrupted: &PpcExecutionContext,
+        interrupted_refnum: Option<i16>,
+        on_return: PpcInterruptReturnWork,
+    ) -> bool {
+        let Some(callback_sp) = callback_sp else {
+            return false;
+        };
+        if !entry.may_park
+            || probe.unsupported_import_index.is_some()
+            || !matches!(probe.result, PpcRunResult::Halted { pc, .. } if pc != self.halt_pc)
+        {
+            return false;
+        }
+        let calls = self.toolbox_startup.execution.calls();
+        if calls.current_task() != entry.task {
+            return false;
+        }
+        let Some(awaited_call) = calls
+            .unstarted_m68k_call()
+            .filter(|call| entry.top_call.is_none_or(|top| *call > top))
+        else {
+            return false;
+        };
+        self.interrupt_callback_parks = self.interrupt_callback_parks.saturating_add(1);
+        if ppc_hle_trace_enabled() {
+            eprintln!(
+                "[PPC-TRACE] {level:?}-level callback parked on 68K call: pc=${:08X} callback_sp=${callback_sp:08X} interrupted_pc=${:08X} parks={}",
+                self.cpu.pc,
+                interrupted.architectural().pc,
+                self.interrupt_callback_parks,
+            );
+        }
+        self.parked_interrupt_callback = Some(PpcParkedInterruptCallback {
+            level,
+            task: entry.task,
+            awaited_call,
+            callback_sp,
+            interrupted: interrupted.clone(),
+            interrupted_refnum,
+            on_return,
+        });
+        true
+    }
+
+    /// Runs once the callback has really returned and every process record
+    /// is back in place.
+    pub(super) fn finish_interrupt_return_work(&mut self, work: PpcInterruptReturnWork) {
+        match work {
+            PpcInterruptReturnWork::None => {}
+            PpcInterruptReturnWork::VblTask { task_ptr } => {
+                self.retire_vbl_task_if_unscheduled(task_ptr);
+            }
+            PpcInterruptReturnWork::DoubleBack(doubleback) => {
+                self.sound
+                    .manager
+                    .with_mut(|sound| sound.clear_doubleback_pending(&doubleback));
+            }
+        }
+    }
+
+    /// Inside Macintosh: Processes (1994), pp. 4-7–4-8: a VBL task must reset
+    /// vblCount from its callback or the Vertical Retrace Manager removes the
+    /// task after that execution.
+    fn retire_vbl_task_if_unscheduled(&mut self, task_ptr: u32) {
+        if self.memory.read_u16_be(task_ptr + 10) == Some(0) {
+            self.vbl_tasks.with_mut(|vbl_tasks| {
+                vbl_tasks.retain(|installed| installed.task_ptr != task_ptr);
+                ppc_sync_vbl_task_links(&mut self.memory, vbl_tasks);
+            });
+        }
+    }
+
     fn interrupt_callback_stack_fault(&self) -> PpcHleRunProbe {
         PpcHleRunProbe {
             result: PpcRunResult::MemoryFault {
@@ -207,7 +362,10 @@ impl PpcLoadedApp {
                 self.memory.read_u32_be(completion.wrapping_add(4)),
             );
         }
-        let probe = if let Some(context) = continuing {
+        let interrupt = self.interrupt_entry();
+        let mut callback_frame = None;
+        let probe = if let Some((context, callback_sp)) = continuing {
+            callback_frame = Some(callback_sp);
             self.cpu.install_execution_context(context);
             self.run_with_hle_imports_with_trace(
                 max_cycles,
@@ -217,6 +375,7 @@ impl PpcLoadedApp {
                 Some(cfm),
             )
         } else if let Some(callback_sp) = self.prepare_interrupt_callback_frame(default_rtoc) {
+            callback_frame = Some(callback_sp);
             self.cpu.invalidate_reservation();
             self.cpu.pc = target.entry;
             self.cpu.lr = self.halt_pc;
@@ -234,12 +393,24 @@ impl PpcLoadedApp {
         } else {
             self.interrupt_callback_stack_fault()
         };
-        // Inside Macintosh: Files (1992), "Completion Routines": the callback
-        // completes after I/O; a runner slice is not a callback completion.
-        if matches!(probe.result, PpcRunResult::CycleLimit { .. }) {
-            self.file_completion_context = Some(self.cpu.capture_execution_context());
+        let parked = self.park_interrupt_callback_if_awaiting_m68k(
+            PpcCallbackLevel::Interrupt,
+            interrupt,
+            callback_frame,
+            &probe,
+            &saved_context,
+            None,
+            PpcInterruptReturnWork::None,
+        );
+        if !parked {
+            // Inside Macintosh: Files (1992), "Completion Routines": the callback
+            // completes after I/O; a runner slice is not a callback completion.
+            if matches!(probe.result, PpcRunResult::CycleLimit { .. }) {
+                self.file_completion_context = callback_frame
+                    .map(|callback_sp| (self.cpu.capture_execution_context(), callback_sp));
+            }
+            self.cpu.install_execution_context(saved_context);
         }
-        self.cpu.install_execution_context(saved_context);
         probe
     }
 
@@ -295,6 +466,12 @@ impl PpcLoadedApp {
         } else {
             self.prepare_interrupt_callback_frame(default_rtoc)
         };
+        // Switchers run at task level, not interrupt level, so they are never
+        // parked; report one that leaves a 68K call behind.
+        let trace_thread = std::env::var_os("SYSTEMLESS_PPC_THREAD_TRACE").is_some();
+        let top_call = trace_thread
+            .then(|| self.toolbox_startup.execution.calls().top_call_id())
+            .flatten();
         let probe = if let Some(callback_sp) = callback_sp {
             self.cpu.invalidate_reservation();
             self.cpu.pc = target.entry;
@@ -316,6 +493,20 @@ impl PpcLoadedApp {
         } else {
             self.interrupt_callback_stack_fault()
         };
+        if trace_thread {
+            if let Some(call) = self
+                .toolbox_startup
+                .execution
+                .calls()
+                .unstarted_m68k_call()
+                .filter(|call| top_call.is_none_or(|top| *call > top))
+            {
+                eprintln!(
+                    "[PPC-THREAD-TRACE] switcher thread={thread_id} left 68K call {call:?} unstarted pc=${:08X}",
+                    self.cpu.pc
+                );
+            }
+        }
         self.cpu.install_execution_context(saved_context);
         probe
     }
@@ -348,10 +539,13 @@ impl PpcLoadedApp {
             proc_info: 0,
             routine_flags: 0,
         });
+        let interrupt = self.interrupt_entry();
+        let mut callback_frame = None;
         let mut entered = false;
         let probe = if let Some(callback_sp) = self.prepare_interrupt_callback_frame(default_rtoc) {
             self.cpu.invalidate_reservation();
             entered = true;
+            callback_frame = Some(callback_sp);
             self.cpu.pc = target.entry;
             self.cpu.lr = self.halt_pc;
             self.cpu.gpr[1] = callback_sp;
@@ -391,7 +585,16 @@ impl PpcLoadedApp {
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
         let cycles = ppc_run_result_cycles(probe.result);
-        if entered {
+        let parked = self.park_interrupt_callback_if_awaiting_m68k(
+            PpcCallbackLevel::Interrupt,
+            interrupt,
+            callback_frame,
+            &probe,
+            &saved_context,
+            None,
+            PpcInterruptReturnWork::None,
+        );
+        if !parked && entered {
             self.cpu.install_execution_context(saved_context);
         }
 
@@ -462,6 +665,11 @@ impl PpcLoadedApp {
             self.callback_scheduling
                 .set_current_subtick(u64::from(current_tick) * 1_000_000);
             loop {
+                // Interrupts stay masked while a callback waits on a 68K call;
+                // due tasks stay due and fire after it returns.
+                if self.interrupts_masked() {
+                    break;
+                }
                 if probes.len() >= max_callbacks {
                     return probes;
                 }
@@ -581,6 +789,9 @@ impl PpcLoadedApp {
                 continue;
             }
             loop {
+                if self.event_loop_timers_masked() {
+                    break;
+                }
                 if probes.len() >= max_callbacks {
                     return probes;
                 }
@@ -609,6 +820,7 @@ impl PpcLoadedApp {
                     timer.timer_ref,
                     timer.callback,
                     &[timer.timer_ref, timer.user_data],
+                    PpcCallbackLevel::Task,
                     max_cycles,
                     trace_imports,
                     trace_fetches,
@@ -618,6 +830,29 @@ impl PpcLoadedApp {
             }
         }
         probes
+    }
+
+    /// Fixtures install a timer on an event loop that is polling until
+    /// `poll_until_tick`.
+    #[cfg(test)]
+    pub(crate) fn install_test_event_loop_timer(
+        &mut self,
+        timer_ref: u32,
+        callback: u32,
+        first_tick: u32,
+        interval_ticks: u32,
+        poll_until_tick: u32,
+    ) {
+        self.toolbox_startup.event_loop_poll_until_tick = Some(poll_until_tick);
+        self.toolbox_startup
+            .event_loop_timers
+            .push(dispatch_event::PpcEventLoopTimerRecord {
+                timer_ref,
+                callback,
+                user_data: 0,
+                next_fire_tick: Some(first_tick),
+                interval_ticks,
+            });
     }
 
     pub(crate) fn run_timer_callback(
@@ -634,6 +869,7 @@ impl PpcLoadedApp {
             task_ptr,
             callback,
             &[task_ptr],
+            PpcCallbackLevel::Interrupt,
             max_cycles,
             trace_imports,
             trace_fetches,
@@ -648,6 +884,7 @@ impl PpcLoadedApp {
         task_ptr: u32,
         callback: u32,
         arguments: &[u32],
+        level: PpcCallbackLevel,
         max_cycles: u64,
         trace_imports: bool,
         trace_fetches: bool,
@@ -669,10 +906,13 @@ impl PpcLoadedApp {
                 proc_info: 0,
                 routine_flags: 0,
             });
+        let interrupt = self.interrupt_entry();
+        let mut callback_frame = None;
         let mut entered = false;
         let probe = if let Some(callback_sp) = self.prepare_interrupt_callback_frame(default_rtoc) {
             self.cpu.invalidate_reservation();
             entered = true;
+            callback_frame = Some(callback_sp);
             self.cpu.pc = target.entry;
             self.cpu.lr = self.halt_pc;
             self.cpu.gpr[1] = callback_sp;
@@ -694,10 +934,21 @@ impl PpcLoadedApp {
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
         let cycles = ppc_run_result_cycles(probe.result);
-        if entered {
-            self.cpu.install_execution_context(saved_context);
+        let parked = self.park_interrupt_callback_if_awaiting_m68k(
+            level,
+            interrupt,
+            callback_frame,
+            &probe,
+            &saved_context,
+            Some(saved_current_resource_refnum),
+            PpcInterruptReturnWork::None,
+        );
+        if !parked {
+            if entered {
+                self.cpu.install_execution_context(saved_context);
+            }
+            self.set_current_resource_refnum(saved_current_resource_refnum);
         }
-        self.set_current_resource_refnum(saved_current_resource_refnum);
 
         PpcTimerCallbackProbe {
             invocation: PpcTimerCallbackInvocationRecord {
@@ -763,6 +1014,11 @@ impl PpcLoadedApp {
                 self.publish_tick(start_tick.wrapping_add(tick_offset).wrapping_add(1));
             self.callback_scheduling
                 .set_current_subtick(u64::from(current_tick) * 1_000_000);
+            // The Vertical Retrace Manager does not re-enter its queue while a
+            // task is still running; masked ticks do not count down vblCount.
+            if self.interrupts_masked() {
+                continue;
+            }
             if let (Some(context), Some(vbl_proc)) = (
                 self.draw_sprocket.active_context,
                 self.draw_sprocket.vbl_proc,
@@ -788,6 +1044,9 @@ impl PpcLoadedApp {
                 if task.architecture != CallbackTaskArchitecture::PowerPc {
                     continue;
                 }
+                if self.interrupts_masked() {
+                    break;
+                }
                 if probes.len() >= max_callbacks {
                     return probes;
                 }
@@ -806,6 +1065,7 @@ impl PpcLoadedApp {
                 if callback == 0 {
                     continue;
                 }
+                let parks = self.interrupt_callback_parks;
                 probes.push(self.run_vbl_callback(
                     task.task_ptr,
                     callback,
@@ -815,15 +1075,11 @@ impl PpcLoadedApp {
                     process_memory_manager.as_deref_mut(),
                     process_cfm.as_deref_mut(),
                 ));
-                // Inside Macintosh: Processes (1994), pp. 4-7–4-8: a VBL
-                // task must reset vblCount from its callback or the Vertical
-                // Retrace Manager removes the task after that execution.
-                if self.memory.read_u16_be(task.task_ptr + 10) == Some(0) {
-                    self.vbl_tasks.with_mut(|vbl_tasks| {
-                        vbl_tasks.retain(|installed| installed.task_ptr != task.task_ptr);
-                        ppc_sync_vbl_task_links(&mut self.memory, vbl_tasks);
-                    });
+                // A parked task is retired, if at all, when it really returns.
+                if self.interrupt_callback_parks != parks {
+                    break;
                 }
+                self.retire_vbl_task_if_unscheduled(task.task_ptr);
             }
         }
         probes
@@ -854,10 +1110,13 @@ impl PpcLoadedApp {
                 proc_info: 0,
                 routine_flags: 0,
             });
+        let interrupt = self.interrupt_entry();
+        let mut callback_frame = None;
         let mut entered = false;
         let probe = if let Some(callback_sp) = self.prepare_interrupt_callback_frame(default_rtoc) {
             self.cpu.invalidate_reservation();
             entered = true;
+            callback_frame = Some(callback_sp);
             self.cpu.pc = target.entry;
             self.cpu.lr = self.halt_pc;
             self.cpu.gpr[1] = callback_sp;
@@ -882,10 +1141,21 @@ impl PpcLoadedApp {
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
         let cycles = ppc_run_result_cycles(probe.result);
-        if entered {
-            self.cpu.install_execution_context(saved_context);
+        let parked = self.park_interrupt_callback_if_awaiting_m68k(
+            PpcCallbackLevel::Interrupt,
+            interrupt,
+            callback_frame,
+            &probe,
+            &saved_context,
+            Some(saved_current_resource_refnum),
+            PpcInterruptReturnWork::VblTask { task_ptr },
+        );
+        if !parked {
+            if entered {
+                self.cpu.install_execution_context(saved_context);
+            }
+            self.set_current_resource_refnum(saved_current_resource_refnum);
         }
-        self.set_current_resource_refnum(saved_current_resource_refnum);
 
         PpcVblCallbackProbe {
             invocation: PpcVblCallbackInvocationRecord {
@@ -932,10 +1202,13 @@ impl PpcLoadedApp {
                 proc_info: 0,
                 routine_flags: 0,
             });
+        let interrupt = self.interrupt_entry();
+        let mut callback_frame = None;
         let mut entered = false;
         let probe = if let Some(callback_sp) = self.prepare_interrupt_callback_frame(default_rtoc) {
             self.cpu.invalidate_reservation();
             entered = true;
+            callback_frame = Some(callback_sp);
             self.cpu.pc = target.entry;
             self.cpu.lr = self.halt_pc;
             self.cpu.gpr[1] = callback_sp;
@@ -956,10 +1229,21 @@ impl PpcLoadedApp {
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
         let cycles = ppc_run_result_cycles(probe.result);
-        if entered {
-            self.cpu.install_execution_context(saved_context);
+        let parked = self.park_interrupt_callback_if_awaiting_m68k(
+            PpcCallbackLevel::Interrupt,
+            interrupt,
+            callback_frame,
+            &probe,
+            &saved_context,
+            Some(saved_current_resource_refnum),
+            PpcInterruptReturnWork::None,
+        );
+        if !parked {
+            if entered {
+                self.cpu.install_execution_context(saved_context);
+            }
+            self.set_current_resource_refnum(saved_current_resource_refnum);
         }
-        self.set_current_resource_refnum(saved_current_resource_refnum);
 
         PpcVblCallbackProbe {
             invocation: PpcVblCallbackInvocationRecord {
@@ -1021,10 +1305,13 @@ impl PpcLoadedApp {
                     proc_info: 0,
                     routine_flags: 0,
                 });
+        let interrupt = self.interrupt_entry();
+        let mut callback_frame = None;
         let mut entered = false;
         let probe = if let Some(callback_sp) = self.prepare_interrupt_callback_frame(default_rtoc) {
             self.cpu.invalidate_reservation();
             entered = true;
+            callback_frame = Some(callback_sp);
             self.cpu.pc = target.entry;
             self.cpu.lr = self.halt_pc;
             self.cpu.gpr[1] = callback_sp;
@@ -1049,7 +1336,16 @@ impl PpcLoadedApp {
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
         let cycles = ppc_run_result_cycles(probe.result);
-        if entered {
+        let parked = self.park_interrupt_callback_if_awaiting_m68k(
+            PpcCallbackLevel::Interrupt,
+            interrupt,
+            callback_frame,
+            &probe,
+            &saved_context,
+            None,
+            PpcInterruptReturnWork::DoubleBack(doubleback),
+        );
+        if !parked && entered {
             self.cpu.install_execution_context(saved_context);
         }
 
@@ -1075,6 +1371,14 @@ impl PpcLoadedApp {
             fetch_histogram: probe.fetch_histogram,
         }
     }
+}
+
+/// The callback's task as found when an interrupt-level callback was entered.
+#[derive(Debug, Clone, Copy)]
+struct PpcInterruptEntry {
+    task: crate::guest_call::ExecutionTaskId,
+    top_call: Option<crate::guest_call::CallId>,
+    may_park: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
