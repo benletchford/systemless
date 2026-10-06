@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.81.0](https://github.com/benletchford/systemless/compare/v0.80.0...v0.81.0) (2026-10-06)
+
+
+### Features
+
+* **catalogue:** select executable within archives ([#4078](https://github.com/benletchford/systemless/issues/4078)) ([2560d43](https://github.com/benletchford/systemless/commit/2560d43d41079a2f4fc7f646c56e4ff1ebc79d7c))
+* **ppc:** compare QuickDraw regions ([#4117](https://github.com/benletchford/systemless/issues/4117)) ([46920b8](https://github.com/benletchford/systemless/commit/46920b853e11f9cc278ec036921fa530de76e08c))
+* **ppc:** create Apple Event lists and records ([#4097](https://github.com/benletchford/systemless/issues/4097)) ([937f6e3](https://github.com/benletchford/systemless/commit/937f6e3526a1167cc0fe739c2028239726d54733))
+* **ppc:** create signed offset descriptors ([#4121](https://github.com/benletchford/systemless/issues/4121)) ([4c714c2](https://github.com/benletchford/systemless/commit/4c714c21d1a6e956d07b158ae385089af5bb146f))
+* **ppc:** insert descriptors into Apple Event lists ([#4099](https://github.com/benletchford/systemless/issues/4099)) ([db0a039](https://github.com/benletchford/systemless/commit/db0a039b882e704e1751d072ddbd28baf656a0b9))
+* **ppc:** invoke DeviceLoop drawing callbacks ([#4109](https://github.com/benletchford/systemless/issues/4109)) ([8506ffe](https://github.com/benletchford/systemless/commit/8506ffe50669a099c58d37ebe18e4014a2cbce15))
+* **ppc:** map QuickDraw points between rectangles ([#4114](https://github.com/benletchford/systemless/issues/4114)) ([e9eb29b](https://github.com/benletchford/systemless/commit/e9eb29bf208e896c6aeb1b0b9678a1238efd7e1e))
+* **ppc:** register TextEdit click loop ([#4120](https://github.com/benletchford/systemless/issues/4120)) ([5fce1d7](https://github.com/benletchford/systemless/commit/5fce1d75b30d089b33f091d3252b3f5e5767f848))
+* **ppc:** resolve Apple Event object specifiers ([#4102](https://github.com/benletchford/systemless/issues/4102)) ([38658fc](https://github.com/benletchford/systemless/commit/38658fcaf0a139c1b512199cc1de99e34c46aea1))
+* **ppc:** set Balloon Help enabled state ([#4115](https://github.com/benletchford/systemless/issues/4115)) ([b151958](https://github.com/benletchford/systemless/commit/b151958215ac7413ca40a4e8fe3d5597bbd898f4))
+
+
+### Bug Fixes
+
+* **cfm:** describe disk-backed PPC fragments to initializers ([#4126](https://github.com/benletchford/systemless/issues/4126)) ([8b6406a](https://github.com/benletchford/systemless/commit/8b6406a2569060e30ccc5c5d25cfbcf6648852d0))
+* **cfm:** enumerate exported symbols from index zero ([#4094](https://github.com/benletchford/systemless/issues/4094)) ([3805594](https://github.com/benletchford/systemless/commit/3805594963b4092184decd7114c9c31d6f045628))
+* **file-manager:** grant current permission writes for FSSpec opens ([#4123](https://github.com/benletchford/systemless/issues/4123)) ([0b71923](https://github.com/benletchford/systemless/commit/0b719232ad86444dc3cb4202812668c1ab7111d5))
+* **files:** preserve existing files on duplicate create ([#4108](https://github.com/benletchford/systemless/issues/4108)) ([4846236](https://github.com/benletchford/systemless/commit/484623680cde80ac330f06d854332193ed58968c))
+* **macintosh:** implement QuickTime identity matrix trap ([f43ff2d](https://github.com/benletchford/systemless/commit/f43ff2d47ffd59ddaace137921e55e42f2116394))
+* **mac:** provide the standard Extensions folder at boot ([#4086](https://github.com/benletchford/systemless/issues/4086)) ([726e800](https://github.com/benletchford/systemless/commit/726e8003ffc1582a25b6efef6cf893489f0d3f13))
+* **mac:** resync hidden window regions from edited port rect ([4bcc6dd](https://github.com/benletchford/systemless/commit/4bcc6dd1a98f8574244836d1afd1e781b4a8a581))
+* **mac:** stage classic installer files from multiple disks ([#4089](https://github.com/benletchford/systemless/issues/4089)) ([c82c4ba](https://github.com/benletchford/systemless/commit/c82c4ba1536ebc7f52757f50ca233c4e4ba05ac6))
+* **ppc:** initialize existing color ports through InitCPort ([#4081](https://github.com/benletchford/systemless/issues/4081)) ([0f812cd](https://github.com/benletchford/systemless/commit/0f812cd91620387cc975166c0b85960b877779be))
+* **ppc:** reapply Standard File filters after folder changes ([#4106](https://github.com/benletchford/systemless/issues/4106)) ([90736a7](https://github.com/benletchford/systemless/commit/90736a77a0dcef029c5a6f85def86e7cb9e69a58))
+* **ppc:** report inactive Help Manager balloon ([#4112](https://github.com/benletchford/systemless/issues/4112)) ([12af97f](https://github.com/benletchford/systemless/commit/12af97f041730f8b733e27a7acbf2a349b506e9b))
+* **ppc:** store pending window activation through low memory accessor ([#4104](https://github.com/benletchford/systemless/issues/4104)) ([0524283](https://github.com/benletchford/systemless/commit/05242837a2e40b5ffd0cc5a32e957fa418c1456e))
+* **ppc:** support AEManagerInfo import ([#4096](https://github.com/benletchford/systemless/issues/4096)) ([54f7b86](https://github.com/benletchford/systemless/commit/54f7b8601cecaa58fc20a2e36a5765ce9d4710eb))
+* **ppc:** support MovePortTo import for QuickDraw ports ([#4092](https://github.com/benletchford/systemless/issues/4092)) ([188606b](https://github.com/benletchford/systemless/commit/188606bd4b40b8adc0549d040f67b8045b95e5e1))
+* **ppc:** support PortSize import for QuickDraw ports ([#4093](https://github.com/benletchford/systemless/issues/4093)) ([5f6af3f](https://github.com/benletchford/systemless/commit/5f6af3f8b08e6787db85d497d7e0f030eb11d95d))
+* **ppc:** support UnpackBits import ([#4083](https://github.com/benletchford/systemless/issues/4083)) ([eac7cce](https://github.com/benletchford/systemless/commit/eac7cce81feb91845de68254f16f479b485faf3a))
+* read HFS files from shortened disk images ([#4101](https://github.com/benletchford/systemless/issues/4101)) ([f67e22f](https://github.com/benletchford/systemless/commit/f67e22fa7c4b78bab5d9941be5ca1db1d8d4e278))
+* **window:** keep swapped basic port bitmaps offscreen ([f172ece](https://github.com/benletchford/systemless/commit/f172ecef9944472caa997ca415b749c5cc6a5e47))
+
 ## [0.80.0](https://github.com/benletchford/systemless/compare/v0.79.0...v0.80.0) (2026-10-05)
 
 
