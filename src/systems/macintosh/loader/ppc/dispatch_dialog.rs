@@ -3624,10 +3624,16 @@ fn ppc_initialize_dialog_items(
         }
         if base_type == DIALOG_ITEM_RESOURCE_CONTROL {
             ppc_initialize_popup_control(
+                process_memory_manager,
                 memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
                 controls,
                 vfs_resources,
                 current_resource_refnum,
+                last_resource_error,
                 item_handle,
             );
         }

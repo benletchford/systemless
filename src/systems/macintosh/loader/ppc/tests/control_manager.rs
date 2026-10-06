@@ -209,6 +209,14 @@ fn popup_control_records_preserve_item_values_across_set_control_value() {
     );
     assert_ne!(handle, 0);
     let control = loaded.memory.read_u32_be(handle).unwrap();
+    let private_handle = loaded
+        .memory
+        .read_u32_be(control + PPC_CONTROL_DATA_OFFSET)
+        .unwrap();
+    assert_ne!(private_handle, 0);
+    let private_data = loaded.memory.read_u32_be(private_handle).unwrap();
+    assert_ne!(private_data, 0);
+    assert_eq!(loaded.memory.read_u16_be(private_data + 4), Some(143));
     assert_eq!(
         loaded
             .memory
@@ -239,6 +247,54 @@ fn popup_control_records_preserve_item_values_across_set_control_value() {
             .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET),
         Some(4)
     );
+}
+
+#[test]
+fn popup_control_exposes_its_menu_resource_through_private_data() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetNewControl")).unwrap();
+    let mut cntl = vec![0; 23];
+    cntl[10] = 1;
+    cntl[14..16].copy_from_slice(&143i16.to_be_bytes());
+    cntl[16..18].copy_from_slice(&1008i16.to_be_bytes());
+    let ref_num = *loaded.process_file_system.current_resource_file;
+    for (res_type, res_id, data) in [
+        (u32::from_be_bytes(*b"CNTL"), 128, cntl),
+        (
+            u32::from_be_bytes(*b"MENU"),
+            143,
+            new_standard_menu_record(143, 0, b"Shapes"),
+        ),
+    ] {
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num,
+                path: String::new(),
+                res_type,
+                res_id,
+                name: Vec::new(),
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    loaded.cpu.gpr[3] = 128;
+    loaded.cpu.gpr[4] = PPC_MAIN_GWORLD;
+    let probe = loaded.run_with_hle_imports(128);
+    assert_eq!(probe.unsupported_import_index, None);
+    let control = loaded.memory.read_u32_be(loaded.cpu.gpr[3]).unwrap();
+    let data_handle = loaded
+        .memory
+        .read_u32_be(control + PPC_CONTROL_DATA_OFFSET)
+        .unwrap();
+    let data = loaded.memory.read_u32_be(data_handle).unwrap();
+    let menu_handle = loaded.memory.read_u32_be(data).unwrap();
+    assert_ne!(menu_handle, 0);
+    let menu = loaded.memory.read_u32_be(menu_handle).unwrap();
+    assert_eq!(loaded.memory.read_u16_be(menu), Some(143));
+    assert_eq!(loaded.memory.read_u16_be(data + 4), Some(143));
 }
 
 #[test]
