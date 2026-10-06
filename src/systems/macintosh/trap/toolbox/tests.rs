@@ -18481,6 +18481,72 @@
 
     // Image Compression Manager Dispatch ($AAA3)
     #[test]
+    fn fdecompress_image_decodes_jpeg_with_matrix_and_pascal_frame() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let desc_handle = sp + 0x200;
+        let desc = sp + 0x220;
+        let dst_handle = sp + 0x300;
+        let dst = sp + 0x320;
+        let matrix = sp + 0x400;
+        let data = sp + 0x500;
+        let pixels = sp + 0x2000;
+        let rgb = [255, 0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0];
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 100)
+            .encode(&rgb, 2, 2, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        bus.write_bytes(data, &jpeg);
+        bus.write_long(desc_handle, desc);
+        bus.write_long(desc, 86);
+        bus.write_long(desc + 4, u32::from_be_bytes(*b"jpeg"));
+        bus.write_word(desc + 32, 2);
+        bus.write_word(desc + 34, 2);
+        bus.write_long(desc + 44, jpeg.len() as u32);
+        bus.write_long(dst_handle, dst);
+        bus.write_long(dst, pixels);
+        bus.write_word(dst + 4, 0x800C);
+        bus.write_word(dst + 10, 3);
+        bus.write_word(dst + 12, 3);
+        bus.write_word(dst + 32, 32);
+        for index in 0..9 {
+            bus.write_long(
+                matrix + index * 4,
+                match index {
+                    0 | 4 | 6 => 0x0001_0000,
+                    8 => 0x4000_0000,
+                    _ => 0,
+                },
+            );
+        }
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 9);
+        bus.write_long(sp + 16, 0x3FF); // accuracy
+        bus.write_word(sp + 32, 64); // ditherCopy
+        bus.write_long(sp + 34, matrix);
+        bus.write_long(sp + 42, dst_handle);
+        bus.write_long(sp + 46, desc_handle);
+        bus.write_long(sp + 50, data);
+
+        let result = disp.dispatch_toolbox(true, 0x2A3, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 54);
+        assert_eq!(bus.read_word(sp + 54), 0);
+        assert_eq!(bus.read_long(pixels), 0);
+        for (row, column) in [(0, 1), (0, 2), (1, 1), (1, 2)] {
+            let pixel = bus.read_long(pixels + row * 12 + column * 4);
+            assert!(pixel & 0x00FF_0000 >= 0x00C8_0000, "{pixel:08X}");
+            assert!(pixel & 0x0000_FFFF < 0x0000_2020, "{pixel:08X}");
+        }
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 9);
+        bus.write_long(desc + 4, u32::from_be_bytes(*b"raw "));
+        assert!(disp.dispatch_toolbox(true, 0x2A3, &mut cpu, &mut bus).unwrap().is_ok());
+        assert_eq!(bus.read_word(sp + 54) as i16, -8961);
+    }
+
+    #[test]
     fn image_compression_align_screen_rect_uses_eight_bit_grid() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
