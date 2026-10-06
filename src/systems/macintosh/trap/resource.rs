@@ -5867,52 +5867,18 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
 
-                // Per IM Files 1992, 2-89, PBCreate returns dupFNErr when the
-                // file already exists. Some shareware/demo titles ship a
-                // marker file (e.g. Meteor Storm's "MS UserKey") inside their
-                // install folder yet still call HCreate at launch without an
-                // intervening HDelete, treating any error as fatal. Real Mac
-                // installs were typically run from a freshly-extracted copy
-                // where the file did not exist, so the bug never surfaced.
-                // Systemless models the .sit-extracted folder directly, so the
-                // marker is always pre-existing on first launch. To keep
-                // these titles bootable without breaking apps that *do*
-                // handle dupFNErr, truncate-on-exists: clear both forks of
-                // the existing entry and report noErr.
+                // Inside Macintosh: Files (1992), PBCreate pp. 2-89--2-90
+                // and PBHCreate pp. 2-191--2-192: an existing name returns
+                // dupFNErr without changing either fork.
                 let existing = self
                     .vfs
                     .keys()
                     .chain(self.vfs_rsrc.keys())
                     .find(|key| key.eq_ignore_ascii_case(&vfs_key))
                     .cloned();
-                if let Some(existing) = existing {
-                    // Preserve any existing resource-fork content — some
-                    // shareware titles ship a key file with registration
-                    // resources baked into the resource fork (the data
-                    // fork is the marker, the resource fork carries the
-                    // actual templates). Truncating both forks would
-                    // destroy the resources the game then tries to read
-                    // back via FSpOpenResFile + Get1Resource. Truncating
-                    // only the data fork is enough to satisfy the
-                    // "create fresh" expectation that triggers the
-                    // dupFNErr fatal-launch path.
-                    let rsrc_len = self.vfs_rsrc.get(&existing).map(|v| v.len()).unwrap_or(0);
-                    eprintln!(
-                        "[TRAP] PBCreate truncate-on-exists for \"{}\" -> noErr (rsrc preserved: {} bytes)",
-                        existing, rsrc_len
-                    );
-                    self.vfs.insert(existing.clone(), Vec::new());
-                    self.vfs_rsrc.ensure_empty(existing.clone());
-                    self.touch_vfs_entry(&existing);
-                    if let Some(ref dir) = self.output_dir {
-                        let host_path = dir.join(&existing);
-                        if let Some(parent) = host_path.parent() {
-                            let _ = std::fs::create_dir_all(parent);
-                        }
-                        let _ = std::fs::write(host_path, []);
-                    }
-                    bus.write_word(pb + 16, 0);
-                    cpu.write_reg(Register::D0, 0);
+                if existing.is_some() {
+                    bus.write_word(pb + 16, (-48i16) as u16); // dupFNErr
+                    cpu.write_reg(Register::D0, (-48i32) as u32);
                     return Some(Ok(()));
                 }
 

@@ -8042,40 +8042,24 @@ fn pbh_open_data_fork_finds_literal_slash_in_explicit_directory() {
 }
 
 #[test]
-fn pb_create_truncate_on_exists_preserves_rsrc_fork() {
-    // Per IM Files 1992, 2-89, PBCreate returns dupFNErr when a
-    // file with the matching name already exists. Some shareware
-    // titles (e.g. Meteor Storm's "MS UserKey" marker) ship that
-    // file inside their install folder yet still call HCreate at
-    // launch without an intervening HDelete and treat any error
-    // as fatal. Systemless models the .sit-extracted folder
-    // directly, so the marker is always pre-existing on first
-    // launch — we truncate the data fork and report noErr to keep
-    // these titles bootable, but PRESERVE the resource fork
-    // because some titles bake registration templates into it
-    // and read them back via FSpOpenResFile + Get1Resource.
-    let (mut disp, mut cpu, mut bus) = setup();
+fn pb_create_duplicate_preserves_both_forks() {
+    // Inside Macintosh: Files (1992), PBCreate pp. 2-89--2-90 and
+    // PBHCreate pp. 2-191--2-192: duplicate creation returns dupFNErr.
+    for trap in [0xA008, 0xA208] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let filename = "Pilot 1";
+        disp.vfs.insert(filename.to_string(), vec![1, 2, 3]);
+        disp.vfs_rsrc
+            .insert(filename.to_string(), vec![9, 9, 9, 9]);
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, filename.as_bytes());
+        call_trap_word(&mut disp, trap, &mut cpu, &mut bus).unwrap();
 
-    disp.vfs.insert("Pilot 1".to_string(), vec![1, 2, 3]);
-    disp.vfs_rsrc
-        .insert("Pilot 1".to_string(), vec![9, 9, 9, 9]);
-    let pb = 0x300000u32;
-    setup_param_block(&mut bus, &mut cpu, pb, b"Pilot 1");
-
-    call(&mut disp, false, 0x08, &mut cpu, &mut bus).unwrap();
-
-    assert_eq!(cpu.read_reg(Register::D0), 0, "noErr from truncate path");
-    assert_eq!(bus.read_word(pb + 16), 0);
-    assert_eq!(
-        disp.vfs.get("Pilot 1").unwrap(),
-        &Vec::<u8>::new(),
-        "data fork must be empty after truncate"
-    );
-    assert_eq!(
-        disp.vfs_rsrc.get("Pilot 1").unwrap(),
-        &vec![9, 9, 9, 9],
-        "resource fork must be preserved across truncate"
-    );
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -48, "trap {trap:#06x}");
+        assert_eq!(bus.read_word(pb + 16) as i16, -48, "trap {trap:#06x}");
+        assert_eq!(disp.vfs.get(filename).unwrap(), &vec![1, 2, 3]);
+        assert_eq!(disp.vfs_rsrc.get(filename).unwrap(), &vec![9, 9, 9, 9]);
+    }
 }
 
 #[test]
