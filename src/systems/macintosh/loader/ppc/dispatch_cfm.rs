@@ -106,6 +106,7 @@ pub(super) fn dispatch_cfm_import(context: PpcCfmDispatchContext<'_>) -> Option<
             next_cfm_connection_id,
             import_run_state,
             None,
+            None,
         )),
         PpcImportDispatcherTarget::GetDiskFragment => Some(ppc_get_disk_fragment(
             cpu,
@@ -441,6 +442,7 @@ pub(super) fn ppc_get_disk_fragment(
         next_cfm_connection_id,
         import_run_state,
         Some(size),
+        Some(path.rsplit('/').next().unwrap_or(&path)),
     )
 }
 
@@ -456,6 +458,7 @@ pub(super) fn ppc_get_mem_fragment(
     next_cfm_connection_id: &mut u32,
     import_run_state: &mut PpcImportRunState,
     disk_container_size: Option<u32>,
+    disk_file_name: Option<&str>,
 ) -> PpcImportAction {
     // Inside Macintosh: PowerPC System Software (1994), pp. 3-21--3-22:
     // GetMemFragment binds an in-memory PEF and returns a connection ID plus
@@ -496,8 +499,14 @@ pub(super) fn ppc_get_mem_fragment(
     if header.architecture != *b"pwpc" {
         return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_ARCH_ERR));
     }
+    // GetDiskFragment identifies a container by its FSSpec and fork range;
+    // fragName is optional debugging information. Use the file name for a
+    // nameless disk lookup so kFindLib can find an already-connected fragment.
+    // Inside Macintosh: PowerPC System Software (1994), pp. 3-19–3-21.
     let frag_name = if frag_name_ptr == 0 {
-        format!("memory fragment ${mem_addr:08X}")
+        disk_file_name
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("memory fragment ${mem_addr:08X}"))
     } else {
         ppc_read_pstring_bytes(memory, frag_name_ptr)
             .map(|name| decode_mac_roman(&name))
