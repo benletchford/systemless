@@ -1043,6 +1043,81 @@ pub(super) fn ppc_rect_rgn(memory: &mut PpcSectionMem, rgn_handle: u32, rect_ptr
     ppc_write_rgn_bbox(memory, rgn_handle, top, left, bottom, right)
 }
 
+pub(super) fn ppc_inset_rgn(
+    allocator: Option<&mut PpcProcessAllocatorView<'_>>,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    rgn_handle: u32,
+    dh: i16,
+    dv: i16,
+) -> i16 {
+    // InsetRgn contracts each horizontal interval by dh and intersects rows
+    // within dv; negative values expand by union. This preserves nonrectangular
+    // shapes as well as rectangular region headers. Inside Macintosh I-184.
+    let Some(ptr) = ppc_rgn_ptr(memory, rgn_handle) else { return PPC_PARAM_ERR };
+    let Some(size) = memory.read_u16_be(ptr).map(u32::from) else { return PPC_PARAM_ERR };
+    if size < 10 { return PPC_PARAM_ERR; }
+    let Some(storage) = ppc_memory_read_bytes(memory, ptr, size) else { return PPC_PARAM_ERR };
+    let Some((top, left, bottom, right)) = ppc_region_storage_bbox(&storage) else {
+        return PPC_PARAM_ERR;
+    };
+    let output = if bottom <= top || right <= left {
+        vec![0, 10, 0, 0, 0, 0, 0, 0, 0, 0]
+    } else {
+        let clamp = |n: i32| n.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+        let new_top = clamp(i32::from(top) + i32::from(dv));
+        let new_left = clamp(i32::from(left) + i32::from(dh));
+        let new_bottom = clamp(i32::from(bottom) - i32::from(dv));
+        let new_right = clamp(i32::from(right) - i32::from(dh));
+        if new_bottom <= new_top || new_right <= new_left {
+            vec![0, 10, 0, 0, 0, 0, 0, 0, 0, 0]
+        } else {
+            let Some(source_rows) = ppc_region_rows_for_band(&storage, top, bottom) else {
+                return PPC_PARAM_ERR;
+            };
+            let horizontal = source_rows.iter().map(|row| {
+                ppc_region_intervals_to_endpoints(
+                    ppc_region_endpoints_to_intervals(row).into_iter().filter_map(|(l, r)| {
+                        let l = clamp(i32::from(l) + i32::from(dh));
+                        let r = clamp(i32::from(r) - i32::from(dh));
+                        (l < r).then_some((l, r))
+                    }).collect()
+                )
+            }).collect::<Vec<_>>();
+            let radius = i32::from(dv).abs();
+            let mut rows = Vec::with_capacity((i32::from(new_bottom) - i32::from(new_top)) as usize);
+            for y in i32::from(new_top)..i32::from(new_bottom) {
+                let first = y - radius;
+                let last = y + radius;
+                if dv >= 0 && (first < i32::from(top) || last >= i32::from(bottom)) {
+                    rows.push(Vec::new());
+                    continue;
+                }
+                let first = first.max(i32::from(top));
+                let last = last.min(i32::from(bottom) - 1);
+                let mut combined = if dv >= 0 { None } else { Some(Vec::new()) };
+                for source_y in first..=last {
+                    let row = &horizontal[(source_y - i32::from(top)) as usize];
+                    combined = Some(match combined {
+                        Some(current) if dv >= 0 => ppc_region_intersect_rows(&current, row),
+                        Some(current) => ppc_region_union_rows(&current, row),
+                        None => row.clone(),
+                    });
+                }
+                rows.push(combined.unwrap_or_default());
+            }
+            let Some(output) = ppc_region_storage_from_rows(new_top, &rows) else {
+                return PPC_MEM_FULL_ERR;
+            };
+            output
+        }
+    };
+    ppc_write_region_storage(allocator, memory, heap_cursor, heap_limit, last_mem_error, handles, rgn_handle, &output)
+}
+
 pub(super) fn ppc_offset_rgn(memory: &mut PpcSectionMem, rgn_handle: u32, dh: i16, dv: i16) -> i16 {
     let Some(ptr) = ppc_rgn_ptr(memory, rgn_handle) else {
         return PPC_PARAM_ERR;

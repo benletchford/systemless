@@ -21,6 +21,9 @@ pub(super) fn dispatch_low_memory_import(
         default_dir_id,
     } = context;
     match target {
+        PpcImportDispatcherTarget::LMGetGhostWindow => Some(PpcImportAction::Return(
+            memory.read_u32_be(crate::memory::globals::addr::GHOST_WINDOW).unwrap_or(0),
+        )),
         PpcImportDispatcherTarget::LMGetMenuList => {
             Some(PpcImportAction::Return(current_menu_list))
         }
@@ -45,6 +48,17 @@ pub(super) fn dispatch_low_memory_import(
         PpcImportDispatcherTarget::LMGetPaintWhite => Some(PpcImportAction::Return(u32::from(
             memory.read_u16_be(0x09dc).unwrap_or(1) != 0,
         ))),
+        PpcImportDispatcherTarget::LMGetHWCfgFlags => Some(PpcImportAction::Return(
+            // Apple Technical Note PT09 identifies HwCfgFlgs as a signed
+            // low-memory word at $0B22.
+            ppc_i16_result(memory.read_u16_be(0x0b22).unwrap_or(0) as i16),
+        )),
+        PpcImportDispatcherTarget::LMSetROMMapInsert => {
+            // RomMapInsert is a byte global at $0B9E. The Resource Manager
+            // consumes it on the next resource lookup.
+            let _ = memory.write_u8(0x0b9e, cpu.gpr[3] as u8);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::LMGetSysMap => {
             // LowMem.h: LMGetSysMap returns the signed reference number of
             // the System file's resource map. The HLE resource chain uses
@@ -232,6 +246,12 @@ pub(super) fn dispatch_low_memory_import(
         PpcImportDispatcherTarget::LMGetRndSeed => Some(PpcImportAction::Return(
             memory.read_u32_be(PPC_RAND_SEED_ADDR).unwrap_or(1),
         )),
+        PpcImportDispatcherTarget::LMGetCrsrBusy => {
+            // CrsrBusy is true only while the system is changing the cursor.
+            // No asynchronous cursor operation is active in this HLE.
+            // Inside Macintosh: Processes (1994), 4-18.
+            Some(PpcImportAction::Return(0))
+        }
         PpcImportDispatcherTarget::LMSetRndSeed => {
             // Inside Macintosh: Memory (1992), pp. 2-6--2-8: RndSeed is the
             // 32-bit random-number seed low-memory global at $0156.

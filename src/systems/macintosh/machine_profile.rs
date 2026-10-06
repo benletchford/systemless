@@ -212,6 +212,9 @@ pub const REFERENCE_MACHINE_PROFILE: MachineProfile = BASILISK_II_PLAY_PROFILE;
 /// reference profile remains Mac OS 8.1 for 68k guest compatibility.
 pub(crate) const POWERPC_SYSTEM_VERSION_BCD: u16 = 0x0900;
 pub(crate) const POWERPC_CARBON_VERSION_BCD: u16 = 0x0130;
+/// Power Macintosh 9500/120, matching the native PowerPC 604 identity.
+/// Apple lists model ID 67 for this machine.
+pub(crate) const POWERPC_GESTALT_MACHINE_TYPE: u16 = 67;
 
 pub(crate) const REFERENCE_M68K_EXECUTION_CAPABILITIES: GuestExecutionCapabilities =
     REFERENCE_MACHINE_PROFILE.m68k_execution_capabilities();

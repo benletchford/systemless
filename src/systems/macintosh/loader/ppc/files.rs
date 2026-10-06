@@ -3061,6 +3061,7 @@ pub(super) fn ppc_pbh_open_df(
     files: &mut Vec<PpcFileRecord>,
     writable_refnums: &mut HashSet<u16>,
     next_file_ref_num: &mut i16,
+    deny_modes: bool,
 ) -> i16 {
     let pb = cpu.gpr[3];
     if pb == 0 || !ppc_memory_can_write_bytes(memory, pb, 52) {
@@ -3075,8 +3076,21 @@ pub(super) fn ppc_pbh_open_df(
     let Some(dir_id) = memory.read_u32_be(pb + 48) else {
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
     };
-    let Some(permission) = memory.read_u8(pb + 27) else {
+    let Some(raw_permission) = memory.read_u8(pb + 27) else {
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    };
+    // PBHOpenDeny's low ioDenyModes byte encodes requested read/write
+    // access in bits 0 and 1; the other bits restrict concurrent users.
+    // This process-local VFS has no other users to deny. Files (1992), 2-93.
+    let permission = if deny_modes {
+        match raw_permission & 0x03 {
+            1 => 1, // fsRdPerm
+            2 => 2, // fsWrPerm
+            3 => 3, // fsRdWrPerm
+            _ => return ppc_complete_pb(memory, pb, PPC_PARAM_ERR),
+        }
+    } else {
+        raw_permission
     };
     let name = ppc_normalize_vfs_path(&decode_mac_roman(&name_bytes));
     if name.is_empty() {
@@ -5280,13 +5294,11 @@ pub(super) fn ppc_classic_alias_record_from_data(
         PPC_FSSPEC_MAX_NAME_LEN,
     )?;
 
-    if target_dir_id == u32::MAX || target_name.is_empty() {
-        if let Some((full_path_dir_id, full_path_name)) =
-            ppc_classic_alias_full_path_target(memory, data_ptr, record_size, vfs_directories)
-        {
-            target_dir_id = full_path_dir_id;
-            target_name = full_path_name;
-        }
+    if let Some((full_path_dir_id, full_path_name)) =
+        ppc_classic_alias_full_path_target(memory, data_ptr, record_size, vfs_directories)
+    {
+        target_dir_id = full_path_dir_id;
+        target_name = full_path_name;
     }
     if target_dir_id == u32::MAX || target_name.len() > PPC_FSSPEC_MAX_NAME_LEN {
         return None;
@@ -5357,13 +5369,14 @@ pub(super) fn ppc_classic_alias_record_from_bytes(
         PPC_CLASSIC_ALIAS_FILE_NAME_OFFSET,
         PPC_FSSPEC_MAX_NAME_LEN,
     )?;
-    if target_dir_id == u32::MAX || target_name.is_empty() {
-        if let Some((full_path_dir_id, full_path_name)) =
-            ppc_classic_alias_full_path_target_from_bytes(bytes, record_size, vfs_directories)
-        {
-            target_dir_id = full_path_dir_id;
-            target_name = full_path_name;
-        }
+    // Directory IDs in a classic alias refer to the source volume's catalog.
+    // Resolve the saved full path against the current VFS before using that
+    // historical ID, as an alias may have moved to another mounted volume.
+    if let Some((full_path_dir_id, full_path_name)) =
+        ppc_classic_alias_full_path_target_from_bytes(bytes, record_size, vfs_directories)
+    {
+        target_dir_id = full_path_dir_id;
+        target_name = full_path_name;
     }
     if target_dir_id == u32::MAX || target_name.len() > PPC_FSSPEC_MAX_NAME_LEN {
         return None;
@@ -5515,6 +5528,41 @@ pub(super) fn ppc_read_fixed_pstring_bytes(
         bytes.push(memory.read_u8(addr.checked_add(1 + offset as u32)?)?);
     }
     Some(bytes)
+}
+
+pub(super) fn ppc_match_alias(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_directories: &[PpcVfsDirectory],
+    handles: &[PpcHandleRecord],
+    aliases: &[PpcAliasRecord],
+) -> i16 {
+    // MatchAlias returns up to aliasCount FSSpec candidates. A classic
+    // single-volume alias has one deterministic match in this process VFS.
+    // Inside Macintosh: Files (1992), 4-20 through 4-22.
+    let alias_handle = cpu.gpr[5];
+    let count_ptr = cpu.gpr[6];
+    let list_ptr = cpu.gpr[7];
+    let needs_update_ptr = cpu.gpr[8];
+    if alias_handle == 0 || count_ptr == 0 || list_ptr == 0 || needs_update_ptr == 0 {
+        return PPC_PARAM_ERR;
+    }
+    let Some(max_count) = memory.read_u16_be(count_ptr) else { return PPC_PARAM_ERR };
+    if max_count == 0 || !ppc_memory_can_write_bytes(memory, list_ptr, PPC_FSSPEC_SIZE as u32)
+        || !ppc_memory_can_write_bytes(memory, needs_update_ptr, 1)
+    {
+        return PPC_PARAM_ERR;
+    }
+    let alias = aliases.iter().find(|record| record.handle == alias_handle).cloned()
+        .or_else(|| ppc_alias_record_from_handle(memory, handles, alias_handle, Some(vfs_directories)));
+    let Some(alias) = alias else { return PPC_PARAM_ERR };
+    if !ppc_write_fsspec_parts(memory, list_ptr, alias.target_vref, alias.target_dir_id, &alias.target_name)
+        || memory.write_u16_be(count_ptr, 1).is_none()
+        || memory.write_u8(needs_update_ptr, 0).is_none()
+    {
+        return PPC_PARAM_ERR;
+    }
+    PPC_NO_ERR
 }
 
 pub(super) fn ppc_resolve_alias(

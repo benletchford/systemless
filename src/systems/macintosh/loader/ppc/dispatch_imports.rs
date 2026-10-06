@@ -517,6 +517,7 @@ pub(crate) fn dispatch_supported_import(
             last_mem_error,
             stdc_qsort_stack,
             stdc_signal_state: &mut toolbox_startup.stdc_signal_state,
+            stdc_jmpbufs: &mut toolbox_startup.stdc_jmpbufs,
         })
     {
         return Some(action);
@@ -813,6 +814,7 @@ pub(crate) fn dispatch_supported_import(
             binding,
             cpu,
             memory,
+            init_graf_global_ptr: toolbox_startup.init_graf_global_ptr,
         })
     {
         return Some(action);
@@ -1325,6 +1327,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::HandToHand
         | PpcImportDispatcherTarget::HandAndHand
         | PpcImportDispatcherTarget::NewHandle { .. }
+        | PpcImportDispatcherTarget::NewString
+        | PpcImportDispatcherTarget::NewHandleSys { .. }
         | PpcImportDispatcherTarget::TempNewHandle
         | PpcImportDispatcherTarget::TempDisposeHandle
         | PpcImportDispatcherTarget::HoldMemory
@@ -1629,6 +1633,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::HOpen
         | PpcImportDispatcherTarget::PBOpen
         | PpcImportDispatcherTarget::PBHOpenDF
+        | PpcImportDispatcherTarget::PBHOpenDeny
         | PpcImportDispatcherTarget::CurResFile
         | PpcImportDispatcherTarget::UseResFile
         | PpcImportDispatcherTarget::OpenResFile
@@ -1670,6 +1675,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::PlotIconRef
         | PpcImportDispatcherTarget::ReleaseIconRef
         | PpcImportDispatcherTarget::ResolveAlias
+        | PpcImportDispatcherTarget::MatchAlias
         | PpcImportDispatcherTarget::UpdateAlias
         | PpcImportDispatcherTarget::NewAlias
         | PpcImportDispatcherTarget::NewAliasMinimalFromFullPath
@@ -1864,6 +1870,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::SetRectRgn
         | PpcImportDispatcherTarget::RectRgn
         | PpcImportDispatcherTarget::OffsetRgn
+        | PpcImportDispatcherTarget::InsetRgn
         | PpcImportDispatcherTarget::EmptyRgn
         | PpcImportDispatcherTarget::EqualRgn
         | PpcImportDispatcherTarget::PtInRgn
@@ -2020,6 +2027,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::AutoSleepControl
         | PpcImportDispatcherTarget::IsAutoSlpControlDisabled
         | PpcImportDispatcherTarget::OpenDriver
+        | PpcImportDispatcherTarget::Status
         | PpcImportDispatcherTarget::Control
         | PpcImportDispatcherTarget::PBControl
         | PpcImportDispatcherTarget::PBStatus => {
@@ -2041,6 +2049,7 @@ pub(crate) fn dispatch_supported_import(
             unreachable!("standard file imports return through dispatch_standard_file_import")
         }
         PpcImportDispatcherTarget::GetScrap
+        | PpcImportDispatcherTarget::InfoScrap
         | PpcImportDispatcherTarget::PutScrap
         | PpcImportDispatcherTarget::ZeroScrap
         | PpcImportDispatcherTarget::LoadScrap
@@ -2143,6 +2152,9 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::SysEnvirons
         | PpcImportDispatcherTarget::SVersion
         | PpcImportDispatcherTarget::EqualString
+        | PpcImportDispatcherTarget::RelString
+        | PpcImportDispatcherTarget::InitEditionPackVersion
+        | PpcImportDispatcherTarget::StuffHex
         | PpcImportDispatcherTarget::GetIntlResourceTable
         | PpcImportDispatcherTarget::NumToString
         | PpcImportDispatcherTarget::StringToNum
@@ -2159,17 +2171,25 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::CharWidth
         | PpcImportDispatcherTarget::GetFontInfo
         | PpcImportDispatcherTarget::FontMetrics
-        | PpcImportDispatcherTarget::GetFNum => {
+        | PpcImportDispatcherTarget::GetFNum
+        | PpcImportDispatcherTarget::FontToScript
+        | PpcImportDispatcherTarget::SetPreserveGlyph
+        | PpcImportDispatcherTarget::GetPreserveGlyph
+        | PpcImportDispatcherTarget::IsMetric
+        | PpcImportDispatcherTarget::VisibleLength => {
             unreachable!("Font Manager imports return through dispatch_font_import")
         }
         PpcImportDispatcherTarget::AESetInteractionAllowed
         | PpcImportDispatcherTarget::AEGetInteractionAllowed
+        | PpcImportDispatcherTarget::AEInteractWithUser
         | PpcImportDispatcherTarget::AEManagerInfo => {
             unreachable!("Apple Event imports return through dispatch_apple_event_import")
         }
         PpcImportDispatcherTarget::StdMemset
         | PpcImportDispatcherTarget::StdMemcmp
         | PpcImportDispatcherTarget::StdMemcpy
+        | PpcImportDispatcherTarget::StdSetJmp
+        | PpcImportDispatcherTarget::StdLongJmp
         | PpcImportDispatcherTarget::StdMemmove => {
             unreachable!("stdc imports return through dispatch_stdc_import")
         }
@@ -2835,6 +2855,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::LMSetCurActivate
         | PpcImportDispatcherTarget::LMGetMenuFlash
         | PpcImportDispatcherTarget::LMGetPaintWhite
+        | PpcImportDispatcherTarget::LMGetHWCfgFlags
+        | PpcImportDispatcherTarget::LMSetROMMapInsert
         | PpcImportDispatcherTarget::LMGetSysMap
         | PpcImportDispatcherTarget::LMGetCurApRefNum
         | PpcImportDispatcherTarget::GetVCBQHdr
@@ -2864,6 +2886,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::LMGetSFSaveDisk
         | PpcImportDispatcherTarget::LMSetSFSaveDisk
         | PpcImportDispatcherTarget::LMGetRndSeed
+        | PpcImportDispatcherTarget::LMGetGhostWindow
+        | PpcImportDispatcherTarget::LMGetCrsrBusy
         | PpcImportDispatcherTarget::LMSetRndSeed
         | PpcImportDispatcherTarget::SetCurrentA5
         | PpcImportDispatcherTarget::SetA5

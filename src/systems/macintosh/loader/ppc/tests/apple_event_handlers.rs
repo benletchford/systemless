@@ -1,6 +1,23 @@
 use super::*;
 
 #[test]
+fn ae_interact_with_user_allows_foreground_application() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "AEInteractWithUser"),
+        PpcImportDispatcherTarget::AEInteractWithUser,
+    );
+    let pef = synthetic_pef_with_import(b"AEInteractWithUser");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = u32::MAX; // Default timeout.
+    loaded.cpu.gpr[4] = 0; // No Notification Manager record.
+    loaded.cpu.gpr[5] = 0; // No idle callback.
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AEInteractWithUser);
+
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+}
+
+#[test]
 fn ae_manager_info_returns_version_and_recorder_count() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "AEManagerInfo"),

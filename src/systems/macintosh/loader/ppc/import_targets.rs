@@ -18,6 +18,8 @@ pub enum PpcImportDispatcherTarget {
     HandToHand,
     HandAndHand,
     NewHandle { clear: bool },
+    NewString,
+    NewHandleSys { clear: bool },
     TempNewHandle,
     TempDisposeHandle,
     HoldMemory,
@@ -237,6 +239,7 @@ pub enum PpcImportDispatcherTarget {
     SetRectRgn,
     RectRgn,
     OffsetRgn,
+    InsetRgn,
     EmptyRgn,
     EqualRgn,
     PtInRgn,
@@ -256,6 +259,7 @@ pub enum PpcImportDispatcherTarget {
     SetWindowPic,
     GetAuxWin,
     LMGetWindowList,
+    LMGetGhostWindow,
     LMSetWindowList,
     LMSetCurActivate,
     LMGetAuxWinHead,
@@ -321,6 +325,8 @@ pub enum PpcImportDispatcherTarget {
     LMSetMenuHook,
     LMGetMenuFlash,
     LMGetPaintWhite,
+    LMGetHWCfgFlags,
+    LMSetROMMapInsert,
     LMGetSysMap,
     LMGetCurApRefNum,
     GetVCBQHdr,
@@ -430,6 +436,7 @@ pub enum PpcImportDispatcherTarget {
     AutoSleepControl,
     IsAutoSlpControlDisabled,
     OpenDriver,
+    Status,
     Control,
     PBControl,
     PBStatus,
@@ -438,6 +445,7 @@ pub enum PpcImportDispatcherTarget {
     NewAliasMinimalFromFullPath,
     UpdateAlias,
     ResolveAlias,
+    MatchAlias,
     ResolveAliasFile,
     ResolveAliasFileWithMountFlags,
     GetIconRefFromFile,
@@ -466,6 +474,7 @@ pub enum PpcImportDispatcherTarget {
     HSetFInfo,
     StandardGetFile,
     GetScrap,
+    InfoScrap,
     PutScrap,
     ZeroScrap,
     LoadScrap,
@@ -508,6 +517,7 @@ pub enum PpcImportDispatcherTarget {
     FSpOpenRF,
     PBOpen,
     PBHOpenDF,
+    PBHOpenDeny,
     HOpen,
     FSOpen,
     FSpOpenResFile,
@@ -729,15 +739,22 @@ pub enum PpcImportDispatcherTarget {
     GetFontInfo,
     FontMetrics,
     GetFNum,
+    FontToScript,
+    SetPreserveGlyph,
+    GetPreserveGlyph,
+    IsMetric,
+    VisibleLength,
     GetIntlResource,
     AESetInteractionAllowed,
     AEGetInteractionAllowed,
+    AEInteractWithUser,
     AEManagerInfo,
     LMGetCurDirStore,
     LMSetCurDirStore,
     LMGetSFSaveDisk,
     LMSetSFSaveDisk,
     LMGetRndSeed,
+    LMGetCrsrBusy,
     LMSetRndSeed,
     SetCurrentA5,
     SetA5,
@@ -756,6 +773,9 @@ pub enum PpcImportDispatcherTarget {
     SetOSTrapAddress,
     NSetTrapAddress,
     EqualString,
+    RelString,
+    InitEditionPackVersion,
+    StuffHex,
     IUEqualPString,
     GetIntlResourceTable,
     NumToString,
@@ -767,6 +787,8 @@ pub enum PpcImportDispatcherTarget {
     StdMemset,
     StdMemcmp,
     StdMemcpy,
+    StdSetJmp,
+    StdLongJmp,
     StdMemmove,
     StdMalloc,
     StdFree,
@@ -2254,10 +2276,8 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::Math64(PpcMath64Operation::UInt64ToSInt64)
         }
         ("MathLib", "pi") => PpcImportDispatcherTarget::NoOpPreserve,
-        // ISO/IEC 9899:1990 §4.6.1.1: setjmp returns zero when invoked
-        // directly. The supported callers import __setjmp without longjmp,
-        // so they do not require restoration of the saved environment.
-        ("StdCLib", "__setjmp") => PpcImportDispatcherTarget::ReturnNoErr,
+        ("StdCLib", "__setjmp") => PpcImportDispatcherTarget::StdSetJmp,
+        ("StdCLib", "longjmp") => PpcImportDispatcherTarget::StdLongJmp,
         // Classic Text Services Manager startup registers the application.
         // The emulated process has no external input method to initialize.
         ("InterfaceLib", "InitTSMAwareApplication")
@@ -2519,7 +2539,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "SetPtrSize") => PpcImportDispatcherTarget::SetPtrSize,
         ("InterfaceLib", "RecoverHandle") => PpcImportDispatcherTarget::RecoverHandle,
         ("InterfaceLib", "NewHandle") => PpcImportDispatcherTarget::NewHandle { clear: false },
+        ("InterfaceLib", "NewString") => PpcImportDispatcherTarget::NewString,
         ("InterfaceLib", "NewHandleClear") => PpcImportDispatcherTarget::NewHandle { clear: true },
+        ("InterfaceLib", "NewHandleSys") => PpcImportDispatcherTarget::NewHandleSys { clear: false },
+        ("InterfaceLib", "NewHandleSysClear") => PpcImportDispatcherTarget::NewHandleSys { clear: true },
         ("InterfaceLib", "TempNewHandle") => PpcImportDispatcherTarget::TempNewHandle,
         ("InterfaceLib", "TempDisposeHandle") => PpcImportDispatcherTarget::TempDisposeHandle,
         ("InterfaceLib", "HoldMemory") => PpcImportDispatcherTarget::HoldMemory,
@@ -2808,6 +2831,8 @@ pub(crate) fn dispatcher_target_for_import(
             "LMGetMenuFlash" | "lmgetmenuflash",
         ) => PpcImportDispatcherTarget::LMGetMenuFlash,
         ("InterfaceLib", "LMGetPaintWhite") => PpcImportDispatcherTarget::LMGetPaintWhite,
+        ("InterfaceLib", "LMGetHWCfgFlags") => PpcImportDispatcherTarget::LMGetHWCfgFlags,
+        ("InterfaceLib", "LMSetROMMapInsert") => PpcImportDispatcherTarget::LMSetROMMapInsert,
         ("InterfaceLib", "LMGetSysMap") => PpcImportDispatcherTarget::LMGetSysMap,
         ("InterfaceLib", "LMGetCurApRefNum") => PpcImportDispatcherTarget::LMGetCurApRefNum,
         ("InterfaceLib", "GetVCBQHdr") => PpcImportDispatcherTarget::GetVCBQHdr,
@@ -3023,6 +3048,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "SetRectRgn") => PpcImportDispatcherTarget::SetRectRgn,
         ("InterfaceLib", "RectRgn") => PpcImportDispatcherTarget::RectRgn,
         ("InterfaceLib", "OffsetRgn") => PpcImportDispatcherTarget::OffsetRgn,
+        ("InterfaceLib", "InsetRgn") => PpcImportDispatcherTarget::InsetRgn,
         ("InterfaceLib", "EmptyRgn") => PpcImportDispatcherTarget::EmptyRgn,
         ("InterfaceLib", "EqualRgn") => PpcImportDispatcherTarget::EqualRgn,
         ("InterfaceLib", "PtInRgn") => PpcImportDispatcherTarget::PtInRgn,
@@ -3066,6 +3092,7 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "LMGetWindowList" | "lmgetwindowlist",
         ) => PpcImportDispatcherTarget::LMGetWindowList,
+        ("InterfaceLib", "LMGetGhostWindow") => PpcImportDispatcherTarget::LMGetGhostWindow,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "LMSetWindowList" | "lmsetwindowlist",
@@ -3305,6 +3332,7 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::IsAutoSlpControlDisabled
         }
         ("InterfaceLib", "OpenDriver") => PpcImportDispatcherTarget::OpenDriver,
+        ("InterfaceLib", "Status") => PpcImportDispatcherTarget::Status,
         ("InterfaceLib", "Control") => PpcImportDispatcherTarget::Control,
         ("InterfaceLib", "PBControl")
         | ("InterfaceLib", "PBControlSync")
@@ -3319,6 +3347,7 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "UpdateAlias") => PpcImportDispatcherTarget::UpdateAlias,
         ("InterfaceLib", "ResolveAlias") => PpcImportDispatcherTarget::ResolveAlias,
+        ("InterfaceLib", "MatchAlias") => PpcImportDispatcherTarget::MatchAlias,
         ("InterfaceLib", "ResolveAliasFile") => PpcImportDispatcherTarget::ResolveAliasFile,
         ("InterfaceLib", "ResolveAliasFileWithMountFlags") => {
             PpcImportDispatcherTarget::ResolveAliasFileWithMountFlags
@@ -3370,6 +3399,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "HSetFInfo") => PpcImportDispatcherTarget::HSetFInfo,
         ("InterfaceLib", "StandardGetFile") => PpcImportDispatcherTarget::StandardGetFile,
         ("InterfaceLib", "GetScrap") => PpcImportDispatcherTarget::GetScrap,
+        ("InterfaceLib", "InfoScrap") => PpcImportDispatcherTarget::InfoScrap,
         ("InterfaceLib", "PutScrap") => PpcImportDispatcherTarget::PutScrap,
         ("InterfaceLib", "ZeroScrap") => PpcImportDispatcherTarget::ZeroScrap,
         ("InterfaceLib", "LoadScrap") => PpcImportDispatcherTarget::LoadScrap,
@@ -3387,6 +3417,9 @@ pub(crate) fn dispatcher_target_for_import(
         | ("InterfaceLib", "PBHOpen")
         | ("InterfaceLib", "PBHOpenSync")
         | ("InterfaceLib", "PBHOpenAsync") => PpcImportDispatcherTarget::PBHOpenDF,
+        ("InterfaceLib", "PBHOpenDeny")
+        | ("InterfaceLib", "PBHOpenDenySync")
+        | ("InterfaceLib", "PBHOpenDenyAsync") => PpcImportDispatcherTarget::PBHOpenDeny,
         ("InterfaceLib", "FSpCreateResFile") => PpcImportDispatcherTarget::FSpCreateResFile,
         ("InterfaceLib", "HCreateResFile") => PpcImportDispatcherTarget::HCreateResFile,
         ("InterfaceLib", "FSpOpenResFile") => PpcImportDispatcherTarget::FSpOpenResFile,
@@ -4000,6 +4033,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "LMGetSFSaveDisk") => PpcImportDispatcherTarget::LMGetSFSaveDisk,
         ("InterfaceLib", "LMSetSFSaveDisk") => PpcImportDispatcherTarget::LMSetSFSaveDisk,
         ("InterfaceLib", "LMGetRndSeed") => PpcImportDispatcherTarget::LMGetRndSeed,
+        ("InterfaceLib", "LMGetCrsrBusy") => PpcImportDispatcherTarget::LMGetCrsrBusy,
         ("InterfaceLib", "LMSetRndSeed") => PpcImportDispatcherTarget::LMSetRndSeed,
         ("InterfaceLib", "SetCurrentA5") => PpcImportDispatcherTarget::SetCurrentA5,
         ("InterfaceLib", "SetA5") => PpcImportDispatcherTarget::SetA5,
@@ -4026,6 +4060,11 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetFontInfo") => PpcImportDispatcherTarget::GetFontInfo,
         ("InterfaceLib", "FontMetrics") => PpcImportDispatcherTarget::FontMetrics,
         ("InterfaceLib", "GetFNum") => PpcImportDispatcherTarget::GetFNum,
+        ("InterfaceLib", "FontToScript") => PpcImportDispatcherTarget::FontToScript,
+        ("InterfaceLib", "SetPreserveGlyph") => PpcImportDispatcherTarget::SetPreserveGlyph,
+        ("InterfaceLib", "GetPreserveGlyph") => PpcImportDispatcherTarget::GetPreserveGlyph,
+        ("InterfaceLib", "IsMetric") => PpcImportDispatcherTarget::IsMetric,
+        ("InterfaceLib", "VisibleLength") => PpcImportDispatcherTarget::VisibleLength,
         ("InterfaceLib", "GetIntlResource") => PpcImportDispatcherTarget::GetIntlResource,
         ("InterfaceLib", "AESetInteractionAllowed") => {
             PpcImportDispatcherTarget::AESetInteractionAllowed
@@ -4033,9 +4072,15 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "AEGetInteractionAllowed") => {
             PpcImportDispatcherTarget::AEGetInteractionAllowed
         }
+        ("InterfaceLib", "AEInteractWithUser") => {
+            PpcImportDispatcherTarget::AEInteractWithUser
+        }
         ("InterfaceLib", "AEManagerInfo") => PpcImportDispatcherTarget::AEManagerInfo,
         ("InterfaceLib", "SVersion") => PpcImportDispatcherTarget::SVersion,
         ("InterfaceLib", "EqualString") => PpcImportDispatcherTarget::EqualString,
+        ("InterfaceLib", "RelString") => PpcImportDispatcherTarget::RelString,
+        ("InterfaceLib", "InitEditionPackVersion") => PpcImportDispatcherTarget::InitEditionPackVersion,
+        ("InterfaceLib", "StuffHex") => PpcImportDispatcherTarget::StuffHex,
         ("InterfaceLib", "IUEqualPString") => PpcImportDispatcherTarget::IUEqualPString,
         ("InterfaceLib", "GetIntlResourceTable") => {
             PpcImportDispatcherTarget::GetIntlResourceTable

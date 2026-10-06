@@ -1,6 +1,61 @@
 use super::*;
 
 #[test]
+fn preserve_glyph_preference_round_trips() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SetPreserveGlyph")).unwrap();
+    assert!(!loaded.toolbox_startup.preserve_glyph);
+    loaded.cpu.gpr[3] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetPreserveGlyph);
+    assert!(loaded.toolbox_startup.preserve_glyph);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPreserveGlyph);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetPreserveGlyph);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPreserveGlyph);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
+fn is_metric_matches_roman_numeric_format() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"IsMetric")).unwrap();
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::IsMetric);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
+fn font_to_script_defaults_to_enabled_roman_script() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "FontToScript"),
+        PpcImportDispatcherTarget::FontToScript
+    );
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"FontToScript")).unwrap();
+    for font in [0, 1, 3, 16_384, 17_408] {
+        loaded.cpu.gpr[3] = font;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::FontToScript);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+}
+
+#[test]
+fn visible_length_excludes_trailing_roman_whitespace() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "VisibleLength"),
+        PpcImportDispatcherTarget::VisibleLength
+    );
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"VisibleLength")).unwrap();
+    let text = PPC_DATA_BASE + 0x2700;
+    loaded.memory.add_region(text, b"Hello  \t".to_vec());
+    loaded.cpu.gpr[3] = text;
+    loaded.cpu.gpr[4] = 8;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::VisibleLength);
+    assert_eq!(loaded.cpu.gpr[3], 5);
+    loaded.cpu.gpr[3] = text;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::VisibleLength);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
 fn hle_import_runner_sets_textedit_click_loop_procedure() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "TESetClickLoop"),

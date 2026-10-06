@@ -486,6 +486,38 @@ fn pb_read_async_returns_from_sound_doubleback_before_its_completion() {
     }
 
     #[test]
+    fn classic_alias_uses_current_directory_id_for_saved_full_path() {
+        let mut bytes = classic_alias_record_with_full_path(
+            b"Old Disk:Applications:Photoshop:Plug-ins",
+        );
+        bytes[PPC_CLASSIC_ALIAS_DIR_ID_OFFSET..PPC_CLASSIC_ALIAS_DIR_ID_OFFSET + 4]
+            .copy_from_slice(&42u32.to_be_bytes());
+        let directories = [
+            PpcVfsDirectory {
+                dir_id: 100,
+                parent_dir_id: PPC_ROOT_DIR_ID,
+                path: "Applications".to_string(),
+                creator: PPC_DIRECTORY_CREATOR,
+                file_type: PPC_DIRECTORY_FILE_TYPE,
+                finder_flags: 0,
+                dirty: false,
+            },
+            PpcVfsDirectory {
+                dir_id: 101,
+                parent_dir_id: 100,
+                path: "Applications/Photoshop".to_string(),
+                creator: PPC_DIRECTORY_CREATOR,
+                file_type: PPC_DIRECTORY_FILE_TYPE,
+                finder_flags: 0,
+                dirty: false,
+            },
+        ];
+        let alias = ppc_classic_alias_record_from_bytes(&bytes, Some(&directories)).unwrap();
+        assert_eq!(alias.target_dir_id, 101);
+        assert_eq!(alias.target_name, b"Plug-ins");
+    }
+
+    #[test]
     fn hle_import_runner_new_alias_allocates_classic_alias_record_handle() {
         let pef = synthetic_pef_with_import(b"NewAlias");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -664,6 +696,36 @@ fn pb_read_async_returns_from_sound_doubleback_before_its_completion() {
             Some(b"Test App Prefs".as_slice())
         );
         assert_eq!(loaded.memory.read_u8(was_changed_ptr), Some(0));
+    }
+
+    #[test]
+    fn match_alias_returns_one_fsspec_candidate() {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewAlias")).unwrap();
+        let scratch = PPC_HEAP_BASE + 0x1200;
+        loaded.memory.add_region(scratch, vec![0; 512]);
+        write_ppc_fsspec(&mut loaded.memory, scratch, PPC_BOOT_VOLUME_REF_NUM,
+            PPC_PREFERENCES_DIR_ID, b"Plug-ins");
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = scratch;
+        loaded.cpu.gpr[5] = scratch + 80;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::NewAlias);
+        let alias = loaded.memory.read_u32_be(scratch + 80).unwrap();
+        assert_ne!(alias, 0);
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 0x0100; // kARMSearch
+        loaded.cpu.gpr[5] = alias;
+        loaded.cpu.gpr[6] = scratch + 84;
+        loaded.cpu.gpr[7] = scratch + 96;
+        loaded.cpu.gpr[8] = scratch + 200;
+        loaded.cpu.gpr[9] = 0;
+        loaded.cpu.gpr[10] = 0;
+        loaded.memory.write_u16_be(scratch + 84, 1).unwrap();
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::MatchAlias);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u16_be(scratch + 84), Some(1));
+        assert_eq!(ppc_read_pstring_bytes(&mut loaded.memory, scratch + 102).as_deref(),
+            Some(b"Plug-ins".as_slice()));
+        assert_eq!(loaded.memory.read_u8(scratch + 200), Some(0));
     }
 
     #[test]
@@ -4143,6 +4205,31 @@ fn pb_read_async_returns_from_sound_doubleback_before_its_completion() {
         );
         assert_eq!(loaded.files.len(), 1);
         assert_eq!(loaded.files[0].path, "Game Folder/Scores");
+    }
+
+    #[test]
+    fn pbh_open_deny_sync_reads_access_bits_from_io_deny_modes() {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PBHOpenDenySync")).unwrap();
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: "Document".to_string(),
+            data: b"test".to_vec().into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+        let pb = PPC_DATA_BASE + 0x1000;
+        let name = pb + 64;
+        loaded.memory.add_region(pb, vec![0; 128]);
+        write_ppc_pstring(&mut loaded.memory, name, b"Document");
+        loaded.memory.write_u32_be(pb + 18, name).unwrap();
+        loaded.memory.write_u32_be(pb + 48, PPC_ROOT_DIR_ID).unwrap();
+        loaded.memory.write_u16_be(pb + 26, 0x0023).unwrap();
+        loaded.cpu.gpr[3] = pb;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PBHOpenDeny);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        let ref_num = loaded.memory.read_u16_be(pb + 24).unwrap();
+        assert!(loaded.writable_refnums.contains(&ref_num));
     }
 
     #[test]

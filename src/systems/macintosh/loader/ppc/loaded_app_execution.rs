@@ -2478,10 +2478,14 @@ pub(crate) fn dispatch_simple_hot_import_fast(
 }
 
 pub(crate) fn ppc_random(memory: &mut PpcSectionMem) -> u16 {
-    let old_seed = memory.read_u32_be(PPC_RAND_SEED_ADDR).unwrap_or(1);
+    ppc_random_at(memory, PPC_RAND_SEED_ADDR)
+}
+
+pub(crate) fn ppc_random_at(memory: &mut PpcSectionMem, seed_addr: u32) -> u16 {
+    let old_seed = memory.read_u32_be(seed_addr).unwrap_or(1);
     let seed = if old_seed == 0 { 1 } else { old_seed };
     let new_seed = ((u64::from(seed) * 16_807) % 2_147_483_647) as u32;
-    let _ = memory.write_u32_be(PPC_RAND_SEED_ADDR, new_seed);
+    let _ = memory.write_u32_be(seed_addr, new_seed);
     let result = new_seed as u16;
     if result == 0x8000 {
         0

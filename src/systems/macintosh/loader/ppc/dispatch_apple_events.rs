@@ -839,6 +839,12 @@ pub(super) fn dispatch_apple_event_import(
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
+        PpcImportDispatcherTarget::AEInteractWithUser => {
+            // The runner has one foreground application; the request can
+            // return immediately without a Notification Manager handoff.
+            // Inside Macintosh: Interapplication Communication (1993), 4-83.
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
         PpcImportDispatcherTarget::AEManagerInfo => {
             // AEManagerInfo (Pack8 selector $0441)
             // FUNCTION AEManagerInfo(keyword: AEKeyword; VAR result: LongInt): OSErr;

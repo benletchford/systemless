@@ -3,6 +3,24 @@ use crate::cpu::{CpuOps, Register};
 use crate::trap::test_helpers::{setup_with_port, MockCpu, TEST_SP};
 
 #[test]
+fn inset_rgn_contracts_and_expands_rectangular_bounds() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewRgn")).unwrap();
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewRgn);
+    let region = loaded.cpu.gpr[3];
+    ppc_write_rgn_bbox(&mut loaded.memory, region, 10, 20, 90, 120).unwrap();
+    loaded.cpu.gpr[3] = region;
+    loaded.cpu.gpr[4] = 5;
+    loaded.cpu.gpr[5] = 8;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InsetRgn);
+    assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, region), Some((18, 25, 82, 115)));
+    loaded.cpu.gpr[3] = region;
+    loaded.cpu.gpr[4] = (-5i16) as u16 as u32;
+    loaded.cpu.gpr[5] = (-8i16) as u16 as u32;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InsetRgn);
+    assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, region), Some((10, 20, 90, 120)));
+}
+
+#[test]
 fn move_port_to_shifts_bitmap_bounds_without_moving_port_rect() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "MovePortTo"),

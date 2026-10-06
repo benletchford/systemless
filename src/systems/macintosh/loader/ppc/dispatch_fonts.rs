@@ -36,12 +36,49 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
     } = context;
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::SetPreserveGlyph => {
+            // Inside Macintosh: Text (1993), 4-62 through 4-63.
+            toolbox_startup.preserve_glyph = cpu.gpr[3] != 0;
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::GetPreserveGlyph => {
+            Some(PpcImportAction::Return(u32::from(toolbox_startup.preserve_glyph)))
+        }
+        PpcImportDispatcherTarget::IsMetric => {
+            // The active Roman numeric-format resource has metricSys = 0.
+            // Inside Macintosh: Operating System Utilities (1994), 4-48.
+            Some(PpcImportAction::Return(0))
+        }
         // Inside Macintosh: Text (1993), p. 4-53: GetSysFont returns the
         // system font ID. Systemless models the standard systemFont value.
         PpcImportDispatcherTarget::GetSysFont => Some(PpcImportAction::Return(0)),
         // Inside Macintosh: Text (1993), p. 4-54: GetAppFont returns ApFontID.
         // The standard Roman application font is Geneva (family ID 3).
         PpcImportDispatcherTarget::GetAppFont => Some(PpcImportAction::Return(3)),
+        PpcImportDispatcherTarget::FontToScript => {
+            // FontToScript maps a font family ID to an enabled script. This
+            // Roman system has only script 0 enabled, so non-Roman families
+            // also default to the system script.
+            // Inside Macintosh: Text (1993), pp. 6-22 to 6-24, 6-82 to 6-83.
+            Some(PpcImportAction::Return(0))
+        }
+        PpcImportDispatcherTarget::VisibleLength => {
+            // VisibleLength excludes whitespace at the display end of a
+            // Roman, left-to-right style run without changing its contents.
+            // Inside Macintosh: Text (1993), pp. 3-36 to 3-38, 3-82.
+            let mut visible = (cpu.gpr[4] as i32).max(0) as u32;
+            if !ppc_memory_can_read_bytes(memory, cpu.gpr[3], visible) {
+                return None;
+            }
+            while visible > 0 {
+                let byte = memory.read_u8(cpu.gpr[3].checked_add(visible - 1)?)?;
+                if !matches!(byte, b' ' | b'\t') {
+                    break;
+                }
+                visible -= 1;
+            }
+            Some(PpcImportAction::Return(visible))
+        }
         // The same reference specifies that GetDefFontSize returns
         // SysFontSize, using 12 points when that low-memory value is zero.
         // Systemless currently models the default system font at 12 points.

@@ -1,6 +1,19 @@
 use super::*;
 
 #[test]
+fn get_intl_resource_supplies_roman_numeric_format_from_system_file() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetIntlResource")).unwrap();
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetIntlResource);
+    let handle = loaded.cpu.gpr[3];
+    assert_ne!(handle, 0);
+    let data = loaded.memory.read_u32_be(handle).unwrap();
+    assert_eq!(loaded.memory.read_u8(data), Some(b'.'));
+    assert_eq!(loaded.memory.read_u8(data + 1), Some(b','));
+    assert_eq!(loaded.memory.read_u8(data + 9), Some(b'/'));
+}
+
+#[test]
 fn import_bindings_classify_resource_cleanup_imports() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "ReleaseResource"),
@@ -245,6 +258,23 @@ fn hle_import_runner_lm_get_cur_ap_ref_num_reads_signed_low_memory_word() {
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-2));
+}
+
+#[test]
+fn hle_import_runner_lm_get_hw_cfg_flags_reads_signed_low_memory_word() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "LMGetHWCfgFlags"),
+        PpcImportDispatcherTarget::LMGetHWCfgFlags
+    );
+    let pef = synthetic_pef_with_import(b"LMGetHWCfgFlags");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.write_u16_be(0x0b22, 0x8123).unwrap();
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(0x8123u16 as i16));
 }
 
 #[test]

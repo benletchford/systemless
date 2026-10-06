@@ -300,7 +300,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
             );
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
-        PpcImportDispatcherTarget::PBHOpenDF => {
+        PpcImportDispatcherTarget::PBHOpenDF | PpcImportDispatcherTarget::PBHOpenDeny => {
             Some(PpcImportAction::Return(ppc_i16_result(ppc_pbh_open_df(
                 cpu,
                 memory,
@@ -309,6 +309,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 files,
                 writable_refnums,
                 next_file_ref_num,
+                matches!(binding.dispatcher_target, PpcImportDispatcherTarget::PBHOpenDeny),
             ))))
         }
         PpcImportDispatcherTarget::CurResFile => Some(PpcImportAction::Return(ppc_i16_result(
@@ -732,6 +733,9 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
         }
         PpcImportDispatcherTarget::ResolveAlias => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_resolve_alias(cpu, memory, vfs_directories, handles, aliases),
+        ))),
+        PpcImportDispatcherTarget::MatchAlias => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_match_alias(cpu, memory, vfs_directories, handles, aliases),
         ))),
         PpcImportDispatcherTarget::UpdateAlias => {
             Some(PpcImportAction::Return(ppc_i16_result(ppc_update_alias(
