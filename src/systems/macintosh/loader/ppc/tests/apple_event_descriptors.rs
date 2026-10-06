@@ -1420,6 +1420,49 @@ fn native_ppc_object_callbacks_keep_nil_slots_and_replace_present_slots() {
 }
 
 #[test]
+fn object_support_creates_signed_offset_descriptors() {
+    assert_eq!(
+        dispatcher_target_for_import("ObjectSupportLib", "CreateOffsetDescriptor"),
+        PpcImportDispatcherTarget::ObjectSupportCreateOffsetDescriptor,
+    );
+    let pef = synthetic_pef_with_library_import(b"ObjectSupportLib", b"CreateOffsetDescriptor");
+    let mut native = load_pef_application(&pef).unwrap();
+    let mut context = ProcessContext::default();
+    native.attach_unconverted_process_services(&mut context);
+    let descriptors = PPC_DATA_BASE + 0x2400;
+    native.memory.add_region(descriptors, vec![0; 16]);
+
+    for (index, offset) in [1i32, -1].into_iter().enumerate() {
+        let result_ptr = descriptors + index as u32 * 8;
+        native.cpu.gpr[3] = offset as u32;
+        native.cpu.gpr[4] = result_ptr;
+        run_test_import(
+            &mut native,
+            PpcImportDispatcherTarget::ObjectSupportCreateOffsetDescriptor,
+        );
+        assert_eq!(native.cpu.gpr[3] as u16 as i16, PPC_NO_ERR);
+        let descriptor = dispatch_apple_events::ppc_ae_descriptor(
+            &mut native.memory,
+            &native.apple_events.descriptors,
+            result_ptr,
+        )
+        .unwrap();
+        assert_eq!(descriptor.desc_type, u32::from_be_bytes(*b"long"));
+        assert_eq!(descriptor.data, offset.to_be_bytes());
+        let handle = native.memory.read_u32_be(result_ptr + 4).unwrap();
+        assert_eq!(context.memory_manager_mut().native_allocation(handle).unwrap().size, 4);
+    }
+
+    native.cpu.gpr[3] = 1;
+    native.cpu.gpr[4] = 0;
+    run_test_import(
+        &mut native,
+        PpcImportDispatcherTarget::ObjectSupportCreateOffsetDescriptor,
+    );
+    assert_eq!(native.cpu.gpr[3] as u16 as i16, PPC_PARAM_ERR);
+}
+
+#[test]
 fn object_specifier_descriptors_are_immediately_process_owned() {
     let pef = synthetic_pef_with_library_import(b"ObjectSupportLib", b"CreateObjSpecifier");
     let mut native = load_pef_application(&pef).unwrap();

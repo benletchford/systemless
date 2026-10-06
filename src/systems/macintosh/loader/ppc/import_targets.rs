@@ -1200,6 +1200,7 @@ pub enum PpcImportDispatcherTarget {
     MathCompatibility(PpcMathCompatibilityOperation),
     StdCCompatibility(PpcStdCCompatibilityOperation),
     ObjectSupportCompatibility,
+    ObjectSupportCreateOffsetDescriptor,
     ObjectSupportInit,
     ObjectSupportInstallAccessor,
     ObjectSupportGetAccessor,
@@ -5937,6 +5938,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("ObjectSupportLib", "AEResolve") => PpcImportDispatcherTarget::ObjectSupportResolve,
         ("ObjectSupportLib", "CreateObjSpecifier") => {
             PpcImportDispatcherTarget::ObjectSupportCompatibility
+        }
+        ("ObjectSupportLib", "CreateOffsetDescriptor") => {
+            PpcImportDispatcherTarget::ObjectSupportCreateOffsetDescriptor
         }
         ("OpenGLLibrary", "aglChoosePixelFormat") => {
             PpcImportDispatcherTarget::AglChoosePixelFormat
