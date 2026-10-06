@@ -17504,6 +17504,38 @@
         );
     }
 
+    #[test]
+    fn tenew_accepts_two_empty_rect_pointers_without_overwriting_caller_stack() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let rect_ptr = TEST_SP + 0x100;
+        for offset in (0..8).step_by(2) {
+            bus.write_word(rect_ptr + offset, 0);
+        }
+        bus.write_long(TEST_SP, rect_ptr);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+        bus.write_long(TEST_SP + 8, 0xDEAD_BEEF);
+        bus.write_long(TEST_SP + 12, 0xCAFE_BABE);
+
+        let result = disp.dispatch_dialog(true, 0x1D2, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        let te_handle = bus.read_long(TEST_SP + 8);
+        assert_ne!(te_handle, 0);
+        assert_ne!(te_handle, 0xDEAD_BEEF);
+        assert_eq!(bus.read_long(TEST_SP + 12), 0xCAFE_BABE);
+        let te_ptr = bus.read_long(te_handle);
+        for offset in (0..8).step_by(2) {
+            assert_eq!(
+                bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + offset),
+                0
+            );
+            assert_eq!(
+                bus.read_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + offset),
+                0
+            );
+        }
+    }
+
     // ---- TEDispose / TECalText / TESetSelect / TEDelete ----
 
     #[test]

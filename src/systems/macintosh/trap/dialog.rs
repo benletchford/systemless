@@ -1088,12 +1088,6 @@ impl super::TrapDispatcher {
                 (dest, dest, 8)
             } else if Self::te_rect_is_empty(dest) && !Self::te_rect_is_empty(view) {
                 (view, view, 8)
-            } else if Self::te_rect_is_empty(dest) && Self::te_rect_is_empty(view) {
-                (
-                    Self::te_read_rect(bus, sp + 8),
-                    Self::te_read_rect(bus, sp),
-                    16,
-                )
             } else {
                 (dest, view, 8)
             }
