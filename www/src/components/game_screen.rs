@@ -3037,6 +3037,7 @@ fn record_frame_trace(
     set_trace_number(&entry, "ticksBehind", counters.ticks_behind as f64);
     set_trace_number(&entry, "lastSteps", counters.last_steps as f64);
     set_trace_number(&entry, "cpuBudgetMs", counters.cpu_budget_ms);
+    set_trace_number(&entry, "cpuMhz", counters.cpu_mhz as f64);
     if let Some(audio_queue_ms) = counters.audio_queue_ms {
         set_trace_number(&entry, "audioQueueMs", audio_queue_ms);
     }

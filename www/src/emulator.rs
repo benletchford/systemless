@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
+use crate::adaptive_clock::AdaptiveClock;
 use crate::catalogue::{GameArchitecture, LaunchModifier, RuntimePacing};
 use crate::paths::asset_path;
 use crate::save_store::{self, DownloadableSaveFile};
@@ -223,6 +224,7 @@ pub struct Machine {
     game_id: String,
     runner: FixtureRunner,
     runtime_pacing: RuntimePacing,
+    adaptive_clock: Option<AdaptiveClock>,
     started_at_ms: f64,
     audio_started_at_ms: f64,
     last_presentation_at_ms: f64,
@@ -364,7 +366,13 @@ impl Machine {
         } else {
             MenuBarPolicy::InitialKiosk
         });
-        let ipt = web_instructions_per_tick(runtime_pacing);
+        let initial_mhz = runtime_pacing
+            .adaptive_min_cpu_mhz
+            .filter(|&min| {
+                architecture == GameArchitecture::PowerPc && min < runtime_pacing.cpu_mhz
+            })
+            .unwrap_or(runtime_pacing.cpu_mhz);
+        let ipt = web_instructions_for_mhz(initial_mhz);
         runner.set_instructions_per_tick(ipt);
 
         let app = if let Some(mut loader) =
@@ -445,11 +453,23 @@ impl Machine {
         let audio_started_at_ms = performance_now();
         let started_at_ms =
             wall_clock_origin_for_guest_tick(audio_started_at_ms, runner.guest_tick());
+        let adaptive_clock = runtime_pacing
+            .adaptive_min_cpu_mhz
+            .filter(|&min| runner.is_powerpc_app() && min < runtime_pacing.cpu_mhz)
+            .map(|min| {
+                AdaptiveClock::new(
+                    min,
+                    runtime_pacing.cpu_mhz,
+                    audio_started_at_ms,
+                    runner.guest_tick(),
+                )
+            });
         runner.prepare_text_presentation();
         let mut machine = Machine {
             game_id: game_id.to_string(),
             runner,
             runtime_pacing,
+            adaptive_clock,
             started_at_ms,
             audio_started_at_ms,
             last_presentation_at_ms: audio_started_at_ms,
@@ -686,6 +706,13 @@ impl Machine {
         }
         self.sync_save_files();
 
+        if let Some(clock) = &mut self.adaptive_clock {
+            if let Some(mhz) = clock.observe(performance_now(), self.runner.guest_tick()) {
+                self.runner
+                    .set_instructions_per_tick(web_instructions_for_mhz(mhz));
+            }
+        }
+
         FrameRunResult {
             running: running && !self.runner.is_halted(),
             visual_work,
@@ -776,6 +803,10 @@ impl Machine {
             ticks_behind: self.last_ticks_behind,
             last_steps: self.last_steps,
             cpu_budget_ms: self.last_cpu_budget_ms,
+            cpu_mhz: self
+                .adaptive_clock
+                .as_ref()
+                .map_or(self.runtime_pacing.cpu_mhz, AdaptiveClock::current_mhz),
             audio_queue_ms: self.last_audio_queue_ms,
         }
     }
@@ -1441,6 +1472,7 @@ pub struct PerfCounters {
     pub ticks_behind: u32,
     pub last_steps: usize,
     pub cpu_budget_ms: f64,
+    pub cpu_mhz: u32,
     pub audio_queue_ms: Option<f64>,
 }
 
@@ -1598,8 +1630,13 @@ fn web_effective_target_tick(
     current_tick.saturating_add(ticks_behind.min(runtime_pacing.max_ticks_per_paint))
 }
 
+#[cfg(test)]
 fn web_instructions_per_tick(runtime_pacing: RuntimePacing) -> u32 {
-    ((runtime_pacing.cpu_mhz as f64 * 1_000_000.0) / DEFAULT_VBL_HZ)
+    web_instructions_for_mhz(runtime_pacing.cpu_mhz)
+}
+
+fn web_instructions_for_mhz(cpu_mhz: u32) -> u32 {
+    ((cpu_mhz as f64 * 1_000_000.0) / DEFAULT_VBL_HZ)
         .round()
         .max(1.0) as u32
 }
@@ -1956,6 +1993,7 @@ mod tests {
             max_ticks_per_paint: 4,
             reset_slack_ticks: 6,
             cpu_mhz: 25,
+            adaptive_min_cpu_mhz: None,
         };
 
         assert_eq!(web_effective_target_tick(100, 2, pacing), 102);
@@ -1976,6 +2014,7 @@ mod tests {
             max_ticks_per_paint: 4,
             reset_slack_ticks: 6,
             cpu_mhz: 10,
+            adaptive_min_cpu_mhz: None,
         };
 
         assert_eq!(

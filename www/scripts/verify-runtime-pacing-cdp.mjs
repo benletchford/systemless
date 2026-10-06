@@ -522,6 +522,7 @@ function runtimeTracePrelude() {
             ticksBehind: data.ticksBehind,
             lastSteps: data.lastSteps,
             cpuBudgetMs: data.cpuBudgetMs,
+            cpuMhz: data.cpuMhz,
             audioQueueMs: data.audioQueueMs,
             presentationMetrics: data.presentationMetrics,
             ...(data.directFrame ? { directSequence: data.directFrame.sequence, rendererGeneration: data.directFrame.rendererGeneration, requestedAt: frameSentAt } : {}),
@@ -643,6 +644,10 @@ function buildReport(samples, console, rafTrace, longTasks, frameTrace, workerTr
     guest_progress: {
       first_tick: runtimeFrames[0]?.guestTick ?? null,
       last_tick: runtimeFrames.at(-1)?.guestTick ?? null,
+      first_cpu_mhz: runtimeFrames[0]?.cpuMhz ?? null,
+      last_cpu_mhz: runtimeFrames.at(-1)?.cpuMhz ?? null,
+      min_cpu_mhz: runtimeFrames.length ? Math.min(...runtimeFrames.map((entry) => entry.cpuMhz ?? Infinity)) : null,
+      max_cpu_mhz: runtimeFrames.length ? Math.max(...runtimeFrames.map((entry) => entry.cpuMhz ?? -Infinity)) : null,
       first_instructions: runtimeFrames[0]?.totalInstructions ?? null,
       last_instructions: runtimeFrames.at(-1)?.totalInstructions ?? null,
     },

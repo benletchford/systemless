@@ -101,7 +101,7 @@ pub fn rust_games(c: &CompiledCatalogue) -> Result<String> {
         )?;
         write!(
             out,
-            "settings: GameSettings {{ worker: {}, arrows_as_numpad: {}, show_menu_bar: {}, screen_depth: {:?}, application_partition_size: {:?}, executable_path: {:?}, remove_paths: {}, file_mappings: &[{}], key_mappings: &[{}], launch_modifiers: &[{}], runtime_pacing: RuntimePacing {{max_ticks_per_paint: {}, reset_slack_ticks: {}, cpu_mhz: {}}},",
+            "settings: GameSettings {{ worker: {}, arrows_as_numpad: {}, show_menu_bar: {}, screen_depth: {:?}, application_partition_size: {:?}, executable_path: {:?}, remove_paths: {}, file_mappings: &[{}], key_mappings: &[{}], launch_modifiers: &[{}], runtime_pacing: RuntimePacing {{max_ticks_per_paint: {}, reset_slack_ticks: {}, cpu_mhz: {}, adaptive_min_cpu_mhz: {:?}}},",
             r.worker,
             e.controls.arrows_as_numpad,
             r.show_menu_bar,
@@ -127,7 +127,8 @@ pub fn rust_games(c: &CompiledCatalogue) -> Result<String> {
                 .join(","),
             p.max_ticks_per_paint,
             p.reset_slack_ticks,
-            p.cpu_mhz
+            p.cpu_mhz,
+            p.adaptive_min_cpu_mhz
         )?;
         write!(
             out,

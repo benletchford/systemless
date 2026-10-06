@@ -149,6 +149,7 @@ pub struct RuntimePacing {
     pub max_ticks_per_paint: u32,
     pub reset_slack_ticks: u32,
     pub cpu_mhz: u32,
+    pub adaptive_min_cpu_mhz: Option<u32>,
 }
 
 impl Default for RuntimePacing {
@@ -157,6 +158,7 @@ impl Default for RuntimePacing {
             max_ticks_per_paint: 2,
             reset_slack_ticks: 4,
             cpu_mhz: 25,
+            adaptive_min_cpu_mhz: None,
         }
     }
 }
