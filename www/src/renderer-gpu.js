@@ -75,6 +75,8 @@ export class GpuFramePresenter {
     this.gl = gl;
     this.canvas = canvas;
     this.maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+    this.compactImageSize = null;
+    this.compactDetailSize = null;
     const compile = (type, source) => {
       const shader = gl.createShader(type);
       gl.shaderSource(shader, source); gl.compileShader(shader);
@@ -194,6 +196,7 @@ export class GpuFramePresenter {
       this.paintCompact(frame);
       return;
     }
+    this.compactImageSize = null;
     if (frame.cursor) {
       const patch = frame.cursor;
       gl.uniform4f(this.cursorRect, patch.x, patch.y, patch.width, patch.height);
@@ -229,6 +232,7 @@ export class GpuFramePresenter {
     gl.uniform1f(this.compact, 0);
     gl.uniform4f(this.cursorRect, 0, 0, 0, 0);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.textures[0]);
+    this.compactImageSize = null;
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
@@ -243,13 +247,20 @@ export class GpuFramePresenter {
     gl.uniform2f(this.logicalSize, source.width, source.height);
     gl.uniform4f(this.compactInfo, source.scale, frame.width / source.width, width, height);
     gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, this.textures[3]);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    if (this.compactDetailSize?.[0] !== width || this.compactDetailSize?.[1] !== height) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      this.compactDetailSize = [width, height];
+    }
     const bytes = compactBytes(source.detail), rows = Math.floor(source.detail.length / width);
     if (rows) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, rows, gl.RGBA, gl.UNSIGNED_BYTE, bytes.subarray(0, rows * width * 4));
     const tail = source.detail.length % width;
     if (tail) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, rows, tail, 1, gl.RGBA, gl.UNSIGNED_BYTE, bytes.subarray(rows * width * 4));
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.textures[0]);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, source.width, source.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, compactBytes(source.cells));
+    if (this.compactImageSize?.[0] !== source.width || this.compactImageSize?.[1] !== source.height) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, source.width, source.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      this.compactImageSize = [source.width, source.height];
+    }
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, source.width, source.height, gl.RGBA, gl.UNSIGNED_BYTE, compactBytes(source.cells));
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
