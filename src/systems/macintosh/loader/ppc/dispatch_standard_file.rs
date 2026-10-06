@@ -24,6 +24,7 @@ pub(super) struct PpcStandardFileEntry {
     pub(super) path: String,
     pub(super) dir_id: u32,
     pub(super) file_type: u32,
+    pub(super) creator: u32,
     pub(super) finder_flags: u16,
     pub(super) is_directory: bool,
 }
@@ -34,18 +35,25 @@ pub(super) struct PpcStandardFileGetTrackingState {
     pub(super) entries: Vec<PpcStandardFileEntry>,
     pub(super) current_dir_id: u32,
     pub(super) file_types: Option<Vec<u32>>,
+    filter: Option<PpcStandardFileFilter>,
     pub(super) selected: usize,
     pub(super) bounds: (i16, i16, i16, i16),
     pub(super) front_buffer: PpcFrontBuffer,
     pub(super) saved_pixels: crate::memory::SavedPixels<(i32, i32, u16)>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PpcStandardFileFilter {
+    callback: PpcCallbackTarget,
+    callback_with_data: bool,
+    your_data_ptr: u32,
+    include_directories: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PpcStandardFileFilteringState {
     pub(super) import_pc: u32,
     pub(super) restore_rtoc: u32,
-    callback: PpcCallbackTarget,
-    callback_with_data: bool,
     pub(super) tracking: PpcStandardFileGetTrackingState,
     pub(super) next_entry: usize,
     pub(super) filter_pb: u32,
@@ -235,6 +243,7 @@ fn ppc_standard_file_get_entries(
             path: directory.path.clone(),
             dir_id: directory.dir_id,
             file_type: 0,
+            creator: directory.creator,
             finder_flags: directory.finder_flags,
             is_directory: true,
         });
@@ -251,6 +260,7 @@ fn ppc_standard_file_get_entries(
             path: file.path.clone(),
             dir_id,
             file_type: file.file_type,
+            creator: file.creator,
             finder_flags: file.finder_flags,
             is_directory: false,
         });
@@ -275,6 +285,7 @@ fn ppc_standard_file_get_entries(
             path: fork.path.clone(),
             dir_id,
             file_type: fork.file_type,
+            creator: fork.creator,
             finder_flags: fork.finder_flags,
             is_directory: false,
         });
@@ -481,6 +492,8 @@ fn ppc_standard_file_write_filter_pb(
     if !ppc_memory_can_write_bytes(memory, filter_pb, PPC_STANDARD_FILE_FILTER_PB_SIZE) {
         return false;
     }
+    // Inside Macintosh: Files (1992), Catalog Information Parameter Block:
+    // ioFlAttrib is byte 30, and bit 4 identifies a directory.
     let name_ptr = filter_pb.saturating_add(PPC_STANDARD_FILE_FILTER_NAME_OFFSET);
     ppc_write_pstring_bytes(memory, name_ptr, &entry.name)
         && memory.write_u32_be(filter_pb + 18, name_ptr).is_some()
@@ -488,12 +501,15 @@ fn ppc_standard_file_write_filter_pb(
             .write_u16_be(filter_pb + 22, PPC_BOOT_VOLUME_REF_NUM as u16)
             .is_some()
         && memory.write_u16_be(filter_pb + 28, 0).is_some()
+        && memory
+            .write_u8(filter_pb + 30, if entry.is_directory { 0x10 } else { 0 })
+            .is_some()
         && memory.write_u32_be(filter_pb + 48, entry.dir_id).is_some()
         && ppc_write_finfo(
             memory,
             filter_pb + 32,
             entry.file_type,
-            0,
+            entry.creator,
             entry.finder_flags,
         )
         .is_some()
@@ -504,23 +520,22 @@ fn ppc_standard_file_filter_next_action(
     memory: &mut PpcSectionMem,
     state: &mut PpcStandardFileFilteringState,
 ) -> Option<PpcImportAction> {
-    while state
-        .tracking
-        .entries
-        .get(state.next_entry)
-        .is_some_and(|entry| entry.is_directory)
+    let filter = state.tracking.filter?;
+    while !filter.include_directories
+        && state
+            .tracking
+            .entries
+            .get(state.next_entry)
+            .is_some_and(|entry| entry.is_directory)
     {
         state.next_entry = state.next_entry.saturating_add(1);
     }
     let entry = state.tracking.entries.get(state.next_entry)?;
-    if entry.is_directory {
-        return None;
-    }
     if !ppc_standard_file_write_filter_pb(memory, state.filter_pb, entry) {
         return None;
     }
-    let arguments = if state.callback_with_data {
-        vec![state.filter_pb, 0]
+    let arguments = if filter.callback_with_data {
+        vec![state.filter_pb, filter.your_data_ptr]
     } else {
         vec![state.filter_pb]
     };
@@ -528,8 +543,8 @@ fn ppc_standard_file_filter_next_action(
     GuestCallEffect::call_guest(
         GuestCallRequest::new(GuestCallTarget {
             isa: GuestIsa::PowerPc,
-            entry: state.callback.entry,
-            rtoc: state.callback.rtoc,
+            entry: filter.callback.entry,
+            rtoc: filter.callback.rtoc,
         }),
         GuestCallContinuation::to_powerpc(
             PPC_GUEST_CALL_RETURN_PC,
@@ -557,6 +572,53 @@ fn ppc_standard_file_dispose_filter_pb(
             last_mem_error,
         );
     }
+}
+
+fn ppc_standard_file_begin_filtering(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    startup: &mut PpcToolboxStartupState,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    tracking: PpcStandardFileGetTrackingState,
+) -> Result<PpcImportAction, PpcStandardFileGetTrackingState> {
+    if tracking.filter.is_none() {
+        return Err(tracking);
+    }
+    let filter_pb = process_memory_manager.new_native_ptr(
+        memory,
+        PPC_STANDARD_FILE_FILTER_PB_SIZE,
+        true,
+    );
+    ppc_apply_process_native_allocator(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+    );
+    if filter_pb == 0 {
+        return Err(tracking);
+    }
+    let mut filtering = PpcStandardFileFilteringState {
+        import_pc: cpu.pc,
+        restore_rtoc: cpu.gpr[2],
+        tracking,
+        next_entry: 0,
+        filter_pb,
+    };
+    if let Some(action) = ppc_standard_file_filter_next_action(cpu, memory, &mut filtering) {
+        startup.standard_file_get_filtering = Some(filtering);
+        return Ok(action);
+    }
+    ppc_standard_file_dispose_filter_pb(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+        filter_pb,
+    );
+    Err(filtering.tracking)
 }
 
 pub(super) fn ppc_standard_file_draw_button(
@@ -1162,9 +1224,12 @@ pub(super) fn ppc_standard_file_insert_name_character(
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_standard_file_get_service(
-    cpu: &PpcCpu,
+    cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     startup: &mut PpcToolboxStartupState,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &ProcessVfsFileRecords,
     vfs_resource_files: &[PpcVfsResourceFileRecord],
@@ -1302,6 +1367,22 @@ fn ppc_standard_file_get_service(
             }
         }
     }
+    if tracking.current_dir_id != previous_dir_id {
+        // CustomGetFile filters each displayed folder, not just the initial
+        // listing. Inside Macintosh: Files (1992), pp. 3-20--3-21.
+        tracking = match ppc_standard_file_begin_filtering(
+            cpu,
+            memory,
+            startup,
+            process_memory_manager,
+            heap_cursor,
+            last_mem_error,
+            tracking,
+        ) {
+            Ok(action) => return action,
+            Err(tracking) => tracking,
+        };
+    }
     if tracking.current_dir_id != previous_dir_id || tracking.selected != previous_selection {
         ppc_standard_file_draw_get_dialog(memory, gworlds, &tracking);
     }
@@ -1336,10 +1417,7 @@ fn ppc_standard_file_get_start(
             // A CustomGetFile file filter returns TRUE to exclude an item.
             // Inside Macintosh: Files (1992), p. 3-20.
             let excluded = cpu.gpr[3] & 0xff != 0;
-            if excluded
-                && candidate_index < filtering.tracking.entries.len()
-                && !filtering.tracking.entries[candidate_index].is_directory
-            {
+            if excluded && candidate_index < filtering.tracking.entries.len() {
                 filtering.tracking.entries.remove(candidate_index);
             } else {
                 filtering.next_entry = filtering.next_entry.saturating_add(1);
@@ -1389,6 +1467,9 @@ fn ppc_standard_file_get_start(
             cpu,
             memory,
             startup,
+            process_memory_manager,
+            heap_cursor,
+            last_mem_error,
             vfs_directories,
             vfs_files,
             vfs_resource_files,
@@ -1431,59 +1512,49 @@ fn ppc_standard_file_get_start(
         PPC_STANDARD_FILE_GET_DIALOG_HEIGHT,
         requested_origin,
     );
-    let mut tracking = PpcStandardFileGetTrackingState {
+    let (filter_ptr, callback_with_data) = operation.filter_pointer(cpu);
+    let filter = (filter_ptr != 0)
+        .then(|| ppc_resolve_callback_target(memory, filter_ptr, cpu.gpr[2], None))
+        .flatten()
+        .filter(|callback| memory.read_u32_be(callback.entry).is_some())
+        .map(|callback| PpcStandardFileFilter {
+            callback,
+            callback_with_data,
+            // CustomGetFile's eleventh argument is the private pointer passed
+            // to its callbacks. Inside Macintosh: Files (1992), p. 3-52.
+            your_data_ptr: if callback_with_data {
+                ppc_parameter_area_slot_addr(cpu.gpr[1], PPC_NATIVE_PARAMETER_GPR_COUNT + 2)
+                    .and_then(|address| memory.read_u32_be(address))
+                    .unwrap_or(0)
+            } else {
+                0
+            },
+            include_directories: operation == PpcStandardFileOperation::CustomGetFile
+                && num_types == -1,
+        });
+    let tracking = PpcStandardFileGetTrackingState {
         call: ppc_standard_file_call(mode, cpu),
         entries,
         current_dir_id,
         file_types,
+        filter,
         selected: 0,
         bounds,
         front_buffer,
         saved_pixels: ppc_standard_file_save_pixels(memory, front_buffer, bounds),
     };
-    let (filter_ptr, callback_with_data) = operation.filter_pointer(cpu);
-    if filter_ptr != 0 {
-        if let Some(callback) = ppc_resolve_callback_target(memory, filter_ptr, cpu.gpr[2], None)
-            .filter(|callback| memory.read_u32_be(callback.entry).is_some())
-        {
-            let filter_pb = process_memory_manager.new_native_ptr(
-                memory,
-                PPC_STANDARD_FILE_FILTER_PB_SIZE,
-                true,
-            );
-            ppc_apply_process_native_allocator(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                last_mem_error,
-            );
-            if filter_pb != 0 {
-                let mut filtering = PpcStandardFileFilteringState {
-                    import_pc: cpu.pc,
-                    restore_rtoc: cpu.gpr[2],
-                    callback,
-                    callback_with_data,
-                    tracking,
-                    next_entry: 0,
-                    filter_pb,
-                };
-                if let Some(action) =
-                    ppc_standard_file_filter_next_action(cpu, memory, &mut filtering)
-                {
-                    startup.standard_file_get_filtering = Some(filtering);
-                    return action;
-                }
-                ppc_standard_file_dispose_filter_pb(
-                    process_memory_manager,
-                    memory,
-                    heap_cursor,
-                    last_mem_error,
-                    filter_pb,
-                );
-                tracking = filtering.tracking;
-            }
-        }
-    }
+    let tracking = match ppc_standard_file_begin_filtering(
+        cpu,
+        memory,
+        startup,
+        process_memory_manager,
+        heap_cursor,
+        last_mem_error,
+        tracking,
+    ) {
+        Ok(action) => return action,
+        Err(tracking) => tracking,
+    };
     ppc_standard_file_draw_get_dialog(memory, gworlds, &tracking);
     startup.standard_file_get_tracking = Some(tracking);
     PpcImportAction::Yield(u64::MAX)
