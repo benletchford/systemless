@@ -3935,8 +3935,13 @@ impl SharedProcessTextEditManager {
         self.with_mut(|manager| manager.register(handle));
     }
 
+    #[cfg(test)]
     pub(crate) fn handles(&self) -> Vec<u32> {
         self.with_ref(ProcessTextEditManagerState::handles)
+    }
+
+    pub(crate) fn identities(&self) -> Vec<(u32, u64)> {
+        self.with_ref(ProcessTextEditManagerState::identities)
     }
 
     pub(crate) fn feature_bit(&self, handle: u32, feature: u16) -> bool {

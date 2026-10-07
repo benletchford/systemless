@@ -3164,15 +3164,40 @@ impl FixtureRunner {
     /// Inspect caller-created TextEdit records and the process's private scrap.
     #[doc(hidden)]
     pub fn text_edit_snapshot(&mut self) -> TextEditManagerSnapshot {
-        if let Some(app) = self.native.application_mut() {
-            let handles = app.scrap.text_edit.handles();
+        use crate::window_manager::{snapshot_local_rect_to_global, snapshot_port_bounds_origin};
+
+        let mut snapshot = if let Some(app) = self.native.application_mut() {
+            let handles = app.scrap.text_edit.identities();
             crate::text_edit::snapshot_guest_records(&handles, &mut |addr| app.memory.read_u8(addr))
         } else {
-            let handles = self.dispatcher.textedit_states.handles();
+            let handles = self.dispatcher.textedit_states.identities();
             crate::text_edit::snapshot_guest_records(&handles, &mut |addr| {
                 Some(self.bus.read_byte(addr))
             })
+        };
+        let window_ports: BTreeSet<u32> = self
+            .window_frame_snapshot()
+            .into_iter()
+            .map(|frame| frame.guest_id)
+            .collect();
+        for record in &mut snapshot.records {
+            if !window_ports.contains(&record.owner_port) {
+                continue;
+            }
+            // TERec's inPort owns local destRect/viewRect coordinates.
+            // Inside Macintosh: Text (1993), pp. 2-64--2-69;
+            // Imaging With QuickDraw (1994), Basic QuickDraw pp. 2-9--2-10.
+            let origin = if let Some(app) = self.native.application_mut() {
+                snapshot_port_bounds_origin(
+                    &mut |addr| app.memory.read_u8(addr).unwrap_or(0),
+                    record.owner_port,
+                )
+            } else {
+                snapshot_port_bounds_origin(&mut |addr| self.bus.read_byte(addr), record.owner_port)
+            };
+            record.global_view_rect = Some(snapshot_local_rect_to_global(record.view_rect, origin));
         }
+        snapshot
     }
 
     /// Inspect logical list contents and the visibility/highlight bytes of

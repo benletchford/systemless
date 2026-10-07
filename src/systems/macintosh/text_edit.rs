@@ -21,6 +21,8 @@ pub(crate) struct ProcessTextEditState {
 pub(crate) struct ProcessTextEditManagerState {
     records: HashMap<u32, ProcessTextEditState>,
     handles: BTreeSet<u32>,
+    generations: HashMap<u32, u64>,
+    next_generation: u64,
     click_tracking: Option<TextEditClickTracking>,
 }
 
@@ -30,13 +32,22 @@ impl ProcessTextEditManagerState {
     }
 
     pub(crate) fn register(&mut self, handle: u32) {
-        if handle != 0 {
-            self.handles.insert(handle);
+        if handle != 0 && self.handles.insert(handle) {
+            self.next_generation = self.next_generation.saturating_add(1);
+            self.generations.insert(handle, self.next_generation);
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn handles(&self) -> Vec<u32> {
         self.handles.iter().copied().collect()
+    }
+
+    pub(crate) fn identities(&self) -> Vec<(u32, u64)> {
+        self.handles
+            .iter()
+            .map(|handle| (*handle, self.generations.get(handle).copied().unwrap_or(0)))
+            .collect()
     }
 
     pub(crate) fn feature_bit(&self, handle: u32, feature: u16) -> bool {
@@ -67,6 +78,7 @@ impl ProcessTextEditManagerState {
     pub(crate) fn remove(&mut self, handle: &u32) {
         self.records.remove(handle);
         self.handles.remove(handle);
+        self.generations.remove(handle);
         if self
             .click_tracking
             .as_ref()
@@ -216,7 +228,19 @@ pub(crate) fn aligned_line_left(
 
 #[cfg(test)]
 mod tests {
-    use super::{aligned_line_left, TextEditBuffer};
+    use super::{aligned_line_left, ProcessTextEditManagerState, TextEditBuffer};
+
+    #[test]
+    fn edit_handle_generation_changes_only_after_disposal() {
+        let mut state = ProcessTextEditManagerState::default();
+        state.register(0x1000);
+        let first = state.identities()[0].1;
+        state.register(0x1000);
+        assert_eq!(state.identities(), vec![(0x1000, first)]);
+        state.remove(&0x1000);
+        state.register(0x1000);
+        assert!(state.identities()[0].1 > first);
+    }
 
     #[test]
     fn selection_is_clamped_and_normalized_once() {
@@ -267,6 +291,10 @@ mod tests {
 #[doc(hidden)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TextEditSnapshot {
+    pub guest_id: u32,
+    pub generation: u64,
+    pub owner_port: u32,
+    pub global_view_rect: Option<(i16, i16, i16, i16)>,
     pub view_rect: (i16, i16, i16, i16),
     pub text: Vec<u8>,
     pub selection: (usize, usize),
@@ -284,7 +312,7 @@ pub struct TextEditManagerSnapshot {
 }
 
 pub(crate) fn snapshot_guest_records(
-    handles: &[u32],
+    handles: &[(u32, u64)],
     read: &mut dyn FnMut(u32) -> Option<u8>,
 ) -> TextEditManagerSnapshot {
     fn word(read: &mut dyn FnMut(u32) -> Option<u8>, addr: u32) -> Option<u16> {
@@ -302,7 +330,7 @@ pub(crate) fn snapshot_guest_records(
     // architectures. Inside Macintosh: Text (1993), pp. 2-64--2-69, 2-98.
     let records = handles
         .iter()
-        .filter_map(|handle| {
+        .filter_map(|(handle, generation)| {
             let ptr = long(read, *handle).filter(|ptr| *ptr != 0)?;
             let length = usize::from(word(read, ptr + 0x3c)?);
             let text_handle = long(read, ptr + 0x3e)?;
@@ -311,6 +339,10 @@ pub(crate) fn snapshot_guest_records(
                 .map(|i| read(text_ptr + i as u32))
                 .collect::<Option<Vec<_>>>()?;
             Some(TextEditSnapshot {
+                guest_id: *handle,
+                generation: *generation,
+                owner_port: long(read, ptr + 0x52)?,
+                global_view_rect: None,
                 view_rect: (
                     word(read, ptr + 8)? as i16,
                     word(read, ptr + 10)? as i16,
