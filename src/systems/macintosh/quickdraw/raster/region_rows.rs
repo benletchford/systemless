@@ -59,18 +59,6 @@ pub(crate) fn intervals_to_endpoints(mut intervals: Vec<(i16, i16)>) -> Vec<i16>
     endpoints
 }
 
-/// Intersection by a single merge pass. Only intervals that the pass meets
-/// are compared, so the result is the full intersection only when each row
-/// lists its intervals in order of their starts (true of every row produced
-/// by [`intervals_to_endpoints`]); unordered rows can lose pieces. The 68K
-/// trap path uses this form directly; [`intersect_rows`] checks the order
-/// first.
-pub(crate) fn intersect_sorted_rows(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
-    let lhs = endpoints_to_intervals(lhs);
-    let rhs = endpoints_to_intervals(rhs);
-    intervals_to_endpoints(merge_intersect_intervals(&lhs, &rhs))
-}
-
 /// Intersection of any two rows. Rows parsed from guest region storage may
 /// list their intervals out of order; those are compared all-pairs. Rows
 /// whose interval starts never decrease take the merge pass, which gives the
@@ -176,11 +164,9 @@ pub(crate) fn xor_rows(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
     intervals_to_endpoints(intervals)
 }
 
-/// `Intersection` uses [`intersect_sorted_rows`] and so inherits its ordering
-/// precondition.
 pub(crate) fn combine_rows(lhs: &[i16], rhs: &[i16], op: RegionBooleanOp) -> Vec<i16> {
     match op {
-        RegionBooleanOp::Intersection => intersect_sorted_rows(lhs, rhs),
+        RegionBooleanOp::Intersection => intersect_rows(lhs, rhs),
         RegionBooleanOp::Union => union_rows(lhs, rhs),
         RegionBooleanOp::Difference => difference_rows(lhs, rhs),
         RegionBooleanOp::Xor => xor_rows(lhs, rhs),

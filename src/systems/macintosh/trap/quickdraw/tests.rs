@@ -4689,6 +4689,69 @@
     }
 
     #[test]
+    fn sectrgn_keeps_every_piece_of_an_app_built_row_listed_out_of_order() {
+        // Region data is private to QuickDraw (Inside Macintosh Volume I,
+        // pp. I-141–I-142; Imaging With QuickDraw, pp. 2-7 and 2-29), but
+        // SectRgn takes any handle, and CopyRgn and SetClip copy region
+        // bytes verbatim. A row whose inversion points are listed out of
+        // order used to lose the pieces the merge pass skipped.
+        let (mut d, mut cpu, mut bus) = setup();
+
+        let unordered = make_complex_rgn(
+            &mut bus,
+            (0, 0, 1, 6),
+            &[
+                0,
+                5,
+                6,
+                0,
+                1,
+                super::REGION_STOP,
+                1,
+                5,
+                6,
+                0,
+                1,
+                super::REGION_STOP,
+                super::REGION_STOP,
+            ],
+        );
+        let ordered = make_complex_rgn(
+            &mut bus,
+            (0, 0, 1, 6),
+            &[
+                0,
+                0,
+                1,
+                5,
+                6,
+                super::REGION_STOP,
+                1,
+                0,
+                1,
+                5,
+                6,
+                super::REGION_STOP,
+                super::REGION_STOP,
+            ],
+        );
+        let dst_data = bus.alloc(10);
+        let dst = bus.alloc(4);
+        make_rgn(&mut bus, dst_data, dst, 0, 0, 0, 0);
+
+        bus.write_long(TEST_SP, dst);
+        bus.write_long(TEST_SP + 4, ordered);
+        bus.write_long(TEST_SP + 8, unordered);
+
+        let result = d.dispatch_quickdraw(true, 0x0E4, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(read_rgn_bbox(&bus, dst), (0, 0, 1, 6));
+        assert!(TrapDispatcher::region_contains_point(&bus, dst, 0, 0));
+        assert!(!TrapDispatcher::region_contains_point(&bus, dst, 0, 3));
+        assert!(TrapDispatcher::region_contains_point(&bus, dst, 0, 5));
+    }
+
+    #[test]
     fn offsetrgn_shifts_complex_region_scanlines() {
         // Inside Macintosh Volume I (1985), p. I-183: OffsetRgn moves the
         // region shape. Complex scanline coordinates must move with the bbox.

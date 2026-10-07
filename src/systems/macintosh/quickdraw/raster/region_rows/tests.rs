@@ -3,6 +3,9 @@
 //! `ppc_region_*` functions (PowerPC), kept below as references with their logic unchanged.
 //! The 68K picture parser held a third copy of `merge_region_endpoints`,
 //! identical to the `TrapDispatcher` one.
+//! Intersection is the exception: both paths now take the all-pairs pass
+//! when a row's interval starts fall, so the 68K merge reference is matched
+//! only on rows whose starts are in order.
 
 use super::*;
 
@@ -446,9 +449,18 @@ fn row_operations_match_68k_reference_on_any_rows() {
             reference_68k::endpoints_to_intervals(lhs),
             "{lhs:?}"
         );
+        // The 68K path now takes the all-pairs intersection where a row's
+        // interval starts fall; it agreed with the merge pass everywhere else.
+        let ordered = starts_in_order(&endpoints_to_intervals(lhs))
+            && starts_in_order(&endpoints_to_intervals(rhs));
+        let previous_intersection = if ordered {
+            reference_68k::intersect_region_rows(lhs, rhs)
+        } else {
+            reference_ppc::ppc_region_intersect_rows(lhs, rhs)
+        };
         assert_eq!(
-            intersect_sorted_rows(lhs, rhs),
-            reference_68k::intersect_region_rows(lhs, rhs),
+            intersect_rows(lhs, rhs),
+            previous_intersection,
             "intersect {lhs:?} {rhs:?}"
         );
         assert_eq!(
@@ -467,9 +479,13 @@ fn row_operations_match_68k_reference_on_any_rows() {
             "xor {lhs:?} {rhs:?}"
         );
         for op in all_ops() {
+            let expected = match op {
+                RegionBooleanOp::Intersection => previous_intersection.clone(),
+                _ => reference_68k::combine_region_rows(lhs, rhs, op),
+            };
             assert_eq!(
                 combine_rows(lhs, rhs, op),
-                reference_68k::combine_region_rows(lhs, rhs, op),
+                expected,
                 "combine {lhs:?} {rhs:?}"
             );
         }
@@ -594,7 +610,7 @@ fn shared_operations_match_ppc_reference_on_any_rows() {
 fn merge_intersection_matches_ppc_all_pairs_on_sorted_rows() {
     for_row_pairs(0x0bc_0002, true, |lhs, rhs| {
         assert_eq!(
-            intersect_sorted_rows(lhs, rhs),
+            reference_68k::intersect_region_rows(lhs, rhs),
             reference_ppc::ppc_region_intersect_rows(lhs, rhs),
             "{lhs:?} {rhs:?}"
         );
@@ -611,8 +627,12 @@ fn merge_intersection_differs_from_all_pairs_on_unsorted_rows() {
         reference_ppc::ppc_region_intersect_rows(&lhs, &rhs),
         vec![0, 1, 5, 6]
     );
-    assert_eq!(intersect_sorted_rows(&lhs, &rhs), vec![5, 6]);
+    assert_eq!(reference_68k::intersect_region_rows(&lhs, &rhs), vec![5, 6]);
     assert_eq!(intersect_rows(&lhs, &rhs), vec![0, 1, 5, 6]);
+    assert_eq!(
+        combine_rows(&lhs, &rhs, RegionBooleanOp::Intersection),
+        vec![0, 1, 5, 6]
+    );
 }
 
 /// A row whose non-empty interval starts never decrease, with empty and
