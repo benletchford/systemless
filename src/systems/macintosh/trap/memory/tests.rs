@@ -435,6 +435,8 @@ fn dispose_handle_trap_releases_native_process_allocation_immediately() {
         manager.register_native_handle_records([(record, 0xE0)]);
     }
     dispatcher.attach_unconverted_process_services(&mut context);
+    let generation =
+        dispatcher.with_resource_manager_mut(|resources| resources.menu_generation(handle));
 
     cpu.write_reg(Register::A0, handle);
     dispatcher.current_trap_word = 0xA023;
@@ -444,6 +446,10 @@ fn dispose_handle_trap_releases_native_process_allocation_immediately() {
         .unwrap();
 
     assert_eq!(cpu.read_reg(Register::D0), 0);
+    dispatcher.with_resource_manager_mut(|resources| {
+        assert!(!resources.menu_generations.contains_key(&handle));
+        assert_ne!(resources.menu_generation(handle), generation);
+    });
     assert_eq!(bus.read_long(handle), 0);
     assert_eq!(memory_manager.borrow().native_allocation(handle), None);
     assert_eq!(memory_manager.borrow().recover_handle(ptr), None);
