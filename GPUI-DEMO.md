@@ -101,6 +101,11 @@ Use `--capture-modal-dialog` to review the real showcase preferences dialog
 through the macOS headless GPUI renderer. Composed captures are available for
 [68K](tests/toolbox-showcase/reference/gpui-demo/07-modal-68k.png) and
 [PowerPC](tests/toolbox-showcase/reference/gpui-demo/07-modal-ppc.png).
+Use `--capture-modal-dialog-checked` to inspect the guest-updated checkbox:
+[68K checked](tests/toolbox-showcase/reference/gpui-demo/07-modal-checked-68k.png)
+and [PowerPC checked](tests/toolbox-showcase/reference/gpui-demo/07-modal-checked-ppc.png).
+On both CPUs the composed image differs from its unchecked capture only
+inside the checkbox's 28-by-28-pixel rendered area.
 
 TextEdit fields still use guest pixels. The GPUI runner now forwards ordinary
 ASCII keys and arrows to the guest, preserving the guest TERec's text and
