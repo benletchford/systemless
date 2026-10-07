@@ -5430,12 +5430,13 @@ impl super::TrapDispatcher {
             }
 
             // ShowHide ($A908)
+            // Sets window visibility without changing its order or activation.
             // PROCEDURE ShowHide(theWindow: WindowPtr; showFlag: BOOLEAN);
-            // ShowHide ($A908): Sets window visible byte; rebuilds visRgn/clipRgn from content rect; on show, queues update event for content; on hide, drops queued updates
+            // Inside Macintosh Volume I, I-285
             (true, 0x108) => {
                 let sp = cpu.read_reg(Register::A7);
-                // Pascal BOOLEAN in high byte (MPW C convention).
-                let show_flag = bus.read_byte(sp) != 0;
+                // A byte pushed to A7 occupies the low byte of its two-byte stack slot.
+                let show_flag = bus.read_byte(sp + 1) != 0;
                 let the_window = bus.read_long(sp + 2);
                 if the_window != 0 {
                     let was_visible = self.window_visible(bus, the_window);
