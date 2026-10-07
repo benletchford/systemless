@@ -4807,7 +4807,9 @@ pub(crate) fn ppc_get_new_mbar(
     // Macintosh Toolbox Essentials (1992), pp. 3-110--3-112 and 3-155:
     // GetNewMBar expands the MBAR's ordered MENU resource IDs into a new,
     // caller-owned menu-list handle; it does not install or draw that list.
-    let mut menu_list = PpcMenuListDefinition::from_regular_handles(mbar_id, menu_handles);
+    // MBAR resource identity does not select the MBDF; InitProcMenu does.
+    // Macintosh Toolbox Essentials (1992), pp. 3-104, 3-111.
+    let mut menu_list = PpcMenuListDefinition::from_regular_handles(0, menu_handles);
     ppc_relayout_menu_list(memory, &mut menu_list);
     let mut allocator = PpcProcessAllocatorView {
         memory_manager: process_memory_manager,
