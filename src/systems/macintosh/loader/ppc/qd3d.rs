@@ -1658,7 +1658,10 @@ pub fn ppc_q3_software_texture_sample(
     let u = ppc_q3_software_texture_coordinate(u, u_boundary)?;
     let v = ppc_q3_software_texture_coordinate(v, v_boundary)?;
     let x = ((u * texture.width as f32).floor() as u32).min(texture.width.saturating_sub(1));
-    let y = ((v * texture.height as f32).floor() as u32).min(texture.height.saturating_sub(1));
+    // The pixmap's origin is its upper-left pixel, but v = 0 is the bottom
+    // edge of the standard pixmap parameterization.
+    let y =
+        (((1.0 - v) * texture.height as f32).floor() as u32).min(texture.height.saturating_sub(1));
     ppc_q3_software_texture_pixel_at(memory, texture, x, y)
 }
 
