@@ -727,6 +727,7 @@ impl super::TrapDispatcher {
                 Some(SharedMenuSnapshotRecord {
                     id: bus.read_word(menu) as i16,
                     title: bus.read_bytes(menu + 15, title_len),
+                    standard_definition: self.menu_uses_standard_definition(bus, menu),
                     items: menu_items_from_memory(bus, menu_handle)?,
                 })
             })

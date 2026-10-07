@@ -207,10 +207,15 @@ mod desktop {
                     .run_gui_slice_with_audio(100_000, deadline, 367);
                 session.drain_audio();
                 let menus = session.runner_mut().guest_menu_snapshot();
+                let guest_menu_fallback = menus.requires_guest_menu_rendering();
                 let frame = session.video_frame().map(|frame| {
                     // Preserve guest MBarHeight and crop only the displayed image,
                     // as the native menu frontend does (Inside Macintosh V, V-245).
-                    let top = u32::from(session.runner().bus().read_word(MBAR_HEIGHT));
+                    let top = if guest_menu_fallback {
+                        0
+                    } else {
+                        u32::from(session.runner().bus().read_word(MBAR_HEIGHT))
+                    };
                     let top = if top < frame.height { top } else { 0 };
                     let mut pixels = frame.pixels[(top * frame.width * 4) as usize..].to_vec();
                     for pixel in pixels.chunks_exact_mut(4) {
@@ -358,16 +363,27 @@ mod desktop {
         }
 
         fn pointer(&self, position: Point<Pixels>) -> (i16, i16) {
-            // The framebuffer is displayed at 1:1 beneath the fixed-height bar.
+            // The framebuffer is displayed at 1:1; custom MDEFs retain the
+            // guest menu bar and therefore have no host-bar offset.
             let x = f32::from(position.x).clamp(0., self.width.saturating_sub(1) as f32);
-            let y = (f32::from(position.y) - 36.).clamp(0., self.height.saturating_sub(1) as f32);
+            let bar_height = if self.guest_menu_fallback() { 0. } else { 36. };
+            let y = (f32::from(position.y) - bar_height)
+                .clamp(0., self.height.saturating_sub(1) as f32);
             ((y as u32 + self.crop_top) as i16, x as i16)
         }
 
         fn inside_guest_pane(&self, position: Point<Pixels>) -> bool {
             let x = f32::from(position.x);
             let y = f32::from(position.y);
-            x >= 0. && x < self.width as f32 && y >= 36. && y < 36. + self.height as f32
+            let bar_height = if self.guest_menu_fallback() { 0. } else { 36. };
+            x >= 0.
+                && x < self.width as f32
+                && y >= bar_height
+                && y < bar_height + self.height as f32
+        }
+
+        fn guest_menu_fallback(&self) -> bool {
+            self.menus.requires_guest_menu_rendering()
         }
 
         fn scrollbar_at(&self, point: (i16, i16)) -> Option<(u32, u64, (i16, i16))> {
@@ -1721,6 +1737,7 @@ mod desktop {
                     screen = screen.child(overlay);
                 }
             }
+            let guest_menu_fallback = self.guest_menu_fallback();
             div()
                 .flex()
                 .flex_col()
@@ -1745,7 +1762,7 @@ mod desktop {
                         }));
                 }))
                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                    if event.keystroke.modifiers.platform {
+                    if event.keystroke.modifiers.platform && !this.guest_menu_fallback() {
                         if let Some(key) = event.keystroke.key.chars().next() {
                             for menu in &this.menus.menus {
                                 if !menu.enabled {
@@ -1784,7 +1801,7 @@ mod desktop {
                         }
                     }
                 }))
-                .child(bar)
+                .when(!guest_menu_fallback, |root| root.child(bar))
                 .child(screen)
                 .child(div().px_3().py_1().text_xs().child(self.status.clone()))
         }
@@ -2345,7 +2362,11 @@ mod desktop {
         let standard_file = session.runner_mut().standard_file_snapshot();
         let menus = session.runner_mut().guest_menu_snapshot();
         let frame = session.video_frame().unwrap();
-        let top = u32::from(session.runner().bus().read_word(MBAR_HEIGHT));
+        let top = if menus.requires_guest_menu_rendering() {
+            0
+        } else {
+            u32::from(session.runner().bus().read_word(MBAR_HEIGHT))
+        };
         let mut pixels = frame.pixels[(top * frame.width * 4) as usize..].to_vec();
         for pixel in pixels.chunks_exact_mut(4) {
             pixel.swap(0, 2);

@@ -569,6 +569,7 @@ mod tests {
             id: 143,
             title: "Loadout".into(),
             enabled: true,
+            standard_definition: true,
             hierarchical: true,
             visible_in_menu_bar: false,
             items: vec![GuestMenuItem {

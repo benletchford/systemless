@@ -341,6 +341,7 @@ mod tests {
             id: 1,
             title: "Apple".to_owned(),
             enabled: true,
+            standard_definition: true,
             hierarchical: false,
             visible_in_menu_bar: true,
             items: vec![GuestMenuItem {

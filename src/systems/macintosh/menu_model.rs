@@ -13,6 +13,12 @@ pub struct GuestMenuSnapshot {
 }
 
 impl GuestMenuSnapshot {
+    /// A custom MDEF can draw arbitrary pixels and define its own hit regions.
+    /// Macintosh Toolbox Essentials (1992), pp. 3-3, 3-87.
+    pub fn requires_guest_menu_rendering(&self) -> bool {
+        self.menus.iter().any(|menu| !menu.standard_definition)
+    }
+
     /// Validate a host-presented command against the immutable projection of
     /// the live Menu Manager state and return its packed MenuSelect result.
     /// Disabled menus/items, dividers, and submenu-parent rows cannot be
@@ -33,6 +39,9 @@ pub struct GuestMenu {
     pub id: i16,
     pub title: String,
     pub enabled: bool,
+    /// Whether the live menu uses the standard MDEF. Custom MDEFs own their
+    /// drawing and hit testing (Macintosh Toolbox Essentials, pp. 3-3, 3-87).
+    pub standard_definition: bool,
     /// A hierarchical menu is reached through an item in another menu and
     /// does not itself have a menu-bar title.
     pub hierarchical: bool,
@@ -62,6 +71,7 @@ mod tests {
                 id: -120,
                 title: "File".to_owned(),
                 enabled: menu_enabled,
+                standard_definition: true,
                 hierarchical: false,
                 visible_in_menu_bar: true,
                 items: vec![item],
@@ -98,5 +108,13 @@ mod tests {
         let mut parent = item();
         parent.submenu_id = Some(200);
         assert_eq!(snapshot(true, parent).selectable_result(-120, 2), None);
+    }
+
+    #[test]
+    fn custom_definition_requires_guest_rendering() {
+        let mut menus = snapshot(true, item());
+        assert!(!menus.requires_guest_menu_rendering());
+        menus.menus[0].standard_definition = false;
+        assert!(menus.requires_guest_menu_rendering());
     }
 }
