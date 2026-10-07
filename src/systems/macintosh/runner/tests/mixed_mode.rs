@@ -1407,3 +1407,1065 @@ fn void_special_case_completion_preserves_nonzero_native_r3() {
     assert_eq!(ppc_app.cpu.gpr[3], NATIVE_R3);
     assert!(ppc_app.toolbox_startup.execution.calls().is_empty());
 }
+
+// Interrupt-level PowerPC callbacks that wait on a 68K Mixed Mode call. The
+// foreground is a counting loop with every other register seeded; callbacks
+// use a private frame below its 224-byte Red Zone.
+const IRQ_LOOP_PC: u32 = PPC_CODE_BASE + 0x800;
+const IRQ_CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
+const IRQ_PLAIN_CALLBACK: u32 = PPC_CODE_BASE + 0x1400;
+const IRQ_TVECTOR: u32 = 0x0301_0200;
+const IRQ_PLAIN_TVECTOR: u32 = 0x0301_0210;
+const IRQ_CALLBACK_RTOC: u32 = 0x0301_0300;
+const IRQ_M68K_ROUTINE: u32 = 0x0301_0400;
+const IRQ_DESCRIPTOR: u32 = 0x0301_0600;
+const IRQ_DATA: u32 = 0x0305_0000;
+const IRQ_RESULT: u32 = IRQ_DATA;
+const IRQ_PRIVATE: u32 = IRQ_DATA + 4;
+const IRQ_COUNTER: u32 = IRQ_DATA + 8;
+const IRQ_FIRST_RESULT: u32 = IRQ_DATA + 12;
+const IRQ_PLAIN_MARKER: u32 = IRQ_DATA + 16;
+const IRQ_TASK: u32 = IRQ_DATA + 0x100;
+const IRQ_PLAIN_TASK: u32 = IRQ_DATA + 0x120;
+const IRQ_TIMER_TASK: u32 = IRQ_DATA + 0x140;
+const IRQ_ARGUMENT: u32 = 0x10;
+const IRQ_PRIVATE_VALUE: u32 = 0xc0de_cafe;
+const IRQ_TICK_CYCLES: u32 = 200;
+const IRQ_RED_ZONE: u32 = 224;
+const IRQ_USE_RES_FILE_TRAP: u32 = PPC_IMPORT_TRAP_BASE + 4;
+
+fn irq_proc_info() -> u32 {
+    use crate::mixed_mode::proc_info;
+    proc_info::PASCAL_STACK_BASED
+        | (proc_info::SIZE_FOUR << proc_info::RESULT_SIZE_PHASE)
+        | (proc_info::SIZE_FOUR << proc_info::STACK_PARAMETER_PHASE)
+}
+
+/// A callback that saves r30, loads a private value into it, makes `calls`
+/// sequential CallUniversalProc calls on the 68K routine (each passing the
+/// previous result), records the results, bumps a counter, and optionally
+/// re-arms a VBL task after the 68K work.
+fn irq_mixed_mode_callback(calls: usize, rearm: Option<u32>) -> Vec<u32> {
+    irq_mixed_mode_callback_with(calls, rearm, 0, None)
+}
+
+/// As [`irq_mixed_mode_callback`], optionally spinning `delay` iterations
+/// before its first call and selecting resource file `before` ahead of the
+/// 68K work and `after` once it has returned.
+fn irq_mixed_mode_callback_with(
+    calls: usize,
+    rearm: Option<u32>,
+    delay: u32,
+    resource_files: Option<(u16, u16)>,
+) -> Vec<u32> {
+    let proc_info = irq_proc_info();
+    let mut words = vec![
+        0x7c08_02a6, // mflr r0
+        0x9001_0008, // stw r0,8(r1)
+        0x9421_ffb0, // stwu r1,-80(r1)
+        0x93c1_0048, // stw r30,72(r1)
+        0x3fc0_0000 | (IRQ_PRIVATE_VALUE >> 16),
+        0x63de_0000 | (IRQ_PRIVATE_VALUE & 0xffff),
+    ];
+    if delay != 0 {
+        words.extend([
+            0x3d20_0000 | (delay >> 16),
+            0x6129_0000 | (delay & 0xffff),
+            0x7d29_03a6, // mtctr r9
+            0x4200_0000, // bdnz .
+        ]);
+    }
+    let use_res_file = |words: &mut Vec<u32>, refnum: u16| {
+        words.push(0x3860_0000 | u32::from(refnum)); // li r3,refnum
+        let branch_pc = IRQ_CALLBACK + u32::try_from(words.len()).unwrap() * 4;
+        words.push(ppc_test_relative_branch(branch_pc, IRQ_USE_RES_FILE_TRAP) | 1);
+    };
+    if let Some((before, _)) = resource_files {
+        use_res_file(&mut words, before);
+    }
+    words.push(0x38a0_0000 | IRQ_ARGUMENT); // li r5,ARGUMENT
+    for call in 0..calls {
+        words.extend([
+            0x3c60_0000 | (IRQ_DESCRIPTOR >> 16),
+            0x6063_0000 | (IRQ_DESCRIPTOR & 0xffff),
+            0x3c80_0000 | (proc_info >> 16),
+            0x6084_0000 | (proc_info & 0xffff),
+        ]);
+        let branch_pc = IRQ_CALLBACK + u32::try_from(words.len()).unwrap() * 4;
+        words.push(ppc_test_relative_branch(branch_pc, PPC_IMPORT_TRAP_BASE) | 1);
+        if call == 0 {
+            words.extend([
+                0x3cc0_0000 | (IRQ_DATA >> 16),
+                0x9066_0000 | (IRQ_FIRST_RESULT & 0xffff), // stw r3,FIRST(r6)
+            ]);
+        }
+        words.push(0x7c65_1b78); // mr r5,r3
+    }
+    words.extend([
+        0x3cc0_0000 | (IRQ_DATA >> 16),
+        0x9066_0000 | (IRQ_RESULT & 0xffff),  // stw r3,RESULT(r6)
+        0x93c6_0000 | (IRQ_PRIVATE & 0xffff), // stw r30,PRIVATE(r6)
+        0x80e6_0000 | (IRQ_COUNTER & 0xffff), // lwz r7,COUNTER(r6)
+        0x38e7_0001,                          // addi r7,r7,1
+        0x90e6_0000 | (IRQ_COUNTER & 0xffff), // stw r7,COUNTER(r6)
+    ]);
+    if let Some((_, after)) = resource_files {
+        use_res_file(&mut words, after);
+    }
+    if let Some(task) = rearm {
+        words.extend([
+            0x3ce0_0000 | (task >> 16),
+            0x60e7_0000 | (task & 0xffff),
+            0x3900_0001, // li r8,1
+            0xb107_000a, // sth r8,10(r7): vblCount
+        ]);
+    }
+    words.extend([
+        0x83c1_0048, // lwz r30,72(r1)
+        0x3821_0050, // addi r1,r1,80
+        0x8001_0008, // lwz r0,8(r1)
+        0x7c08_03a6, // mtlr r0
+        0x4e80_0020, // blr
+    ]);
+    words
+}
+
+/// Plain callback `index` lives at its own entry, transition vector and
+/// marker word.
+fn irq_plain_tvector(index: u32) -> u32 {
+    IRQ_PLAIN_TVECTOR + index * 8
+}
+
+fn irq_plain_marker(index: u32) -> u32 {
+    IRQ_PLAIN_MARKER + index * 4
+}
+
+/// A callback that never reaches 68K code: it clobbers volatile registers,
+/// bumps its marker word, and re-arms the plain VBL task.
+fn irq_plain_callback(index: u32) -> Vec<u32> {
+    let marker = irq_plain_marker(index) & 0xffff;
+    let mut words = vec![0x3800_0077]; // li r0,0x77
+    for register in 3..=12u32 {
+        words.push(0x3800_0000 | (register << 21) | (0x40 + register)); // li rN,0x40+N
+    }
+    words.extend([
+        0x7d89_03a6, // mtctr r12
+        0x2c03_0005, // cmpwi r3,5
+        0x3cc0_0000 | (IRQ_DATA >> 16),
+        0x80e6_0000 | marker, // lwz r7,MARKER(r6)
+        0x38e7_0001,          // addi r7,r7,1
+        0x90e6_0000 | marker, // stw r7,MARKER(r6)
+        0x3ce0_0000 | (IRQ_PLAIN_TASK >> 16),
+        0x60e7_0000 | (IRQ_PLAIN_TASK & 0xffff),
+        0x3900_0001, // li r8,1
+        0xb107_000a, // sth r8,10(r7): vblCount
+        0x4e80_0020, // blr
+    ]);
+    words
+}
+
+fn irq_words(words: Vec<u32>) -> Vec<u8> {
+    words.into_iter().flat_map(u32::to_be_bytes).collect()
+}
+
+/// A runner whose foreground PowerPC loop counts in r20 and whose 68K routine
+/// (Pascal, one long argument, long result) returns its argument plus 7
+/// after a delay loop that spans several runner slices.
+fn irq_runner(callback: Vec<u32>) -> FixtureRunner {
+    use crate::guest_procedure::{
+        ROUTINE_DESCRIPTOR_HEADER_SIZE, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP,
+        ROUTINE_DESCRIPTOR_VERSION, ROUTINE_RECORD_ISA_OFFSET, ROUTINE_RECORD_M68K_ISA,
+        ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
+    };
+
+    let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+    let ppc_app = app.ppc.as_mut().expect("PPC app");
+    ppc_app.memory.add_region(
+        IRQ_LOOP_PC,
+        irq_words(vec![
+            0x3a94_0001, // addi r20,r20,1
+            0x4bff_fffc, // b .-4
+        ]),
+    );
+    ppc_app.memory.add_region(IRQ_CALLBACK, irq_words(callback));
+    ppc_app.memory.add_region(IRQ_TVECTOR, vec![0; 0x40]);
+    for index in 0..3 {
+        let entry = IRQ_PLAIN_CALLBACK + index * 0x100;
+        ppc_app
+            .memory
+            .add_region(entry, irq_words(irq_plain_callback(index)));
+        ppc_app
+            .memory
+            .write_u32_be(irq_plain_tvector(index), entry)
+            .unwrap();
+        ppc_app
+            .memory
+            .write_u32_be(irq_plain_tvector(index) + 4, IRQ_CALLBACK_RTOC)
+            .unwrap();
+    }
+    ppc_app
+        .memory
+        .write_u32_be(IRQ_TVECTOR, IRQ_CALLBACK)
+        .unwrap();
+    ppc_app
+        .memory
+        .write_u32_be(IRQ_TVECTOR + 4, IRQ_CALLBACK_RTOC)
+        .unwrap();
+    let routine = [
+        0x323c, 0x012c, // MOVE.W #300,D1
+        0x51c9, 0xfffe, // DBRA D1,*
+        0x202f, 0x0004, // MOVE.L 4(SP),D0
+        0x5e80, // ADDQ.L #7,D0
+        0x2f40, 0x0008, // MOVE.L D0,8(SP)
+        0x4e74, 0x0004, // RTD #4
+    ];
+    ppc_app.memory.add_region(
+        IRQ_M68K_ROUTINE,
+        routine.into_iter().flat_map(u16::to_be_bytes).collect(),
+    );
+    ppc_app.memory.add_region(IRQ_DESCRIPTOR, vec![0; 0x100]);
+    ppc_app
+        .memory
+        .write_u16_be(IRQ_DESCRIPTOR, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP)
+        .unwrap();
+    ppc_app
+        .memory
+        .write_u8(IRQ_DESCRIPTOR + 2, ROUTINE_DESCRIPTOR_VERSION)
+        .unwrap();
+    let record = IRQ_DESCRIPTOR + ROUTINE_DESCRIPTOR_HEADER_SIZE;
+    ppc_app
+        .memory
+        .write_u32_be(record, irq_proc_info())
+        .unwrap();
+    ppc_app
+        .memory
+        .write_u8(record + ROUTINE_RECORD_ISA_OFFSET, ROUTINE_RECORD_M68K_ISA)
+        .unwrap();
+    ppc_app
+        .memory
+        .write_u32_be(
+            record + ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
+            IRQ_M68K_ROUTINE,
+        )
+        .unwrap();
+    ppc_app.memory.add_region(IRQ_DATA, vec![0; 0x200]);
+    let mut call_universal_proc = test_ppc_import_binding(0, "InterfaceLib", "CallUniversalProc");
+    call_universal_proc.trap_pc = PPC_IMPORT_TRAP_BASE;
+    call_universal_proc.dispatcher_target = PpcImportDispatcherTarget::CallUniversalProc;
+    let mut use_res_file = test_ppc_import_binding(1, "InterfaceLib", "UseResFile");
+    use_res_file.trap_pc = IRQ_USE_RES_FILE_TRAP;
+    use_res_file.dispatcher_target = PpcImportDispatcherTarget::UseResFile;
+    ppc_app.import_count = 2;
+    ppc_app.imports = vec![call_universal_proc, use_res_file];
+
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.init_app(&app);
+    runner.set_instructions_per_tick(IRQ_TICK_CYCLES);
+    runner.tick_budget = IRQ_TICK_CYCLES as i32;
+    let ppc_app = runner.native.application_mut().expect("PPC app");
+    ppc_app.cpu.pc = IRQ_LOOP_PC;
+    for register in (0..32).filter(|register| *register != 1) {
+        ppc_app.cpu.gpr[register] = 0x5a00_0000 | (register as u32 * 0x0101);
+        ppc_app.cpu.fpr[register] = 0x4000_0000_0000_0000 | register as u64;
+    }
+    ppc_app.cpu.gpr[20] = 0;
+    ppc_app.cpu.cr = 0x2468_ace0;
+    ppc_app.cpu.ctr = 0x1357_9bdf;
+    ppc_app.cpu.lr = 0x0bad_f00c;
+    ppc_app.cpu.xer = 0x2000_0000;
+    let sp = ppc_app.cpu.gpr[1];
+    for offset in 0..IRQ_RED_ZONE {
+        ppc_app
+            .memory
+            .write_u8(sp - IRQ_RED_ZONE + offset, 0xa5 ^ offset as u8)
+            .unwrap();
+    }
+    runner
+}
+
+fn irq_install_vbl(runner: &mut FixtureRunner, task_ptr: u32, tvector: u32) {
+    let ppc_app = runner.native.application_mut().expect("PPC app");
+    ppc_app.memory.write_u16_be(task_ptr + 4, 1).unwrap(); // vType
+    ppc_app.memory.write_u32_be(task_ptr + 6, tvector).unwrap();
+    ppc_app.memory.write_u16_be(task_ptr + 10, 1).unwrap();
+    ppc_app.vbl_tasks.push(PpcVblTaskRecord {
+        task_ptr,
+        architecture: CallbackTaskArchitecture::PowerPc,
+        slot: None,
+        pending: false,
+    });
+}
+
+fn irq_install_timer(runner: &mut FixtureRunner, task_ptr: u32, tvector: u32) {
+    let fire_at_tick = runner.guest_tick().wrapping_add(1);
+    let ppc_app = runner.native.application_mut().expect("PPC app");
+    ppc_app.timer_tasks.push(PpcTimerTaskRecord {
+        task_ptr,
+        architecture: CallbackTaskArchitecture::PowerPc,
+        extended: false,
+        callback: tvector,
+        active: true,
+        fire_at_tick,
+        fire_at_subtick: u64::from(fire_at_tick) * 1_000_000,
+        last_fired_tick: None,
+    });
+}
+
+fn irq_read(runner: &FixtureRunner, address: u32) -> u32 {
+    runner
+        .native
+        .application()
+        .expect("PPC app")
+        .memory
+        .clone()
+        .read_u32_be(address)
+        .expect("mapped fixture word")
+}
+
+fn irq_parked(runner: &FixtureRunner) -> bool {
+    runner
+        .native
+        .application()
+        .expect("PPC app")
+        .parked_interrupt_callback
+        .is_some()
+}
+
+/// Step until `done` holds while nothing is parked, checking that the
+/// application never halts. Returns how many steps observed a parked callback.
+fn irq_run_until(
+    runner: &mut FixtureRunner,
+    mut done: impl FnMut(&FixtureRunner) -> bool,
+) -> usize {
+    let mut parked_steps = 0;
+    for step in 0..4000 {
+        let (_, running) = runner.run_steps(50, None);
+        let ppc_app = runner.native.application().expect("PPC app");
+        assert!(
+            running && !runner.is_halted(),
+            "halted at step {step}: pc=${:08x} lr=${:08x} r1=${:08x} parked={}",
+            ppc_app.cpu.pc,
+            ppc_app.cpu.lr,
+            ppc_app.cpu.gpr[1],
+            ppc_app.parked_interrupt_callback.is_some(),
+        );
+        if irq_parked(runner) {
+            parked_steps += 1;
+        } else if done(runner) {
+            return parked_steps;
+        }
+    }
+    panic!("interrupt fixture did not finish");
+}
+
+/// The interrupted context comes back whole: every register except the
+/// loop's pc and counter, and the Red Zone below its stack pointer.
+fn irq_assert_foreground_intact(runner: &FixtureRunner, expected: &ppc::PpcExecutionContext) {
+    let ppc_app = runner.native.application().expect("PPC app");
+    assert!(ppc_app.parked_interrupt_callback.is_none());
+    let mut actual = ppc_app.cpu.capture_execution_context();
+    assert!(
+        [IRQ_LOOP_PC, IRQ_LOOP_PC + 4].contains(&actual.architectural().pc),
+        "foreground resumed at ${:08x}",
+        actual.architectural().pc
+    );
+    actual.architectural_mut().pc = expected.architectural().pc;
+    actual.architectural_mut().gpr[20] = expected.architectural().gpr[20];
+    assert_eq!(actual.architectural(), expected.architectural());
+    let sp = expected.architectural().gpr[1];
+    let mut memory = ppc_app.memory.clone();
+    for offset in 0..IRQ_RED_ZONE {
+        assert_eq!(
+            memory.read_u8(sp - IRQ_RED_ZONE + offset),
+            Some(0xa5 ^ offset as u8),
+            "red zone byte {offset}"
+        );
+    }
+}
+
+fn irq_foreground_context(runner: &FixtureRunner) -> ppc::PpcExecutionContext {
+    runner
+        .native
+        .application()
+        .expect("PPC app")
+        .cpu
+        .capture_execution_context()
+}
+
+#[test]
+fn vbl_callback_awaiting_68k_resumes_with_its_own_registers() {
+    let mut runner = irq_runner(irq_mixed_mode_callback(1, Some(IRQ_TASK)));
+    let expected = irq_foreground_context(&runner);
+    irq_install_vbl(&mut runner, IRQ_TASK, IRQ_TVECTOR);
+
+    let parked_steps = irq_run_until(&mut runner, |runner| irq_read(runner, IRQ_COUNTER) >= 1);
+    assert!(parked_steps > 1, "the 68K call spans several slices");
+    assert_eq!(irq_read(&runner, IRQ_RESULT), IRQ_ARGUMENT + 7);
+    assert_eq!(irq_read(&runner, IRQ_PRIVATE), IRQ_PRIVATE_VALUE);
+    irq_assert_foreground_intact(&runner, &expected);
+    let first_count = irq_foreground_context(&runner).architectural().gpr[20];
+
+    irq_run_until(&mut runner, |runner| irq_read(runner, IRQ_COUNTER) >= 2);
+    irq_assert_foreground_intact(&runner, &expected);
+    assert!(irq_foreground_context(&runner).architectural().gpr[20] > first_count);
+    assert!(runner.dispatcher.guest_calls.is_empty());
+    let ppc_app = runner.native.application().expect("PPC app");
+    assert!(ppc_app
+        .vbl_tasks
+        .iter()
+        .any(|task| task.task_ptr == IRQ_TASK));
+    assert_eq!(ppc_app.interrupt_callback_parks, 2);
+}
+
+#[test]
+fn interrupt_callback_can_make_sequential_mixed_mode_calls() {
+    let mut runner = irq_runner(irq_mixed_mode_callback(2, None));
+    let expected = irq_foreground_context(&runner);
+    irq_install_vbl(&mut runner, IRQ_TASK, IRQ_TVECTOR);
+
+    irq_run_until(&mut runner, |runner| irq_read(runner, IRQ_COUNTER) >= 1);
+
+    assert_eq!(irq_read(&runner, IRQ_FIRST_RESULT), IRQ_ARGUMENT + 7);
+    assert_eq!(irq_read(&runner, IRQ_RESULT), IRQ_ARGUMENT + 14);
+    assert_eq!(irq_read(&runner, IRQ_PRIVATE), IRQ_PRIVATE_VALUE);
+    assert_eq!(irq_read(&runner, IRQ_COUNTER), 1);
+    irq_assert_foreground_intact(&runner, &expected);
+    assert!(runner.dispatcher.guest_calls.is_empty());
+    assert_eq!(
+        runner
+            .native
+            .application()
+            .expect("PPC app")
+            .interrupt_callback_parks,
+        1
+    );
+}
+
+#[test]
+fn vbl_removal_waits_for_parked_return() {
+    let mut runner = irq_runner(irq_mixed_mode_callback(1, None));
+    let expected = irq_foreground_context(&runner);
+    irq_install_vbl(&mut runner, IRQ_TASK, IRQ_TVECTOR);
+
+    let mut parked_steps = 0;
+    for _ in 0..4000 {
+        let (_, running) = runner.run_steps(50, None);
+        assert!(running && !runner.is_halted());
+        let ppc_app = runner.native.application().expect("PPC app");
+        if ppc_app.parked_interrupt_callback.is_some() {
+            // The task did not reset vblCount, but it has not returned yet.
+            assert_eq!(ppc_app.memory.clone().read_u16_be(IRQ_TASK + 10), Some(0));
+            assert!(ppc_app
+                .vbl_tasks
+                .iter()
+                .any(|task| task.task_ptr == IRQ_TASK));
+            parked_steps += 1;
+        } else if irq_read(&runner, IRQ_COUNTER) >= 1 {
+            break;
+        }
+    }
+
+    assert!(parked_steps > 0);
+    assert_eq!(irq_read(&runner, IRQ_COUNTER), 1);
+    assert!(!runner
+        .native
+        .application()
+        .expect("PPC app")
+        .vbl_tasks
+        .iter()
+        .any(|task| task.task_ptr == IRQ_TASK));
+    irq_assert_foreground_intact(&runner, &expected);
+}
+
+#[test]
+fn timer_callback_awaiting_68k_resumes_with_its_own_registers() {
+    let mut runner = irq_runner(irq_mixed_mode_callback(1, None));
+    let expected = irq_foreground_context(&runner);
+    irq_install_timer(&mut runner, IRQ_TIMER_TASK, IRQ_TVECTOR);
+
+    let parked_steps = irq_run_until(&mut runner, |runner| irq_read(runner, IRQ_COUNTER) >= 1);
+
+    assert!(parked_steps > 1);
+    assert_eq!(irq_read(&runner, IRQ_RESULT), IRQ_ARGUMENT + 7);
+    assert_eq!(irq_read(&runner, IRQ_PRIVATE), IRQ_PRIVATE_VALUE);
+    irq_assert_foreground_intact(&runner, &expected);
+    assert!(runner.dispatcher.guest_calls.is_empty());
+    let ppc_app = runner.native.application().expect("PPC app");
+    assert_eq!(ppc_app.interrupt_callback_parks, 1);
+    assert!(!ppc_app.timer_tasks[0].active);
+}
+
+#[test]
+fn doubleback_buffer_stays_pending_until_parked_callback_returns() {
+    const CHANNEL: u32 = 0x0300_1000;
+    const HEADER: u32 = 0x0300_2000;
+    const BUFFER: u32 = 0x0300_3000;
+
+    let mut runner = irq_runner(irq_mixed_mode_callback(1, None));
+    let expected = irq_foreground_context(&runner);
+    let pending_mask = |runner: &FixtureRunner| {
+        runner
+            .native
+            .application()
+            .expect("PPC app")
+            .sound
+            .manager
+            .double_buffer_playbacks[0]
+            .callback_pending_mask
+    };
+    {
+        let ppc_app = runner.native.application_mut().expect("PPC app");
+        ppc_app.sound.manager.replace_double_buffer_playbacks(vec![
+            PpcSoundDoubleBufferPlaybackRecord {
+                channel: CHANNEL,
+                header: HEADER,
+                buffers: [BUFFER, 0],
+                callback: IRQ_TVECTOR,
+                callback_architecture: CallbackTaskArchitecture::PowerPc,
+                sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
+                num_channels: 1,
+                sample_size: 8,
+                compression_id: 0,
+                format: 0,
+                packet_size: 0,
+                current_buffer_index: 0,
+                callback_pending_mask: 1,
+                active: false,
+                host_initialized: false,
+                host_buffer_loaded: false,
+            },
+        ]);
+        ppc_app
+            .sound
+            .manager
+            .replace_pending_process_doublebacks(vec![PpcSoundDoubleBackRecord {
+                architecture: CallbackTaskArchitecture::PowerPc,
+                channel: CHANNEL,
+                header: HEADER,
+                exhausted_buffer: BUFFER,
+                exhausted_buffer_index: 0,
+                callback: IRQ_TVECTOR,
+                tick: 1,
+                instruction_count: 1,
+            }]);
+    }
+
+    runner.fire_pending_ppc_sound_doublebacks();
+
+    assert!(!runner.is_halted());
+    assert!(irq_parked(&runner));
+    assert_eq!(pending_mask(&runner), 1);
+    // The exhausted buffer is neither queued nor delivered again meanwhile.
+    runner
+        .native
+        .application_mut()
+        .expect("PPC app")
+        .sound
+        .manager
+        .with_mut(|sound| FixtureRunner::queue_ppc_doubleback(sound, 0, 2, 2));
+    runner.fire_pending_ppc_sound_doublebacks();
+    let sound = &runner.native.application().expect("PPC app").sound;
+    assert!(sound.manager.pending_process_doublebacks.is_empty());
+    assert_eq!(sound.completion_invocations.len(), 1);
+
+    irq_run_until(&mut runner, |runner| irq_read(runner, IRQ_COUNTER) >= 1);
+
+    assert_eq!(pending_mask(&runner), 0);
+    assert_eq!(irq_read(&runner, IRQ_RESULT), IRQ_ARGUMENT + 7);
+    assert_eq!(irq_read(&runner, IRQ_PRIVATE), IRQ_PRIVATE_VALUE);
+    irq_assert_foreground_intact(&runner, &expected);
+    assert!(runner.dispatcher.guest_calls.is_empty());
+}
+
+#[test]
+fn interrupts_are_masked_while_a_callback_is_parked() {
+    const SOUND_CHANNEL: u32 = 0x0300_1000;
+
+    let mut runner = irq_runner(irq_mixed_mode_callback(1, None));
+    let expected = irq_foreground_context(&runner);
+    // The plain VBL task runs first in each tick; the parking task follows.
+    irq_install_vbl(&mut runner, IRQ_PLAIN_TASK, irq_plain_tvector(0));
+    irq_install_vbl(&mut runner, IRQ_TASK, IRQ_TVECTOR);
+    let plain_vbl = |runner: &FixtureRunner| irq_read(runner, irq_plain_marker(0));
+    let timer = |runner: &FixtureRunner| irq_read(runner, irq_plain_marker(1));
+    let completion = |runner: &FixtureRunner| irq_read(runner, irq_plain_marker(2));
+    let queued_completions = |runner: &FixtureRunner| {
+        runner
+            .native
+            .application()
+            .expect("PPC app")
+            .sound
+            .manager
+            .pending_sound_callbacks
+            .len()
+    };
+
+    for _ in 0..4000 {
+        runner.run_steps(50, None);
+        if irq_parked(&runner) {
+            break;
+        }
+    }
+    assert!(irq_parked(&runner));
+    let plain_vbl_at_park = plain_vbl(&runner);
+    irq_install_timer(&mut runner, IRQ_TIMER_TASK, irq_plain_tvector(1));
+    queue_ppc_sound_completion(
+        &mut runner.native.application_mut().expect("PPC app").sound,
+        SOUND_CHANNEL,
+        irq_plain_tvector(2),
+    );
+
+    let mut masked_steps = 0;
+    while irq_parked(&runner) {
+        runner.fire_pending_ppc_sound_completions();
+        assert_eq!(plain_vbl(&runner), plain_vbl_at_park);
+        assert_eq!(timer(&runner), 0);
+        assert_eq!(completion(&runner), 0);
+        assert_eq!(queued_completions(&runner), 1);
+        let (_, running) = runner.run_steps(50, None);
+        assert!(running && !runner.is_halted());
+        masked_steps += 1;
+        assert!(masked_steps < 4000);
+    }
+    assert!(masked_steps > 1);
+    assert_eq!(irq_read(&runner, IRQ_COUNTER), 1);
+
+    // After the return, the due timer fires late and once, the queued
+    // completion is delivered, and the other VBL task counts again.
+    irq_run_until(&mut runner, |runner| {
+        timer(runner) == 1 && plain_vbl(runner) > plain_vbl_at_park + 1
+    });
+    runner.fire_pending_ppc_sound_completions();
+    assert_eq!(completion(&runner), 1);
+    assert_eq!(queued_completions(&runner), 0);
+    for _ in 0..20 {
+        runner.run_steps(50, None);
+    }
+    assert_eq!(timer(&runner), 1);
+    assert!(!runner.is_halted());
+    let ppc_app = runner.native.application().expect("PPC app");
+    assert!(ppc_app.parked_interrupt_callback.is_none());
+    assert_eq!(ppc_app.interrupt_callback_parks, 1);
+    irq_assert_foreground_intact(&runner, &expected);
+}
+
+#[test]
+fn plain_interrupt_callbacks_restore_the_interrupted_context() {
+    let mut runner = irq_runner(irq_mixed_mode_callback(1, None));
+    irq_install_vbl(&mut runner, IRQ_PLAIN_TASK, irq_plain_tvector(0));
+    irq_install_timer(&mut runner, IRQ_TIMER_TASK, irq_plain_tvector(1));
+    let tick = runner.guest_tick();
+    let ppc_app = runner.native.application_mut().expect("PPC app");
+    let before = ppc_app.cpu.capture_execution_context();
+    let refnum = ppc_app.current_resource_refnum();
+
+    runner
+        .process_context
+        .with_memory_and_cfm(|memory_manager, cfm| {
+            let vbl = ppc_app.fire_vbl_tasks_for_ticks_with_process_services(
+                tick,
+                1,
+                usize::MAX,
+                u64::from(IRQ_TICK_CYCLES),
+                false,
+                false,
+                memory_manager,
+                cfm,
+            );
+            assert_eq!(vbl.len(), 1);
+            let timers = ppc_app.fire_timer_tasks_for_ticks_with_process_services(
+                tick,
+                1,
+                usize::MAX,
+                u64::from(IRQ_TICK_CYCLES),
+                false,
+                false,
+                memory_manager,
+                cfm,
+            );
+            assert_eq!(timers.len(), 1);
+        });
+
+    let mut memory = ppc_app.memory.clone();
+    assert_eq!(memory.read_u32_be(irq_plain_marker(0)), Some(1));
+    assert_eq!(memory.read_u32_be(irq_plain_marker(1)), Some(1));
+    assert!(ppc_app.parked_interrupt_callback.is_none());
+    assert_eq!(ppc_app.interrupt_callback_parks, 0);
+    assert_eq!(
+        ppc_app.cpu.capture_execution_context().architectural(),
+        before.architectural()
+    );
+    assert_eq!(ppc_app.current_resource_refnum(), refnum);
+}
+
+#[test]
+fn parked_callback_return_is_matched_by_task_and_stack() {
+    use crate::execution_kernel::{ExecutionTaskId, ExecutionTaskState};
+
+    const CALLBACK_SP: u32 = PPC_STACK_TOP - 0x200;
+    const INTERRUPTED_SP: u32 = PPC_STACK_TOP - 64;
+    for (owner_matches, stack_matches) in [(true, true), (false, true), (true, false)] {
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let ppc_app = app.ppc.as_mut().expect("PPC app");
+        let calls = ppc_app.toolbox_startup.execution.calls().shared_handle();
+        let other = calls.create_task().expect("second task");
+        assert!(calls.set_scheduling_state(other, ExecutionTaskState::Ready));
+        assert!(calls.switch_to_task(other));
+        assert!(calls.begin_powerpc_to_m68k(
+            crate::guest_call::GuestCallTarget {
+                isa: crate::guest_procedure::GuestIsa::M68k,
+                entry: IRQ_M68K_ROUTINE,
+                rtoc: 0,
+            },
+            IRQ_M68K_ROUTINE,
+            0x0303_0080,
+            0x0304_0000,
+            0x0303_0084,
+            crate::guest_call::M68kRegisterState::default(),
+            None,
+            PPC_CODE_BASE,
+            0,
+            PpcNativeReturnGpr3::Preserve,
+        ));
+        let awaited_call = calls.top_call_id().expect("submitted call");
+        assert!(calls.switch_to_task(ExecutionTaskId::APPLICATION));
+
+        let mut interrupted = ppc_app.cpu.capture_execution_context();
+        interrupted.architectural_mut().pc = PPC_CODE_BASE;
+        interrupted.architectural_mut().lr = PPC_HALT_PC;
+        interrupted.architectural_mut().gpr[1] = INTERRUPTED_SP;
+        interrupted.architectural_mut().gpr[31] = 0x1234_5678;
+        ppc_app.parked_interrupt_callback = Some(PpcParkedInterruptCallback {
+            level: PpcCallbackLevel::Interrupt,
+            task: if owner_matches {
+                ExecutionTaskId::APPLICATION
+            } else {
+                other
+            },
+            awaited_call,
+            callback_sp: CALLBACK_SP,
+            interrupted,
+            interrupted_refnum: None,
+            on_return: PpcInterruptReturnWork::None,
+        });
+        // A callback epilogue that returns to `halt_pc`.
+        let return_sp = if stack_matches {
+            CALLBACK_SP
+        } else {
+            CALLBACK_SP - 0x40
+        };
+        ppc_app.cpu.pc = PPC_CODE_BASE;
+        ppc_app.cpu.lr = PPC_HALT_PC;
+        ppc_app.cpu.gpr[1] = return_sp;
+        ppc_app.cpu.gpr[31] = 0;
+
+        let probe = ppc_app.run_with_hle_imports(64);
+
+        assert!(matches!(probe.result, PpcRunResult::Halted { pc, .. } if pc == PPC_HALT_PC));
+        if owner_matches && stack_matches {
+            assert!(ppc_app.parked_interrupt_callback.is_none());
+            assert_eq!(ppc_app.cpu.gpr[1], INTERRUPTED_SP);
+            assert_eq!(ppc_app.cpu.gpr[31], 0x1234_5678);
+        } else {
+            assert!(ppc_app.parked_interrupt_callback.is_some());
+            assert_eq!(ppc_app.cpu.gpr[1], return_sp);
+            assert_eq!(ppc_app.cpu.gpr[31], 0);
+        }
+    }
+}
+
+#[test]
+fn interrupt_callbacks_outside_the_parking_gate_keep_the_old_restore_path() {
+    use crate::execution_kernel::ExecutionTaskState;
+    use crate::guest_procedure::GuestIsa;
+
+    for pending_68k_frame in [false, true] {
+        let mut runner = irq_runner(irq_mixed_mode_callback(1, None));
+        irq_install_vbl(&mut runner, IRQ_TASK, IRQ_TVECTOR);
+        let tick = runner.guest_tick();
+        let ppc_app = runner.native.application_mut().expect("PPC app");
+        let calls = ppc_app.toolbox_startup.execution.calls().shared_handle();
+        if pending_68k_frame {
+            // The interrupted code is already waiting on a 68K call.
+            assert!(calls.begin_powerpc_to_m68k(
+                crate::guest_call::GuestCallTarget {
+                    isa: GuestIsa::M68k,
+                    entry: IRQ_M68K_ROUTINE,
+                    rtoc: 0,
+                },
+                IRQ_M68K_ROUTINE,
+                0x0303_0080,
+                0x0304_0000,
+                0x0303_0084,
+                crate::guest_call::M68kRegisterState::default(),
+                None,
+                IRQ_LOOP_PC,
+                0,
+                PpcNativeReturnGpr3::Preserve,
+            ));
+        } else {
+            // A native thread is current but does not own the native CPU.
+            let thread = calls.create_task().expect("second task");
+            assert!(calls.bind_task_entry_isa(thread, GuestIsa::PowerPc));
+            assert!(calls.set_scheduling_state(thread, ExecutionTaskState::Ready));
+            assert!(calls.switch_to_task(thread));
+        }
+        let depth = calls.depth();
+        let before = ppc_app.cpu.capture_execution_context();
+        let refnum = ppc_app.current_resource_refnum();
+
+        let probes = runner
+            .process_context
+            .with_memory_and_cfm(|memory_manager, cfm| {
+                ppc_app.fire_vbl_tasks_for_ticks_with_process_services(
+                    tick,
+                    1,
+                    usize::MAX,
+                    u64::from(IRQ_TICK_CYCLES),
+                    false,
+                    false,
+                    memory_manager,
+                    cfm,
+                )
+            });
+
+        assert_eq!(probes.len(), 1, "pending_68k_frame={pending_68k_frame}");
+        assert!(matches!(
+            probes[0].invocation.result,
+            PpcRunResult::Halted { pc, .. } if pc == PPC_IMPORT_TRAP_BASE
+        ));
+        // The callback's call was submitted, but nothing parked: the old
+        // path restored the interrupted context exactly.
+        assert_eq!(calls.depth(), depth + 1);
+        assert!(ppc_app.parked_interrupt_callback.is_none());
+        assert_eq!(ppc_app.interrupt_callback_parks, 0);
+        assert_eq!(
+            ppc_app.cpu.capture_execution_context().architectural(),
+            before.architectural()
+        );
+        assert_eq!(ppc_app.current_resource_refnum(), refnum);
+    }
+}
+
+#[test]
+fn file_completion_parks_after_a_continued_slice_and_pops_once() {
+    const PARAMETER_BLOCK: u32 = IRQ_DATA + 0x180;
+
+    // The delay outlasts one callback slice, so the completion first hits
+    // its cycle cap and parks only in its continued slice.
+    let mut runner = irq_runner(irq_mixed_mode_callback_with(1, None, 300_000, None));
+    let expected = irq_foreground_context(&runner);
+    let ppc_app = runner.native.application_mut().expect("PPC app");
+    ppc_app.pending_file_completions.extend([
+        (PARAMETER_BLOCK, IRQ_TVECTOR),
+        (PARAMETER_BLOCK, irq_plain_tvector(1)),
+    ]);
+    let queued = |runner: &FixtureRunner| {
+        runner
+            .native
+            .application()
+            .expect("PPC app")
+            .pending_file_completions
+            .len()
+    };
+
+    let mut continued = false;
+    let mut parked_steps = 0;
+    for _ in 0..4000 {
+        let (_, running) = runner.run_steps(50, None);
+        assert!(running && !runner.is_halted());
+        let ppc_app = runner.native.application().expect("PPC app");
+        if ppc_app.file_completion_context.is_some() {
+            assert!(!irq_parked(&runner));
+            assert_eq!(queued(&runner), 2);
+            continued = true;
+        } else if irq_parked(&runner) {
+            // Delivered once: popped, and the next completion stays queued.
+            assert_eq!(queued(&runner), 1);
+            assert_eq!(irq_read(&runner, irq_plain_marker(1)), 0);
+            parked_steps += 1;
+        } else if irq_read(&runner, irq_plain_marker(1)) == 1 {
+            break;
+        }
+    }
+
+    assert!(continued);
+    assert!(parked_steps > 1);
+    assert_eq!(queued(&runner), 0);
+    assert_eq!(irq_read(&runner, IRQ_COUNTER), 1);
+    assert_eq!(irq_read(&runner, IRQ_RESULT), IRQ_ARGUMENT + 7);
+    assert_eq!(irq_read(&runner, IRQ_PRIVATE), IRQ_PRIVATE_VALUE);
+    irq_assert_foreground_intact(&runner, &expected);
+    assert!(runner.dispatcher.guest_calls.is_empty());
+    assert_eq!(
+        runner
+            .native
+            .application()
+            .expect("PPC app")
+            .interrupt_callback_parks,
+        1
+    );
+}
+
+#[test]
+fn sound_completion_awaiting_68k_resumes_with_its_own_registers() {
+    let mut runner = irq_runner(irq_mixed_mode_callback(1, None));
+    let expected = irq_foreground_context(&runner);
+    queue_ppc_sound_completion(
+        &mut runner.native.application_mut().expect("PPC app").sound,
+        0x0300_1000,
+        IRQ_TVECTOR,
+    );
+
+    runner.fire_pending_ppc_sound_completions();
+
+    assert!(!runner.is_halted());
+    assert!(irq_parked(&runner));
+    let sound = &runner.native.application().expect("PPC app").sound;
+    assert!(sound.manager.pending_sound_callbacks.is_empty());
+    assert_eq!(sound.completion_invocations.len(), 1);
+
+    irq_run_until(&mut runner, |runner| irq_read(runner, IRQ_COUNTER) >= 1);
+
+    assert_eq!(irq_read(&runner, IRQ_RESULT), IRQ_ARGUMENT + 7);
+    assert_eq!(irq_read(&runner, IRQ_PRIVATE), IRQ_PRIVATE_VALUE);
+    irq_assert_foreground_intact(&runner, &expected);
+    assert!(runner.dispatcher.guest_calls.is_empty());
+}
+
+#[test]
+fn draw_sprocket_vbl_awaiting_68k_resumes_with_its_own_registers() {
+    let mut runner = irq_runner(irq_mixed_mode_callback(1, None));
+    let expected = irq_foreground_context(&runner);
+    let draw_sprocket = &mut runner
+        .native
+        .application_mut()
+        .expect("PPC app")
+        .draw_sprocket;
+    draw_sprocket.active_context = Some(IRQ_DATA + 0x1c0);
+    draw_sprocket.context_state = crate::loader::ppc::PpcDspContextPlayState::Active;
+    draw_sprocket.vbl_proc = Some(IRQ_TVECTOR);
+    draw_sprocket.vbl_refcon = Some(0x1234);
+
+    irq_run_until(&mut runner, |runner| irq_read(runner, IRQ_COUNTER) >= 2);
+
+    assert_eq!(irq_read(&runner, IRQ_RESULT), IRQ_ARGUMENT + 7);
+    assert_eq!(irq_read(&runner, IRQ_PRIVATE), IRQ_PRIVATE_VALUE);
+    irq_assert_foreground_intact(&runner, &expected);
+    assert!(runner.dispatcher.guest_calls.is_empty());
+    assert_eq!(
+        runner
+            .native
+            .application()
+            .expect("PPC app")
+            .interrupt_callback_parks,
+        2
+    );
+}
+
+#[test]
+fn parked_callback_return_restores_the_interrupted_resource_file() {
+    const FOREGROUND_FILE: i16 = 0x30;
+    const CALLBACK_FILE: u16 = 0x41;
+    const CONTINUATION_FILE: u16 = 0x42;
+
+    let mut runner = irq_runner(irq_mixed_mode_callback_with(
+        1,
+        None,
+        0,
+        Some((CALLBACK_FILE, CONTINUATION_FILE)),
+    ));
+    runner
+        .native
+        .application_mut()
+        .expect("PPC app")
+        .set_current_resource_refnum(FOREGROUND_FILE);
+    let expected = irq_foreground_context(&runner);
+    irq_install_vbl(&mut runner, IRQ_TASK, IRQ_TVECTOR);
+    let refnum = |runner: &FixtureRunner| {
+        runner
+            .native
+            .application()
+            .expect("PPC app")
+            .current_resource_refnum()
+    };
+
+    let mut parked_steps = 0;
+    for _ in 0..4000 {
+        let (_, running) = runner.run_steps(50, None);
+        assert!(running && !runner.is_halted());
+        if irq_parked(&runner) {
+            // The callback's own selection stands while it is parked.
+            assert_eq!(refnum(&runner), CALLBACK_FILE as i16);
+            parked_steps += 1;
+        } else if irq_read(&runner, IRQ_COUNTER) >= 1 {
+            break;
+        }
+    }
+
+    assert!(parked_steps > 0);
+    assert_eq!(refnum(&runner), FOREGROUND_FILE);
+    assert_eq!(irq_read(&runner, IRQ_RESULT), IRQ_ARGUMENT + 7);
+    irq_assert_foreground_intact(&runner, &expected);
+}
+
+#[test]
+fn parked_event_loop_timer_masks_timers_but_not_interrupts_during_its_68k_call() {
+    let mut runner = irq_runner(irq_mixed_mode_callback(1, None));
+    let expected = irq_foreground_context(&runner);
+    let tick = runner.guest_tick();
+    runner
+        .native
+        .application_mut()
+        .expect("PPC app")
+        .install_test_event_loop_timer(
+            IRQ_DATA + 0x1e0,
+            IRQ_TVECTOR,
+            tick.wrapping_add(1),
+            1,
+            tick.wrapping_add(0x10_0000),
+        );
+    irq_install_vbl(&mut runner, IRQ_PLAIN_TASK, irq_plain_tvector(0));
+    let plain_vbl = |runner: &FixtureRunner| irq_read(runner, irq_plain_marker(0));
+
+    let mut in_flight_vbls = 0;
+    for _ in 0..4000 {
+        let before = plain_vbl(&runner);
+        let parks_before = runner
+            .native
+            .application()
+            .expect("PPC app")
+            .interrupt_callback_parks;
+        let call_pending_before = irq_parked(&runner) && !runner.dispatcher.guest_calls.is_empty();
+        let (_, running) = runner.run_steps(50, None);
+        assert!(running && !runner.is_halted());
+        let ppc_app = runner.native.application().expect("PPC app");
+        if ppc_app.parked_interrupt_callback.is_some() {
+            // The repeating timer is not re-entered while it is parked: one
+            // park per firing that has not returned yet.
+            assert_eq!(
+                ppc_app.interrupt_callback_parks,
+                u64::from(irq_read(&runner, IRQ_COUNTER)) + 1
+            );
+            // Count only steps that began and ended inside the same park
+            // with its 68K call still pending.
+            if call_pending_before
+                && ppc_app.interrupt_callback_parks == parks_before
+                && !runner.dispatcher.guest_calls.is_empty()
+                && plain_vbl(&runner) > before
+            {
+                in_flight_vbls += 1;
+            }
+        } else if irq_read(&runner, IRQ_COUNTER) >= 1 {
+            break;
+        }
+    }
+
+    // A task-level timer does not hold off interrupt-level callbacks while
+    // its 68K call runs.
+    assert!(in_flight_vbls > 0);
+    assert!(irq_read(&runner, IRQ_COUNTER) >= 1);
+    assert_eq!(irq_read(&runner, IRQ_RESULT), IRQ_ARGUMENT + 7);
+    assert_eq!(irq_read(&runner, IRQ_PRIVATE), IRQ_PRIVATE_VALUE);
+    irq_assert_foreground_intact(&runner, &expected);
+}

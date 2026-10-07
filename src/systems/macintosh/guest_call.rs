@@ -3207,6 +3207,64 @@ impl SharedGuestCallStack {
             .is_some_and(|(_, frame)| frame.m68k_execution.is_some())
     }
 
+    /// The current task's newest continuation. Call IDs are allocated
+    /// monotonically, so a smaller ID was submitted earlier.
+    pub(crate) fn top_call_id(&self) -> Option<CallId> {
+        let tasks = self.0.borrow();
+        let task = tasks.kernel.current_task();
+        tasks.kernel.peek(task).map(|semantic| semantic.call_id())
+    }
+
+    /// The newest continuation on `task`, whether or not it is current.
+    pub(crate) fn task_top_call_id(&self, task: ExecutionTaskId) -> Option<CallId> {
+        self.0
+            .borrow()
+            .kernel
+            .peek(task)
+            .map(|semantic| semantic.call_id())
+    }
+
+    /// The current task's top frame when it is a submitted 68K call that has
+    /// not yet captured its native caller.
+    pub(crate) fn unstarted_m68k_call(&self) -> Option<CallId> {
+        let tasks = self.0.borrow();
+        let task = tasks.kernel.current_task();
+        let call_id = tasks.kernel.peek(task)?.call_id();
+        tasks
+            .frames
+            .get(&call_id)?
+            .m68k_execution
+            .is_some_and(|execution| !execution.started)
+            .then_some(call_id)
+    }
+
+    /// Whether any continuation on the current task runs 68K code or waits
+    /// for native code on behalf of a 68K caller.
+    pub(crate) fn current_task_has_m68k_frames(&self) -> bool {
+        let tasks = self.0.borrow();
+        let task = tasks.kernel.current_task();
+        tasks.kernel.task_states(task).into_iter().any(|semantic| {
+            tasks.frames.get(&semantic.call_id()).is_some_and(|frame| {
+                frame.m68k_execution.is_some() || matches!(frame.origin, GuestCallOrigin::M68k(_))
+            })
+        })
+    }
+
+    /// Whether the running current task has a native entry and already owns
+    /// the native CPU, so a call it submits starts on the registers installed
+    /// now and its continuation stays on a native execution route.
+    pub(crate) fn current_native_task_owns_cpu(&self) -> bool {
+        let tasks = self.0.borrow();
+        let current = tasks.kernel.current_task();
+        tasks.kernel.scheduling_state(current) == Some(ExecutionTaskState::Running)
+            && tasks.handoff.is_none()
+            && tasks.kernel.task_entry_isa(current) == Some(GuestIsa::PowerPc)
+            && match tasks.native_cpu_task {
+                Some(owner) => owner == current,
+                None => current == ExecutionTaskId::APPLICATION,
+            }
+    }
+
     /// Activate a native call without discarding its task or logical arguments.
     /// The entire parameter area must be writable before any call state or
     /// architectural state changes. No guest execution intervenes in commit.

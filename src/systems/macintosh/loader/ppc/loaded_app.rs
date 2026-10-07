@@ -31,8 +31,16 @@ pub struct PpcLoadedApp {
     pub(crate) dialog_callback_stack: Vec<PpcDialogCallbackState>,
     pub(crate) collection_callback_stack: Vec<PpcCollectionCallbackState>,
     pub(crate) pending_file_completions: VecDeque<(u32, u32)>,
-    /// A callback that exhausted its current runner slice, in queue-front order.
-    pub(crate) file_completion_context: Option<PpcExecutionContext>,
+    /// A callback that exhausted its current runner slice, in queue-front
+    /// order, with the stack pointer of its private callback frame.
+    pub(crate) file_completion_context: Option<(PpcExecutionContext, u32)>,
+    /// A callback the runner entered asynchronously (an interrupt-level task
+    /// or completion, or a Carbon event-loop timer) that is waiting on a 68K
+    /// Mixed Mode call. It keeps the native CPU until it returns; what it
+    /// interrupted waits here.
+    pub(crate) parked_interrupt_callback: Option<PpcParkedInterruptCallback>,
+    /// Number of such callbacks parked since launch.
+    pub(crate) interrupt_callback_parks: u64,
     pub(crate) apple_events: PpcAppleEventState,
     /// Standalone CFM seed; None after a runner moves it into its process.
     /// Installed execution must receive the process service explicitly.
@@ -125,6 +133,50 @@ pub struct PpcLoadedApp {
     pub(crate) glm_allocations: HashMap<u32, (bool, u32)>,
     pub(crate) glm_page_free_all_queue: VecDeque<u32>,
     pub(crate) glm_error: u32,
+}
+
+/// Work a callback runner does right after an asynchronous callback returns,
+/// deferred to the callback's real return when it parked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PpcInterruptReturnWork {
+    None,
+    /// The Vertical Retrace Manager removes a task whose callback left
+    /// vblCount at zero.
+    VblTask {
+        task_ptr: u32,
+    },
+    /// The exhausted buffer stays marked pending until its refill returns.
+    DoubleBack(PpcSoundDoubleBackRecord),
+}
+
+/// How a parked callback was entered, which decides what it masks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PpcCallbackLevel {
+    /// VBL, DrawSprocket VBL, Time Manager, sound and File Manager callbacks
+    /// run at interrupt time.
+    Interrupt,
+    /// Carbon event-loop timers run from the event loop at task level.
+    Task,
+}
+
+/// A native routine that calls a 68K routine through Mixed Mode waits for the
+/// emulated call to return. An asynchronously entered callback in that state
+/// still owns the processor, so the interrupted context is set aside until
+/// the callback itself returns.
+#[derive(Debug, Clone)]
+pub(crate) struct PpcParkedInterruptCallback {
+    pub(crate) level: PpcCallbackLevel,
+    /// Task that owns the callback's 68K call and its native frame.
+    pub(crate) task: crate::guest_call::ExecutionTaskId,
+    /// The 68K call the callback submitted when it parked. Every call the
+    /// callback makes afterwards has a larger ID.
+    pub(crate) awaited_call: crate::guest_call::CallId,
+    /// Stack pointer the callback holds when it returns to `halt_pc`.
+    pub(crate) callback_sp: u32,
+    pub(crate) interrupted: PpcExecutionContext,
+    /// Resource file to reselect, on the paths that restore it on return.
+    pub(crate) interrupted_refnum: Option<i16>,
+    pub(crate) on_return: PpcInterruptReturnWork,
 }
 
 #[derive(Debug, Clone, Copy)]

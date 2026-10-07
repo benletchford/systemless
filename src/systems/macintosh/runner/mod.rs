@@ -7687,7 +7687,15 @@ impl FixtureRunner {
                 .unwrap_or_else(|_| panic!("native context lost its owner"));
             return (0, false);
         }
-        if ppc_app.toolbox_startup.execution.calls().has_m68k_execution() {
+        // A parked callback whose 68K call returned resumes natively
+        // before any older 68K frame on its task.
+        if ppc_app
+            .toolbox_startup
+            .execution
+            .calls()
+            .has_m68k_execution()
+            && !ppc_app.interrupt_continuation_ready()
+        {
             let ppc_task = ppc_app.toolbox_startup.execution.calls().current_task();
             let ppc_start_time = self.bus.read_long(crate::memory::globals::addr::TIME);
             let (mixed_steps, running) = self
@@ -7839,6 +7847,9 @@ impl FixtureRunner {
         }
         let mut file_completion_cycles = 0u64;
         for _ in 0..16 {
+            if ppc_app.interrupts_masked() {
+                break;
+            }
             let Some(&(parameter_block, completion)) = ppc_app.pending_file_completions.front()
             else {
                 break;
@@ -8189,6 +8200,9 @@ impl FixtureRunner {
         max_steps: usize,
     ) -> Option<(usize, bool)> {
         self.m68k.apply_task_handoff();
+        if ppc_app.interrupt_continuation_ready() {
+            return None;
+        }
         if !ppc_app.toolbox_startup.execution.calls().has_m68k_execution() {
             return None;
         }
@@ -9111,6 +9125,12 @@ impl FixtureRunner {
         self.prepare_ppc_execution_clock(&mut ppc_app);
         let mut fired_count = 0usize;
         while fired_count < 16 {
+            // Sound callbacks run at interrupt time too: while a callback
+            // waits on a 68K call, queued records stay queued.
+            if ppc_app.interrupts_masked() {
+                break;
+            }
+            let parks = ppc_app.interrupt_callback_parks;
             let Some(doubleback) = ppc_app.sound.manager.with_mut(|sound| {
                 sound
                     .pending_process_doublebacks
@@ -9170,20 +9190,15 @@ impl FixtureRunner {
             let _ = self.advance_ticks_for_ppc_cycles(invocation.cycles, None);
             self.prepare_ppc_execution_clock(&mut ppc_app);
 
-            let buffer_bit = 1u8 << (doubleback.exhausted_buffer_index.min(1) as u8);
-            ppc_app.sound.manager.with_mut(|sound| {
-                if let Some(playback) = sound
-                    .double_buffer_playbacks
-                    .iter_mut()
-                    .rev()
-                    .find(|playback| {
-                        playback.channel == doubleback.channel
-                            && playback.header == doubleback.header
-                    })
-                {
-                    playback.callback_pending_mask &= !buffer_bit;
-                }
-            });
+            // A parked callback has not returned yet: its buffer stays pending,
+            // so it is not queued again, until the callback's real return.
+            let parked = ppc_app.interrupt_callback_parks != parks;
+            if !parked {
+                ppc_app
+                    .sound
+                    .manager
+                    .with_mut(|sound| sound.clear_doubleback_pending(&doubleback));
+            }
 
             let callback_failed = invocation.unsupported_import_index.is_some()
                 || !matches!(invocation.result, PpcRunResult::Halted { .. });
@@ -9205,7 +9220,7 @@ impl FixtureRunner {
 
             ppc_app.sound.completion_invocations.push(invocation);
             fired_count += 1;
-            if callback_failed {
+            if callback_failed || parked {
                 break;
             }
         }
@@ -9255,6 +9270,10 @@ impl FixtureRunner {
         self.prepare_ppc_execution_clock(&mut ppc_app);
         let mut fired_count = 0usize;
         while fired_count < 16 {
+            if ppc_app.interrupts_masked() {
+                break;
+            }
+            let parks = ppc_app.interrupt_callback_parks;
             let Some(pending) = ppc_app.sound.manager.with_mut(|sound| {
                 sound
                     .pending_sound_callbacks
@@ -9382,7 +9401,7 @@ impl FixtureRunner {
 
             ppc_app.sound.completion_invocations.push(invocation);
             fired_count += 1;
-            if callback_failed {
+            if callback_failed || ppc_app.interrupt_callback_parks != parks {
                 break;
             }
         }

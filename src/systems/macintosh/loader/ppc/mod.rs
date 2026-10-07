@@ -206,6 +206,7 @@ mod import_policies;
 mod loaded_app;
 pub use loaded_app::PpcLoadedApp;
 use loaded_app::PpcLaunchPartitionStorage;
+pub(crate) use loaded_app::{PpcCallbackLevel, PpcInterruptReturnWork, PpcParkedInterruptCallback};
 mod pict_rendering;
 mod process_memory;
 mod surface;
