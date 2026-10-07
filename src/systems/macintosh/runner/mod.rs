@@ -27,6 +27,9 @@ use crate::memory::GuestAddressSpace as PpcSectionMem;
 use crate::memory::{AccessSource, MacMemoryBus, MemoryBus};
 use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{ProcessContext, ProcessMemoryManager, SharedProcessFileSystem};
+pub use crate::standard_file_ui::{
+    StandardFileEntrySnapshot, StandardFileKind, StandardFileSnapshot,
+};
 pub use crate::text_edit::{TextEditManagerSnapshot, TextEditSnapshot};
 use crate::trap::dispatch::TrapTableProfile;
 use crate::trap::TrapDispatcher;
@@ -3198,6 +3201,71 @@ impl FixtureRunner {
             record.global_view_rect = Some(snapshot_local_rect_to_global(record.view_rect, origin));
         }
         snapshot
+    }
+
+    /// Observe a retained Standard File Open/Save session without advancing
+    /// its modal event loop or changing the caller's reply record.
+    /// Inside Macintosh: Files (1992), pp. 3-3--3-13, 3-44--3-47.
+    #[doc(hidden)]
+    pub fn standard_file_snapshot(&self) -> Option<StandardFileSnapshot> {
+        if let Some(app) = self.native.application() {
+            return app.toolbox_startup.standard_file_snapshot();
+        }
+        if let Some(tracking) = &self.dispatcher.standard_file_get_tracking {
+            return Some(StandardFileSnapshot {
+                guest_id: tracking.reply_ptr,
+                generation: tracking.generation,
+                kind: StandardFileKind::Get,
+                bounds: tracking.bounds,
+                directory_id: tracking.current_dir_id,
+                entries: Some(
+                    tracking
+                        .entries
+                        .iter()
+                        .map(|entry| StandardFileEntrySnapshot {
+                            name: entry.display_name.clone(),
+                            directory_id: entry.dir_id,
+                            is_directory: entry.is_directory,
+                            file_type: entry.file_type,
+                        })
+                        .collect(),
+                ),
+                selected: (tracking.selected < tracking.entries.len())
+                    .then_some(tracking.selected),
+                prompt: None,
+                name: None,
+                name_selection: None,
+            });
+        }
+        let tracking = self.dispatcher.standard_file_put_tracking.as_ref()?;
+        Some(StandardFileSnapshot {
+            guest_id: tracking.reply_ptr,
+            generation: tracking.generation,
+            kind: StandardFileKind::Put,
+            bounds: tracking.bounds,
+            directory_id: tracking.current_dir_id,
+            entries: Some(
+                tracking
+                    .entries
+                    .iter()
+                    .map(|entry| StandardFileEntrySnapshot {
+                        name: entry.display_name.clone(),
+                        directory_id: entry.dir_id,
+                        is_directory: entry.is_directory,
+                        file_type: entry.file_type,
+                    })
+                    .collect(),
+            ),
+            selected: tracking
+                .selected
+                .filter(|index| *index < tracking.entries.len()),
+            prompt: Some(tracking.prompt.clone()),
+            name: Some(tracking.name.clone()),
+            name_selection: Some((
+                tracking.sel_start.max(0) as usize,
+                tracking.sel_end.max(0) as usize,
+            )),
+        })
     }
 
     /// Inspect logical list contents and the visibility/highlight bytes of

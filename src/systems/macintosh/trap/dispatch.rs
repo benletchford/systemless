@@ -756,6 +756,7 @@ pub struct DialogTrackingState {
 /// Inside Macintosh: Files (1992), pp. 3-13, 3-45 to 3-47.
 #[derive(Clone, Debug)]
 pub(crate) struct StandardFilePutTrackingState {
+    pub generation: u64,
     pub modern_reply: bool,
     pub reply_ptr: u32,
     pub stack_ptr: u32,
@@ -791,6 +792,7 @@ pub(crate) struct StandardFileGetEntry {
 /// picks a visible file or cancels.
 #[derive(Clone, Debug)]
 pub(crate) struct StandardFileGetTrackingState {
+    pub generation: u64,
     pub modern_reply: bool,
     pub reply_ptr: u32,
     pub stack_ptr: u32,
@@ -2209,6 +2211,7 @@ pub struct TrapDispatcher {
     pub(crate) standard_file_put_tracking: Option<StandardFilePutTrackingState>,
     /// Active Standard File Package open dialog tracking state.
     pub(crate) standard_file_get_tracking: Option<StandardFileGetTrackingState>,
+    pub(crate) next_standard_file_generation: u64,
     /// The screen mark taken when a Standard File dialog was last drawn. An
     /// idle pass that consumed no event redraws the dialog only when the
     /// screen under its frame changed since.
@@ -4065,6 +4068,7 @@ impl TrapDispatcher {
             standard_file_put_tracking: None,
             standard_file_drawn: None,
             standard_file_get_tracking: None,
+            next_standard_file_generation: 0,
             external_host_overlay_rects: Vec::new(),
             dialog_items: HashMap::default(),
             hidden_dialog_item_rects: HashMap::default(),

@@ -37,6 +37,7 @@ pub struct PpcToolboxStartupState {
     pub(super) standard_file_get_filtering: Option<PpcStandardFileFilteringState>,
     pub(super) standard_file_get_tracking: Option<PpcStandardFileGetTrackingState>,
     pub(super) standard_file_put_tracking: Option<PpcStandardFilePutTrackingState>,
+    pub(crate) next_standard_file_generation: u64,
     pub text_edit_initialized: bool,
     pub(crate) printing_error: i16,
     pub dialogs_initialized: bool,
@@ -147,6 +148,7 @@ impl Default for PpcToolboxStartupState {
             standard_file_get_filtering: None,
             standard_file_get_tracking: None,
             standard_file_put_tracking: None,
+            next_standard_file_generation: 0,
             text_edit_initialized: false,
             printing_error: 0,
             dialogs_initialized: false,
@@ -219,6 +221,58 @@ impl Default for PpcToolboxStartupState {
 }
 
 impl PpcToolboxStartupState {
+    pub(crate) fn standard_file_snapshot(
+        &self,
+    ) -> Option<crate::standard_file_ui::StandardFileSnapshot> {
+        use crate::standard_file_ui::{
+            StandardFileEntrySnapshot, StandardFileKind, StandardFileSnapshot,
+        };
+
+        if let Some(tracking) = self.standard_file_get_tracking.as_ref().or_else(|| {
+            self.standard_file_get_filtering
+                .as_ref()
+                .map(|filtering| &filtering.tracking)
+        }) {
+            return Some(StandardFileSnapshot {
+                guest_id: tracking.call.reply,
+                generation: tracking.generation,
+                kind: StandardFileKind::Get,
+                bounds: tracking.bounds,
+                directory_id: tracking.current_dir_id,
+                entries: Some(
+                    tracking
+                        .entries
+                        .iter()
+                        .map(|entry| StandardFileEntrySnapshot {
+                            name: crate::mac_roman::decode_mac_roman(&entry.name),
+                            directory_id: entry.dir_id,
+                            is_directory: entry.is_directory,
+                            file_type: entry.file_type,
+                        })
+                        .collect(),
+                ),
+                selected: (tracking.selected < tracking.entries.len())
+                    .then_some(tracking.selected),
+                prompt: None,
+                name: None,
+                name_selection: None,
+            });
+        }
+        let tracking = self.standard_file_put_tracking.as_ref()?;
+        Some(StandardFileSnapshot {
+            guest_id: tracking.call.reply,
+            generation: tracking.generation,
+            kind: StandardFileKind::Put,
+            bounds: tracking.bounds,
+            directory_id: tracking.dir_id,
+            entries: None,
+            selected: None,
+            prompt: Some(crate::mac_roman::decode_mac_roman(&tracking.prompt)),
+            name: Some(crate::mac_roman::decode_mac_roman(&tracking.name)),
+            name_selection: Some((tracking.sel_start, tracking.sel_end)),
+        })
+    }
+
     pub(crate) fn window_default_button(&self, window: u32) -> u32 {
         self.window_default_buttons.get(&window).copied().unwrap_or(0)
     }

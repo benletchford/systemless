@@ -39,6 +39,7 @@ pub(crate) mod process_manager;
 pub mod quickdraw;
 pub mod runner;
 pub(crate) mod scrap_manager;
+pub(crate) mod standard_file_ui;
 #[cfg(feature = "test-support")]
 pub mod scripted_traces;
 pub mod sound;

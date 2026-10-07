@@ -8849,6 +8849,7 @@ mod redraw_chrome_tests {
 
         let get_bounds = (50, 0, 228, 356);
         disp.standard_file_get_tracking = Some(StandardFileGetTrackingState {
+            generation: 1,
             modern_reply: false,
             reply_ptr: 0,
             stack_ptr: 0,
@@ -8884,6 +8885,7 @@ mod redraw_chrome_tests {
         disp.external_host_overlay_rects.clear();
         let put_bounds = (200, 8, 460, 368);
         disp.standard_file_put_tracking = Some(StandardFilePutTrackingState {
+            generation: 2,
             modern_reply: false,
             reply_ptr: 0,
             stack_ptr: 0,
