@@ -32,6 +32,9 @@ pub struct ControlSnapshot {
     pub minimum: i16,
     pub maximum: i16,
     pub title: String,
+    /// Standard popup CDEF's associated menu and label width, if applicable.
+    pub popup_menu_id: Option<i16>,
+    pub popup_title_width: Option<i16>,
 }
 
 /// Read the live ControlRecord through the architecture's byte adapter. The
@@ -42,6 +45,8 @@ pub(crate) fn snapshot_control_record(
     expected_pointer: u32,
     generation: u64,
     proc_id: i16,
+    popup_menu_id: i16,
+    popup_title_width: Option<i16>,
     owner_state: impl Fn(u32) -> Option<((i16, i16, i16, i16), bool)>,
     mut read: impl FnMut(u32) -> Option<u8>,
 ) -> Option<ControlSnapshot> {
@@ -76,6 +81,21 @@ pub(crate) fn snapshot_control_record(
     let value = word(&mut read, pointer.wrapping_add(18))?;
     let minimum = word(&mut read, pointer.wrapping_add(20))?;
     let maximum = word(&mut read, pointer.wrapping_add(22))?;
+    // popupMenuProc stores the MENU ID in contrlMin and reserves contrlMax
+    // pixels for its title, but later repurposes these fields for item range.
+    // The CDEF's contrlData private record retains MENU handle and ID.
+    // MTE (1992), pp. 5-25--5-27 and 5-77.
+    let popup = (1008..=1023).contains(&proc_id);
+    let private_popup_menu_id = if popup {
+        long(&mut read, pointer.wrapping_add(28))
+            .filter(|handle| *handle != 0)
+            .and_then(|handle| long(&mut read, handle))
+            .filter(|pointer| *pointer != 0)
+            .and_then(|pointer| word(&mut read, pointer.wrapping_add(4)))
+            .filter(|id| *id != 0)
+    } else {
+        None
+    };
     let length = usize::from(read(pointer.wrapping_add(40))?);
     let title = (0..length)
         .map(|index| read(pointer.wrapping_add(41).wrapping_add(index as u32)))
@@ -95,6 +115,10 @@ pub(crate) fn snapshot_control_record(
         minimum,
         maximum,
         title: crate::mac_roman::decode_mac_roman(&title),
+        popup_menu_id: popup
+            .then(|| private_popup_menu_id.or((popup_menu_id != 0).then_some(popup_menu_id)))
+            .flatten(),
+        popup_title_width: popup.then_some(popup_title_width.unwrap_or(0)),
     })
 }
 

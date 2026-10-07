@@ -2453,6 +2453,8 @@ impl FixtureRunner {
                         record.pointer,
                         record.generation,
                         record.proc_id,
+                        record.popup_menu_id,
+                        record.popup_title_width,
                         |owner| owners.get(&owner).copied(),
                         |address| app.memory.read_u8(address),
                     )
@@ -2471,6 +2473,8 @@ impl FixtureRunner {
                         record.pointer,
                         record.generation,
                         record.proc_id,
+                        record.popup_menu_id,
+                        record.popup_title_width,
                         |owner| owners.get(&owner).copied(),
                         |address| Some(self.bus.read_byte(address)),
                     )
