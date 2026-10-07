@@ -63,8 +63,13 @@ fallbacks, and a stale window generation. Nested modal
 ordering and nonrectangular visible regions remain unqualified. The
 `--capture-modeless-dialog-layout` headless case composes an inactive standard
 dialog behind a front window and checks that its covered item keeps guest
-pixels while the exposed part uses the GPUI overlay. This synthetic layout
-does not replace a real guest modeless-dialog replay on both CPUs.
+pixels while the exposed part uses the GPUI overlay. The showcase also opens
+a real resource-backed modeless dialog through its Options menu. A focused
+68K/PowerPC replay checks its WDEF 4 identity, checkbox state, deactivation,
+reactivation, and close lifecycle; `--capture-modeless-dialog` records the
+composed guest and GPUI surface on both CPUs. PowerPC newly shown windows
+paint the default white content background when they have no WCTab, avoiding
+stale artwork beneath the dialog items.
 
 The dependency order is menus, frames, dialogs, controls, lists/TextEdit, then
 Standard File. The first end-to-end gate is one standard modal dialog on each

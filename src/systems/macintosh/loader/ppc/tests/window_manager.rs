@@ -3670,7 +3670,7 @@ fn show_window_does_not_read_dialog_edit_state_as_a_color_table() {
         )
         .unwrap();
     let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
-    ppc_quickdraw_write_pixel(&mut loaded.memory, front, (50, 50), PPC_RGB_WHITE);
+    ppc_quickdraw_write_pixel(&mut loaded.memory, front, (50, 50), PPC_RGB_BLACK);
     loaded.cpu.gpr[3] = dialog;
 
     let probe = loaded.run_with_hle_imports(64);

@@ -28,7 +28,9 @@ test protocol. Its Pages menu selects sixteen interactive views:
    checkboxes, difficulty and renderer radio groups, a volume scroll bar, and
    action buttons. Its settings stay synchronized with hierarchical menus.
 6. Dialogs & Alerts exercises resource-backed modal dialogs, controls,
-   editable text, and a system alert.
+   editable text, and a system alert. Options → Modeless Dialog opens a
+   separate resource-backed standard dialog whose activation and close
+   lifecycle can be exercised while the showcase window keeps running.
 7. TextEdit exercises an interactive multiline `TERec` buffer, character
    insertion and selection, paragraph alignment (`teJustLeft`, `teJustCenter`,
    `teJustRight`), clipboard scrap operations (`TECut`, `TECopy`, `TEPaste`),

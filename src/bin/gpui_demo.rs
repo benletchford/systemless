@@ -65,6 +65,9 @@ mod desktop {
         capture_modal_dialog_checked: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_modeless_dialog: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_controls: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -2030,6 +2033,7 @@ mod desktop {
         Alert,
         ModalDialog,
         ModalDialogChecked,
+        ModelessDialog,
         Controls,
         ControlsChanged,
         ControlsDragged,
@@ -2131,6 +2135,8 @@ mod desktop {
         }
         let (menu_id, item) = if standard_file_page {
             (129, 12)
+        } else if matches!(capture, CaptureCase::ModelessDialog) {
+            (132, 7)
         } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked) {
             (129, 6)
         } else if lists_page {
@@ -2145,7 +2151,17 @@ mod desktop {
             (128, 1)
         };
         assert!(session.runner_mut().select_guest_menu_item(menu_id, item));
-        let dialogs = if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked) {
+        let dialogs = if matches!(capture, CaptureCase::ModelessDialog) {
+            (0..300)
+                .find_map(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    let dialogs = session.runner_mut().dialog_snapshot();
+                    dialogs.iter().any(|dialog| {
+                        dialog.visible && dialog.items.len() == 4
+                    }).then_some(dialogs)
+                })
+                .expect("modeless dialog should become visible")
+        } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked) {
             assert!((0..300).any(|_| {
                 session.runner_mut().run_steps(100_000, None);
                 session.runner_mut().guest_menu_snapshot().menus.iter().any(|menu| {
@@ -2311,7 +2327,14 @@ mod desktop {
                 .expect("About alert should become visible")
         };
         let windows = session.runner_mut().window_frame_snapshot();
-        if !controls_page && !lists_page && !text_edit_page && !popup_page && !standard_file_page {
+        if matches!(capture, CaptureCase::ModelessDialog) {
+            assert!(!super::frames::dialog_item_pieces(
+                &dialogs,
+                &windows,
+                super::frames::Rect::from((0, 0, 600, 800)),
+            )
+            .is_empty());
+        } else if !controls_page && !lists_page && !text_edit_page && !popup_page && !standard_file_page {
             assert!(standard_dbox_dialog(&dialogs, &windows).is_some());
         }
         if controls_changed {
@@ -2604,6 +2627,17 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::ModalDialogChecked,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_modeless_dialog.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::ModelessDialog,
             );
             return;
         }
@@ -3094,6 +3128,7 @@ mod desktop {
                         capture_about_alert: None,
                         capture_modal_dialog: None,
                         capture_modal_dialog_checked: None,
+                        capture_modeless_dialog: None,
                         capture_controls: None,
                         capture_controls_changed: None,
                         capture_controls_dragged: None,
@@ -4437,6 +4472,110 @@ mod desktop {
                     session.runner_mut().dialog_snapshot().iter().any(|current| {
                         current.guest_id == dialog.guest_id && current.edit_field == Some(9)
                     })
+                }));
+            }
+        }
+
+        #[test]
+        fn modeless_dialog_tracks_guest_lifecycle_on_both_cpus() {
+            for powerpc in [false, true] {
+                let mut session = MacintoshSession::new(true, if powerpc { None } else { Some(8) });
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session
+                    .load_path(
+                        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("tests/toolbox-showcase/toolbox-showcase.sit"),
+                    )
+                    .unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(132, 7));
+                let dialog = (0..300)
+                    .find_map(|_| {
+                        session.runner_mut().run_steps(100_000, None);
+                        session
+                            .runner_mut()
+                            .dialog_snapshot()
+                            .into_iter()
+                            .find(|dialog| dialog.visible && dialog.items.len() == 4)
+                    })
+                    .expect("modeless guest dialog should open");
+                let windows = session.runner_mut().window_frame_snapshot();
+                assert_eq!(windows[0].guest_id, dialog.guest_id);
+                assert_eq!(windows[0].definition_id, Some(4));
+                assert!(dialog.active);
+                assert!(!crate::frames::dialog_item_pieces(
+                    &[dialog.clone()],
+                    &windows,
+                    crate::frames::Rect::from((0, 0, 600, 800)),
+                )
+                .is_empty());
+
+                let checkbox = &dialog.items[1];
+                let point = (
+                    (checkbox.bounds.0 + checkbox.bounds.2) / 2,
+                    (checkbox.bounds.1 + checkbox.bounds.3) / 2,
+                );
+                session.deliver_input(MacintoshInput::MouseDown {
+                    vertical: point.0,
+                    horizontal: point.1,
+                });
+                settle(&mut session);
+                session.deliver_input(MacintoshInput::MouseUp {
+                    vertical: point.0,
+                    horizontal: point.1,
+                });
+                assert!((0..100).any(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    session.runner_mut().dialog_snapshot().iter().any(|current| {
+                        current.guest_id == dialog.guest_id && current.items[1].value == Some(1)
+                    })
+                }));
+
+                session.deliver_input(MacintoshInput::MouseDown {
+                    vertical: 70,
+                    horizontal: 70,
+                });
+                settle(&mut session);
+                session.deliver_input(MacintoshInput::MouseUp {
+                    vertical: 70,
+                    horizontal: 70,
+                });
+                assert!((0..100).any(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    session.runner_mut().dialog_snapshot().iter().any(|current| {
+                        current.guest_id == dialog.guest_id && current.visible && !current.active
+                    })
+                }));
+
+                assert!(session.runner_mut().select_guest_menu_item(132, 7));
+                assert!((0..100).any(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    session.runner_mut().dialog_snapshot().iter().any(|current| {
+                        current.guest_id == dialog.guest_id && current.active
+                    })
+                }));
+                let close = &dialog.items[0];
+                let close_point = (
+                    (close.bounds.0 + close.bounds.2) / 2,
+                    (close.bounds.1 + close.bounds.3) / 2,
+                );
+                session.deliver_input(MacintoshInput::MouseDown {
+                    vertical: close_point.0,
+                    horizontal: close_point.1,
+                });
+                settle(&mut session);
+                session.deliver_input(MacintoshInput::MouseUp {
+                    vertical: close_point.0,
+                    horizontal: close_point.1,
+                });
+                assert!((0..100).any(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    session
+                        .runner_mut()
+                        .dialog_snapshot()
+                        .iter()
+                        .all(|current| current.guest_id != dialog.guest_id)
                 }));
             }
         }

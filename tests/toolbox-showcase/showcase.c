@@ -67,6 +67,7 @@
 #define rMainWindow 128
 #define rPrefDialog 129
 #define rAboutAlert 130
+#define rModelessDialog 131
 #define rShowcaseIcon 128
 #define rShowcasePalette 150
 #define rShowcaseSound 151
@@ -115,6 +116,7 @@
 #define iOptRenderer 3
 #define iOptResetPrefs 5
 #define iOptLaunchDialog 6
+#define iOptLaunchModeless 7
 
 /* Difficulty submenu items */
 #define iDiffEasy 1
@@ -798,6 +800,7 @@ static Boolean gMusic = true;
 static short gVolume = 75;
 static short gRenderer = iRendBevel;
 static Boolean gModalDialogCompleted = false;
+static DialogPtr gModelessDialog = nil;
 
 MenuHandle StateMenu(void)
 {
@@ -4124,6 +4127,65 @@ static void DoModalPrefsDialog(void)
     DrawMainWindow();
 }
 
+static void CloseModelessDialog(void)
+{
+    if (gModelessDialog == nil) return;
+    DisposeDialog(gModelessDialog);
+    gModelessDialog = nil;
+    SetPort(gMainWindow);
+    DrawMainWindow();
+}
+
+static void OpenModelessDialog(void)
+{
+    if (gModelessDialog != nil) {
+        SelectWindow((WindowPtr)gModelessDialog);
+        return;
+    }
+    gModelessDialog = GetNewDialog(rModelessDialog, nil, (WindowPtr)-1);
+    if (gModelessDialog == nil) return;
+    SetPort(gModelessDialog);
+    ShowWindow((WindowPtr)gModelessDialog);
+    DrawDialog(gModelessDialog);
+}
+
+/* Route modeless content and editing through DialogSelect while the app owns
+ * title-bar dragging and close-box events. Macintosh Toolbox Essentials
+ * (1992), pp. 6-91--6-99. */
+static Boolean HandleModelessDialogEvent(EventRecord *event)
+{
+    DialogPtr dialog;
+    short itemHit;
+    short itemType;
+    Handle itemHandle;
+    Rect itemRect;
+    WindowPtr window;
+
+    if (gModelessDialog == nil || FrontWindow() != (WindowPtr)gModelessDialog) {
+        return false;
+    }
+    if (event->what == mouseDown) {
+        if (FindWindow(event->where, &window) != inContent ||
+            window != (WindowPtr)gModelessDialog) return false;
+    } else if ((event->what != keyDown && event->what != autoKey) ||
+               (event->modifiers & cmdKey) != 0) {
+        return false;
+    }
+    if (!IsDialogEvent(event)) return false;
+    dialog = nil;
+    itemHit = 0;
+    if (DialogSelect(event, &dialog, &itemHit) && dialog == gModelessDialog) {
+        if (itemHit == 1) {
+            CloseModelessDialog();
+        } else if (itemHit == 2) {
+            GetDialogItem(gModelessDialog, itemHit, &itemType, &itemHandle, &itemRect);
+            SetControlValue((ControlHandle)itemHandle,
+                            GetControlValue((ControlHandle)itemHandle) == 0 ? 1 : 0);
+        }
+    }
+    return true;
+}
+
 static void DoAboutAlert(void)
 {
     Alert(rAboutAlert, nil);
@@ -4569,6 +4631,8 @@ static void DoMenuChoice(long choice)
             DrawMainWindow();
         } else if (item == iOptLaunchDialog) {
             DoModalPrefsDialog();
+        } else if (item == iOptLaunchModeless) {
+            OpenModelessDialog();
         }
     } else if (menuID == mFile) {
         if (item == iFilePrefs) {
@@ -4840,6 +4904,7 @@ static void DoEvent(EventRecord *event)
 
     RecordShowcaseEvent(event,
                         gPage == pageEventsCursors && event->what == mouseDown);
+    if (HandleModelessDialogEvent(event)) return;
 
     switch (event->what) {
         case mouseDown:
@@ -4887,7 +4952,9 @@ static void DoEvent(EventRecord *event)
                 SetPort(window);
                 InvalRect(&window->portRect);
             } else if (part == inGoAway && TrackGoAway(window, event->where)) {
-                if (window == gStackWindow) {
+                if (window == (WindowPtr)gModelessDialog) {
+                    CloseModelessDialog();
+                } else if (window == gStackWindow) {
                     DisposeWindow(gStackWindow);
                     gStackWindow = nil;
                     /* The promoted auxiliary window may have been partly
@@ -4946,6 +5013,8 @@ static void DoEvent(EventRecord *event)
                 DrawAuxWindow(gAuxWindow);
             } else if (window == gStackWindow) {
                 DrawAuxWindow(gStackWindow);
+            } else if (window == (WindowPtr)gModelessDialog) {
+                DrawDialog(gModelessDialog);
             }
             EndUpdate(window);
             break;
@@ -4966,6 +5035,7 @@ void main(void)
             PollShowcaseSound();
         }
     }
+    CloseModelessDialog();
     DisposeShowcaseSoundChannel();
     SetPalette(gMainWindow, nil, true);
     if (gShowcasePalette != nil) DisposePalette(gShowcasePalette);
