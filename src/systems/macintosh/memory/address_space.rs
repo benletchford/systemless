@@ -1950,6 +1950,19 @@ impl GuestAddressSpace {
         true
     }
 
+    /// Borrow a single visible sparse mapping for a read-only PPC fast path.
+    /// Shared aliases, boundaries between overlapping regions, and address
+    /// overflow retain the routed interpreter path.
+    pub fn readable_bytes(&mut self, addr: u32, len: usize) -> Option<&[u8]> {
+        if len == 0 {
+            return Some(&[]);
+        }
+        if self.route(addr, len, None) != GuestMemoryRoute::Sparse {
+            return None;
+        }
+        self.state_mut().regions.readable_bytes(addr, len)
+    }
+
     /// Return a cached writable span contained in one mapped region.
     pub fn writable_span(&mut self, addr: u32, len: usize) -> Option<GuestWritableSpan> {
         if self.state().presentation.observes(addr, len) {
@@ -2370,7 +2383,7 @@ impl AddressBus for GuestAddressSpace {
 
 #[cfg(test)]
 mod tests {
-    use super::{shared_lookup_at, GuestAddressSpace, GuestIsa, SharedLookup};
+    use super::{shared_lookup_at, GuestAddressSpace, GuestIsa, SharedLookup, SharedRamRegion};
     use crate::memory::{GuestMemoryRoute, MacMemoryBus, MemoryBus};
     use m68k::{AddressBus, BatchExit, CpuCore, StepResult};
     use ppc::{PpcCpu, PpcMemory, PpcRunResult};
@@ -3498,6 +3511,38 @@ mod tests {
         assert!(AddressBus::try_write_byte(&mut memory, 0x1000, 0xff).is_err());
         assert!(AddressBus::try_read_byte(&mut memory, 0x2000).is_err());
         assert_eq!(AddressBus::read_byte(&mut memory, 0x2000), 0);
+    }
+
+    #[test]
+    fn readable_bytes_requires_one_visible_sparse_region() {
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(0x1000, vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(memory.readable_bytes(0x1000, 0), Some(&[][..]));
+        assert_eq!(memory.readable_bytes(0x1001, 3), Some(&[2, 3, 4][..]));
+        assert_eq!(memory.readable_bytes(0x1004, 3), None);
+        assert_eq!(memory.readable_bytes(u32::MAX - 1, 4), None);
+        memory.add_region(0x1006, vec![7, 8]);
+        assert_eq!(memory.readable_bytes(0x1004, 4), None);
+
+        memory.add_readonly_region(0x1003, vec![0xaa, 0xbb]);
+        assert_eq!(memory.readable_bytes(0x1002, 3), None);
+        assert_eq!(memory.readable_bytes(0x1003, 2), Some(&[0xaa, 0xbb][..]));
+        memory.add_region(0x1003, vec![0xcc, 0xdd]);
+        assert_eq!(memory.readable_bytes(0x1003, 2), Some(&[0xcc, 0xdd][..]));
+    }
+
+    #[test]
+    fn readable_bytes_declines_shared_alias_shadowing() {
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(0x2000, vec![1, 2, 3, 4, 5, 6]);
+        // SAFETY: this test owns the allocation and accesses it serially.
+        unsafe {
+            memory.add_shared_region(0x2002, SharedRamRegion::from_owned_bytes(vec![0xaa, 0xbb]));
+        }
+        assert_eq!(memory.readable_bytes(0x2000, 2), Some(&[1, 2][..]));
+        assert_eq!(memory.readable_bytes(0x2000, 4), None);
+        assert_eq!(memory.readable_bytes(0x2002, 2), None);
+        assert_eq!(memory.readable_bytes(0x2004, 2), Some(&[5, 6][..]));
     }
 
     #[test]
