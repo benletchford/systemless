@@ -2500,7 +2500,7 @@ fn ppc_dispatch_dialog_compatibility(
                 parent_structure,
                 screen_width,
                 screen_height,
-                20,
+                ppc_live_menu_bar_height(memory),
             );
             let _ = ppc_move_window_coordinates(
                 memory,
@@ -2756,7 +2756,15 @@ fn ppc_parse_dialog_items(bytes: &[u8]) -> Option<Vec<PpcDialogItemView>> {
     parse_ditl_items(bytes)
 }
 
+/// Live MBarHeight: auto-positioning excludes the menu bar the guest
+/// actually has, so an app that zeroes MBarHeight (a hidden menu bar)
+/// positions against the whole main screen, as the 68K Dialog Manager does.
+fn ppc_live_menu_bar_height(memory: &mut PpcSectionMem) -> i32 {
+    i32::from(memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i16).max(0)
+}
+
 fn ppc_position_dialog_bounds(
+    memory: &mut PpcSectionMem,
     bounds: (i16, i16, i16, i16),
     position: u16,
     gworlds: &[PpcGWorldRecord],
@@ -2771,7 +2779,7 @@ fn ppc_position_dialog_bounds(
         None,
         screen_width,
         screen_height,
-        20,
+        ppc_live_menu_bar_height(memory),
     )
 }
 
@@ -3032,7 +3040,7 @@ fn ppc_new_alert_dialog(
         *last_mem_error = PPC_MEM_FULL_ERR;
         return 0;
     }
-    let bounds = ppc_position_dialog_bounds(bounds, position, gworlds);
+    let bounds = ppc_position_dialog_bounds(memory, bounds, position, gworlds);
     let scratch = ppc_process_heap_alloc(process_memory_manager, memory, heap_cursor, 9, true);
     let Some(items_slot) = ppc_parameter_area_slot_addr(cpu.gpr[1], PPC_NATIVE_PARAMETER_GPR_COUNT)
     else {
@@ -3185,7 +3193,7 @@ fn ppc_get_new_dialog(
         *last_mem_error = PPC_MEM_FULL_ERR;
         return 0;
     }
-    let bounds = ppc_position_dialog_bounds(template.bounds, template.position, gworlds);
+    let bounds = ppc_position_dialog_bounds(memory, template.bounds, template.position, gworlds);
     let scratch_size = 8u32.saturating_add(1 + template.title.len().min(255) as u32);
     let scratch = ppc_process_heap_alloc(
         process_memory_manager,

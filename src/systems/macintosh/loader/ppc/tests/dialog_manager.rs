@@ -6645,6 +6645,131 @@ fn dialog_auto_positioning_and_cursor_tracking_dispatch_with_canonical_evaluatio
     }
 }
 
+/// Expected bounds under the 68K Dialog Manager rule: auto-position against
+/// the main screen minus the live MBarHeight.
+fn expected_auto_position(
+    loaded: &PpcLoadedApp,
+    content: (i16, i16, i16, i16),
+    position: u16,
+    menu_bar_height: i32,
+) -> (i16, i16, i16, i16) {
+    let screen = loaded
+        .gworlds
+        .iter()
+        .find(|record| record.port == PPC_MAIN_GWORLD);
+    crate::dialog_manager::evaluate_dialog_position_bounds(
+        content,
+        position,
+        Some(crate::dialog_manager::dialog_dbox_frame_rect(content)),
+        None,
+        screen.map_or(ppc_main_screen_width(), |record| record.width) as i32,
+        screen.map_or(ppc_main_screen_height(), |record| record.height) as i32,
+        menu_bar_height,
+    )
+}
+
+#[test]
+fn get_new_dialog_auto_positions_against_the_live_menu_bar_height() {
+    let pef = synthetic_pef_with_import(b"GetNewDialog");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    // A hidden menu bar: the application zeroed MBarHeight.
+    loaded.memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, 0).unwrap();
+    let mut dlog = vec![0; 24];
+    dlog[4..6].copy_from_slice(&100i16.to_be_bytes());
+    dlog[6..8].copy_from_slice(&200i16.to_be_bytes());
+    dlog[10] = 1;
+    dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+    dlog[20] = 1;
+    dlog[21] = b'T';
+    // alertPositionMainScreen
+    dlog[22..24].copy_from_slice(&0x300Au16.to_be_bytes());
+    let mut ditl = vec![0; 22];
+    ditl[6..8].copy_from_slice(&10i16.to_be_bytes());
+    ditl[8..10].copy_from_slice(&10i16.to_be_bytes());
+    ditl[10..12].copy_from_slice(&26i16.to_be_bytes());
+    ditl[12..14].copy_from_slice(&190i16.to_be_bytes());
+    ditl[14] = PPC_DIALOG_ITEM_STATIC_TEXT;
+    ditl[15] = 5;
+    ditl[16..21].copy_from_slice(b"Hello");
+    for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
+        let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: 128,
+                name: Vec::new(),
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    loaded.cpu.gpr[3] = 128;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    let dialog = loaded.cpu.gpr[3];
+    assert_ne!(dialog, 0);
+    let expected = expected_auto_position(&loaded, (0, 0, 100, 200), 0x300A, 0);
+    assert_ne!(
+        expected,
+        expected_auto_position(&loaded, (0, 0, 100, 200), 0x300A, 20),
+        "the alert position must depend on the menu bar height"
+    );
+    assert_eq!(
+        ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog),
+        Some(expected)
+    );
+}
+
+#[test]
+fn auto_position_dialog_uses_the_live_menu_bar_height() {
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"AutoPositionDialog");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+    let dialog = window_manager::create_test_cwindow(
+        &mut loaded,
+        bounds_ptr,
+        (40, 50, 140, 250),
+        0,
+        true,
+        u32::MAX,
+    );
+    // A taller-than-default menu bar.
+    loaded
+        .memory
+        .write_u16_be(PPC_MBAR_HEIGHT_ADDR, 44)
+        .unwrap();
+    let content = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+
+    // kWindowAlertPositionOnMainScreen
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 2;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::AutoPositionDialog,
+        ),
+    );
+
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    let expected = expected_auto_position(&loaded, content, 2, 44);
+    assert_ne!(expected, expected_auto_position(&loaded, content, 2, 20));
+    assert_eq!(
+        ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog),
+        Some(expected)
+    );
+}
+
 #[test]
 fn dialog_sheet_window_filter_and_item_insertion_dispatch_with_canonical_evaluation() {
     let bounds_ptr = PPC_DATA_BASE + 0x1000;
