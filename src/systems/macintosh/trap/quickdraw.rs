@@ -23005,7 +23005,7 @@ impl super::TrapDispatcher {
 
     #[inline]
     fn intersect_region_rows(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
-        region_rows::intersect_rows(lhs, rhs)
+        region_rows::intersect_sorted_rows(lhs, rhs)
     }
 
     #[inline]

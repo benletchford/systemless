@@ -707,6 +707,7 @@ pub(super) fn ppc_copy_rgn(
 pub(super) use crate::quickdraw::raster::region_rows::{
     difference_rows as ppc_region_difference_rows,
     endpoints_to_intervals as ppc_region_endpoints_to_intervals,
+    intersect_rows as ppc_region_intersect_rows,
     intervals_to_endpoints as ppc_region_intervals_to_endpoints,
     merge_endpoints as ppc_region_merge_endpoints, union_rows as ppc_region_union_rows,
 };
@@ -832,26 +833,6 @@ pub(super) fn ppc_region_rows_for_band(storage: &[u8], top: i16, bottom: i16) ->
         }
     }
     Some(rows)
-}
-
-/// All-pairs intersection. Rows parsed from guest region storage are not
-/// guaranteed to be sorted, and the shared merge-based
-/// `region_rows::intersect_rows` can drop pieces of unsorted rows, so the
-/// PowerPC path keeps this form.
-pub(super) fn ppc_region_intersect_rows(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
-    let lhs = ppc_region_endpoints_to_intervals(lhs);
-    let rhs = ppc_region_endpoints_to_intervals(rhs);
-    let mut out = Vec::new();
-    for &(lhs_start, lhs_end) in &lhs {
-        for &(rhs_start, rhs_end) in &rhs {
-            let start = lhs_start.max(rhs_start);
-            let end = lhs_end.min(rhs_end);
-            if start < end {
-                out.push((start, end));
-            }
-        }
-    }
-    ppc_region_intervals_to_endpoints(out)
 }
 
 pub(super) fn ppc_region_combine_rows(lhs: &[i16], rhs: &[i16], operation: PpcRegionBooleanOp) -> Vec<i16> {
