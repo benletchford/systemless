@@ -12,6 +12,26 @@ impl PpcLoadedApp {
     ) -> Option<Vec<crate::dialog_manager::DialogItemSnapshot>> {
         let handles = self.handles();
         let items = ppc_dialog_items_for_dialog(&mut self.memory, &handles, dialog)?;
+        // DialogRecord.textH belongs to editField (a zero-based DITL index).
+        // Read the live TERec selection rather than inferring it from the
+        // item's text or the host focus. Macintosh Toolbox Essentials (1992),
+        // pp. 6-101--6-102; Text (1993), pp. 2-72, 2-78, 2-85--2-86.
+        let active_edit_index = self
+            .memory
+            .read_u16_be(dialog + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET)
+            .filter(|index| *index != u16::MAX)
+            .map(usize::from);
+        let active_selection = self
+            .memory
+            .read_u32_be(dialog + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET)
+            .and_then(|handle| ppc_te_record_ptr(&mut self.memory, handle))
+            .and_then(|te_ptr| {
+                let length = self.memory.read_u16_be(te_ptr + PPC_TE_LENGTH_OFFSET)?;
+                let start = self.memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)?;
+                let end = self.memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)?;
+                (start <= end && end <= length)
+                    .then_some((i16::try_from(start).ok()?, i16::try_from(end).ok()?))
+            });
         Some(
             items
                 .iter()
@@ -47,7 +67,10 @@ impl PpcLoadedApp {
                         enabled: item.is_enabled(),
                         visible: !crate::dialog_manager::is_dialog_item_rect_hidden(item.rect),
                         value,
-                        selection: None,
+                        selection: (kind == crate::dialog_manager::DialogItemKind::EditText
+                            && active_edit_index == Some(index))
+                            .then_some(active_selection)
+                            .flatten(),
                     }
                 })
                 .collect(),

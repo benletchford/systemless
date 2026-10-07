@@ -3115,6 +3115,10 @@ mod desktop {
                         })
                     })
                     .expect("preferences dialog should expose unchecked guest controls");
+                if powerpc {
+                    assert_eq!(dialog.edit_field, Some(7));
+                    assert_eq!(dialog.items[6].selection, Some((0, 13)));
+                }
                 let windows = session.runner_mut().window_frame_snapshot();
                 assert!(super::standard_dbox_dialog(&[dialog.clone()], &windows).is_some());
                 let checkbox = dialog.items.iter().find(|item| item.number == 4).unwrap();
