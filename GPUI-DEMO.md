@@ -140,3 +140,7 @@ cover [68K initial](tests/toolbox-showcase/reference/gpui-demo/02-controls-68k.p
 Use `--capture-controls-dragged` to capture the guest thumb after a full drag
 and release: [68K](tests/toolbox-showcase/reference/gpui-demo/02-controls-dragged-68k.png)
 and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/02-controls-dragged-ppc.png).
+Use `--capture-controls-held` to capture the composed surface before release.
+The guest value is asserted unchanged while the Systemless GPUI thumb outline
+tracks the held pointer: [68K](tests/toolbox-showcase/reference/gpui-demo/02-controls-held-68k.png)
+and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/02-controls-held-ppc.png).

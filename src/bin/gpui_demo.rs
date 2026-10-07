@@ -64,6 +64,9 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_controls_dragged: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_controls_held: Option<PathBuf>,
     }
 
     fn parse_depth(value: &str) -> Result<u16, String> {
@@ -983,6 +986,7 @@ mod desktop {
         controls_page: bool,
         controls_changed: bool,
         controls_dragged: bool,
+        controls_held: bool,
     ) {
         use gpui_kit::{platform, VisualTestAppContext};
 
@@ -1076,7 +1080,8 @@ mod desktop {
                 .iter()
                 .any(|control| control.visible && control.proc_id == 16 && control.value > 0));
         }
-        if controls_dragged {
+        let mut held_drag = None;
+        if controls_dragged || controls_held {
             let controls = session.runner_mut().control_snapshot();
             let bar = controls
                 .iter()
@@ -1088,7 +1093,8 @@ mod desktop {
                 bar.bounds.1 + thumb.thumb_start as i16 + 8,
             );
             let to = (from.0, bar.bounds.3 - 28);
-            for input in [
+            let original_value = bar.value;
+            let mut inputs = vec![
                 MacintoshInput::MouseDown {
                     vertical: from.0,
                     horizontal: from.1,
@@ -1097,21 +1103,32 @@ mod desktop {
                     vertical: to.0,
                     horizontal: to.1,
                 },
-                MacintoshInput::MouseUp {
+            ];
+            if controls_dragged {
+                inputs.push(MacintoshInput::MouseUp {
                     vertical: to.0,
                     horizontal: to.1,
-                },
-            ] {
+                });
+            }
+            for input in inputs {
                 session.deliver_input(input);
                 for _ in 0..20 {
                     session.runner_mut().run_steps(10_000, None);
                 }
             }
-            assert!(session
+            let value = session
                 .runner_mut()
                 .control_snapshot()
                 .iter()
-                .any(|control| control.guest_id == bar.guest_id && control.value >= 8));
+                .find(|control| control.guest_id == bar.guest_id)
+                .unwrap()
+                .value;
+            if controls_held {
+                assert_eq!(value, original_value);
+                held_drag = Some((bar.guest_id, bar.generation, from, to));
+            } else {
+                assert!(value >= 8);
+            }
         }
         let controls = session.runner_mut().control_snapshot();
         let menus = session.runner_mut().guest_menu_snapshot();
@@ -1145,6 +1162,11 @@ mod desktop {
                 demo.windows = windows;
                 demo.dialogs = dialogs;
                 demo.controls = controls;
+                if let Some((id, generation, from, to)) = held_drag {
+                    demo.mouse_down = true;
+                    demo.mouse_position = to;
+                    demo.scrollbar_drag = Some((id, generation, from));
+                }
                 demo.width = frame.width;
                 demo.height = frame_height;
                 demo.crop_top = top;
@@ -1179,6 +1201,7 @@ mod desktop {
                 false,
                 false,
                 false,
+                false,
             );
             return;
         }
@@ -1190,6 +1213,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 true,
+                false,
                 false,
                 false,
             );
@@ -1205,6 +1229,7 @@ mod desktop {
                 true,
                 true,
                 false,
+                false,
             );
             return;
         }
@@ -1216,6 +1241,21 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 true,
+                false,
+                true,
+                false,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_controls_held.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                true,
+                false,
                 false,
                 true,
             );
@@ -1301,6 +1341,7 @@ mod desktop {
                         capture_controls: None,
                         capture_controls_changed: None,
                         capture_controls_dragged: None,
+                        capture_controls_held: None,
                     },
                     rx,
                     worker_updates,
