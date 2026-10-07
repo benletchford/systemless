@@ -39,4 +39,6 @@ pub struct StandardFileSnapshot {
     pub prompt: Option<String>,
     pub name: Option<String>,
     pub name_selection: Option<(usize, usize)>,
+    /// `None` for Open panels; Save reports where guest keyboard input goes.
+    pub name_has_focus: Option<bool>,
 }

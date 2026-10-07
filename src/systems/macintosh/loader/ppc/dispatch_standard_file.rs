@@ -72,6 +72,7 @@ pub(super) struct PpcStandardFilePutTrackingState {
     pub(super) entries: Vec<PpcStandardFileEntry>,
     pub(super) selected: Option<usize>,
     pub(super) list_has_focus: bool,
+    pub(super) last_list_click: Option<(usize, u32)>,
     pub(super) prompt: Vec<u8>,
     pub(super) name: Vec<u8>,
     pub(super) sel_start: usize,
@@ -347,6 +348,7 @@ fn ppc_standard_file_put_enter_directory(
         None,
     );
     tracking.selected = None;
+    tracking.last_list_click = None;
 }
 
 pub(super) fn ppc_capture_saved_detail<T>(
@@ -1702,6 +1704,7 @@ fn ppc_standard_file_put_start(
         ),
         selected: None,
         list_has_focus: false,
+        last_list_click: None,
         prompt: ppc_standard_file_prompt(memory, prompt_ptr),
         name: name.clone(),
         sel_start: 0,
@@ -1786,6 +1789,12 @@ fn ppc_dispatch_standard_file(
                             event.where_v.saturating_sub(tracking.bounds.0),
                             event.where_h.saturating_sub(tracking.bounds.1),
                         );
+                        if !ppc_standard_file_point_in_rect(
+                            local,
+                            PPC_STANDARD_FILE_PUT_LIST_RECT,
+                        ) {
+                            tracking.last_list_click = None;
+                        }
                         if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_PUT_CANCEL_RECT)
                         {
                             return ppc_standard_file_finish_put(
@@ -1824,8 +1833,29 @@ fn ppc_dispatch_standard_file(
                             let first_visible = tracking.selected.unwrap_or(0).saturating_sub(7);
                             let index = first_visible.saturating_add(row);
                             if index < tracking.entries.len() {
+                                let double_time = memory
+                                    .read_u32_be(crate::memory::globals::addr::DOUBLE_TIME)
+                                    .unwrap_or(PPC_DEFAULT_DOUBLE_TIME_TICKS);
+                                let double_click = tracking.last_list_click.is_some_and(
+                                    |(previous_index, previous_time)| {
+                                        previous_index == index
+                                            && previous_time != 0
+                                            && event.when.wrapping_sub(previous_time) <= double_time
+                                    },
+                                );
                                 tracking.selected = Some(index);
                                 tracking.list_has_focus = true;
+                                tracking.last_list_click = Some((index, event.when));
+                                if double_click && tracking.entries[index].is_directory {
+                                    let dir_id = tracking.entries[index].dir_id;
+                                    ppc_standard_file_put_enter_directory(
+                                        &mut tracking,
+                                        dir_id,
+                                        vfs_directories,
+                                        vfs_files,
+                                        vfs_resource_files,
+                                    );
+                                }
                             }
                         } else if ppc_standard_file_point_in_rect(
                             local,
@@ -1852,6 +1882,7 @@ fn ppc_dispatch_standard_file(
                             tracking.list_has_focus = true;
                         }
                     } else {
+                        tracking.last_list_click = None;
                         let character = event.message as u8;
                         let key_code = (event.message >> 8) as u8;
                         if crate::dialog_manager::is_dialog_cancel_key(
