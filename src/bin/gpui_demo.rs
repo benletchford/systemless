@@ -41,7 +41,7 @@ mod desktop {
     };
     use systemless::{
         memory::{globals::addr::MBAR_HEIGHT, MemoryBus},
-        menu_model::GuestMenuSnapshot,
+        menu_model::{GuestMenu, GuestMenuSnapshot},
         runner::{ControlSnapshot, DialogItemKind, DialogSnapshot, ListManagerSnapshot, StandardFileKind, StandardFileSnapshot, TextEditSnapshot, WindowFrameSnapshot},
         systems::macintosh::session::{MacintoshInput, MacintoshSession},
     };
@@ -152,7 +152,7 @@ mod desktop {
     #[derive(Default)]
     struct LiveMenuState {
         menu: Option<Entity<PopupMenu>>,
-        rendered: Option<GuestMenuSnapshot>,
+        rendered: Option<Vec<GuestMenu>>,
     }
 
     #[derive(Default)]
@@ -573,6 +573,25 @@ mod desktop {
         popup
     }
 
+    fn rendered_menu_tree(snapshot: &GuestMenuSnapshot, id: i16) -> Vec<GuestMenu> {
+        fn visit(snapshot: &GuestMenuSnapshot, id: i16, tree: &mut Vec<GuestMenu>) {
+            if tree.iter().any(|menu| menu.id == id) {
+                return;
+            }
+            let Some(menu) = snapshot.menus.iter().find(|menu| menu.id == id) else {
+                return;
+            };
+            tree.push(menu.clone());
+            for submenu_id in menu.items.iter().filter_map(|item| item.submenu_id) {
+                visit(snapshot, submenu_id, tree);
+            }
+        }
+
+        let mut tree = Vec::new();
+        visit(snapshot, id, &mut tree);
+        tree
+    }
+
     fn standard_dbox_dialog<'a>(
         dialogs: &'a [DialogSnapshot],
         windows: &[WindowFrameSnapshot],
@@ -643,8 +662,9 @@ mod desktop {
                                 .disabled(!menu.enabled),
                         )
                         .content(move |_, window, cx| {
+                            let menu_tree = rendered_menu_tree(&snapshot, id);
                             if let Some(open_menu) = state.read(cx).menu.clone() {
-                                if state.read(cx).rendered.as_ref() != Some(&snapshot) {
+                                if state.read(cx).rendered.as_ref() != Some(&menu_tree) {
                                     open_menu.update(cx, |popup, cx| {
                                         popup.rebuild(window, cx, |popup, window, cx| {
                                             populate_menu(
@@ -659,7 +679,7 @@ mod desktop {
                                         });
                                     });
                                     state.update(cx, |state, _| {
-                                        state.rendered = Some(snapshot.clone());
+                                        state.rendered = Some(menu_tree);
                                     });
                                 }
                                 return open_menu;
@@ -677,7 +697,7 @@ mod desktop {
                             });
                             state.update(cx, |state, _| {
                                 state.menu = Some(open_menu.clone());
-                                state.rendered = Some(snapshot.clone());
+                                state.rendered = Some(menu_tree);
                             });
                             open_menu.focus_handle(cx).focus(window, cx);
                             let popover = cx.entity().downgrade();
@@ -2898,6 +2918,43 @@ mod desktop {
     #[cfg(test)]
     mod tests {
         use super::{MacintoshInput, MacintoshSession, PathBuf};
+
+        #[test]
+        fn open_menu_rebuilds_only_for_its_own_tree() {
+            use systemless::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
+
+            let item = |submenu_id| GuestMenuItem {
+                number: 1,
+                text: "Item".into(),
+                enabled: true,
+                checked: false,
+                key_equivalent: None,
+                submenu_id,
+                separator: false,
+            };
+            let menu = |id: i16, submenu_id: Option<i16>| GuestMenu {
+                guest_id: id as u32,
+                generation: 1,
+                id,
+                title: format!("Menu {id}"),
+                enabled: true,
+                standard_definition: true,
+                hierarchical: submenu_id.is_none(),
+                visible_in_menu_bar: submenu_id.is_some(),
+                items: vec![item(submenu_id)],
+            };
+            let mut snapshot = GuestMenuSnapshot {
+                menus: vec![menu(1, Some(3)), menu(2, None), menu(3, None)],
+                custom_bar_definition: false,
+            };
+            let original = super::rendered_menu_tree(&snapshot, 1);
+            snapshot.menus[1].items[0].checked = true;
+            assert_eq!(super::rendered_menu_tree(&snapshot, 1), original);
+            snapshot.menus[2].items[0].checked = true;
+            assert_ne!(super::rendered_menu_tree(&snapshot, 1), original);
+            snapshot.menus[2].items[0].submenu_id = Some(1);
+            assert_eq!(super::rendered_menu_tree(&snapshot, 1).len(), 2);
+        }
 
         #[test]
         fn save_selection_offsets_follow_mac_roman_characters_after_decoding() {
