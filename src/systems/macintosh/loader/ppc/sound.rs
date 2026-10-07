@@ -852,7 +852,23 @@ pub(crate) fn ppc_snd_do_command(cpu: &PpcCpu, memory: &mut PpcSectionMem, sound
     // `noWait` controls whether the classic implementation may sleep until
     // a FIFO slot opens. The host runner cannot block the guest, so both
     // variants return queueFull when the process-owned FIFO is full.
-    if let Some(decoded) = ppc_decode_buffer_command(memory, channel, command) {
+    // soundCmd's header is decoded now, while the guest's pointer is known
+    // to be current; the queue installs the voice in order.
+    if command.command == crate::sound::cmd::SOUND {
+        let instrument = ppc_sampled_instrument_from_header(memory, command.param2);
+        if instrument.is_none() && ppc_sound_trace_enabled() {
+            eprintln!(
+                "[PPC-SOUND] could not decode soundCmd header=${:08X}",
+                command.param2
+            );
+        }
+        if !sound
+            .manager
+            .with_mut(|manager| manager.enqueue_instrument(channel, instrument))
+        {
+            return -203; // queueFull
+        }
+    } else if let Some(decoded) = ppc_decode_buffer_command(memory, channel, command) {
         if !sound.manager.enqueue_buffer_command_for_architecture(
             channel,
             decoded.samples,

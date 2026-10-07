@@ -338,6 +338,8 @@ pub struct SndChannel {
     instrument: Option<SampledInstrument>,
     /// Loop of the note now playing from `instrument`, if it repeats.
     note_loop: Option<NoteLoop>,
+    /// Output samples a freqDurationCmd note still holds the command queue.
+    note_hold: u64,
     /// Callback procedure installed by SndNewChannel in the guest channel record.
     pub callback_addr: u32,
     /// Instruction set of the callback procedure. Native PowerPC channels
@@ -388,6 +390,9 @@ pub struct SndChannel {
 #[derive(Clone, Debug)]
 enum QueuedSoundCommand {
     Command(SndCommand),
+    /// soundCmd whose SoundHeader the CPU adapter decoded when it was
+    /// queued; `None` when the header could not be decoded.
+    Instrument(Option<Box<SampledInstrument>>),
     Buffer {
         samples: Vec<u8>,
         sample_rate_fixed: u32,
@@ -407,6 +412,7 @@ impl SndChannel {
             playback_kind: None,
             instrument: None,
             note_loop: None,
+            note_hold: 0,
             callback_addr: 0,
             callback_architecture: CallbackTaskArchitecture::M68k,
             volume: FULL_STEREO_VOLUME,
@@ -470,6 +476,30 @@ impl SndChannel {
         }
     }
 
+    fn enqueue_instrument(&mut self, instrument: Option<SampledInstrument>) -> bool {
+        if self.queue.len() >= STD_Q_LENGTH {
+            return false;
+        }
+        self.queue
+            .push(QueuedSoundCommand::Instrument(instrument.map(Box::new)));
+        true
+    }
+
+    /// Whether playback keeps the command queue waiting. Sampled sounds and
+    /// double buffers occupy the channel until they finish. A note does not:
+    /// freqCmd plays indefinitely while later commands run, and
+    /// freqDurationCmd holds the queue only for its duration (Sound 1994,
+    /// pp. 2-41--2-42 and 2-95--2-96).
+    fn blocks_queue(&self) -> bool {
+        if self.double_buffer.is_some() {
+            return true;
+        }
+        if self.playback_kind == Some(PlaybackKind::Note) && self.playing.is_some() {
+            return self.note_hold > 0;
+        }
+        self.has_active_playback()
+    }
+
     /// Clear the command queue.
     pub fn flush(&mut self) {
         self.queue.clear();
@@ -482,6 +512,7 @@ impl SndChannel {
         self.playing = None;
         self.playback_kind = None;
         self.note_loop = None;
+        self.note_hold = 0;
         self.pending_callback_cmds.clear();
         self.file_completion_addr = 0;
         self.file_completion_architecture = None;
@@ -518,6 +549,7 @@ impl SndChannel {
             step: playback_step(sample_rate_fixed, UNITY_RATE_FIXED),
         });
         self.note_loop = None;
+        self.note_hold = 0;
         self.playback_kind = Some(kind);
         self.file_completion_addr = file_completion_addr;
         self.file_completion_architecture =
@@ -567,6 +599,7 @@ impl SndChannel {
             step: playback_step(sample_rate_fixed, self.rate_fixed),
         });
         self.note_loop = note_loop;
+        self.note_hold = duration.unwrap_or(0);
         self.playback_kind = Some(PlaybackKind::Note);
         self.file_completion_addr = 0;
         self.file_completion_architecture = None;
@@ -1102,6 +1135,18 @@ impl SoundManager {
         self.ensure_channel_mut(guest_ptr).instrument = None;
     }
 
+    /// Queue a soundCmd decoded by a CPU adapter (`None` for a header it
+    /// could not decode). Returns false when the queue is full.
+    pub(crate) fn enqueue_instrument(
+        &mut self,
+        guest_ptr: u32,
+        instrument: Option<SampledInstrument>,
+    ) -> bool {
+        self.record_command(cmd::SOUND);
+        self.ensure_channel_mut(guest_ptr)
+            .enqueue_instrument(instrument)
+    }
+
     /// Queue a native command on the canonical process channel FIFO.
     pub(crate) fn enqueue_command(&mut self, guest_ptr: u32, command: SndCommand) -> bool {
         self.record_command(command.cmd);
@@ -1209,7 +1254,7 @@ impl SoundManager {
         // playback immediately.
         let mut queued_callbacks = Vec::new();
         for chan in &mut self.channels {
-            if chan.has_active_playback() || chan.double_buffer.is_some() {
+            if chan.blocks_queue() {
                 continue;
             }
 
@@ -1231,6 +1276,14 @@ impl SoundManager {
                         }
                         cmd::VOLUME => chan.set_volume(cmd.param2),
                         cmd::RATE => chan.set_rate(cmd.param2),
+                        cmd::AMP => chan.set_amplitude(cmd.param1),
+                        cmd::FREQ => chan.play_note(cmd.param2, None),
+                        cmd::FREQ_DURATION => {
+                            chan.play_note(cmd.param2, Some(note_duration_samples(cmd.param1)));
+                            if chan.blocks_queue() {
+                                break;
+                            }
+                        }
                         cmd::BUFFER | cmd::SOUND => {
                             // Raw guest buffer pointers are decoded by the
                             // architecture adapter before they enter this
@@ -1238,6 +1291,9 @@ impl SoundManager {
                         }
                         _ => {}
                     },
+                    QueuedSoundCommand::Instrument(instrument) => {
+                        chan.instrument = instrument.map(|instrument| *instrument);
+                    }
                     QueuedSoundCommand::Buffer {
                         samples,
                         sample_rate_fixed,
@@ -1305,6 +1361,7 @@ impl SoundManager {
                             *remaining = remaining.saturating_sub(1);
                         }
                     }
+                    chan.note_hold = chan.note_hold.saturating_sub(1);
                     let Some(source_sample) =
                         resampled_sample(&buf.samples, buf.position, buf.step)
                     else {
@@ -3517,5 +3574,47 @@ mod tests {
         assert_eq!(manager.mix_frame(1), vec![0x80]);
         manager.execute_immediate_command(chan, note_command(cmd::AMP, 255, 0));
         assert_eq!(manager.mix_frame(1), vec![0xC0]);
+    }
+
+    fn long_instrument() -> SampledInstrument {
+        SampledInstrument {
+            samples: vec![0xC0; 64],
+            sample_rate_fixed: OUTPUT_RATE << 16,
+            base_note: 60,
+            loop_start: 0,
+            loop_end: 0,
+        }
+    }
+
+    /// Sound 1994, pp. 2-41--2-42: queued freqDurationCmd plays for its
+    /// duration before the next queued command (here quietCmd) runs.
+    #[test]
+    fn queued_freq_duration_note_holds_the_queue_for_its_duration() {
+        let chan = 0x1000;
+        let mut manager = SoundManager::new();
+        assert!(manager.enqueue_instrument(chan, Some(long_instrument())));
+        // One half-millisecond lasts 11 output samples at 22050 Hz.
+        assert!(manager.enqueue_command(chan, note_command(cmd::FREQ_DURATION, 1, 60)));
+        assert!(manager.enqueue_command(chan, note_command(cmd::QUIET, 0, 0)));
+
+        assert_eq!(manager.mix_frame(8), vec![0xC0; 8]);
+        assert_eq!(manager.mix_frame(8), vec![0xC0; 8]);
+        assert_eq!(manager.mix_frame(8), Vec::<u8>::new());
+        assert!(!manager.channels[0].is_playing());
+    }
+
+    /// Sound 1994, p. 2-96: a queued freqCmd note plays indefinitely while
+    /// the commands after it run.
+    #[test]
+    fn queued_freq_note_lets_later_commands_run() {
+        let chan = 0x1000;
+        let mut manager = SoundManager::new();
+        assert!(manager.enqueue_instrument(chan, Some(long_instrument())));
+        assert!(manager.enqueue_command(chan, note_command(cmd::FREQ, 0, 60)));
+        assert!(manager.enqueue_command(chan, note_command(cmd::AMP, 0, 0)));
+
+        assert_eq!(manager.mix_frame(2), vec![0x80, 0x80]);
+        assert!(manager.channels[0].is_playing());
+        assert!(!manager.channel_has_queued_commands(chan).unwrap());
     }
 }

@@ -1988,3 +1988,37 @@ fn sound_command_installs_a_sampled_sound_that_freq_command_plays() {
     immediate(&mut loaded, 42, 72);
     assert_eq!(playback_rate(&loaded), Some(0x5622_0000));
 }
+
+#[test]
+fn queued_sound_command_installs_a_voice_that_a_queued_freq_command_plays() {
+    let pef = synthetic_pef_with_import(b"SndDoCommand");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let channel = 0x0500_1000;
+    let cmd_ptr = PPC_DATA_BASE + 0x1000;
+    let header = PPC_DATA_BASE + 0x1100;
+    let mut bytes = vec![0u8; 22];
+    bytes[4..8].copy_from_slice(&4u32.to_be_bytes());
+    bytes[8..12].copy_from_slice(&(crate::sound::OUTPUT_RATE << 16).to_be_bytes());
+    bytes[21] = 60;
+    bytes.extend_from_slice(&[0xC0; 4]);
+    loaded.memory.add_region(cmd_ptr, vec![0; 8]);
+    loaded.memory.add_region(header, bytes);
+    for (command, param2) in [(80u16, header), (42, 60)] {
+        loaded.memory.write_u16_be(cmd_ptr, command).unwrap();
+        loaded.memory.write_u16_be(cmd_ptr + 2, 0).unwrap();
+        loaded.memory.write_u32_be(cmd_ptr + 4, param2).unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.gpr[3] = channel;
+        loaded.cpu.gpr[4] = cmd_ptr;
+        loaded.cpu.gpr[5] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    }
+
+    let mixed = loaded
+        .sound
+        .manager
+        .with_mut(|manager| manager.mix_frame(4));
+    assert_eq!(mixed, vec![0xC0; 4]);
+}
