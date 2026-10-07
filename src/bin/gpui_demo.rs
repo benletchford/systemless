@@ -3108,6 +3108,154 @@ mod desktop {
 
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
+        fn themed_standard_file_actions_forward_guest_clicks(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            use gpui_kit::{test::TestWindowExt, AppContext, Bounds, WindowBounds, WindowOptions};
+            use systemless::runner::{
+                StandardFileEntrySnapshot, StandardFileGetLayout, StandardFileKind,
+                StandardFilePutLayout, StandardFileSnapshot,
+            };
+
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            cx.update(gpui_kit::init);
+            let (window, view) = cx.update(|cx| {
+                gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                            None,
+                            gpui_kit::size(gpui_kit::px(900.), gpui_kit::px(740.)),
+                            cx,
+                        ))),
+                        ..Default::default()
+                    },
+                    cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(sender, updates, cx)),
+                )
+                .unwrap()
+            });
+            cx.update(|cx| {
+                view.update(cx, |demo, cx| {
+                    demo.width = 800;
+                    demo.height = 580;
+                    demo.crop_top = 20;
+                    demo.standard_file = Some(StandardFileSnapshot {
+                        guest_id: 7,
+                        generation: 1,
+                        kind: StandardFileKind::Get,
+                        standard_entry_point: true,
+                        bounds: (100, 100, 278, 456),
+                        directory_id: 2,
+                        entries: Some(vec![StandardFileEntrySnapshot {
+                            name: "Documents".into(),
+                            directory_id: 3,
+                            is_directory: true,
+                            file_type: 0,
+                        }]),
+                        selected: Some(0),
+                        prompt: None,
+                        name: None,
+                        name_selection: None,
+                        name_has_focus: None,
+                        directory_label: Some("MacintoshHD".into()),
+                        get_layout: Some(StandardFileGetLayout {
+                            volume: (112, 190, 131, 264),
+                            directory_label: (112, 368, 131, 436),
+                            list: (135, 118, 263, 336),
+                            scroll: (135, 335, 263, 351),
+                            eject: (138, 358, 159, 438),
+                            desktop: (166, 358, 187, 438),
+                            cancel: (210, 358, 231, 438),
+                            open: (238, 358, 259, 438),
+                            row_height: 14,
+                            first_visible: 0,
+                            visible_rows: 8,
+                        }),
+                        put_layout: None,
+                    });
+                    cx.notify();
+                });
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window.click("guest-standard-open-7-1-Open", cx);
+            })
+            .unwrap();
+            let open_inputs: Vec<_> = receiver
+                .try_iter()
+                .filter_map(|command| match command {
+                    super::Command::Input(input) => Some(input),
+                    _ => None,
+                })
+                .collect();
+            let open_presses: Vec<_> = open_inputs
+                .iter()
+                .filter(|input| matches!(input, MacintoshInput::MouseDown { .. } | MacintoshInput::MouseUp { .. }))
+                .collect();
+            assert!(matches!(open_presses.as_slice(), [
+                MacintoshInput::MouseDown { vertical: 238..=258, horizontal: 358..=437 },
+                MacintoshInput::MouseUp { vertical: 238..=258, horizontal: 358..=437 },
+            ]), "{open_inputs:?}");
+
+            cx.update(|cx| {
+                view.update(cx, |demo, cx| {
+                    demo.standard_file = Some(StandardFileSnapshot {
+                        guest_id: 8,
+                        generation: 2,
+                        kind: StandardFileKind::Put,
+                        standard_entry_point: true,
+                        bounds: (100, 100, 360, 460),
+                        directory_id: 2,
+                        entries: Some(Vec::new()),
+                        selected: None,
+                        prompt: Some("Save as:".into()),
+                        name: Some("Untitled".into()),
+                        name_selection: Some((0, 8)),
+                        name_has_focus: Some(true),
+                        directory_label: Some("MacintoshHD".into()),
+                        get_layout: None,
+                        put_layout: Some(StandardFilePutLayout {
+                            directory_label: (112, 224, 131, 436),
+                            list: (138, 118, 256, 416),
+                            scroll: (138, 415, 256, 431),
+                            prompt: (266, 124, 284, 430),
+                            name: (288, 124, 308, 430),
+                            desktop: (320, 124, 342, 204),
+                            cancel: (320, 266, 342, 346),
+                            save: (320, 358, 342, 438),
+                            row_height: 14,
+                            first_visible: 0,
+                            visible_rows: 8,
+                        }),
+                    });
+                    cx.notify();
+                });
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window.click("guest-standard-save-8-2-Save", cx);
+            })
+            .unwrap();
+            let save_inputs: Vec<_> = receiver
+                .try_iter()
+                .filter_map(|command| match command {
+                    super::Command::Input(input) => Some(input),
+                    _ => None,
+                })
+                .collect();
+            let save_presses: Vec<_> = save_inputs
+                .iter()
+                .filter(|input| matches!(input, MacintoshInput::MouseDown { .. } | MacintoshInput::MouseUp { .. }))
+                .collect();
+            assert!(matches!(save_presses.as_slice(), [
+                MacintoshInput::MouseDown { vertical: 320..=341, horizontal: 358..=437 },
+                MacintoshInput::MouseUp { vertical: 320..=341, horizontal: 358..=437 },
+            ]), "{save_inputs:?}");
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
         fn themed_list_row_forwards_guest_click(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::{test::TestWindowExt, AppContext, Bounds, WindowBounds, WindowOptions};
             use systemless::runner::{ListManagerSnapshot, WindowFrameSnapshot, WindowSnapshot};
