@@ -3163,6 +3163,55 @@ mod desktop {
         }
 
         #[test]
+        fn held_shortcut_posts_autokey_at_guest_tick_threshold_on_both_cpus() {
+            for powerpc in [false, true] {
+                let mut session = MacintoshSession::new(true, if powerpc { None } else { Some(8) });
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session
+                    .load_path(
+                        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("tests/toolbox-showcase/toolbox-showcase.sit"),
+                    )
+                    .unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x37, character: 0 });
+                session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x23, character: b'p' });
+
+                // The Event Manager posts autoKey after the initial key-repeat
+                // threshold, then at the repeat rate. Inside Macintosh Volume I,
+                // I-246; Macintosh Toolbox Essentials (1992), pp. 2-29, 2-38.
+                for _ in 0..15 {
+                    session.runner_mut().force_advance_guest_tick();
+                }
+                let repeat_count = |session: &MacintoshSession| {
+                    session
+                        .runner()
+                        .event_manager_snapshot()
+                        .queued_event_types
+                        .iter()
+                        .filter(|&&what| what == 5)
+                        .count()
+                };
+                assert_eq!(repeat_count(&session), 0, "early autoKey on powerpc={powerpc}");
+                session.runner_mut().force_advance_guest_tick();
+                assert_eq!(repeat_count(&session), 1, "missing autoKey on powerpc={powerpc}");
+                for _ in 0..3 {
+                    session.runner_mut().force_advance_guest_tick();
+                }
+                assert_eq!(repeat_count(&session), 1, "early repeat on powerpc={powerpc}");
+                session.runner_mut().force_advance_guest_tick();
+                assert_eq!(repeat_count(&session), 2, "missing repeat on powerpc={powerpc}");
+                session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x23, character: b'p' });
+                session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x37, character: 0 });
+                for _ in 0..4 {
+                    session.runner_mut().force_advance_guest_tick();
+                }
+                assert_eq!(repeat_count(&session), 2, "released key repeated on powerpc={powerpc}");
+            }
+        }
+
+        #[test]
         fn live_menu_bridge_updates_pages_and_nested_checks_across_guest_modes() {
             for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
                 let mut session = MacintoshSession::new(true, depth);

@@ -39,6 +39,13 @@ event ordering. Inside Macintosh Volume I, I-352 and I-356–I-358, defines
 menu lifetime, item state, and `MenuSelect` tracking; a visual refresh must
 not synthesize an application command.
 
+The showcase's Command+P input now has a deterministic Event Manager timing
+check on both CPUs: while the shortcut is held, no `autoKey` is queued before
+guest tick 16, one is queued at tick 16, and the next arrives four ticks later.
+After key release, four further guest ticks add no repeat. This checks the
+Systemless input and guest clock path; actual host key-hold timing and menu
+tracking during repeated shortcuts still need a GPUI interaction check.
+
 The dependency order is menus, frames, dialogs, controls, lists/TextEdit, then
 Standard File. The first end-to-end gate is one standard modal dialog on each
 CPU alongside menus and windows. For every row, record at least one 68K and
