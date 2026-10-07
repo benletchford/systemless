@@ -126,6 +126,25 @@ pub(super) fn dispatch_polygon_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::ErasePoly => {
+            // ErasePoly paints the polygon with the port's background pattern
+            // in patCopy mode, ignoring pnPat and pnMode, and leaves the pen
+            // where it was. Inside Macintosh Volume I (1985), p. I-192;
+            // Imaging With QuickDraw (1994), p. 3-84.
+            if toolbox_startup.open_region_port == current_gworld {
+                ppc_open_region_include_polygon(toolbox_startup, memory, cpu.gpr[3]);
+            } else {
+                let _ = ppc_paint_polygon(
+                    memory,
+                    gworlds,
+                    current_gworld,
+                    cpu.gpr[3],
+                    *quickdraw_back_color,
+                    None,
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         _ => None,
     }
 }
