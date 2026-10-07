@@ -72,7 +72,9 @@ paint the default white content background when they have no WCTab, avoiding
 stale artwork beneath the dialog items. Deterministic guest-input replays on
 both CPUs also cover checkbox tracking and reactivation after full occlusion;
 the 68K standard-dialog redraw clears newly exposed content while retaining
-application-painted custom dialog content.
+application-painted custom dialog content. DialogSelect key input now repaints
+the guest-owned edit field immediately on both CPUs; the replays assert a new
+glyph before any window switch, alongside the semantic text snapshot checks.
 
 The dependency order is menus, frames, dialogs, controls, lists/TextEdit, then
 Standard File. The first end-to-end gate is one standard modal dialog on each

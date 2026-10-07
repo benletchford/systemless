@@ -1889,6 +1889,20 @@ fn ppc_dispatch_dialog_compatibility(
                     if *last_mem_error != PPC_NO_ERR {
                         return PpcImportAction::Return(0);
                     }
+                    // DialogSelect delegates key input to TextEdit, whose
+                    // TEKey operation redraws the changed field immediately.
+                    // Macintosh Toolbox Essentials (1992), pp. 6-140--6-141;
+                    // Text (1993), pp. 2-81--2-82.
+                    let _ = ppc_draw_dialog(
+                        memory,
+                        handles,
+                        controls,
+                        gworlds,
+                        screen_clut,
+                        vfs_resources,
+                        current_resource_refnum,
+                        dialog,
+                    );
                     PpcImportAction::Return(1)
                 }
                 _ => PpcImportAction::Return(0),
