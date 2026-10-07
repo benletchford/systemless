@@ -3785,12 +3785,16 @@ pub fn ppc_q3_software_is_backfacing(
     if vertices.len() < 3 {
         return false;
     }
-    // Screen-space y points downward, reversing QD3D's projected winding.
+    // The front face is the one whose vertices run counterclockwise (or
+    // clockwise, per the orientation style) as seen by the camera.  The
+    // edge value is the negated screen cross product, and screen y points
+    // downward, so a positive value is a counterclockwise winding as seen
+    // by the camera.
     let edge = ppc_q3_software_edge_value(vertices[0], vertices[1], vertices[2]);
     if orientation_style == PPC_Q3_ORIENTATION_STYLE_CLOCKWISE {
-        edge < 0
-    } else {
         edge > 0
+    } else {
+        edge < 0
     }
 }
 
