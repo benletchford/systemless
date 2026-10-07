@@ -225,7 +225,8 @@ impl PpcToolboxStartupState {
         &self,
     ) -> Option<crate::standard_file_ui::StandardFileSnapshot> {
         use crate::standard_file_ui::{
-            StandardFileEntrySnapshot, StandardFileKind, StandardFileSnapshot,
+            StandardFileEntrySnapshot, StandardFileKind, StandardFilePutLayout,
+            StandardFileSnapshot,
         };
 
         if let Some(tracking) = self.standard_file_get_tracking.as_ref().or_else(|| {
@@ -258,6 +259,8 @@ impl PpcToolboxStartupState {
                 name: None,
                 name_selection: None,
                 name_has_focus: None,
+                directory_label: None,
+                put_layout: None,
             });
         }
         let tracking = self.standard_file_put_tracking.as_ref()?;
@@ -285,6 +288,30 @@ impl PpcToolboxStartupState {
             name: Some(crate::mac_roman::decode_mac_roman(&tracking.name)),
             name_selection: Some((tracking.sel_start, tracking.sel_end)),
             name_has_focus: Some(!tracking.list_has_focus),
+            directory_label: Some(crate::mac_roman::decode_mac_roman(&tracking.directory_name)),
+            put_layout: Some({
+                use super::dispatch_standard_file::{
+                    PPC_STANDARD_FILE_GET_ROW_HEIGHT, PPC_STANDARD_FILE_PUT_CANCEL_RECT,
+                    PPC_STANDARD_FILE_PUT_DESKTOP_RECT,
+                    PPC_STANDARD_FILE_PUT_DIRECTORY_LABEL_RECT, PPC_STANDARD_FILE_PUT_LIST_RECT,
+                    PPC_STANDARD_FILE_PUT_NAME_RECT, PPC_STANDARD_FILE_PUT_PROMPT_RECT,
+                    PPC_STANDARD_FILE_PUT_SAVE_RECT, PPC_STANDARD_FILE_PUT_SCROLL_RECT,
+                };
+                let global = |rect| StandardFilePutLayout::global_rect(tracking.bounds, rect);
+                StandardFilePutLayout {
+                    directory_label: global(PPC_STANDARD_FILE_PUT_DIRECTORY_LABEL_RECT),
+                    list: global(PPC_STANDARD_FILE_PUT_LIST_RECT),
+                    scroll: global(PPC_STANDARD_FILE_PUT_SCROLL_RECT),
+                    prompt: global(PPC_STANDARD_FILE_PUT_PROMPT_RECT),
+                    name: global(PPC_STANDARD_FILE_PUT_NAME_RECT),
+                    desktop: global(PPC_STANDARD_FILE_PUT_DESKTOP_RECT),
+                    cancel: global(PPC_STANDARD_FILE_PUT_CANCEL_RECT),
+                    save: global(PPC_STANDARD_FILE_PUT_SAVE_RECT),
+                    row_height: PPC_STANDARD_FILE_GET_ROW_HEIGHT,
+                    first_visible: tracking.selected.unwrap_or(0).saturating_sub(7),
+                    visible_rows: 8,
+                }
+            }),
         })
     }
 

@@ -40,7 +40,7 @@ mod desktop {
     use systemless::{
         memory::{globals::addr::MBAR_HEIGHT, MemoryBus},
         menu_model::GuestMenuSnapshot,
-        runner::{ControlSnapshot, DialogItemKind, DialogSnapshot, ListManagerSnapshot, WindowFrameSnapshot},
+        runner::{ControlSnapshot, DialogItemKind, DialogSnapshot, ListManagerSnapshot, StandardFileKind, StandardFileSnapshot, WindowFrameSnapshot},
         systems::macintosh::session::{MacintoshInput, MacintoshSession},
     };
 
@@ -76,6 +76,9 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_standard_file_save: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_standard_file_save_composed: Option<PathBuf>,
     }
 
     fn parse_depth(value: &str) -> Result<u16, String> {
@@ -100,6 +103,7 @@ mod desktop {
         dialogs: Vec<DialogSnapshot>,
         controls: Vec<ControlSnapshot>,
         lists: Vec<ListManagerSnapshot>,
+        standard_file: Option<StandardFileSnapshot>,
         frame: Option<(u32, u32, u32, Vec<u8>)>,
         status: String,
     }
@@ -170,12 +174,14 @@ mod desktop {
                 let dialogs = session.runner_mut().dialog_snapshot();
                 let controls = session.runner_mut().control_snapshot();
                 let lists = session.runner_mut().list_manager_snapshot();
+                let standard_file = session.runner_mut().standard_file_snapshot();
                 *updates.lock().unwrap() = Some(Update {
                     menus,
                     windows,
                     dialogs,
                     controls,
                     lists,
+                    standard_file,
                     frame,
                     status: format!(
                         "{architecture} · {} · GPUI Kit UI demo",
@@ -206,6 +212,7 @@ mod desktop {
         dialogs: Vec<DialogSnapshot>,
         controls: Vec<ControlSnapshot>,
         lists: Vec<ListManagerSnapshot>,
+        standard_file: Option<StandardFileSnapshot>,
         image: Option<Arc<RenderImage>>,
         logo: Arc<RenderImage>,
         width: u32,
@@ -238,6 +245,7 @@ mod desktop {
                             this.dialogs = update.dialogs;
                             this.controls = update.controls;
                             this.lists = update.lists;
+                            this.standard_file = update.standard_file;
                             this.status = update.status;
                             if let Some((width, height, top, pixels)) = update.frame {
                                 this.width = width;
@@ -274,6 +282,7 @@ mod desktop {
                 dialogs: Vec::new(),
                 controls: Vec::new(),
                 lists: Vec::new(),
+                standard_file: None,
                 image: None,
                 logo: Arc::new(RenderImage::new(vec![image::Frame::new(
                     image::load_from_memory(include_bytes!("../../www/assets/icons/icon-192.png"))
@@ -1012,6 +1021,206 @@ mod desktop {
                     );
                 }
             }
+            if let Some(panel) = self.standard_file.as_ref().filter(|panel| {
+                panel.kind == StandardFileKind::Put
+                    && panel.standard_entry_point
+                    && panel.put_layout.is_some()
+                    && panel.entries.is_some()
+                    && panel.name.is_some()
+            }) {
+                let layout = panel.put_layout.as_ref().unwrap();
+                let bounds = super::frames::Rect::from(panel.bounds);
+                if bounds.intersection(viewport).is_some() {
+                    let at = |rect: (i16, i16, i16, i16)| {
+                        let rect = super::frames::Rect::from(rect);
+                        div()
+                            .absolute()
+                            .top(px((rect.top - bounds.top) as f32))
+                            .left(px((rect.left - bounds.left) as f32))
+                            .w(px(rect.width() as f32))
+                            .h(px(rect.height() as f32))
+                    };
+                    let mut overlay = div()
+                        .id(format!("guest-standard-save-{}-{}", panel.guest_id, panel.generation))
+                        .test_support()
+                        .absolute()
+                        .top(px((bounds.top - self.crop_top as i32) as f32))
+                        .left(px(bounds.left as f32))
+                        .w(px(bounds.width() as f32))
+                        .h(px(bounds.height() as f32))
+                        .bg(cx.theme().background)
+                        .border_2()
+                        .border_color(cx.theme().border)
+                        .text_color(cx.theme().foreground)
+                        .text_size(px(13.));
+                    overlay = overlay.child(
+                        at(layout.directory_label)
+                            .flex()
+                            .items_center()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(panel.directory_label.clone().unwrap_or_default()),
+                    );
+                    let entries = panel.entries.as_ref().unwrap();
+                    let list_width = i32::from(layout.list.3 - layout.list.1);
+                    let mut list = at(layout.list)
+                        .overflow_hidden()
+                        .bg(cx.theme().background)
+                        .border_1()
+                        .border_color(cx.theme().border);
+                    for (row, (index, entry)) in entries
+                        .iter()
+                        .enumerate()
+                        .skip(layout.first_visible)
+                        .take(layout.visible_rows)
+                        .enumerate()
+                    {
+                        let selected = panel.selected == Some(index);
+                        list = list.child(
+                            div()
+                                .id(format!(
+                                    "guest-standard-save-entry-{}-{}-{}",
+                                    panel.guest_id, panel.generation, index
+                                ))
+                                .test_support()
+                                .role(Role::ListItem)
+                                .aria_label(entry.name.clone())
+                                .aria_selected(selected)
+                                .absolute()
+                                .top(px(2. + row as f32 * f32::from(layout.row_height)))
+                                .left(px(2.))
+                                .w(px((list_width - 4).max(1) as f32))
+                                .h(px(f32::from(layout.row_height)))
+                                .overflow_hidden()
+                                .flex()
+                                .items_center()
+                                .px_1()
+                                .bg(if selected {
+                                    cx.theme().accent
+                                } else {
+                                    cx.theme().background
+                                })
+                                .child(if entry.is_directory {
+                                    format!("{} ▸", entry.name)
+                                } else {
+                                    entry.name.clone()
+                                }),
+                        );
+                    }
+                    overlay = overlay.child(list);
+                    let scroll_max = entries.len().saturating_sub(layout.visible_rows);
+                    let scroll_height = i32::from(layout.scroll.2 - layout.scroll.0);
+                    let track_height = (scroll_height - 32).max(0);
+                    let thumb_height = if scroll_max == 0 {
+                        track_height
+                    } else {
+                        16.min(track_height)
+                    };
+                    let thumb_top = 16
+                        + if scroll_max == 0 {
+                            0
+                        } else {
+                            ((track_height - thumb_height) as i64
+                                * layout.first_visible.min(scroll_max) as i64
+                                / scroll_max as i64) as i32
+                        };
+                    overlay = overlay.child(
+                        at(layout.scroll)
+                            .bg(cx.theme().secondary)
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .w_full()
+                                    .h(px(16.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child("▴"),
+                            )
+                            .child(
+                                div()
+                                    .absolute()
+                                    .bottom_0()
+                                    .w_full()
+                                    .h(px(16.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child("▾"),
+                            )
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top(px(thumb_top as f32))
+                                    .w_full()
+                                    .h(px(thumb_height as f32))
+                                    .bg(cx.theme().accent)
+                                    .border_1()
+                                    .border_color(cx.theme().border),
+                            ),
+                    );
+                    overlay = overlay.child(
+                        at(layout.prompt)
+                            .flex()
+                            .items_center()
+                            .overflow_hidden()
+                            .child(panel.prompt.clone().unwrap_or_default()),
+                    );
+                    let name = panel.name.as_deref().unwrap_or_default();
+                    let (selection_start, selection_end) = panel.name_selection.unwrap_or((0, 0));
+                    let selected_name = panel.name_has_focus == Some(true)
+                        && selection_start == 0
+                        && selection_end == name.len();
+                    overlay = overlay.child(
+                        at(layout.name)
+                            .id(format!(
+                                "guest-standard-save-name-{}-{}",
+                                panel.guest_id, panel.generation
+                            ))
+                            .test_support()
+                            .overflow_hidden()
+                            .flex()
+                            .items_center()
+                            .px_1()
+                            .border_1()
+                            .border_color(if panel.name_has_focus == Some(true) {
+                                cx.theme().accent
+                            } else {
+                                cx.theme().border
+                            })
+                            .bg(if selected_name {
+                                cx.theme().accent
+                            } else {
+                                cx.theme().background
+                            })
+                            .child(name.to_string()),
+                    );
+                    for (label, rect) in [
+                        ("Desktop", layout.desktop),
+                        ("Cancel", layout.cancel),
+                        ("Save", layout.save),
+                    ] {
+                        overlay = overlay.child(
+                            at(rect).child(
+                                Button::new(format!(
+                                    "guest-standard-save-{}-{}-{}",
+                                    panel.guest_id, panel.generation, label
+                                ))
+                                .label(label)
+                                .small()
+                                .compact()
+                                .tab_stop(false)
+                                .w_full()
+                                .h_full(),
+                            ),
+                        );
+                    }
+                    screen = screen.child(overlay);
+                }
+            }
             div()
                 .flex()
                 .flex_col()
@@ -1181,6 +1390,7 @@ mod desktop {
         Lists,
         ListsSelected,
         StandardFileSave,
+        StandardFileSaveComposed,
     }
 
     #[cfg(feature = "gpui-demo-test")]
@@ -1201,7 +1411,10 @@ mod desktop {
                 | CaptureCase::ControlsHeld
         );
         let lists_page = matches!(capture, CaptureCase::Lists | CaptureCase::ListsSelected);
-        let standard_file_save = matches!(capture, CaptureCase::StandardFileSave);
+        let standard_file_save = matches!(
+            capture,
+            CaptureCase::StandardFileSave | CaptureCase::StandardFileSaveComposed
+        );
         let controls_changed = matches!(capture, CaptureCase::ControlsChanged);
         let controls_dragged = matches!(capture, CaptureCase::ControlsDragged);
         let controls_held = matches!(capture, CaptureCase::ControlsHeld);
@@ -1438,6 +1651,7 @@ mod desktop {
         }
         let controls = session.runner_mut().control_snapshot();
         let lists = session.runner_mut().list_manager_snapshot();
+        let standard_file = session.runner_mut().standard_file_snapshot();
         let menus = session.runner_mut().guest_menu_snapshot();
         let frame = session.video_frame().unwrap();
         let top = u32::from(session.runner().bus().read_word(MBAR_HEIGHT));
@@ -1446,7 +1660,7 @@ mod desktop {
             pixel.swap(0, 2);
         }
         let frame_height = frame.height - top;
-        if standard_file_save {
+        if matches!(capture, CaptureCase::StandardFileSave) {
             image::RgbaImage::from_raw(frame.width, frame_height, pixels)
                 .unwrap()
                 .save(output)
@@ -1479,6 +1693,7 @@ mod desktop {
                 demo.dialogs = dialogs;
                 demo.controls = controls;
                 demo.lists = lists;
+                demo.standard_file = standard_file;
                 if let Some((id, generation, from, to)) = held_drag {
                     demo.mouse_down = true;
                     demo.mouse_position = to;
@@ -1596,6 +1811,17 @@ mod desktop {
             );
             return;
         }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_standard_file_save_composed.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::StandardFileSaveComposed,
+            );
+            return;
+        }
         let (commands, receiver) = mpsc::channel();
         let updates = Arc::new(Mutex::new(None));
         let worker_updates = updates.clone();
@@ -1680,6 +1906,7 @@ mod desktop {
                         capture_lists: None,
                         capture_lists_selected: None,
                         capture_standard_file_save: None,
+                        capture_standard_file_save_composed: None,
                     },
                     rx,
                     worker_updates,
@@ -2071,6 +2298,23 @@ mod desktop {
                 assert!(saving.name.as_ref().is_some_and(|name| !name.is_empty()));
                 assert_eq!(saving.name_selection, Some((0, saving.name.as_ref().unwrap().len())));
                 assert_eq!(saving.name_has_focus, Some(true));
+                assert!(saving.directory_label.as_ref().is_some_and(|label| !label.is_empty()));
+                let layout = saving.put_layout.as_ref().expect("standard Save geometry");
+                for rect in [
+                    layout.directory_label,
+                    layout.list,
+                    layout.scroll,
+                    layout.prompt,
+                    layout.name,
+                    layout.desktop,
+                    layout.cancel,
+                    layout.save,
+                ] {
+                    assert!(rect.0 >= saving.bounds.0 && rect.2 <= saving.bounds.2);
+                    assert!(rect.1 >= saving.bounds.1 && rect.3 <= saving.bounds.3);
+                    assert!(rect.2 > rect.0 && rect.3 > rect.1);
+                }
+                assert!(layout.row_height > 0 && layout.visible_rows > 0);
                 session.deliver_input(MacintoshInput::KeyDown {
                     mac_key: 0x00,
                     character: b'S',

@@ -183,6 +183,8 @@ pub(super) const PPC_STANDARD_FILE_PUT_DIALOG_HEIGHT: i16 = 270;
 pub(super) const PPC_STANDARD_FILE_PUT_CANCEL_RECT: (i16, i16, i16, i16) = (239, 166, 261, 246);
 pub(super) const PPC_STANDARD_FILE_PUT_SAVE_RECT: (i16, i16, i16, i16) = (239, 258, 261, 338);
 pub(super) const PPC_STANDARD_FILE_PUT_NAME_RECT: (i16, i16, i16, i16) = (204, 24, 224, 330);
+pub(super) const PPC_STANDARD_FILE_PUT_PROMPT_RECT: (i16, i16, i16, i16) = (183, 18, 201, 330);
+pub(super) const PPC_STANDARD_FILE_PUT_DIRECTORY_LABEL_RECT: (i16, i16, i16, i16) = (16, 18, 36, 236);
 pub(super) const PPC_STANDARD_FILE_PUT_LIST_RECT: (i16, i16, i16, i16) = (39, 18, 167, 314);
 pub(super) const PPC_STANDARD_FILE_PUT_SCROLL_RECT: (i16, i16, i16, i16) = (39, 314, 167, 330);
 pub(super) const PPC_STANDARD_FILE_PUT_DESKTOP_RECT: (i16, i16, i16, i16) = (239, 24, 261, 104);
@@ -933,12 +935,7 @@ fn ppc_standard_file_draw_put_dialog(
     ppc_draw_dialog_text(
         memory,
         gworlds,
-        (
-            bounds.0.saturating_add(183),
-            bounds.1.saturating_add(18),
-            bounds.0.saturating_add(201),
-            bounds.1.saturating_add(330),
-        ),
+        ppc_standard_file_global_rect(bounds, PPC_STANDARD_FILE_PUT_PROMPT_RECT),
         &tracking.prompt,
         PPC_RGB_BLACK,
     );
@@ -982,7 +979,7 @@ fn ppc_standard_file_draw_put_dialog(
     ppc_draw_dialog_text(
         memory,
         gworlds,
-        ppc_standard_file_global_rect(bounds, (16, 18, 36, 236)),
+        ppc_standard_file_global_rect(bounds, PPC_STANDARD_FILE_PUT_DIRECTORY_LABEL_RECT),
         &tracking.directory_name,
         PPC_RGB_BLACK,
     );
