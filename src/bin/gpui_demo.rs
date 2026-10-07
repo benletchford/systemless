@@ -40,7 +40,7 @@ mod desktop {
     use systemless::{
         memory::{globals::addr::MBAR_HEIGHT, MemoryBus},
         menu_model::GuestMenuSnapshot,
-        runner::{ControlSnapshot, DialogItemKind, DialogSnapshot, ListManagerSnapshot, StandardFileKind, StandardFileSnapshot, WindowFrameSnapshot},
+        runner::{ControlSnapshot, DialogItemKind, DialogSnapshot, ListManagerSnapshot, StandardFileKind, StandardFileSnapshot, TextEditSnapshot, WindowFrameSnapshot},
         systems::macintosh::session::{MacintoshInput, MacintoshSession},
     };
 
@@ -79,6 +79,9 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_lists_selected: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_text_edit: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_standard_file_save: Option<PathBuf>,
@@ -136,6 +139,7 @@ mod desktop {
         dialogs: Vec<DialogSnapshot>,
         controls: Vec<ControlSnapshot>,
         lists: Vec<ListManagerSnapshot>,
+        text_edits: Vec<TextEditSnapshot>,
         standard_file: Option<StandardFileSnapshot>,
         frame: Option<(u32, u32, u32, Vec<u8>)>,
         status: String,
@@ -207,6 +211,7 @@ mod desktop {
                 let dialogs = session.runner_mut().dialog_snapshot();
                 let controls = session.runner_mut().control_snapshot();
                 let lists = session.runner_mut().list_manager_snapshot();
+                let text_edits = session.runner_mut().text_edit_snapshot().records;
                 let standard_file = session.runner_mut().standard_file_snapshot();
                 *updates.lock().unwrap() = Some(Update {
                     menus,
@@ -214,6 +219,7 @@ mod desktop {
                     dialogs,
                     controls,
                     lists,
+                    text_edits,
                     standard_file,
                     frame,
                     status: format!(
@@ -245,6 +251,7 @@ mod desktop {
         dialogs: Vec<DialogSnapshot>,
         controls: Vec<ControlSnapshot>,
         lists: Vec<ListManagerSnapshot>,
+        text_edits: Vec<TextEditSnapshot>,
         standard_file: Option<StandardFileSnapshot>,
         image: Option<Arc<RenderImage>>,
         logo: Arc<RenderImage>,
@@ -278,6 +285,7 @@ mod desktop {
                             this.dialogs = update.dialogs;
                             this.controls = update.controls;
                             this.lists = update.lists;
+                            this.text_edits = update.text_edits;
                             this.standard_file = update.standard_file;
                             this.status = update.status;
                             if let Some((width, height, top, pixels)) = update.frame {
@@ -315,6 +323,7 @@ mod desktop {
                 dialogs: Vec::new(),
                 controls: Vec::new(),
                 lists: Vec::new(),
+                text_edits: Vec::new(),
                 standard_file: None,
                 image: None,
                 logo: Arc::new(RenderImage::new(vec![image::Frame::new(
@@ -781,6 +790,83 @@ mod desktop {
                         .px_1()
                         .text_size(px(13.))
                         .child(text.clone()),
+                    );
+                }
+                screen = screen.child(
+                    div()
+                        .absolute()
+                        .overflow_hidden()
+                        .left(px(clip.left as f32))
+                        .top(px((clip.top - self.crop_top as i32) as f32))
+                        .w(px(clip.width() as f32))
+                        .h(px(clip.height() as f32))
+                        .child(overlay),
+                );
+            }
+            // TextEdit supplies the guest line breaks and scroll origin. Keep
+            // keyboard and pointer events on the normal guest path.
+            // Inside Macintosh: Text (1993), pp. 2-64--2-69.
+            for piece in super::frames::text_edit_pieces(
+                &self.text_edits,
+                &self.dialogs,
+                &self.controls,
+                &self.windows,
+                viewport,
+            ) {
+                let record = &self.text_edits[piece.record];
+                let Some(lines) = record.display_lines() else {
+                    continue;
+                };
+                let Some(dest) = record.global_dest_rect.map(super::frames::Rect::from) else {
+                    continue;
+                };
+                let source = piece.source;
+                let clip = piece.clip;
+                let mut overlay = div()
+                    .absolute()
+                    .left(px((source.left - clip.left) as f32))
+                    .top(px((source.top - clip.top) as f32))
+                    .w(px(source.width() as f32))
+                    .h(px(source.height() as f32))
+                    .bg(cx.theme().background);
+                for (index, line) in lines.into_iter().enumerate() {
+                    let top = dest.top + index as i32 * i32::from(record.line_height) - source.top;
+                    if top >= source.height() || top + i32::from(record.line_height) <= 0 {
+                        continue;
+                    }
+                    let starts = record.line_starts.as_ref().unwrap();
+                    let line_start = starts[index];
+                    let line_end = line_start + line.chars().count();
+                    let selection = (
+                        record.selection.0.saturating_sub(line_start).min(line_end - line_start),
+                        record.selection.1.saturating_sub(line_start).min(line_end - line_start),
+                    );
+                    let (before, selected, after) = save_name_segments(&line, selection, true);
+                    let soft_wrap_end = index + 2 < starts.len() && starts[index + 1] == line_end;
+                    let caret = record.active && record.selection.0 == record.selection.1
+                        && record.selection.0 >= line_start
+                        && (record.selection.0 < line_end
+                            || record.selection.0 == line_end && !soft_wrap_end);
+                    overlay = overlay.child(
+                        div()
+                            .id(format!("guest-text-edit-line-{}-{}-{index}", record.guest_id, record.generation))
+                            .absolute()
+                            .left(px((dest.left - source.left) as f32))
+                            .top(px(top as f32))
+                            .w(px(dest.width().max(1) as f32))
+                            .h(px(f32::from(record.line_height)))
+                            .overflow_hidden()
+                            .flex()
+                            .items_center()
+                            .text_size(px(f32::from(record.size.clamp(9, 18))))
+                            .child(before)
+                            .when(caret, |row| row.child(
+                                div().w(px(1.)).h(px(f32::from(record.line_height.max(1)))).bg(cx.theme().foreground)
+                            ))
+                            .when(!selected.is_empty(), |row| row.child(
+                                div().bg(cx.theme().accent).child(selected)
+                            ))
+                            .child(after),
                     );
                 }
                 screen = screen.child(
@@ -1716,6 +1802,7 @@ mod desktop {
         ControlsHeld,
         Lists,
         ListsSelected,
+        TextEdit,
         StandardFileSave,
         StandardFileSaveComposed,
         StandardFileOpenComposed,
@@ -1740,6 +1827,7 @@ mod desktop {
                 | CaptureCase::ControlsHeld
         );
         let lists_page = matches!(capture, CaptureCase::Lists | CaptureCase::ListsSelected);
+        let text_edit_page = matches!(capture, CaptureCase::TextEdit);
         let standard_file_save = matches!(
             capture,
             CaptureCase::StandardFileSave
@@ -1776,6 +1864,8 @@ mod desktop {
             (129, 6)
         } else if lists_page {
             (129, 9)
+        } else if text_edit_page {
+            (129, 7)
         } else if controls_page {
             (129, 2)
         } else {
@@ -1886,6 +1976,14 @@ mod desktop {
                 }));
             }
             Vec::new()
+        } else if text_edit_page {
+            assert!((0..300).any(|_| {
+                session.runner_mut().run_steps(100_000, None);
+                session.runner_mut().text_edit_snapshot().records.iter().any(|record| {
+                    record.view_rect == (76, 34, 211, 326) && record.line_starts.is_some()
+                })
+            }));
+            Vec::new()
         } else if lists_page {
             for _ in 0..300 {
                 session.runner_mut().run_steps(100_000, None);
@@ -1932,7 +2030,7 @@ mod desktop {
                 .expect("About alert should become visible")
         };
         let windows = session.runner_mut().window_frame_snapshot();
-        if !controls_page && !lists_page && !standard_file_page {
+        if !controls_page && !lists_page && !text_edit_page && !standard_file_page {
             assert!(standard_dbox_dialog(&dialogs, &windows).is_some());
         }
         if controls_changed {
@@ -2057,6 +2155,7 @@ mod desktop {
         }
         let controls = session.runner_mut().control_snapshot();
         let lists = session.runner_mut().list_manager_snapshot();
+        let text_edits = session.runner_mut().text_edit_snapshot().records;
         let standard_file = session.runner_mut().standard_file_snapshot();
         let menus = session.runner_mut().guest_menu_snapshot();
         let frame = session.video_frame().unwrap();
@@ -2099,6 +2198,7 @@ mod desktop {
                 demo.dialogs = dialogs;
                 demo.controls = controls;
                 demo.lists = lists;
+                demo.text_edits = text_edits;
                 demo.standard_file = standard_file;
                 if let Some((id, generation, from, to)) = held_drag {
                     demo.mouse_down = true;
@@ -2225,6 +2325,17 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::ListsSelected,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_text_edit.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::TextEdit,
             );
             return;
         }
@@ -2369,6 +2480,7 @@ mod desktop {
                         capture_controls_held: None,
                         capture_lists: None,
                         capture_lists_selected: None,
+                        capture_text_edit: None,
                         capture_standard_file_save: None,
                         capture_standard_file_save_composed: None,
                         capture_standard_file_open_composed: None,
@@ -2861,6 +2973,14 @@ mod desktop {
                 assert_ne!(first.generation, 0);
                 assert_ne!(first.owner_port, 0);
                 assert_eq!(first.global_view_rect, Some((126, 74, 261, 366)));
+                assert!(first.global_dest_rect.is_some());
+                assert!(!first.styled);
+                assert!(first.line_height > 0 && first.size > 0);
+                let starts = first.line_starts.as_ref().expect("TextEdit should expose guest lines");
+                assert_eq!(starts.first(), Some(&0));
+                assert_eq!(starts.last(), Some(&first.text.len()));
+                assert_eq!(starts.len(), first.line_count + 1);
+                assert_eq!(first.display_lines().unwrap().len(), first.line_count);
                 settle(&mut session);
                 let next = session
                     .runner_mut()

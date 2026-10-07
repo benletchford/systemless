@@ -3199,6 +3199,7 @@ impl FixtureRunner {
             } else {
                 snapshot_port_bounds_origin(&mut |addr| self.bus.read_byte(addr), record.owner_port)
             };
+            record.global_dest_rect = Some(snapshot_local_rect_to_global(record.dest_rect, origin));
             record.global_view_rect = Some(snapshot_local_rect_to_global(record.view_rect, origin));
         }
         snapshot

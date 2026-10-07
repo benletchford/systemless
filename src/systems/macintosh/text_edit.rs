@@ -294,13 +294,38 @@ pub struct TextEditSnapshot {
     pub guest_id: u32,
     pub generation: u64,
     pub owner_port: u32,
+    pub global_dest_rect: Option<(i16, i16, i16, i16)>,
     pub global_view_rect: Option<(i16, i16, i16, i16)>,
+    pub dest_rect: (i16, i16, i16, i16),
     pub view_rect: (i16, i16, i16, i16),
     pub text: Vec<u8>,
     pub selection: (usize, usize),
     pub active: bool,
     pub justification: i16,
     pub line_count: usize,
+    /// Guest byte offsets for the start of each line and the final end offset.
+    pub line_starts: Option<Vec<usize>>,
+    pub line_height: i16,
+    pub font: i16,
+    pub face: u8,
+    pub size: i16,
+    pub styled: bool,
+}
+
+impl TextEditSnapshot {
+    /// Decode guest-defined lines without changing their byte offsets or wrapping.
+    /// Inside Macintosh: Text (1993), pp. 2-66--2-68.
+    pub fn display_lines(&self) -> Option<Vec<String>> {
+        let starts = self.line_starts.as_ref()?;
+        starts
+            .windows(2)
+            .map(|span| {
+                let bytes = self.text.get(span[0]..span[1])?;
+                let bytes = bytes.strip_suffix(b"\r").unwrap_or(bytes);
+                Some(crate::mac_roman::decode_mac_roman(bytes))
+            })
+            .collect()
+    }
 }
 
 #[doc(hidden)]
@@ -338,11 +363,36 @@ pub(crate) fn snapshot_guest_records(
             let text = (0..length)
                 .map(|i| read(text_ptr + i as u32))
                 .collect::<Option<Vec<_>>>()?;
+            let line_count = usize::from(word(read, ptr + 0x5e)?);
+            // lineStarts[0..nLines] are guest byte offsets. Reject an
+            // incomplete or inconsistent table before any host presentation
+            // uses it for wrapping or selection. Text (1993), pp. 2-66--2-68.
+            let line_starts = (line_count <= length.saturating_add(1) && line_count <= 4096)
+                .then(|| {
+                    (0..=line_count)
+                        .map(|index| word(read, ptr + 0x60 + index as u32 * 2).map(usize::from))
+                        .collect::<Option<Vec<_>>>()
+                })
+                .flatten()
+                .filter(|starts| {
+                    starts.first() == Some(&0)
+                        && starts.last() == Some(&length)
+                        && starts.windows(2).all(|pair| pair[0] <= pair[1])
+                });
+            let line_height = word(read, ptr + 0x18)? as i16;
+            let size = word(read, ptr + 0x50)? as i16;
             Some(TextEditSnapshot {
                 guest_id: *handle,
                 generation: *generation,
                 owner_port: long(read, ptr + 0x52)?,
+                global_dest_rect: None,
                 global_view_rect: None,
+                dest_rect: (
+                    word(read, ptr)? as i16,
+                    word(read, ptr + 2)? as i16,
+                    word(read, ptr + 4)? as i16,
+                    word(read, ptr + 6)? as i16,
+                ),
                 view_rect: (
                     word(read, ptr + 8)? as i16,
                     word(read, ptr + 10)? as i16,
@@ -356,7 +406,13 @@ pub(crate) fn snapshot_guest_records(
                 ),
                 active: word(read, ptr + 0x24)? != 0,
                 justification: word(read, ptr + 0x3a)? as i16,
-                line_count: usize::from(word(read, ptr + 0x5e)?),
+                line_count,
+                line_starts,
+                line_height,
+                font: word(read, ptr + 0x4a)? as i16,
+                face: read(ptr + 0x4c)?,
+                size,
+                styled: size == -1 || line_height == -1,
             })
         })
         .collect();
