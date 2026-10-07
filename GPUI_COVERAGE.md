@@ -13,7 +13,7 @@ The opt-in implementation is staged in a draft PR and must not be merged.
 
 | System UI | Existing state and presentation path | Missing GPUI work | Status |
 | --- | --- | --- | --- |
-| Menu bar and standard menus | `menu_model.rs` supplies `GuestMenuSnapshot`, including live, resource-aware standard MDEF classification on both CPUs, the current menu list's MBDF ID, and each MenuHandle with a process-shared lifetime generation. GPUI menu button identity and queued command validation follow the handle and generation instead of the reusable menu ID; both CPU menu disposal, resource-release, and direct handle-disposal paths invalidate the generation. `gpui_demo.rs` renders standard menu buttons and popups and dispatches selected items to the guest. A custom MDEF or MBDF selects the full guest framebuffer at original coordinates so GPUI chrome cannot cover it. Classic `InitProcMenu` retains the ID and loads its MBDF resource. A synthetic headless composed capture checks placement and pointer translation. Focused guest tests confirm fallback selection during a real 68K MDEF callback in a PowerPC app and during a native PowerPC MDEF invocation; the cross-CPU tracking test confirms live menu pixels and save-under restoration. | Custom MBDF message execution is not implemented: Inside Macintosh V-250 defines Draw, Hit, Calc, Init, Dispose, Hilite, Height, Save, Restore, Rect, SaveAlt, ResetAlt, and MenuRgn messages. Verify a real guest composed capture and standalone 68K custom MDEF tracking; then live validation, keyboard equivalents, submenus, and tracking order. An open GPUI Kit dropdown retains its initial item tree, so guest changes to marks, enabled state, text, or submenu contents are not yet shown until dismissal. | Demo only |
+| Menu bar and standard menus | `menu_model.rs` supplies `GuestMenuSnapshot`, including live, resource-aware standard MDEF classification on both CPUs, the current menu list's MBDF ID, and each MenuHandle with a process-shared lifetime generation. GPUI menu button identity and queued command validation follow the handle and generation instead of the reusable menu ID; both CPU menu disposal, resource-release, and direct handle-disposal paths invalidate the generation. `gpui_demo.rs` retains and rebuilds an open GPUI Kit popup when its guest snapshot changes, renders standard menu buttons and items, and dispatches selected items to the guest. A headless GPUI interaction test confirms live item text, dismissal/reopening, and removal when the guest menu disappears. A custom MDEF or MBDF selects the full guest framebuffer at original coordinates so GPUI chrome cannot cover it. Classic `InitProcMenu` retains the ID and loads its MBDF resource. A synthetic headless composed capture checks placement and pointer translation. Focused guest tests confirm fallback selection during a real 68K MDEF callback in a PowerPC app and during a native PowerPC MDEF invocation; the cross-CPU tracking test confirms live menu pixels and save-under restoration. | Custom MBDF message execution is not implemented: Inside Macintosh V-250 defines Draw, Hit, Calc, Init, Dispose, Hilite, Height, Save, Restore, Rect, SaveAlt, ResetAlt, and MenuRgn messages. Verify a real guest composed capture and standalone 68K custom MDEF tracking; then live validation, keyboard equivalents, submenus, and tracking order. GPUI Kit rebuild resets the selected row, so preserve hover/keyboard selection across live updates; qualify changed checkmarks, disabled states, submenu contents, and focus in composed and interaction tests. | Demo only |
 | Window frames and title bars | `window_manager.rs` supplies ordered `WindowFrameSnapshot` records with a guest WindowPtr and lifetime generation; `gpui_demo_frames.rs` clips standard frame overlays against content and front windows. | Verify WDEF variants, nonrectangular regions, activation, drag, zoom, grow, and fullscreen transitions. | Demo only |
 | Document gutters and grow box | `gpui_demo_frames.rs` draws 15-pixel edge strips for selected WDEFs; `control_snapshot` can now identify real scrollbar records and their live value/range. | Distinguish actual guest controls from empty gutters, handle tracking and clipping, and avoid covering custom content. | Unsafe to generalize |
 | Dialogs and alerts | `FixtureRunner::dialog_snapshot` exposes ordered items, types, global bounds, live text, enabled state, window lifetime generation, and active edit selection on both CPUs. The first enabled edit item now initializes the 68K DialogRecord and TERec with an insertion point at offset zero; PowerPC reads that selection from its active TERec. Fresh systemless-play runs against BasiliskII and SheepShaver show the same initial caret, and the showcase test verifies insertion and backspace on both CPUs. The demo overlays buttons, static text, value-backed checkboxes/radio buttons, and single-line edit fields in standard `dBoxProc` dialogs. Multiline/tall edit fields retain guest pixels, and all input remains guest-owned. Offscreen composed captures cover the showcase alert and both unchecked and guest-checked modal preferences states on 68K and PowerPC. A host checkbox click queues one guest press/release pair. | Complete TextEdit layout, modality, callback state, custom-item fallback, broader GPUI rendering, and host accessibility. | Standard dialog slice |
@@ -26,18 +26,18 @@ The opt-in implementation is staged in a draft PR and must not be merged.
 | QuickDraw and custom definitions | Framebuffer remains the presentation source. | Mask only verified standard system pixels; keep unknown WDEF, CDEF, MDEF, user items, and application drawing unchanged. | Required fallback |
 
 For live menu validation, GPUI Kit 0.7.1's `DropdownMenuPopover`
-retains one `PopupMenu` entity while the popover is open and rebuilds it only
-after dismissal. `PopupMenu::rebuild` can replace its items while keeping
-focus, parent menu, and layer priority, but `Button::dropdown_menu` does not
-expose the retained entity to the caller. The Systemless menu presentation
-therefore needs to own that entity and compare each emulator-thread snapshot
-against the displayed menu while it remains open. Rebuild only when the live
-items change, preserve the current selection when the corresponding guest
-item still exists, and close the popup if its MenuHandle generation disappears.
-Selection must still pass through `FixtureRunner::select_guest_menu_item` for
-guest-side validation and Toolbox event ordering. Inside Macintosh Volume I,
-I-352 and I-356–I-358, defines menu lifetime, item state, and `MenuSelect`
-tracking; a visual refresh must not synthesize an application command.
+retains one `PopupMenu` entity while open and rebuilds it only after dismissal.
+Systemless now owns an equivalent retained entity through GPUI Kit's `Popover`
+and calls `PopupMenu::rebuild` when the guest snapshot changes. This preserves
+the popup entity, focus, parent menu, and layer priority while replacing its
+items. `PopupMenu::rebuild` clears its selected row and exposes no public
+selection setter, so preserving hover and keyboard selection during live
+updates remains open. The interaction test also verifies that removing the guest menu unmounts
+the open popup; replacement with a reused MenuHandle still needs qualification. Selections still pass through
+`FixtureRunner::select_guest_menu_item` for guest-side validation and Toolbox
+event ordering. Inside Macintosh Volume I, I-352 and I-356–I-358, defines
+menu lifetime, item state, and `MenuSelect` tracking; a visual refresh must
+not synthesize an application command.
 
 The dependency order is menus, frames, dialogs, controls, lists/TextEdit, then
 Standard File. The first end-to-end gate is one standard modal dialog on each

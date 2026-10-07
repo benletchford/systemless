@@ -30,7 +30,8 @@ mod desktop {
         component::{
             button::{Button, ButtonVariants},
             checkbox::Checkbox,
-            menu::{DropdownMenu, PopupMenu, PopupMenuItem},
+            menu::{PopupMenu, PopupMenuItem},
+            popover::Popover,
             radio::Radio,
             ActiveTheme, Disableable, Sizable,
         },
@@ -145,6 +146,12 @@ mod desktop {
     enum Command {
         Menu(i16, i16, u32, u64),
         Input(MacintoshInput),
+    }
+
+    #[derive(Default)]
+    struct LiveMenuState {
+        menu: Option<Entity<PopupMenu>>,
+        rendered: Option<GuestMenuSnapshot>,
     }
 
     #[derive(Default)]
@@ -536,7 +543,7 @@ mod desktop {
     }
 
     impl Render for Demo {
-        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let mut bar = div()
                 .flex()
                 .items_center()
@@ -558,22 +565,77 @@ mod desktop {
                 let snapshot = self.menus.clone();
                 let commands = self.commands.clone();
                 let id = menu.id;
+                let identity = format!("guest-menu-{}-{}", menu.guest_id, menu.generation);
+                let state = window.use_keyed_state(format!("live-{identity}"), cx, |_, _| {
+                    LiveMenuState::default()
+                });
                 bar = bar.child(
-                    Button::new(format!("guest-menu-{}-{}", menu.guest_id, menu.generation))
-                        .label(menu.title.clone())
-                        .ghost()
-                        .small()
-                        .disabled(!menu.enabled)
-                        .dropdown_menu(move |popup, window, cx| {
-                            populate_menu(
-                                popup.scrollable(true).max_h(px(420.)),
-                                &snapshot,
-                                id,
-                                &commands,
-                                &[],
-                                window,
-                                cx,
-                            )
+                    Popover::new(format!("popover-{identity}"))
+                        .appearance(false)
+                        .overlay_closable(false)
+                        .trigger(
+                            Button::new(identity)
+                                .label(menu.title.clone())
+                                .ghost()
+                                .small()
+                                .disabled(!menu.enabled),
+                        )
+                        .content(move |_, window, cx| {
+                            if let Some(open_menu) = state.read(cx).menu.clone() {
+                                if state.read(cx).rendered.as_ref() != Some(&snapshot) {
+                                    open_menu.update(cx, |popup, cx| {
+                                        popup.rebuild(window, cx, |popup, window, cx| {
+                                            populate_menu(
+                                                popup.scrollable(true).max_h(px(420.)),
+                                                &snapshot,
+                                                id,
+                                                &commands,
+                                                &[],
+                                                window,
+                                                cx,
+                                            )
+                                        });
+                                    });
+                                    state.update(cx, |state, _| {
+                                        state.rendered = Some(snapshot.clone());
+                                    });
+                                }
+                                return open_menu;
+                            }
+                            let open_menu = PopupMenu::build(window, cx, |popup, window, cx| {
+                                populate_menu(
+                                    popup.scrollable(true).max_h(px(420.)),
+                                    &snapshot,
+                                    id,
+                                    &commands,
+                                    &[],
+                                    window,
+                                    cx,
+                                )
+                            });
+                            state.update(cx, |state, _| {
+                                state.menu = Some(open_menu.clone());
+                                state.rendered = Some(snapshot.clone());
+                            });
+                            open_menu.focus_handle(cx).focus(window, cx);
+                            let popover = cx.entity().downgrade();
+                            window
+                                .subscribe(&open_menu, cx, {
+                                    let state = state.downgrade();
+                                    move |_, _: &DismissEvent, window, cx| {
+                                        if let Some(popover) = popover.upgrade() {
+                                            popover.update(cx, |popover, cx| {
+                                                popover.dismiss(window, cx);
+                                            });
+                                        }
+                                        _ = state.update(cx, |state, _| {
+                                            state.menu = None;
+                                            state.rendered = None;
+                                        });
+                                    }
+                                })
+                                .detach();
+                            open_menu
                         }),
                 );
             }
@@ -3510,6 +3572,107 @@ mod desktop {
                 ..Default::default()
             };
             assert_eq!(super::guest_key(&non_roman), None);
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        async fn open_menu_rebuilds_from_live_guest_snapshot(cx: &mut gpui_kit::TestAppContext) {
+            use std::time::Duration;
+            use gpui_kit::{
+                test::{TestAppContextExt, TestWindowExt},
+                AppContext, Bounds, WindowBounds, WindowOptions,
+            };
+            use systemless::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
+
+            let (sender, _receiver) = std::sync::mpsc::channel();
+            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            cx.update(gpui_kit::init);
+            let (window, view) = cx.update(|cx| {
+                gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                            None,
+                            gpui_kit::size(gpui_kit::px(640.), gpui_kit::px(480.)),
+                            cx,
+                        ))),
+                        ..Default::default()
+                    },
+                    cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(sender, updates, cx)),
+                )
+                .unwrap()
+            });
+            cx.update(|cx| {
+                view.update(cx, |demo, cx| {
+                    demo.menus = GuestMenuSnapshot {
+                        custom_bar_definition: false,
+                        menus: vec![GuestMenu {
+                            guest_id: 0x1000,
+                            generation: 1,
+                            id: 129,
+                            title: "File".into(),
+                            enabled: true,
+                            standard_definition: true,
+                            hierarchical: false,
+                            visible_in_menu_bar: true,
+                            items: vec![GuestMenuItem {
+                                number: 1,
+                                text: "Open".into(),
+                                enabled: true,
+                                checked: false,
+                                key_equivalent: None,
+                                submenu_id: None,
+                                separator: false,
+                            }],
+                        }],
+                    };
+                    cx.notify();
+                });
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window.click("guest-menu-4096-1", cx);
+                assert_eq!(window.within("popup-menu").find(0usize).label(), Some("Open"));
+            })
+            .unwrap();
+            cx.update(|cx| {
+                view.update(cx, |demo, cx| {
+                    demo.menus.menus[0].items[0].text = "Open recent".into();
+                    demo.menus.menus[0].items[0].checked = true;
+                    demo.menus.menus[0].items[0].enabled = false;
+                    cx.notify();
+                });
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                let item = window.within("popup-menu").find(0usize);
+                assert_eq!(item.label(), Some("Open recent"));
+                window.within("popup-menu").press("escape", cx);
+            })
+            .unwrap();
+            cx.wait_for(window.into(), Duration::from_secs(1), |window, _| {
+                window.try_find("popup-menu").is_none()
+            })
+            .await;
+            cx.update_window(window.into(), |_, window, cx| {
+                window.click("guest-menu-4096-1", cx);
+                assert_eq!(
+                    window.within("popup-menu").find(0usize).label(),
+                    Some("Open recent")
+                );
+            })
+            .unwrap();
+            cx.update(|cx| {
+                view.update(cx, |demo, cx| {
+                    demo.menus.menus.clear();
+                    cx.notify();
+                });
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert!(window.try_find("popup-menu").is_none());
+            })
+            .unwrap();
         }
 
         #[cfg(feature = "gpui-demo-test")]
