@@ -3742,14 +3742,29 @@ impl super::TrapDispatcher {
             // across the call.
             //
             // Store mbResID in the live MenuList so guest reads and frontend
-            // fallback observe the requested definition. Loading and
-            // executing a custom MBDF remain separate runtime work.
+            // fallback observe the requested definition. Resolve its MBDF
+            // resource through the process Resource Manager; executing its
+            // messages remains separate runtime work.
             (true, 0x008) => {
                 let sp = cpu.read_reg(Register::A7);
                 let mb_res_id = bus.read_word(sp) as i16;
                 let mut menu_list = self.current_menu_list(bus).unwrap_or_default();
                 menu_list.mb_res_id = mb_res_id;
                 self.replace_current_menu_list(bus, &menu_list);
+                let definition_id = ((mb_res_id as u16) >> 3) as i16;
+                if definition_id != 0 {
+                    if let Some((refnum, ptr)) =
+                        self.find_or_load_resource_any(bus, *b"MBDF", definition_id)
+                    {
+                        self.get_or_create_resource_handle_in_file(
+                            bus,
+                            *b"MBDF",
+                            definition_id,
+                            ptr,
+                            refnum,
+                        );
+                    }
+                }
                 cpu.write_reg(Register::A7, sp + 2);
                 Ok(())
             }

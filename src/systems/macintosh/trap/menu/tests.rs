@@ -5347,12 +5347,14 @@ fn initprocmenu_consumes_mbresid_and_preserves_stack_pointer() {
 
     // The upper 13 bits identify the MBDF; the low three are its variant.
     // Macintosh Toolbox Essentials (1992), pp. 3-103--3-105.
+    disp.install_test_resource_in_file(&mut bus, 0, *b"MBDF", 257, &[0x4e, 0x75]);
     let sp = cpu.read_reg(Register::A7) - 2;
-    bus.write_word(sp, 0x0803); // application MBDF 256, variant 3
+    bus.write_word(sp, 0x080b); // application MBDF 257, variant 3
     cpu.write_reg(Register::A7, sp);
     assert!(disp.dispatch_menu(true, 0x008, &mut cpu, &mut bus).unwrap().is_ok());
-    assert_eq!(disp.current_menu_list(&bus).unwrap().mb_res_id, 0x0803);
+    assert_eq!(disp.current_menu_list(&bus).unwrap().mb_res_id, 0x080b);
     assert!(disp.guest_menu_snapshot(&bus).custom_bar_definition);
+    assert!(disp.loaded_handles.values().any(|(_, kind, id)| *kind == *b"MBDF" && *id == 257));
 
     let sp = cpu.read_reg(Register::A7) - 2;
     bus.write_word(sp, 0x0003); // standard MBDF, variant 3
