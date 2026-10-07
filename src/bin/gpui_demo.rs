@@ -38,7 +38,7 @@ mod desktop {
     use systemless::{
         memory::{globals::addr::MBAR_HEIGHT, MemoryBus},
         menu_model::GuestMenuSnapshot,
-        runner::{DialogItemKind, DialogSnapshot, WindowFrameSnapshot},
+        runner::{ControlSnapshot, DialogItemKind, DialogSnapshot, WindowFrameSnapshot},
         systems::macintosh::session::{MacintoshInput, MacintoshSession},
     };
 
@@ -75,6 +75,7 @@ mod desktop {
         menus: GuestMenuSnapshot,
         windows: Vec<WindowFrameSnapshot>,
         dialogs: Vec<DialogSnapshot>,
+        controls: Vec<ControlSnapshot>,
         frame: Option<(u32, u32, u32, Vec<u8>)>,
         status: String,
     }
@@ -143,10 +144,12 @@ mod desktop {
                 let running = session.status().running;
                 let windows = session.runner_mut().window_frame_snapshot();
                 let dialogs = session.runner_mut().dialog_snapshot();
+                let controls = session.runner_mut().control_snapshot();
                 *updates.lock().unwrap() = Some(Update {
                     menus,
                     windows,
                     dialogs,
+                    controls,
                     frame,
                     status: format!(
                         "{architecture} · {} · GPUI Kit UI demo",
@@ -175,6 +178,7 @@ mod desktop {
         menus: GuestMenuSnapshot,
         windows: Vec<WindowFrameSnapshot>,
         dialogs: Vec<DialogSnapshot>,
+        controls: Vec<ControlSnapshot>,
         image: Option<Arc<RenderImage>>,
         logo: Arc<RenderImage>,
         width: u32,
@@ -204,6 +208,7 @@ mod desktop {
                             this.menus = update.menus;
                             this.windows = update.windows;
                             this.dialogs = update.dialogs;
+                            this.controls = update.controls;
                             this.status = update.status;
                             if let Some((width, height, top, pixels)) = update.frame {
                                 this.width = width;
@@ -238,6 +243,7 @@ mod desktop {
                 menus: Default::default(),
                 windows: Vec::new(),
                 dialogs: Vec::new(),
+                controls: Vec::new(),
                 image: None,
                 logo: Arc::new(RenderImage::new(vec![image::Frame::new(
                     image::load_from_memory(include_bytes!("../../www/assets/icons/icon-192.png"))
@@ -753,6 +759,7 @@ mod desktop {
             .expect("About alert should become visible");
         let windows = session.runner_mut().window_frame_snapshot();
         assert!(standard_dbox_dialog(&dialogs, &windows).is_some());
+        let controls = session.runner_mut().control_snapshot();
         let menus = session.runner_mut().guest_menu_snapshot();
         let frame = session.video_frame().unwrap();
         let top = u32::from(session.runner().bus().read_word(MBAR_HEIGHT));
@@ -783,6 +790,7 @@ mod desktop {
                 demo.menus = menus;
                 demo.windows = windows;
                 demo.dialogs = dialogs;
+                demo.controls = controls;
                 demo.width = frame.width;
                 demo.height = frame_height;
                 demo.crop_top = top;
@@ -1048,6 +1056,81 @@ mod desktop {
                     .chunks_exact(4)
                     .any(|p| p != &frame.pixels[..4]));
                 check_frames(&mut session);
+            }
+        }
+
+        #[test]
+        fn live_controls_expose_guest_values_on_both_cpus() {
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session
+                    .load_path(
+                        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("tests/toolbox-showcase/toolbox-showcase.sit"),
+                    )
+                    .unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 2));
+                wait_for_menu(&mut session, 129, 2, true);
+                let controls = session.runner_mut().control_snapshot();
+                let button = controls
+                    .iter()
+                    .find(|control| control.visible && control.title == "Activate")
+                    .unwrap();
+                assert_eq!(button.proc_id, 0);
+                assert_eq!(button.bounds, (305, 80, 329, 190));
+                let checkbox = controls
+                    .iter()
+                    .find(|control| control.visible && control.title == "Checkbox")
+                    .unwrap();
+                assert_eq!(checkbox.proc_id, 1);
+                assert_eq!(checkbox.bounds, (305, 225, 329, 355));
+                assert_eq!(checkbox.value, 0);
+                assert!(checkbox.enabled);
+                let checkbox_id = checkbox.guest_id;
+                let bar = controls
+                    .iter()
+                    .find(|control| control.visible && control.proc_id == 16)
+                    .unwrap();
+                assert_eq!(bar.bounds, (360, 80, 376, 540));
+                assert_eq!((bar.value, bar.minimum, bar.maximum), (0, 0, 10));
+                let bar_id = bar.guest_id;
+                let (top, left, bottom, right) = checkbox.bounds;
+                let (vertical, horizontal) = ((top + bottom) / 2, (left + right) / 2);
+                session.deliver_input(MacintoshInput::MouseDown {
+                    vertical,
+                    horizontal,
+                });
+                settle(&mut session);
+                session.deliver_input(MacintoshInput::MouseUp {
+                    vertical,
+                    horizontal,
+                });
+                settle(&mut session);
+                let updated = session.runner_mut().control_snapshot();
+                let checkbox = updated
+                    .iter()
+                    .find(|control| control.guest_id == checkbox_id)
+                    .unwrap();
+                assert_eq!(checkbox.value, 1);
+                session.deliver_input(MacintoshInput::MouseDown {
+                    vertical: 368,
+                    horizontal: 532,
+                });
+                settle(&mut session);
+                session.deliver_input(MacintoshInput::MouseUp {
+                    vertical: 368,
+                    horizontal: 532,
+                });
+                settle(&mut session);
+                let updated = session.runner_mut().control_snapshot();
+                let bar = updated
+                    .iter()
+                    .find(|control| control.guest_id == bar_id)
+                    .unwrap();
+                assert!(bar.value > 0 && bar.value <= bar.maximum);
             }
         }
 

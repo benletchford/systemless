@@ -70,7 +70,10 @@ its bounding box conservatively, leaving original pixels in that area. Standard
 fullscreen takeover suppresses the frame overlays. Window movement keeps the
 guest's original drag outline rather than introducing live GPUI window movement.
 The gutter overlays are presentation only: scrollbar tracks do not invent a
-thumb or scroll state, and input in those areas still reaches the guest.
+thumb or scroll state, and input in those areas still reaches the guest. The
+demo now receives live Control Manager snapshots for both CPUs, including
+scrollbar value/range and checkbox state; control rendering still uses guest
+pixels until clipping, tracking, and fallback behavior are qualified.
 
 The dialog overlay is limited to standard `dBoxProc` windows with button/static-text
 items. Dialogs with custom items, editable text, or other definitions retain

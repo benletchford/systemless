@@ -1,6 +1,7 @@
 //! Fixture Runner - Loading and execution infrastructure
 
 use crate::callback_manager::CallbackTaskArchitecture;
+pub use crate::control_manager::ControlSnapshot;
 use crate::cpu::{M68kCpu, Register, StepResult};
 use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
 pub use crate::dialog_manager::{DialogItemKind, DialogItemSnapshot, DialogSnapshot};
@@ -2412,6 +2413,51 @@ impl FixtureRunner {
                 }
             })
             .collect()
+    }
+
+    /// Read live ControlRecords on either CPU without executing a CDEF or
+    /// changing a guest field. Unknown definitions remain identifiable by
+    /// their original procID for a guest-pixel fallback.
+    /// Macintosh Toolbox Essentials (1992), pp. 5-60--5-64.
+    #[doc(hidden)]
+    pub fn control_snapshot(&mut self) -> Vec<ControlSnapshot> {
+        let owners = self
+            .window_frame_snapshot()
+            .into_iter()
+            .map(|frame| (frame.guest_id, (frame.window.bounds, frame.window.visible)))
+            .collect::<HashMap<_, _>>();
+        if let Some(app) = self.native.application_mut() {
+            let records = app.controls.with_ref(|state| state.iter().cloned().collect::<Vec<_>>());
+            records
+                .into_iter()
+                .filter_map(|record| {
+                    crate::control_manager::snapshot_control_record(
+                        record.handle,
+                        record.pointer,
+                        record.proc_id,
+                        |owner| owners.get(&owner).copied(),
+                        |address| app.memory.read_u8(address),
+                    )
+                })
+                .collect()
+        } else {
+            let records = self
+                .dispatcher
+                .control_manager
+                .with_ref(|state| state.iter().cloned().collect::<Vec<_>>());
+            records
+                .into_iter()
+                .filter_map(|record| {
+                    crate::control_manager::snapshot_control_record(
+                        record.handle,
+                        record.pointer,
+                        record.proc_id,
+                        |owner| owners.get(&owner).copied(),
+                        |address| Some(self.bus.read_byte(address)),
+                    )
+                })
+                .collect()
+        }
     }
 
     /// Inspect visible and hidden Dialog Manager windows without running

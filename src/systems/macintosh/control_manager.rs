@@ -1,5 +1,89 @@
 //! Architecture-neutral Control Manager records and list operations.
 
+/// Read-only, frontend-neutral state of a guest Control Manager control.
+/// Bounds are in global screen coordinates; `local_bounds` retains the
+/// canonical `contrlRect` for cases where a port origin needs more context.
+/// Macintosh Toolbox Essentials (1992), pp. 5-60--5-64.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ControlSnapshot {
+    pub guest_id: u32,
+    pub owner_id: u32,
+    pub proc_id: i16,
+    pub local_bounds: (i16, i16, i16, i16),
+    pub bounds: (i16, i16, i16, i16),
+    pub owner_visible: bool,
+    pub visible: bool,
+    pub enabled: bool,
+    pub hilite: u8,
+    pub value: i16,
+    pub minimum: i16,
+    pub maximum: i16,
+    pub title: String,
+}
+
+/// Read the live ControlRecord through the architecture's byte adapter. The
+/// process registry identifies a CDEF but never substitutes for guest fields.
+/// ControlRecord layout: Macintosh Toolbox Essentials (1992), pp. 5-60--5-64.
+pub(crate) fn snapshot_control_record(
+    handle: u32,
+    expected_pointer: u32,
+    proc_id: i16,
+    owner_state: impl Fn(u32) -> Option<((i16, i16, i16, i16), bool)>,
+    mut read: impl FnMut(u32) -> Option<u8>,
+) -> Option<ControlSnapshot> {
+    fn word(read: &mut impl FnMut(u32) -> Option<u8>, address: u32) -> Option<i16> {
+        Some(i16::from_be_bytes([
+            read(address)?,
+            read(address.wrapping_add(1))?,
+        ]))
+    }
+    fn long(read: &mut impl FnMut(u32) -> Option<u8>, address: u32) -> Option<u32> {
+        Some(u32::from_be_bytes([
+            read(address)?,
+            read(address.wrapping_add(1))?,
+            read(address.wrapping_add(2))?,
+            read(address.wrapping_add(3))?,
+        ]))
+    }
+    let pointer = long(&mut read, handle)?;
+    if pointer == 0 || pointer != expected_pointer {
+        return None;
+    }
+    let owner_id = long(&mut read, pointer.wrapping_add(4))?;
+    let (owner, owner_visible) = owner_state(owner_id)?;
+    let local_bounds = (
+        word(&mut read, pointer.wrapping_add(8))?,
+        word(&mut read, pointer.wrapping_add(10))?,
+        word(&mut read, pointer.wrapping_add(12))?,
+        word(&mut read, pointer.wrapping_add(14))?,
+    );
+    let visible = read(pointer.wrapping_add(16))? != 0;
+    let hilite = read(pointer.wrapping_add(17))?;
+    let value = word(&mut read, pointer.wrapping_add(18))?;
+    let minimum = word(&mut read, pointer.wrapping_add(20))?;
+    let maximum = word(&mut read, pointer.wrapping_add(22))?;
+    let length = usize::from(read(pointer.wrapping_add(40))?);
+    let title = (0..length)
+        .map(|index| read(pointer.wrapping_add(41).wrapping_add(index as u32)))
+        .collect::<Option<Vec<_>>>()?;
+    Some(ControlSnapshot {
+        guest_id: handle,
+        owner_id,
+        proc_id,
+        local_bounds,
+        bounds: crate::dialog_manager::dialog_rect_to_global(owner, local_bounds),
+        owner_visible,
+        visible,
+        enabled: hilite != 255,
+        hilite,
+        value,
+        minimum,
+        maximum,
+        title: crate::mac_roman::decode_mac_roman(&title),
+    })
+}
+
 /// Tagged property associated with a ControlRef in Appearance Manager / Carbon.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ProcessControlProperty {
