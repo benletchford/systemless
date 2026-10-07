@@ -3,6 +3,7 @@
 use crate::callback_manager::CallbackTaskArchitecture;
 use crate::cpu::{M68kCpu, Register, StepResult};
 use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
+pub use crate::dialog_manager::{DialogItemKind, DialogItemSnapshot, DialogSnapshot};
 use crate::event_queue::{EventManagerSnapshot, EventRecordSnapshot};
 use crate::execution_kernel::ExecutionRoute;
 use crate::execution_m68k::M68kExecution;
@@ -2409,6 +2410,86 @@ impl FixtureRunner {
                     definition_id,
                     close_box,
                 }
+            })
+            .collect()
+    }
+
+    /// Inspect visible and hidden Dialog Manager windows without running
+    /// guest code or changing their records. Item bounds are global screen
+    /// coordinates; input still belongs to the guest Dialog Manager.
+    /// Macintosh Toolbox Essentials (1992), pp. 6-13--6-15, 6-120--6-124.
+    #[doc(hidden)]
+    pub fn dialog_snapshot(&mut self) -> Vec<DialogSnapshot> {
+        self.window_frame_snapshot()
+            .into_iter()
+            .filter_map(|frame| {
+                let guest_id = frame.guest_id;
+                let bounds = frame.window.bounds;
+                let (items, default, cancel, edit) =
+                    if let Some(app) = self.native.application_mut() {
+                        let items = app.dialog_items_snapshot(guest_id, bounds)?;
+                        let mut read = |offset| app.memory.read_u16_be(guest_id + offset);
+                        (
+                            items,
+                            read(crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET),
+                            read(crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET),
+                            read(crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET),
+                        )
+                    } else {
+                        let items = self.dispatcher.dialog_items.get(&guest_id)?;
+                        let snapshots = items
+                            .iter()
+                            .enumerate()
+                            .map(|(index, item)| {
+                                let number = (index + 1) as i16;
+                                DialogItemSnapshot {
+                                    number,
+                                    kind: crate::dialog_manager::DialogItemKind::from_raw_type(
+                                        item.item_type,
+                                    ),
+                                    bounds: crate::dialog_manager::dialog_rect_to_global(
+                                        bounds, item.rect,
+                                    ),
+                                    text: item.text.clone(),
+                                    enabled: item.is_enabled(),
+                                    visible: !item.is_hidden(),
+                                    value: self
+                                        .dispatcher
+                                        .dialog_control_values
+                                        .get(&(guest_id, number))
+                                        .copied(),
+                                    selection: item
+                                        .is_edit_text()
+                                        .then_some((item.sel_start, item.sel_end)),
+                                }
+                            })
+                            .collect();
+                        let read = |offset| Some(self.bus.read_word(guest_id + offset));
+                        (
+                            snapshots,
+                            read(crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET),
+                            read(crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET),
+                            read(crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET),
+                        )
+                    };
+                let valid_item = |raw: Option<u16>| {
+                    raw.map(|number| number as i16)
+                        .filter(|number| *number > 0 && (*number as usize) <= items.len())
+                };
+                let edit_field = edit
+                    .map(|index| index as i16)
+                    .filter(|index| *index >= 0 && (*index as usize) < items.len())
+                    .map(|index| index + 1);
+                Some(DialogSnapshot {
+                    guest_id,
+                    bounds,
+                    visible: frame.window.visible,
+                    active: frame.window.active,
+                    default_item: valid_item(default),
+                    cancel_item: valid_item(cancel),
+                    edit_field,
+                    items,
+                })
             })
             .collect()
     }

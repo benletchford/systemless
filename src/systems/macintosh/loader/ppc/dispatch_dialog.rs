@@ -4457,7 +4457,7 @@ pub(super) fn ppc_draw_dialog_text(
     }
 }
 
-fn ppc_dialog_item_title(
+pub(super) fn ppc_dialog_item_title(
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
     item: &PpcDialogItemView,

@@ -3,6 +3,57 @@
 use super::*;
 
 impl PpcLoadedApp {
+    /// Read the live DITL and control records for frontend presentation.
+    /// Macintosh Toolbox Essentials (1992), pp. 6-120--6-124.
+    pub(crate) fn dialog_items_snapshot(
+        &mut self,
+        dialog: u32,
+        bounds: (i16, i16, i16, i16),
+    ) -> Option<Vec<crate::dialog_manager::DialogItemSnapshot>> {
+        let handles = self.handles();
+        let items = ppc_dialog_items_for_dialog(&mut self.memory, &handles, dialog)?;
+        Some(
+            items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    let kind = item.kind();
+                    let text = decode_mac_roman(&ppc_dialog_item_title(
+                        &mut self.memory,
+                        &handles,
+                        item,
+                    ));
+                    let value = matches!(
+                        kind,
+                        crate::dialog_manager::DialogItemKind::Checkbox
+                            | crate::dialog_manager::DialogItemKind::RadioButton
+                    )
+                    .then(|| {
+                        self.memory
+                            .read_u32_be(item.handle)
+                            .filter(|control| *control != 0)
+                            .and_then(|control| {
+                                self.memory
+                                    .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
+                            })
+                            .map(|value| value as i16)
+                    })
+                    .flatten();
+                    crate::dialog_manager::DialogItemSnapshot {
+                        number: (index + 1) as i16,
+                        kind,
+                        bounds: crate::dialog_manager::dialog_rect_to_global(bounds, item.rect),
+                        text,
+                        enabled: item.is_enabled(),
+                        visible: !crate::dialog_manager::is_dialog_item_rect_hidden(item.rect),
+                        value,
+                        selection: None,
+                    }
+                })
+                .collect(),
+        )
+    }
+
     pub(crate) fn window_definition_id(&mut self, window: u32) -> i16 {
         ppc_window_proc_id(&mut self.memory, window)
     }

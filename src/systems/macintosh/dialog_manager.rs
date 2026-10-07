@@ -661,6 +661,38 @@ pub enum DialogItemKind {
     Unknown(u8),
 }
 
+/// Frontend-neutral, read-only description of a live Dialog Manager item.
+/// The item number is the Toolbox's 1-based identity within its dialog.
+/// Macintosh Toolbox Essentials (1992), pp. 6-13--6-14, 6-120--6-124.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DialogItemSnapshot {
+    pub number: i16,
+    pub kind: DialogItemKind,
+    pub bounds: (i16, i16, i16, i16),
+    pub text: String,
+    pub enabled: bool,
+    pub visible: bool,
+    /// Only populated when the live control value is known.
+    pub value: Option<i16>,
+    /// Only populated for editable text with a known guest selection.
+    pub selection: Option<(i16, i16)>,
+}
+
+/// A live dialog's semantic state, separate from its guest-rendered pixels.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DialogSnapshot {
+    pub guest_id: u32,
+    pub bounds: (i16, i16, i16, i16),
+    pub visible: bool,
+    pub active: bool,
+    pub default_item: Option<i16>,
+    pub cancel_item: Option<i16>,
+    pub edit_field: Option<i16>,
+    pub items: Vec<DialogItemSnapshot>,
+}
+
 #[allow(dead_code)]
 impl DialogItemKind {
     /// Decode the base item kind, masking out the disabled flag bit (0x80).
