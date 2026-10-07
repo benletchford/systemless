@@ -1191,7 +1191,7 @@ mod desktop {
         screen_depth: Option<u16>,
         capture: CaptureCase,
     ) {
-        use gpui_kit::{platform, VisualTestAppContext};
+        use gpui_kit::{platform, HeadlessAppContext};
 
         let controls_page = matches!(
             capture,
@@ -1455,16 +1455,17 @@ mod desktop {
             return;
         }
 
-        let mut visual = VisualTestAppContext::with_asset_source(
-            platform::current_platform(true),
+        let mut visual = HeadlessAppContext::with_platform(
+            platform::current_platform(true).text_system(),
             Arc::new(gpui_kit::assets::Assets),
+            platform::current_headless_renderer,
         );
         visual.update(gpui_kit::init);
         let (sender, _receiver) = mpsc::channel();
         let updates = Arc::new(Mutex::new(None));
         let mut view = None;
         let window = visual
-            .open_offscreen_window(size(px(900.), px(740.)), |_, cx| {
+            .open_window(size(px(900.), px(740.)), |_, cx| {
                 let entity = cx.new(|cx| Demo::new(sender, updates, cx));
                 view = Some(entity.clone());
                 entity
