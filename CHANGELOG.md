@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.82.0](https://github.com/benletchford/systemless/compare/v0.81.2...v0.82.0) (2026-10-07)
+
+
+### Features
+
+* **catalogue:** stage Tomb Raider Gold PPC demo ([#4181](https://github.com/benletchford/systemless/issues/4181)) ([e39a5b1](https://github.com/benletchford/systemless/commit/e39a5b15fb0ccfb5f1a124e1625b1a34df7df4ff))
+* **memory:** expose guarded sparse read spans ([#4177](https://github.com/benletchford/systemless/issues/4177)) ([7502ff2](https://github.com/benletchford/systemless/commit/7502ff278f9310b7664b0c17c67a1beb49123821))
+* **site:** launch pinned local game archives ([#4180](https://github.com/benletchford/systemless/issues/4180)) ([57381a8](https://github.com/benletchford/systemless/commit/57381a8bbe8d52af83335fdde8b18b2e5432492f))
+
+
+### Bug Fixes
+
+* **palette:** retain device colors across unassociated windows ([#4170](https://github.com/benletchford/systemless/issues/4170)) ([04182ff](https://github.com/benletchford/systemless/commit/04182ff4252eca3d5dee08082ed8dde11e4742cb))
+* **ppc:** auto-position dialogs against the live MBarHeight ([#4184](https://github.com/benletchford/systemless/issues/4184)) ([a910fc4](https://github.com/benletchford/systemless/commit/a910fc4897b4bbd9b7fef27de9a01e05ed2cecdc))
+* **ppc:** call the application's ModalDialog filter proc ([#4183](https://github.com/benletchford/systemless/issues/4183)) ([ff23524](https://github.com/benletchford/systemless/commit/ff235242a02b78f923e69c31ef39f4cdf0d05e20))
+* **ppc:** fill polygons with the caller's pattern in FillPoly ([#4187](https://github.com/benletchford/systemless/issues/4187)) ([66412ef](https://github.com/benletchford/systemless/commit/66412ef8e2b689bb9303efb2143a3b4aa187d73f))
+* **ppc:** implement InterfaceLib ErasePoly ([#4186](https://github.com/benletchford/systemless/issues/4186)) ([ecec155](https://github.com/benletchford/systemless/commit/ecec15581cfeaf662f948b846f947b516cde4735))
+* **ppc:** keep async callbacks installed while they wait on 68K code ([#4185](https://github.com/benletchford/systemless/issues/4185)) ([17af3c1](https://github.com/benletchford/systemless/commit/17af3c1e200c9de7f9b93e00fad8edf68faba3ec))
+
 ## [0.81.2](https://github.com/benletchford/systemless/compare/v0.81.1...v0.81.2) (2026-10-06)
 
 
