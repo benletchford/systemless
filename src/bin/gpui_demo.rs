@@ -111,6 +111,9 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_custom_menu_fallback: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_modeless_dialog_layout: Option<PathBuf>,
     }
 
     fn parse_depth(value: &str) -> Result<u16, String> {
@@ -2567,6 +2570,11 @@ mod desktop {
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_modeless_dialog_layout.as_ref() {
+            capture_modeless_dialog_layout(output);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_about_alert.as_ref() {
             capture_fixture_screen(
                 &args.game,
@@ -2805,6 +2813,107 @@ mod desktop {
     }
 
     #[cfg(feature = "gpui-demo-test")]
+    fn capture_modeless_dialog_layout(output: &std::path::Path) {
+        use gpui_kit::{platform, AppContext, HeadlessAppContext, RenderImage};
+        use std::sync::{mpsc, Arc, Mutex};
+        use systemless::runner::{DialogItemSnapshot, WindowSnapshot};
+
+        let mut visual = HeadlessAppContext::with_platform(
+            platform::current_platform(true).text_system(),
+            Arc::new(gpui_kit::assets::Assets),
+            platform::current_headless_renderer,
+        );
+        visual.update(gpui_kit::init);
+        let (sender, _receiver) = mpsc::channel();
+        let updates = Arc::new(Mutex::new(None));
+        let mut view = None;
+        let window = visual
+            .open_window(size(px(360.), px(320.)), |_, cx| {
+                let entity = cx.new(|cx| Demo::new(sender, updates, cx));
+                view = Some(entity.clone());
+                entity
+            })
+            .unwrap();
+        let view = view.unwrap();
+        visual.update(|cx| {
+            view.update(cx, |demo, cx| {
+                demo.width = 300;
+                demo.height = 220;
+                demo.crop_top = 0;
+                demo.windows = vec![
+                    WindowFrameSnapshot {
+                        guest_id: 2,
+                        generation: 1,
+                        window: WindowSnapshot {
+                            title: "Front".into(),
+                            bounds: (90, 90, 150, 160),
+                            structure_bounds: Some((70, 85, 155, 165)),
+                            visible_region: None,
+                            update_region: None,
+                            visible: true,
+                            active: true,
+                        },
+                        definition_id: Some(0),
+                        close_box: true,
+                    },
+                    WindowFrameSnapshot {
+                        guest_id: 1,
+                        generation: 1,
+                        window: WindowSnapshot {
+                            title: "Modeless".into(),
+                            bounds: (50, 50, 180, 240),
+                            structure_bounds: Some((30, 45, 185, 245)),
+                            visible_region: None,
+                            update_region: None,
+                            visible: true,
+                            active: false,
+                        },
+                        definition_id: Some(1),
+                        close_box: false,
+                    },
+                ];
+                demo.dialogs = vec![DialogSnapshot {
+                    guest_id: 1,
+                    generation: 1,
+                    bounds: (50, 50, 180, 240),
+                    visible: true,
+                    active: false,
+                    default_item: None,
+                    cancel_item: None,
+                    edit_field: None,
+                    items: vec![DialogItemSnapshot {
+                        number: 1,
+                        kind: DialogItemKind::StaticText,
+                        bounds: (105, 100, 135, 210),
+                        text: "Modeless item".into(),
+                        enabled: false,
+                        visible: true,
+                        value: None,
+                        selection: None,
+                    }],
+                }];
+                let mut pixels = image::RgbaImage::new(300, 220);
+                for (x, y, pixel) in pixels.enumerate_pixels_mut() {
+                    *pixel = if (90..150).contains(&y) && (90..160).contains(&x) {
+                        image::Rgba([20, 20, 220, 255])
+                    } else {
+                        image::Rgba([220, 20, 20, 255])
+                    };
+                }
+                demo.image = Some(Arc::new(RenderImage::new(vec![image::Frame::new(pixels)])));
+                cx.notify();
+            });
+        });
+        visual.run_until_parked();
+        let capture = visual.capture_screenshot(window.into()).unwrap();
+        capture.save(output).unwrap();
+        let guest_front = *capture.get_pixel(240, 262);
+        assert_eq!(*capture.get_pixel(240, 312), guest_front);
+        let guest_background = *capture.get_pixel(450, 312);
+        assert_ne!(*capture.get_pixel(410, 312), guest_background);
+    }
+
+    #[cfg(feature = "gpui-demo-test")]
     fn capture_custom_menu_fallback(output: &std::path::Path) {
         use gpui_kit::{platform, AppContext, HeadlessAppContext, RenderImage};
         use std::sync::{mpsc, Arc, Mutex};
@@ -3001,6 +3110,7 @@ mod desktop {
                         capture_standard_file_open_composed: None,
                         capture_standard_file_save_edited_composed: None,
                         capture_custom_menu_fallback: None,
+                        capture_modeless_dialog_layout: None,
                     },
                     rx,
                     worker_updates,
