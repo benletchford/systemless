@@ -142,8 +142,9 @@ pub struct DialogItemPiece {
 }
 
 /// Clip standard DITL presentation to its owning dialog and all windows in
-/// front of it. Unknown items and WDEFs keep their guest pixels. Macintosh
-/// Toolbox Essentials (1992), pp. 4-19, 4-40, 6-13--6-15.
+/// front of it. Standard modeless dialogs use noGrowDocProc (4), while modal
+/// dialogs commonly use dBoxProc (1); custom WDEFs keep their guest pixels.
+/// Macintosh Toolbox Essentials (1992), pp. 4-10, 4-19, 4-40, 6-13--6-15.
 pub fn dialog_item_pieces(
     dialogs: &[DialogSnapshot],
     windows: &[WindowFrameSnapshot],
@@ -158,7 +159,7 @@ pub fn dialog_item_pieces(
         let Some(structure) = frame.window.structure_bounds.map(Rect::from) else {
             continue;
         };
-        if frame.definition_id == Some(1) {
+        if matches!(frame.definition_id, Some(0 | 1 | 2 | 3 | 4 | 5 | 8 | 12 | 16)) {
             if let Some((dialog_index, dialog)) = dialogs.iter().enumerate().find(|(_, dialog)| {
                 dialog.visible
                     && dialog.guest_id == frame.guest_id
@@ -645,7 +646,7 @@ mod tests {
     fn inactive_standard_dialog_items_clip_below_front_window() {
         let mut front = window((80, 80, 130, 150), true, 0);
         front.guest_id = 2;
-        let mut back = window((50, 50, 180, 220), true, 1);
+        let mut back = window((50, 50, 180, 220), true, 4);
         back.window.active = false;
         let windows = [front, back];
         let mut dialog = DialogSnapshot {
@@ -677,6 +678,9 @@ mod tests {
         dialog.items[0].kind = DialogItemKind::UserItem;
         assert!(dialog_item_pieces(&[dialog.clone()], &windows, viewport).is_empty());
         dialog.items[0].kind = DialogItemKind::StaticText;
+        let mut custom_windows = windows.to_vec();
+        custom_windows[1].definition_id = Some(32);
+        assert!(dialog_item_pieces(&[dialog.clone()], &custom_windows, viewport).is_empty());
         dialog.generation += 1;
         assert!(dialog_item_pieces(&[dialog], &windows, viewport).is_empty());
     }
