@@ -11,7 +11,7 @@ from pathlib import Path
 import shutil
 import subprocess
 
-root = Path(__file__).resolve().parents[1]
+root = Path(__file__).resolve().parents[2]
 output = root / "native-window-results"
 output.mkdir(exist_ok=True)
 failed = []

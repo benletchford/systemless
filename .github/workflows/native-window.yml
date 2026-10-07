@@ -5,7 +5,7 @@ on:
     paths:
       - 'src/bin/**'
       - '.github/workflows/native-window.yml'
-      - 'scripts/verify-native-window.py'
+      - '.github/scripts/verify-native-window.py'
   workflow_dispatch:
 
 permissions:
@@ -36,10 +36,10 @@ jobs:
         run: cargo build --locked --profile ci-test --bin systemless --features test-support
       - name: Run Linux native window checks
         if: runner.os == 'Linux'
-        run: xvfb-run -a -s '-screen 0 1600x1200x24' sh -c 'openbox & python3 scripts/verify-native-window.py'
+        run: xvfb-run -a -s '-screen 0 1600x1200x24' sh -c 'openbox & python3 .github/scripts/verify-native-window.py'
       - name: Run macOS native window checks
         if: runner.os == 'macOS'
-        run: python3 scripts/verify-native-window.py
+        run: python3 .github/scripts/verify-native-window.py
       - name: Preserve qualification evidence
         if: always()
         uses: actions/upload-artifact@v7
