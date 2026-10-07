@@ -745,6 +745,14 @@ mod desktop {
             let before = session.runner_mut().window_frame_snapshot();
             assert_eq!(before.len(), 3);
             assert_eq!(before[0].window.title, "Stacked Inspector");
+            assert_ne!(before[0].guest_id, 0);
+            assert!(before.iter().all(|frame| {
+                before
+                    .iter()
+                    .filter(|other| other.guest_id == frame.guest_id)
+                    .count()
+                    == 1
+            }));
             assert_eq!(before[0].definition_id, Some(8));
             assert!(before[0].close_box && before[0].window.active);
             let (top, left, bottom, right) = before[0].window.bounds;
@@ -765,6 +773,7 @@ mod desktop {
             });
             settle(session);
             let moved = session.runner_mut().window_frame_snapshot();
+            assert_eq!(moved[0].guest_id, before[0].guest_id);
             assert_eq!(
                 moved[0].window.bounds,
                 (top + 12, left + 16, bottom + 12, right + 16)

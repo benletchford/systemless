@@ -217,6 +217,7 @@ mod tests {
         definition_id: i16,
     ) -> WindowFrameSnapshot {
         WindowFrameSnapshot {
+            guest_id: 1,
             window: WindowSnapshot {
                 title: "Test".into(),
                 bounds,

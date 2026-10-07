@@ -2404,6 +2404,7 @@ impl FixtureRunner {
                     pointer.wrapping_add(crate::window_manager::WINDOW_GO_AWAY_FLAG_OFFSET),
                 ) != 0;
                 crate::window_manager::WindowFrameSnapshot {
+                    guest_id: pointer,
                     window,
                     definition_id,
                     close_box,

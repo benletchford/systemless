@@ -57,6 +57,9 @@ pub struct WindowSnapshot {
 #[doc(hidden)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WindowFrameSnapshot {
+    /// Guest WindowPtr, used only as an opaque identity within this guest run.
+    /// A future generation number must distinguish pointer reuse after disposal.
+    pub guest_id: u32,
     pub window: WindowSnapshot,
     /// Unknown or application-defined WDEFs must retain guest presentation.
     pub definition_id: Option<i16>,
