@@ -40,7 +40,7 @@ mod desktop {
     use systemless::{
         memory::{globals::addr::MBAR_HEIGHT, MemoryBus},
         menu_model::GuestMenuSnapshot,
-        runner::{ControlSnapshot, DialogItemKind, DialogSnapshot, WindowFrameSnapshot},
+        runner::{ControlSnapshot, DialogItemKind, DialogSnapshot, ListManagerSnapshot, WindowFrameSnapshot},
         systems::macintosh::session::{MacintoshInput, MacintoshSession},
     };
 
@@ -67,6 +67,12 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_controls_held: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_lists: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_lists_selected: Option<PathBuf>,
     }
 
     fn parse_depth(value: &str) -> Result<u16, String> {
@@ -90,6 +96,7 @@ mod desktop {
         windows: Vec<WindowFrameSnapshot>,
         dialogs: Vec<DialogSnapshot>,
         controls: Vec<ControlSnapshot>,
+        lists: Vec<ListManagerSnapshot>,
         frame: Option<(u32, u32, u32, Vec<u8>)>,
         status: String,
     }
@@ -159,11 +166,13 @@ mod desktop {
                 let windows = session.runner_mut().window_frame_snapshot();
                 let dialogs = session.runner_mut().dialog_snapshot();
                 let controls = session.runner_mut().control_snapshot();
+                let lists = session.runner_mut().list_manager_snapshot();
                 *updates.lock().unwrap() = Some(Update {
                     menus,
                     windows,
                     dialogs,
                     controls,
+                    lists,
                     frame,
                     status: format!(
                         "{architecture} · {} · GPUI Kit UI demo",
@@ -193,6 +202,7 @@ mod desktop {
         windows: Vec<WindowFrameSnapshot>,
         dialogs: Vec<DialogSnapshot>,
         controls: Vec<ControlSnapshot>,
+        lists: Vec<ListManagerSnapshot>,
         image: Option<Arc<RenderImage>>,
         logo: Arc<RenderImage>,
         width: u32,
@@ -224,6 +234,7 @@ mod desktop {
                             this.windows = update.windows;
                             this.dialogs = update.dialogs;
                             this.controls = update.controls;
+                            this.lists = update.lists;
                             this.status = update.status;
                             if let Some((width, height, top, pixels)) = update.frame {
                                 this.width = width;
@@ -259,6 +270,7 @@ mod desktop {
                 windows: Vec::new(),
                 dialogs: Vec::new(),
                 controls: Vec::new(),
+                lists: Vec::new(),
                 image: None,
                 logo: Arc::new(RenderImage::new(vec![image::Frame::new(
                     image::load_from_memory(include_bytes!("../../www/assets/icons/icon-192.png"))
@@ -661,6 +673,80 @@ mod desktop {
                         .child(gutter),
                 );
             }
+            // A standard LDEF's unstyled text rows can use Kit list items.
+            // The list's guest-visible cells, selection, and view origin remain
+            // authoritative, and unknown LDEFs retain their framebuffer pixels.
+            // More Macintosh Toolbox (1993), pp. 4-70--4-76.
+            for piece in super::frames::list_pieces(
+                &self.lists,
+                &self.controls,
+                &self.windows,
+                viewport,
+            ) {
+                let list = &self.lists[piece.list];
+                let Some(cells) = list.text_cells.as_ref() else {
+                    continue;
+                };
+                let source = piece.source;
+                let clip = piece.clip;
+                let mut overlay = div()
+                    .absolute()
+                    .left(px((source.left - clip.left) as f32))
+                    .top(px((source.top - clip.top) as f32))
+                    .w(px(source.width() as f32))
+                    .h(px(source.height() as f32))
+                    .bg(cx.theme().background);
+                for (&(row, column), text) in cells {
+                    if row < list.visible.0
+                        || row >= list.visible.2
+                        || column < list.visible.1
+                        || column >= list.visible.3
+                    {
+                        continue;
+                    }
+                    let top = i32::from(row - list.visible.0) * i32::from(list.cell_size.0.max(1));
+                    let left =
+                        i32::from(column - list.visible.1) * i32::from(list.cell_size.1.max(1));
+                    let selected = list.selected.contains(&(row, column));
+                    overlay = overlay.child(
+                        div()
+                        .id(format!(
+                            "guest-list-cell-{}-{}-{}-{}",
+                            list.guest_id, list.generation, row, column
+                        ))
+                        .test_support()
+                        .role(Role::ListItem)
+                        .aria_label(text.clone())
+                        .aria_selected(selected)
+                        .absolute()
+                        .left(px(left as f32))
+                        .top(px(top as f32))
+                        .w(px(f32::from(list.cell_size.1.max(1))))
+                        .h(px(f32::from(list.cell_size.0.max(1))))
+                        .overflow_hidden()
+                        .flex()
+                        .items_center()
+                        .bg(if selected && list.active {
+                            cx.theme().accent
+                        } else {
+                            cx.theme().background
+                        })
+                        .px_1()
+                        .text_size(px(13.))
+                        .child(text.clone()),
+                    );
+                }
+                screen = screen.child(
+                    div()
+                        .absolute()
+                        .overflow_hidden()
+                        .left(px(clip.left as f32))
+                        .top(px((clip.top - self.crop_top as i32) as f32))
+                        .w(px(clip.width() as f32))
+                        .h(px(clip.height() as f32))
+                        .child(overlay),
+                );
+            }
             // CDEF-owned standard controls can use Kit components while their
             // ControlRecord state and tracking remain guest-owned.
             // Macintosh Toolbox Essentials (1992), pp. 5-58--5-64.
@@ -1000,17 +1086,38 @@ mod desktop {
     }
 
     #[cfg(feature = "gpui-demo-test")]
+    #[derive(Clone, Copy)]
+    enum CaptureCase {
+        Alert,
+        Controls,
+        ControlsChanged,
+        ControlsDragged,
+        ControlsHeld,
+        Lists,
+        ListsSelected,
+    }
+
+    #[cfg(feature = "gpui-demo-test")]
     fn capture_fixture_screen(
         game: &std::path::Path,
         output: &std::path::Path,
         prefer_powerpc: bool,
         screen_depth: Option<u16>,
-        controls_page: bool,
-        controls_changed: bool,
-        controls_dragged: bool,
-        controls_held: bool,
+        capture: CaptureCase,
     ) {
         use gpui_kit::{platform, VisualTestAppContext};
+
+        let controls_page = matches!(
+            capture,
+            CaptureCase::Controls
+                | CaptureCase::ControlsChanged
+                | CaptureCase::ControlsDragged
+                | CaptureCase::ControlsHeld
+        );
+        let lists_page = matches!(capture, CaptureCase::Lists | CaptureCase::ListsSelected);
+        let controls_changed = matches!(capture, CaptureCase::ControlsChanged);
+        let controls_dragged = matches!(capture, CaptureCase::ControlsDragged);
+        let controls_held = matches!(capture, CaptureCase::ControlsHeld);
 
         let mut session = MacintoshSession::new(true, screen_depth.or(Some(8)));
         session
@@ -1030,9 +1137,33 @@ mod desktop {
                 break;
             }
         }
-        let (menu_id, item) = if controls_page { (129, 2) } else { (128, 1) };
+        let (menu_id, item) = if lists_page {
+            (129, 9)
+        } else if controls_page {
+            (129, 2)
+        } else {
+            (128, 1)
+        };
         assert!(session.runner_mut().select_guest_menu_item(menu_id, item));
-        let dialogs = if controls_page {
+        let dialogs = if lists_page {
+            for _ in 0..300 {
+                session.runner_mut().run_steps(100_000, None);
+                if session
+                    .runner_mut()
+                    .list_manager_snapshot()
+                    .iter()
+                    .any(|list| list.draw_enabled && list.definition_id == 0)
+                {
+                    break;
+                }
+            }
+            assert!(session
+                .runner_mut()
+                .list_manager_snapshot()
+                .iter()
+                .any(|list| list.draw_enabled && list.definition_id == 0));
+            Vec::new()
+        } else if controls_page {
             for _ in 0..300 {
                 session.runner_mut().run_steps(100_000, None);
                 if session
@@ -1060,7 +1191,7 @@ mod desktop {
                 .expect("About alert should become visible")
         };
         let windows = session.runner_mut().window_frame_snapshot();
-        if !controls_page {
+        if !controls_page && !lists_page {
             assert!(standard_dbox_dialog(&dialogs, &windows).is_some());
         }
         if controls_changed {
@@ -1101,6 +1232,37 @@ mod desktop {
             assert!(controls
                 .iter()
                 .any(|control| control.visible && control.proc_id == 16 && control.value > 0));
+        }
+        if matches!(capture, CaptureCase::ListsSelected) {
+            let list = session
+                .runner_mut()
+                .list_manager_snapshot()
+                .into_iter()
+                .find(|list| list.draw_enabled && list.definition_id == 0)
+                .unwrap();
+            let bounds = list.global_view_rect.unwrap();
+            let list_id = list.guest_id;
+            let point = (bounds.0 + 7 * list.cell_size.0 + list.cell_size.0 / 2, bounds.1 + 480);
+            for input in [
+                MacintoshInput::MouseDown {
+                    vertical: point.0,
+                    horizontal: point.1,
+                },
+                MacintoshInput::MouseUp {
+                    vertical: point.0,
+                    horizontal: point.1,
+                },
+            ] {
+                session.deliver_input(input);
+                for _ in 0..20 {
+                    session.runner_mut().run_steps(10_000, None);
+                }
+            }
+            assert!(session
+                .runner_mut()
+                .list_manager_snapshot()
+                .iter()
+                .any(|list| list.guest_id == list_id && list.selected.contains(&(7, 0))));
         }
         let mut held_drag = None;
         if controls_dragged || controls_held {
@@ -1153,6 +1315,7 @@ mod desktop {
             }
         }
         let controls = session.runner_mut().control_snapshot();
+        let lists = session.runner_mut().list_manager_snapshot();
         let menus = session.runner_mut().guest_menu_snapshot();
         let frame = session.video_frame().unwrap();
         let top = u32::from(session.runner().bus().read_word(MBAR_HEIGHT));
@@ -1184,6 +1347,7 @@ mod desktop {
                 demo.windows = windows;
                 demo.dialogs = dialogs;
                 demo.controls = controls;
+                demo.lists = lists;
                 if let Some((id, generation, from, to)) = held_drag {
                     demo.mouse_down = true;
                     demo.mouse_position = to;
@@ -1220,10 +1384,7 @@ mod desktop {
                 output,
                 args.prefer_powerpc,
                 args.screen_depth,
-                false,
-                false,
-                false,
-                false,
+                CaptureCase::Alert,
             );
             return;
         }
@@ -1234,10 +1395,7 @@ mod desktop {
                 output,
                 args.prefer_powerpc,
                 args.screen_depth,
-                true,
-                false,
-                false,
-                false,
+                CaptureCase::Controls,
             );
             return;
         }
@@ -1248,10 +1406,7 @@ mod desktop {
                 output,
                 args.prefer_powerpc,
                 args.screen_depth,
-                true,
-                true,
-                false,
-                false,
+                CaptureCase::ControlsChanged,
             );
             return;
         }
@@ -1262,10 +1417,7 @@ mod desktop {
                 output,
                 args.prefer_powerpc,
                 args.screen_depth,
-                true,
-                false,
-                true,
-                false,
+                CaptureCase::ControlsDragged,
             );
             return;
         }
@@ -1276,10 +1428,29 @@ mod desktop {
                 output,
                 args.prefer_powerpc,
                 args.screen_depth,
-                true,
-                false,
-                false,
-                true,
+                CaptureCase::ControlsHeld,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_lists.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::Lists,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_lists_selected.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::ListsSelected,
             );
             return;
         }
@@ -1364,6 +1535,8 @@ mod desktop {
                         capture_controls_changed: None,
                         capture_controls_dragged: None,
                         capture_controls_held: None,
+                        capture_lists: None,
+                        capture_lists_selected: None,
                     },
                     rx,
                     worker_updates,
@@ -1700,9 +1873,32 @@ mod desktop {
                     .expect("Lists page should create a guest ListHandle");
                 assert_ne!(initial.guest_id, 0);
                 assert_ne!(initial.generation, 0);
+                assert_eq!(initial.definition_id, 0);
                 assert_ne!(initial.owner_port, 0);
                 assert_eq!(initial.view_rect, (78, 24, 228, 528));
+                assert_eq!(initial.global_view_rect, Some((128, 64, 278, 568)));
                 assert_eq!(initial.cells.len(), 12);
+                assert_eq!(
+                    initial.text_cells.as_ref().unwrap()[&(0, 0)].trim(),
+                    "Phase Shifter       01  equipped"
+                );
+                let row_seven = (initial.global_view_rect.unwrap().0 + 7 * 18 + 9,
+                    initial.global_view_rect.unwrap().1 + 480);
+                session.deliver_input(MacintoshInput::MouseDown {
+                    vertical: row_seven.0,
+                    horizontal: row_seven.1,
+                });
+                settle(&mut session);
+                session.deliver_input(MacintoshInput::MouseUp {
+                    vertical: row_seven.0,
+                    horizontal: row_seven.1,
+                });
+                settle(&mut session);
+                assert_eq!(
+                    session.runner_mut().list_manager_snapshot()[0].selected,
+                    [(7, 0)].into(),
+                    "guest List Manager must own selection: {powerpc:?}"
+                );
                 settle(&mut session);
                 let updated = session.runner_mut().list_manager_snapshot().remove(0);
                 assert_eq!(
@@ -1715,6 +1911,7 @@ mod desktop {
                 let off_page = session.runner_mut().list_manager_snapshot().remove(0);
                 assert_eq!(off_page.guest_id, initial.guest_id);
                 assert_eq!(off_page.generation, initial.generation);
+                assert_eq!(off_page.global_view_rect, initial.global_view_rect);
                 assert!(!off_page.draw_enabled && !off_page.active);
                 assert_eq!(off_page.vertical_scrollbar, Some((false, 254)));
                 assert!(session.runner_mut().select_guest_menu_item(129, 9));
@@ -2041,6 +2238,106 @@ mod desktop {
                     .count(),
                 1
             );
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn themed_list_row_forwards_guest_click(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::{test::TestWindowExt, AppContext, Bounds, WindowBounds, WindowOptions};
+            use systemless::runner::{ListManagerSnapshot, WindowFrameSnapshot, WindowSnapshot};
+
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            cx.update(gpui_kit::init);
+            let (window, view) = cx.update(|cx| {
+                gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                            None,
+                            gpui_kit::size(gpui_kit::px(900.), gpui_kit::px(740.)),
+                            cx,
+                        ))),
+                        ..Default::default()
+                    },
+                    cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(sender, updates, cx)),
+                )
+                .unwrap()
+            });
+            cx.update(|cx| {
+                view.update(cx, |demo, cx| {
+                    demo.windows = vec![WindowFrameSnapshot {
+                        guest_id: 7,
+                        generation: 1,
+                        window: WindowSnapshot {
+                            title: "List".into(),
+                            bounds: (50, 40, 420, 600),
+                            structure_bounds: Some((31, 39, 422, 602)),
+                            visible_region: None,
+                            update_region: None,
+                            visible: true,
+                            active: true,
+                        },
+                        definition_id: Some(0),
+                        close_box: false,
+                    }];
+                    demo.lists = vec![ListManagerSnapshot {
+                        guest_id: 10,
+                        generation: 1,
+                        definition_id: 0,
+                        owner_port: 7,
+                        global_view_rect: Some((128, 64, 278, 568)),
+                        view_rect: (78, 24, 228, 528),
+                        data_bounds: (0, 0, 12, 1),
+                        cell_size: (18, 504),
+                        visible: (0, 0, 9, 1),
+                        draw_enabled: true,
+                        active: true,
+                        cells: [((7, 0), b"Signal Beacon".to_vec())].into(),
+                        text_cells: Some([((7, 0), "Signal Beacon".into())].into()),
+                        selected: Default::default(),
+                        vertical_scrollbar: None,
+                        horizontal_scrollbar: None,
+                    }];
+                    demo.width = 800;
+                    demo.height = 580;
+                    demo.crop_top = 20;
+                    cx.notify();
+                });
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window.click("guest-list-cell-10-1-7-0", cx);
+            })
+            .unwrap();
+            let inputs: Vec<_> = receiver
+                .try_iter()
+                .filter_map(|command| match command {
+                    super::Command::Input(input) => Some(input),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                inputs
+                    .iter()
+                    .filter(|input| matches!(input, MacintoshInput::MouseDown { .. }))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                inputs
+                    .iter()
+                    .filter(|input| matches!(input, MacintoshInput::MouseUp { .. }))
+                    .count(),
+                1
+            );
+            assert!(inputs.iter().any(|input| matches!(
+                input,
+                MacintoshInput::MouseDown {
+                    vertical: 263,
+                    horizontal: 316
+                }
+            )));
         }
 
         #[cfg(feature = "gpui-demo-test")]

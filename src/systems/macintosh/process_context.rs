@@ -14297,6 +14297,7 @@ mod tests {
             crate::list_manager::ProcessListRecord {
                 handle: 0x1000,
                 generation: crate::list_manager::new_list_generation(),
+                definition_id: 0,
                 cells_handle: 0x2000,
                 view_rect: (0, 0, 40, 100),
                 data_bounds: (0, 0, 2, 1),

@@ -1,6 +1,6 @@
 //! Rectangular guest-frame overlays. Content pixels and input remain guest-owned.
 
-use systemless::runner::{ControlSnapshot, WindowFrameSnapshot};
+use systemless::runner::{ControlSnapshot, ListManagerSnapshot, WindowFrameSnapshot};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Rect {
@@ -96,6 +96,12 @@ pub struct GutterPiece {
 
 pub struct ControlPiece {
     pub control: usize,
+    pub source: Rect,
+    pub clip: Rect,
+}
+
+pub struct ListPiece {
+    pub list: usize,
     pub source: Rect,
     pub clip: Rect,
 }
@@ -228,6 +234,76 @@ pub fn control_pieces(
     result
 }
 
+/// Replace only a visible standard text LDEF in a known rectangular window.
+/// A custom definition or overlapping custom control retains guest pixels.
+/// More Macintosh Toolbox (1993), pp. 4-3--4-7, 4-70--4-76.
+pub fn list_pieces(
+    lists: &[ListManagerSnapshot],
+    controls: &[ControlSnapshot],
+    windows: &[WindowFrameSnapshot],
+    viewport: Rect,
+) -> Vec<ListPiece> {
+    let mut pieces = Vec::new();
+    let mut covers = Vec::new();
+    for frame in windows {
+        let window = &frame.window;
+        if !window.visible {
+            continue;
+        }
+        let Some(structure) = window.structure_bounds.map(Rect::from) else {
+            continue;
+        };
+        if !matches!(frame.definition_id, Some(0 | 4 | 8 | 12 | 16)) {
+            covers.push(structure);
+            continue;
+        }
+        for (index, list) in lists.iter().enumerate() {
+            if list.owner_port != frame.guest_id
+                || list.definition_id != 0
+                || !list.draw_enabled
+                || list.text_cells.is_none()
+            {
+                continue;
+            }
+            let Some(source) = list.global_view_rect.map(Rect::from) else {
+                continue;
+            };
+            if controls.iter().any(|control| {
+                control.owner_id == frame.guest_id
+                    && control.visible
+                    && !matches!(control.proc_id, 0 | 1 | 2 | 16)
+                    && Rect::from(control.bounds).intersection(source).is_some()
+            }) {
+                continue;
+            }
+            let mut clips: Vec<_> = source
+                .intersection(Rect::from(window.bounds))
+                .and_then(|rect| rect.intersection(viewport))
+                .into_iter()
+                .collect();
+            if let Some(visible) = window.visible_region.map(Rect::from) {
+                clips = clips
+                    .into_iter()
+                    .filter_map(|clip| clip.intersection(visible))
+                    .collect();
+            }
+            for cover in &covers {
+                clips = clips
+                    .into_iter()
+                    .flat_map(|clip| clip.subtract(*cover))
+                    .collect();
+            }
+            pieces.extend(clips.into_iter().map(|clip| ListPiece {
+                list: index,
+                source,
+                clip,
+            }));
+        }
+        covers.push(structure);
+    }
+    pieces
+}
+
 /// Restyle the content-edge areas reserved for standard document scrollbars
 /// and DrawGrowIcon without painting over another window or a custom WDEF.
 pub fn gutter_pieces(windows: &[WindowFrameSnapshot], viewport: Rect) -> Vec<GutterPiece> {
@@ -342,8 +418,8 @@ pub fn frame_pieces(windows: &[WindowFrameSnapshot], viewport: Rect) -> Vec<Fram
 
 #[cfg(test)]
 mod tests {
-    use super::{control_pieces, frame_pieces, gutter_pieces, scrollbar_drag_outline, scrollbar_geometry, GutterKind, Rect};
-    use systemless::runner::{ControlSnapshot, WindowFrameSnapshot, WindowSnapshot};
+    use super::{control_pieces, frame_pieces, gutter_pieces, list_pieces, scrollbar_drag_outline, scrollbar_geometry, GutterKind, Rect};
+    use systemless::runner::{ControlSnapshot, ListManagerSnapshot, WindowFrameSnapshot, WindowSnapshot};
 
     fn window(
         bounds: (i16, i16, i16, i16),
@@ -404,6 +480,42 @@ mod tests {
             assert!(piece.clip.intersection(Rect::from((40, 60, 92, 142))).is_none());
             assert_eq!(piece.clip.intersection(Rect::from((65, 10, 150, 170))), Some(piece.clip));
         }
+    }
+
+    #[test]
+    fn standard_list_clips_beneath_front_window_and_custom_definition_falls_back() {
+        let front = window((40, 60, 90, 140), true, 0);
+        let mut back = window((65, 10, 150, 170), true, 0);
+        back.guest_id = 2;
+        let mut list = ListManagerSnapshot {
+            guest_id: 10,
+            generation: 1,
+            definition_id: 0,
+            owner_port: 2,
+            global_view_rect: Some((70, 20, 130, 160)),
+            view_rect: (5, 10, 65, 150),
+            data_bounds: (0, 0, 2, 1),
+            cell_size: (20, 140),
+            visible: (0, 0, 2, 1),
+            draw_enabled: true,
+            active: true,
+            cells: Default::default(),
+            text_cells: Some(Default::default()),
+            selected: Default::default(),
+            vertical_scrollbar: None,
+            horizontal_scrollbar: None,
+        };
+        let viewport = Rect::from((20, 0, 160, 180));
+        let pieces = list_pieces(&[list.clone()], &[], &[front.clone(), back.clone()], viewport);
+        assert!(!pieces.is_empty());
+        assert!(pieces.iter().all(|piece| {
+            piece.clip.intersection(Rect::from((40, 60, 92, 142))).is_none()
+        }));
+        list.definition_id = 128;
+        assert!(list_pieces(&[list.clone()], &[], &[front, back.clone()], viewport).is_empty());
+        list.definition_id = 0;
+        list.draw_enabled = false;
+        assert!(list_pieces(&[list], &[], &[back], viewport).is_empty());
     }
 
     #[test]

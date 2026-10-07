@@ -46,8 +46,12 @@ pub struct ListManagerSnapshot {
     pub guest_id: u32,
     /// Changes when a disposed list's handle is reused.
     pub generation: u64,
+    /// LNew `theProc` resource ID; only zero is the standard text LDEF.
+    pub definition_id: i16,
     /// Guest GrafPort or window pointer owning the local view rectangle.
     pub owner_port: u32,
+    /// Global bounds only when the owner is a known Window Manager window.
+    pub global_view_rect: Option<(i16, i16, i16, i16)>,
     pub view_rect: (i16, i16, i16, i16),
     pub data_bounds: (i16, i16, i16, i16),
     pub cell_size: (i16, i16),
@@ -55,6 +59,8 @@ pub struct ListManagerSnapshot {
     pub draw_enabled: bool,
     pub active: bool,
     pub cells: BTreeMap<(i16, i16), Vec<u8>>,
+    /// Decoded unstyled cell text only for the standard LDEF (resource 0).
+    pub text_cells: Option<BTreeMap<(i16, i16), String>>,
     pub selected: BTreeSet<(i16, i16)>,
     pub vertical_scrollbar: Option<(bool, u8)>,
     pub horizontal_scrollbar: Option<(bool, u8)>,
@@ -3174,11 +3180,26 @@ impl FixtureRunner {
     #[doc(hidden)]
     pub fn list_manager_snapshot(&mut self) -> Vec<ListManagerSnapshot> {
         use crate::list_manager::ProcessListRecord;
+        use crate::window_manager::{snapshot_local_rect_to_global, snapshot_port_bounds_origin};
+
+        // LNew's rView is local to theWindow. Use the same QuickDraw port
+        // origin conversion as Window Manager snapshots only for known windows.
+        // More Macintosh Toolbox (1993), pp. 4-70--4-72;
+        // Imaging With QuickDraw (1994), Basic QuickDraw pp. 2-9--2-10.
+        let window_ports: BTreeSet<u32> = self
+            .window_frame_snapshot()
+            .into_iter()
+            .map(|frame| frame.guest_id)
+            .collect();
         let snapshot =
-            |record: &ProcessListRecord, bars: [Option<(bool, u8)>; 2]| ListManagerSnapshot {
+            |record: &ProcessListRecord,
+             bars: [Option<(bool, u8)>; 2],
+             global_view_rect: Option<(i16, i16, i16, i16)>| ListManagerSnapshot {
                 guest_id: record.handle,
                 generation: record.generation,
+                definition_id: record.definition_id,
                 owner_port: record.port,
+                global_view_rect,
                 view_rect: record.view_rect,
                 data_bounds: record.data_bounds,
                 cell_size: record.cell_size,
@@ -3190,6 +3211,13 @@ impl FixtureRunner {
                     .iter()
                     .map(|(cell, bytes)| (*cell, bytes.clone()))
                     .collect(),
+                text_cells: (record.definition_id == 0).then(|| {
+                    record
+                        .cells
+                        .iter()
+                        .map(|(cell, bytes)| (*cell, crate::mac_roman::decode_mac_roman(bytes)))
+                        .collect()
+                }),
                 selected: record.selected.clone(),
                 vertical_scrollbar: bars[0],
                 horizontal_scrollbar: bars[1],
@@ -3201,6 +3229,13 @@ impl FixtureRunner {
             records
                 .iter()
                 .map(|record| {
+                    let global_view_rect = window_ports.contains(&record.port).then(|| {
+                        let origin = snapshot_port_bounds_origin(
+                            &mut |address| app.memory.read_u8(address).unwrap_or(0),
+                            record.port,
+                        );
+                        snapshot_local_rect_to_global(record.view_rect, origin)
+                    });
                     let bars = [28, 32].map(|offset| {
                         let ptr = app.memory.read_u32_be(record.handle).filter(|p| *p != 0)?;
                         let handle = app.memory.read_u32_be(ptr + offset).filter(|p| *p != 0)?;
@@ -3210,7 +3245,7 @@ impl FixtureRunner {
                             app.memory.read_u8(control + 17)?,
                         ))
                     });
-                    (record.handle, snapshot(record, bars))
+                    (record.handle, snapshot(record, bars, global_view_rect))
                 })
                 .collect::<Vec<_>>()
         } else {
@@ -3218,6 +3253,13 @@ impl FixtureRunner {
             records
                 .iter()
                 .map(|record| {
+                    let global_view_rect = window_ports.contains(&record.port).then(|| {
+                        let origin = snapshot_port_bounds_origin(
+                            &mut |address| self.bus.read_byte(address),
+                            record.port,
+                        );
+                        snapshot_local_rect_to_global(record.view_rect, origin)
+                    });
                     let bars = [28, 32].map(|offset| {
                         let ptr = self.bus.read_long(record.handle);
                         if ptr == 0 {
@@ -3236,7 +3278,7 @@ impl FixtureRunner {
                             self.bus.read_byte(control + 17),
                         ))
                     });
-                    (record.handle, snapshot(record, bars))
+                    (record.handle, snapshot(record, bars, global_view_rect))
                 })
                 .collect::<Vec<_>>()
         };

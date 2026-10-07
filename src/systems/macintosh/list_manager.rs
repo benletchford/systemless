@@ -21,6 +21,7 @@ pub(crate) fn new_list_generation() -> u64 {
 pub struct ProcessListRecord {
     pub(crate) handle: u32,
     pub(crate) generation: u64,
+    pub(crate) definition_id: i16,
     pub(crate) cells_handle: u32,
     pub(crate) view_rect: (i16, i16, i16, i16),
     pub(crate) data_bounds: (i16, i16, i16, i16),
@@ -162,6 +163,7 @@ mod tests {
         let mut list = ProcessListRecord {
             handle: 0,
             generation: new_list_generation(),
+            definition_id: 0,
             cells_handle: 0,
             view_rect: (78, 24, 228, 528),
             data_bounds: (0, 0, 12, 1),
@@ -200,6 +202,7 @@ mod tests {
         let record = ProcessListRecord {
             handle: 0x1000,
             generation: new_list_generation(),
+            definition_id: 0,
             cells_handle: 0x2000,
             view_rect: (0, 0, 40, 100),
             data_bounds: (0, 0, 2, 1),
