@@ -8,7 +8,7 @@ use systemless::display::render_screen_with_gamma;
 use systemless::game::{init_game, load_game, new_runner_with_screen_depth};
 use systemless::menu_model::GuestMenuSnapshot;
 use systemless::runner::{
-    FixtureRunner, ResourceManagerSnapshot, TextEditSnapshot, WindowSnapshot,
+    FixtureRunner, ResourceManagerSnapshot, StandardFileKind, TextEditSnapshot, WindowSnapshot,
 };
 use systemless::ui_theme::UiThemeId;
 
@@ -1773,6 +1773,12 @@ fn test_toolbox_showcase() {
     run_ticks(&mut runner, "drag volume thumb right", 1);
     click_point(&mut runner, win_top + 203, win_left + 207);
     run_ticks(&mut runner, "Preferences page to settle", 1);
+    let volume = runner
+        .control_snapshot()
+        .into_iter()
+        .find(|control| control.local_bounds == (195, 35, 211, 215))
+        .expect("preferences volume control must remain live");
+    assert_eq!(volume.value, 53, "both CPU slices must commit the same scrollbar value");
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, "05-preferences.png");
 
@@ -1814,6 +1820,13 @@ fn test_toolbox_showcase() {
     // 6a. Open Modal Preferences Dialog via button: local (317, 130)
     click_point(&mut runner, win_top + 317, win_left + 130);
     run_ticks(&mut runner, "Modal preferences dialog to open", 2);
+    let modal = runner
+        .dialog_snapshot()
+        .into_iter()
+        .find(|dialog| dialog.visible && dialog.bounds == (100, 130, 315, 470))
+        .expect("preferences dialog must be visible");
+    assert_eq!(modal.edit_field, Some(7));
+    assert_eq!(modal.items[6].selection, Some((0, 0)));
     // Dialog bounds: {100, 130, 315, 470}. The two stacked edit fields
     // reproduce the layout that previously exposed cross-field glyphs.
     assert_reference_frame(&mut runner, "07-modal-dialog.png");
@@ -2545,16 +2558,10 @@ fn test_toolbox_showcase() {
     let page_save_dialog_sample = screen_rgb(&mut runner, 227, 221);
     // Sample persistent page/dialog contrast outside font-dependent ink.
     let legacy_get_sample_point = if powerpc { (160, 10) } else { (50, 0) };
-    let legacy_save_sample_point = if powerpc { (71, 200) } else { (227, 221) };
     let page_legacy_get_sample = screen_rgb(
         &mut runner,
         legacy_get_sample_point.0,
         legacy_get_sample_point.1,
-    );
-    let page_legacy_save_sample = screen_rgb(
-        &mut runner,
-        legacy_save_sample_point.0,
-        legacy_save_sample_point.1,
     );
     let legacy_get_sample = legacy_get_sample_point;
     assert_reference_frame(&mut runner, "20-standard-file-page.png");
@@ -2608,21 +2615,22 @@ fn test_toolbox_showcase() {
     });
 
     // Legacy SFPutFile: cancellation must leave its SFReply good bit false.
+    // Its white file list can cover a white page pixel, so panel identity is
+    // a stronger gate than framebuffer contrast on either CPU.
     click_point(&mut runner, win_top + 216, win_left + 480);
     runner.set_mouse_position(550, 760);
     step_until_gui(&mut runner, "legacy SFPutFile dialog", |r| {
-        screen_rgb(r, legacy_save_sample_point.0, legacy_save_sample_point.1)
-            != page_legacy_save_sample
+        r.standard_file_snapshot()
+            .is_some_and(|panel| panel.kind == StandardFileKind::Put && !panel.standard_entry_point)
     });
     runner.push_key_down(0x35, 0);
     runner.push_key_up(0x35, 0);
     step_until_gui(&mut runner, "legacy SFPutFile cancellation", |r| {
-        screen_rgb(r, legacy_save_sample_point.0, legacy_save_sample_point.1)
-            == page_legacy_save_sample
+        r.standard_file_snapshot().is_none()
     });
 
-    // The sample pixel is restored early in the page redraw; wait for the
-    // guest to return to its event loop so the capture sees the whole page.
+    // The page background can return before its contents; wait for the guest
+    // event loop so the capture sees the whole redraw.
     wait_for_page_event_loop(&mut runner, "standard file page redraw");
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, "22-standard-file-complete.png");
