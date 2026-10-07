@@ -1494,12 +1494,16 @@ impl super::TrapDispatcher {
                 self.flush_guest_sound_queue(bus, chan_ptr);
             }
             sound::cmd::REST => {
-                // Sound 1994, 2-95: restCmd inserts a rest of `param1`
-                // half-frames in a sequence-channel (note synth path).
-                // For a sample-mixing channel rests don't translate to
-                // anything observable in the PCM stream; the channel
-                // either has buffered samples to play or doesn't. Accept
-                // as a recognised no-op.
+                // Sound 1994, p. 2-96: restCmd rests a channel for `param1`
+                // half-milliseconds. For a sample-mixing channel rests don't
+                // translate to anything observable in the PCM stream; the
+                // channel either has buffered samples to play or doesn't.
+                // Accept as a recognised no-op.
+            }
+            sound::cmd::AMP => {
+                self.sound_manager.with_channel_mut(chan_ptr, |chan| {
+                    chan.set_amplitude(cmd.param1);
+                });
             }
             sound::cmd::CALLBACK => {
                 let pending_callback = self.sound_manager.with_channel_mut(chan_ptr, |chan| {

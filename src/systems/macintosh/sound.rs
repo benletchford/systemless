@@ -37,6 +37,8 @@ const FULL_VOLUME: u16 = 0x0100;
 const FULL_STEREO_VOLUME: u32 = ((FULL_VOLUME as u32) << 16) | FULL_VOLUME as u32;
 /// Unity playback rate in Sound Manager Fixed units (Sound 1994, 2-97).
 const UNITY_RATE_FIXED: u32 = 0x0001_0000;
+/// ampCmd's full amplitude. Sound 1994, p. 2-96.
+const FULL_AMPLITUDE: u8 = 255;
 /// Maximum decoded double-buffer frames retained for waveform diagnostics.
 pub(crate) const DEBUG_DOUBLE_BUFFER_CAPTURE_LIMIT: usize = OUTPUT_RATE as usize * 60;
 /// Guest-pointer range reserved for native Sound Manager channels that have no
@@ -54,13 +56,13 @@ pub mod cmd {
     pub const VERSION: u16 = 25;
     pub const TOTAL_LOAD: u16 = 26;
     pub const LOAD: u16 = 27;
-    /// restCmd ($2B = 43) inserts a rest of `param1` half-frames in
-    /// a sequence-channel (note channel for note/freq/wave synth).
-    /// Sound 1994, 2-95. Sample-mixing channels (Marathon 1's case)
-    /// receive restCmd as part of envelope sequencing but it has
-    /// no effect on raw PCM playback — we accept it as a recognised
-    /// no-op so the unhandled-cmds sentinel doesn't trip.
-    pub const REST: u16 = 43;
+    /// restCmd (41) rests a channel for `param1` half-milliseconds
+    /// (Sound 1994, pp. 2-12 and 2-96). It has no effect on sampled-sound
+    /// playback and is accepted as a recognised no-op.
+    pub const REST: u16 = 41;
+    /// ampCmd (43) sets the amplitude, 0 to 255 in `param1`, of the sound
+    /// playing and of the next sound played. Sound 1994, pp. 2-12, 2-96.
+    pub const AMP: u16 = 43;
     pub const VOLUME: u16 = 46;
     /// freqDurationCmd plays the installed voice at a MIDI note for a
     /// duration; freqCmd plays it indefinitely or changes the pitch of the
@@ -343,6 +345,9 @@ pub struct SndChannel {
     pub callback_architecture: CallbackTaskArchitecture,
     /// Current channel volume as packed stereo values (right in high word).
     volume: u32,
+    /// ampCmd amplitude, 0 (silent) to 255 (full), applied on top of
+    /// `volume`.
+    amplitude: u8,
     /// Current playback rate relative to the channel's base sample rate.
     rate_fixed: u32,
     /// Sample rate selected through Sound Manager channel information.
@@ -405,6 +410,7 @@ impl SndChannel {
             callback_addr: 0,
             callback_architecture: CallbackTaskArchitecture::M68k,
             volume: FULL_STEREO_VOLUME,
+            amplitude: FULL_AMPLITUDE,
             rate_fixed: UNITY_RATE_FIXED,
             sample_rate_fixed: RATE_22KHZ_FIXED,
             pending_callback_cmds: Vec::new(),
@@ -607,6 +613,17 @@ impl SndChannel {
 
     pub fn set_volume(&mut self, packed_volume: u32) {
         self.volume = packed_volume;
+    }
+
+    /// ampCmd: values outside 0-255 are clamped.
+    pub(crate) fn set_amplitude(&mut self, amplitude: i16) {
+        self.amplitude = amplitude.clamp(0, i16::from(FULL_AMPLITUDE)) as u8;
+    }
+
+    /// The packed stereo volume scaled by the ampCmd amplitude.
+    fn mix_volume(&self) -> u32 {
+        let scale = |volume: u32| volume * u32::from(self.amplitude) / u32::from(FULL_AMPLITUDE);
+        (scale(self.volume >> 16) << 16) | scale(self.volume & 0xFFFF)
     }
 
     pub fn set_rate(&mut self, rate_fixed: u32) {
@@ -1064,6 +1081,7 @@ impl SoundManager {
             cmd::FLUSH => self.flush_channel(guest_ptr),
             cmd::VOLUME => self.ensure_channel_mut(guest_ptr).set_volume(command.param2),
             cmd::RATE => self.ensure_channel_mut(guest_ptr).set_rate(command.param2),
+            cmd::AMP => self.ensure_channel_mut(guest_ptr).set_amplitude(command.param1),
             cmd::FREQ => self.ensure_channel_mut(guest_ptr).play_note(command.param2, None),
             cmd::FREQ_DURATION => self
                 .ensure_channel_mut(guest_ptr)
@@ -1275,6 +1293,7 @@ impl SoundManager {
                 continue;
             }
 
+            let mix_volume = chan.mix_volume();
             if let Some(ref mut buf) = chan.playing {
                 any_active = true;
                 for slot in output.iter_mut().take(num_samples) {
@@ -1291,7 +1310,7 @@ impl SoundManager {
                     else {
                         break;
                     };
-                    let sample = apply_volume_stereo(source_sample, chan.volume);
+                    let sample = apply_volume_stereo(source_sample, mix_volume);
                     let mixed_left = slot.left as i16 + sample.left as i16 - 0x80;
                     let mixed_right = slot.right as i16 + sample.right as i16 - 0x80;
                     slot.left = mixed_left.clamp(0, 255) as u8;
@@ -1587,7 +1606,8 @@ mod tests {
         assert_eq!(cmd::VERSION, 25, "versionCmd per IM:Sound 2-92");
         assert_eq!(cmd::TOTAL_LOAD, 26, "totalLoadCmd per IM:Sound 2-92");
         assert_eq!(cmd::LOAD, 27, "loadCmd per IM:Sound 2-92");
-        assert_eq!(cmd::REST, 43, "restCmd per IM:Sound 2-95");
+        assert_eq!(cmd::REST, 41, "restCmd per IM:Sound 2-12");
+        assert_eq!(cmd::AMP, 43, "ampCmd per IM:Sound 2-12");
         assert_eq!(cmd::VOLUME, 46, "volumeCmd per IM:Sound 2-126");
         assert_eq!(cmd::SOUND, 80, "soundCmd per IM:Sound 2-126");
         assert_eq!(cmd::BUFFER, 81, "bufferCmd per IM:Sound 2-126");
@@ -3477,5 +3497,25 @@ mod tests {
             Some((2 * OUTPUT_RATE) << 16)
         );
         assert_eq!(manager.mix_frame(2), vec![0xB0, 0xD0]);
+    }
+
+    /// Sound 1994, p. 2-96: ampCmd sets the amplitude of the sound playing
+    /// and, when none is, of the next sound played.
+    #[test]
+    fn amp_command_scales_current_and_next_sounds() {
+        let chan = 0x1000;
+        let mut manager = SoundManager::new();
+        manager.execute_immediate_command(chan, note_command(cmd::AMP, 128, 0));
+        manager.play_buffer_command_for_architecture(
+            chan,
+            vec![0xC0; 4],
+            OUTPUT_RATE << 16,
+            CallbackTaskArchitecture::PowerPc,
+        );
+        assert_eq!(manager.mix_frame(2), vec![0xA0, 0xA0]);
+        manager.execute_immediate_command(chan, note_command(cmd::AMP, 0, 0));
+        assert_eq!(manager.mix_frame(1), vec![0x80]);
+        manager.execute_immediate_command(chan, note_command(cmd::AMP, 255, 0));
+        assert_eq!(manager.mix_frame(1), vec![0xC0]);
     }
 }

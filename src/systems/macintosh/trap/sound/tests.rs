@@ -2441,3 +2441,45 @@ fn decode_double_buffer_samples_preserves_stereo_16bit() {
         vec![128, 192]
     );
 }
+
+#[test]
+fn snddoimmediate_ampcmd_sets_channel_amplitude() {
+    // Inside Macintosh: Sound (1994), pp. 2-12 and 2-96: ampCmd (43) sets
+    // the amplitude, 0 to 255 in param1, of the next sound played.
+    let (mut disp, mut cpu, mut bus) = setup();
+    let create_sp = TEST_SP;
+    let chan_ptr_ptr = 0x220500;
+    bus.write_long(chan_ptr_ptr, 0);
+    bus.write_long(create_sp, 0);
+    bus.write_long(create_sp + 4, 0);
+    bus.write_word(create_sp + 8, 5);
+    bus.write_long(create_sp + 10, chan_ptr_ptr);
+    assert!(disp
+        .dispatch_sound(true, 0x007, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    let chan_ptr = bus.read_long(chan_ptr_ptr);
+
+    let cmd_ptr = 0x230200;
+    bus.write_word(cmd_ptr, cmd::AMP);
+    bus.write_word(cmd_ptr + 2, 0);
+    bus.write_long(cmd_ptr + 4, 0);
+    let sp = TEST_SP + 0x40;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, cmd_ptr);
+    bus.write_long(sp + 4, chan_ptr);
+    bus.write_word(sp + 8, 0xFFFF);
+    assert!(disp
+        .dispatch_sound(true, 0x004, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(bus.read_word(sp + 8), 0);
+
+    disp.sound_manager.play_buffer_command_for_architecture(
+        chan_ptr,
+        vec![0xC0; 2],
+        crate::sound::OUTPUT_RATE << 16,
+        crate::callback_manager::CallbackTaskArchitecture::M68k,
+    );
+    assert_eq!(disp.sound_manager.mix_frame(2), vec![0x80, 0x80]);
+}
