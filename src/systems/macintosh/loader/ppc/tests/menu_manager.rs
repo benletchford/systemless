@@ -2390,6 +2390,12 @@ fn native_custom_mdef_adapter_marshals_shared_choose_invocation() {
         .memory
         .write_u32_be(menu_ptr + 6, mdef_handle)
         .unwrap();
+    let presentation = loaded.guest_menu_snapshot();
+    assert!(presentation.requires_guest_menu_rendering());
+    assert!(presentation
+        .menus
+        .iter()
+        .any(|item| item.id == 128 && !item.standard_definition));
 
     let invocation = MenuDefinitionInvocation {
         message: crate::menu_manager::MenuDefinitionMessage::Choose,
