@@ -5314,6 +5314,27 @@ fn init_graf_initializes_application_quickdraw_globals() {
 }
 
 #[test]
+fn set_port_updates_qd_globals_the_port() {
+    let pef = synthetic_pef_with_import(b"InitGraf");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let globals = PPC_DATA_BASE + 0x2000;
+    let port = PPC_DATA_BASE + 0x3000;
+    loaded.memory.add_region(globals - 126, vec![0; 130]);
+    loaded.memory.add_region(port, vec![0; 128]);
+    loaded.cpu.gpr[3] = globals;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InitGraf);
+    assert_eq!(loaded.memory.read_u32_be(globals), Some(PPC_MAIN_GWORLD));
+
+    loaded.cpu.gpr[3] = port;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetPort);
+    assert_eq!(loaded.memory.read_u32_be(globals), Some(port));
+
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetPort);
+    assert_eq!(loaded.memory.read_u32_be(globals), Some(PPC_MAIN_GWORLD));
+}
+
+#[test]
 fn hle_import_runner_gets_and_sets_gray_region_low_memory_handle() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "LMSetGrayRgn"),

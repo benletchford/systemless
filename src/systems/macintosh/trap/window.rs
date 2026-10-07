@@ -3496,10 +3496,10 @@ impl super::TrapDispatcher {
         // portBits.bounds by (-left, -top) so that local coordinate (0,0)
         // maps to the window's top-left screen pixel.
         // Reference: Inside Macintosh Volume I, I-289 (SetOrigin)
-        let bounds_top = -wind_top;
-        let bounds_left = -wind_left;
-        let bounds_bottom = screen_h as i16 - wind_top;
-        let bounds_right = screen_w as i16 - wind_left;
+        let bounds_top = wind_top.saturating_neg();
+        let bounds_left = wind_left.saturating_neg();
+        let bounds_bottom = (screen_h as i16).saturating_sub(wind_top);
+        let bounds_right = (screen_w as i16).saturating_sub(wind_left);
 
         let pixmap = bus.alloc(50);
         // Some CRTs (Centaurian 1.2.1) zero out low-mem globals
@@ -3540,8 +3540,8 @@ impl super::TrapDispatcher {
         bus.write_word(window_ptr + 6, 0xC000); // portVersion (CGrafPort flag)
 
         // portRect — in local coordinates (origin at window top-left)
-        let port_height = wind_bottom - wind_top;
-        let port_width = wind_right - wind_left;
+        let port_height = wind_bottom.saturating_sub(wind_top);
+        let port_width = wind_right.saturating_sub(wind_left);
         bus.write_word(window_ptr + 16, 0u16); // top = 0
         bus.write_word(window_ptr + 18, 0u16); // left = 0
         bus.write_word(window_ptr + 20, port_height as u16); // bottom = height
@@ -3551,7 +3551,7 @@ impl super::TrapDispatcher {
         // Inside Macintosh Volume V, V-245
         // In local coordinates, the menu bar is at y = mbar_h - wind_top.
         let mbar_h = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
-        let vis_top_local = (mbar_h - wind_top).max(0);
+        let vis_top_local = mbar_h.saturating_sub(wind_top).max(0);
         let mut content_rect = (vis_top_local, 0, port_height, port_width);
         // The menu-bar exclusion is a property of visRgn, not of the window's
         // content region, so the Window-Manager regions start from the whole

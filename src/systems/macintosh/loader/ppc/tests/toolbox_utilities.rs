@@ -9,6 +9,25 @@ fn low_memory_ghost_window_accessor_reads_current_pointer() {
 }
 
 #[test]
+fn low_memory_cur_deactive_accessors_roundtrip() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"LMSetCurDeactive")).unwrap();
+    assert_eq!(
+        loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::LMSetCurDeactive
+    );
+    loaded.cpu.gpr[3] = 0x1234_5678;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LMSetCurDeactive);
+    assert_eq!(
+        loaded
+            .memory
+            .read_u32_be(crate::memory::globals::addr::CUR_DEACTIVE),
+        Some(0x1234_5678)
+    );
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LMGetCurDeactive);
+    assert_eq!(loaded.cpu.gpr[3], 0x1234_5678);
+}
+
+#[test]
 fn hle_import_runner_unpacks_packbits_and_advances_pointer_variables() {
     let pef = synthetic_pef_with_import(b"UnpackBits");
     let mut loaded = load_pef_application(&pef).unwrap();

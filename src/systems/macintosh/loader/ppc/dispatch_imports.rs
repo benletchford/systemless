@@ -2856,6 +2856,8 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::LMGetMenuList
         | PpcImportDispatcherTarget::LMSetMenuHook
         | PpcImportDispatcherTarget::LMSetCurActivate
+        | PpcImportDispatcherTarget::LMGetCurDeactive
+        | PpcImportDispatcherTarget::LMSetCurDeactive
         | PpcImportDispatcherTarget::LMGetMenuFlash
         | PpcImportDispatcherTarget::LMGetPaintWhite
         | PpcImportDispatcherTarget::LMGetHWCfgFlags

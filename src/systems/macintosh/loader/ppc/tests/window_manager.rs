@@ -1137,7 +1137,22 @@ fn hle_import_runner_new_cwindow_draws_document_frame_at_supported_depths() {
         );
 
         loaded.cpu.gpr[3] = window;
+        if depth == 16 {
+            assert!(ppc_quickdraw_write_raw_pixel(
+                &mut loaded.memory,
+                front,
+                (150, 150),
+                0x1234,
+            ));
+        }
         run_test_import(&mut loaded, PpcImportDispatcherTarget::HideWindow);
+        if depth == 16 {
+            assert_ne!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, (150, 150)),
+                Some(0x1234),
+                "HideWindow left the hidden window's content on screen",
+            );
+        }
         let hidden_frame =
             ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len)
                 .unwrap();

@@ -40,6 +40,15 @@ pub(super) fn dispatch_low_memory_import(
             let _ = memory.write_u32_be(crate::memory::globals::addr::CUR_ACTIVATE, cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::LMGetCurDeactive => Some(PpcImportAction::Return(
+            memory
+                .read_u32_be(crate::memory::globals::addr::CUR_DEACTIVE)
+                .unwrap_or(0),
+        )),
+        PpcImportDispatcherTarget::LMSetCurDeactive => {
+            let _ = memory.write_u32_be(crate::memory::globals::addr::CUR_DEACTIVE, cpu.gpr[3]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::LMGetMenuFlash => Some(PpcImportAction::Return(ppc_i16_result(
             memory
                 .read_u16_be(crate::memory::globals::addr::MENU_FLASH)

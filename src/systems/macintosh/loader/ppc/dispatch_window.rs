@@ -501,6 +501,14 @@ pub(super) fn dispatch_window_import(
                 previous_front,
                 toolbox_startup.host_menu_bar_hidden,
             );
+            let next_front = ppc_front_visible_process_window(memory, window_list);
+            ppc_enqueue_window_activation_transition(
+                memory,
+                event_queue,
+                previous_front,
+                next_front,
+                tick_count,
+            );
             if !was_visible {
                 if let Some(port_rect) = ppc_read_rect(memory, window.wrapping_add(16)) {
                     ppc_invalidate_window_local_rect(memory, window, port_rect);
@@ -547,6 +555,13 @@ pub(super) fn dispatch_window_import(
         PpcImportDispatcherTarget::HideWindow => {
             let window = cpu.gpr[3];
             let previous_front = ppc_front_visible_process_window(memory, window_list);
+            let exposed = ppc_window_is_visible(memory, window)
+                .then(|| {
+                    memory
+                        .read_u32_be(window.wrapping_add(PPC_CWINDOW_STRUCTURE_RGN_OFFSET))
+                        .and_then(|region| ppc_read_rgn_bbox(memory, region))
+                })
+                .flatten();
             let _ = ppc_set_window_visible(memory, window, false);
             let _ = ppc_set_window_hilited(memory, window, false);
             ppc_recalculate_window_vis_regions(
@@ -559,12 +574,29 @@ pub(super) fn dispatch_window_import(
                 handles,
             );
             let next_front = ppc_front_visible_process_window(memory, window_list);
+            ppc_enqueue_window_activation_transition(
+                memory,
+                event_queue,
+                previous_front,
+                next_front,
+                tick_count,
+            );
             ppc_transition_front_window_chrome(
                 memory,
                 gworlds,
                 window_list,
                 previous_front,
                 toolbox_startup.host_menu_bar_hidden,
+            );
+            ppc_restore_window_removal_exposure(
+                memory,
+                gworlds,
+                window_list,
+                exposed,
+                toolbox_startup.host_menu_bar_hidden,
+                event_queue,
+                tick_count,
+                input,
             );
             if next_front != previous_front {
                 let _ = ppc_activate_front_window_palette(
@@ -589,6 +621,13 @@ pub(super) fn dispatch_window_import(
             let visible = cpu.gpr[4] != 0;
             let previous_front = ppc_front_visible_process_window(memory, window_list);
             let was_visible = ppc_window_is_visible(memory, window);
+            let exposed = (was_visible && !visible)
+                .then(|| {
+                    memory
+                        .read_u32_be(window.wrapping_add(PPC_CWINDOW_STRUCTURE_RGN_OFFSET))
+                        .and_then(|region| ppc_read_rgn_bbox(memory, region))
+                })
+                .flatten();
             let _ = ppc_set_window_visible(memory, window, visible);
             ppc_recalculate_window_vis_regions(
                 process_memory_manager,
@@ -605,6 +644,24 @@ pub(super) fn dispatch_window_import(
                 window_list,
                 previous_front,
                 toolbox_startup.host_menu_bar_hidden,
+            );
+            let next_front = ppc_front_visible_process_window(memory, window_list);
+            ppc_enqueue_window_activation_transition(
+                memory,
+                event_queue,
+                previous_front,
+                next_front,
+                tick_count,
+            );
+            ppc_restore_window_removal_exposure(
+                memory,
+                gworlds,
+                window_list,
+                exposed,
+                toolbox_startup.host_menu_bar_hidden,
+                event_queue,
+                tick_count,
+                input,
             );
             if visible && !was_visible {
                 if ppc_front_visible_process_window(memory, window_list) != Some(window) {

@@ -1820,7 +1820,8 @@ impl PpcLoadedApp {
                                             current_gworld.with_mut(|current_gworld| {
                                             current_gdevice.with_mut(|current_gdevice| {
                                             files.with_mut(|files| {
-                                            dispatch_supported_import(PpcDispatchContext {
+                                            let previous_port = *current_gworld;
+                                            let action = dispatch_supported_import(PpcDispatchContext {
                                             binding,
                                             agl: &mut agl,
                                             cpu,
@@ -1932,7 +1933,26 @@ impl PpcLoadedApp {
                                             input,
                                             event_queue,
                                             draw_sprocket: &mut draw_sprocket,
-                                            })
+                                            });
+                                            // QDGlobals.thePort is guest-visible state. Keep it
+                                            // consistent with SetPort and Toolbox operations that
+                                            // select a window or dialog port internally.
+                                            if toolbox_startup.init_graf_global_ptr != 0
+                                                && previous_port != *current_gworld
+                                                && matches!(
+                                                    binding.dispatcher_target,
+                                                    PpcImportDispatcherTarget::SetPort
+                                                        | PpcImportDispatcherTarget::SetPortWindowPort
+                                                        | PpcImportDispatcherTarget::SetPortDialogPort
+                                                        | PpcImportDispatcherTarget::SetGWorld
+                                                )
+                                            {
+                                                let _ = memory.write_u32_be(
+                                                    toolbox_startup.init_graf_global_ptr,
+                                                    *current_gworld,
+                                                );
+                                            }
+                                            action
                                             })
                                             })
                                             })

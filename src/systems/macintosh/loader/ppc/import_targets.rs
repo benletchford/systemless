@@ -263,6 +263,8 @@ pub enum PpcImportDispatcherTarget {
     LMGetGhostWindow,
     LMSetWindowList,
     LMSetCurActivate,
+    LMGetCurDeactive,
+    LMSetCurDeactive,
     LMGetAuxWinHead,
     LMSetAuxWinHead,
     SizeWindow,
@@ -3101,6 +3103,8 @@ pub(crate) fn dispatcher_target_for_import(
             "LMSetWindowList" | "lmsetwindowlist",
         ) => PpcImportDispatcherTarget::LMSetWindowList,
         ("InterfaceLib", "LMSetCurActivate") => PpcImportDispatcherTarget::LMSetCurActivate,
+        ("InterfaceLib", "LMGetCurDeactive") => PpcImportDispatcherTarget::LMGetCurDeactive,
+        ("InterfaceLib", "LMSetCurDeactive") => PpcImportDispatcherTarget::LMSetCurDeactive,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "LMGetAuxWinHead" | "lmgetauxwinhead",

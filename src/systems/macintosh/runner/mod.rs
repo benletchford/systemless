@@ -8206,6 +8206,45 @@ impl FixtureRunner {
         if !ppc_app.toolbox_startup.execution.calls().has_m68k_execution() {
             return None;
         }
+        let current_refnum = ppc_app.current_resource_refnum();
+        if current_refnum > 0 {
+            let refnum = current_refnum as u16;
+            let missing = self
+                .dispatcher
+                .resources
+                .as_ref()
+                .is_none_or(|resources| !resources.files.contains_key(&refnum));
+            if missing {
+                let path = self.process_context.resource_manager().with_mut(|resources| {
+                    resources
+                        .resource_files
+                        .iter()
+                        .find(|file| file.ref_num == current_refnum)
+                        .map(|file| file.path.clone())
+                });
+                if let Some(path) = path {
+                    if let Some(fork) = self
+                        .dispatcher
+                        .vfs_rsrc
+                        .get(&path)
+                        .and_then(|bytes| ResourceFork::parse(bytes))
+                    {
+                        self.dispatcher
+                            .merge_resources_from_fork(&fork, &mut self.bus, refnum);
+                        self.dispatcher.set_resource_file_name(refnum, path);
+                    }
+                }
+            }
+            if self
+                .dispatcher
+                .resources
+                .as_ref()
+                .is_some_and(|resources| resources.files.contains_key(&refnum))
+            {
+                self.dispatcher
+                    .set_current_resource_refnum(&mut self.bus, refnum);
+            }
+        }
         if !ppc_app.toolbox_startup.execution.calls().prepare_native_task(&mut ppc_app.cpu) {
             return Some((0, true));
         }
