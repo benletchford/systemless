@@ -8636,6 +8636,9 @@ fn disposemenu_releases_newmenu_menuhandle_and_record_allocations() {
     let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, menu_id, 0x30B800, "Temp");
     let menu_ptr = bus.read_long(handle);
     insert_menu(&mut disp, &mut cpu, &mut bus, handle);
+    let generation = disp.guest_menu_snapshot(&bus).menus[0].generation;
+    assert_ne!(generation, 0);
+    assert_eq!(disp.guest_menu_snapshot(&bus).menus[0].generation, generation);
 
     assert_eq!(
         get_mhandle_for_id(&mut disp, &mut cpu, &mut bus, menu_id),
@@ -8662,6 +8665,10 @@ fn disposemenu_releases_newmenu_menuhandle_and_record_allocations() {
         "DeleteMenu must leave the menu record allocated"
     );
     dispose_menu_by_handle(&mut disp, &mut cpu, &mut bus, handle);
+    disp.with_resource_manager_mut(|resources| {
+        assert!(!resources.menu_generations.contains_key(&handle));
+        assert_ne!(resources.menu_generation(handle), generation);
+    });
 
     assert_eq!(
         bus.get_alloc_size(handle),

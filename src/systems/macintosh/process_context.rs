@@ -29,11 +29,18 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_WINDOW_GENERATION: AtomicU64 = AtomicU64::new(1);
+static NEXT_MENU_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 fn new_window_generation() -> u64 {
     NEXT_WINDOW_GENERATION
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| next.checked_add(1))
         .expect("window lifetime generation exhausted")
+}
+
+fn new_menu_generation() -> u64 {
+    NEXT_MENU_GENERATION
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| next.checked_add(1))
+        .expect("menu lifetime generation exhausted")
 }
 
 #[derive(Debug)]
@@ -830,6 +837,8 @@ pub(crate) struct ProcessLoadedResources {
 /// Process-owned Resource Manager bookkeeping used by CPU adapters.
 #[derive(Clone, Debug, Default)]
 pub struct ProcessResourceManagerState {
+    /// Presentation lifetimes for guest MenuHandles, shared across CPU adapters.
+    pub(crate) menu_generations: HashMap<u32, u64>,
     /// Current resource file for the process, shared by every CPU adapter.
     /// `ProcessLoadedResources::current_file` remains the classic file-chain
     /// cursor, while this is the architecture-neutral `CurResFile` value.
@@ -929,9 +938,21 @@ fn process_resource_manager_runtime_is_empty(manager: &ProcessResourceManagerSta
         && manager.resource_backing_data.is_empty()
         && manager.resident_resources.is_empty()
         && manager.resource_files.is_empty()
+        && manager.menu_generations.is_empty()
 }
 
 impl ProcessResourceManagerState {
+    pub(crate) fn menu_generation(&mut self, handle: u32) -> u64 {
+        *self
+            .menu_generations
+            .entry(handle)
+            .or_insert_with(new_menu_generation)
+    }
+
+    pub(crate) fn forget_menu_generation(&mut self, handle: u32) {
+        self.menu_generations.remove(&handle);
+    }
+
     pub(crate) fn is_pristine(&self) -> bool {
         process_resource_manager_runtime_is_empty(self)
             && *self.current_resource_file == 0
@@ -982,6 +1003,7 @@ impl ProcessResourceManagerState {
         }
 
         if target_runtime_is_empty && !source_runtime_is_empty {
+            self.menu_generations = std::mem::take(&mut source.menu_generations);
             self.loaded_handles = std::mem::take(&mut source.loaded_handles);
             self.resource_handles_by_key = std::mem::take(&mut source.resource_handles_by_key);
             self.detached_handles = std::mem::take(&mut source.detached_handles);
@@ -13648,6 +13670,7 @@ mod tests {
                 .resource_backing_data
                 .insert((7, *b"TEST", 128), b"before".to_vec());
         });
+        let first_menu_generation = first.with_mut(|resources| resources.menu_generation(0x1234));
         let mut second = SharedProcessResourceManager::default();
 
         context.attach_resource_manager(&mut first);
@@ -13682,6 +13705,19 @@ mod tests {
         });
 
         assert!(first.ptr_eq(&second));
+        assert_eq!(
+            second.with_mut(|resources| resources.menu_generation(0x1234)),
+            first_menu_generation
+        );
+        second.with_mut(|resources| resources.forget_menu_generation(0x1234));
+        assert_ne!(
+            first.with_mut(|resources| resources.menu_generation(0x1234)),
+            first_menu_generation
+        );
+        assert_eq!(
+            detached.with_ref(|resources| resources.menu_generations[&0x1234]),
+            first_menu_generation
+        );
         assert_eq!(*first.current_resource_file, 9);
         assert_eq!(*native.current_resource_file, 9);
         assert_eq!(

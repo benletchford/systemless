@@ -550,7 +550,7 @@ mod desktop {
                 let commands = self.commands.clone();
                 let id = menu.id;
                 bar = bar.child(
-                    Button::new(("guest-menu", id as u16 as usize))
+                    Button::new(format!("guest-menu-{}-{}", menu.guest_id, menu.generation))
                         .label(menu.title.clone())
                         .ghost()
                         .small()
@@ -2719,6 +2719,8 @@ mod desktop {
                 demo.menus = GuestMenuSnapshot {
                     custom_bar_definition: false,
                     menus: vec![GuestMenu {
+                        guest_id: 128,
+                        generation: 1,
                         id: 128,
                         title: "Custom".into(),
                         enabled: true,

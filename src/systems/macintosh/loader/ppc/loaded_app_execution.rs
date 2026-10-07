@@ -1808,6 +1808,7 @@ impl PpcLoadedApp {
                                                 resource_files,
                                                 vfs_resource_files,
                                                 vfs_resources,
+                                                menu_generations,
                                                 ..
                                             } = resource_manager;
                                             current_gworld.with_mut(|current_gworld| {
@@ -1895,6 +1896,7 @@ impl PpcLoadedApp {
                                             resource_files,
                                             vfs_resource_files,
                                             vfs_resources,
+                                            menu_generations,
                                             next_file_ref_num,
                                             current_gworld,
                                             current_gdevice,

@@ -39,6 +39,10 @@ impl GuestMenuSnapshot {
 /// One menu in the guest's current menu list.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GuestMenu {
+    /// Live guest MenuHandle; use as presentation identity within this run.
+    pub guest_id: u32,
+    /// Changes when a disposed MenuHandle address is reused.
+    pub generation: u64,
     pub id: i16,
     pub title: String,
     pub enabled: bool,
@@ -72,6 +76,8 @@ mod tests {
         GuestMenuSnapshot {
             custom_bar_definition: false,
             menus: vec![GuestMenu {
+                guest_id: 0x1000,
+                generation: 1,
                 id: -120,
                 title: "File".to_owned(),
                 enabled: menu_enabled,
