@@ -43,13 +43,8 @@ redistributed. An incoming source uses `type: incoming` and a website-relative
 `path`, such as `catalogue/incoming/example/screenshot.png`; Markdown in the
 same entry refers to it as `incoming/example/screenshot.png`.
 
-When an archive cannot be hosted, use `type: local_file` with the exact
-`sha256` and `size_bytes` of the original archive. The game page asks visitors
-to choose that file from their own computer, verifies its bytes, and starts it
-in the browser without uploading it. Keep `launch_enabled: false` until the
-exact archive has passed a browser play test. A local-file entry has no
-download link; its page description should identify where a visitor can
-legitimately obtain the archive.
+Game archives must be hosted by Systemless. Visitor-supplied archives and
+external archive links are not accepted as game sources.
 
 Run preview validation below, then open a pull request with the entry and its
 small incoming assets. **Local R2 credentials and manual uploads are not

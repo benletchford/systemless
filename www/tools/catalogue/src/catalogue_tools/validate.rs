@@ -393,11 +393,8 @@ pub fn entry(e: &Entry) -> Result<()> {
             a.role != ArtifactRole::Screenshot || a.provenance.content_only,
             "screenshot provenance must attest content_only: true"
         );
-        let managed_software = a.role != ArtifactRole::Screenshot
-            && !matches!(
-                a.source,
-                AssetSource::External { .. } | AssetSource::LocalFile { .. }
-            );
+        let managed_software =
+            a.role != ArtifactRole::Screenshot && !matches!(a.source, AssetSource::External { .. });
         ensure!(
             !managed_software || a.provenance.original,
             "hosted software must attest original: true for the unchanged distributable"
@@ -437,21 +434,11 @@ pub fn entry(e: &Entry) -> Result<()> {
                 }
             }
             AssetSource::External { url } => {
+                ensure!(
+                    a.role != ArtifactRole::Archive,
+                    "game archives must be hosted by Systemless"
+                );
                 https(url)?;
-            }
-            AssetSource::LocalFile {
-                sha256: hash,
-                size_bytes,
-            } => {
-                ensure!(
-                    a.role == ArtifactRole::Archive,
-                    "local files must be game archives"
-                );
-                sha256(hash)?;
-                ensure!(
-                    *size_bytes > 0 && *size_bytes <= a.format.limit(),
-                    "invalid local archive size"
-                );
             }
             AssetSource::Sha256 {
                 sha256: hash,

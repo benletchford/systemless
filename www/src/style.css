@@ -867,30 +867,6 @@ input {
   text-transform: uppercase;
 }
 
-.local-archive {
-  width: min(100%, var(--game-width));
-  margin-inline: auto;
-  padding: 16px;
-  border: 1px solid var(--rule);
-  border-radius: 5px;
-  background: var(--surface);
-}
-
-.local-archive label {
-  display: grid;
-  gap: 10px;
-  font-weight: 600;
-}
-
-.local-archive input {
-  max-width: 100%;
-}
-
-.local-archive p {
-  margin: 8px 0 0;
-  color: var(--muted);
-}
-
 .game-canvas-wrap {
   --game-aspect-ratio: inherit;
   --game-aspect-width: inherit;

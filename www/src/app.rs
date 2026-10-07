@@ -475,18 +475,16 @@ fn GamePage(
                             format!("{} · {}", game.developer, game.year)
                         }}
                     </p>
-                    <Show when=move || !active_game.get().assets.archive_path.is_empty()>
-                        <a
-                            class="game-download"
-                            href=move || asset_path(active_game.get().assets.archive_path)
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            download=move || active_game.get().assets.archive_download_name
-                            aria-label=move || format!("Download {}", active_game.get().title)
-                        >
-                            "Download game"
-                        </a>
-                    </Show>
+                    <a
+                        class="game-download"
+                        href=move || asset_path(active_game.get().assets.archive_path)
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        download=move || active_game.get().assets.archive_download_name
+                        aria-label=move || format!("Download {}", active_game.get().title)
+                    >
+                        "Download game"
+                    </a>
                 </div>
             </header>
             <div class="game-screen-wrap">
