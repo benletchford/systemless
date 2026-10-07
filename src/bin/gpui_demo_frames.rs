@@ -80,6 +80,87 @@ pub struct FramePiece {
     pub title: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GutterKind {
+    Vertical,
+    Horizontal,
+    GrowBox,
+}
+
+pub struct GutterPiece {
+    pub window: usize,
+    pub source: Rect,
+    pub clip: Rect,
+    pub kind: GutterKind,
+}
+
+/// Restyle the content-edge areas reserved for standard document scrollbars
+/// and DrawGrowIcon without painting over another window or a custom WDEF.
+pub fn gutter_pieces(windows: &[WindowFrameSnapshot], viewport: Rect) -> Vec<GutterPiece> {
+    let mut result = Vec::new();
+    let mut covers = Vec::new();
+    for (index, frame) in windows.iter().enumerate() {
+        let window = &frame.window;
+        if !window.visible {
+            continue;
+        }
+        let Some(structure) = window.structure_bounds.map(Rect::from) else {
+            continue;
+        };
+        let content = Rect::from(window.bounds);
+        if matches!(frame.definition_id, Some(0 | 4 | 8 | 12))
+            && content.width() > 30
+            && content.height() > 30
+            && structure.intersection(content) == Some(content)
+        {
+            let right = content.right - 15;
+            let bottom = content.bottom - 15;
+            for (kind, source) in [
+                (
+                    GutterKind::Vertical,
+                    Rect {
+                        left: right,
+                        bottom,
+                        ..content
+                    },
+                ),
+                (
+                    GutterKind::Horizontal,
+                    Rect {
+                        top: bottom,
+                        right,
+                        ..content
+                    },
+                ),
+                (
+                    GutterKind::GrowBox,
+                    Rect {
+                        top: bottom,
+                        left: right,
+                        ..content
+                    },
+                ),
+            ] {
+                let mut clips: Vec<_> = source.intersection(viewport).into_iter().collect();
+                for cover in &covers {
+                    clips = clips
+                        .into_iter()
+                        .flat_map(|clip| clip.subtract(*cover))
+                        .collect();
+                }
+                result.extend(clips.into_iter().map(|clip| GutterPiece {
+                    window: index,
+                    source,
+                    clip,
+                    kind,
+                }));
+            }
+        }
+        covers.push(structure);
+    }
+    result
+}
+
 /// Preserve the guest's frame/content boundary and front-to-back ordering.
 /// Standard window variants: Inside Macintosh I, I-275; structure/content
 /// regions and FindWindow: I-276--I-288. Custom WDEFs retain their pixels.
@@ -127,7 +208,7 @@ pub fn frame_pieces(windows: &[WindowFrameSnapshot], viewport: Rect) -> Vec<Fram
 
 #[cfg(test)]
 mod tests {
-    use super::{frame_pieces, Rect};
+    use super::{frame_pieces, gutter_pieces, GutterKind, Rect};
     use systemless::runner::{WindowFrameSnapshot, WindowSnapshot};
 
     fn window(
@@ -198,6 +279,25 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn gutters_stay_on_standard_document_edges_and_below_front_windows() {
+        let windows = [
+            window((60, 60, 120, 120), true, 8),
+            window((40, 40, 140, 140), true, 8),
+            window((20, 20, 160, 160), true, 99),
+        ];
+        let pieces = gutter_pieces(&windows, Rect::from((0, 0, 180, 180)));
+        assert!(pieces
+            .iter()
+            .any(|piece| { piece.window == 0 && piece.kind == GutterKind::GrowBox }));
+        assert!(pieces.iter().all(|piece| piece.window != 2));
+        let front = Rect::from(windows[0].window.structure_bounds.unwrap());
+        assert!(pieces
+            .iter()
+            .filter(|piece| piece.window == 1)
+            .all(|piece| piece.clip.intersection(front).is_none()));
     }
 
     #[test]
