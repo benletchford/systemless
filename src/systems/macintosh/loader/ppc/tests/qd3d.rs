@@ -22038,7 +22038,7 @@ fn q3_software_renderer_applies_linear_fog_style_to_materials() {
                 fog_start: 0.0,
                 fog_end: 1.0,
                 density: 1.0,
-                color: (0.0, 0.0, 1.0, 1.0),
+                color: (1.0, 0.0, 0.0, 1.0),
             }),
             attributes: vec![PpcQ3AttributeRecord {
                 attribute_set,
@@ -22118,7 +22118,7 @@ fn q3_software_renderer_applies_exponential_fog_modes_to_materials() {
                     fog_start: 0.0,
                     fog_end: 1.0,
                     density: 0.5,
-                    color: (0.0, 0.0, 1.0, 1.0),
+                    color: (1.0, 0.0, 0.0, 1.0),
                 }),
                 ..sample
             },
@@ -22275,7 +22275,7 @@ fn q3_software_renderer_applies_alpha_fog_from_vertex_transparency() {
                 fog_start: 0.0,
                 fog_end: 1.0,
                 density: 1.0,
-                color: (0.0, 0.0, 1.0, 1.0),
+                color: (1.0, 0.0, 0.0, 1.0),
             }),
             attributes: vec![color_attribute(
                 attribute_set,

@@ -2208,10 +2208,12 @@ pub fn ppc_q3_software_apply_fog(
         return color;
     };
     let factor = factor.clamp(0.0, 1.0);
+    // The fog color is a TQ3ColorARGB, so alpha comes first.
+    let (_, red, green, blue) = fog_style.color;
     (
-        color.0.mul_add(factor, fog_style.color.0 * (1.0 - factor)),
-        color.1.mul_add(factor, fog_style.color.1 * (1.0 - factor)),
-        color.2.mul_add(factor, fog_style.color.2 * (1.0 - factor)),
+        color.0.mul_add(factor, red * (1.0 - factor)),
+        color.1.mul_add(factor, green * (1.0 - factor)),
+        color.2.mul_add(factor, blue * (1.0 - factor)),
     )
 }
 
