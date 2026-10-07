@@ -1117,6 +1117,7 @@ fn ppc_list_new(
     let draw_enabled = cpu.gpr[8] != 0;
     let record = PpcListRecord {
         handle: list_handle,
+        generation: crate::list_manager::new_list_generation(),
         cells_handle,
         view_rect: view,
         data_bounds,

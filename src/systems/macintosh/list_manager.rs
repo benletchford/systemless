@@ -1,6 +1,15 @@
 //! Architecture-neutral List Manager records.
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_LIST_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) fn new_list_generation() -> u64 {
+    NEXT_LIST_GENERATION
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| next.checked_add(1))
+        .expect("list lifetime generation exhausted")
+}
 
 /// Canonical host-side state for one guest `ListRec`.
 ///
@@ -11,6 +20,7 @@ use std::collections::{BTreeSet, HashMap};
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProcessListRecord {
     pub(crate) handle: u32,
+    pub(crate) generation: u64,
     pub(crate) cells_handle: u32,
     pub(crate) view_rect: (i16, i16, i16, i16),
     pub(crate) data_bounds: (i16, i16, i16, i16),
@@ -151,6 +161,7 @@ mod tests {
     fn clipped_cells_can_scroll_fully_into_view_and_back() {
         let mut list = ProcessListRecord {
             handle: 0,
+            generation: new_list_generation(),
             cells_handle: 0,
             view_rect: (78, 24, 228, 528),
             data_bounds: (0, 0, 12, 1),
@@ -188,6 +199,7 @@ mod tests {
 
         let record = ProcessListRecord {
             handle: 0x1000,
+            generation: new_list_generation(),
             cells_handle: 0x2000,
             view_rect: (0, 0, 40, 100),
             data_bounds: (0, 0, 2, 1),

@@ -7617,6 +7617,7 @@
         let handle = 0x350000;
         let cell = 0x350100;
         disp.list_states.insert_record(handle, super::super::dispatch::ListState {
+            generation: crate::list_manager::new_list_generation(),
             handle,
             cells_handle: 0,
             view_rect: (0, 0, 20, 20),

@@ -42,6 +42,12 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 #[doc(hidden)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListManagerSnapshot {
+    /// Guest ListHandle; combine with generation before retaining UI state.
+    pub guest_id: u32,
+    /// Changes when a disposed list's handle is reused.
+    pub generation: u64,
+    /// Guest GrafPort or window pointer owning the local view rectangle.
+    pub owner_port: u32,
     pub view_rect: (i16, i16, i16, i16),
     pub data_bounds: (i16, i16, i16, i16),
     pub cell_size: (i16, i16),
@@ -3170,6 +3176,9 @@ impl FixtureRunner {
         use crate::list_manager::ProcessListRecord;
         let snapshot =
             |record: &ProcessListRecord, bars: [Option<(bool, u8)>; 2]| ListManagerSnapshot {
+                guest_id: record.handle,
+                generation: record.generation,
+                owner_port: record.port,
                 view_rect: record.view_rect,
                 data_bounds: record.data_bounds,
                 cell_size: record.cell_size,
