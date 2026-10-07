@@ -144,55 +144,6 @@ fn derived_launch_assets_and_unattested_captures_are_rejected() {
 }
 
 #[test]
-fn pinned_local_archive_builds_without_managed_software() {
-    let root = repo();
-    let mut entry = hosted("local-game", &hash(1));
-    entry.launch_enabled = true;
-    entry.artifacts[0].source = AssetSource::LocalFile {
-        sha256: hash(2),
-        size_bytes: 2_724_762,
-    };
-    entry.artifacts[0].provenance.redistribution = Redistribution::Unknown;
-    entry.artifacts.push(Artifact {
-        id: "gameplay-screenshot".into(),
-        role: ArtifactRole::Screenshot,
-        format: FileType::Png,
-        source: AssetSource::Sha256 {
-            sha256: hash(3),
-            size_bytes: 123,
-        },
-        provenance: permission(),
-    });
-    save(root.path(), &entry, "\nGameplay notes.\n");
-
-    let catalogue = load(root.path(), Mode::Production).unwrap();
-    let compiled = compiled(&catalogue);
-    let archive = compiled.entries[0]
-        .assets
-        .iter()
-        .find(|asset| asset.role == ArtifactRole::Archive)
-        .unwrap();
-    assert!(archive.url.is_empty());
-    assert_eq!(archive.sha256.as_deref(), Some(hash(2).as_str()));
-    assert_eq!(archive.size_bytes, Some(2_724_762));
-    assert!(site::rust_games(&compiled)
-        .unwrap()
-        .contains("local_archive_sha256: Some("));
-    let desired = assets::desired(&catalogue).unwrap();
-    assert_eq!(desired.len(), 1);
-    assert!(desired[0].key.contains(&hash(3)));
-
-    entry.artifacts[0].role = ArtifactRole::Supplement;
-    assert!(validate::entry(&entry).is_err());
-    entry.artifacts[0].role = ArtifactRole::Archive;
-    entry.artifacts[0].source = AssetSource::LocalFile {
-        sha256: "invalid".into(),
-        size_bytes: 2_724_762,
-    };
-    assert!(validate::entry(&entry).is_err());
-}
-
-#[test]
 fn launch_enabled_entries_require_a_gameplay_screenshot() {
     let root = repo();
     let mut entry = simple("missing-screenshot");
@@ -667,6 +618,23 @@ fn validation_catches_semantic_errors() {
     for path in ["/etc/passwd", "a/../b", "a\\b", "C:foo", "./foo"] {
         assert!(validate::relative_path(path).is_err());
     }
+}
+
+#[test]
+fn game_archives_cannot_use_external_sources() {
+    let mut entry = hosted("one", &hash(1));
+    let archive = entry
+        .artifacts
+        .iter_mut()
+        .find(|artifact| artifact.role == ArtifactRole::Archive)
+        .unwrap();
+    archive.source = AssetSource::External {
+        url: "https://example.org/game.sit".into(),
+    };
+    assert!(validate::entry(&entry)
+        .unwrap_err()
+        .to_string()
+        .contains("game archives must be hosted by Systemless"));
 }
 
 #[test]

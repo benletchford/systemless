@@ -344,7 +344,6 @@ pub fn artifact_url(config: &Config, artifact: &Artifact) -> String {
             path.strip_prefix("catalogue/").unwrap_or(path).to_string()
         }
         AssetSource::Url { url, .. } | AssetSource::External { url } => url.clone(),
-        AssetSource::LocalFile { .. } => String::new(),
         AssetSource::Sha256 { sha256, .. } => format!(
             "{}/{}",
             config.asset_base_url.trim_end_matches('/'),
@@ -574,8 +573,7 @@ pub fn build(c: &Catalogue) -> Result<CompiledCatalogue> {
                     .iter()
                     .map(|a| {
                         let (sha256, size_bytes) = match &a.source {
-                            AssetSource::Sha256 { sha256, size_bytes }
-                            | AssetSource::LocalFile { sha256, size_bytes } => {
+                            AssetSource::Sha256 { sha256, size_bytes } => {
                                 (Some(sha256.clone()), Some(*size_bytes))
                             }
                             _ => (None, None),

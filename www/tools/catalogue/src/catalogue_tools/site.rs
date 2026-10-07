@@ -80,13 +80,11 @@ pub fn rust_games(c: &CompiledCatalogue) -> Result<String> {
         let archive = artifact(e, ArtifactRole::Archive);
         write!(
             out,
-            "assets: GameAssets {{ archive_path: {:?}, archive_download_name: {:?}, local_archive_sha256: {:?}, local_archive_size_bytes: {:?}, web_pack_path: {:?}, screenshot_path: {:?} }},",
+            "assets: GameAssets {{ archive_path: {:?}, archive_download_name: {:?}, web_pack_path: {:?}, screenshot_path: {:?} }},",
             archive.map(|a| a.url.as_str()).unwrap_or(""),
             archive
                 .map(|a| download_name(&e.id, None, a.format))
                 .unwrap_or_default(),
-            archive.filter(|a| a.url.is_empty()).and_then(|a| a.sha256.as_deref()),
-            archive.filter(|a| a.url.is_empty()).and_then(|a| a.size_bytes),
             asset(e, ArtifactRole::WebPack),
             asset(e, ArtifactRole::Screenshot).unwrap_or("")
         )?;
@@ -404,7 +402,7 @@ pub fn pages(
             escape(&image),
             escape(&e.title)
         );
-        if let Some(download) = artifact(e, ArtifactRole::Archive).filter(|a| !a.url.is_empty()) {
+        if let Some(download) = artifact(e, ArtifactRole::Archive) {
             write!(
                 body,
                 "<p><a href=\"{}\" download=\"{}\">Download {}</a></p>",

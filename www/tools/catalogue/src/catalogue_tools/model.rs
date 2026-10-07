@@ -341,11 +341,6 @@ pub enum AssetSource {
         sha256: String,
         size_bytes: u64,
     },
-    /// An exact archive selected by the visitor; never fetched or promoted.
-    LocalFile {
-        sha256: String,
-        size_bytes: u64,
-    },
     /// A deliberate link to a third-party download, outside R2 management.
     External {
         url: String,
