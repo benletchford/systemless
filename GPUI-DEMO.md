@@ -92,8 +92,10 @@ qualification remain unfinished.
 
 The dialog overlay is limited to standard `dBoxProc` windows with button,
 static-text, checkbox, radio, and edit-text items. Editable fields retain
-guest pixels; dialogs with custom items or unknown control values retain
-all guest pixels. The themed alert button is not yet qualified for keyboard or
+guest pixels for multiline or tall layouts; ordinary single-line fields show
+GPUI text, border, selection, and caret from the guest dialog snapshot.
+Dialogs with custom items or unknown control values retain all guest pixels.
+The themed alert button is not yet qualified for keyboard or
 accessibility operation through the host control; guest keyboard input and
 click handling remain the operative path.
 
@@ -107,11 +109,11 @@ and [PowerPC checked](tests/toolbox-showcase/reference/gpui-demo/07-modal-checke
 On both CPUs the composed image differs from its unchecked capture only
 inside the checkbox's 28-by-28-pixel rendered area.
 
-TextEdit fields still use guest pixels. The GPUI runner now forwards ordinary
-ASCII keys and arrows to the guest, preserving the guest TERec's text and
-selection changes. Mac Roman non-ASCII input, composition, and host modifier
-state need separate qualification before themed editable fields can replace
-those pixels.
+Document TextEdit fields still use guest pixels. The GPUI runner forwards
+ordinary ASCII keys and arrows to the guest, preserving its TERec text and
+selection changes. The single-line dialog presentation is read-only: the
+guest owns typing and focus. Mac Roman non-ASCII input, composition, host
+modifier state, multiline layout, and caret blink need separate qualification.
 
 The Open and Save overlays are limited to modern standard entry points on both
 CPUs. Legacy and custom panels retain guest pixels. The Save filename field now
