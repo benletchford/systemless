@@ -15862,6 +15862,7 @@
         bus.write_long(dialog_ptr + 24, vis);
 
         disp.dialog_items.insert(dialog_ptr, Vec::new());
+        disp.dialogs_drawn_by_app.insert(dialog_ptr);
         disp.window_proc_ids.insert(dialog_ptr, 2);
         disp.window_list.replace(vec![occluder, dialog_ptr]);
         disp.front_window = occluder;
