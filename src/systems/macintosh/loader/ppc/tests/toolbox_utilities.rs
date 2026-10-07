@@ -1,6 +1,33 @@
 use super::*;
 
 #[test]
+fn low_memory_ghost_window_accessor_reads_current_pointer() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"LMGetGhostWindow")).unwrap();
+    loaded.memory.write_u32_be(crate::memory::globals::addr::GHOST_WINDOW, 0x1234_5678).unwrap();
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LMGetGhostWindow);
+    assert_eq!(loaded.cpu.gpr[3], 0x1234_5678);
+}
+
+#[test]
+fn low_memory_cur_deactive_accessors_roundtrip() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"LMSetCurDeactive")).unwrap();
+    assert_eq!(
+        loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::LMSetCurDeactive
+    );
+    loaded.cpu.gpr[3] = 0x1234_5678;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LMSetCurDeactive);
+    assert_eq!(
+        loaded
+            .memory
+            .read_u32_be(crate::memory::globals::addr::CUR_DEACTIVE),
+        Some(0x1234_5678)
+    );
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LMGetCurDeactive);
+    assert_eq!(loaded.cpu.gpr[3], 0x1234_5678);
+}
+
+#[test]
 fn hle_import_runner_unpacks_packbits_and_advances_pointer_variables() {
     let pef = synthetic_pef_with_import(b"UnpackBits");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -289,6 +316,25 @@ fn hle_import_runner_handles_random() {
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
+fn toolbox_random_uses_quickdraw_globals_seed_after_init_graf() {
+    let pef = synthetic_pef_with_import(b"Random");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let global_ptr = PPC_DATA_BASE + 0x2000;
+    let quickdraw_seed = global_ptr - 126;
+    loaded.memory.add_region(quickdraw_seed, vec![0; 130]);
+    loaded.memory.write_u32_be(quickdraw_seed, 12345).unwrap();
+    loaded.memory.write_u32_be(PPC_RAND_SEED_ADDR, 99).unwrap();
+    loaded.toolbox_startup.init_graf_global_ptr = global_ptr;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.memory.read_u32_be(quickdraw_seed), Some(207482415));
+    assert_eq!(loaded.memory.read_u32_be(PPC_RAND_SEED_ADDR), Some(99));
+    assert_eq!(loaded.cpu.gpr[3], u32::from(207482415u32 as u16));
 }
 
 #[test]

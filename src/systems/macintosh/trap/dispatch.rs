@@ -2407,6 +2407,84 @@ impl std::ops::Deref for TrapDispatcher {
     }
 }
 
+pub(crate) fn standard_us_kchr_bytes() -> Vec<u8> {
+    const TABLES: usize = 2;
+    const TABLE_COUNT_OFFSET: usize = 2 + 256;
+    const TABLE_BASE: usize = TABLE_COUNT_OFFSET + 2;
+    const DEAD_KEY_COUNT_OFFSET: usize = TABLE_BASE + TABLES * 128;
+    const LEN: usize = DEAD_KEY_COUNT_OFFSET + 2;
+    let mut body = vec![0u8; LEN];
+    for modifier in 0..=255usize {
+        body[2 + modifier] = if (modifier & 0x22) != 0 { 1 } else { 0 };
+    }
+    body[TABLE_COUNT_OFFSET..TABLE_COUNT_OFFSET + 2]
+        .copy_from_slice(&(TABLES as u16).to_be_bytes());
+
+    let normal = TABLE_BASE;
+    let shifted = TABLE_BASE + 128;
+    let keys: &[(usize, u8, u8)] = &[
+        (0x00, b'a', b'A'),
+        (0x01, b's', b'S'),
+        (0x02, b'd', b'D'),
+        (0x03, b'f', b'F'),
+        (0x04, b'h', b'H'),
+        (0x05, b'g', b'G'),
+        (0x06, b'z', b'Z'),
+        (0x07, b'x', b'X'),
+        (0x08, b'c', b'C'),
+        (0x09, b'v', b'V'),
+        (0x0B, b'b', b'B'),
+        (0x0C, b'q', b'Q'),
+        (0x0D, b'w', b'W'),
+        (0x0E, b'e', b'E'),
+        (0x0F, b'r', b'R'),
+        (0x10, b'y', b'Y'),
+        (0x11, b't', b'T'),
+        (0x12, b'1', b'!'),
+        (0x13, b'2', b'@'),
+        (0x14, b'3', b'#'),
+        (0x15, b'4', b'$'),
+        (0x16, b'6', b'^'),
+        (0x17, b'5', b'%'),
+        (0x18, b'=', b'+'),
+        (0x19, b'9', b'('),
+        (0x1A, b'7', b'&'),
+        (0x1B, b'-', b'_'),
+        (0x1C, b'8', b'*'),
+        (0x1D, b'0', b')'),
+        (0x1E, b']', b'}'),
+        (0x1F, b'o', b'O'),
+        (0x20, b'u', b'U'),
+        (0x21, b'[', b'{'),
+        (0x22, b'i', b'I'),
+        (0x23, b'p', b'P'),
+        (0x24, b'\r', b'\r'),
+        (0x25, b'l', b'L'),
+        (0x26, b'j', b'J'),
+        (0x27, b'\'', b'"'),
+        (0x28, b'k', b'K'),
+        (0x29, b';', b':'),
+        (0x2A, b'\\', b'|'),
+        (0x2B, b',', b'<'),
+        (0x2C, b'/', b'?'),
+        (0x2D, b'n', b'N'),
+        (0x2E, b'm', b'M'),
+        (0x2F, b'.', b'>'),
+        (0x31, b' ', b' '),
+        (0x32, b'`', b'~'),
+        (0x7B, 0x1C, 0x1C),
+        (0x7C, 0x1D, 0x1D),
+        (0x7D, 0x1F, 0x1F),
+        (0x7E, 0x1E, 0x1E),
+    ];
+    for &(vk, unshifted, shifted_char) in keys {
+        body[normal + vk] = unshifted;
+        body[shifted + vk] = shifted_char;
+    }
+
+    body
+}
+
 impl TrapDispatcher {
     pub(crate) fn current_process_application_metadata(&self) -> ProcessApplicationMetadata {
         resolve_process_application_metadata(
@@ -7078,79 +7156,7 @@ impl TrapDispatcher {
             return None;
         }
 
-        const TABLES: usize = 2;
-        const TABLE_COUNT_OFFSET: usize = 2 + 256;
-        const TABLE_BASE: usize = TABLE_COUNT_OFFSET + 2;
-        const DEAD_KEY_COUNT_OFFSET: usize = TABLE_BASE + TABLES * 128;
-        const LEN: usize = DEAD_KEY_COUNT_OFFSET + 2;
-        let mut body = vec![0u8; LEN];
-        for modifier in 0..=255usize {
-            body[2 + modifier] = if (modifier & 0x22) != 0 { 1 } else { 0 };
-        }
-        body[TABLE_COUNT_OFFSET..TABLE_COUNT_OFFSET + 2]
-            .copy_from_slice(&(TABLES as u16).to_be_bytes());
-
-        let normal = TABLE_BASE;
-        let shifted = TABLE_BASE + 128;
-        let keys: &[(usize, u8, u8)] = &[
-            (0x00, b'a', b'A'),
-            (0x01, b's', b'S'),
-            (0x02, b'd', b'D'),
-            (0x03, b'f', b'F'),
-            (0x04, b'h', b'H'),
-            (0x05, b'g', b'G'),
-            (0x06, b'z', b'Z'),
-            (0x07, b'x', b'X'),
-            (0x08, b'c', b'C'),
-            (0x09, b'v', b'V'),
-            (0x0B, b'b', b'B'),
-            (0x0C, b'q', b'Q'),
-            (0x0D, b'w', b'W'),
-            (0x0E, b'e', b'E'),
-            (0x0F, b'r', b'R'),
-            (0x10, b'y', b'Y'),
-            (0x11, b't', b'T'),
-            (0x12, b'1', b'!'),
-            (0x13, b'2', b'@'),
-            (0x14, b'3', b'#'),
-            (0x15, b'4', b'$'),
-            (0x16, b'6', b'^'),
-            (0x17, b'5', b'%'),
-            (0x18, b'=', b'+'),
-            (0x19, b'9', b'('),
-            (0x1A, b'7', b'&'),
-            (0x1B, b'-', b'_'),
-            (0x1C, b'8', b'*'),
-            (0x1D, b'0', b')'),
-            (0x1E, b']', b'}'),
-            (0x1F, b'o', b'O'),
-            (0x20, b'u', b'U'),
-            (0x21, b'[', b'{'),
-            (0x22, b'i', b'I'),
-            (0x23, b'p', b'P'),
-            (0x24, b'\r', b'\r'),
-            (0x25, b'l', b'L'),
-            (0x26, b'j', b'J'),
-            (0x27, b'\'', b'"'),
-            (0x28, b'k', b'K'),
-            (0x29, b';', b':'),
-            (0x2A, b'\\', b'|'),
-            (0x2B, b',', b'<'),
-            (0x2C, b'/', b'?'),
-            (0x2D, b'n', b'N'),
-            (0x2E, b'm', b'M'),
-            (0x2F, b'.', b'>'),
-            (0x31, b' ', b' '),
-            (0x32, b'`', b'~'),
-            (0x7B, 0x1C, 0x1C),
-            (0x7C, 0x1D, 0x1D),
-            (0x7D, 0x1F, 0x1F),
-            (0x7E, 0x1E, 0x1E),
-        ];
-        for &(vk, unshifted, shifted_char) in keys {
-            body[normal + vk] = unshifted;
-            body[shifted + vk] = shifted_char;
-        }
+        let body = standard_us_kchr_bytes();
 
         let ptr = bus.alloc(body.len() as u32);
         if ptr == 0 {

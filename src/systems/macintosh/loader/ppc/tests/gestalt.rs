@@ -166,6 +166,16 @@ fn hle_import_runner_handles_gestalt_powerpc_capabilities() {
         (*b"cpuf", PPC_NO_ERR, 0x0104),
         (*b"pclk", PPC_NO_ERR, REFERENCE_POWERPC_CPU_CLOCK_HZ),
         (*b"proc", PPC_NO_ERR, 3),
+        (
+            *b"mach",
+            PPC_NO_ERR,
+            u32::from(crate::machine_profile::POWERPC_GESTALT_MACHINE_TYPE),
+        ),
+        (
+            *b"hdwr",
+            PPC_NO_ERR,
+            (1 << 0) | (1 << 1) | (1 << 4) | (1 << 19) | (1 << 21) | (1 << 22),
+        ),
         (*b"ppcf", PPC_NO_ERR, 0),
         (*b"fpu ", PPC_NO_ERR, 3),
         (*b"mmu ", PPC_NO_ERR, 4),
@@ -302,7 +312,7 @@ fn hle_import_runner_handles_sys_environs() {
     assert_eq!(loaded.memory.read_u16_be(sys_env_ptr), Some(2));
     assert_eq!(
         loaded.memory.read_u16_be(sys_env_ptr + 2),
-        Some(REFERENCE_MACHINE_PROFILE.gestalt_machine_type)
+        Some(crate::machine_profile::POWERPC_GESTALT_MACHINE_TYPE)
     );
     assert_eq!(
         loaded.memory.read_u16_be(sys_env_ptr + 4),

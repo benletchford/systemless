@@ -217,6 +217,17 @@ pub(super) fn dispatch_region_import(
             );
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::InsetRgn => {
+            let mut allocator = PpcProcessAllocatorView {
+                memory_manager: process_memory_manager,
+            };
+            *last_mem_error = ppc_inset_rgn(
+                Some(&mut allocator), memory, heap_cursor, heap_limit,
+                last_mem_error, handles, cpu.gpr[3],
+                cpu.gpr[4] as u16 as i16, cpu.gpr[5] as u16 as i16,
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::EmptyRgn => Some(PpcImportAction::Return(
             if ppc_empty_rgn(memory, cpu.gpr[3]) {
                 1

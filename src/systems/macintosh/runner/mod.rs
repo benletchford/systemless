@@ -184,9 +184,9 @@ fn resource_manager_snapshot_powerpc(
 pub mod audio;
 pub mod idle;
 pub mod interrupt;
-mod virtual_idle;
 pub mod ppc_exec;
 pub mod vfs;
+mod virtual_idle;
 
 #[cfg(feature = "debug")]
 mod debug_support;
@@ -194,10 +194,10 @@ mod debug_support;
 mod debug_support_disabled;
 
 pub(crate) use idle::*;
-pub(crate) use virtual_idle::*;
 pub(crate) use interrupt::*;
 pub(crate) use ppc_exec::*;
 pub use vfs::*;
+pub(crate) use virtual_idle::*;
 
 // Cache env-var lookups (per-call syscall otherwise).
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -2363,11 +2363,11 @@ impl FixtureRunner {
 
     #[doc(hidden)]
     pub fn window_stack_snapshot(&mut self) -> Vec<WindowSnapshot> {
-        self.dispatcher
-            .window_list
-            .with_ref(|windows| crate::window_manager::snapshot_window_stack(windows, |address| {
+        self.dispatcher.window_list.with_ref(|windows| {
+            crate::window_manager::snapshot_window_stack(windows, |address| {
                 self.bus.read_byte(address)
-            }))
+            })
+        })
     }
 
     /// Returns the selected UI theme provider. `classic-system7` is the
@@ -5637,7 +5637,9 @@ impl FixtureRunner {
             |address| {
                 let word = address & !3;
                 match changes.iter().find(|change| change.0 == word) {
-                    Some(&(_, old, new)) => (byte_of(old, word, address), byte_of(new, word, address)),
+                    Some(&(_, old, new)) => {
+                        (byte_of(old, word, address), byte_of(new, word, address))
+                    }
                     None => {
                         let byte = bus.read_byte(address);
                         (byte, byte)
@@ -5665,7 +5667,11 @@ impl FixtureRunner {
         };
         let units_i64 = i64::from(units);
         let budget = i64::from(self.tick_budget);
-        let mut passes = i64::from(passes_with_unchanged_flags(value, counter.step, counter.width));
+        let mut passes = i64::from(passes_with_unchanged_flags(
+            value,
+            counter.step,
+            counter.width,
+        ));
         passes = passes.min((budget - 1).max(0) / units_i64);
         if let Some(due) = self.next_m68k_timer_subtick() {
             // Stay strictly before the task's subtick at every batch boundary
@@ -8206,6 +8212,45 @@ impl FixtureRunner {
         if !ppc_app.toolbox_startup.execution.calls().has_m68k_execution() {
             return None;
         }
+        let current_refnum = ppc_app.current_resource_refnum();
+        if current_refnum > 0 {
+            let refnum = current_refnum as u16;
+            let missing = self
+                .dispatcher
+                .resources
+                .as_ref()
+                .is_none_or(|resources| !resources.files.contains_key(&refnum));
+            if missing {
+                let path = self.process_context.resource_manager().with_mut(|resources| {
+                    resources
+                        .resource_files
+                        .iter()
+                        .find(|file| file.ref_num == current_refnum)
+                        .map(|file| file.path.clone())
+                });
+                if let Some(path) = path {
+                    if let Some(fork) = self
+                        .dispatcher
+                        .vfs_rsrc
+                        .get(&path)
+                        .and_then(|bytes| ResourceFork::parse(bytes))
+                    {
+                        self.dispatcher
+                            .merge_resources_from_fork(&fork, &mut self.bus, refnum);
+                        self.dispatcher.set_resource_file_name(refnum, path);
+                    }
+                }
+            }
+            if self
+                .dispatcher
+                .resources
+                .as_ref()
+                .is_some_and(|resources| resources.files.contains_key(&refnum))
+            {
+                self.dispatcher
+                    .set_current_resource_refnum(&mut self.bus, refnum);
+            }
+        }
         if !ppc_app.toolbox_startup.execution.calls().prepare_native_task(&mut ppc_app.cpu) {
             return Some((0, true));
         }
@@ -8440,7 +8485,8 @@ impl FixtureRunner {
                 trace_fetches,
                 memory_manager,
                 cfm,
-            ));
+                ),
+            );
         }
         (vbl_probes, timer_probes)
     }
@@ -9469,6 +9515,45 @@ impl FixtureRunner {
     }
 
     fn sync_ppc_front_buffer_to_host(&mut self, ppc_app: &mut PpcLoadedApp) {
+        // Classic QuickDraw draws directly into the host screen while native
+        // PPC drawing uses a separate front buffer. Preserve the structure
+        // regions of classic windows above the first native window when the
+        // native buffer is mirrored. Macintosh Toolbox Essentials (1992),
+        // pp. 4-63--4-65.
+        let classic_overlays = ppc_app.window_list.with_ref(|windows| {
+            let mut overlays = Vec::new();
+            for &window in windows {
+                if self
+                    .bus
+                    .read_byte(window + crate::window_manager::WINDOW_VISIBLE_FLAG_OFFSET)
+                    == 0
+                {
+                    continue;
+                }
+                if ppc_app.gworlds.iter().any(|record| record.port == window) {
+                    break;
+                }
+                let handle = self
+                    .bus
+                    .read_long(window + crate::window_manager::WINDOW_STRUCTURE_RGN_OFFSET);
+                if handle == 0 {
+                    continue;
+                }
+                let region = self.bus.read_long(handle);
+                if region != 0 && self.bus.read_word(region) >= 10 {
+                    let rect = (
+                        self.bus.read_word(region + 2) as i16,
+                        self.bus.read_word(region + 4) as i16,
+                        self.bus.read_word(region + 6) as i16,
+                        self.bus.read_word(region + 8) as i16,
+                    );
+                    if rect.0 < rect.2 && rect.1 < rect.3 {
+                        overlays.push(rect);
+                    }
+                }
+            }
+            overlays
+        });
         let Some(primary_buffer) = ppc_app.presented_front_buffer() else {
             return;
         };
@@ -9550,6 +9635,7 @@ impl FixtureRunner {
             canvas_row_bytes,
             primary_destination_x,
             primary_destination_y,
+            &classic_overlays,
         ) {
             return;
         }
@@ -9738,6 +9824,29 @@ impl FixtureRunner {
         true
     }
 
+    fn ppc_overlay_spans_for_row(
+        overlays: &[(i16, i16, i16, i16)],
+        host_y: u32,
+        destination_x: u32,
+        width: u32,
+    ) -> Vec<(u32, u32)> {
+        let mut covered = overlays
+            .iter()
+            .filter(|&&(top, _, bottom, _)| {
+                i64::from(top) <= i64::from(host_y) && i64::from(host_y) < i64::from(bottom)
+            })
+            .filter_map(|&(_, left, _, right)| {
+                let start =
+                    (i64::from(left) - i64::from(destination_x)).clamp(0, i64::from(width)) as u32;
+                let end =
+                    (i64::from(right) - i64::from(destination_x)).clamp(0, i64::from(width)) as u32;
+                (start < end).then_some((start, end))
+            })
+            .collect::<Vec<_>>();
+        covered.sort_unstable();
+        covered
+    }
+
     fn copy_ppc_front_buffer_rows_to_host(
         bus: &mut MacMemoryBus,
         ppc_app: &mut PpcLoadedApp,
@@ -9746,6 +9855,7 @@ impl FixtureRunner {
         host_row_bytes: u32,
         destination_x: u32,
         destination_y: u32,
+        classic_overlays: &[(i16, i16, i16, i16)],
     ) -> bool {
         let Some(visible_row_bytes) = Self::ppc_front_buffer_visible_row_bytes(front_buffer) else {
             return false;
@@ -9794,8 +9904,15 @@ impl FixtureRunner {
             else {
                 return false;
             };
+            let covered = Self::ppc_overlay_spans_for_row(
+                classic_overlays,
+                destination_row,
+                destination_x,
+                front_buffer.width,
+            );
             if matches!(front_buffer.depth, 1 | 2 | 4) {
                 let mut packed_destination = bus.read_bytes(destination_row_addr, host_row_len);
+                let original = (!covered.is_empty()).then(|| packed_destination.clone());
                 if packed_destination.len() != host_row_len
                     || !Self::copy_ppc_packed_indexed_row(
                         &row[..visible_row_len],
@@ -9807,29 +9924,48 @@ impl FixtureRunner {
                 {
                     return false;
                 }
+                if let Some(original) = original {
+                    for (start, end) in covered {
+                        let first = ((destination_x + start) * front_buffer.depth / 8) as usize;
+                        let last =
+                            ((destination_x + end) * front_buffer.depth).div_ceil(8) as usize;
+                        packed_destination[first..last].copy_from_slice(&original[first..last]);
+                    }
+                }
                 bus.write_bytes(destination_row_addr, &packed_destination);
             } else {
                 let bytes_per_pixel = front_buffer.depth / 8;
                 let Some(destination_x_bytes) = destination_x.checked_mul(bytes_per_pixel) else {
                     return false;
                 };
+                let mut copy_span = |start: u32, end: u32| {
+                    if start >= end {
+                        return;
+                    }
+                    let start_byte = (start * bytes_per_pixel) as usize;
+                    let end_byte = (end * bytes_per_pixel) as usize;
+                    let source = front_buffer.base_addr
+                        + y * front_buffer.row_bytes
+                        + start * bytes_per_pixel;
+                    let destination =
+                        destination_row_addr + destination_x_bytes + start * bytes_per_pixel;
                 if ppc_app
                     .draw_sprocket
                     .last_fade_percent
                     .is_none_or(|percent| percent == 100)
                     && ppc_app.draw_sprocket.last_fade_zero_color.is_none()
                 {
-                    bus.sync_presented_bytes(
-                        destination_row_addr + destination_x_bytes,
-                        front_buffer.base_addr + y * front_buffer.row_bytes,
-                        &row[..visible_row_len],
-                    );
+                        bus.sync_presented_bytes(destination, source, &row[start_byte..end_byte]);
                 } else {
-                    bus.write_bytes(
-                        destination_row_addr + destination_x_bytes,
-                        &row[..visible_row_len],
-                    );
+                        bus.write_bytes(destination, &row[start_byte..end_byte]);
                 }
+                };
+                let mut next = 0;
+                for (start, end) in covered {
+                    copy_span(next, start);
+                    next = next.max(end);
+                }
+                copy_span(next, front_buffer.width);
             }
         }
         true
@@ -10848,9 +10984,7 @@ impl FixtureRunner {
         let due_task = self.dispatcher.vbl_tasks.with_mut(|vbl_tasks| {
             vbl_tasks
                 .iter_mut()
-                .filter(|task| {
-                    task.architecture == CallbackTaskArchitecture::M68k && task.pending
-                })
+                .filter(|task| task.architecture == CallbackTaskArchitecture::M68k && task.pending)
                 .find_map(|task| {
                     task.pending = false;
                     let callback_addr = self.bus.read_long(task.task_ptr + 6);

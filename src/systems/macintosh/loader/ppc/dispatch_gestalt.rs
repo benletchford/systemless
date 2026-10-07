@@ -90,6 +90,13 @@ fn ppc_gestalt_response(selector: u32, physical_ram_size: u32) -> Option<(u32, i
     match &selector.to_be_bytes() {
         b"vers" => Some((0x0001, PPC_NO_ERR)),
         b"sysv" => Some((u32::from(POWERPC_SYSTEM_VERSION_BCD), PPC_NO_ERR)),
+        // Script Manager version is returned in the low word. Photoshop 3
+        // checks for its presence before opening the native application.
+        b"scri" => Some((0x0700, PPC_NO_ERR)),
+        // Text Services Manager 1.5 is part of the classic Mac OS profile.
+        b"tsmv" => Some((0x0150, PPC_NO_ERR)),
+        // Edition Manager present (bit 0); Photoshop checks this at startup.
+        b"edtn" => Some((1, PPC_NO_ERR)),
         b"cbon" => Some((u32::from(POWERPC_CARBON_VERSION_BCD), PPC_NO_ERR)),
         b"ostt" => Some((crate::trap::dispatch::OS_TRAP_TABLE_BASE, PPC_NO_ERR)),
         b"tbtt" => Some((crate::trap::dispatch::TOOLBOX_TRAP_TABLE_BASE, PPC_NO_ERR)),
@@ -123,7 +130,14 @@ fn ppc_gestalt_response(selector: u32, physical_ram_size: u32) -> Option<(u32, i
         // instruction set is verified in the PowerPC interpreter.
         b"ppcf" => Some((0, PPC_NO_ERR)),
         b"mach" => Some((
-            u32::from(REFERENCE_MACHINE_PROFILE.gestalt_machine_type),
+            u32::from(crate::machine_profile::POWERPC_GESTALT_MACHINE_TYPE),
+            PPC_NO_ERR,
+        )),
+        // A Power Macintosh 9500 has VIA controllers and 53C96 SCSI buses.
+        // Inside Macintosh: Operating System Utilities (1994), Gestalt
+        // Manager hardware attribute bit definitions.
+        b"hdwr" => Some((
+            (1 << 0) | (1 << 1) | (1 << 4) | (1 << 19) | (1 << 21) | (1 << 22),
             PPC_NO_ERR,
         )),
         // Match the 68K toolbox profile: System 7 Color QuickDraw 1.3.

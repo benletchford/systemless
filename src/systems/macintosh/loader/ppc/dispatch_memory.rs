@@ -36,6 +36,27 @@ pub(super) fn dispatch_memory_import(
     } = context;
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::NewString => {
+            // NewString copies the Pascal string into a relocatable block
+            // sized to its actual length. Inside Macintosh I (1985), I-468.
+            let source = cpu.gpr[3];
+            let length = memory.read_u8(source)? as u32;
+            let bytes = ppc_memory_read_bytes(memory, source, length + 1)?;
+            let result = process_memory_manager.new_handle(
+                ProcessNewHandleRequest::new((length + 1) as i32, false, ProcessHandleHeap::Current),
+                ProcessNewHandleBackend::Native(memory),
+            );
+            *last_mem_error = result.error;
+            ppc_apply_process_native_allocator(process_memory_manager, memory, heap_cursor, last_mem_error);
+            if result.succeeded() {
+                if let Some(record) = process_memory_manager.native_allocation(result.handle) {
+                    handles.push(record);
+                }
+                let data = memory.read_u32_be(result.handle)?;
+                memory.write_bytes(data, &bytes)?;
+            }
+            Some(PpcImportAction::Return(result.handle))
+        }
         PpcImportDispatcherTarget::HoldMemory => {
             // HoldMemory (Ptr, Size): OSErr. Native guest memory is resident
             // for the process lifetime, so no page pin is required.
@@ -324,10 +345,16 @@ pub(super) fn dispatch_memory_import(
             *last_mem_error = result;
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
-        PpcImportDispatcherTarget::NewHandle { clear } => {
+        PpcImportDispatcherTarget::NewHandle { clear }
+        | PpcImportDispatcherTarget::NewHandleSys { clear } => {
             let size = cpu.gpr[3];
+            let heap = if matches!(binding.dispatcher_target, PpcImportDispatcherTarget::NewHandleSys { .. }) {
+                ProcessHandleHeap::System
+            } else {
+                ProcessHandleHeap::Current
+            };
             let result = process_memory_manager.new_handle(
-                ProcessNewHandleRequest::new(size as i32, clear, ProcessHandleHeap::Current),
+                ProcessNewHandleRequest::new(size as i32, clear, heap),
                 ProcessNewHandleBackend::Native(memory),
             );
             *last_mem_error = result.error;
@@ -701,6 +728,9 @@ pub(super) fn dispatch_memory_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::MemError => {
+            if ppc_hle_trace_enabled() && *last_mem_error != PPC_NO_ERR {
+                eprintln!("[PPC-TRACE] MemError lr=${:08X} -> {}", cpu.lr, *last_mem_error);
+            }
             Some(PpcImportAction::Return(ppc_i16_result(*last_mem_error)))
         }
         _ => None,

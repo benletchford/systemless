@@ -120,17 +120,31 @@ pub(crate) fn ppc_get_resource(
     ) {
         Some(index) => index,
         None => {
-            let system_string = (!current_only && res_type == u32::from_be_bytes(*b"STR "))
-                .then(|| crate::trap::TrapDispatcher::system_str_default_body(res_id))
-                .flatten();
-            if let Some(data) = system_string {
+            let system_resource = if !current_only && res_type == u32::from_be_bytes(*b"STR ") {
+                crate::trap::TrapDispatcher::system_str_default_body(res_id).map(|body| body.to_vec())
+            } else if !current_only && res_type == u32::from_be_bytes(*b"itl0") && res_id == 0 {
+                // The Roman system script supplies numeric-format resource 0.
+                // Intl0Rec layout: Inside Macintosh: Text (1993), B-22–B-24.
+                Some(vec![
+                    b'.', b',', b';', b'$', 0, 0, 0xF0, 0, 0, b'/', 0xFF,
+                    0x60, b' ', b'A', b'M', 0, b' ', b'P', b'M', 0, b':',
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                ])
+            } else {
+                None
+            };
+            if let Some(data) = system_resource {
                 vfs_resources.push(PpcVfsResourceRecord {
                     ref_num: 0,
-                    path: "__system__/STR ".to_string(),
+                    path: if res_type == u32::from_be_bytes(*b"STR ") {
+                        "__system__/STR ".to_string()
+                    } else {
+                        "__system__/itl0".to_string()
+                    },
                     res_type,
                     res_id,
                     name: Vec::new(),
-                    data: data.to_vec(),
+                    data,
                     raw_data: None,
                     raw_attrs: None,
                     attrs: 0,

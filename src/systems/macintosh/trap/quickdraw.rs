@@ -3,18 +3,18 @@
 
 use super::types::{read_rect, Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
-use crate::systems::macintosh::display::{self, CursorImage};
 use crate::machine_profile::REFERENCE_MACHINE_PROFILE;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::process_context::DEFAULT_QUICKDRAW_HILITE_COLOR;
 use crate::quickdraw::fonts::{font_id_for_name, font_name_for_id, get_font_face_scaled};
 use crate::quickdraw::raster::region_rows;
 use crate::quickdraw::text::get_glyph;
-use crate::trap::pict;
+use crate::systems::macintosh::display::{self, CursorImage};
 use crate::trap::dispatch::{
     selector_operation_route, CachedCopyBitmapInfo, InverseTableCacheEntry, PortDrawState,
     RecentColorTableFetch, ScreenCopyBitsRect, SelectorOperationRoute, INVERSE_TABLE_CACHE_LIMIT,
 };
+use crate::trap::pict;
 use crate::Result;
 use std::sync::OnceLock;
 
@@ -4483,6 +4483,54 @@ impl super::TrapDispatcher {
                                     );
                                 } else {
                                     bus.write_byte(dst_addr, dst_pixel);
+                                }
+                            }
+                            (src_bits @ (16 | 32), dst_bits @ (16 | 32))
+                                if src_bits != dst_bits =>
+                            {
+                                let src_addr = src_info.base
+                                    + src_y_off * src_info.row_bytes
+                                    + src_x_off * (src_bits / 8);
+                                let dst_addr = dst_info.base
+                                    + dst_y * dst_info.row_bytes
+                                    + dst_x * (dst_bits / 8);
+                                let src_rgb = Self::read_rgbdirect_pixel(
+                                    |address| read_src_byte(bus, address),
+                                    src_addr,
+                                    src_bits,
+                                )
+                                .expect("RGBDirect source depth");
+                                if mode_base == 36 && src_rgb == copy_bg_rgb {
+                                    continue;
+                                }
+                                let dst_rgb = Self::read_rgbdirect_pixel(
+                                    |address| bus.read_byte(address),
+                                    dst_addr,
+                                    dst_bits,
+                                )
+                                .expect("RGBDirect destination depth");
+                                let effective_mode = if mode_base == 36 { 0 } else { mode_base };
+                                let Some(rgb) = Self::copy_bits_direct_source_mode_rgb(
+                                    src_rgb,
+                                    dst_rgb,
+                                    effective_mode,
+                                    copy_fg_rgb,
+                                    copy_bg_rgb,
+                                ) else {
+                                    continue;
+                                };
+                                if dst_bits == 16 {
+                                    let packed = ((rgb[0] >> 11) << 10)
+                                        | ((rgb[1] >> 11) << 5)
+                                        | (rgb[2] >> 11);
+                                    bus.write_word(dst_addr, packed);
+                                } else {
+                                    bus.write_long(
+                                        dst_addr,
+                                        (u32::from(rgb[0] >> 8) << 16)
+                                            | (u32::from(rgb[1] >> 8) << 8)
+                                            | u32::from(rgb[2] >> 8),
+                                    );
                                 }
                             }
                             (src_bits, dst_bits)
@@ -14888,12 +14936,9 @@ impl super::TrapDispatcher {
                         else {
                             continue;
                         };
-                        let Some(source_rgb) = Self::bitmap_pixel_rgb(
-                            bus,
-                            &src_info,
-                            src_pixel,
-                            src_clut.as_ref(),
-                        ) else {
+                        let Some(source_rgb) =
+                            Self::bitmap_pixel_rgb(bus, &src_info, src_pixel, src_clut.as_ref())
+                        else {
                             continue;
                         };
                         let Some(destination_pixel) =
@@ -14917,11 +14962,9 @@ impl super::TrapDispatcher {
                         // representation. Arithmetic modes are represented by
                         // the RGB source and destination values below; the
                         // deep-mask weighting itself is always component-wise.
-                        let Some(source_for_destination) = Self::bitmap_rgb_to_pixel(
-                            &dst_info,
-                            source_rgb,
-                            dst_clut.as_ref(),
-                        ) else {
+                        let Some(source_for_destination) =
+                            Self::bitmap_rgb_to_pixel(&dst_info, source_rgb, dst_clut.as_ref())
+                        else {
                             continue;
                         };
                         let source_for_blend = if mode_base <= 7 && mode_base != 0 {
@@ -14944,13 +14987,14 @@ impl super::TrapDispatcher {
                             source_rgb
                         };
                         let output_pixel = if let Some(mask_rgb) = mask_rgb {
-                            let blended =
-                                Self::blend_deep_mask_rgb(source_for_blend, destination_rgb, mask_rgb);
-                            let Some(output) = Self::bitmap_rgb_to_pixel(
-                                &dst_info,
-                                blended,
-                                dst_clut.as_ref(),
-                            ) else {
+                            let blended = Self::blend_deep_mask_rgb(
+                                source_for_blend,
+                                destination_rgb,
+                                mask_rgb,
+                            );
+                            let Some(output) =
+                                Self::bitmap_rgb_to_pixel(&dst_info, blended, dst_clut.as_ref())
+                            else {
                                 continue;
                             };
                             output
@@ -14964,13 +15008,7 @@ impl super::TrapDispatcher {
                         } else {
                             source_for_destination
                         };
-                        let _ = Self::write_bitmap_raw_pixel(
-                            bus,
-                            &dst_info,
-                            dy,
-                            dx,
-                            output_pixel,
-                        );
+                        let _ = Self::write_bitmap_raw_pixel(bus, &dst_info, dy, dx, output_pixel);
                     }
                 }
                 Ok(())
@@ -16389,11 +16427,7 @@ impl super::TrapDispatcher {
     /// active region. Each span is recorded as a one-row closed loop, which
     /// preserves QuickDraw's even-odd boundary organization while avoiding a
     /// lossy bounding-box substitution for curved shapes.
-    fn extend_recording_region_from_spans(
-        &mut self,
-        top: i16,
-        spans: &[(i16, i16)],
-    ) -> bool {
+    fn extend_recording_region_from_spans(&mut self, top: i16, spans: &[(i16, i16)]) -> bool {
         let Some(recording) = self.recording_region.as_mut() else {
             return false;
         };
@@ -16405,13 +16439,7 @@ impl super::TrapDispatcher {
                 break;
             };
             let y = top.saturating_add(row_offset);
-            Self::record_region_rect_boundary(
-                recording,
-                y,
-                left,
-                y.saturating_add(1),
-                right,
-            );
+            Self::record_region_rect_boundary(recording, y, left, y.saturating_add(1), right);
         }
         true
     }
@@ -18080,12 +18108,7 @@ impl super::TrapDispatcher {
                 .iter()
                 .zip(logical_screen_clut)
                 .filter(|(picture, _)| **picture != [0, 0, 0])
-                .all(|(picture, screen)| {
-                    picture
-                        .iter()
-                        .zip(screen)
-                        .all(|(p, s)| p >> 8 == s >> 8)
-                })
+                .all(|(picture, screen)| picture.iter().zip(screen).all(|(p, s)| p >> 8 == s >> 8))
     }
 
     fn scale_clut(clut: &[[u16; 3]; 256], scale: f64) -> [[u16; 3]; 256] {
@@ -18560,7 +18583,12 @@ impl super::TrapDispatcher {
     /// background pattern byte by byte. `pixels` is the rect as read before
     /// the scroll, `size.0` bytes per row. Returns false, having written
     /// nothing, when the row copy declines.
-    fn scroll_color_rows(&mut self, bus: &mut MacMemoryBus, scroll: ScrollRows, pixels: &[u8]) -> bool {
+    fn scroll_color_rows(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        scroll: ScrollRows,
+        pixels: &[u8],
+    ) -> bool {
         let ScrollRows {
             base,
             row_bytes,
@@ -18581,7 +18609,9 @@ impl super::TrapDispatcher {
                 let src_row = dst_row - dv;
                 if (0..h).contains(&src_row) {
                     rows.push((address(src_row, src_col), address(dst_row, dst_col)));
-                    moved.extend_from_slice(&pixels[(src_row * w + src_col) as usize..][..moved_len]);
+                    moved.extend_from_slice(
+                        &pixels[(src_row * w + src_col) as usize..][..moved_len],
+                    );
                 }
             }
         }
@@ -19070,10 +19100,8 @@ impl super::TrapDispatcher {
             return C_NO_MEM_ERR;
         }
         bus.write_long(pixmap_handle, pixmap);
-        self.gworld_pixel_states.set_quickdraw_pixel_state(
-            pixmap_handle,
-            if purgeable { 1 << 6 } else { 0 },
-        );
+        self.gworld_pixel_states
+            .set_quickdraw_pixel_state(pixmap_handle, if purgeable { 1 << 6 } else { 0 });
 
         bus.write_long(gdh_out_ptr, gdh);
         bus.write_long(offscreen_pixmap_out_ptr, pixmap_handle);
@@ -19499,12 +19527,7 @@ impl super::TrapDispatcher {
         self.sync_port_draw_state(bus, port);
     }
 
-    fn write_port_op_color(
-        &mut self,
-        bus: &mut MacMemoryBus,
-        port: u32,
-        color: (u16, u16, u16),
-    ) {
+    fn write_port_op_color(&mut self, bus: &mut MacMemoryBus, port: u32, color: (u16, u16, u16)) {
         let port_range_mapped = port.checked_add(14).is_some_and(|end| {
             end <= bus.ram_size()
                 || (port..end).all(|address| bus.is_foreign_ordinary_sparse_address(address))
@@ -19534,11 +19557,7 @@ impl super::TrapDispatcher {
         self.hilite_color_for_port(bus, *self.current_port)
     }
 
-    pub(crate) fn hilite_color_for_port(
-        &self,
-        bus: &MacMemoryBus,
-        port: u32,
-    ) -> (u16, u16, u16) {
+    pub(crate) fn hilite_color_for_port(&self, bus: &MacMemoryBus, port: u32) -> (u16, u16, u16) {
         self.port_hilite_color_from_graf_vars(bus, port)
             .or_else(|| self.quickdraw_hilite_colors.quickdraw_hilite_color(port))
             .unwrap_or(DEFAULT_QUICKDRAW_HILITE_COLOR)
@@ -20794,7 +20813,9 @@ impl super::TrapDispatcher {
             if bus.has_outline_presentation() && !plan.is_empty() {
                 let spans: Vec<(u32, usize, usize)> = plan
                     .iter()
-                    .map(|&(_, destination, len, offset)| (destination, offset.expect("snapshot offset"), len))
+                    .map(|&(_, destination, len, offset)| {
+                        (destination, offset.expect("snapshot offset"), len)
+                    })
                     .collect();
                 if bus.copy_saved_spans(&spans, pixels, table_map) {
                     return true;
@@ -21653,6 +21674,50 @@ impl super::TrapDispatcher {
                             bus.write_byte(dst_addr, dst_pixel);
                         }
                     }
+                    (src_bits @ (16 | 32), dst_bits @ (16 | 32)) if src_bits != dst_bits => {
+                        let src_addr = src_info.base
+                            + src_y_off * src_info.row_bytes
+                            + src_x_off * (src_bits / 8);
+                        let dst_addr =
+                            dst_info.base + dst_y * dst_info.row_bytes + dst_x * (dst_bits / 8);
+                        let src_rgb = Self::read_rgbdirect_pixel(
+                            |address| read_src_byte(bus, address),
+                            src_addr,
+                            src_bits,
+                        )
+                        .expect("RGBDirect source depth");
+                        if mode_base == 36 && src_rgb == copy_bg_rgb {
+                            continue;
+                        }
+                        let dst_rgb = Self::read_rgbdirect_pixel(
+                            |address| bus.read_byte(address),
+                            dst_addr,
+                            dst_bits,
+                        )
+                        .expect("RGBDirect destination depth");
+                        let effective_mode = if mode_base == 36 { 0 } else { mode_base };
+                        let Some(rgb) = Self::copy_bits_direct_source_mode_rgb(
+                            src_rgb,
+                            dst_rgb,
+                            effective_mode,
+                            copy_fg_rgb,
+                            copy_bg_rgb,
+                        ) else {
+                            continue;
+                        };
+                        if dst_bits == 16 {
+                            let packed =
+                                ((rgb[0] >> 11) << 10) | ((rgb[1] >> 11) << 5) | (rgb[2] >> 11);
+                            bus.write_word(dst_addr, packed);
+                        } else {
+                            bus.write_long(
+                                dst_addr,
+                                (u32::from(rgb[0] >> 8) << 16)
+                                    | (u32::from(rgb[1] >> 8) << 8)
+                                    | u32::from(rgb[2] >> 8),
+                            );
+                        }
+                    }
                     (src_bits, dst_bits)
                         if src_bits >= 8 && dst_bits >= 8 && src_bits == dst_bits =>
                     {
@@ -22290,9 +22355,7 @@ impl super::TrapDispatcher {
         match info.pixel_size {
             1 | 2 | 4 => {
                 let pixels_per_byte = 8 / info.pixel_size;
-                let byte = bus.read_byte(
-                    row_base.checked_add(col.checked_div(pixels_per_byte)?)?,
-                );
+                let byte = bus.read_byte(row_base.checked_add(col.checked_div(pixels_per_byte)?)?);
                 let shift = 8 - info.pixel_size - (col % pixels_per_byte) * info.pixel_size;
                 Some(u32::from((byte >> shift) & ((1u8 << info.pixel_size) - 1)))
             }
@@ -22431,11 +22494,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn blend_deep_mask_rgb(
-        source: [u16; 3],
-        destination: [u16; 3],
-        mask: [u16; 3],
-    ) -> [u16; 3] {
+    fn blend_deep_mask_rgb(source: [u16; 3], destination: [u16; 3], mask: [u16; 3]) -> [u16; 3] {
         std::array::from_fn(|component| {
             let source = u64::from(source[component]);
             let destination = u64::from(destination[component]);

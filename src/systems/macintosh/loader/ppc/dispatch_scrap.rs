@@ -30,6 +30,56 @@ pub(super) fn dispatch_scrap_import(
     } = context;
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::InfoScrap => {
+            // Inside Macintosh I, I-457: ScrapStuff is a 16-byte record.
+            let ptr = scrap.desktop.ensure_stuff_ptr(|| {
+                process_memory_manager.new_native_ptr(memory, 16, true)
+            });
+            ppc_apply_process_native_allocator(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            if ptr == 0 {
+                return Some(PpcImportAction::Return(0));
+            }
+            let summary = scrap.desktop.summary();
+            let handle = if summary.in_memory {
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                let handle = scrap.desktop.ensure_handle(|| {
+                    allocator.allocate_handle(memory, heap_cursor, last_mem_error, handles, 0, true)
+                });
+                if handle != 0 && summary.handle_dirty {
+                    let bytes = scrap.desktop.serialized_entries();
+                    if allocator.resize_handle(
+                        memory,
+                        heap_cursor,
+                        last_mem_error,
+                        handles,
+                        handle,
+                        bytes.len() as u32,
+                    ) == PPC_NO_ERR
+                    {
+                        let data_ptr = memory.read_u32_be(handle).unwrap_or(0);
+                        if bytes.is_empty() || memory.write_bytes(data_ptr, &bytes).is_some() {
+                            scrap.desktop.mark_handle_clean();
+                        }
+                    }
+                }
+                handle
+            } else {
+                0
+            };
+            let _ = memory.write_u32_be(ptr, summary.serialized_size);
+            let _ = memory.write_u32_be(ptr + 4, handle);
+            let _ = memory.write_u16_be(ptr + 8, summary.count as u16);
+            let _ = memory.write_u16_be(ptr + 10, u16::from(summary.in_memory));
+            let _ = memory.write_u32_be(ptr + 12, 0);
+            Some(PpcImportAction::Return(ptr))
+        }
         PpcImportDispatcherTarget::GetScrap => {
             // Inside Macintosh: More Macintosh Toolbox (1993), pp. 2-38--2-40:
             // return the first matching flavor, resize the destination handle,

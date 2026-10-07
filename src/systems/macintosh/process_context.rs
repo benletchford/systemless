@@ -6663,11 +6663,9 @@ impl ProcessNativeMemoryManager {
                 .map(|record| ProcessNewHandleResult::success(record.handle, record.ptr))
                 .unwrap_or_else(ProcessNewHandleResult::failure),
             ProcessNewHandleBackend::Native(memory) => {
-                debug_assert_eq!(
-                    heap,
-                    ProcessHandleHeap::Current,
-                    "native InterfaceLib exposes only current-heap NewHandle"
-                );
+                // The native backend currently uses one physical allocator
+                // for both Macintosh heap policies, as the classic backend
+                // does above.
                 let handle = self.allocate_native_handle(memory, size, request.clear);
                 if handle == 0 {
                     let error = self

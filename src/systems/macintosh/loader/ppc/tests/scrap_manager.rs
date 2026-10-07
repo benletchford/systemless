@@ -1,6 +1,41 @@
 use super::*;
 
 #[test]
+fn infoscrap_exposes_a_live_serialized_handle() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"InfoScrap")).unwrap();
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ZeroScrap);
+    let source = PPC_DATA_BASE + 0x2700;
+    loaded.memory.add_region(source, b"abc".to_vec());
+    loaded.cpu.gpr[3] = 3;
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"TEXT");
+    loaded.cpu.gpr[5] = source;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PutScrap);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InfoScrap);
+    let info = loaded.cpu.gpr[3];
+    let handle = loaded.memory.read_u32_be(info + 4).unwrap();
+    let data = loaded.memory.read_u32_be(handle).unwrap();
+    assert_ne!(handle, 0);
+    assert_eq!(loaded.memory.read_u32_be(info), Some(12));
+    assert_eq!(loaded.memory.read_u16_be(info + 10), Some(1));
+    assert_eq!(
+        (0..12)
+            .map(|offset| loaded.memory.read_u8(data + offset).unwrap())
+            .collect::<Vec<_>>(),
+        b"TEXT\0\0\0\x03abc\0"
+    );
+
+    loaded.scrap.desktop.zero();
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InfoScrap);
+    assert_eq!(loaded.memory.read_u32_be(info), Some(0));
+    assert_eq!(loaded.memory.read_u32_be(info + 4), Some(handle));
+    loaded.with_process_memory_manager(|_, manager| {
+        assert_eq!(manager.native_allocation(handle).unwrap().size, 0);
+    });
+}
+
+#[test]
 fn carbon_unload_scrap_tracks_residency_and_write_errors() {
     assert_eq!(
         dispatcher_target_for_import("CarbonLib", "UnloadScrap"),

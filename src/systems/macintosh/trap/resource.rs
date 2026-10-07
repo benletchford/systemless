@@ -6919,7 +6919,18 @@ impl super::TrapDispatcher {
                                 return Some(Ok(()));
                             }
 
-                            let refnum = self.allocate_process_file_refnum();
+                            let refnum = match self.allocate_data_file_fcb(
+                                bus,
+                                &vfs_name,
+                                wants_write && !read_only,
+                            ) {
+                                Ok(refnum) => refnum,
+                                Err(error) => {
+                                    bus.write_word(sp + 10, error as u16);
+                                    cpu.write_reg(Register::A7, sp + 10);
+                                    return Some(Ok(()));
+                                }
+                            };
                             self.open_files.insert(refnum, vfs_name.clone());
                             if wants_write && !read_only {
                                 self.write_refnums.insert(refnum);

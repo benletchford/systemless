@@ -283,9 +283,9 @@ pub(super) fn dispatch_window_import(
                 window.wrapping_add(PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET),
                 4,
             );
-            if let Ok(params) = crate::window_manager::evaluate_set_w_ref_con_parameters(
-                window, ref_con, can_write,
-            ) {
+            if let Ok(params) =
+                crate::window_manager::evaluate_set_w_ref_con_parameters(window, ref_con, can_write)
+            {
                 let _ = memory.write_u32_be(
                     params
                         .window_ptr()
@@ -313,9 +313,9 @@ pub(super) fn dispatch_window_import(
                 window.wrapping_add(PPC_CWINDOW_WINDOW_PIC_OFFSET),
                 4,
             );
-            if let Ok(params) = crate::window_manager::evaluate_set_window_pic_parameters(
-                window, pic, can_write,
-            ) {
+            if let Ok(params) =
+                crate::window_manager::evaluate_set_window_pic_parameters(window, pic, can_write)
+            {
                 let _ = memory.write_u32_be(
                     params
                         .window_ptr()
@@ -501,7 +501,18 @@ pub(super) fn dispatch_window_import(
                 previous_front,
                 toolbox_startup.host_menu_bar_hidden,
             );
+            let next_front = ppc_front_visible_process_window(memory, window_list);
+            ppc_enqueue_window_activation_transition(
+                memory,
+                event_queue,
+                previous_front,
+                next_front,
+                tick_count,
+            );
             if !was_visible {
+                if let Some(port_rect) = ppc_read_rect(memory, window.wrapping_add(16)) {
+                    ppc_invalidate_window_local_rect(memory, window, port_rect);
+                }
                 // Macintosh Toolbox Essentials (1992), Window Manager,
                 // PaintOne: newly exposed content uses its window color table.
                 let content_color = ppc_window_color_table_handle(memory, window)
@@ -544,6 +555,13 @@ pub(super) fn dispatch_window_import(
         PpcImportDispatcherTarget::HideWindow => {
             let window = cpu.gpr[3];
             let previous_front = ppc_front_visible_process_window(memory, window_list);
+            let exposed = ppc_window_is_visible(memory, window)
+                .then(|| {
+                    memory
+                        .read_u32_be(window.wrapping_add(PPC_CWINDOW_STRUCTURE_RGN_OFFSET))
+                        .and_then(|region| ppc_read_rgn_bbox(memory, region))
+                })
+                .flatten();
             let _ = ppc_set_window_visible(memory, window, false);
             let _ = ppc_set_window_hilited(memory, window, false);
             ppc_recalculate_window_vis_regions(
@@ -556,12 +574,29 @@ pub(super) fn dispatch_window_import(
                 handles,
             );
             let next_front = ppc_front_visible_process_window(memory, window_list);
+            ppc_enqueue_window_activation_transition(
+                memory,
+                event_queue,
+                previous_front,
+                next_front,
+                tick_count,
+            );
             ppc_transition_front_window_chrome(
                 memory,
                 gworlds,
                 window_list,
                 previous_front,
                 toolbox_startup.host_menu_bar_hidden,
+            );
+            ppc_restore_window_removal_exposure(
+                memory,
+                gworlds,
+                window_list,
+                exposed,
+                toolbox_startup.host_menu_bar_hidden,
+                event_queue,
+                tick_count,
+                input,
             );
             if next_front != previous_front {
                 let _ = ppc_activate_front_window_palette(
@@ -586,6 +621,13 @@ pub(super) fn dispatch_window_import(
             let visible = cpu.gpr[4] != 0;
             let previous_front = ppc_front_visible_process_window(memory, window_list);
             let was_visible = ppc_window_is_visible(memory, window);
+            let exposed = (was_visible && !visible)
+                .then(|| {
+                    memory
+                        .read_u32_be(window.wrapping_add(PPC_CWINDOW_STRUCTURE_RGN_OFFSET))
+                        .and_then(|region| ppc_read_rgn_bbox(memory, region))
+                })
+                .flatten();
             let _ = ppc_set_window_visible(memory, window, visible);
             ppc_recalculate_window_vis_regions(
                 process_memory_manager,
@@ -602,6 +644,24 @@ pub(super) fn dispatch_window_import(
                 window_list,
                 previous_front,
                 toolbox_startup.host_menu_bar_hidden,
+            );
+            let next_front = ppc_front_visible_process_window(memory, window_list);
+            ppc_enqueue_window_activation_transition(
+                memory,
+                event_queue,
+                previous_front,
+                next_front,
+                tick_count,
+            );
+            ppc_restore_window_removal_exposure(
+                memory,
+                gworlds,
+                window_list,
+                exposed,
+                toolbox_startup.host_menu_bar_hidden,
+                event_queue,
+                tick_count,
+                input,
             );
             if visible && !was_visible {
                 if ppc_front_visible_process_window(memory, window_list) != Some(window) {
@@ -987,9 +1047,7 @@ pub(super) fn dispatch_window_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::SaveOld => {
-            Some(PpcImportAction::ReturnPreserve)
-        }
+        PpcImportDispatcherTarget::SaveOld => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::DrawNew => {
             let window = cpu.gpr[3];
             let f_update = cpu.gpr[4] != 0;
@@ -1602,7 +1660,8 @@ pub(super) fn ppc_draw_standard_window_frame(
     }
 
     if !title.is_empty() {
-        let _ = ppc_draw_text_bytes(
+        let _ = ppc_with_unclipped_screen_port(memory, |memory| {
+            ppc_draw_text_bytes(
             memory,
             gworlds,
             PPC_MAIN_GWORLD,
@@ -1613,7 +1672,8 @@ pub(super) fn ppc_draw_standard_window_frame(
             ppc_theme_rgb(palette.frame_dark),
             None,
             &title,
-        );
+            )
+        });
     }
 }
 
@@ -2185,8 +2245,13 @@ pub(super) fn ppc_recalculate_window_vis_regions(
                 PpcRegionBooleanOp::Difference,
             );
         }
-        if let Some((top, left, _, _)) = ppc_read_rgn_bbox(memory, content_rgn) {
-            let _ = ppc_offset_rgn(memory, vis_rgn, left.saturating_neg(), top.saturating_neg());
+        // visRgn is in port coordinates. The port PixMap's screen bounds
+        // include any SetOrigin shift, while contRgn remains global.
+        let pixmap = memory
+            .read_u32_be(window + 2)
+            .and_then(|handle| memory.read_u32_be(handle));
+        if let Some((top, left, _, _)) = pixmap.and_then(|ptr| ppc_read_rect(memory, ptr + 6)) {
+            let _ = ppc_offset_rgn(memory, vis_rgn, left, top);
         }
     }
 }
@@ -2392,7 +2457,10 @@ pub(super) fn ppc_size_window_dimensions(
         .read_u32_be(window_ptr.checked_add(PPC_CWINDOW_CONTENT_RGN_OFFSET)?)
         .and_then(|region| ppc_read_rgn_bbox(memory, region))
         .map(|(global_top, global_left, _, _)| (global_top, global_left))
-        .unwrap_or((top.saturating_sub(pixel_top), left.saturating_sub(pixel_left)));
+        .unwrap_or((
+            top.saturating_sub(pixel_top),
+            left.saturating_sub(pixel_left),
+        ));
     let bottom = ppc_i32_to_i16_saturating(i32::from(top).saturating_add(height as i32));
     let right = ppc_i32_to_i16_saturating(i32::from(left).saturating_add(width as i32));
 
@@ -2927,7 +2995,11 @@ pub(super) fn ppc_paint_behind(
 }
 
 pub(super) fn ppc_window_is_visible(memory: &mut PpcSectionMem, window: u32) -> bool {
-    window != 0 && memory.read_u8(window.wrapping_add(PPC_CWINDOW_VISIBLE_OFFSET)) == Some(1)
+    // Classic Window Manager calls write 0xFF for TRUE; native calls write 1.
+    window != 0
+        && memory
+            .read_u8(window.wrapping_add(PPC_CWINDOW_VISIBLE_OFFSET))
+            .is_some_and(|visible| visible != 0)
 }
 
 pub(super) fn ppc_front_visible_window(
@@ -4327,10 +4399,8 @@ pub(super) fn ppc_dispatch_legacy_window(
             let window = cpu.gpr[3];
             let out_bounds = cpu.gpr[4];
             let result = if window != 0 && out_bounds != 0 {
-                let (top, left, bottom, right) = ppc_read_rect(
-                    memory,
-                    window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET),
-                )
+                let (top, left, bottom, right) =
+                    ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET))
                 .unwrap_or((0, 0, 0, 0));
                 let _ = ppc_write_rect(memory, out_bounds, top, left, bottom, right);
                 out_bounds
@@ -4478,13 +4548,22 @@ pub(super) fn ppc_dispatch_legacy_window(
                 Err(err) => return Some(PpcImportAction::Return(ppc_i16_result(err))),
             };
             let state = memory
-                .read_u32_be(params.window_ptr().wrapping_add(PPC_CWINDOW_STATE_HANDLE_OFFSET))
+                .read_u32_be(
+                    params
+                        .window_ptr()
+                        .wrapping_add(PPC_CWINDOW_STATE_HANDLE_OFFSET),
+                )
                 .filter(|handle| *handle != 0)
                 .and_then(|handle| memory.read_u32_be(handle))
                 .filter(|state| *state != 0);
             let (top, left, bottom, right) = if let Some(s) = state {
                 ppc_read_rect(memory, s).unwrap_or((40, 40, 240, 340))
-            } else if let Some((t, l, b, r)) = ppc_read_rect(memory, params.window_ptr().wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET)) {
+            } else if let Some((t, l, b, r)) = ppc_read_rect(
+                memory,
+                params
+                    .window_ptr()
+                    .wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET),
+            ) {
                 (t, l, b, r)
             } else {
                 (40, 40, 240, 340)
@@ -4506,7 +4585,11 @@ pub(super) fn ppc_dispatch_legacy_window(
             };
             if let Some((top, left, bottom, right)) = ppc_read_rect(memory, params.in_rect_ptr()) {
                 let state = memory
-                    .read_u32_be(params.window_ptr().wrapping_add(PPC_CWINDOW_STATE_HANDLE_OFFSET))
+                    .read_u32_be(
+                        params
+                            .window_ptr()
+                            .wrapping_add(PPC_CWINDOW_STATE_HANDLE_OFFSET),
+                    )
                     .filter(|handle| *handle != 0)
                     .and_then(|handle| memory.read_u32_be(handle))
                     .filter(|state| *state != 0);
@@ -4785,17 +4868,13 @@ pub(super) fn ppc_dispatch_legacy_window(
                         });
                     let result = if let Some(prop) = maybe_prop {
                         if params.out_actual_size_ptr() != 0 {
-                            let _ = memory.write_u32_be(
-                                params.out_actual_size_ptr(),
-                                prop.data.len() as u32,
-                            );
+                            let _ = memory
+                                .write_u32_be(params.out_actual_size_ptr(), prop.data.len() as u32);
                         }
                         if params.out_data_ptr() != 0 && params.buffer_size() > 0 {
                             let copy_len = (params.buffer_size() as usize).min(prop.data.len());
-                            let _ = memory.write_bytes(
-                                params.out_data_ptr(),
-                                &prop.data[..copy_len],
-                            );
+                            let _ =
+                                memory.write_bytes(params.out_data_ptr(), &prop.data[..copy_len]);
                         }
                         PPC_NO_ERR
                     } else {
@@ -4878,10 +4957,8 @@ pub(super) fn ppc_dispatch_legacy_window(
                         });
                     let result = if let Some(prop) = maybe_prop {
                         if params.out_actual_size_ptr() != 0 {
-                            let _ = memory.write_u32_be(
-                                params.out_actual_size_ptr(),
-                                prop.data.len() as u32,
-                            );
+                            let _ = memory
+                                .write_u32_be(params.out_actual_size_ptr(), prop.data.len() as u32);
                         }
                         PPC_NO_ERR
                     } else {
@@ -5069,9 +5146,9 @@ pub(super) fn ppc_dispatch_legacy_window(
                 window.wrapping_add(PPC_CWINDOW_WINDOW_PIC_OFFSET),
                 4,
             );
-            if let Ok(params) = crate::window_manager::evaluate_set_window_pic_parameters(
-                window, pic, can_write,
-            ) {
+            if let Ok(params) =
+                crate::window_manager::evaluate_set_window_pic_parameters(window, pic, can_write)
+            {
                 let _ = memory.write_u32_be(
                     params
                         .window_ptr()
@@ -5089,9 +5166,9 @@ pub(super) fn ppc_dispatch_legacy_window(
                 window.wrapping_add(PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET),
                 4,
             );
-            if let Ok(params) = crate::window_manager::evaluate_set_w_ref_con_parameters(
-                window, ref_con, can_write,
-            ) {
+            if let Ok(params) =
+                crate::window_manager::evaluate_set_w_ref_con_parameters(window, ref_con, can_write)
+            {
                 let _ = memory.write_u32_be(
                     params
                         .window_ptr()
@@ -5589,7 +5666,12 @@ pub(super) fn ppc_rect_difference_bbox(
     ] {
         if rect.0 < rect.2 && rect.1 < rect.3 {
             remaining = match remaining {
-                Some(r) => Some((r.0.min(rect.0), r.1.min(rect.1), r.2.max(rect.2), r.3.max(rect.3))),
+                Some(r) => Some((
+                    r.0.min(rect.0),
+                    r.1.min(rect.1),
+                    r.2.max(rect.2),
+                    r.3.max(rect.3),
+                )),
                 None => Some(rect),
             };
         }

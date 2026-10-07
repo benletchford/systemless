@@ -444,6 +444,35 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                 }
                 let name = decode_catalog_name(catalog_data, &mut cursor, name_len, "file name")?;
                 let path = child_path(&dirs, parent, &name, "file")?;
+                // In VISE 3.6 full catalogs, segment zero contains installer
+                // auxiliaries and generated files outside the install tree.
+                // Only numbered segments contribute installed payload files.
+                if version == VISE_VERSION_36_FULL
+                    && read_u16(record, 94, "file segment number")? == 0
+                {
+                    // A generated file can carry a second Pascal name before
+                    // the next FVCT/DVCT record.
+                    let next = catalog_data.get(cursor..cursor + 4);
+                    if index + 1 < entry_count
+                        && next != Some(b"FVCT".as_slice())
+                        && next != Some(b"DVCT".as_slice())
+                    {
+                        let alias_len = *catalog_data
+                            .get(cursor)
+                            .ok_or_else(|| format!("{path} missing alias length"))?
+                            as usize;
+                        range(catalog_data, cursor + 1, alias_len, "placeholder alias")?;
+                        let next_record = cursor + 1 + alias_len;
+                        let magic = catalog_data.get(next_record..next_record + 4);
+                        if magic != Some(b"FVCT".as_slice())
+                            && magic != Some(b"DVCT".as_slice())
+                        {
+                            return Err(format!("{path} has invalid alias trailer"));
+                        }
+                        cursor = next_record;
+                    }
+                    continue;
+                }
                 // Grouped records share one compressed stream. Flag 0x10 also
                 // appears in extended catalogs, where fork offsets still refer
                 // to positions within that stream.
@@ -1649,6 +1678,7 @@ pub(crate) mod tests {
         let mut file =
             original[file_record_start..file_record_start + VISE_FILE_RECORD_LEN].to_vec();
         file[92..94].copy_from_slice(&1u16.to_be_bytes());
+        file[94..96].copy_from_slice(&1u16.to_be_bytes());
 
         let mut archive = original[..catalog_offset].to_vec();
         archive[16..20].copy_from_slice(&VISE_VERSION_36_FULL.to_be_bytes());
@@ -1680,5 +1710,49 @@ pub(crate) mod tests {
             decode_vise_fork(game.rsrc_packed, game.rsrc_unpacked_len).unwrap(),
             b"resource fork"
         );
+    }
+
+    #[test]
+    fn skips_vise_0304_installer_placeholder_with_alias() {
+        let original = make_test_archive("Game", b"payload", b"");
+        let catalog_offset = read_u32(&original, 36, "catalog offset").unwrap() as usize;
+        let mut archive = original[..catalog_offset].to_vec();
+        archive[16..20].copy_from_slice(&VISE_VERSION_36_FULL.to_be_bytes());
+        let mut catalog = [0u8; VISE_CATALOG_HEADER_LEN];
+        catalog[..4].copy_from_slice(VISE_CATALOG_MAGIC);
+        catalog[16..18].copy_from_slice(&3u16.to_be_bytes());
+        archive.extend_from_slice(&catalog);
+
+        archive.extend_from_slice(b"FVCT");
+        let mut placeholder = [0u8; VISE_FILE_RECORD_LEN];
+        placeholder[8] = 0x08;
+        placeholder[64..68].copy_from_slice(&0x40001u32.to_be_bytes());
+        placeholder[96..100].copy_from_slice(&((archive.len() + 1024) as u32).to_be_bytes());
+        placeholder[118] = 3;
+        archive.extend_from_slice(&placeholder);
+        archive.extend_from_slice(&[0u8; VISE_36_FULL_FILE_SUFFIX_LEN]);
+        archive.extend_from_slice(b"Log");
+        archive.extend_from_slice(b"\x05Alias");
+
+        archive.extend_from_slice(b"FVCT");
+        let mut auxiliary = [0u8; VISE_FILE_RECORD_LEN];
+        auxiliary[64..68].copy_from_slice(&0x100u32.to_be_bytes());
+        auxiliary[96..100].copy_from_slice(&((archive.len() + 1024) as u32).to_be_bytes());
+        auxiliary[118] = 3;
+        archive.extend_from_slice(&auxiliary);
+        archive.extend_from_slice(&[0u8; VISE_36_FULL_FILE_SUFFIX_LEN]);
+        archive.extend_from_slice(b"Aux");
+
+        archive.extend_from_slice(b"FVCT");
+        let start = catalog_offset + VISE_CATALOG_HEADER_LEN + 4;
+        let mut installed = original[start..start + VISE_FILE_RECORD_LEN].to_vec();
+        installed[94..96].copy_from_slice(&1u16.to_be_bytes());
+        archive.extend_from_slice(&installed);
+        archive.extend_from_slice(&[0u8; VISE_36_FULL_FILE_SUFFIX_LEN]);
+        archive.extend_from_slice(b"Game");
+
+        let parsed = parse_vise(&archive).unwrap().unwrap();
+        assert_eq!(parsed.entries.len(), 1);
+        assert_eq!(parsed.entries[0].path, "Game");
     }
 }

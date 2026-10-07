@@ -345,6 +345,7 @@ pub(crate) const PPC_CONTROL_HILITE_OFFSET: u32 = 17;
 pub(crate) const PPC_CONTROL_VALUE_OFFSET: u32 = 18;
 pub(crate) const PPC_CONTROL_MIN_OFFSET: u32 = 20;
 pub(crate) const PPC_CONTROL_MAX_OFFSET: u32 = 22;
+pub(crate) const PPC_CONTROL_DATA_OFFSET: u32 = 28;
 pub(crate) const PPC_CONTROL_ACTION_OFFSET: u32 = 32;
 pub(crate) const PPC_CONTROL_REF_CON_OFFSET: u32 = 36;
 pub(crate) const PPC_CONTROL_TITLE_OFFSET: u32 = 40;

@@ -476,10 +476,16 @@ pub(super) fn ppc_dispatch_legacy_control(
                 ref_con,
             );
             ppc_initialize_popup_control(
+                process_memory_manager,
                 memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
                 controls,
                 vfs_resources,
                 current_resource_refnum,
+                last_resource_error,
                 handle,
             );
             if handle != 0 && cpu.gpr[6] != 0 {
@@ -546,10 +552,16 @@ pub(super) fn ppc_dispatch_legacy_control(
                 PPC_NO_ERR
             };
             ppc_initialize_popup_control(
+                process_memory_manager,
                 memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
                 controls,
                 vfs_resources,
                 current_resource_refnum,
+                last_resource_error,
                 handle,
             );
             if handle != 0 && bytes[10] != 0 {
@@ -1690,7 +1702,7 @@ pub(super) fn ppc_new_control_values(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn ppc_new_control_record_values(
-    allocator: Option<&mut PpcProcessAllocatorView<'_>>,
+    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -1716,7 +1728,7 @@ pub(super) fn ppc_new_control_record_values(
         return 0;
     }
     let handle = ppc_allocator_view_allocate_handle(
-        allocator,
+        allocator.as_deref_mut(),
         memory,
         heap_cursor,
         heap_limit,
@@ -1732,6 +1744,32 @@ pub(super) fn ppc_new_control_record_values(
     let old_head = memory
         .read_u32_be(owner.wrapping_add(PPC_CWINDOW_CONTROL_LIST_OFFSET))
         .unwrap_or(0);
+    let popup = (1008..=1023).contains(&(proc_id & 0x0fff));
+    let popup_data = if popup {
+        // Inside Macintosh VI (1991), pp. 3-18--3-19: the pop-up CDEF
+        // publishes a handle to popupPrivateData through contrlData.
+        let data_handle = ppc_allocator_view_allocate_handle(
+            allocator.as_deref_mut(),
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            8,
+            true,
+        );
+        let Some(data) = ppc_control_ptr(memory, data_handle) else {
+            *last_mem_error = PPC_MEM_FULL_ERR;
+            return 0;
+        };
+        let menu_list = ppc_current_menu_list(memory);
+        let menu = ppc_get_menu_handle(memory, menu_list, min);
+        let _ = memory.write_u32_be(data, menu);
+        let _ = memory.write_u16_be(data + 4, min as u16);
+        data_handle
+    } else {
+        0
+    };
     // Popup CDEF records repurpose contrlMin for the menu ID and contrlMax
     // for the title width, so their value is a menu item number rather than
     // an ordinary min/max control value. Macintosh Toolbox Essentials (1992),
@@ -1778,6 +1816,9 @@ pub(super) fn ppc_new_control_record_values(
             .write_u16_be(control.wrapping_add(PPC_CONTROL_MAX_OFFSET), max as u16)
             .is_some()
         && memory
+            .write_u32_be(control.wrapping_add(PPC_CONTROL_DATA_OFFSET), popup_data)
+            .is_some()
+        && memory
             .write_u32_be(control.wrapping_add(PPC_CONTROL_REF_CON_OFFSET), ref_con)
             .is_some()
         && ppc_write_pstring_bytes(
@@ -1792,7 +1833,6 @@ pub(super) fn ppc_new_control_record_values(
         *last_mem_error = PPC_PARAM_ERR;
         return 0;
     }
-    let popup = (1008..=1023).contains(&(proc_id & 0x0fff));
     // Macintosh Toolbox Essentials (1992), pp. 5-79--5-80.
     let _ = memory.write_u32_be(control + 32, if popup { u32::MAX } else { 0 });
     controls.retain(|record| record.handle != handle);
@@ -1824,10 +1864,16 @@ pub(super) fn ppc_new_control_record_values(
 // width are retained in PpcControlRecord. Macintosh Toolbox Essentials (1992),
 // Creating Pop-Up Menus, pp. 5-25--5-27.
 pub(super) fn ppc_initialize_popup_control(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
     controls: &[PpcControlRecord],
-    resources: &[PpcVfsResourceRecord],
+    resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
+    last_resource_error: &mut i16,
     handle: u32,
 ) {
     let Some(record) = controls.iter().find(|record| {
@@ -1839,7 +1885,34 @@ pub(super) fn ppc_initialize_popup_control(
         return;
     };
     let menu_list = ppc_current_menu_list(memory);
-    let menu = ppc_get_menu_handle(memory, menu_list, record.popup_menu_id);
+    let mut menu = ppc_get_menu_handle(memory, menu_list, record.popup_menu_id);
+    if menu == 0 {
+        if let Some(index) = ppc_vfs_resource_index(
+            resources,
+            current_resource_refnum,
+            u32::from_be_bytes(*b"MENU"),
+            record.popup_menu_id,
+            false,
+        ) {
+            menu = ppc_materialize_vfs_resource_handle(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                resources,
+                index,
+                true,
+                last_resource_error,
+            );
+        }
+    }
+    if let Some(data_handle) = memory.read_u32_be(control + PPC_CONTROL_DATA_OFFSET) {
+        if let Some(data) = ppc_control_ptr(memory, data_handle) {
+            let _ = memory.write_u32_be(data, menu);
+        }
+    }
     let count = if menu != 0 {
         usize::from(ppc_count_menu_items(memory, menu))
     } else {

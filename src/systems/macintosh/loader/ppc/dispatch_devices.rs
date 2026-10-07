@@ -94,6 +94,12 @@ pub(super) fn dispatch_device_import(
             // the documented openErr response disables those optional paths.
             Some(PpcImportAction::Return(ppc_i16_result(PPC_OPEN_ERR)))
         }
+        PpcImportDispatcherTarget::Status => {
+            // No legacy device drivers are installed. A status request for a
+            // driver that failed OpenDriver must report the absent unit.
+            // Inside Macintosh: Devices (1994), pp. 1-76--1-79.
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_OPEN_ERR)))
+        }
         PpcImportDispatcherTarget::Control => {
             Some(PpcImportAction::Return(ppc_i16_result(ppc_control(
                 cpu,

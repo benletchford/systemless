@@ -1,12 +1,12 @@
 //! Window Manager trap handlers.
 
-use crate::memory::SavedPixels;
+use super::quickdraw::RegionBooleanOp;
 use crate::cpu::{CpuOps, Register};
 use crate::mac_roman::{decode_mac_roman, encode_mac_roman_lossy};
+use crate::memory::SavedPixels;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::systems::macintosh::ui_theme::Rgb8;
 use crate::trap::dispatch::{DrawOldState, PortDrawState, QueuedEvent};
-use super::quickdraw::RegionBooleanOp;
 use crate::trap::types::{Rect, ShapeOp};
 use crate::Result;
 use std::sync::OnceLock;
@@ -2145,7 +2145,10 @@ impl super::TrapDispatcher {
         };
         for (offset, delta) in [(0, delta_v), (2, delta_h), (4, delta_v), (6, delta_h)] {
             let coordinate = bus.read_word(bitmap_bounds + offset) as i16;
-            bus.write_word(bitmap_bounds + offset, coordinate.wrapping_sub(delta) as u16);
+            bus.write_word(
+                bitmap_bounds + offset,
+                coordinate.wrapping_sub(delta) as u16,
+            );
         }
 
         // portRect, visRgn, clipRgn stay in local coords — no update needed.
@@ -3496,10 +3499,10 @@ impl super::TrapDispatcher {
         // portBits.bounds by (-left, -top) so that local coordinate (0,0)
         // maps to the window's top-left screen pixel.
         // Reference: Inside Macintosh Volume I, I-289 (SetOrigin)
-        let bounds_top = -wind_top;
-        let bounds_left = -wind_left;
-        let bounds_bottom = screen_h as i16 - wind_top;
-        let bounds_right = screen_w as i16 - wind_left;
+        let bounds_top = wind_top.saturating_neg();
+        let bounds_left = wind_left.saturating_neg();
+        let bounds_bottom = (screen_h as i16).saturating_sub(wind_top);
+        let bounds_right = (screen_w as i16).saturating_sub(wind_left);
 
         let pixmap = bus.alloc(50);
         // Some CRTs (Centaurian 1.2.1) zero out low-mem globals
@@ -3540,8 +3543,8 @@ impl super::TrapDispatcher {
         bus.write_word(window_ptr + 6, 0xC000); // portVersion (CGrafPort flag)
 
         // portRect — in local coordinates (origin at window top-left)
-        let port_height = wind_bottom - wind_top;
-        let port_width = wind_right - wind_left;
+        let port_height = wind_bottom.saturating_sub(wind_top);
+        let port_width = wind_right.saturating_sub(wind_left);
         bus.write_word(window_ptr + 16, 0u16); // top = 0
         bus.write_word(window_ptr + 18, 0u16); // left = 0
         bus.write_word(window_ptr + 20, port_height as u16); // bottom = height
@@ -3551,7 +3554,7 @@ impl super::TrapDispatcher {
         // Inside Macintosh Volume V, V-245
         // In local coordinates, the menu bar is at y = mbar_h - wind_top.
         let mbar_h = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
-        let vis_top_local = (mbar_h - wind_top).max(0);
+        let vis_top_local = mbar_h.saturating_sub(wind_top).max(0);
         let mut content_rect = (vis_top_local, 0, port_height, port_width);
         // The menu-bar exclusion is a property of visRgn, not of the window's
         // content region, so the Window-Manager regions start from the whole
@@ -4648,10 +4651,10 @@ impl super::TrapDispatcher {
                         let (_, _, screen_width, screen_height, _) = self.get_screen_params();
                         self.erase_exposed_desktop_rect(
                             bus,
-                            (wind_top - 19).max(0),
-                            (wind_left - 1).max(0),
-                            (wind_bottom + 2).min(screen_height),
-                            (wind_right + 2).min(screen_width),
+                            wind_top.saturating_sub(19).max(0),
+                            wind_left.saturating_sub(1).max(0),
+                            wind_bottom.saturating_add(2).min(screen_height),
+                            wind_right.saturating_add(2).min(screen_width),
                         );
                     }
                     if self.front_window == the_window {
@@ -5430,12 +5433,13 @@ impl super::TrapDispatcher {
             }
 
             // ShowHide ($A908)
+            // Sets window visibility without changing its order or activation.
             // PROCEDURE ShowHide(theWindow: WindowPtr; showFlag: BOOLEAN);
-            // ShowHide ($A908): Sets window visible byte; rebuilds visRgn/clipRgn from content rect; on show, queues update event for content; on hide, drops queued updates
+            // Inside Macintosh Volume I, I-285
             (true, 0x108) => {
                 let sp = cpu.read_reg(Register::A7);
-                // Pascal BOOLEAN in high byte (MPW C convention).
-                let show_flag = bus.read_byte(sp) != 0;
+                // A byte pushed to A7 occupies the low byte of its two-byte stack slot.
+                let show_flag = bus.read_byte(sp + 1) != 0;
                 let the_window = bus.read_long(sp + 2);
                 if the_window != 0 {
                     let was_visible = self.window_visible(bus, the_window);

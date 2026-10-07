@@ -7,6 +7,7 @@ pub(super) struct PpcToolboxDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,
     pub(super) memory: &'a mut PpcSectionMem,
+    pub(super) init_graf_global_ptr: u32,
 }
 
 pub(super) fn dispatch_toolbox_import(
@@ -16,6 +17,7 @@ pub(super) fn dispatch_toolbox_import(
         binding,
         cpu,
         memory,
+        init_graf_global_ptr,
     } = context;
 
     match binding.dispatcher_target {
@@ -38,6 +40,55 @@ pub(super) fn dispatch_toolbox_import(
         }
         PpcImportDispatcherTarget::EqualString => {
             Some(PpcImportAction::Return(ppc_equal_string(cpu, memory)))
+        }
+        PpcImportDispatcherTarget::RelString => {
+            let left = ppc_read_pstring_bytes(memory, cpu.gpr[3])?;
+            let right = ppc_read_pstring_bytes(memory, cpu.gpr[4])?;
+            let case_sensitive = cpu.gpr[5] != 0;
+            let diac_sensitive = cpu.gpr[6] != 0;
+            let normalize = |byte| {
+                let byte = if diac_sensitive {
+                    byte
+                } else {
+                    crate::trap::mac_roman_strip_diacriticals(byte)
+                };
+                if case_sensitive {
+                    byte
+                } else {
+                    crate::trap::mac_roman_to_upper(byte, false)
+                }
+            };
+            let order = left.into_iter().map(normalize).cmp(right.into_iter().map(normalize));
+            let result: i16 = match order {
+                std::cmp::Ordering::Less => -1,
+                std::cmp::Ordering::Equal => 0,
+                std::cmp::Ordering::Greater => 1,
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::InitEditionPackVersion => {
+            // As with the classic _Pack11 InitEditionPack path, initialization
+            // succeeds for the process-owned Edition Manager stub.
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
+        PpcImportDispatcherTarget::StuffHex => {
+            // Inside Macintosh I, I-195: write each pair of Pascal-string
+            // hexadecimal digits to the destination, as the 68K trap does.
+            let destination = cpu.gpr[3];
+            let digits = ppc_read_pstring_bytes(memory, cpu.gpr[4])?;
+            if destination != 0 {
+                for (offset, pair) in digits.chunks_exact(2).enumerate() {
+                    let nibble = |digit: u8| match digit {
+                        b'0'..=b'9' => digit - b'0',
+                        b'a'..=b'f' => digit - b'a' + 10,
+                        b'A'..=b'F' => digit - b'A' + 10,
+                        _ => 0,
+                    };
+                    let _ = memory.write_u8(destination.wrapping_add(offset as u32),
+                        (nibble(pair[0]) << 4) | nibble(pair[1]));
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::IUEqualPString => {
             // IdenticalString uses the current script's primary ordering when
@@ -78,7 +129,10 @@ pub(super) fn dispatch_toolbox_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::Random => {
-            Some(PpcImportAction::Return(u32::from(ppc_random(memory))))
+            // QuickDraw's randSeed lives 126 bytes before thePort, not at
+            // the unrelated low-memory RandSeed global (Inside Macintosh I-195).
+            let seed_addr = init_graf_global_ptr.checked_sub(126).unwrap_or(PPC_RAND_SEED_ADDR);
+            Some(PpcImportAction::Return(u32::from(ppc_random_at(memory, seed_addr))))
         }
         PpcImportDispatcherTarget::BitAnd => Some(PpcImportAction::Return(cpu.gpr[3] & cpu.gpr[4])),
         PpcImportDispatcherTarget::BitOr => Some(PpcImportAction::Return(cpu.gpr[3] | cpu.gpr[4])),
@@ -142,7 +196,10 @@ pub(crate) fn ppc_sys_environs(memory: &mut PpcSectionMem, rec_ptr: u32) -> i16 
         return PPC_PARAM_ERR;
     }
     let _ = memory.write_u16_be(rec_ptr, 2);
-    let _ = memory.write_u16_be(rec_ptr + 2, REFERENCE_MACHINE_PROFILE.gestalt_machine_type);
+    let _ = memory.write_u16_be(
+        rec_ptr + 2,
+        crate::machine_profile::POWERPC_GESTALT_MACHINE_TYPE,
+    );
     let _ = memory.write_u16_be(rec_ptr + 4, POWERPC_SYSTEM_VERSION_BCD);
     let _ = memory.write_u16_be(
         rec_ptr + 6,

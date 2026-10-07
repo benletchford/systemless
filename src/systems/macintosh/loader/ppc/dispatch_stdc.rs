@@ -44,6 +44,18 @@ pub struct PpcStdSignalState {
     pub(super) handlers: [u32; 32],
 }
 
+/// Architectural state restored by StdCLib longjmp for a matching jmp_buf.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PpcStdJmpContext {
+    pub(super) gpr: [u32; 32],
+    pub(super) fpr: [u64; 32],
+    pub(super) cr: u32,
+    pub(super) lr: u32,
+    pub(super) ctr: u32,
+    pub(super) xer: u32,
+    pub(super) fpscr: u32,
+}
+
 pub(super) struct PpcStdCDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,
@@ -53,6 +65,7 @@ pub(super) struct PpcStdCDispatchContext<'a> {
     pub(super) last_mem_error: &'a mut i16,
     pub(super) stdc_qsort_stack: &'a mut Vec<PpcQsortState>,
     pub(super) stdc_signal_state: &'a mut PpcStdSignalState,
+    pub(super) stdc_jmpbufs: &'a mut HashMap<u32, PpcStdJmpContext>,
 }
 
 pub(super) fn dispatch_stdc_import(ctx: PpcStdCDispatchContext<'_>) -> Option<PpcImportAction> {
@@ -65,9 +78,41 @@ pub(super) fn dispatch_stdc_import(ctx: PpcStdCDispatchContext<'_>) -> Option<Pp
         last_mem_error,
         stdc_qsort_stack,
         stdc_signal_state,
+        stdc_jmpbufs,
     } = ctx;
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::StdSetJmp => {
+            let buffer = cpu.gpr[3];
+            if buffer == 0 {
+                return Some(PpcImportAction::Return(0));
+            }
+            stdc_jmpbufs.insert(buffer, PpcStdJmpContext {
+                gpr: cpu.gpr,
+                fpr: cpu.fpr,
+                cr: cpu.cr,
+                lr: cpu.lr,
+                ctr: cpu.ctr,
+                xer: cpu.xer,
+                fpscr: cpu.fpscr,
+            });
+            Some(PpcImportAction::Return(0))
+        }
+        PpcImportDispatcherTarget::StdLongJmp => {
+            let buffer = cpu.gpr[3];
+            let value = cpu.gpr[4];
+            let saved = stdc_jmpbufs.get(&buffer)?;
+            cpu.gpr = saved.gpr;
+            cpu.fpr = saved.fpr;
+            cpu.cr = saved.cr;
+            cpu.lr = saved.lr;
+            cpu.ctr = saved.ctr;
+            cpu.xer = saved.xer;
+            cpu.fpscr = saved.fpscr;
+            cpu.gpr[3] = if value == 0 { 1 } else { value };
+            cpu.pc = saved.lr;
+            Some(PpcImportAction::Continue)
+        }
         PpcImportDispatcherTarget::StdMemset => {
             let destination = cpu.gpr[3];
             let byte = cpu.gpr[4] as u8;

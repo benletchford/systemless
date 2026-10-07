@@ -2786,6 +2786,15 @@ fn write_pixel(
             let addr = screen_base + (y as u32) * screen_rb + (x as u32) * 2;
             bus.write_word(addr, pixel);
         }
+        32 => {
+            let device_clut = STANDARD_MAC_8BPP_CLUT
+                .get_or_init(crate::trap::dispatch::TrapDispatcher::standard_mac_8bpp_clut);
+            let [red, green, blue] = device_clut[usize::from(color_index)];
+            let pixel =
+                (u32::from(red >> 8) << 16) | (u32::from(green >> 8) << 8) | u32::from(blue >> 8);
+            let addr = screen_base + (y as u32) * screen_rb + (x as u32) * 4;
+            bus.write_long(addr, pixel);
+        }
         _ => {
             // 8bpp: one byte per pixel
             let addr = screen_base + (y as u32) * screen_rb + (x as u32);
@@ -2843,6 +2852,28 @@ fn write_rgb555_pixel_clipped(
     }
     let addr = screen_base + (y as u32) * screen_rb + (x as u32) * 2;
     bus.write_word(addr, pixel & 0x7fff);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_rgb32_pixel_clipped(
+    bus: &mut MacMemoryBus,
+    screen_base: u32,
+    screen_rb: u32,
+    x: i32,
+    y: i32,
+    rgb: [u16; 3],
+    screen_w: i32,
+    screen_h: i32,
+    dst_clip: Option<&DstClip>,
+) {
+    if x < 0 || y < 0 || x >= screen_w || y >= screen_h || !dst_clip_contains(dst_clip, x, y) {
+        return;
+    }
+    let addr = screen_base + (y as u32) * screen_rb + (x as u32) * 4;
+    bus.write_long(
+        addr,
+        (u32::from(rgb[0] >> 8) << 16) | (u32::from(rgb[1] >> 8) << 8) | u32::from(rgb[2] >> 8),
+    );
 }
 
 fn indexed_src_copy_rgb555(
@@ -5795,6 +5826,24 @@ fn blit_row(
                                 );
                                 continue;
                             }
+                            if scrn_ps == 32 && mode_base == 0 {
+                                let rgb = src_clut
+                                    .get(ci)
+                                    .copied()
+                                    .unwrap_or(device_clut[usize::from(src_to_dst[ci.min(255)])]);
+                                write_rgb32_pixel_clipped(
+                                    bus,
+                                    screen_base,
+                                    screen_rb,
+                                    x,
+                                    y,
+                                    rgb,
+                                    screen_w,
+                                    screen_h,
+                                    dst_clip,
+                                );
+                                continue;
+                            }
                             let Some(pixel) = pict_indexed_transfer_pixel(
                                 bus,
                                 ci,
@@ -5878,6 +5927,23 @@ fn blit_row(
                                         src_to_dst,
                                         device_clut,
                                     ),
+                                    screen_w,
+                                    screen_h,
+                                    dst_clip,
+                                );
+                                continue;
+                            }
+                            if scrn_ps == 32 && mode_base == 0 {
+                                let rgb = src_clut.get(src_pixel).copied().unwrap_or(
+                                    device_clut[usize::from(src_to_dst[src_pixel.min(255)])],
+                                );
+                                write_rgb32_pixel_clipped(
+                                    bus,
+                                    screen_base,
+                                    screen_rb,
+                                    x,
+                                    y,
+                                    rgb,
                                     screen_w,
                                     screen_h,
                                     dst_clip,

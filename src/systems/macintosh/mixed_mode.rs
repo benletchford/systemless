@@ -606,11 +606,10 @@ pub(crate) fn enter_m68k_routine_descriptor(
                     .and_then(|address| address.checked_add(selector_bytes))
                     .ok_or(Error::Halted)?;
                 if let Some(size) = result_size {
-                    let address = if size == ValueSize::One {
-                        final_sp.checked_add(1).ok_or(Error::Halted)?
-                    } else {
-                        final_sp
-                    };
+                    // Pascal byte results occupy the high-order byte of the
+                    // reserved word. Inside Macintosh: Operating System
+                    // Utilities (1994), p. 8-19.
+                    let address = final_sp;
                     result = Some(M68kResultTarget::Memory {
                         address,
                         size: size.bytes(),
@@ -962,6 +961,42 @@ mod tests {
             Some(M68kResultTarget::Memory {
                 address: TEST_SP + 12,
                 size: 4,
+            })
+        );
+    }
+
+    #[test]
+    fn native_record_places_pascal_boolean_result_in_high_byte() {
+        let (_, mut cpu, mut bus) = setup();
+        let calls = SharedGuestCallStack::default();
+        let proc_info = stack_proc_info(proc_info::PASCAL_STACK_BASED, proc_info::SIZE_ONE, &[]);
+        write_header(&mut bus, 0);
+        write_record(
+            &mut bus,
+            0,
+            ROUTINE_RECORD_POWERPC_ISA,
+            ROUTINE_FLAG_USE_NATIVE_ISA,
+            proc_info,
+            TVECTOR,
+            0,
+        );
+        install_powerpc_target(&mut bus);
+
+        enter(&mut cpu, &mut bus, &calls);
+        let mut ppc = PpcCpu::new();
+        calls
+            .activate_powerpc_from_m68k(&mut ppc, PPC_RETURN_PC)
+            .unwrap();
+        ppc.pc = PPC_RETURN_PC;
+        ppc.gpr[3] = 1;
+        assert!(calls.complete_powerpc_for_m68k(&mut ppc));
+        let resume = calls.take_m68k_resume().unwrap();
+        assert_eq!(resume.final_sp, TEST_SP + 4);
+        assert_eq!(
+            resume.result,
+            Some(M68kResultTarget::Memory {
+                address: TEST_SP + 4,
+                size: 1,
             })
         );
     }

@@ -393,6 +393,79 @@ use super::*;
     }
 
     #[test]
+    fn dialog_palette_association_preserves_its_item_list() {
+        let pef = synthetic_pef_with_import(b"NSetPalette");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let dialog = PPC_DATA_BASE + 0x1000;
+        let items = PPC_DATA_BASE + 0x2000;
+        let palette = PPC_DATA_BASE + 0x3000;
+        loaded
+            .memory
+            .add_region(dialog, vec![0; crate::dialog_manager::DIALOG_RECORD_SIZE as usize]);
+        loaded
+            .memory
+            .write_u16_be(
+                dialog + PPC_CWINDOW_WINDOW_KIND_OFFSET,
+                crate::dialog_manager::DIALOG_WINDOW_KIND,
+            )
+            .unwrap();
+        loaded
+            .memory
+            .write_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET, items)
+            .unwrap();
+        loaded.cpu.gpr[3] = dialog;
+        loaded.cpu.gpr[4] = palette;
+        loaded.cpu.gpr[5] = 1;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::NSetPalette);
+        assert_eq!(
+            loaded.memory.read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET),
+            Some(items)
+        );
+
+        let palette_ptr = PPC_DATA_BASE + 0x4000;
+        loaded.memory.add_region(palette, vec![0; 4]);
+        loaded.memory.add_region(palette_ptr, vec![0; 32]);
+        loaded.memory.write_u32_be(palette, palette_ptr).unwrap();
+        loaded.memory.write_u16_be(palette_ptr, 1).unwrap();
+        ppc_write_rgb_color(
+            &mut loaded.memory,
+            palette_ptr + 16,
+            PpcRgbColor {
+                red: 0x1234,
+                green: 0x5678,
+                blue: 0x9abc,
+            },
+        )
+        .unwrap();
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = dialog);
+        loaded.cpu.gpr[3] = 0;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::PmForeColor;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PmForeColor);
+        assert_eq!(
+            loaded.quickdraw_fore_color,
+            PpcRgbColor {
+                red: 0x1234,
+                green: 0x5678,
+                blue: 0x9abc,
+            }
+        );
+        assert_eq!(
+            loaded.toolbox_startup.dialog_palettes.get(&dialog),
+            Some(&(palette, 1))
+        );
+
+        loaded.cpu.gpr[3] = dialog;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPalette);
+        assert_eq!(loaded.cpu.gpr[3], palette);
+        assert_eq!(
+            loaded.memory.read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET),
+            Some(items)
+        );
+    }
+
+    #[test]
     fn application_default_palette_round_trips_and_colors_unassigned_front_window() {
         let pef = synthetic_pef_with_import(b"NSetPalette");
         let mut loaded = load_pef_application(&pef).unwrap();

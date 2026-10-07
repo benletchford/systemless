@@ -1820,7 +1820,8 @@ impl PpcLoadedApp {
                                             current_gworld.with_mut(|current_gworld| {
                                             current_gdevice.with_mut(|current_gdevice| {
                                             files.with_mut(|files| {
-                                            dispatch_supported_import(PpcDispatchContext {
+                                            let previous_port = *current_gworld;
+                                            let action = dispatch_supported_import(PpcDispatchContext {
                                             binding,
                                             agl: &mut agl,
                                             cpu,
@@ -1932,7 +1933,26 @@ impl PpcLoadedApp {
                                             input,
                                             event_queue,
                                             draw_sprocket: &mut draw_sprocket,
-                                            })
+                                            });
+                                            // QDGlobals.thePort is guest-visible state. Keep it
+                                            // consistent with SetPort and Toolbox operations that
+                                            // select a window or dialog port internally.
+                                            if toolbox_startup.init_graf_global_ptr != 0
+                                                && previous_port != *current_gworld
+                                                && matches!(
+                                                    binding.dispatcher_target,
+                                                    PpcImportDispatcherTarget::SetPort
+                                                        | PpcImportDispatcherTarget::SetPortWindowPort
+                                                        | PpcImportDispatcherTarget::SetPortDialogPort
+                                                        | PpcImportDispatcherTarget::SetGWorld
+                                                )
+                                            {
+                                                let _ = memory.write_u32_be(
+                                                    toolbox_startup.init_graf_global_ptr,
+                                                    *current_gworld,
+                                                );
+                                            }
+                                            action
                                             })
                                             })
                                             })
@@ -2478,10 +2498,14 @@ pub(crate) fn dispatch_simple_hot_import_fast(
 }
 
 pub(crate) fn ppc_random(memory: &mut PpcSectionMem) -> u16 {
-    let old_seed = memory.read_u32_be(PPC_RAND_SEED_ADDR).unwrap_or(1);
+    ppc_random_at(memory, PPC_RAND_SEED_ADDR)
+}
+
+pub(crate) fn ppc_random_at(memory: &mut PpcSectionMem, seed_addr: u32) -> u16 {
+    let old_seed = memory.read_u32_be(seed_addr).unwrap_or(1);
     let seed = if old_seed == 0 { 1 } else { old_seed };
     let new_seed = ((u64::from(seed) * 16_807) % 2_147_483_647) as u32;
-    let _ = memory.write_u32_be(PPC_RAND_SEED_ADDR, new_seed);
+    let _ = memory.write_u32_be(seed_addr, new_seed);
     let result = new_seed as u16;
     if result == 0x8000 {
         0

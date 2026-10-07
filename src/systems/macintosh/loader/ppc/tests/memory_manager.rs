@@ -1,6 +1,19 @@
 use super::*;
 
 #[test]
+fn new_string_copies_only_the_pascal_string_length() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewString")).unwrap();
+    let source = PPC_DATA_BASE + 0x2f00;
+    loaded.memory.add_region(source, b"\x03Macextra".to_vec());
+    loaded.cpu.gpr[3] = source;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewString);
+    let handle = loaded.cpu.gpr[3];
+    assert_ne!(handle, 0);
+    let data = loaded.memory.read_u32_be(handle).unwrap();
+    assert_eq!(ppc_memory_read_bytes(&mut loaded.memory, data, 4), Some(b"\x03Mac".to_vec()));
+}
+
+#[test]
 fn native_operation_uses_canonical_allocator_without_slice_handoff() {
     let pef = synthetic_pef_with_import(b"NewHandle");
     let mut native = load_pef_application(&pef).unwrap();

@@ -3624,10 +3624,16 @@ fn ppc_initialize_dialog_items(
         }
         if base_type == DIALOG_ITEM_RESOURCE_CONTROL {
             ppc_initialize_popup_control(
+                process_memory_manager,
                 memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
                 controls,
                 vfs_resources,
                 current_resource_refnum,
+                last_resource_error,
                 item_handle,
             );
         }
@@ -4427,7 +4433,7 @@ pub(super) fn ppc_draw_dialog_text(
         if baseline >= rect.2 {
             break;
         }
-        let _ = ppc_draw_text_bytes(
+        let _ = ppc_with_unclipped_screen_port(memory, |memory| ppc_draw_text_bytes(
             memory,
             gworlds,
             PPC_MAIN_GWORLD,
@@ -4438,7 +4444,7 @@ pub(super) fn ppc_draw_dialog_text(
             color,
             None,
             line,
-        );
+        ));
     }
 }
 

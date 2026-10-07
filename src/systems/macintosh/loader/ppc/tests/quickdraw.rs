@@ -3,6 +3,63 @@ use crate::cpu::{CpuOps, Register};
 use crate::trap::test_helpers::{setup_with_port, MockCpu, TEST_SP};
 
 #[test]
+fn host_chrome_text_ignores_and_restores_application_screen_clip() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawString")).unwrap();
+    let clip = loaded
+        .memory
+        .read_u32_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_CLIP_RGN_OFFSET)
+        .unwrap();
+    ppc_write_rgn_bbox(&mut loaded.memory, clip, 0x7ffe, 0x7ffe, 0x7ffd, 0x7ffd).unwrap();
+    let clip_ptr = ppc_rgn_ptr(&mut loaded.memory, clip).unwrap();
+    let saved = ppc_memory_read_bytes(&mut loaded.memory, clip_ptr, 10).unwrap();
+    let front = ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    for y in 2..16 {
+        for x in 40..72 {
+            ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, y), 255);
+        }
+    }
+    let draw = |memory: &mut PpcSectionMem| {
+        ppc_draw_text_bytes(
+            memory,
+            &loaded.gworlds,
+            PPC_MAIN_GWORLD,
+            (42, 14),
+            PPC_QD_TEXT_FONT_DEFAULT,
+            PPC_QD_TEXT_SIZE_SYSTEM,
+            PPC_QD_TEXT_MODE_SRC_OR,
+            PPC_RGB_BLACK,
+            Some(0),
+            b"File",
+        )
+    };
+    draw(&mut loaded.memory);
+    assert_eq!(ppc_quickdraw_read_pixel(&mut loaded.memory, front, (42, 8)), Some(255));
+    ppc_with_unclipped_screen_port(&mut loaded.memory, draw);
+    assert!((2..16).any(|y| (40..72).any(|x| {
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)) != Some(255)
+    })));
+    assert_eq!(ppc_memory_read_bytes(&mut loaded.memory, clip_ptr, 10), Some(saved));
+}
+
+#[test]
+fn inset_rgn_contracts_and_expands_rectangular_bounds() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewRgn")).unwrap();
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewRgn);
+    let region = loaded.cpu.gpr[3];
+    ppc_write_rgn_bbox(&mut loaded.memory, region, 10, 20, 90, 120).unwrap();
+    loaded.cpu.gpr[3] = region;
+    loaded.cpu.gpr[4] = 5;
+    loaded.cpu.gpr[5] = 8;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InsetRgn);
+    assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, region), Some((18, 25, 82, 115)));
+    loaded.cpu.gpr[3] = region;
+    loaded.cpu.gpr[4] = (-5i16) as u16 as u32;
+    loaded.cpu.gpr[5] = (-8i16) as u16 as u32;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InsetRgn);
+    assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, region), Some((10, 20, 90, 120)));
+}
+
+#[test]
 fn move_port_to_shifts_bitmap_bounds_without_moving_port_rect() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "MovePortTo"),
@@ -5257,6 +5314,27 @@ fn init_graf_initializes_application_quickdraw_globals() {
 }
 
 #[test]
+fn set_port_updates_qd_globals_the_port() {
+    let pef = synthetic_pef_with_import(b"InitGraf");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let globals = PPC_DATA_BASE + 0x2000;
+    let port = PPC_DATA_BASE + 0x3000;
+    loaded.memory.add_region(globals - 126, vec![0; 130]);
+    loaded.memory.add_region(port, vec![0; 128]);
+    loaded.cpu.gpr[3] = globals;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InitGraf);
+    assert_eq!(loaded.memory.read_u32_be(globals), Some(PPC_MAIN_GWORLD));
+
+    loaded.cpu.gpr[3] = port;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetPort);
+    assert_eq!(loaded.memory.read_u32_be(globals), Some(port));
+
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetPort);
+    assert_eq!(loaded.memory.read_u32_be(globals), Some(PPC_MAIN_GWORLD));
+}
+
+#[test]
 fn hle_import_runner_gets_and_sets_gray_region_low_memory_handle() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "LMSetGrayRgn"),
@@ -5289,6 +5367,26 @@ fn hle_import_runner_gets_and_sets_gray_region_low_memory_handle() {
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], 0x0300_1234);
+}
+
+#[test]
+fn hle_get_gray_returns_representable_intermediate_color() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetGray")).unwrap();
+    let background = PPC_DATA_BASE + 0x1000;
+    let foreground = PPC_DATA_BASE + 0x1010;
+    loaded.memory.add_region(background, vec![0; 6]);
+    loaded.memory.add_region(foreground, vec![0; 6]);
+    ppc_write_rgb_color(&mut loaded.memory, background, PPC_RGB_WHITE).unwrap();
+    ppc_write_rgb_color(&mut loaded.memory, foreground, PPC_RGB_BLACK).unwrap();
+    loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
+    loaded.cpu.gpr[4] = background;
+    loaded.cpu.gpr[5] = foreground;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    let gray = ppc_read_rgb_color(&mut loaded.memory, foreground).unwrap();
+    assert_ne!(gray, PPC_RGB_BLACK);
+    assert_ne!(gray, PPC_RGB_WHITE);
 }
 
 #[test]
@@ -5341,6 +5439,36 @@ fn hle_import_runner_handles_text_width() {
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], 42);
+}
+
+#[test]
+fn offset_full_clip_region_preserves_unbounded_extent() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"OffsetRgn")).unwrap();
+    let full = Some((i16::MIN, i16::MIN, i16::MAX, i16::MAX));
+    assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, PPC_MAIN_CLIP_RGN_HANDLE), full);
+    assert_eq!(ppc_offset_rgn(&mut loaded.memory, PPC_MAIN_CLIP_RGN_HANDLE, -2, -2), PPC_NO_ERR);
+    assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, PPC_MAIN_CLIP_RGN_HANDLE), full);
+    assert!(!ppc_empty_rgn(&mut loaded.memory, PPC_MAIN_CLIP_RGN_HANDLE));
+}
+
+#[test]
+fn set_origin_preserves_window_screen_position() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SetOrigin")).unwrap();
+    let port = PPC_MAIN_GWORLD;
+    let pixmap_handle = loaded.memory.read_u32_be(port + 2).unwrap();
+    let pixmap = loaded.memory.read_u32_be(pixmap_handle).unwrap();
+    ppc_write_rect(&mut loaded.memory, pixmap + 6, -50, -40, 550, 760).unwrap();
+    ppc_write_rect(&mut loaded.memory, port + 16, 0, 0, 200, 300).unwrap();
+
+    ppc_set_port_origin(&mut loaded.memory, port, 0, -360).unwrap();
+
+    assert_eq!(ppc_read_rect(&mut loaded.memory, port + 16), Some((-360, 0, -160, 300)));
+    assert_eq!(ppc_read_rect(&mut loaded.memory, pixmap + 6), Some((-410, -40, 190, 760)));
+    assert_eq!(
+        ppc_read_rect(&mut loaded.memory, port + 16).unwrap().0
+            - ppc_read_rect(&mut loaded.memory, pixmap + 6).unwrap().0,
+        50,
+    );
 }
 
 #[test]

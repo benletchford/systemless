@@ -1,5 +1,30 @@
 use super::*;
 
+#[test]
+fn select_window_preserves_classic_visible_region() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SelectWindow")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1400;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let window = create_test_cwindow(&mut loaded, scratch, (40, 50, 140, 250), 0, false, u32::MAX);
+    loaded
+        .memory
+        .write_u8(window + PPC_CWINDOW_VISIBLE_OFFSET, 0xFF)
+        .unwrap();
+
+    loaded.cpu.gpr[3] = window;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SelectWindow);
+
+    assert!(ppc_window_is_visible(&mut loaded.memory, window));
+    let vis_rgn = loaded
+        .memory
+        .read_u32_be(window + PPC_CGRAF_PORT_VIS_RGN_OFFSET)
+        .unwrap();
+    assert_eq!(
+        ppc_read_rgn_bbox(&mut loaded.memory, vis_rgn),
+        Some((0, 0, 100, 200))
+    );
+}
+
 pub(crate) fn create_test_cwindow(
     loaded: &mut PpcLoadedApp,
     bounds_ptr: u32,
@@ -22,6 +47,22 @@ pub(crate) fn create_test_cwindow(
     let window = loaded.cpu.gpr[3];
     assert_ne!(window, 0, "test NewCWindow must succeed");
     window
+}
+
+#[test]
+fn window_visibility_recalculation_keeps_set_origin_coordinates() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SizeWindow")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1400;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let window = create_test_cwindow(&mut loaded, scratch, (40, 50, 140, 250), 0, true, u32::MAX);
+    ppc_set_port_origin(&mut loaded.memory, window, 0, -360).unwrap();
+    loaded.cpu.gpr[3] = window;
+    loaded.cpu.gpr[4] = 200;
+    loaded.cpu.gpr[5] = 100;
+    loaded.cpu.gpr[6] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SizeWindow);
+    let vis_rgn = loaded.memory.read_u32_be(window + PPC_CGRAF_PORT_VIS_RGN_OFFSET).unwrap();
+    assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, vis_rgn), Some((-360, 0, -260, 200)));
 }
 
 #[test]
@@ -1121,7 +1162,22 @@ fn hle_import_runner_new_cwindow_draws_document_frame_at_supported_depths() {
         );
 
         loaded.cpu.gpr[3] = window;
+        if depth == 16 {
+            assert!(ppc_quickdraw_write_raw_pixel(
+                &mut loaded.memory,
+                front,
+                (150, 150),
+                0x1234,
+            ));
+        }
         run_test_import(&mut loaded, PpcImportDispatcherTarget::HideWindow);
+        if depth == 16 {
+            assert_ne!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, (150, 150)),
+                Some(0x1234),
+                "HideWindow left the hidden window's content on screen",
+            );
+        }
         let hidden_frame =
             ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len)
                 .unwrap();
@@ -2642,8 +2698,20 @@ fn hle_import_runner_handles_get_new_cwindow() {
     );
     assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
 
+    let update_rgn = loaded
+        .memory
+        .read_u32_be(storage_ptr + PPC_CWINDOW_UPDATE_RGN_OFFSET)
+        .unwrap();
+    assert_eq!(
+        ppc_read_rgn_bbox(&mut loaded.memory, update_rgn),
+        Some((0, 0, 0, 0))
+    );
     loaded.cpu.gpr[3] = storage_ptr;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::ShowWindow);
+    assert_eq!(
+        ppc_read_rgn_bbox(&mut loaded.memory, update_rgn),
+        Some((0, 0, 200, 300))
+    );
     let surface =
         ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, storage_ptr).unwrap();
     let black =

@@ -5,6 +5,7 @@ pub enum PpcSystemCompatibilityOperation {
     BuildDdPwds,
     CtbGetCtbVersion,
     CallComponentUpp,
+    CharByte,
     DiBadMount,
     DiLoad,
     DiUnload,
@@ -13,12 +14,15 @@ pub enum PpcSystemCompatibilityOperation {
     Enqueue,
     FindNextComponent,
     GetNextProcess,
+    GetEvQHdr,
     GetScript,
     GetScriptManagerVariable,
     GetScriptVariable,
     GetSysBeepVolume,
+    GetSysDirection,
     IuCompString,
     IuDateString,
+    IuEqualString,
     InitCrm,
     InitCtbUtilities,
     IntlScript,
@@ -41,6 +45,36 @@ pub enum PpcSystemCompatibilityOperation {
     SystemEdit,
     TruncText,
     UpperString,
+}
+
+fn ppc_key_translate(memory: &mut PpcSectionMem, trans_data: u32, keycode: u16, state: u32) -> u32 {
+    // KeyTranslate / KeyTrans uses the caller's KCHR modifier index and
+    // 128-byte key tables. Ordinary (non-dead-key) translations return the
+    // character in the low byte and leave no pending state.
+    // FUNCTION KeyTranslate(transData: Ptr; keycode: Integer;
+    //                       VAR state: LongInt): LongInt;
+    // Macintosh Toolbox Essentials (1992), pp. 2-110--2-111.
+    let result = (|| {
+        let modifier_index = u32::from(keycode >> 8);
+        let table = u32::from(memory.read_u8(trans_data.checked_add(2 + modifier_index)?)?);
+        let table_count = u32::from(memory.read_u16_be(trans_data.checked_add(258)?)?);
+        if table >= table_count {
+            return None;
+        }
+        let table_offset = 260u32.checked_add(table.checked_mul(128)?)?;
+        let offset = table_offset.checked_add(u32::from(keycode & 0x007f))?;
+        memory.read_u8(trans_data.checked_add(offset)?)
+    })()
+    .map_or(0, u32::from);
+    if state != 0 {
+        let _ = memory.write_u32_be(state, 0);
+    }
+    if crate::trap::dispatch::trace_input_enabled() {
+        eprintln!(
+            "[INPUT] PPC KeyTranslate data=${trans_data:08X} key=${keycode:04X} state=${state:08X} -> ${result:08X}"
+        );
+    }
+    result
 }
 
 pub(crate) fn ppc_munger_compatibility(
@@ -179,6 +213,7 @@ pub(crate) fn ppc_dispatch_system_compatibility(
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
     launched_app_path: Option<&str>,
+    kchr_cache_ptr: &mut u32,
 ) -> PpcImportAction {
     match operation {
         PpcSystemCompatibilityOperation::Munger => {
@@ -234,6 +269,20 @@ pub(crate) fn ppc_dispatch_system_compatibility(
                 std::cmp::Ordering::Greater => 1,
             };
             PpcImportAction::Return(ppc_i16_result(ordering))
+        }
+        PpcSystemCompatibilityOperation::IuEqualString => {
+            // IUEqualString compares Pascal strings using primary ordering:
+            // case and diacritic differences do not matter, and it returns
+            // zero for equality. Inside Macintosh I (1985), p. I-506.
+            // FUNCTION IUEqualString(aStr,bStr: Str255): INTEGER;
+            let lhs = ppc_read_pstring_bytes(memory, cpu.gpr[3]).unwrap_or_default();
+            let rhs = ppc_read_pstring_bytes(memory, cpu.gpr[4]).unwrap_or_default();
+            let primary = |byte| crate::trap::mac_roman_to_upper(byte, true);
+            let equal = lhs
+                .into_iter()
+                .map(primary)
+                .eq(rhs.into_iter().map(primary));
+            PpcImportAction::Return(u32::from(!equal))
         }
         PpcSystemCompatibilityOperation::TruncText => {
             let width = usize::from(cpu.gpr[3] as u16);
@@ -335,10 +384,59 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             // the Roman script (smRoman = 0).
             PpcImportAction::Return(0)
         }
-        PpcSystemCompatibilityOperation::GetScriptManagerVariable
-        | PpcSystemCompatibilityOperation::GetScriptVariable
+        PpcSystemCompatibilityOperation::CharByte => {
+            // CharByte identifies a byte's place in a multibyte character.
+            // The installed Roman script uses only single-byte characters.
+            // FUNCTION CharByte(textBuf: Ptr; textOffset: Integer): Integer;
+            // Inside Macintosh Volume V (1986), V-306.
+            PpcImportAction::Return(0)
+        }
+        PpcSystemCompatibilityOperation::GetSysDirection => {
+            // GetSysDirection returns the SysDirection global: zero for
+            // left-to-right or -1 for right-to-left text.
+            // FUNCTION GetSysDirection: Integer;
+            // Inside Macintosh: Text (1993), pp. 6-10 and 6-76.
+            PpcImportAction::Return(ppc_i16_result(
+                memory.read_u16_be(0x0BAC).unwrap_or(0) as i16,
+            ))
+        }
+        PpcSystemCompatibilityOperation::GetEvQHdr => {
+            // GetEvQHdr returns the address of the EventQueue low-memory QHdr.
+            // FUNCTION GetEvQHdr: QHdrPtr;
+            // Inside Macintosh Volume II (1985), II-71; Volume III, low-memory globals.
+            PpcImportAction::Return(0x014A)
+        }
+        PpcSystemCompatibilityOperation::KeyTranslate => PpcImportAction::Return(
+            ppc_key_translate(memory, cpu.gpr[3], cpu.gpr[4] as u16, cpu.gpr[5]),
+        ),
+        PpcSystemCompatibilityOperation::GetScriptManagerVariable => {
+            // smKCHRCache (38) is the current KCHR data pointer, used by
+            // KeyTranslate to map virtual keys through the keyboard layout.
+            // Inside Macintosh: Text (1993), pp. 6-61 and C-18--C-20.
+            let result = if cpu.gpr[3] as u16 == 38 {
+                if *kchr_cache_ptr == 0 {
+                    let bytes = crate::trap::dispatch::standard_us_kchr_bytes();
+                    let ptr = ppc_process_heap_alloc(
+                        process_memory_manager,
+                        memory,
+                        heap_cursor,
+                        bytes.len() as u32,
+                        false,
+                    );
+                    if ptr != 0 && memory.write_bytes(ptr, &bytes).is_some() {
+                        *kchr_cache_ptr = ptr;
+                    } else {
+                        *last_mem_error = PPC_MEM_FULL_ERR;
+                    }
+                }
+                *kchr_cache_ptr
+            } else {
+                0
+            };
+            PpcImportAction::Return(result)
+        }
+        PpcSystemCompatibilityOperation::GetScriptVariable
         | PpcSystemCompatibilityOperation::GetScript
-        | PpcSystemCompatibilityOperation::KeyTranslate
         | PpcSystemCompatibilityOperation::CallComponentUpp => PpcImportAction::Return(0),
         PpcSystemCompatibilityOperation::LaunchApplication => {
             PpcImportAction::Return(ppc_i16_result(PPC_PROC_NOT_FOUND_ERR))

@@ -1,6 +1,40 @@
 use super::*;
 
 #[test]
+fn ppc_script_manager_caches_kchr_for_keytranslate() {
+    let pef = synthetic_pef_with_import(b"GetScriptManagerVariable");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let script_variable = PpcImportDispatcherTarget::SystemCompatibility(
+        PpcSystemCompatibilityOperation::GetScriptManagerVariable,
+    );
+    loaded.cpu.gpr[3] = 38; // smKCHRCache
+    run_test_import(&mut loaded, script_variable.clone());
+    let kchr = loaded.cpu.gpr[3];
+    assert_ne!(kchr, 0);
+    assert_eq!(loaded.memory.read_u16_be(kchr), Some(0));
+    assert_eq!(loaded.memory.read_u16_be(kchr + 258), Some(2));
+
+    loaded.cpu.gpr[3] = 38;
+    run_test_import(&mut loaded, script_variable);
+    assert_eq!(loaded.cpu.gpr[3], kchr);
+
+    let state = PPC_DATA_BASE + 0x3200;
+    loaded.memory.add_region(state, vec![0; 4]);
+    let key_translate = PpcImportDispatcherTarget::SystemCompatibility(
+        PpcSystemCompatibilityOperation::KeyTranslate,
+    );
+    for (keycode, expected) in [(0x00AD, b'n'), (0x02AD, b'N')] {
+        loaded.memory.write_u32_be(state, 0x1234).unwrap();
+        loaded.cpu.gpr[3] = kchr;
+        loaded.cpu.gpr[4] = keycode;
+        loaded.cpu.gpr[5] = state;
+        run_test_import(&mut loaded, key_translate.clone());
+        assert_eq!(loaded.cpu.gpr[3], u32::from(expected));
+        assert_eq!(loaded.memory.read_u32_be(state), Some(0));
+    }
+}
+
+#[test]
 fn attached_68k_and_powerpc_event_adapters_share_fifo_and_menu_bar_invalidation() {
     let (mut classic, _, _) = setup_with_port();
     let pef = synthetic_pef_with_import(b"InvalMenuBar");
@@ -1822,6 +1856,7 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
         ("BuildDDPwds", PpcSystemCompatibilityOperation::BuildDdPwds),
         ("CTBGetCTBVersion", PpcSystemCompatibilityOperation::CtbGetCtbVersion),
         ("CallComponentUPP", PpcSystemCompatibilityOperation::CallComponentUpp),
+        ("CharByte", PpcSystemCompatibilityOperation::CharByte),
         ("DIBadMount", PpcSystemCompatibilityOperation::DiBadMount),
         ("DILoad", PpcSystemCompatibilityOperation::DiLoad),
         ("DIUnload", PpcSystemCompatibilityOperation::DiUnload),
@@ -1830,12 +1865,15 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
         ("Enqueue", PpcSystemCompatibilityOperation::Enqueue),
         ("FindNextComponent", PpcSystemCompatibilityOperation::FindNextComponent),
         ("GetNextProcess", PpcSystemCompatibilityOperation::GetNextProcess),
+        ("GetEvQHdr", PpcSystemCompatibilityOperation::GetEvQHdr),
         ("GetScript", PpcSystemCompatibilityOperation::GetScript),
         ("GetScriptManagerVariable", PpcSystemCompatibilityOperation::GetScriptManagerVariable),
         ("GetScriptVariable", PpcSystemCompatibilityOperation::GetScriptVariable),
         ("GetSysBeepVolume", PpcSystemCompatibilityOperation::GetSysBeepVolume),
+        ("GetSysDirection", PpcSystemCompatibilityOperation::GetSysDirection),
         ("IUCompString", PpcSystemCompatibilityOperation::IuCompString),
         ("IUDateString", PpcSystemCompatibilityOperation::IuDateString),
+        ("IUEqualString", PpcSystemCompatibilityOperation::IuEqualString),
         ("InitCRM", PpcSystemCompatibilityOperation::InitCrm),
         ("InitCTBUtilities", PpcSystemCompatibilityOperation::InitCtbUtilities),
         ("IntlScript", PpcSystemCompatibilityOperation::IntlScript),
@@ -1864,4 +1902,35 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
             PpcImportDispatcherTarget::SystemCompatibility(operation),
         );
     }
+}
+
+#[test]
+fn iu_equal_string_uses_primary_mac_roman_ordering() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"IUEqualString")).unwrap();
+    let left = PPC_DATA_BASE + 0x1000;
+    let right = PPC_DATA_BASE + 0x1040;
+    loaded.memory.add_region(left, vec![0; 64]);
+    loaded.memory.add_region(right, vec![0; 64]);
+    write_ppc_pstring(&mut loaded.memory, left, b"Rose");
+    write_ppc_pstring(&mut loaded.memory, right, b"ros\x8e");
+    loaded.cpu.gpr[3] = left;
+    loaded.cpu.gpr[4] = right;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::IuEqualString,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    write_ppc_pstring(&mut loaded.memory, right, b"Rope");
+    loaded.cpu.gpr[3] = left;
+    loaded.cpu.gpr[4] = right;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::IuEqualString,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 1);
 }

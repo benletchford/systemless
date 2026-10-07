@@ -1,6 +1,37 @@
 use super::*;
 
 #[test]
+fn stdclib_longjmp_restores_setjmp_context_and_converts_zero_to_one() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"StdCLib",
+        b"__setjmp",
+    ))
+    .unwrap();
+    let buffer = PPC_DATA_BASE + 0x2100;
+    loaded.cpu.gpr[3] = buffer;
+    loaded.cpu.gpr[5] = 0x1234_5678;
+    loaded.cpu.cr = 0x8765_4321;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert!(loaded.toolbox_startup.stdc_jmpbufs.contains_key(&buffer));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = buffer;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.cr = 0;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::StdLongJmp;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    assert_eq!(loaded.cpu.gpr[5], 0x1234_5678);
+    assert_eq!(loaded.cpu.cr, 0x8765_4321);
+    assert_eq!(loaded.cpu.pc, PPC_HALT_PC);
+}
+
+#[test]
 fn stdclib_time_uses_msl_epoch_and_optional_result_pointer() {
     let pef = synthetic_pef_with_library_import(b"StdCLib", b"time");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -482,7 +513,11 @@ fn stdio_imports_pre_resolve_to_typed_operations() {
 fn import_bindings_classify_stdclib_utility_imports() {
     assert_eq!(
         dispatcher_target_for_import("StdCLib", "__setjmp"),
-        PpcImportDispatcherTarget::ReturnNoErr
+        PpcImportDispatcherTarget::StdSetJmp
+    );
+    assert_eq!(
+        dispatcher_target_for_import("StdCLib", "longjmp"),
+        PpcImportDispatcherTarget::StdLongJmp
     );
     assert_eq!(
         dispatcher_target_for_import("StdCLib", "sprintf"),

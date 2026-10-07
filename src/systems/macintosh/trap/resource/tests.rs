@@ -5077,12 +5077,14 @@ fn hlfs_dispatch_fspopendf() {
 
     let new_sp = cpu.read_reg(Register::A7);
     assert_eq!(new_sp, TEST_SP + 10);
-    // A refnum should have been written
+    // FSpOpenDF must publish an HFS FCB offset: 68K code can inspect the
+    // table directly through FCBSPtr without calling PBGetFCBInfo.
     let refnum = bus.read_word(ref_num_ptr);
-    assert!(
-        refnum >= 100,
-        "refnum should be >= 100 (initial next_refnum)"
-    );
+    assert_eq!(refnum % 94, 2);
+    let fcb_buffer = bus.read_long(crate::memory::globals::addr::FCB_S_PTR);
+    assert_ne!(fcb_buffer, 0);
+    assert!(u32::from(refnum) + 94 <= u32::from(bus.read_word(fcb_buffer)));
+    assert_eq!(bus.read_long(fcb_buffer + u32::from(refnum) + 8), 3);
     // Result at new SP should be 0
     assert_eq!(bus.read_word(new_sp), 0);
 }
