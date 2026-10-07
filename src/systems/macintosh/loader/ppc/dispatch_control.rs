@@ -1839,6 +1839,7 @@ pub(super) fn ppc_new_control_record_values(
     controls.push(PpcControlRecord {
         handle,
         pointer: control,
+        generation: crate::control_manager::new_control_generation(),
         proc_id,
         popup_menu_id: if popup { min } else { 0 },
         popup_title_width: popup.then_some(max),

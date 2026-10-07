@@ -1,5 +1,15 @@
 //! Architecture-neutral Control Manager records and list operations.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_CONTROL_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) fn new_control_generation() -> u64 {
+    NEXT_CONTROL_GENERATION
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| next.checked_add(1))
+        .expect("control lifetime generation exhausted")
+}
+
 /// Read-only, frontend-neutral state of a guest Control Manager control.
 /// Bounds are in global screen coordinates; `local_bounds` retains the
 /// canonical `contrlRect` for cases where a port origin needs more context.
@@ -8,6 +18,8 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ControlSnapshot {
     pub guest_id: u32,
+    /// Changes when a disposed control's guest handle is reused.
+    pub generation: u64,
     pub owner_id: u32,
     pub proc_id: i16,
     pub local_bounds: (i16, i16, i16, i16),
@@ -28,6 +40,7 @@ pub struct ControlSnapshot {
 pub(crate) fn snapshot_control_record(
     handle: u32,
     expected_pointer: u32,
+    generation: u64,
     proc_id: i16,
     owner_state: impl Fn(u32) -> Option<((i16, i16, i16, i16), bool)>,
     mut read: impl FnMut(u32) -> Option<u8>,
@@ -69,6 +82,7 @@ pub(crate) fn snapshot_control_record(
         .collect::<Option<Vec<_>>>()?;
     Some(ControlSnapshot {
         guest_id: handle,
+        generation,
         owner_id,
         proc_id,
         local_bounds,
@@ -105,6 +119,7 @@ pub(crate) struct ProcessControlProperty {
 pub(crate) struct ProcessControlRecord {
     pub(crate) handle: u32,
     pub(crate) pointer: u32,
+    pub(crate) generation: u64,
     pub(crate) proc_id: i16,
     pub(crate) popup_menu_id: i16,
     pub(crate) popup_title_width: Option<i16>,
@@ -165,6 +180,7 @@ impl ProcessControlManagerState {
         self.records.push(ProcessControlRecord {
             handle,
             pointer,
+            generation: new_control_generation(),
             proc_id,
             popup_menu_id,
             popup_title_width: None,
@@ -829,6 +845,23 @@ mod tests {
         state.remove_handle(20);
         assert_eq!(state.count_sub_controls(10), 1);
         assert_eq!(state.indexed_sub_control(10, 1), Some(30));
+    }
+
+    #[test]
+    fn control_generation_changes_only_for_a_new_lifetime() {
+        let mut state = ProcessControlManagerState::default();
+        state.register(10, 0x1000, 1, 0);
+        let first = state
+            .iter()
+            .find(|record| record.handle == 10)
+            .unwrap()
+            .generation;
+        assert_ne!(first, 0);
+        state.register(10, 0x1000, 1, 0);
+        assert_eq!(state[0].generation, first);
+        state.remove_handle(10);
+        state.register(10, 0x1000, 1, 0);
+        assert!(state[0].generation > first);
     }
 
     #[test]

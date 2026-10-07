@@ -190,11 +190,13 @@ fn hle_import_runner_creates_and_links_a_classic_control_record() {
         ppc_read_pstring_bytes(&mut loaded.memory, control + PPC_CONTROL_TITLE_OFFSET),
         Some(b"Launch".to_vec())
     );
+    assert_ne!(loaded.controls.records()[0].generation, 0);
     assert_eq!(
         loaded.controls.records(),
         vec![PpcControlRecord {
             handle,
             pointer: control,
+            generation: loaded.controls.records()[0].generation,
             proc_id: 16,
             popup_menu_id: 0,
             popup_title_width: None,

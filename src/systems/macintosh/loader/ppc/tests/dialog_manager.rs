@@ -1234,11 +1234,13 @@ fn get_new_dialog_installs_owned_control_records_in_the_live_ditl() {
         ppc_read_pstring_bytes(&mut loaded.memory, control + PPC_CONTROL_TITLE_OFFSET),
         Some(b"OK".to_vec())
     );
+    assert_ne!(loaded.controls.records()[0].generation, 0);
     assert_eq!(
         loaded.controls.records(),
         vec![PpcControlRecord {
             handle: control_handle,
             pointer: control,
+            generation: loaded.controls.records()[0].generation,
             proc_id: 0,
             popup_menu_id: 0,
             popup_title_width: None,

@@ -615,7 +615,10 @@ mod desktop {
                 match control.proc_id {
                     0 => {
                         overlay = overlay.child(
-                            Button::new(("guest-control-button", control.guest_id as usize))
+                            Button::new(format!(
+                                "guest-control-button-{}-{}",
+                                control.guest_id, control.generation
+                            ))
                                 .label(control.title.clone())
                                 .small()
                                 .compact()
@@ -627,7 +630,10 @@ mod desktop {
                     }
                     1 => {
                         overlay = overlay.child(
-                            Checkbox::new(("guest-control-checkbox", control.guest_id as usize))
+                            Checkbox::new(format!(
+                                "guest-control-checkbox-{}-{}",
+                                control.guest_id, control.generation
+                            ))
                                 .label(control.title.clone())
                                 .checked(control.value != 0)
                                 .disabled(!control.enabled)
@@ -639,7 +645,10 @@ mod desktop {
                     }
                     2 => {
                         overlay = overlay.child(
-                            Radio::new(("guest-control-radio", control.guest_id as usize))
+                            Radio::new(format!(
+                                "guest-control-radio-{}-{}",
+                                control.guest_id, control.generation
+                            ))
                                 .label(control.title.clone())
                                 .checked(control.value != 0)
                                 .disabled(!control.enabled)
@@ -1350,14 +1359,18 @@ mod desktop {
                 assert_eq!(checkbox.bounds, (305, 225, 329, 355));
                 assert_eq!(checkbox.value, 0);
                 assert!(checkbox.enabled);
+                assert_ne!(checkbox.generation, 0);
                 let checkbox_id = checkbox.guest_id;
+                let checkbox_generation = checkbox.generation;
                 let bar = controls
                     .iter()
                     .find(|control| control.visible && control.proc_id == 16)
                     .unwrap();
                 assert_eq!(bar.bounds, (360, 80, 376, 540));
                 assert_eq!((bar.value, bar.minimum, bar.maximum), (0, 0, 10));
+                assert_ne!(bar.generation, 0);
                 let bar_id = bar.guest_id;
+                let bar_generation = bar.generation;
                 let (top, left, bottom, right) = checkbox.bounds;
                 let (vertical, horizontal) = ((top + bottom) / 2, (left + right) / 2);
                 session.deliver_input(MacintoshInput::MouseDown {
@@ -1376,6 +1389,7 @@ mod desktop {
                     .find(|control| control.guest_id == checkbox_id)
                     .unwrap();
                 assert_eq!(checkbox.value, 1);
+                assert_eq!(checkbox.generation, checkbox_generation);
                 session.deliver_input(MacintoshInput::MouseDown {
                     vertical: 368,
                     horizontal: 532,
@@ -1392,6 +1406,7 @@ mod desktop {
                     .find(|control| control.guest_id == bar_id)
                     .unwrap();
                 assert!(bar.value > 0 && bar.value <= bar.maximum);
+                assert_eq!(bar.generation, bar_generation);
             }
         }
 
@@ -1597,6 +1612,7 @@ mod desktop {
                     }];
                     demo.controls = vec![ControlSnapshot {
                         guest_id: 22,
+                        generation: 1,
                         owner_id: 7,
                         proc_id: 1,
                         local_bounds: (100, 100, 124, 220),
@@ -1617,7 +1633,7 @@ mod desktop {
                 });
             });
             cx.update_window(window.into(), |_, window, cx| {
-                window.click(("guest-control-checkbox", 22usize), cx);
+                window.click("guest-control-checkbox-22-1", cx);
             })
             .unwrap();
             let inputs: Vec<_> = receiver
