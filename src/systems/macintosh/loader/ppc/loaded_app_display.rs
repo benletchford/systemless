@@ -3,6 +3,9 @@
 use super::*;
 
 impl PpcLoadedApp {
+    pub(crate) fn window_definition_id(&mut self, window: u32) -> i16 {
+        ppc_window_proc_id(&mut self.memory, window)
+    }
     pub fn current_front_buffer(&self) -> Option<PpcFrontBuffer> {
         ppc_front_buffer_for_gworld(&self.gworlds, *self.current_gworld)
     }

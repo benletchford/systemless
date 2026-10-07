@@ -29,7 +29,7 @@ pub use crate::text_edit::{TextEditManagerSnapshot, TextEditSnapshot};
 use crate::trap::dispatch::TrapTableProfile;
 use crate::trap::TrapDispatcher;
 use crate::ui_theme::{ThemeMetricsMode, UiTheme, UiThemeId};
-pub use crate::window_manager::WindowSnapshot;
+pub use crate::window_manager::{WindowFrameSnapshot, WindowSnapshot};
 use crate::{Error, Result};
 use m68k::BatchExit;
 use ppc::{PpcException, PpcFetchHistogram, PpcMemory, PpcRunResult};
@@ -2368,6 +2368,48 @@ impl FixtureRunner {
                 self.bus.read_byte(address)
             })
         })
+    }
+
+    /// Describe guest frames without granting frontends mutable window records.
+    #[doc(hidden)]
+    pub fn window_frame_snapshot(&mut self) -> Vec<WindowFrameSnapshot> {
+        // Match redraw_chrome: a fullscreen guest owns every display pixel.
+        if self
+            .dispatcher
+            .with_process_state(|state| state.screen_takeover_active)
+            || self
+                .native
+                .application()
+                .is_some_and(|app| app.draw_sprocket.active_context.is_some())
+        {
+            return Vec::new();
+        }
+        let order = self
+            .dispatcher
+            .window_list
+            .with_ref(|windows| windows.to_vec());
+        let snapshots = self.window_stack_snapshot();
+        order
+            .into_iter()
+            .filter(|window| *window != 0)
+            .zip(snapshots)
+            .map(|(pointer, window)| {
+                let definition_id = if let Some(app) = self.native.application_mut() {
+                    Some(app.window_definition_id(pointer))
+                } else {
+                    self.dispatcher.window_proc_ids.get(&pointer).copied()
+                };
+                // WindowRecord.goAwayFlag: Inside Macintosh I, I-277.
+                let close_box = self.bus.read_byte(
+                    pointer.wrapping_add(crate::window_manager::WINDOW_GO_AWAY_FLAG_OFFSET),
+                ) != 0;
+                crate::window_manager::WindowFrameSnapshot {
+                    window,
+                    definition_id,
+                    close_box,
+                }
+            })
+            .collect()
     }
 
     /// Returns the selected UI theme provider. `classic-system7` is the
