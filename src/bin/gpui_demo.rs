@@ -145,6 +145,7 @@ mod desktop {
 
     enum Command {
         Menu(i16, i16, u32, u64),
+        Shortcut(u8, u8),
         Input(MacintoshInput),
     }
 
@@ -189,6 +190,7 @@ mod desktop {
             let mut previous = epoch;
             loop {
                 let start = Instant::now();
+                let mut shortcut_release = None;
                 loop {
                     match commands.try_recv() {
                         Ok(Command::Menu(menu, item, guest_id, generation)) => {
@@ -200,6 +202,17 @@ mod desktop {
                             {
                                 session.runner_mut().select_guest_menu_item(menu, item);
                             }
+                        }
+                        Ok(Command::Shortcut(mac_key, character)) => {
+                            // The application receives a Command-modified
+                            // keyDown and calls MenuKey itself (IM:I, I-356).
+                            session.deliver_input(MacintoshInput::KeyDown {
+                                mac_key: 0x37,
+                                character: 0,
+                            });
+                            session.deliver_input(MacintoshInput::KeyDown { mac_key, character });
+                            shortcut_release = Some((mac_key, character));
+                            break;
                         }
                         Ok(Command::Input(input)) => {
                             session.deliver_input(input);
@@ -222,6 +235,13 @@ mod desktop {
                 session
                     .runner_mut()
                     .run_gui_slice_with_audio(100_000, deadline, 367);
+                if let Some((mac_key, character)) = shortcut_release {
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key, character });
+                    session.deliver_input(MacintoshInput::KeyUp {
+                        mac_key: 0x37,
+                        character: 0,
+                    });
+                }
                 session.drain_audio();
                 let menus = session.runner_mut().guest_menu_snapshot();
                 let guest_menu_fallback = menus.requires_guest_menu_rendering();
@@ -1841,39 +1861,20 @@ mod desktop {
                         }));
                 }))
                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                    if event.keystroke.modifiers.platform && !this.guest_menu_fallback() {
-                        if let Some(key) = event.keystroke.key.chars().next() {
-                            for menu in &this.menus.menus {
-                                if !menu.enabled {
-                                    continue;
-                                }
-                                if let Some(item) = menu.items.iter().find(|item| {
-                                    item.enabled
-                                        && !item.separator
-                                        && item.submenu_id.is_none()
-                                        && item
-                                            .key_equivalent
-                                            .is_some_and(|k| k.eq_ignore_ascii_case(&key))
-                                }) {
-                                    let _ = this.commands.send(Command::Menu(
-                                        menu.id,
-                                        item.number,
-                                        menu.guest_id,
-                                        menu.generation,
-                                    ));
-                                    cx.stop_propagation();
-                                    return;
-                                }
+                    if event.keystroke.modifiers.platform {
+                        if !event.is_held {
+                            if let Some((mac_key, character)) = guest_key(&event.keystroke) {
+                                let _ = this.commands.send(Command::Shortcut(mac_key, character));
+                                cx.stop_propagation();
                             }
                         }
+                        return;
                     }
-                    if !event.keystroke.modifiers.platform {
-                        if let Some((mac_key, character)) = guest_key(&event.keystroke) {
-                            let _ = this.commands.send(Command::Input(MacintoshInput::KeyDown {
-                                mac_key,
-                                character,
-                            }));
-                        }
+                    if let Some((mac_key, character)) = guest_key(&event.keystroke) {
+                        let _ = this.commands.send(Command::Input(MacintoshInput::KeyDown {
+                            mac_key,
+                            character,
+                        }));
                     }
                 }))
                 .on_key_up(cx.listener(|this, event: &KeyUpEvent, _, _| {
@@ -2873,7 +2874,7 @@ mod desktop {
         }
 
         #[test]
-        fn worker_preserves_rapid_close_button_press_and_release() {
+        fn worker_routes_command_shortcut_and_rapid_close_button_press() {
             use super::{run_guest, Args, Command, Update};
             use std::{
                 sync::{mpsc, Arc, Mutex},
@@ -2928,7 +2929,14 @@ mod desktop {
                     worker_updates,
                 )
             });
-            let update = wait(&updates, |u| u.menus.menus.iter().any(|m| m.id == 129));
+            wait(&updates, |u| u.menus.menus.iter().any(|m| m.id == 129));
+            tx.send(Command::Shortcut(0x23, b'p')).unwrap();
+            let update = wait(&updates, |u| {
+                u.menus.menus.iter().any(|menu| {
+                    menu.id == 129
+                        && menu.items.iter().any(|item| item.number == 5 && item.checked)
+                })
+            });
             let menu = update.menus.menus.iter().find(|menu| menu.id == 129).unwrap();
             tx.send(Command::Menu(129, 3, menu.guest_id, menu.generation))
                 .unwrap();
@@ -3054,6 +3062,27 @@ mod desktop {
                 );
             }
             panic!("menu {menu_id} item {item_number} did not reach checked={checked}");
+        }
+
+        #[test]
+        fn guest_command_p_uses_menukey_on_both_cpus() {
+            for powerpc in [false, true] {
+                let mut session = MacintoshSession::new(true, if powerpc { None } else { Some(8) });
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session
+                    .load_path(
+                        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("tests/toolbox-showcase/toolbox-showcase.sit"),
+                    )
+                    .unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x37, character: 0 });
+                session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x23, character: b'p' });
+                wait_for_menu(&mut session, 129, 5, true);
+                session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x23, character: b'p' });
+                session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x37, character: 0 });
+            }
         }
 
         #[test]
@@ -3679,6 +3708,7 @@ mod desktop {
         #[gpui_kit::test]
         fn gpui_key_event_reaches_guest_queue(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::{test::TestWindowExt, AppContext, Bounds, InputEvent, KeyDownEvent, KeyUpEvent, WindowBounds, WindowOptions};
+            use systemless::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
 
             let (sender, receiver) = std::sync::mpsc::channel();
             let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -3721,6 +3751,50 @@ mod desktop {
                 MacintoshInput::KeyDown { mac_key: 0x00, character: b'A' },
                 MacintoshInput::KeyUp { mac_key: 0x00, character: b'A' },
             ]));
+            cx.update(|cx| {
+                view.update(cx, |demo, cx| {
+                    demo.menus = GuestMenuSnapshot {
+                        custom_bar_definition: false,
+                        menus: vec![GuestMenu {
+                            guest_id: 0x1000,
+                            generation: 1,
+                            id: 131,
+                            title: "File".into(),
+                            enabled: false,
+                            standard_definition: true,
+                            hierarchical: false,
+                            visible_in_menu_bar: true,
+                            items: vec![GuestMenuItem {
+                                number: 1,
+                                text: "Preferences".into(),
+                                enabled: false,
+                                checked: false,
+                                key_equivalent: Some('p'),
+                                submenu_id: None,
+                                separator: false,
+                            }],
+                        }],
+                    };
+                    cx.notify();
+                });
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                view.update(cx, |demo, cx| demo.focus.focus(window, cx));
+                window.render_frame(cx);
+                window.dispatch_event(KeyDownEvent {
+                    keystroke: gpui_kit::Keystroke {
+                        key: "p".into(),
+                        modifiers: gpui_kit::Modifiers {
+                            platform: true,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    is_held: false,
+                    prefer_character_input: false,
+                }.to_platform_input(), cx);
+            }).unwrap();
+            assert!(matches!(receiver.try_recv(), Ok(super::Command::Shortcut(0x23, b'p'))));
         }
 
         #[test]
