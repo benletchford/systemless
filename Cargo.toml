@@ -85,6 +85,9 @@ debug = []
 debug-server = ["debug"]
 # Experimental standalone guest menu presentation demo.
 gpui-demo = ["dep:gpui-kit"]
+# Host-control interaction tests without adding GPUI's test harness to the
+# ordinary demo build.
+gpui-demo-test = ["gpui-demo", "gpui-kit/test-support"]
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.54", optional = true, features = [

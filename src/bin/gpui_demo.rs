@@ -38,7 +38,7 @@ mod desktop {
     use systemless::{
         memory::{globals::addr::MBAR_HEIGHT, MemoryBus},
         menu_model::GuestMenuSnapshot,
-        runner::WindowFrameSnapshot,
+        runner::{DialogItemKind, DialogSnapshot, WindowFrameSnapshot},
         systems::macintosh::session::{MacintoshInput, MacintoshSession},
     };
 
@@ -71,6 +71,7 @@ mod desktop {
     struct Update {
         menus: GuestMenuSnapshot,
         windows: Vec<WindowFrameSnapshot>,
+        dialogs: Vec<DialogSnapshot>,
         frame: Option<(u32, u32, u32, Vec<u8>)>,
         status: String,
     }
@@ -138,12 +139,14 @@ mod desktop {
                 });
                 let running = session.status().running;
                 let windows = session.runner_mut().window_frame_snapshot();
+                let dialogs = session.runner_mut().dialog_snapshot();
                 *updates.lock().unwrap() = Some(Update {
                     menus,
                     windows,
+                    dialogs,
                     frame,
                     status: format!(
-                        "{architecture} · {} · GPUI Kit menu demo",
+                        "{architecture} · {} · GPUI Kit UI demo",
                         if running { "Running" } else { "Guest stopped" }
                     ),
                 });
@@ -168,6 +171,7 @@ mod desktop {
         commands: mpsc::Sender<Command>,
         menus: GuestMenuSnapshot,
         windows: Vec<WindowFrameSnapshot>,
+        dialogs: Vec<DialogSnapshot>,
         image: Option<Arc<RenderImage>>,
         logo: Arc<RenderImage>,
         width: u32,
@@ -196,6 +200,7 @@ mod desktop {
                         if let Some(update) = update {
                             this.menus = update.menus;
                             this.windows = update.windows;
+                            this.dialogs = update.dialogs;
                             this.status = update.status;
                             if let Some((width, height, top, pixels)) = update.frame {
                                 this.width = width;
@@ -229,6 +234,7 @@ mod desktop {
                 commands,
                 menus: Default::default(),
                 windows: Vec::new(),
+                dialogs: Vec::new(),
                 image: None,
                 logo: Arc::new(RenderImage::new(vec![image::Frame::new(
                     image::load_from_memory(include_bytes!("../../www/assets/icons/icon-192.png"))
@@ -307,6 +313,23 @@ mod desktop {
             }
         }
         popup
+    }
+
+    fn standard_dbox_dialog<'a>(
+        dialogs: &'a [DialogSnapshot],
+        windows: &[WindowFrameSnapshot],
+    ) -> Option<&'a DialogSnapshot> {
+        dialogs.iter().find(|dialog| {
+            dialog.visible
+                && dialog.active
+                && windows.iter().any(|frame| {
+                    frame.guest_id == dialog.guest_id && frame.definition_id == Some(1)
+                })
+                && !dialog.items.is_empty()
+                && dialog.items.iter().all(|item| {
+                    matches!(item.kind, DialogItemKind::Button | DialogItemKind::StaticText)
+                })
+        })
     }
 
     impl Render for Demo {
@@ -558,6 +581,61 @@ mod desktop {
                         .child(gutter),
                 );
             }
+            // dBoxProc dialogs with only standard DITL text and buttons can be
+            // restyled without covering application-owned user items. Their
+            // guest bounds and event handling remain authoritative.
+            // Macintosh Toolbox Essentials (1992), pp. 6-13--6-15, 6-120.
+            if let Some(dialog) = standard_dbox_dialog(&self.dialogs, &self.windows) {
+                for item in &dialog.items {
+                    if !item.visible {
+                        continue;
+                    }
+                    let source = super::frames::Rect::from(item.bounds);
+                    let Some(clip) = source
+                        .intersection(dialog.bounds.into())
+                        .and_then(|rect| rect.intersection(viewport))
+                    else {
+                        continue;
+                    };
+                    let mut overlay = div()
+                        .absolute()
+                        .left(px((source.left - clip.left) as f32))
+                        .top(px((source.top - clip.top) as f32))
+                        .w(px(source.width() as f32))
+                        .h(px(source.height() as f32))
+                        .bg(cx.theme().background);
+                    overlay = match item.kind {
+                        DialogItemKind::Button => overlay.child(
+                            Button::new((
+                                "guest-dialog-button",
+                                ((dialog.guest_id as usize) << 16) | item.number as usize,
+                            ))
+                            .label(item.text.clone())
+                            .small()
+                            .compact()
+                            .tab_stop(false)
+                            .disabled(!item.enabled)
+                            .w_full()
+                            .h_full(),
+                        ),
+                        DialogItemKind::StaticText => overlay
+                            .text_size(px(13.))
+                            .text_color(cx.theme().foreground)
+                            .child(item.text.clone()),
+                        _ => unreachable!(),
+                    };
+                    screen = screen.child(
+                        div()
+                            .absolute()
+                            .overflow_hidden()
+                            .left(px(clip.left as f32))
+                            .top(px((clip.top - self.crop_top as i32) as f32))
+                            .w(px(clip.width() as f32))
+                            .h(px(clip.height() as f32))
+                            .child(overlay),
+                    );
+                }
+            }
             div()
                 .flex()
                 .flex_col()
@@ -642,7 +720,7 @@ mod desktop {
                             cx,
                         ))),
                         titlebar: Some(TitlebarOptions {
-                            title: Some("Systemless · GPUI menu demo".into()),
+                            title: Some("Systemless · GPUI UI demo".into()),
                             ..Default::default()
                         }),
                         ..Default::default()
@@ -893,7 +971,126 @@ mod desktop {
                 assert_eq!(dialog.items[0].bounds, (220, 360, 240, 430));
                 assert_eq!(dialog.items[1].kind, DialogItemKind::StaticText);
                 assert!(!dialog.items[1].enabled);
+                let windows = session.runner_mut().window_frame_snapshot();
+                assert_eq!(
+                    super::standard_dbox_dialog(&[dialog.clone()], &windows)
+                        .map(|selected| selected.guest_id),
+                    Some(dialog.guest_id)
+                );
+                let (top, left, bottom, right) = dialog.items[0].bounds;
+                let (vertical, horizontal) = ((top + bottom) / 2, (left + right) / 2);
+                session.deliver_input(MacintoshInput::MouseDown {
+                    vertical,
+                    horizontal,
+                });
+                settle(&mut session);
+                session.deliver_input(MacintoshInput::MouseUp {
+                    vertical,
+                    horizontal,
+                });
+                let dismissed = (0..300).any(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    session.runner_mut().dialog_snapshot().is_empty()
+                });
+                assert!(dismissed, "guest should dismiss the About alert after its button click");
             }
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn themed_dialog_button_forwards_one_guest_press_and_release(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            use gpui_kit::{test::TestWindowExt, AppContext, Bounds, WindowBounds, WindowOptions};
+            use systemless::runner::{
+                DialogItemSnapshot, DialogSnapshot, WindowFrameSnapshot, WindowSnapshot,
+            };
+
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            cx.update(gpui_kit::init);
+            let (window, view) = cx.update(|cx| {
+                gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                            None,
+                            gpui_kit::size(gpui_kit::px(900.), gpui_kit::px(740.)),
+                            cx,
+                        ))),
+                        ..Default::default()
+                    },
+                    cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(sender, updates, cx)),
+                )
+                .unwrap()
+            });
+            cx.update(|cx| {
+                view.update(cx, |demo, cx| {
+                    let bounds = (130, 150, 260, 450);
+                    demo.windows = vec![WindowFrameSnapshot {
+                        guest_id: 7,
+                        window: WindowSnapshot {
+                            title: String::new(),
+                            bounds,
+                            structure_bounds: Some((122, 142, 268, 458)),
+                            visible_region: None,
+                            update_region: None,
+                            visible: true,
+                            active: true,
+                        },
+                        definition_id: Some(1),
+                        close_box: false,
+                    }];
+                    demo.dialogs = vec![DialogSnapshot {
+                        guest_id: 7,
+                        bounds,
+                        visible: true,
+                        active: true,
+                        default_item: Some(1),
+                        cancel_item: None,
+                        edit_field: None,
+                        items: vec![DialogItemSnapshot {
+                            number: 1,
+                            kind: super::DialogItemKind::Button,
+                            bounds: (220, 360, 240, 430),
+                            text: "OK".into(),
+                            enabled: true,
+                            visible: true,
+                            value: None,
+                            selection: None,
+                        }],
+                    }];
+                    demo.width = 800;
+                    demo.height = 580;
+                    demo.crop_top = 20;
+                    cx.notify();
+                });
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.click(("guest-dialog-button", ((7 << 16) | 1) as usize), cx);
+            })
+            .unwrap();
+            let inputs: Vec<_> = receiver
+                .try_iter()
+                .filter_map(|command| match command {
+                    super::Command::Input(input) => Some(input),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                inputs
+                    .iter()
+                    .filter(|input| matches!(input, MacintoshInput::MouseDown { .. }))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                inputs
+                    .iter()
+                    .filter(|input| matches!(input, MacintoshInput::MouseUp { .. }))
+                    .count(),
+                1
+            );
         }
     }
 }

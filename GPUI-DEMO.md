@@ -1,4 +1,4 @@
-# GPUI Kit menu and window-frame demo
+# GPUI Kit menu, window-frame, and alert demo
 
 This prototype presents a running Macintosh application's menu bar and standard window frames using
 [GPUI Kit 0.7.1](https://gpui-kit.com/). It is a separate experimental runner;
@@ -25,7 +25,8 @@ execution after the initial build.
 
 Open **Pages → Controls** and reopen Pages to see the guest update its checkmark.
 Use **Options → Difficulty** to try nested menus. Open the Apple menu's About
-item to show the original guest dialog; Return dismisses a default button.
+item to see a standard alert's text and button restyled through GPUI Kit;
+Return or a click on the button still dismisses it through the guest.
 Mouse input is forwarded to the guest below the menu bar.
 
 Choose **Pages → Windows** to try overlapping windows. Drag a title bar,
@@ -41,7 +42,9 @@ zoom hit region; resizing still uses the guest's original lower-right hit region
 - Menu selection through `FixtureRunner::select_guest_menu_item`, which validates
   against current guest state and returns through the normal guest event loop.
 - Command-key equivalents while the game surface has focus.
-- Original guest framebuffer content and dialogs below the new menu bar.
+- Original guest framebuffer content and unsupported dialogs below the new menu bar.
+- A standard `dBoxProc` dialog containing only DITL buttons and static text uses
+  GPUI Kit components over the guest item rectangles, with guest input unchanged.
 - GPUI-drawn standard title bars, frame edges, close and zoom glyphs, with
   active/inactive colours and close-button press feedback.
 - The Systemless logo in the menu bar, and GPUI-drawn document gutters and
@@ -69,6 +72,12 @@ guest's original drag outline rather than introducing live GPUI window movement.
 The gutter overlays are presentation only: scrollbar tracks do not invent a
 thumb or scroll state, and input in those areas still reaches the guest.
 
+The dialog overlay is limited to standard `dBoxProc` windows with button/static-text
+items. Dialogs with custom items, editable text, or other definitions retain
+guest pixels. The themed alert button is not yet qualified for keyboard or
+accessibility operation through the host control; guest keyboard input and
+click handling remain the operative path.
+
 The framebuffer is shown at 1:1 with no automatic scaling. Enlarge the window
 if necessary. Keyboard forwarding covers Return, Escape, Space, Tab and
 Backspace; this is not a full game-input frontend. Audio is serviced but muted,
@@ -80,6 +89,7 @@ and compile only with `gpui-demo`, but add a substantial first-build cost.
 
 ```sh
 cargo test --no-default-features --features gpui-demo --example gpui-menu-demo
+cargo test --no-default-features --features gpui-demo-test --example gpui-menu-demo
 ```
 
 The focused test loads the showcase in monochrome 68k, colour 68k and PPC modes,
@@ -88,4 +98,8 @@ rejects an invalid item, and checks that a nonempty guest image is exported.
 It also verifies frame metadata, title-bar dragging, close-box handling and
 promotion of the rear window in all three modes. Separate tests exhaustively
 check frame clipping for overlapping rectangles, hidden/custom fallback, and a
-rapid close press/release through the demo worker queue.
+rapid close press/release through the demo worker queue. The alert test checks
+the shared item geometry and default button on all three guest modes, confirms
+that the standard alert is eligible for the GPUI overlay, then dismisses it
+through guest mouse input. The additional GPUI Kit host-control test clicks the
+themed alert button and verifies exactly one guest press and release is queued.
