@@ -11461,6 +11461,21 @@ fn guest_menu_snapshot_exposes_only_the_inserted_menu_list() {
     assert_eq!(snapshot.menus[0].items[0].key_equivalent, Some('n'));
     assert!(snapshot.menus[0].items[0].checked);
     assert_eq!(snapshot.menus[1].title, "Systemless");
+
+    // The live menuProc handle, rather than the original MENU resource,
+    // determines whether the frontend may replace this menu's pixels.
+    // Macintosh Toolbox Essentials (1992), pp. 3-3, 3-87.
+    const CUSTOM_MDEF_HANDLE: u32 = 0x306b00;
+    const CUSTOM_MDEF_PROC: u32 = 0x306b20;
+    bus.write_long(CUSTOM_MDEF_HANDLE, CUSTOM_MDEF_PROC);
+    bus.write_long(inserted_ptr + 6, CUSTOM_MDEF_HANDLE);
+    disp.insert_loaded_resource_handle_for_test(
+        CUSTOM_MDEF_HANDLE,
+        (CUSTOM_MDEF_PROC, *b"MDEF", 256),
+    );
+    let custom_snapshot = disp.guest_menu_snapshot(&bus);
+    assert!(!custom_snapshot.menus[0].standard_definition);
+    assert!(custom_snapshot.requires_guest_menu_rendering());
 }
 
 #[test]

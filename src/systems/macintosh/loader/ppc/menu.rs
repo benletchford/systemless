@@ -1157,28 +1157,25 @@ pub(crate) fn ppc_menu_item_is_selectable(memory: &mut PpcSectionMem, menu_handl
 }
 
 pub(crate) fn ppc_guest_menu_snapshot(memory: &mut PpcSectionMem, menu_list_handle: u32) -> GuestMenuSnapshot {
+    ppc_guest_menu_snapshot_with_resources(memory, menu_list_handle, &[])
+}
+
+pub(crate) fn ppc_guest_menu_snapshot_with_resources(
+    memory: &mut PpcSectionMem,
+    menu_list_handle: u32,
+    resources: &[PpcVfsResourceRecord],
+) -> GuestMenuSnapshot {
     let menu_list = ppc_menu_list_definition(memory, menu_list_handle).unwrap_or_default();
     menu_list.guest_snapshot(|menu_handle| {
         let menu = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0)?;
         Some(MenuSnapshotRecord {
             id: memory.read_u16_be(menu)? as i16,
             title: ppc_read_pascal_string(memory, menu + 14)?,
-            // A missing procedure handle is the built-in standard menu. The
-            // standard shim is also identifiable without process resource
-            // metadata. Other procedures keep guest-owned presentation.
-            // Macintosh Toolbox Essentials (1992), pp. 3-3, 3-87.
-            standard_definition: {
-                let handle = memory.read_u32_be(menu + 6).unwrap_or(0);
-                let proc_ptr = memory.read_u32_be(handle).unwrap_or(0);
-                handle == 0
-                    || proc_ptr == 0
-                    || ppc_memory_read_bytes(
-                        memory,
-                        proc_ptr,
-                        STANDARD_MENU_DEFINITION_SHIM.len() as u32,
-                    )
-                    .is_some_and(|bytes| bytes == STANDARD_MENU_DEFINITION_SHIM)
-            },
+            // A custom MDEF owns drawing and hit testing. The execution path
+            // uses this same resource-aware predicate; an unrecognized MDEF
+            // retains guest pixels. Macintosh Toolbox Essentials (1992),
+            // pp. 3-3, 3-87.
+            standard_definition: !ppc_menu_uses_guest_definition(memory, resources, menu_handle),
             items: ppc_menu_items_from_memory(memory, menu_handle)?,
         })
     })
