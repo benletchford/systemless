@@ -449,7 +449,9 @@ pub fn promote(
         for a in &mut d.entry.artifacts {
             if matches!(
                 a.source,
-                AssetSource::Sha256 { .. } | AssetSource::External { .. }
+                AssetSource::Sha256 { .. }
+                    | AssetSource::External { .. }
+                    | AssetSource::LocalFile { .. }
             ) {
                 continue;
             }
@@ -779,7 +781,9 @@ fn read_asset(
                 asset.format.limit(),
             )?;
         }
-        AssetSource::External { .. } => bail!("external links are not managed downloads"),
+        AssetSource::External { .. } | AssetSource::LocalFile { .. } => {
+            bail!("external or local files are not managed downloads")
+        }
     }
     staged.flush()?;
     let inspection = inspect(staged.path(), asset.format)?;
@@ -795,7 +799,10 @@ pub fn verify_integrity(asset: &Artifact, actual: &Inspection) -> Result<()> {
             expected_size,
             ..
         } => (expected_sha256.as_deref(), *expected_size),
-        AssetSource::Sha256 { sha256, size_bytes } => (Some(sha256.as_str()), Some(*size_bytes)),
+        AssetSource::Sha256 { sha256, size_bytes }
+        | AssetSource::LocalFile { sha256, size_bytes } => {
+            (Some(sha256.as_str()), Some(*size_bytes))
+        }
         _ => (None, None),
     };
     ensure!(
@@ -837,7 +844,10 @@ pub fn fetch(root: &Path, entry_id: Option<&str>, directory: &Path) -> Result<Ve
             continue;
         }
         for asset in &doc.entry.artifacts {
-            if matches!(asset.source, AssetSource::External { .. }) {
+            if matches!(
+                asset.source,
+                AssetSource::External { .. } | AssetSource::LocalFile { .. }
+            ) {
                 continue;
             }
             let mut staged = tempfile::NamedTempFile::new()?;

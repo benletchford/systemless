@@ -6,6 +6,7 @@ use std::sync::Arc;
 use js_sys::{Array, Object, Reflect, Uint8Array};
 use leptos::prelude::*;
 use leptos::task::{spawn_local, spawn_local_scoped_with_cancellation};
+use sha2::{Digest, Sha256};
 use systemless::debug_overlay::DebugOverlayFrameStats;
 use wasm_bindgen::{prelude::Closure, JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
@@ -48,12 +49,66 @@ pub fn GameScreen(game: &'static Game) -> impl IntoView {
     let selected_plugins = RwSignal::new(load_selected_plugin_ids(game));
     let selected_plugins_for_storage = selected_plugins;
     let selected_architecture = RwSignal::new(game.default_architecture);
+    let selected_local_archive = RwSignal::new_local(None::<Rc<Vec<u8>>>);
+    let local_archive_message = RwSignal::new(String::new());
 
     Effect::new(move |_| {
         persist_selected_plugin_ids(game, &selected_plugins_for_storage.get());
     });
 
     view! {
+        {game.assets.local_archive_sha256.map(|expected_hash| {
+            let expected_size = game.assets.local_archive_size_bytes.unwrap_or_default();
+            view! {
+                <div class="local-archive">
+                    <label>
+                        "Choose your original game archive"
+                        <input type="file" disabled=move || selected_local_archive.get().is_some()
+                            on:change=move |event| {
+                                local_archive_message.set(String::new());
+                                let Some(file) = event.target()
+                                    .and_then(|target| target.dyn_into::<HtmlInputElement>().ok())
+                                    .and_then(|input| input.files())
+                                    .and_then(|files| files.item(0)) else { return; };
+                                if file.size() != expected_size as f64 {
+                                    local_archive_message.set(format!(
+                                        "This archive is the wrong size; expected {expected_size} bytes."
+                                    ));
+                                    return;
+                                }
+                                spawn_local(async move {
+                                    match JsFuture::from(file.array_buffer()).await {
+                                        Ok(buffer) => {
+                                            let bytes = Uint8Array::new(&buffer).to_vec();
+                                            let hash = Sha256::digest(&bytes)
+                                                .iter()
+                                                .map(|byte| format!("{byte:02x}"))
+                                                .collect::<String>();
+                                            if hash != expected_hash {
+                                                local_archive_message.set(
+                                                    "This is not the original archive for this entry.".into()
+                                                );
+                                            } else {
+                                                local_archive_message.set(
+                                                    "Archive verified. Starting game…".into()
+                                                );
+                                                selected_local_archive.set(Some(Rc::new(bytes)));
+                                            }
+                                        }
+                                        Err(error) => local_archive_message.set(format!(
+                                            "Could not read the selected archive: {}",
+                                            js_value_string(error),
+                                        )),
+                                    }
+                                });
+                            }
+                        />
+                    </label>
+                    <p>"The archive stays in this browser session and is not uploaded."</p>
+                    <p role="status">{move || local_archive_message.get()}</p>
+                </div>
+            }
+        })}
         {if game.architectures.len() > 1 {
             view! {
                 <div class="game-architecture" role="group" aria-label="Choose game architecture">
@@ -99,6 +154,7 @@ pub fn GameScreen(game: &'static Game) -> impl IntoView {
                     architecture=architecture
                     selected_plugin_ids=plugin_ids.clone()
                     selected_plugins_signal=selected_plugins
+                    selected_local_archive=selected_local_archive
                 />
             </For>
         </For>
@@ -287,6 +343,7 @@ fn GameRuntime(
     architecture: GameArchitecture,
     selected_plugin_ids: Vec<&'static str>,
     selected_plugins_signal: RwSignal<Vec<&'static str>>,
+    selected_local_archive: RwSignal<Option<Rc<Vec<u8>>>, LocalStorage>,
 ) -> impl IntoView {
     let canvas_ref: NodeRef<leptos::html::Canvas> = NodeRef::new();
     let controls_ref: NodeRef<leptos::html::Div> = NodeRef::new();
@@ -348,6 +405,11 @@ fn GameRuntime(
         let Some(canvas) = canvas_ref.get() else {
             return;
         };
+        let local_bytes = selected_local_archive.get();
+        if game.assets.local_archive_sha256.is_some() && local_bytes.is_none() {
+            set_status(status, "Choose the original archive above to start.".into());
+            return;
+        }
         let primary_url = primary_archive_url(game);
         let fallback_url = game
             .assets
@@ -372,35 +434,39 @@ fn GameRuntime(
         let machine_handle_for_task = machine_handle_for_effect.clone();
         attach_debug_toggle(&canvas, alive.clone(), debug_visible, &input_listeners);
         spawn_local_scoped_with_cancellation(async move {
-            set_status(status, "Fetching game\u{2026}".into());
-            let bytes = match fetch_bytes(&primary_url, |received, total| {
-                set_status(status, fetch_status(received, total));
-            })
-            .await
-            {
-                Ok(b) => b,
-                Err(primary_error) => match fallback_url.as_deref() {
-                    Some(url) => {
-                        set_status(status, "Fetching game\u{2026}".into());
-                        match fetch_bytes(url, |received, total| {
-                            set_status(status, fetch_status(received, total));
-                        })
-                        .await
-                        {
-                            Ok(b) => b,
-                            Err(fallback_error) => {
-                                set_status(status, format!(
+            let bytes = if let Some(bytes) = local_bytes {
+                bytes.as_ref().clone()
+            } else {
+                set_status(status, "Fetching game\u{2026}".into());
+                match fetch_bytes(&primary_url, |received, total| {
+                    set_status(status, fetch_status(received, total));
+                })
+                .await
+                {
+                    Ok(b) => b,
+                    Err(primary_error) => match fallback_url.as_deref() {
+                        Some(url) => {
+                            set_status(status, "Fetching game\u{2026}".into());
+                            match fetch_bytes(url, |received, total| {
+                                set_status(status, fetch_status(received, total));
+                            })
+                            .await
+                            {
+                                Ok(b) => b,
+                                Err(fallback_error) => {
+                                    set_status(status, format!(
                                     "Fetch failed: {primary_error}; fallback failed: {fallback_error}"
                                 ));
-                                return;
+                                    return;
+                                }
                             }
                         }
-                    }
-                    None => {
-                        set_status(status, format!("Fetch failed: {primary_error}"));
-                        return;
-                    }
-                },
+                        None => {
+                            set_status(status, format!("Fetch failed: {primary_error}"));
+                            return;
+                        }
+                    },
+                }
             };
             // Component may have already unmounted during the fetch.
             if !alive.load(Ordering::Relaxed) {

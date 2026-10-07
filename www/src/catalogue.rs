@@ -55,6 +55,8 @@ pub const GAME_ARCHITECTURES: &[GameArchitecture] =
 pub struct GameAssets {
     pub archive_path: &'static str,
     pub archive_download_name: &'static str,
+    pub local_archive_sha256: Option<&'static str>,
+    pub local_archive_size_bytes: Option<u64>,
     pub web_pack_path: Option<&'static str>,
     pub screenshot_path: &'static str,
 }
