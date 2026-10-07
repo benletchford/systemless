@@ -3792,13 +3792,13 @@ fn ppc_te_create_for_dialog_item(
     {
         return 0;
     }
-    // Macintosh Toolbox Essentials (1992), pp. 6-135--6-137: when a
-    // dialog opens its first editText item, Dialog Manager activates the
-    // shared TERec and selects the item's initial text. The first typed
-    // character therefore replaces resource placeholder/default text.
+    // A new dialog normally places the insertion point at the start of its
+    // first editText item; SelectDialogItemText is needed to preselect text.
+    // Macintosh Toolbox Essentials (1992), "Responding to Events in Editable
+    // Text Items" and "SelectDialogItemText", pp. 6-79--6-80, 6-131.
     if let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) {
         let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, 0);
-        let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, length);
+        let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, 0);
         let _ = memory.write_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET, 1);
         let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, tick_count);
     }

@@ -1864,7 +1864,7 @@ fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
     );
     assert_eq!(
         loaded.memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET),
-        Some(5)
+        Some(0)
     );
 
     let item_hit_ptr = PPC_DATA_BASE + 0x1000;
@@ -1877,6 +1877,20 @@ fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
     loaded
         .current_gworld
         .with_mut(|current_gworld| *current_gworld = dialog);
+    loaded.set_event_queue([PpcQueuedEvent {
+        what: 3,
+        message: (2 << 8) | u32::from(b'X'),
+        when: 0,
+        where_v: 20,
+        where_h: 30,
+        modifiers: 0,
+    }]);
+    let probe = loaded.run_with_hle_imports(64);
+    assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+    assert_eq!(
+        ppc_te_text_bytes(&mut loaded.memory, &test_handle_records!(loaded), te_handle),
+        Some(b"XPilot".to_vec())
+    );
     loaded.set_event_queue([PpcQueuedEvent {
         what: 1,
         message: 0,
