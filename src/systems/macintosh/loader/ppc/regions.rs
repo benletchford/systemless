@@ -2,6 +2,7 @@
 
 use super::graphics::*;
 use super::*;
+use crate::quickdraw::raster::region_rows;
 
 pub(super) fn ppc_transform_port_point(
     memory: &mut PpcSectionMem,
@@ -703,6 +704,13 @@ pub(super) fn ppc_copy_rgn(
     PPC_NO_ERR
 }
 
+pub(super) use crate::quickdraw::raster::region_rows::{
+    difference_rows as ppc_region_difference_rows,
+    endpoints_to_intervals as ppc_region_endpoints_to_intervals,
+    intervals_to_endpoints as ppc_region_intervals_to_endpoints,
+    merge_endpoints as ppc_region_merge_endpoints, union_rows as ppc_region_union_rows,
+};
+
 #[derive(Clone, Copy)]
 pub(super) enum PpcRegionBooleanOp {
     Intersection,
@@ -778,38 +786,6 @@ pub(super) fn ppc_region_storage_bbox(storage: &[u8]) -> Option<(i16, i16, i16, 
     (bbox.2 > bbox.0 && bbox.3 > bbox.1).then_some(bbox)
 }
 
-pub(super) fn ppc_region_merge_endpoints(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
-    let mut merged = Vec::with_capacity(lhs.len() + rhs.len());
-    let mut lhs_index = 0usize;
-    let mut rhs_index = 0usize;
-    while lhs_index < lhs.len() || rhs_index < rhs.len() {
-        match (lhs.get(lhs_index), rhs.get(rhs_index)) {
-            (Some(&lhs_value), Some(&rhs_value)) if lhs_value < rhs_value => {
-                merged.push(lhs_value);
-                lhs_index += 1;
-            }
-            (Some(&lhs_value), Some(&rhs_value)) if rhs_value < lhs_value => {
-                merged.push(rhs_value);
-                rhs_index += 1;
-            }
-            (Some(_), Some(_)) => {
-                lhs_index += 1;
-                rhs_index += 1;
-            }
-            (Some(&lhs_value), None) => {
-                merged.push(lhs_value);
-                lhs_index += 1;
-            }
-            (None, Some(&rhs_value)) => {
-                merged.push(rhs_value);
-                rhs_index += 1;
-            }
-            (None, None) => break,
-        }
-    }
-    merged
-}
-
 pub(super) fn ppc_region_rows_for_band(storage: &[u8], top: i16, bottom: i16) -> Option<Vec<Vec<i16>>> {
     let height = (i32::from(bottom) - i32::from(top)).max(0) as usize;
     let mut rows = vec![Vec::new(); height];
@@ -858,34 +834,10 @@ pub(super) fn ppc_region_rows_for_band(storage: &[u8], top: i16, bottom: i16) ->
     Some(rows)
 }
 
-pub(super) fn ppc_region_endpoints_to_intervals(endpoints: &[i16]) -> Vec<(i16, i16)> {
-    endpoints
-        .chunks_exact(2)
-        .filter_map(|pair| (pair[0] < pair[1]).then_some((pair[0], pair[1])))
-        .collect()
-}
-
-pub(super) fn ppc_region_intervals_to_endpoints(mut intervals: Vec<(i16, i16)>) -> Vec<i16> {
-    intervals.sort_unstable();
-    let mut merged: Vec<(i16, i16)> = Vec::with_capacity(intervals.len());
-    for (start, end) in intervals {
-        if start >= end {
-            continue;
-        }
-        if let Some((_, last_end)) = merged.last_mut() {
-            if start <= *last_end {
-                *last_end = (*last_end).max(end);
-                continue;
-            }
-        }
-        merged.push((start, end));
-    }
-    merged
-        .into_iter()
-        .flat_map(|(start, end)| [start, end])
-        .collect()
-}
-
+/// All-pairs intersection. Rows parsed from guest region storage are not
+/// guaranteed to be sorted, and the shared merge-based
+/// `region_rows::intersect_rows` can drop pieces of unsorted rows, so the
+/// PowerPC path keeps this form.
 pub(super) fn ppc_region_intersect_rows(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
     let lhs = ppc_region_endpoints_to_intervals(lhs);
     let rhs = ppc_region_endpoints_to_intervals(rhs);
@@ -902,49 +854,12 @@ pub(super) fn ppc_region_intersect_rows(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
     ppc_region_intervals_to_endpoints(out)
 }
 
-pub(super) fn ppc_region_union_rows(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
-    let mut intervals = ppc_region_endpoints_to_intervals(lhs);
-    intervals.extend(ppc_region_endpoints_to_intervals(rhs));
-    ppc_region_intervals_to_endpoints(intervals)
-}
-
-pub(super) fn ppc_region_difference_rows(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
-    let lhs = ppc_region_endpoints_to_intervals(lhs);
-    let rhs = ppc_region_endpoints_to_intervals(rhs);
-    let mut out = Vec::new();
-    for (lhs_start, lhs_end) in lhs {
-        let mut start = lhs_start;
-        for &(rhs_start, rhs_end) in &rhs {
-            if rhs_end <= start {
-                continue;
-            }
-            if rhs_start >= lhs_end {
-                break;
-            }
-            if rhs_start > start {
-                out.push((start, rhs_start.min(lhs_end)));
-            }
-            start = start.max(rhs_end);
-            if start >= lhs_end {
-                break;
-            }
-        }
-        if start < lhs_end {
-            out.push((start, lhs_end));
-        }
-    }
-    ppc_region_intervals_to_endpoints(out)
-}
-
 pub(super) fn ppc_region_combine_rows(lhs: &[i16], rhs: &[i16], operation: PpcRegionBooleanOp) -> Vec<i16> {
     match operation {
         PpcRegionBooleanOp::Intersection => ppc_region_intersect_rows(lhs, rhs),
         PpcRegionBooleanOp::Union => ppc_region_union_rows(lhs, rhs),
         PpcRegionBooleanOp::Difference => ppc_region_difference_rows(lhs, rhs),
-        PpcRegionBooleanOp::Xor => ppc_region_union_rows(
-            &ppc_region_difference_rows(lhs, rhs),
-            &ppc_region_difference_rows(rhs, lhs),
-        ),
+        PpcRegionBooleanOp::Xor => region_rows::xor_rows(lhs, rhs),
     }
 }
 

@@ -8,6 +8,7 @@ use crate::machine_profile::REFERENCE_MACHINE_PROFILE;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::process_context::DEFAULT_QUICKDRAW_HILITE_COLOR;
 use crate::quickdraw::fonts::{font_id_for_name, font_name_for_id, get_font_face_scaled};
+use crate::quickdraw::raster::region_rows;
 use crate::quickdraw::text::get_glyph;
 use crate::trap::pict;
 use crate::trap::dispatch::{
@@ -105,13 +106,7 @@ pub(super) struct RegionMembershipCache {
     pub(super) rows: Vec<Vec<i16>>,
 }
 
-#[derive(Clone, Copy)]
-pub(super) enum RegionBooleanOp {
-    Intersection,
-    Union,
-    Difference,
-    Xor,
-}
+pub(super) use crate::quickdraw::raster::region_rows::RegionBooleanOp;
 
 pub(super) const REGION_HEADER_SIZE: u32 = 10;
 const REGION_STOP: i16 = i16::MAX;
@@ -22944,117 +22939,24 @@ impl super::TrapDispatcher {
         rows
     }
 
-    fn endpoints_to_intervals(endpoints: &[i16]) -> Vec<(i16, i16)> {
-        endpoints
-            .chunks_exact(2)
-            .filter_map(|pair| (pair[0] < pair[1]).then_some((pair[0], pair[1])))
-            .collect()
+    #[inline]
+    fn intervals_to_endpoints(intervals: Vec<(i16, i16)>) -> Vec<i16> {
+        region_rows::intervals_to_endpoints(intervals)
     }
 
-    fn intervals_to_endpoints(mut intervals: Vec<(i16, i16)>) -> Vec<i16> {
-        if intervals.is_empty() {
-            return Vec::new();
-        }
-
-        intervals.sort_unstable();
-        let mut merged: Vec<(i16, i16)> = Vec::with_capacity(intervals.len());
-        for (start, end) in intervals {
-            if start >= end {
-                continue;
-            }
-            if let Some((_, last_end)) = merged.last_mut() {
-                if start <= *last_end {
-                    *last_end = (*last_end).max(end);
-                    continue;
-                }
-            }
-            merged.push((start, end));
-        }
-
-        let mut endpoints = Vec::with_capacity(merged.len() * 2);
-        for (start, end) in merged {
-            endpoints.push(start);
-            endpoints.push(end);
-        }
-        endpoints
-    }
-
+    #[inline]
     fn intersect_region_rows(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
-        let lhs = Self::endpoints_to_intervals(lhs);
-        let rhs = Self::endpoints_to_intervals(rhs);
-        let mut out = Vec::new();
-        let mut lhs_index = 0usize;
-        let mut rhs_index = 0usize;
-
-        while let (Some(&(lhs_start, lhs_end)), Some(&(rhs_start, rhs_end))) =
-            (lhs.get(lhs_index), rhs.get(rhs_index))
-        {
-            let start = lhs_start.max(rhs_start);
-            let end = lhs_end.min(rhs_end);
-            if start < end {
-                out.push((start, end));
-            }
-            if lhs_end < rhs_end {
-                lhs_index += 1;
-            } else {
-                rhs_index += 1;
-            }
-        }
-
-        Self::intervals_to_endpoints(out)
+        region_rows::intersect_rows(lhs, rhs)
     }
 
+    #[inline]
     fn union_region_rows(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
-        let mut intervals = Self::endpoints_to_intervals(lhs);
-        intervals.extend(Self::endpoints_to_intervals(rhs));
-        Self::intervals_to_endpoints(intervals)
+        region_rows::union_rows(lhs, rhs)
     }
 
-    fn difference_region_rows(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
-        let lhs = Self::endpoints_to_intervals(lhs);
-        let rhs = Self::endpoints_to_intervals(rhs);
-        let mut out = Vec::new();
-
-        for (lhs_start, lhs_end) in lhs {
-            let mut start = lhs_start;
-            for &(rhs_start, rhs_end) in rhs.iter() {
-                if rhs_end <= start {
-                    continue;
-                }
-                if rhs_start >= lhs_end {
-                    break;
-                }
-                if rhs_start > start {
-                    out.push((start, rhs_start.min(lhs_end)));
-                }
-                start = start.max(rhs_end);
-                if start >= lhs_end {
-                    break;
-                }
-            }
-            if start < lhs_end {
-                out.push((start, lhs_end));
-            }
-        }
-
-        Self::intervals_to_endpoints(out)
-    }
-
-    fn xor_region_rows(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
-        let mut intervals = Self::endpoints_to_intervals(&Self::difference_region_rows(lhs, rhs));
-        intervals.extend(Self::endpoints_to_intervals(&Self::difference_region_rows(
-            rhs, lhs,
-        )));
-        Self::intervals_to_endpoints(intervals)
-    }
-
+    #[inline]
     fn combine_region_rows(lhs: &[i16], rhs: &[i16], op: RegionBooleanOp) -> Vec<i16> {
-        match op {
-            RegionBooleanOp::Intersection => Self::intersect_region_rows(lhs, rhs),
-            RegionBooleanOp::Union => Self::union_region_rows(lhs, rhs),
-            RegionBooleanOp::Difference => Self::difference_region_rows(lhs, rhs),
-            RegionBooleanOp::Xor => Self::xor_region_rows(lhs, rhs),
-        }
+        region_rows::combine_rows(lhs, rhs, op)
     }
 
     fn quantize_region_edge(edge: f64) -> i16 {
@@ -23296,28 +23198,14 @@ impl super::TrapDispatcher {
         }
     }
 
+    #[inline]
     fn clamp_region_coord(value: i32) -> i16 {
-        value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+        region_rows::clamp_coord(value)
     }
 
+    #[inline]
     pub(super) fn inset_region_row(row: &[i16], dh: i16) -> Vec<i16> {
-        if row.is_empty() {
-            return Vec::new();
-        }
-
-        let dh = i32::from(dh);
-        let intervals = Self::endpoints_to_intervals(row)
-            .into_iter()
-            .filter_map(|(left, right)| {
-                let new_left = i32::from(left) + dh;
-                let new_right = i32::from(right) - dh;
-                (new_left < new_right).then_some((
-                    Self::clamp_region_coord(new_left),
-                    Self::clamp_region_coord(new_right),
-                ))
-            })
-            .collect::<Vec<_>>();
-        Self::intervals_to_endpoints(intervals)
+        region_rows::inset_row(row, dh)
     }
 
     fn inset_region(bus: &mut MacMemoryBus, rgn_handle: u32, dh: i16, dv: i16) {
@@ -23407,49 +23295,14 @@ impl super::TrapDispatcher {
         let _ = Self::write_region_from_rows(bus, rgn_handle, new_top, &rows);
     }
 
+    #[inline]
     fn merge_region_endpoints(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
-        let mut merged = Vec::with_capacity(lhs.len() + rhs.len());
-        let mut lhs_index = 0usize;
-        let mut rhs_index = 0usize;
-
-        while lhs_index < lhs.len() || rhs_index < rhs.len() {
-            match (lhs.get(lhs_index), rhs.get(rhs_index)) {
-                (Some(&lhs_value), Some(&rhs_value)) if lhs_value < rhs_value => {
-                    merged.push(lhs_value);
-                    lhs_index += 1;
-                }
-                (Some(&lhs_value), Some(&rhs_value)) if rhs_value < lhs_value => {
-                    merged.push(rhs_value);
-                    rhs_index += 1;
-                }
-                (Some(_), Some(_)) => {
-                    lhs_index += 1;
-                    rhs_index += 1;
-                }
-                (Some(&lhs_value), None) => {
-                    merged.push(lhs_value);
-                    lhs_index += 1;
-                }
-                (None, Some(&rhs_value)) => {
-                    merged.push(rhs_value);
-                    rhs_index += 1;
-                }
-                (None, None) => break,
-            }
-        }
-
-        merged
+        region_rows::merge_endpoints(lhs, rhs)
     }
 
+    #[inline]
     pub(super) fn endpoints_contain_point(endpoints: &[i16], x: i16) -> bool {
-        let mut in_region = false;
-        for &edge in endpoints {
-            if edge > x {
-                break;
-            }
-            in_region = !in_region;
-        }
-        in_region
+        region_rows::endpoints_contain_point(endpoints, x)
     }
 
     fn scan_bitmap_row_endpoints(bus: &MacMemoryBus, info: &CopyBitmapInfo, y: i16) -> Vec<i16> {

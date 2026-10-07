@@ -5,6 +5,7 @@
 //! DirectBitsRect (0x009A) for game artwork.
 
 use crate::memory::{MacMemoryBus, MemoryBus};
+use crate::quickdraw::raster::region_rows::merge_endpoints as merge_region_endpoints;
 
 pub(crate) fn recording_push_word(commands: &mut Vec<u8>, value: u16) {
     commands.extend_from_slice(&value.to_be_bytes());
@@ -262,40 +263,6 @@ impl PictureRegion {
         }
         in_region
     }
-}
-
-fn merge_region_endpoints(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
-    let mut merged = Vec::with_capacity(lhs.len() + rhs.len());
-    let mut lhs_index = 0usize;
-    let mut rhs_index = 0usize;
-
-    while lhs_index < lhs.len() || rhs_index < rhs.len() {
-        match (lhs.get(lhs_index), rhs.get(rhs_index)) {
-            (Some(&lhs_value), Some(&rhs_value)) if lhs_value < rhs_value => {
-                merged.push(lhs_value);
-                lhs_index += 1;
-            }
-            (Some(&lhs_value), Some(&rhs_value)) if rhs_value < lhs_value => {
-                merged.push(rhs_value);
-                rhs_index += 1;
-            }
-            (Some(_), Some(_)) => {
-                lhs_index += 1;
-                rhs_index += 1;
-            }
-            (Some(&lhs_value), None) => {
-                merged.push(lhs_value);
-                lhs_index += 1;
-            }
-            (None, Some(&rhs_value)) => {
-                merged.push(rhs_value);
-                rhs_index += 1;
-            }
-            (None, None) => break,
-        }
-    }
-
-    merged
 }
 
 fn parse_picture_region(bus: &MacMemoryBus, region_ptr: u32) -> Option<PictureRegion> {
