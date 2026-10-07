@@ -76,9 +76,10 @@ guest's original drag outline rather than introducing live GPUI window movement.
 The gutter overlays are presentation only: scrollbar tracks do not invent a
 thumb or scroll state, and input in those areas still reaches the guest. Real
 standard scrollbar controls in document windows now show a guest-value thumb;
-custom CDEFs and controls in unsupported windows retain guest pixels. Host
-keyboard and accessibility activation, scrollbar drag capture, and broader
-overlap/layout qualification remain unfinished.
+guest thumb dragging commits on release on both CPUs. Custom CDEFs and controls
+in unsupported windows retain guest pixels. Host keyboard and accessibility
+activation, drag feedback and pointer capture, and broader overlap/layout
+qualification remain unfinished.
 
 The dialog overlay is limited to standard `dBoxProc` windows with button/static-text
 items. Dialogs with custom items, editable text, or other definitions retain
@@ -136,3 +137,6 @@ cover [68K initial](tests/toolbox-showcase/reference/gpui-demo/02-controls-68k.p
 [68K changed](tests/toolbox-showcase/reference/gpui-demo/02-controls-changed-68k.png),
 [PowerPC initial](tests/toolbox-showcase/reference/gpui-demo/02-controls-ppc.png), and
 [PowerPC changed](tests/toolbox-showcase/reference/gpui-demo/02-controls-changed-ppc.png).
+Use `--capture-controls-dragged` to capture the guest thumb after a full drag
+and release: [68K](tests/toolbox-showcase/reference/gpui-demo/02-controls-dragged-68k.png)
+and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/02-controls-dragged-ppc.png).

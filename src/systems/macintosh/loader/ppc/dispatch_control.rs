@@ -2,6 +2,24 @@
 
 use super::*;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PpcScrollbarThumbTrackingState {
+    handle: u32,
+    pointer: u32,
+    generation: u64,
+    return_address: u32,
+    stack_pointer: u32,
+    start_global: (i16, i16),
+    slop_global: (i16, i16, i16, i16),
+    vertical: bool,
+    start_thumb: i32,
+    track_start: i32,
+    travel: i32,
+    start_value: i16,
+    minimum: i16,
+    maximum: i16,
+}
+
 pub(super) struct PpcControlDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,
@@ -17,6 +35,7 @@ pub(super) struct PpcControlDispatchContext<'a> {
     pub(super) current_gworld: u32,
     pub(super) toolbox_startup: &'a mut PpcToolboxStartupState,
     pub(super) input: PpcInputSnapshot,
+    pub(super) event_queue: &'a mut EventQueue,
     pub(super) vfs_resources: &'a mut [PpcVfsResourceRecord],
     pub(super) current_resource_refnum: i16,
     pub(super) last_resource_error: &'a mut i16,
@@ -40,6 +59,7 @@ pub(super) fn dispatch_control_import(
         current_gworld,
         toolbox_startup,
         input,
+        event_queue,
         vfs_resources,
         current_resource_refnum,
         last_resource_error,
@@ -185,6 +205,7 @@ pub(super) fn dispatch_control_import(
             screen_clut,
             toolbox_startup,
             input,
+            event_queue,
             vfs_resources,
             current_resource_refnum,
             last_resource_error,
@@ -445,6 +466,7 @@ pub(super) fn ppc_dispatch_legacy_control(
     screen_clut: &[[u16; 3]; 256],
     toolbox_startup: &mut PpcToolboxStartupState,
     input: PpcInputSnapshot,
+    event_queue: &mut EventQueue,
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
@@ -1017,6 +1039,66 @@ pub(super) fn ppc_dispatch_legacy_control(
             Some(PpcImportAction::Return(ppc_i16_result(part)))
         }
         PpcLegacyControlOperation::TrackControl => {
+            // Retain the import frame until mouse-up so the scroll-box value
+            // follows the release displacement, as TrackControl specifies.
+            // Macintosh Toolbox Essentials (1992), pp. 5-36, 5-89--5-90.
+            if let Some(tracking) = toolbox_startup.scrollbar_thumb_tracking.take() {
+                if tracking.handle != cpu.gpr[3]
+                    || tracking.return_address != cpu.lr
+                    || tracking.stack_pointer != cpu.gpr[1]
+                    || ppc_control_ptr(memory, tracking.handle) != Some(tracking.pointer)
+                    || !controls.iter().any(|record| {
+                        record.handle == tracking.handle
+                            && record.pointer == tracking.pointer
+                            && record.generation == tracking.generation
+                            && record.active
+                    })
+                {
+                    return Some(PpcImportAction::Return(0));
+                }
+                if input.mouse_button {
+                    toolbox_startup.scrollbar_thumb_tracking = Some(tracking);
+                    return Some(PpcImportAction::Yield(u64::MAX));
+                }
+                if let Some(index) = event_queue.iter().position(|event| event.what == 2) {
+                    event_queue.remove(index);
+                }
+                let (top, left, bottom, right) = tracking.slop_global;
+                let inside = input.mouse_v >= top
+                    && input.mouse_v < bottom
+                    && input.mouse_h >= left
+                    && input.mouse_h < right;
+                if !inside {
+                    return Some(PpcImportAction::Return(0));
+                }
+                let delta = if tracking.vertical {
+                    i32::from(input.mouse_v) - i32::from(tracking.start_global.0)
+                } else {
+                    i32::from(input.mouse_h) - i32::from(tracking.start_global.1)
+                };
+                let thumb = (tracking.start_thumb + delta)
+                    .clamp(tracking.track_start, tracking.track_start + tracking.travel);
+                let range = i32::from(tracking.maximum) - i32::from(tracking.minimum);
+                let value = if tracking.travel > 0 && range > 0 {
+                    i32::from(tracking.minimum)
+                        + (((i64::from(thumb - tracking.track_start) * i64::from(range)
+                            + i64::from(tracking.travel / 2))
+                            / i64::from(tracking.travel)) as i32)
+                } else {
+                    i32::from(tracking.start_value)
+                } as i16;
+                let _ = memory.write_u16_be(tracking.pointer + PPC_CONTROL_VALUE_OFFSET, value as u16);
+                let _ = ppc_draw_control(
+                    memory,
+                    handles,
+                    controls,
+                    gworlds,
+                    vfs_resources,
+                    current_resource_refnum,
+                    tracking.handle,
+                );
+                return Some(PpcImportAction::Return(ppc_i16_result(129)));
+            }
             // Macintosh Toolbox Essentials (1992), pp. 5-79--5-80:
             // -1 selects contrlAction; a second -1 invokes the popup CDEF.
             let action_proc = if cpu.gpr[5] == u32::MAX {
@@ -1058,6 +1140,14 @@ pub(super) fn ppc_dispatch_legacy_control(
             // Arrow/page value changes belong to the action procedure.
             // A nil action only returns the hit part to the caller.
             if part == 129 {
+                if input.mouse_button {
+                    if let Some(tracking) = ppc_begin_scrollbar_thumb_tracking(
+                        cpu, memory, controls, gworlds, v, h,
+                    ) {
+                        toolbox_startup.scrollbar_thumb_tracking = Some(tracking);
+                        return Some(PpcImportAction::Yield(u64::MAX));
+                    }
+                }
                 let _ = ppc_track_scroll_control_value(
                     memory,
                     handles,
@@ -2697,6 +2787,80 @@ pub(super) fn ppc_control_part_at_point(
         }
         _ => Some(10),
     }
+}
+
+/// Build the Control Manager's retained scroll-box tracking geometry from
+/// the live ControlRecord and its owning port. Macintosh Toolbox Essentials
+/// (1992), pp. 5-58--5-61, 5-89--5-90.
+fn ppc_begin_scrollbar_thumb_tracking(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    controls: &[PpcControlRecord],
+    gworlds: &[PpcGWorldRecord],
+    start_v: i16,
+    start_h: i16,
+) -> Option<PpcScrollbarThumbTrackingState> {
+    let handle = cpu.gpr[3];
+    let generation = controls.iter().find(|record| record.handle == handle)?.generation;
+    if ppc_control_part_at_point(memory, controls, handle, start_v, start_h)? != 129 {
+        return None;
+    }
+    let pointer = ppc_control_ptr(memory, handle)?;
+    let owner = memory.read_u32_be(pointer + PPC_CONTROL_OWNER_OFFSET)?;
+    let surface = ppc_live_quickdraw_surface(memory, gworlds, owner)?;
+    let (top, left, bottom, right) =
+        ppc_read_rect(memory, pointer + PPC_CONTROL_RECT_OFFSET)?;
+    let vertical = bottom.saturating_sub(top) >= right.saturating_sub(left);
+    let (axis_start, axis_end) = if vertical {
+        (top, bottom)
+    } else {
+        (left, right)
+    };
+    let arrow = i32::from(axis_end.saturating_sub(axis_start)).clamp(1, 16);
+    let track_start = i32::from(axis_start) + arrow;
+    let track_end = i32::from(axis_end) - arrow;
+    let track = (track_end - track_start).max(0);
+    let thumb = track.min(16);
+    let travel = track - thumb;
+    let minimum = memory.read_u16_be(pointer + PPC_CONTROL_MIN_OFFSET)? as i16;
+    let maximum = memory.read_u16_be(pointer + PPC_CONTROL_MAX_OFFSET)? as i16;
+    let start_value = memory.read_u16_be(pointer + PPC_CONTROL_VALUE_OFFSET)? as i16;
+    let range = i32::from(maximum) - i32::from(minimum);
+    let relative = (i32::from(start_value) - i32::from(minimum)).clamp(0, range.max(0));
+    let start_thumb = track_start
+        + if range > 0 { relative * travel / range } else { 0 };
+    let (global_h, global_v) =
+        surface.local_point((i32::from(start_h), i32::from(start_v)));
+    let (slop_top, slop_left, slop_bottom, slop_right) = surface.local_rect((
+        top.saturating_sub(30),
+        left.saturating_sub(30),
+        bottom.saturating_add(30),
+        right.saturating_add(30),
+    ));
+    Some(PpcScrollbarThumbTrackingState {
+        handle,
+        pointer,
+        generation,
+        return_address: cpu.lr,
+        stack_pointer: cpu.gpr[1],
+        start_global: (
+            ppc_i32_to_i16_saturating(global_v),
+            ppc_i32_to_i16_saturating(global_h),
+        ),
+        slop_global: (
+            ppc_i32_to_i16_saturating(slop_top),
+            ppc_i32_to_i16_saturating(slop_left),
+            ppc_i32_to_i16_saturating(slop_bottom),
+            ppc_i32_to_i16_saturating(slop_right),
+        ),
+        vertical,
+        start_thumb,
+        track_start,
+        travel,
+        start_value,
+        minimum,
+        maximum,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
