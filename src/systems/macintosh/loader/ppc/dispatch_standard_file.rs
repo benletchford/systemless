@@ -32,6 +32,7 @@ pub(super) struct PpcStandardFileEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PpcStandardFileGetTrackingState {
     pub(super) generation: u64,
+    pub(super) standard_entry_point: bool,
     pub(super) call: PpcStandardFileCall,
     pub(super) entries: Vec<PpcStandardFileEntry>,
     pub(super) current_dir_id: u32,
@@ -63,6 +64,7 @@ pub(super) struct PpcStandardFileFilteringState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PpcStandardFilePutTrackingState {
     pub(super) generation: u64,
+    pub(super) standard_entry_point: bool,
     pub(super) call: PpcStandardFileCall,
     pub(super) vref: i16,
     pub(super) dir_id: u32,
@@ -1537,6 +1539,7 @@ fn ppc_standard_file_get_start(
     startup.next_standard_file_generation = startup.next_standard_file_generation.saturating_add(1);
     let tracking = PpcStandardFileGetTrackingState {
         generation: startup.next_standard_file_generation,
+        standard_entry_point: operation == PpcStandardFileOperation::StandardGetFile,
         call: ppc_standard_file_call(mode, cpu),
         entries,
         current_dir_id,
@@ -1571,10 +1574,11 @@ fn ppc_standard_file_put_start(
     startup: &mut PpcToolboxStartupState,
     default_dir_id: u32,
     gworlds: &[PpcGWorldRecord],
-    mode: PpcStandardFileMode,
+    operation: PpcStandardFileOperation,
     prompt_ptr: u32,
     requested_origin: Option<(i16, i16)>,
 ) -> PpcImportAction {
+    let mode = operation.mode();
     let name_ptr = match mode {
         PpcStandardFileMode::PutModern => cpu.gpr[4],
         PpcStandardFileMode::PutLegacy => cpu.gpr[5],
@@ -1605,6 +1609,7 @@ fn ppc_standard_file_put_start(
     startup.next_standard_file_generation = startup.next_standard_file_generation.saturating_add(1);
     let tracking = PpcStandardFilePutTrackingState {
         generation: startup.next_standard_file_generation,
+        standard_entry_point: operation == PpcStandardFileOperation::StandardPutFile,
         call: ppc_standard_file_call(mode, cpu),
         vref: PPC_BOOT_VOLUME_REF_NUM,
         dir_id: default_dir_id,
@@ -1773,7 +1778,7 @@ fn ppc_dispatch_standard_file(
                     startup,
                     default_dir_id,
                     gworlds,
-                    mode,
+                    operation,
                     prompt_ptr,
                     requested_origin,
                 )

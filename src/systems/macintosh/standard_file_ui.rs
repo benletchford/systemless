@@ -28,6 +28,9 @@ pub struct StandardFileSnapshot {
     /// Changes for each retained Standard File invocation.
     pub generation: u64,
     pub kind: StandardFileKind,
+    /// True only for the modern standard entry points. This alone does not
+    /// qualify a panel for an overlay; its guest behavior must also be complete.
+    pub standard_entry_point: bool,
     pub bounds: (i16, i16, i16, i16),
     pub directory_id: u32,
     /// `None` means the current guest panel has no exposed file list.

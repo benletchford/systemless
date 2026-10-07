@@ -2456,6 +2456,7 @@ impl super::TrapDispatcher {
     fn begin_standard_file_get_tracking(
         &mut self,
         bus: &mut MacMemoryBus,
+        standard_entry_point: bool,
         modern_reply: bool,
         reply_ptr: u32,
         stack_ptr: u32,
@@ -2470,6 +2471,7 @@ impl super::TrapDispatcher {
         self.next_standard_file_generation = self.next_standard_file_generation.saturating_add(1);
         let tracking = StandardFileGetTrackingState {
             generation: self.next_standard_file_generation,
+            standard_entry_point,
             modern_reply,
             reply_ptr,
             stack_ptr,
@@ -3062,6 +3064,7 @@ impl super::TrapDispatcher {
     fn begin_standard_file_put_tracking(
         &mut self,
         bus: &mut MacMemoryBus,
+        standard_entry_point: bool,
         modern_reply: bool,
         reply_ptr: u32,
         stack_ptr: u32,
@@ -3080,6 +3083,7 @@ impl super::TrapDispatcher {
         self.next_standard_file_generation = self.next_standard_file_generation.saturating_add(1);
         let tracking = StandardFilePutTrackingState {
             generation: self.next_standard_file_generation,
+            standard_entry_point,
             modern_reply,
             reply_ptr,
             stack_ptr,
@@ -13296,6 +13300,7 @@ impl super::TrapDispatcher {
                     if self.yield_for_ui {
                         self.begin_standard_file_put_tracking(
                             bus,
+                            selector == 0x0005,
                             modern_reply,
                             reply_ptr,
                             sp,
@@ -13360,6 +13365,7 @@ impl super::TrapDispatcher {
                         });
                         self.begin_standard_file_get_tracking(
                             bus,
+                            selector == 0x0006,
                             modern_reply,
                             reply_ptr,
                             sp,

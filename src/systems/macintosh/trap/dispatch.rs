@@ -757,6 +757,7 @@ pub struct DialogTrackingState {
 #[derive(Clone, Debug)]
 pub(crate) struct StandardFilePutTrackingState {
     pub generation: u64,
+    pub standard_entry_point: bool,
     pub modern_reply: bool,
     pub reply_ptr: u32,
     pub stack_ptr: u32,
@@ -793,6 +794,7 @@ pub(crate) struct StandardFileGetEntry {
 #[derive(Clone, Debug)]
 pub(crate) struct StandardFileGetTrackingState {
     pub generation: u64,
+    pub standard_entry_point: bool,
     pub modern_reply: bool,
     pub reply_ptr: u32,
     pub stack_ptr: u32,
