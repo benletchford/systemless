@@ -1891,7 +1891,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::KillPoly
         | PpcImportDispatcherTarget::FramePoly
         | PpcImportDispatcherTarget::PaintPoly
-        | PpcImportDispatcherTarget::FillPoly => {
+        | PpcImportDispatcherTarget::FillPoly
+        | PpcImportDispatcherTarget::ErasePoly => {
             unreachable!("Polygon Manager imports return through dispatch_polygon_import")
         }
         PpcImportDispatcherTarget::NewCWindow

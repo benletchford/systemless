@@ -1921,6 +1921,33 @@ fn hle_import_runner_records_and_fills_classic_quickdraw_polygons() {
         ppc_quickdraw_read_pixel(&mut loaded.memory, front, (4, 3)),
         Some(103)
     );
+    let outside = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (12, 12));
+    assert_ne!(outside, Some(103));
+
+    // ErasePoly fills the interior with the background, not the pen.
+    loaded.quickdraw_back_color = PpcRgbColor {
+        red: 0xffff,
+        green: 0xffff,
+        blue: 0xffff,
+    };
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ErasePoly;
+    loaded.cpu.gpr[3] = polygon;
+    let pen = loaded.memory.read_u32_be(PPC_MAIN_GWORLD + 48);
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    let erased = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (3, 3));
+    assert_ne!(erased, Some(103));
+    assert_eq!(
+        erased,
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (4, 3)),
+        "the whole interior takes the background"
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (12, 12)),
+        outside
+    );
+    assert_eq!(loaded.memory.read_u32_be(PPC_MAIN_GWORLD + 48), pen);
 
     loaded.cpu.pc = loaded.entry_pc;
     loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::KillPoly;
@@ -5094,6 +5121,7 @@ fn import_bindings_classify_classic_quickdraw_shape_imports() {
         ("PaintPoly", PpcImportDispatcherTarget::PaintPoly),
         ("FramePoly", PpcImportDispatcherTarget::FramePoly),
         ("FillPoly", PpcImportDispatcherTarget::FillPoly),
+        ("ErasePoly", PpcImportDispatcherTarget::ErasePoly),
     ] {
         assert_eq!(
             dispatcher_target_for_import("InterfaceLib", symbol),
