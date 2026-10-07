@@ -2,6 +2,20 @@ use super::*;
 use ppc::PpcCpu;
 
 #[test]
+fn classic_window_overlay_spans_clip_native_frame_rows() {
+    let overlays = [(10, 20, 30, 50), (15, 45, 25, 70)];
+    assert!(FixtureRunner::ppc_overlay_spans_for_row(&overlays, 9, 10, 60).is_empty());
+    assert_eq!(
+        FixtureRunner::ppc_overlay_spans_for_row(&overlays, 20, 10, 60),
+        vec![(10, 40), (35, 60)]
+    );
+    assert_eq!(
+        FixtureRunner::ppc_overlay_spans_for_row(&overlays, 29, 10, 60),
+        vec![(10, 40)]
+    );
+}
+
+#[test]
 fn ppc_gui_cpu_slice_defers_front_buffer_sync_until_composite() {
     let front_base = PPC_HEAP_BASE;
     let presented_base = PPC_HEAP_BASE + 4;

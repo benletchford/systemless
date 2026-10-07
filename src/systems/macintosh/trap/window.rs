@@ -1,12 +1,12 @@
 //! Window Manager trap handlers.
 
-use crate::memory::SavedPixels;
+use super::quickdraw::RegionBooleanOp;
 use crate::cpu::{CpuOps, Register};
 use crate::mac_roman::{decode_mac_roman, encode_mac_roman_lossy};
+use crate::memory::SavedPixels;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::systems::macintosh::ui_theme::Rgb8;
 use crate::trap::dispatch::{DrawOldState, PortDrawState, QueuedEvent};
-use super::quickdraw::RegionBooleanOp;
 use crate::trap::types::{Rect, ShapeOp};
 use crate::Result;
 use std::sync::OnceLock;
@@ -2145,7 +2145,10 @@ impl super::TrapDispatcher {
         };
         for (offset, delta) in [(0, delta_v), (2, delta_h), (4, delta_v), (6, delta_h)] {
             let coordinate = bus.read_word(bitmap_bounds + offset) as i16;
-            bus.write_word(bitmap_bounds + offset, coordinate.wrapping_sub(delta) as u16);
+            bus.write_word(
+                bitmap_bounds + offset,
+                coordinate.wrapping_sub(delta) as u16,
+            );
         }
 
         // portRect, visRgn, clipRgn stay in local coords — no update needed.
@@ -4648,10 +4651,10 @@ impl super::TrapDispatcher {
                         let (_, _, screen_width, screen_height, _) = self.get_screen_params();
                         self.erase_exposed_desktop_rect(
                             bus,
-                            (wind_top - 19).max(0),
-                            (wind_left - 1).max(0),
-                            (wind_bottom + 2).min(screen_height),
-                            (wind_right + 2).min(screen_width),
+                            wind_top.saturating_sub(19).max(0),
+                            wind_left.saturating_sub(1).max(0),
+                            wind_bottom.saturating_add(2).min(screen_height),
+                            wind_right.saturating_add(2).min(screen_width),
                         );
                     }
                     if self.front_window == the_window {

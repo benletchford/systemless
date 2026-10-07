@@ -1,5 +1,30 @@
 use super::*;
 
+#[test]
+fn select_window_preserves_classic_visible_region() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SelectWindow")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1400;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let window = create_test_cwindow(&mut loaded, scratch, (40, 50, 140, 250), 0, false, u32::MAX);
+    loaded
+        .memory
+        .write_u8(window + PPC_CWINDOW_VISIBLE_OFFSET, 0xFF)
+        .unwrap();
+
+    loaded.cpu.gpr[3] = window;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SelectWindow);
+
+    assert!(ppc_window_is_visible(&mut loaded.memory, window));
+    let vis_rgn = loaded
+        .memory
+        .read_u32_be(window + PPC_CGRAF_PORT_VIS_RGN_OFFSET)
+        .unwrap();
+    assert_eq!(
+        ppc_read_rgn_bbox(&mut loaded.memory, vis_rgn),
+        Some((0, 0, 100, 200))
+    );
+}
+
 pub(crate) fn create_test_cwindow(
     loaded: &mut PpcLoadedApp,
     bounds_ptr: u32,

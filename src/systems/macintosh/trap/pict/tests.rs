@@ -1553,6 +1553,25 @@ fn packbitsrect_matching_ctseed_still_translates_when_tables_differ() {
         vec![42, 42],
         "matching ctSeed is not enough for identity mapping when ColorTable contents differ"
     );
+
+    bus.write_bytes(screen_base, &[0; 8]);
+    let (ok, _) = draw_picture(
+        &mut bus,
+        pic,
+        0,
+        0,
+        1,
+        2,
+        (screen_base, screen_row_bytes, 2, 1, 32),
+        &device_clut,
+        8,
+        None,
+    );
+    assert!(ok);
+    assert_eq!(
+        bus.read_bytes(screen_base, 8),
+        vec![0, 255, 0, 0, 0, 255, 0, 0]
+    );
 }
 
 #[test]

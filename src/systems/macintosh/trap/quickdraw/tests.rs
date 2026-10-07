@@ -12821,6 +12821,81 @@
         );
     }
 
+#[test]
+fn std_bits_converts_direct_color_into_current_port() {
+    let (mut d, mut cpu, mut bus) = setup_with_port();
+    let port = 0x181000u32;
+    let src_pixmap = 0x306100u32;
+    let dst_pixmap = 0x306200u32;
+    let dst_handle = 0x306300u32;
+    let src_base = 0x307000u32;
+    let dst_base = 0x308000u32;
+    let src_rect = 0x30A000u32;
+    let dst_rect = 0x30A010u32;
+    write_direct_pixmap(&mut bus, src_pixmap, src_base, 2, 1, 32);
+    write_direct_pixmap(&mut bus, dst_pixmap, dst_base, 2, 1, 16);
+    bus.write_long(dst_handle, dst_pixmap);
+    bus.write_long(port + 2, dst_handle);
+    bus.write_word(port + 6, 0xC004);
+    d.set_current_port_for_test(port);
+    bus.write_bytes(src_base, &[0, 0xFF, 0, 0, 0, 0, 0xFF, 0]);
+    write_rect(&mut bus, src_rect, 0, 0, 1, 2);
+    write_rect(&mut bus, dst_rect, 0, 0, 1, 2);
+    bus.write_long(TEST_SP, 0);
+    bus.write_word(TEST_SP + 4, 0);
+    bus.write_long(TEST_SP + 6, dst_rect);
+    bus.write_long(TEST_SP + 10, src_rect);
+    bus.write_long(TEST_SP + 14, src_pixmap);
+
+    assert!(d
+        .dispatch_quickdraw(true, 0x0EB, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(bus.read_bytes(dst_base, 4), vec![0x7C, 0, 0x03, 0xE0]);
+}
+
+#[test]
+fn copy_bits_converts_between_direct_color_depths() {
+    for (src_bits, dst_bits, source, expected) in [
+        (
+            32u16,
+            16u16,
+            vec![0, 0xFF, 0, 0, 0, 0, 0xFF, 0],
+            vec![0x7C, 0, 0x03, 0xE0],
+        ),
+        (
+            16u16,
+            32u16,
+            vec![0x7C, 0, 0x03, 0xE0],
+            vec![0, 0xFF, 0, 0, 0, 0, 0xFF, 0],
+        ),
+    ] {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let src_pixmap = 0x306100u32;
+        let dst_pixmap = 0x306200u32;
+        let src_base = 0x307000u32;
+        let dst_base = 0x308000u32;
+        let src_rect = 0x30A000u32;
+        let dst_rect = 0x30A010u32;
+        write_direct_pixmap(&mut bus, src_pixmap, src_base, 2, 1, src_bits);
+        write_direct_pixmap(&mut bus, dst_pixmap, dst_base, 2, 1, dst_bits);
+        bus.write_bytes(src_base, &source);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 2);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 2);
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+        assert!(d
+            .dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(bus.read_bytes(dst_base, expected.len()), expected);
+    }
+}
+
     #[test]
     fn copy_bits_rgbdirect_sources_map_into_every_indexed_depth() {
         for (src_bits, source_bytes) in [
