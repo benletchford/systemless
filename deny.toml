@@ -1,7 +1,9 @@
 [licenses]
 confidence-threshold = 0.8
 unused-allowed-license = "deny"
-unused-license-exception = "deny"
+# GPUI Kit is optional, so its reviewed exceptions are unused in the default
+# graph. Keep unreviewed license expressions denied in either graph.
+unused-license-exception = "warn"
 
 # Permissive licence expressions currently present in the resolved graph.
 # Licences not listed here or in a crate-specific exception are denied.
@@ -22,4 +24,12 @@ allow = [
 # that require them. New GPL, LGPL, AGPL, or OFL dependencies will fail.
 exceptions = [
     { crate = "systemless", allow = ["GPL-3.0-or-later", "OFL-1.1"] },
+    # Exact transitive crates in the GPUI Kit 0.7.1 all-features graph.
+    { crate = "cbindgen", allow = ["MPL-2.0"] },
+    { crate = "dwrote", allow = ["MPL-2.0"] },
+    { crate = "option-ext", allow = ["MPL-2.0"] },
+    { crate = "hexf-parse", allow = ["CC0-1.0"] },
+    { crate = "notify", allow = ["CC0-1.0"] },
+    { crate = "tiny-keccak", allow = ["CC0-1.0"] },
+    { crate = "libbz2-rs-sys", allow = ["bzip2-1.0.6"] },
 ]
