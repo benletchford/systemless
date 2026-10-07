@@ -137,8 +137,11 @@ pub fn scrollbar_geometry(control: &ControlSnapshot) -> ScrollbarGeometry {
 
 /// Only standard CDEF-owned rectangles are eligible for replacement. Clip
 /// them to their owning content and remove the structures of front windows.
-/// ControlRecord.contrlRect and window control lists: Macintosh Toolbox
-/// Essentials (1992), pp. 5-60--5-64.
+/// The control registry follows creation order, so reverse it to match
+/// DrawControls: first-created overlapping controls paint frontmost. Retain
+/// guest pixels where a custom CDEF intersects a standard control, because
+/// its draw region may extend beyond its recorded rectangle.
+/// Macintosh Toolbox Essentials (1992), pp. 5-60--5-64, 5-87--5-88.
 pub fn control_pieces(
     controls: &[ControlSnapshot],
     windows: &[WindowFrameSnapshot],
@@ -159,7 +162,7 @@ pub fn control_pieces(
             continue;
         }
         let content = Rect::from(window.bounds);
-        for (index, control) in controls.iter().enumerate() {
+        for (index, control) in controls.iter().enumerate().rev() {
             if control.owner_id != frame.guest_id
                 || !control.owner_visible
                 || !control.visible
@@ -168,6 +171,15 @@ pub fn control_pieces(
                 continue;
             }
             let source = Rect::from(control.bounds);
+            if controls.iter().any(|other| {
+                other.owner_id == frame.guest_id
+                    && other.owner_visible
+                    && other.visible
+                    && !matches!(other.proc_id, 0 | 1 | 2 | 16)
+                    && Rect::from(other.bounds).intersection(source).is_some()
+            }) {
+                continue;
+            }
             let mut clips: Vec<_> = source
                 .intersection(content)
                 .and_then(|rect| rect.intersection(viewport))
@@ -355,7 +367,7 @@ mod tests {
         let controls = [
             control(2, 16, (70, 20, 86, 150)),
             control(2, 99, (95, 20, 111, 150)),
-            control(2, 1, (110, 20, 130, 155)),
+            control(2, 1, (112, 20, 130, 155)),
         ];
         let pieces = control_pieces(&controls, &[front, back], Rect::from((20, 0, 160, 180)));
         assert!(pieces.iter().any(|piece| piece.control == 0));
@@ -365,6 +377,23 @@ mod tests {
             assert!(piece.clip.intersection(Rect::from((40, 60, 92, 142))).is_none());
             assert_eq!(piece.clip.intersection(Rect::from((65, 10, 150, 170))), Some(piece.clip));
         }
+    }
+
+    #[test]
+    fn overlapping_controls_follow_guest_draw_order_and_custom_fallback() {
+        let window = window((40, 40, 180, 240), true, 0);
+        let controls = [
+            control(1, 0, (60, 60, 100, 140)),
+            control(1, 1, (80, 100, 120, 180)),
+        ];
+        let viewport = Rect::from((20, 0, 200, 260));
+        let pieces = control_pieces(&controls, &[window.clone()], viewport);
+        assert_eq!(pieces.iter().map(|piece| piece.control).collect::<Vec<_>>(), [1, 0]);
+
+        let mut controls_with_custom = controls.to_vec();
+        controls_with_custom.push(control(1, 99, (105, 150, 130, 190)));
+        let pieces = control_pieces(&controls_with_custom, &[window], viewport);
+        assert_eq!(pieces.iter().map(|piece| piece.control).collect::<Vec<_>>(), [0]);
     }
 
     #[test]
