@@ -160,3 +160,16 @@ before and after a guest selection: [68K initial](tests/toolbox-showcase/referen
 [68K selected](tests/toolbox-showcase/reference/gpui-demo/15-lists-selected-68k.png),
 [PowerPC initial](tests/toolbox-showcase/reference/gpui-demo/15-lists-ppc.png), and
 [PowerPC selected](tests/toolbox-showcase/reference/gpui-demo/15-lists-selected-ppc.png).
+
+For the retained Standard File Save panel, capture its guest framebuffer without
+native graphics services:
+
+```sh
+cargo run --no-default-features --features gpui-demo-test --example gpui-menu-demo -- tests/toolbox-showcase/toolbox-showcase.sit --prefer-powerpc --capture-standard-file-save /tmp/systemless-save-ppc.png
+```
+
+This checks the PowerPC guest panel's list and window layout. It is not a
+composed GPUI capture; Standard File remains guest-rendered while its behavior
+and presentation boundary are qualified. The reviewed guest captures are
+[68K Save](tests/toolbox-showcase/reference/gpui-demo/17-standard-file-save-68k-guest.png)
+and [PowerPC Save](tests/toolbox-showcase/reference/gpui-demo/17-standard-file-save-ppc-guest.png).
