@@ -4053,6 +4053,18 @@ fn window_creation_and_disposal_commands_dispatch_with_canonical_evaluation() {
 }
 
 #[test]
+fn dialog_structure_encloses_the_painted_eight_pixel_frame() {
+    assert_eq!(
+        ppc_window_structure_bounds(1, (130, 150, 260, 450)),
+        (122, 142, 268, 458)
+    );
+    assert_eq!(
+        ppc_window_structure_bounds(2, (130, 150, 260, 450)),
+        (129, 149, 261, 451)
+    );
+}
+
+#[test]
 fn create_new_plain_window_preserves_bounds_and_suppresses_updates() {
     let pef = synthetic_pef_with_library_import(b"CarbonLib", b"CreateNewWindow");
     let mut loaded = load_pef_application(&pef).unwrap();

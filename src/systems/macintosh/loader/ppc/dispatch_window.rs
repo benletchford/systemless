@@ -1204,7 +1204,14 @@ pub(super) fn ppc_window_structure_bounds(
     content: (i16, i16, i16, i16),
 ) -> (i16, i16, i16, i16) {
     let has_title_bar = ppc_window_proc_has_title_bar(proc_id);
-    let border: i16 = if proc_id == 2 { 1 } else { 6 };
+    // dBoxProc paints an eight-pixel frame around the content. Its structure
+    // region must include that ink for hit testing, occlusion, and overlays.
+    // Macintosh Toolbox Essentials (1992), pp. 4-12, 4-24--4-26.
+    let border: i16 = match proc_id {
+        1 => 8,
+        2 => 1,
+        _ => 6,
+    };
     if has_title_bar {
         crate::window_manager::standard_window_structure_bounds(content)
     } else {
