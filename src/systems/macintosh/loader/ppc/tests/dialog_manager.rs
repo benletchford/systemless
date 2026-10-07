@@ -513,6 +513,449 @@ fn draw_dialog_calls_native_user_item_procedure_with_dialog_and_item_number() {
     assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(1));
 }
 
+const MODAL_FILTER_FALSE: u16 = 0x0100;
+const MODAL_FILTER_TRUE: u16 = 0x7f01;
+
+/// Install a native ModalFilterProc at `code` that records each call at
+/// `record` and answers `answer` in r3: the low byte is the Boolean, the
+/// high byte is noise the caller must ignore. With `item`, the filter
+/// also stores that item number through itemHit.
+///
+/// Record: call count, r3 (dialog), r4 (&event), r5 (&itemHit), r1, then a
+/// copy of the 16-byte EventRecord.
+fn install_recording_modal_filter(
+    loaded: &mut PpcLoadedApp,
+    code: u32,
+    record: u32,
+    answer: u16,
+    item: Option<u16>,
+) {
+    let mut words = vec![
+        d_form_u(15, 11, 0, (record >> 16) as u16), // lis r11, record@h
+        d_form_u(24, 11, 11, record as u16),        // ori r11, r11, record@l
+        d_form_u(32, 12, 11, 0),                    // lwz r12, 0(r11)
+        d_form_u(14, 12, 12, 1),                    // addi r12, r12, 1
+        d_form_u(36, 12, 11, 0),                    // stw r12, 0(r11)
+        d_form_u(36, 3, 11, 4),                     // stw r3, 4(r11)
+        d_form_u(36, 4, 11, 8),                     // stw r4, 8(r11)
+        d_form_u(36, 5, 11, 12),                    // stw r5, 12(r11)
+        d_form_u(36, 1, 11, 16),                    // stw r1, 16(r11)
+    ];
+    for offset in [0u16, 4, 8, 12] {
+        words.push(d_form_u(32, 12, 4, offset)); // lwz r12, offset(r4)
+        words.push(d_form_u(36, 12, 11, 20 + offset)); // stw r12, 20+offset(r11)
+    }
+    if let Some(item) = item {
+        words.push(d_form_u(14, 12, 0, item)); // li r12, item
+        words.push(d_form_u(44, 12, 5, 0)); // sth r12, 0(r5)
+    }
+    words.extend([
+        d_form_u(14, 3, 0, answer), // li r3, answer
+        d_form_u(14, 4, 0, 0x5678), // clobber volatile argument registers
+        d_form_u(14, 5, 0, 0x1234),
+        BLR,
+    ]);
+    let bytes = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+    loaded.memory.add_region(code, bytes);
+    loaded.memory.add_region(record, vec![0; 36]);
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RecordedModalFilterCall {
+    count: u32,
+    dialog: u32,
+    event_ptr: u32,
+    item_hit_ptr: u32,
+    sp: u32,
+    event: PpcQueuedEvent,
+}
+
+fn recorded_modal_filter_call(loaded: &mut PpcLoadedApp, record: u32) -> RecordedModalFilterCall {
+    let memory = &mut loaded.memory;
+    RecordedModalFilterCall {
+        count: memory.read_u32_be(record).unwrap(),
+        dialog: memory.read_u32_be(record + 4).unwrap(),
+        event_ptr: memory.read_u32_be(record + 8).unwrap(),
+        item_hit_ptr: memory.read_u32_be(record + 12).unwrap(),
+        sp: memory.read_u32_be(record + 16).unwrap(),
+        event: PpcQueuedEvent {
+            what: memory.read_u16_be(record + 20).unwrap(),
+            message: memory.read_u32_be(record + 22).unwrap(),
+            when: memory.read_u32_be(record + 26).unwrap(),
+            where_v: memory.read_u16_be(record + 30).unwrap() as i16,
+            where_h: memory.read_u16_be(record + 32).unwrap() as i16,
+            modifiers: memory.read_u16_be(record + 34).unwrap(),
+        },
+    }
+}
+
+/// A GetNewDialog dialog with one OK button at local (12, 20, 32, 90),
+/// left with the import rebound to ModalDialog(filter, itemHit).
+fn modal_dialog_with_filter(filter: u32) -> (PpcLoadedApp, u32, u32) {
+    let pef = synthetic_pef_with_import(b"GetNewDialog");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut dlog = vec![0; 22];
+    for (offset, value) in [(0, 60i16), (2, 80), (4, 160), (6, 280)] {
+        dlog[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+    }
+    dlog[10] = 1;
+    dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+    let ditl = make_test_ditl(&[make_test_ditl_item(12, 20, 32, 90, b"OK")]);
+    for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
+        let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: 128,
+                name: Vec::new(),
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    loaded.cpu.gpr[3] = 128;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = u32::MAX;
+    loaded.run_with_hle_imports(128);
+    let dialog = loaded.cpu.gpr[3];
+    assert_ne!(dialog, 0);
+
+    let item_hit_ptr = PPC_DATA_BASE + 0x1100;
+    loaded.memory.add_region(item_hit_ptr, vec![0; 2]);
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ModalDialog;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = filter;
+    loaded.cpu.gpr[4] = item_hit_ptr;
+    (loaded, dialog, item_hit_ptr)
+}
+
+fn modal_filter_mouse_down(v: i16, h: i16) -> PpcQueuedEvent {
+    PpcQueuedEvent {
+        what: 1,
+        message: 0,
+        when: 77,
+        where_v: v,
+        where_h: h,
+        modifiers: 0x0100,
+    }
+}
+
+#[test]
+fn modal_dialog_offers_each_event_to_its_filter_before_hit_testing() {
+    let filter = PPC_CODE_BASE + 0x1000;
+    let record = PPC_DATA_BASE + 0x1800;
+    let (mut loaded, dialog, item_hit_ptr) = modal_dialog_with_filter(filter);
+    install_recording_modal_filter(&mut loaded, filter, record, MODAL_FILTER_FALSE, None);
+    let caller_sp = loaded.cpu.gpr[1];
+    // A click in the OK button (dialog global origin 60, 80).
+    let click = modal_filter_mouse_down(60 + 20, 80 + 50);
+    loaded.set_event_queue([click]);
+
+    let probe = loaded.run_with_hle_imports(512);
+
+    assert!(matches!(
+        probe.result,
+        PpcRunResult::Halted {
+            pc: PPC_HALT_PC,
+            ..
+        }
+    ));
+    let call = recorded_modal_filter_call(&mut loaded, record);
+    assert_eq!(call.count, 1);
+    assert_eq!(call.dialog, dialog);
+    assert_eq!(call.item_hit_ptr, item_hit_ptr);
+    assert_eq!(call.event, click);
+    // The EventRecord lives in a frame below the caller's stack.
+    assert!(call.sp < caller_sp && call.sp % 16 == 0);
+    assert!(call.event_ptr > call.sp && call.event_ptr + 16 <= caller_sp);
+    // Declined: ModalDialog hit-tests the event itself.
+    assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(1));
+    assert_eq!(loaded.cpu.gpr[1], caller_sp);
+    assert_eq!(loaded.cpu.gpr[3..5], [filter, item_hit_ptr]);
+    assert!(loaded.dialog_callback_stack.is_empty());
+}
+
+#[test]
+fn modal_dialog_returns_the_item_a_filter_stores_for_a_disabled_button() {
+    let filter = PPC_CODE_BASE + 0x1000;
+    let record = PPC_DATA_BASE + 0x1800;
+    let (mut loaded, dialog, item_hit_ptr) = modal_dialog_with_filter(0);
+    install_recording_modal_filter(&mut loaded, filter, record, MODAL_FILTER_TRUE, Some(1));
+    // The application keeps the button inactive and hit-tests it itself.
+    let items_handle = loaded
+        .memory
+        .read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET)
+        .unwrap();
+    let items_ptr = loaded.memory.read_u32_be(items_handle).unwrap();
+    let control_handle = loaded.memory.read_u32_be(items_ptr + 2).unwrap();
+    let control = loaded.memory.read_u32_be(control_handle).unwrap();
+    loaded
+        .memory
+        .write_u8(control + PPC_CONTROL_HILITE_OFFSET, 255)
+        .unwrap();
+    let click = modal_filter_mouse_down(60 + 20, 80 + 50);
+
+    // Without a filter the click on the inactive button selects nothing.
+    loaded.set_event_queue([click]);
+    let probe = loaded.run_with_hle_imports(512);
+    assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+    assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(0));
+    assert_eq!(loaded.memory.read_u32_be(record), Some(0));
+
+    loaded.cpu.gpr[3] = filter;
+    loaded.set_event_queue([click]);
+    let probe = loaded.run_with_hle_imports(512);
+
+    assert!(matches!(
+        probe.result,
+        PpcRunResult::Halted {
+            pc: PPC_HALT_PC,
+            ..
+        }
+    ));
+    assert_eq!(recorded_modal_filter_call(&mut loaded, record).count, 1);
+    assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(1));
+    assert_eq!(loaded.cpu.gpr[3..5], [filter, item_hit_ptr]);
+    assert!(loaded.dialog_callback_stack.is_empty());
+}
+
+#[test]
+fn modal_dialog_offers_null_events_to_its_filter_on_every_idle_pass() {
+    let filter = PPC_CODE_BASE + 0x1000;
+    let record = PPC_DATA_BASE + 0x1800;
+    let (mut loaded, dialog, item_hit_ptr) = modal_dialog_with_filter(filter);
+    install_recording_modal_filter(&mut loaded, filter, record, MODAL_FILTER_FALSE, None);
+    loaded.set_tick_count(4321);
+    loaded.set_input_snapshot(PpcInputSnapshot {
+        key_map: [0; 16],
+        mouse_button: false,
+        mouse_v: 33,
+        mouse_h: 44,
+    });
+    loaded.set_event_queue([]);
+    let caller_sp = loaded.cpu.gpr[1];
+
+    for pass in 1..=3 {
+        let probe = loaded.run_with_hle_imports(512);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        let call = recorded_modal_filter_call(&mut loaded, record);
+        assert_eq!(call.count, pass);
+        assert_eq!(call.dialog, dialog);
+        assert_eq!(call.item_hit_ptr, item_hit_ptr);
+        // Each pass reuses the stack frame rather than allocating a record.
+        assert!(call.event_ptr > call.sp && call.event_ptr + 16 <= caller_sp);
+        // `when` is the current tick count, which includes the guest time
+        // elapsed in the execution slice.
+        assert!((4321..4321 + 60).contains(&call.event.when));
+        assert_eq!(
+            call.event,
+            PpcQueuedEvent {
+                what: 0,
+                message: 0,
+                when: call.event.when,
+                where_v: 33,
+                where_h: 44,
+                // btnState: the button is up.
+                modifiers: 0x0080,
+            }
+        );
+        assert_eq!(loaded.cpu.gpr[1], caller_sp);
+        assert_eq!(loaded.cpu.gpr[3..5], [filter, item_hit_ptr]);
+        assert!(loaded.dialog_callback_stack.is_empty());
+    }
+    assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(0));
+}
+
+#[test]
+fn resource_alert_calls_its_filter_with_modal_dialog_arguments() {
+    let filter_false = PPC_CODE_BASE + 0x1000;
+    let filter_true = PPC_CODE_BASE + 0x1100;
+    let record = PPC_DATA_BASE + 0x1800;
+    let record_true = PPC_DATA_BASE + 0x1900;
+    let pef = synthetic_pef_with_import(b"Alert");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    install_recording_modal_filter(&mut loaded, filter_false, record, MODAL_FILTER_FALSE, None);
+    install_recording_modal_filter(
+        &mut loaded,
+        filter_true,
+        record_true,
+        MODAL_FILTER_TRUE,
+        Some(1),
+    );
+    let alert_id = 128i16;
+    let mut alert = vec![0; 12];
+    for (offset, value) in [(0, 130i16), (2, 150), (4, 260), (6, 450)] {
+        alert[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+    }
+    alert[8..10].copy_from_slice(&alert_id.to_be_bytes());
+    alert[10..12].copy_from_slice(&0x4444u16.to_be_bytes());
+    let ditl = make_test_ditl(&[make_test_ditl_item(90, 210, 110, 280, b"OK")]);
+    for (res_type, data) in [(*b"ALRT", alert), (*b"DITL", ditl)] {
+        let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: alert_id,
+                name: Vec::new(),
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    loaded.cpu.gpr[3] = alert_id as u16 as u32;
+    loaded.cpu.gpr[4] = filter_false;
+    let caller_gprs = loaded.cpu.gpr[1..11].to_vec();
+    let mut caller_lr = None;
+
+    // Idle passes call the filter with ModalDialog's arguments and leave the
+    // caller's registers, including Alert's own arguments, intact.
+    for pass in 1..=2 {
+        let probe = loaded.run_with_hle_imports(512);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        let dialog = *loaded.current_gworld;
+        let call = recorded_modal_filter_call(&mut loaded, record);
+        assert_eq!(call.count, pass);
+        assert_eq!(call.dialog, dialog);
+        assert_eq!(
+            call.item_hit_ptr,
+            dialog + crate::dialog_manager::DIALOG_ALERT_HIT_OFFSET
+        );
+        assert_eq!(call.event.what, 0);
+        assert!(call.event_ptr > call.sp && call.event_ptr + 16 <= caller_gprs[0]);
+        assert_eq!(loaded.cpu.gpr[1..11], caller_gprs);
+        assert_ne!(loaded.cpu.lr, loaded.cpu.pc);
+        assert_eq!(*caller_lr.get_or_insert(loaded.cpu.lr), loaded.cpu.lr);
+        assert_eq!(loaded.window_list.first(), Some(dialog));
+        assert!(loaded.dialog_callback_stack.is_empty());
+    }
+    let dialog = *loaded.current_gworld;
+    let window_count = loaded.window_list.len();
+
+    // A click outside every item, which the filter claims as item 1.
+    loaded.cpu.gpr[4] = filter_true;
+    let click = modal_filter_mouse_down(130 + 5, 150 + 5);
+    loaded.set_event_queue([click]);
+    let probe = loaded.run_with_hle_imports(512);
+
+    assert!(matches!(
+        probe.result,
+        PpcRunResult::Halted {
+            pc: PPC_HALT_PC,
+            ..
+        }
+    ));
+    let call = recorded_modal_filter_call(&mut loaded, record_true);
+    assert_eq!(call.count, 1);
+    assert_eq!(call.dialog, dialog);
+    assert_eq!(call.event, click);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    assert_eq!(loaded.cpu.gpr[1], caller_gprs[0]);
+    assert!(!loaded.window_list.contains(&dialog));
+    assert_eq!(loaded.window_list.len(), window_count - 1);
+    assert!(loaded.dialog_callback_stack.is_empty());
+}
+
+#[test]
+fn standard_alert_calls_the_filter_from_its_parameter_record() {
+    let filter_false = PPC_CODE_BASE + 0x1000;
+    let filter_true = PPC_CODE_BASE + 0x1100;
+    let record = PPC_DATA_BASE + 0x1800;
+    let record_true = PPC_DATA_BASE + 0x1900;
+    let pef = synthetic_pef_with_library_import(b"AppearanceLib", b"StandardAlert");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    install_recording_modal_filter(&mut loaded, filter_false, record, MODAL_FILTER_FALSE, None);
+    install_recording_modal_filter(
+        &mut loaded,
+        filter_true,
+        record_true,
+        MODAL_FILTER_TRUE,
+        Some(1),
+    );
+    let base = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(base, vec![0; 256]);
+    loaded.memory.write_u16_be(base, 0x7fff).unwrap();
+    loaded
+        .memory
+        .write_bytes(base + 32, b"\x0cVideo setup?")
+        .unwrap();
+    // AlertStdAlertParamRec: filterProc, the default "OK" text, default
+    // button 1, no cancel button.
+    let alert_params = base + 64;
+    loaded
+        .memory
+        .write_u32_be(alert_params + 2, filter_false)
+        .unwrap();
+    loaded
+        .memory
+        .write_u32_be(alert_params + 6, u32::MAX)
+        .unwrap();
+    loaded.memory.write_u16_be(alert_params + 18, 1).unwrap();
+    loaded.cpu.gpr[3] = 3;
+    loaded.cpu.gpr[4] = base + 32;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = alert_params;
+    loaded.cpu.gpr[7] = base;
+    let caller_gprs = loaded.cpu.gpr[1..11].to_vec();
+    let mut caller_lr = None;
+
+    for pass in 1..=2 {
+        let probe = loaded.run_with_hle_imports(512);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        let dialog = *loaded.current_gworld;
+        let call = recorded_modal_filter_call(&mut loaded, record);
+        assert_eq!(call.count, pass);
+        assert_eq!(call.dialog, dialog);
+        assert_eq!(
+            call.item_hit_ptr,
+            dialog + crate::dialog_manager::DIALOG_ALERT_HIT_OFFSET
+        );
+        assert_eq!(call.event.what, 0);
+        assert_eq!(loaded.cpu.gpr[1..11], caller_gprs);
+        assert_ne!(loaded.cpu.lr, loaded.cpu.pc);
+        assert_eq!(*caller_lr.get_or_insert(loaded.cpu.lr), loaded.cpu.lr);
+        assert!(ppc_window_is_visible(&mut loaded.memory, dialog));
+        assert!(loaded.dialog_callback_stack.is_empty());
+    }
+    let dialog = *loaded.current_gworld;
+    assert_eq!(loaded.memory.read_u16_be(base), Some(0x7fff));
+
+    loaded
+        .memory
+        .write_u32_be(alert_params + 2, filter_true)
+        .unwrap();
+    let bounds = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+    let click = modal_filter_mouse_down(bounds.0 + 2, bounds.1 + 2);
+    loaded.set_event_queue([click]);
+    let probe = loaded.run_with_hle_imports(512);
+
+    assert!(matches!(
+        probe.result,
+        PpcRunResult::Halted {
+            pc: PPC_HALT_PC,
+            ..
+        }
+    ));
+    let call = recorded_modal_filter_call(&mut loaded, record_true);
+    assert_eq!(call.count, 1);
+    assert_eq!(call.dialog, dialog);
+    assert_eq!(call.event, click);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u16_be(base), Some(1));
+    assert!(!loaded.window_list.contains(&dialog));
+    assert!(loaded.dialog_callback_stack.is_empty());
+}
+
 #[test]
 fn hle_import_runner_handles_get_new_dialog_allocation() {
     let pef = synthetic_pef_with_import(b"GetNewDialog");
@@ -1413,6 +1856,7 @@ fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
     loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ModalDialog;
     loaded.cpu.pc = loaded.entry_pc;
     loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = 0; // no filter proc
     loaded.cpu.gpr[4] = item_hit_ptr;
     loaded
         .current_gworld
