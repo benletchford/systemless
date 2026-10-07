@@ -29,7 +29,9 @@ mod desktop {
     use gpui_kit::{
         component::{
             button::{Button, ButtonVariants},
+            checkbox::Checkbox,
             menu::{DropdownMenu, PopupMenu, PopupMenuItem},
+            radio::Radio,
             ActiveTheme, Disableable, Sizable,
         },
         prelude::*,
@@ -53,6 +55,12 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_about_alert: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_controls: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_controls_changed: Option<PathBuf>,
     }
 
     fn parse_depth(value: &str) -> Result<u16, String> {
@@ -590,6 +598,162 @@ mod desktop {
                         .child(gutter),
                 );
             }
+            // CDEF-owned standard controls can use Kit components while their
+            // ControlRecord state and tracking remain guest-owned.
+            // Macintosh Toolbox Essentials (1992), pp. 5-58--5-64.
+            for piece in super::frames::control_pieces(&self.controls, &self.windows, viewport) {
+                let control = &self.controls[piece.control];
+                let source = piece.source;
+                let clip = piece.clip;
+                let mut overlay = div()
+                    .absolute()
+                    .left(px((source.left - clip.left) as f32))
+                    .top(px((source.top - clip.top) as f32))
+                    .w(px(source.width() as f32))
+                    .h(px(source.height() as f32))
+                    .bg(cx.theme().background);
+                match control.proc_id {
+                    0 => {
+                        overlay = overlay.child(
+                            Button::new(("guest-control-button", control.guest_id as usize))
+                                .label(control.title.clone())
+                                .small()
+                                .compact()
+                                .tab_stop(false)
+                                .disabled(!control.enabled)
+                                .w_full()
+                                .h_full(),
+                        );
+                    }
+                    1 => {
+                        overlay = overlay.child(
+                            Checkbox::new(("guest-control-checkbox", control.guest_id as usize))
+                                .label(control.title.clone())
+                                .checked(control.value != 0)
+                                .disabled(!control.enabled)
+                                .tab_stop(false)
+                                .small()
+                                .w_full()
+                                .h_full(),
+                        );
+                    }
+                    2 => {
+                        overlay = overlay.child(
+                            Radio::new(("guest-control-radio", control.guest_id as usize))
+                                .label(control.title.clone())
+                                .checked(control.value != 0)
+                                .disabled(!control.enabled)
+                                .tab_stop(false)
+                                .small()
+                                .w_full()
+                                .h_full(),
+                        );
+                    }
+                    16 => {
+                        let geometry = super::frames::scrollbar_geometry(control);
+                        let active = control.enabled && control.minimum < control.maximum;
+                        let arrow = geometry.arrow_extent as f32;
+                        let (arrow_width, arrow_height, end_left, end_top) = if geometry.vertical {
+                            (
+                                source.width() as f32,
+                                arrow,
+                                0.,
+                                source.height() as f32 - arrow,
+                            )
+                        } else {
+                            (
+                                arrow,
+                                source.height() as f32,
+                                source.width() as f32 - arrow,
+                                0.,
+                            )
+                        };
+                        let (thumb_left, thumb_top, thumb_width, thumb_height) =
+                            if geometry.vertical {
+                                (
+                                    0.,
+                                    geometry.thumb_start as f32,
+                                    source.width() as f32,
+                                    geometry.thumb_extent as f32,
+                                )
+                            } else {
+                                (
+                                    geometry.thumb_start as f32,
+                                    0.,
+                                    geometry.thumb_extent as f32,
+                                    source.height() as f32,
+                                )
+                            };
+                        let (before, after) = if geometry.vertical {
+                            ("▴", "▾")
+                        } else {
+                            ("◂", "▸")
+                        };
+                        overlay = overlay
+                            .bg(cx.theme().secondary)
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .left_0()
+                                    .w(px(arrow_width))
+                                    .h(px(arrow_height))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_color(if active {
+                                        cx.theme().foreground
+                                    } else {
+                                        cx.theme().muted_foreground
+                                    })
+                                    .child(before),
+                            )
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left(px(end_left))
+                                    .top(px(end_top))
+                                    .w(px(arrow_width))
+                                    .h(px(arrow_height))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_color(if active {
+                                        cx.theme().foreground
+                                    } else {
+                                        cx.theme().muted_foreground
+                                    })
+                                    .child(after),
+                            );
+                        if active && geometry.thumb_extent > 0 {
+                            overlay = overlay.child(
+                                div()
+                                    .absolute()
+                                    .left(px(thumb_left))
+                                    .top(px(thumb_top))
+                                    .w(px(thumb_width))
+                                    .h(px(thumb_height))
+                                    .bg(cx.theme().accent)
+                                    .border_1()
+                                    .border_color(cx.theme().border),
+                            );
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+                screen = screen.child(
+                    div()
+                        .absolute()
+                        .overflow_hidden()
+                        .left(px(clip.left as f32))
+                        .top(px((clip.top - self.crop_top as i32) as f32))
+                        .w(px(clip.width() as f32))
+                        .h(px(clip.height() as f32))
+                        .child(overlay),
+                );
+            }
             // dBoxProc dialogs with only standard DITL text and buttons can be
             // restyled without covering application-owned user items. Their
             // guest bounds and event handling remain authoritative.
@@ -723,11 +887,13 @@ mod desktop {
     }
 
     #[cfg(feature = "gpui-demo-test")]
-    fn capture_about_alert(
+    fn capture_fixture_screen(
         game: &std::path::Path,
         output: &std::path::Path,
         prefer_powerpc: bool,
         screen_depth: Option<u16>,
+        controls_page: bool,
+        controls_changed: bool,
     ) {
         use gpui_kit::{platform, VisualTestAppContext};
 
@@ -744,21 +910,83 @@ mod desktop {
                 .guest_menu_snapshot()
                 .menus
                 .iter()
-                .any(|menu| menu.id == 128 && !menu.items.is_empty())
+                .any(|menu| menu.id == 129 && !menu.items.is_empty())
             {
                 break;
             }
         }
-        assert!(session.runner_mut().select_guest_menu_item(128, 1));
-        let dialogs = (0..300)
-            .find_map(|_| {
+        let (menu_id, item) = if controls_page { (129, 2) } else { (128, 1) };
+        assert!(session.runner_mut().select_guest_menu_item(menu_id, item));
+        let dialogs = if controls_page {
+            for _ in 0..300 {
                 session.runner_mut().run_steps(100_000, None);
-                let dialogs = session.runner_mut().dialog_snapshot();
-                dialogs.iter().any(|dialog| dialog.visible).then_some(dialogs)
-            })
-            .expect("About alert should become visible");
+                if session
+                    .runner_mut()
+                    .control_snapshot()
+                    .iter()
+                    .any(|control| control.visible && control.title == "Checkbox")
+                {
+                    break;
+                }
+            }
+            assert!(session
+                .runner_mut()
+                .control_snapshot()
+                .iter()
+                .any(|control| control.visible && control.proc_id == 16));
+            Vec::new()
+        } else {
+            (0..300)
+                .find_map(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    let dialogs = session.runner_mut().dialog_snapshot();
+                    dialogs.iter().any(|dialog| dialog.visible).then_some(dialogs)
+                })
+                .expect("About alert should become visible")
+        };
         let windows = session.runner_mut().window_frame_snapshot();
-        assert!(standard_dbox_dialog(&dialogs, &windows).is_some());
+        if !controls_page {
+            assert!(standard_dbox_dialog(&dialogs, &windows).is_some());
+        }
+        if controls_changed {
+            let controls = session.runner_mut().control_snapshot();
+            let checkbox = controls
+                .iter()
+                .find(|control| control.visible && control.title == "Checkbox")
+                .unwrap();
+            let bar = controls
+                .iter()
+                .find(|control| control.visible && control.proc_id == 16)
+                .unwrap();
+            let checkbox_point = (
+                (checkbox.bounds.0 + checkbox.bounds.2) / 2,
+                (checkbox.bounds.1 + checkbox.bounds.3) / 2,
+            );
+            let bar_point = ((bar.bounds.0 + bar.bounds.2) / 2, bar.bounds.3 - 8);
+            for (vertical, horizontal) in [checkbox_point, bar_point] {
+                session.deliver_input(MacintoshInput::MouseDown {
+                    vertical,
+                    horizontal,
+                });
+                for _ in 0..20 {
+                    session.runner_mut().run_steps(10_000, None);
+                }
+                session.deliver_input(MacintoshInput::MouseUp {
+                    vertical,
+                    horizontal,
+                });
+                for _ in 0..20 {
+                    session.runner_mut().run_steps(10_000, None);
+                }
+            }
+            let controls = session.runner_mut().control_snapshot();
+            assert!(controls.iter().any(|control| {
+                control.visible && control.title == "Checkbox" && control.value == 1
+            }));
+            assert!(controls
+                .iter()
+                .any(|control| control.visible && control.proc_id == 16 && control.value > 0));
+        }
         let controls = session.runner_mut().control_snapshot();
         let menus = session.runner_mut().guest_menu_snapshot();
         let frame = session.video_frame().unwrap();
@@ -810,14 +1038,45 @@ mod desktop {
             .unwrap()
             .save(output)
             .unwrap();
-        eprintln!("saved composed alert capture to {}", output.display());
+        eprintln!("saved composed GPUI capture to {}", output.display());
     }
 
     pub(super) fn main() {
         let args = Args::parse();
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_about_alert.as_ref() {
-            capture_about_alert(&args.game, output, args.prefer_powerpc, args.screen_depth);
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                false,
+                false,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_controls.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                true,
+                false,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_controls_changed.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                true,
+                true,
+            );
             return;
         }
         let (commands, receiver) = mpsc::channel();
@@ -897,6 +1156,8 @@ mod desktop {
                         prefer_powerpc: false,
                         screen_depth: Some(8),
                         capture_about_alert: None,
+                        capture_controls: None,
+                        capture_controls_changed: None,
                     },
                     rx,
                     worker_updates,
@@ -1266,6 +1527,97 @@ mod desktop {
             });
             cx.update_window(window.into(), |_, window, cx| {
                 window.click(("guest-dialog-button", ((7 << 16) | 1) as usize), cx);
+            })
+            .unwrap();
+            let inputs: Vec<_> = receiver
+                .try_iter()
+                .filter_map(|command| match command {
+                    super::Command::Input(input) => Some(input),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                inputs
+                    .iter()
+                    .filter(|input| matches!(input, MacintoshInput::MouseDown { .. }))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                inputs
+                    .iter()
+                    .filter(|input| matches!(input, MacintoshInput::MouseUp { .. }))
+                    .count(),
+                1
+            );
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn themed_checkbox_forwards_one_guest_press_and_release(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            use gpui_kit::{test::TestWindowExt, AppContext, Bounds, WindowBounds, WindowOptions};
+            use systemless::runner::{ControlSnapshot, WindowFrameSnapshot, WindowSnapshot};
+
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            cx.update(gpui_kit::init);
+            let (window, view) = cx.update(|cx| {
+                gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                            None,
+                            gpui_kit::size(gpui_kit::px(900.), gpui_kit::px(740.)),
+                            cx,
+                        ))),
+                        ..Default::default()
+                    },
+                    cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(sender, updates, cx)),
+                )
+                .unwrap()
+            });
+            cx.update(|cx| {
+                view.update(cx, |demo, cx| {
+                    let bounds = (50, 40, 420, 600);
+                    demo.windows = vec![WindowFrameSnapshot {
+                        guest_id: 7,
+                        window: WindowSnapshot {
+                            title: "Controls".into(),
+                            bounds,
+                            structure_bounds: Some((31, 39, 422, 602)),
+                            visible_region: None,
+                            update_region: None,
+                            visible: true,
+                            active: true,
+                        },
+                        definition_id: Some(0),
+                        close_box: false,
+                    }];
+                    demo.controls = vec![ControlSnapshot {
+                        guest_id: 22,
+                        owner_id: 7,
+                        proc_id: 1,
+                        local_bounds: (100, 100, 124, 220),
+                        bounds: (150, 140, 174, 260),
+                        owner_visible: true,
+                        visible: true,
+                        enabled: true,
+                        hilite: 0,
+                        value: 0,
+                        minimum: 0,
+                        maximum: 1,
+                        title: "Checkbox".into(),
+                    }];
+                    demo.width = 800;
+                    demo.height = 580;
+                    demo.crop_top = 20;
+                    cx.notify();
+                });
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.click(("guest-control-checkbox", 22usize), cx);
             })
             .unwrap();
             let inputs: Vec<_> = receiver

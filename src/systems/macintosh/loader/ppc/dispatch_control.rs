@@ -2657,7 +2657,9 @@ pub(super) fn ppc_control_part_at_point(
             let track_start = axis_start.saturating_add(arrow);
             let track_end = axis_end.saturating_sub(arrow);
             let track = i32::from(track_end.saturating_sub(track_start)).max(1);
-            let thumb = 8i32.min(track);
+            // The themed CDEF paints a 16-pixel thumb; use the same span for
+            // hit testing. Macintosh Toolbox Essentials (1992), pp. 5-58--5-61.
+            let thumb = 16i32.min(track);
             let span = i32::from(max).saturating_sub(i32::from(min)).max(1);
             let relative = i32::from(value)
                 .saturating_sub(i32::from(min))
@@ -2737,7 +2739,7 @@ pub(super) fn ppc_track_scroll_control_value(
         23 => i32::from(value) + page,
         129 => {
             let track = i32::from(track_end.saturating_sub(track_start)).max(1);
-            let thumb = 8i32.min(track);
+            let thumb = 16i32.min(track);
             let travel = track.saturating_sub(thumb).max(1);
             let coord = if vertical { v } else { h };
             let rel = (i32::from(coord) - i32::from(track_start)).clamp(0, travel);
