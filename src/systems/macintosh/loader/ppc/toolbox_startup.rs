@@ -225,7 +225,8 @@ impl PpcToolboxStartupState {
         &self,
     ) -> Option<crate::standard_file_ui::StandardFileSnapshot> {
         use crate::standard_file_ui::{
-            StandardFileEntrySnapshot, StandardFileKind, StandardFilePutLayout,
+            StandardFileEntrySnapshot, StandardFileGetLayout, StandardFileKind,
+            StandardFilePutLayout,
             StandardFileSnapshot,
         };
 
@@ -259,7 +260,30 @@ impl PpcToolboxStartupState {
                 name: None,
                 name_selection: None,
                 name_has_focus: None,
-                directory_label: None,
+                directory_label: Some(crate::trap::dispatch::BOOT_VOLUME_NAME.to_string()),
+                get_layout: Some({
+                    use super::dispatch_standard_file::{
+                        PPC_STANDARD_FILE_GET_CANCEL_RECT, PPC_STANDARD_FILE_GET_DESKTOP_RECT,
+                        PPC_STANDARD_FILE_GET_EJECT_RECT, PPC_STANDARD_FILE_GET_LIST_RECT,
+                        PPC_STANDARD_FILE_GET_OPEN_RECT, PPC_STANDARD_FILE_GET_ROW_HEIGHT,
+                        PPC_STANDARD_FILE_GET_SCROLL_RECT, PPC_STANDARD_FILE_GET_VOLUME_LABEL_RECT,
+                        PPC_STANDARD_FILE_GET_VOLUME_RECT,
+                    };
+                    let global = |rect| StandardFilePutLayout::global_rect(tracking.bounds, rect);
+                    StandardFileGetLayout {
+                        volume: global(PPC_STANDARD_FILE_GET_VOLUME_RECT),
+                        directory_label: global(PPC_STANDARD_FILE_GET_VOLUME_LABEL_RECT),
+                        list: global(PPC_STANDARD_FILE_GET_LIST_RECT),
+                        scroll: global(PPC_STANDARD_FILE_GET_SCROLL_RECT),
+                        eject: global(PPC_STANDARD_FILE_GET_EJECT_RECT),
+                        desktop: global(PPC_STANDARD_FILE_GET_DESKTOP_RECT),
+                        cancel: global(PPC_STANDARD_FILE_GET_CANCEL_RECT),
+                        open: global(PPC_STANDARD_FILE_GET_OPEN_RECT),
+                        row_height: PPC_STANDARD_FILE_GET_ROW_HEIGHT,
+                        first_visible: tracking.selected.saturating_sub(7),
+                        visible_rows: 8,
+                    }
+                }),
                 put_layout: None,
             });
         }
@@ -289,6 +313,7 @@ impl PpcToolboxStartupState {
             name_selection: Some((tracking.sel_start, tracking.sel_end)),
             name_has_focus: Some(!tracking.list_has_focus),
             directory_label: Some(crate::mac_roman::decode_mac_roman(&tracking.directory_name)),
+            get_layout: None,
             put_layout: Some({
                 use super::dispatch_standard_file::{
                     PPC_STANDARD_FILE_GET_ROW_HEIGHT, PPC_STANDARD_FILE_PUT_CANCEL_RECT,

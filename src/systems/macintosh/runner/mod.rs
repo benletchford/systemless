@@ -28,7 +28,8 @@ use crate::memory::{AccessSource, MacMemoryBus, MemoryBus};
 use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{ProcessContext, ProcessMemoryManager, SharedProcessFileSystem};
 pub use crate::standard_file_ui::{
-    StandardFileEntrySnapshot, StandardFileKind, StandardFilePutLayout, StandardFileSnapshot,
+    StandardFileEntrySnapshot, StandardFileGetLayout, StandardFileKind, StandardFilePutLayout,
+    StandardFileSnapshot,
 };
 pub use crate::text_edit::{TextEditManagerSnapshot, TextEditSnapshot};
 use crate::trap::dispatch::TrapTableProfile;
@@ -3212,6 +3213,7 @@ impl FixtureRunner {
             return app.toolbox_startup.standard_file_snapshot();
         }
         if let Some(tracking) = &self.dispatcher.standard_file_get_tracking {
+            let get_layout = self.dispatcher.standard_file_get_layout(tracking);
             return Some(StandardFileSnapshot {
                 guest_id: tracking.reply_ptr,
                 generation: tracking.generation,
@@ -3237,7 +3239,8 @@ impl FixtureRunner {
                 name: None,
                 name_selection: None,
                 name_has_focus: None,
-                directory_label: None,
+                directory_label: Some(crate::trap::dispatch::BOOT_VOLUME_NAME.to_string()),
+                get_layout: Some(get_layout),
                 put_layout: None,
             });
         }
@@ -3273,6 +3276,7 @@ impl FixtureRunner {
             )),
             name_has_focus: Some(true),
             directory_label: Some(directory_label),
+            get_layout: None,
             put_layout: Some(put_layout),
         })
     }

@@ -36,6 +36,22 @@ pub struct StandardFilePutLayout {
     pub visible_rows: usize,
 }
 
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StandardFileGetLayout {
+    pub volume: (i16, i16, i16, i16),
+    pub directory_label: (i16, i16, i16, i16),
+    pub list: (i16, i16, i16, i16),
+    pub scroll: (i16, i16, i16, i16),
+    pub eject: (i16, i16, i16, i16),
+    pub desktop: (i16, i16, i16, i16),
+    pub cancel: (i16, i16, i16, i16),
+    pub open: (i16, i16, i16, i16),
+    pub row_height: i16,
+    pub first_visible: usize,
+    pub visible_rows: usize,
+}
+
 impl StandardFilePutLayout {
     pub(crate) fn global_rect(
         bounds: (i16, i16, i16, i16),
@@ -72,5 +88,6 @@ pub struct StandardFileSnapshot {
     /// `None` for Open panels; Save reports where guest keyboard input goes.
     pub name_has_focus: Option<bool>,
     pub directory_label: Option<String>,
+    pub get_layout: Option<StandardFileGetLayout>,
     pub put_layout: Option<StandardFilePutLayout>,
 }
