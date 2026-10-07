@@ -83,6 +83,8 @@ test-support = []
 debug = []
 # Debugger socket transport (Unix-domain sockets). Implies `debug`.
 debug-server = ["debug"]
+# Experimental standalone guest menu presentation demo.
+gpui-demo = ["dep:gpui-kit"]
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.54", optional = true, features = [
@@ -93,6 +95,7 @@ windows = { version = "0.54", optional = true, features = [
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+gpui-kit = { version = "=0.7.1", optional = true }
 objc2 = { version = "0.5.2", optional = true }
 objc2-app-kit = { version = "0.2.2", optional = true, features = ["NSApplication", "NSBitmapImageRep", "NSCursor", "NSCell", "NSGraphics", "NSImage", "NSImageRep", "NSMenu", "NSMenuItem"] }
 objc2-foundation = { version = "0.2.2", optional = true, features = ["NSDate", "NSGeometry", "NSObject", "NSProcessInfo", "NSRunLoop", "NSString", "NSTimer"] }
@@ -122,6 +125,11 @@ objc2-quartz-core = { version = "0.2.2", optional = true, features = [
 [[bin]]
 name = "systemless"
 required-features = ["gui"]
+
+[[example]]
+name = "gpui-menu-demo"
+path = "src/bin/gpui_demo.rs"
+required-features = ["gpui-demo"]
 
 [dev-dependencies]
 hfsplus = { version = "0.2.4", features = ["testutil"] }
