@@ -65,14 +65,18 @@ focused clipping test checks an inactive WDEF 4 dialog, custom item/WDEF
 fallbacks, and a stale window generation. A 68K/PowerPC guest replay now
 checks that a modal dialog opened above a modeless one receives key input,
 that the underlying edit field stays unchanged, and that focus and editing
-return to the modeless dialog on dismissal. Nested modal GPUI composition
-and nonrectangular visible regions remain unqualified. The
-`--capture-nested-modal-dialog` headless case now records the composed 68K
-and PowerPC surface with both real dialogs visible. Both captures show the
-front modal covering the modeless controls without duplicate foreground
-items; the PowerPC capture retains a selected menu title after direct menu
-selection, and its edit focus differs from the 68K capture. Those differences
-still require investigation before calling nested modality visually qualified.
+return to the modeless dialog on dismissal. The read-only frame presentation
+now gives focus to only the frontmost active window, even if a covered guest
+WindowRecord retains its hilite flag. A closed custom MDEF no longer disables
+window and dialog overlays; active custom-menu tracking still preserves the
+whole guest framebuffer so its dropdown can cover windows. The
+`--capture-nested-modal-dialog` headless case asserts that tracking has ended
+and records actual GPUI composition on both CPUs. The captures show matching
+modal controls and edit caret above a clipped, inactive modeless dialog.
+The PowerPC guest menu title remains highlighted while the fixture blocks in
+ModalDialog before calling HiliteMenu(0), whereas the 68K title does not;
+this guest-menu fallback difference still needs investigation. Nonrectangular
+visible regions and arbitrary nested-modal layouts remain unqualified.
 The `--capture-modeless-dialog-layout` headless case composes an inactive standard
 dialog behind a front window and checks that its covered item keeps guest
 pixels while the exposed part uses the GPUI overlay. The showcase also opens

@@ -167,6 +167,7 @@ mod desktop {
     #[derive(Default)]
     struct Update {
         menus: GuestMenuSnapshot,
+        guest_menu_tracking: bool,
         windows: Vec<WindowFrameSnapshot>,
         dialogs: Vec<DialogSnapshot>,
         controls: Vec<ControlSnapshot>,
@@ -237,6 +238,7 @@ mod desktop {
                 session.drain_audio();
                 let menus = session.runner_mut().guest_menu_snapshot();
                 let guest_menu_fallback = menus.requires_guest_menu_rendering();
+                let guest_menu_tracking = session.runner().guest_menu_tracking_active();
                 let frame = session.video_frame().map(|frame| {
                     // Preserve guest MBarHeight and crop only the displayed image,
                     // as the native menu frontend does (Inside Macintosh V, V-245).
@@ -261,6 +263,7 @@ mod desktop {
                 let standard_file = session.runner_mut().standard_file_snapshot();
                 *updates.lock().unwrap() = Some(Update {
                     menus,
+                    guest_menu_tracking,
                     windows,
                     dialogs,
                     controls,
@@ -293,6 +296,7 @@ mod desktop {
     struct Demo {
         commands: mpsc::Sender<Command>,
         menus: GuestMenuSnapshot,
+        guest_menu_tracking: bool,
         windows: Vec<WindowFrameSnapshot>,
         dialogs: Vec<DialogSnapshot>,
         controls: Vec<ControlSnapshot>,
@@ -332,6 +336,7 @@ mod desktop {
                     .update(cx, |this, cx| {
                         if let Some(update) = update {
                             this.menus = update.menus;
+                            this.guest_menu_tracking = update.guest_menu_tracking;
                             this.windows = update.windows;
                             this.dialogs = update.dialogs;
                             this.controls = update.controls;
@@ -370,6 +375,7 @@ mod desktop {
             Self {
                 commands,
                 menus: Default::default(),
+                guest_menu_tracking: false,
                 windows: Vec::new(),
                 dialogs: Vec::new(),
                 controls: Vec::new(),
@@ -813,10 +819,11 @@ mod desktop {
             if let Some(image) = &self.image {
                 screen = screen.child(img(image.clone()).absolute().top_0().left_0().size_full());
             }
-            // A custom MDEF may draw its dropdown over any window. Preserve
-            // the complete guest framebuffer so GPUI chrome cannot cover it.
+            // A tracking custom MDEF may draw its dropdown over any window.
+            // Keep those pixels, but present standard windows and dialogs
+            // while the custom menu is closed.
             // Macintosh Toolbox Essentials (1992), pp. 3-3, 3-87.
-            if !self.guest_menu_fallback() {
+            if !self.guest_menu_fallback() || !self.guest_menu_tracking {
                 let viewport = super::frames::Rect {
                     top: self.crop_top as i32,
                     left: 0,
@@ -2548,6 +2555,11 @@ mod desktop {
         let standard_file = session.runner_mut().standard_file_snapshot();
         let menus = session.runner_mut().guest_menu_snapshot();
         let frame = session.video_frame().unwrap();
+        let guest_menu_tracking = session.runner().guest_menu_tracking_active();
+        if matches!(capture, CaptureCase::NestedModalDialog) {
+            assert!(menus.requires_guest_menu_rendering());
+            assert!(!guest_menu_tracking, "nested dialog capture must compose GPUI overlays");
+        }
         let top = if menus.requires_guest_menu_rendering() {
             0
         } else {
@@ -2587,6 +2599,7 @@ mod desktop {
         visual.update(|cx| {
             view.update(cx, |demo, cx| {
                 demo.menus = menus;
+                demo.guest_menu_tracking = guest_menu_tracking;
                 demo.windows = windows;
                 demo.dialogs = dialogs;
                 demo.controls = controls;
@@ -3036,6 +3049,7 @@ mod desktop {
                         items: Vec::new(),
                     }],
                 };
+                demo.guest_menu_tracking = true;
                 demo.width = 64;
                 demo.height = 64;
                 demo.crop_top = 0;
@@ -4697,6 +4711,10 @@ mod desktop {
                     })
                     .expect("nested modal dialog should open");
                 assert!(modal.active);
+                assert!(!session.runner().guest_menu_tracking_active());
+                assert!(session.runner_mut().dialog_snapshot().iter().any(|current| {
+                    current.guest_id == modeless.guest_id && current.visible && !current.active
+                }), "covered modeless dialog must not present focus on {powerpc:?}");
                 session.deliver_input(MacintoshInput::KeyDown {
                     mac_key: 0x07,
                     character: b'X',

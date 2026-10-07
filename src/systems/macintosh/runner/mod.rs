@@ -2407,7 +2407,7 @@ impl FixtureRunner {
             .window_list
             .with_ref(|windows| windows.to_vec());
         let snapshots = self.window_stack_snapshot();
-        order
+        let mut frames: Vec<_> = order
             .into_iter()
             .filter(|window| *window != 0)
             .zip(snapshots)
@@ -2429,7 +2429,18 @@ impl FixtureRunner {
                     close_box,
                 }
             })
-            .collect()
+            .collect();
+        // Guest hilite flags may remain set on covered windows while a modal
+        // loop runs. Present only the frontmost eligible window as active:
+        // keyboard activity and the active title/selection belong to one
+        // window. Macintosh Toolbox Essentials (1992), pp. 1-4--1-5.
+        let front_active = frames
+            .iter()
+            .position(|frame| frame.window.visible && frame.window.active);
+        for (index, frame) in frames.iter_mut().enumerate() {
+            frame.window.active = Some(index) == front_active;
+        }
+        frames
     }
 
     /// Read live ControlRecords on either CPU without executing a CDEF or
@@ -3167,6 +3178,14 @@ impl FixtureRunner {
         } else {
             self.dispatcher.guest_menu_snapshot(&self.bus)
         }
+    }
+
+    /// A guest menu tracker may paint its own dropdown over window content.
+    /// Frontends can retain guest pixels during that interval without
+    /// disabling standard window presentation whenever a custom MDEF exists.
+    #[doc(hidden)]
+    pub fn guest_menu_tracking_active(&self) -> bool {
+        self.process_context.menu_tracking().is_some() || self.dispatcher.is_menu_tracking()
     }
 
     /// Inspect caller-created TextEdit records and the process's private scrap.
