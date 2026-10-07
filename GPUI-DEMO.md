@@ -103,3 +103,20 @@ the shared item geometry and default button on all three guest modes, confirms
 that the standard alert is eligible for the GPUI overlay, then dismisses it
 through guest mouse input. The additional GPUI Kit host-control test clicks the
 themed alert button and verifies exactly one guest press and release is queued.
+
+For a composed-pixel review of the live About alert, run the opt-in capture
+mode on macOS:
+
+```sh
+cargo run --no-default-features --features gpui-demo-test --example gpui-menu-demo -- tests/toolbox-showcase/toolbox-showcase.sit --capture-about-alert /tmp/systemless-gpui-about-alert.png
+```
+
+This uses GPUI's offscreen renderer on the macOS main thread. The capture
+contains the guest framebuffer, GPUI Kit menu and alert components, and
+Systemless window chrome together. It needs access to native macOS graphics
+services even though it does not open a visible demo window. The alert's
+guest carriage returns are displayed as separate lines, and the default
+button's guest outline is covered along with its item rectangle.
+Committed captures from the 68K and PowerPC slices are available at
+[68K alert](tests/toolbox-showcase/reference/gpui-demo/08-alert-68k.png) and
+[PowerPC alert](tests/toolbox-showcase/reference/gpui-demo/08-alert-ppc.png).
