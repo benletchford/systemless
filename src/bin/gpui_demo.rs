@@ -284,6 +284,12 @@ mod desktop {
             ((y as u32 + self.crop_top) as i16, x as i16)
         }
 
+        fn inside_guest_pane(&self, position: Point<Pixels>) -> bool {
+            let x = f32::from(position.x);
+            let y = f32::from(position.y);
+            x >= 0. && x < self.width as f32 && y >= 36. && y < 36. + self.height as f32
+        }
+
         fn scrollbar_at(&self, point: (i16, i16)) -> Option<(u32, u64, (i16, i16))> {
             let viewport = super::frames::Rect {
                 top: self.crop_top as i32,
@@ -924,6 +930,22 @@ mod desktop {
                 .bg(cx.theme().background)
                 .text_color(cx.theme().foreground)
                 .track_focus(&self.focus)
+                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                    if !this.mouse_down || this.inside_guest_pane(event.position) {
+                        return;
+                    }
+                    let (vertical, horizontal) = this.pointer(event.position);
+                    this.mouse_position = (vertical, horizontal);
+                    if this.scrollbar_drag.is_some() {
+                        cx.notify();
+                    }
+                    let _ = this
+                        .commands
+                        .send(Command::Input(MacintoshInput::MouseMove {
+                            vertical,
+                            horizontal,
+                        }));
+                }))
                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                     if event.keystroke.modifiers.platform {
                         if let Some(key) = event.keystroke.key.chars().next() {
@@ -1722,6 +1744,77 @@ mod desktop {
                 });
                 assert!(dismissed, "guest should dismiss the About alert after its button click");
             }
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn held_pointer_routes_across_guest_pane_boundary(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            use gpui_kit::{test::TestWindowExt, AppContext, Bounds, WindowBounds, WindowOptions};
+
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            cx.update(gpui_kit::init);
+            let (window, view) = cx.update(|cx| {
+                gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                            None,
+                            gpui_kit::size(gpui_kit::px(900.), gpui_kit::px(740.)),
+                            cx,
+                        ))),
+                        ..Default::default()
+                    },
+                    cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(sender, updates, cx)),
+                )
+                .unwrap()
+            });
+            cx.update(|cx| {
+                view.update(cx, |demo, cx| {
+                    demo.width = 800;
+                    demo.height = 580;
+                    demo.crop_top = 20;
+                    cx.notify();
+                });
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.drag(
+                    gpui_kit::point(gpui_kit::px(780.), gpui_kit::px(100.)),
+                    gpui_kit::point(gpui_kit::px(780.), gpui_kit::px(20.)),
+                    cx,
+                );
+            })
+            .unwrap();
+            let inputs: Vec<_> = receiver
+                .try_iter()
+                .filter_map(|command| match command {
+                    super::Command::Input(input) => Some(input),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                inputs
+                    .iter()
+                    .filter(|input| matches!(input, MacintoshInput::MouseDown { .. }))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                inputs
+                    .iter()
+                    .filter(|input| matches!(input, MacintoshInput::MouseUp { .. }))
+                    .count(),
+                1
+            );
+            assert!(inputs.iter().any(|input| matches!(
+                input,
+                MacintoshInput::MouseMove {
+                    vertical: 20,
+                    horizontal: 780
+                }
+            )));
         }
 
         #[cfg(feature = "gpui-demo-test")]
