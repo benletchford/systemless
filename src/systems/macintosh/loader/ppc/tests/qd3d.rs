@@ -8682,7 +8682,7 @@ fn hle_import_runner_queues_completed_q3_frames_at_render_boundaries() {
             view,
             kind: PpcQ3SubmissionKind::TriMesh,
             primary: trimesh,
-            secondary: 0,
+            secondary: 1,
         }]
     );
 
@@ -8708,7 +8708,7 @@ fn hle_import_runner_queues_completed_q3_frames_at_render_boundaries() {
             view,
             kind: PpcQ3SubmissionKind::TriMesh,
             primary: trimesh,
-            secondary: 0,
+            secondary: 1,
         }]
     );
     assert_eq!(loaded.q3_completed_frames[0].submission_transforms.len(), 1);
@@ -13065,7 +13065,7 @@ fn hle_import_runner_snapshots_q3_material_state_for_submissions() {
             view,
             kind: PpcQ3SubmissionKind::TriMesh,
             primary: trimesh,
-            secondary: 0,
+            secondary: 1,
             shader,
             illumination_type: PPC_Q3_ILLUMINATION_TYPE_PHONG,
             styles: vec![fill_style],
@@ -14343,7 +14343,7 @@ fn hle_import_runner_tracks_q3_transform_stack_for_submissions() {
             view,
             kind: PpcQ3SubmissionKind::TriMesh,
             primary: trimesh,
-            secondary: 0,
+            secondary: 1,
             local_to_world: translate_x,
         }
     );
@@ -14703,13 +14703,14 @@ fn hle_import_runner_resolves_q3_trimesh_scene_commands() {
             geometry: PpcQ3SceneTriMeshGeometry {
                 source: PpcQ3SceneTriMeshSource::DataPtr(trimesh_data),
                 data: trimesh,
+                memory_regions: Vec::new(),
             },
             local_to_world,
             material: PpcQ3SubmissionMaterialRecord {
                 view,
                 kind: PpcQ3SubmissionKind::TriMesh,
                 primary: trimesh_data,
-                secondary: 0,
+                secondary: 1,
                 shader,
                 illumination_type: PPC_Q3_ILLUMINATION_TYPE_PHONG,
                 styles: vec![fill_style],
@@ -14724,7 +14725,7 @@ fn hle_import_runner_resolves_q3_trimesh_scene_commands() {
                 view,
                 kind: PpcQ3SubmissionKind::TriMesh,
                 primary: trimesh_data,
-                secondary: 0,
+                secondary: 1,
                 light_group,
                 lights: vec![light_record],
             },
@@ -14766,9 +14767,11 @@ fn hle_import_runner_resolves_q3_trimesh_scene_commands() {
         });
     let mut object_material = loaded.q3_submission_materials[0].clone();
     object_material.primary = object_trimesh;
+    object_material.secondary = 0;
     loaded.q3_submission_materials.push(object_material);
     let mut object_lights = loaded.q3_submission_lights[0].clone();
     object_lights.primary = object_trimesh;
+    object_lights.secondary = 0;
     loaded.q3_submission_lights.push(object_lights);
 
     let commands = loaded.q3_scene_commands();
@@ -14804,10 +14807,12 @@ fn hle_import_runner_resolves_q3_trimesh_scene_commands() {
     let mut style_material = loaded.q3_submission_materials[0].clone();
     style_material.kind = PpcQ3SubmissionKind::Style;
     style_material.primary = style;
+    style_material.secondary = 0;
     loaded.q3_submission_materials.push(style_material);
     let mut style_lights = loaded.q3_submission_lights[0].clone();
     style_lights.kind = PpcQ3SubmissionKind::Style;
     style_lights.primary = style;
+    style_lights.secondary = 0;
     loaded.q3_submission_lights.push(style_lights);
 
     let commands = loaded.q3_scene_commands();
@@ -16925,6 +16930,218 @@ fn q3_software_renderer_respects_backfacing_remove_style() {
             .read_u16_be(clockwise_front_base + 5 * 16 + 5 * 2),
         Some(0x03e0)
     );
+}
+
+/// One-triangle immediate trimesh fixture for the submit-time copy tests: a
+/// 16x16 direct-color front buffer and a camera on +z looking at the origin.
+struct ImmediateTriMeshFixture {
+    loaded: PpcLoadedApp,
+    view: u32,
+    trimesh_data: u32,
+    points_ptr: u32,
+    colors_ptr: u32,
+    front_base: u32,
+}
+
+impl ImmediateTriMeshFixture {
+    const GREEN: u16 = 0x03e0;
+    const RED: u16 = 0x7c00;
+    const LEFT: [(f32, f32, f32); 3] = [(-4.0, -3.0, 0.0), (-0.5, -3.0, 0.0), (-2.25, 3.0, 0.0)];
+    const RIGHT: [(f32, f32, f32); 3] = [(0.5, -3.0, 0.0), (4.0, -3.0, 0.0), (2.25, 3.0, 0.0)];
+
+    fn new() -> Self {
+        let view = PPC_Q3_OBJECT_BASE;
+        let camera = PPC_Q3_OBJECT_BASE + PPC_Q3_OBJECT_STRIDE;
+        let trimesh_data = PPC_DATA_BASE + 0x1000;
+        let points_ptr = PPC_DATA_BASE + 0x1080;
+        let triangles_ptr = PPC_DATA_BASE + 0x1100;
+        let triangle_attrs_ptr = PPC_DATA_BASE + 0x1180;
+        let colors_ptr = PPC_DATA_BASE + 0x11c0;
+        let front_base = PPC_HEAP_BASE + 0x1000;
+        let pef = synthetic_pef_with_library_import(b"QuickDraw\xaa 3D", b"Q3TriMesh_Submit");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.memory.add_region(trimesh_data, vec![0; 0x400]);
+        loaded.memory.add_region(front_base, vec![0; 16 * 16 * 2]);
+        loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+            port: PPC_MAIN_GWORLD,
+            pixmap_handle: 0,
+            pixmap: 0,
+            base_addr: front_base,
+            gdevice: PPC_MAIN_GDEVICE,
+            width: 16,
+            height: 16,
+            depth: 16,
+            row_bytes: 32,
+            pixels_locked: false,
+            pixels_no_purge: false,
+        }];
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
+        loaded
+            .q3_objects
+            .push(test_q3_object(view, PPC_Q3_TYPE_VIEW));
+        let mut view_state = PpcQ3ViewStateRecord::new(view);
+        view_state.camera = camera;
+        view_state.rendering_depth = 1;
+        loaded.q3_views.push(view_state);
+        let mut view_material = PpcQ3ViewMaterialRecord::new(view);
+        view_material.illumination_type = PPC_Q3_ILLUMINATION_TYPE_NULL;
+        loaded.q3_view_materials.push(view_material);
+        loaded.q3_cameras.push(PpcQ3CameraRecord {
+            camera,
+            camera_type: PPC_Q3_CAMERA_TYPE_VIEW_ANGLE_ASPECT,
+            placement: PpcQ3CameraPlacement {
+                camera_location: (0.0, 0.0, 5.0),
+                point_of_interest: (0.0, 0.0, 0.0),
+                up_vector: (0.0, 1.0, 0.0),
+            },
+            range_hither: 1.0,
+            range_yon: 10.0,
+            viewport_origin: (-1.0, 1.0),
+            viewport_width: 2.0,
+            viewport_height: 2.0,
+            projection: PpcQ3CameraProjection::ViewAngleAspect {
+                fov: std::f32::consts::FRAC_PI_2,
+                aspect_ratio_x_to_y: 1.0,
+            },
+        });
+
+        let memory = &mut loaded.memory;
+        for (offset, value) in [
+            (PPC_Q3_TRIMESH_NUM_TRIANGLES_OFFSET, 1),
+            (PPC_Q3_TRIMESH_TRIANGLES_OFFSET, triangles_ptr),
+            (PPC_Q3_TRIMESH_NUM_TRIANGLE_ATTRIBUTE_TYPES_OFFSET, 1),
+            (
+                PPC_Q3_TRIMESH_TRIANGLE_ATTRIBUTE_TYPES_OFFSET,
+                triangle_attrs_ptr,
+            ),
+            (PPC_Q3_TRIMESH_NUM_POINTS_OFFSET, 3),
+            (PPC_Q3_TRIMESH_POINTS_OFFSET, points_ptr),
+        ] {
+            memory.write_u32_be(trimesh_data + offset, value).unwrap();
+        }
+        for (offset, index) in [0u32, 1, 2].into_iter().enumerate() {
+            memory
+                .write_u32_be(triangles_ptr + offset as u32 * 4, index)
+                .unwrap();
+        }
+        memory
+            .write_u32_be(triangle_attrs_ptr, PPC_Q3_ATTRIBUTE_TYPE_DIFFUSE_COLOR)
+            .unwrap();
+        memory
+            .write_u32_be(triangle_attrs_ptr + 4, colors_ptr)
+            .unwrap();
+        memory.write_u32_be(triangle_attrs_ptr + 8, 0).unwrap();
+
+        Self {
+            loaded,
+            view,
+            trimesh_data,
+            points_ptr,
+            colors_ptr,
+            front_base,
+        }
+    }
+
+    /// Fill the shared arrays with one triangle and its color.
+    fn write_triangle(&mut self, points: [(f32, f32, f32); 3], color: (f32, f32, f32)) {
+        for (index, point) in points.into_iter().enumerate() {
+            ppc_write_q3_vector3d(
+                &mut self.loaded.memory,
+                self.points_ptr + index as u32 * PPC_Q3_POINT3D_SIZE,
+                point,
+            )
+            .unwrap();
+        }
+        ppc_write_q3_vector3d(&mut self.loaded.memory, self.colors_ptr, color).unwrap();
+    }
+
+    /// Call Q3TriMesh_Submit(trimesh_data, view) through the import runner.
+    fn submit(&mut self) {
+        self.loaded.cpu.pc = self.loaded.entry_pc;
+        self.loaded.cpu.lr = PPC_HALT_PC;
+        self.loaded.cpu.gpr[3] = self.trimesh_data;
+        self.loaded.cpu.gpr[4] = self.view;
+        let probe = self.loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(self.loaded.cpu.gpr[3], 1);
+    }
+
+    /// What Q3TriMesh_EmptyData does to the structure, plus the arrays
+    /// being reused for something else.
+    fn release(&mut self) {
+        self.write_triangle([(9.0, 9.0, 9.0); 3], (0.0, 0.0, 1.0));
+        for offset in [
+            PPC_Q3_TRIMESH_TRIANGLES_OFFSET,
+            PPC_Q3_TRIMESH_TRIANGLE_ATTRIBUTE_TYPES_OFFSET,
+            PPC_Q3_TRIMESH_POINTS_OFFSET,
+        ] {
+            self.loaded
+                .memory
+                .write_u32_be(self.trimesh_data + offset, 0)
+                .unwrap();
+        }
+    }
+
+    /// Complete the frame, render it, and count green and red pixels.
+    fn render(&mut self) -> (usize, usize, PpcQ3SoftwareRenderStats) {
+        let loaded = &mut self.loaded;
+        let frame = ppc_q3_take_completed_frame(
+            self.view,
+            &mut loaded.q3_submissions,
+            &mut loaded.q3_submission_transforms,
+            &mut loaded.q3_submission_materials,
+            &mut loaded.q3_submission_lights,
+        );
+        loaded.q3_completed_frames.push(frame);
+        let stats = loaded.render_completed_q3_frames_to_front_buffer();
+        let (mut green, mut red) = (0, 0);
+        for offset in (0..16 * 16 * 2).step_by(2) {
+            match loaded.memory.read_u16_be(self.front_base + offset) {
+                Some(Self::GREEN) => green += 1,
+                Some(Self::RED) => red += 1,
+                _ => {}
+            }
+        }
+        (green, red, stats)
+    }
+}
+
+#[test]
+fn q3_immediate_trimesh_renders_as_submitted_after_the_app_releases_it() {
+    // The frame renders after the guest has run on. An application that
+    // empties its immediate trimesh after the submit must still see it drawn.
+    let mut fixture = ImmediateTriMeshFixture::new();
+    fixture.write_triangle(ImmediateTriMeshFixture::LEFT, (0.0, 1.0, 0.0));
+    fixture.submit();
+    fixture.release();
+
+    let (green, red, stats) = fixture.render();
+
+    assert_eq!(stats.triangles, 1);
+    assert!(green > 0);
+    assert_eq!(red, 0);
+    assert!(fixture.loaded.q3_immediate_trimeshes.is_empty());
+}
+
+#[test]
+fn q3_immediate_trimesh_renders_each_submit_of_a_reused_structure() {
+    // One structure submitted twice with different contents draws both.
+    let mut fixture = ImmediateTriMeshFixture::new();
+    fixture.write_triangle(ImmediateTriMeshFixture::LEFT, (0.0, 1.0, 0.0));
+    fixture.submit();
+    fixture.write_triangle(ImmediateTriMeshFixture::RIGHT, (1.0, 0.0, 0.0));
+    fixture.submit();
+    fixture.release();
+
+    let (green, red, stats) = fixture.render();
+
+    assert_eq!(stats.triangles, 2);
+    assert!(green > 0);
+    assert!(red > 0);
 }
 
 #[test]
@@ -23880,6 +24097,7 @@ fn q3_software_renderer_clips_camera_frustum_in_clip_space() {
         geometry: PpcQ3SceneTriMeshGeometry {
             source: PpcQ3SceneTriMeshSource::DataPtr(0),
             data: Vec::new(),
+            memory_regions: Vec::new(),
         },
         local_to_world: ppc_q3_matrix4x4_identity(),
         material: PpcQ3SubmissionMaterialRecord {
@@ -24432,6 +24650,7 @@ fn q3_software_renderer_projects_orthographic_and_view_plane_cameras() {
             geometry: PpcQ3SceneTriMeshGeometry {
                 source: PpcQ3SceneTriMeshSource::DataPtr(0),
                 data: Vec::new(),
+                memory_regions: Vec::new(),
             },
             local_to_world: ppc_q3_matrix4x4_identity(),
             material: PpcQ3SubmissionMaterialRecord {

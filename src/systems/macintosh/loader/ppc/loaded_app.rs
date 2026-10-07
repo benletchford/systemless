@@ -73,6 +73,7 @@ pub struct PpcLoadedApp {
     pub q3_retained_frames: Vec<PpcQ3RetainedFrameRecord>,
     pub q3_state_only_completed_frame_batches: Vec<PpcQ3StateOnlyCompletedFrameBatch>,
     pub q3_fog_styles: Vec<PpcQ3FogStyleRecord>,
+    pub q3_immediate_trimeshes: PpcQ3ImmediateTriMeshStore,
     pub q3_attributes: Vec<PpcQ3AttributeRecord>,
     pub q3_shader_uv_transforms: Vec<PpcQ3ShaderUvTransformRecord>,
     pub q3_shader_boundaries: Vec<PpcQ3ShaderBoundaryRecord>,
