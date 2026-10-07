@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.82.1](https://github.com/benletchford/systemless/compare/v0.82.0...v0.82.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **catalogue:** remove unhosted Tomb Raider Gold demo ([#4195](https://github.com/benletchford/systemless/issues/4195)) ([0eb0717](https://github.com/benletchford/systemless/commit/0eb07177d4b3bd2eae45703bb8d7535d5bb8965e))
+* **ppc:** complete classic plug-in filters across mixed mode ([#4163](https://github.com/benletchford/systemless/issues/4163)) ([9e64628](https://github.com/benletchford/systemless/commit/9e6462895f0c235992532b9bf9c5b950d9e0b736))
+
+
+### Code Refactoring
+
+* **quickdraw:** share region-row algebra and oval/round-rect spans ([#4188](https://github.com/benletchford/systemless/issues/4188)) ([8d981fe](https://github.com/benletchford/systemless/commit/8d981feebf13fbd10a027cc8030e1708975c70b0))
+
 ## [0.82.0](https://github.com/benletchford/systemless/compare/v0.81.2...v0.82.0) (2026-10-07)
 
 
