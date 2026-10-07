@@ -47,6 +47,10 @@ guest tick 16, one is queued at tick 16, and the next arrives four ticks later.
 After key release, four further guest ticks add no repeat. This checks the
 Systemless input and guest clock path; actual host key-hold timing and menu
 tracking during repeated shortcuts still need a GPUI interaction check.
+GPUI focus loss also releases a held guest mouse button through the input
+queue and clears local scrollbar/popup tracking, with a test for exactly one
+release. Scroll-wheel translation still needs a defined guest event route;
+the frontend does not synthesize direct scrollbar value changes.
 
 The dependency order is menus, frames, dialogs, controls, lists/TextEdit, then
 Standard File. The first end-to-end gate is one standard modal dialog on each
