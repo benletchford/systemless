@@ -25,6 +25,22 @@ pub(crate) fn create_test_cwindow(
 }
 
 #[test]
+fn window_visibility_recalculation_keeps_set_origin_coordinates() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SizeWindow")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1400;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let window = create_test_cwindow(&mut loaded, scratch, (40, 50, 140, 250), 0, true, u32::MAX);
+    ppc_set_port_origin(&mut loaded.memory, window, 0, -360).unwrap();
+    loaded.cpu.gpr[3] = window;
+    loaded.cpu.gpr[4] = 200;
+    loaded.cpu.gpr[5] = 100;
+    loaded.cpu.gpr[6] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SizeWindow);
+    let vis_rgn = loaded.memory.read_u32_be(window + PPC_CGRAF_PORT_VIS_RGN_OFFSET).unwrap();
+    assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, vis_rgn), Some((-360, 0, -260, 200)));
+}
+
+#[test]
 fn carbon_get_port_bounds_copies_window_local_rect() {
     let pef = synthetic_pef_with_library_import(b"CarbonLib", b"GetPortBounds");
     let mut loaded = load_pef_application(&pef).unwrap();

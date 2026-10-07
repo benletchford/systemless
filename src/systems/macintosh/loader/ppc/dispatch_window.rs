@@ -2188,8 +2188,13 @@ pub(super) fn ppc_recalculate_window_vis_regions(
                 PpcRegionBooleanOp::Difference,
             );
         }
-        if let Some((top, left, _, _)) = ppc_read_rgn_bbox(memory, content_rgn) {
-            let _ = ppc_offset_rgn(memory, vis_rgn, left.saturating_neg(), top.saturating_neg());
+        // visRgn is in port coordinates. The port PixMap's screen bounds
+        // include any SetOrigin shift, while contRgn remains global.
+        let pixmap = memory
+            .read_u32_be(window + 2)
+            .and_then(|handle| memory.read_u32_be(handle));
+        if let Some((top, left, _, _)) = pixmap.and_then(|ptr| ppc_read_rect(memory, ptr + 6)) {
+            let _ = ppc_offset_rgn(memory, vis_rgn, left, top);
         }
     }
 }

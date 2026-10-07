@@ -5431,6 +5431,26 @@ fn offset_full_clip_region_preserves_unbounded_extent() {
 }
 
 #[test]
+fn set_origin_preserves_window_screen_position() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SetOrigin")).unwrap();
+    let port = PPC_MAIN_GWORLD;
+    let pixmap_handle = loaded.memory.read_u32_be(port + 2).unwrap();
+    let pixmap = loaded.memory.read_u32_be(pixmap_handle).unwrap();
+    ppc_write_rect(&mut loaded.memory, pixmap + 6, -50, -40, 550, 760).unwrap();
+    ppc_write_rect(&mut loaded.memory, port + 16, 0, 0, 200, 300).unwrap();
+
+    ppc_set_port_origin(&mut loaded.memory, port, 0, -360).unwrap();
+
+    assert_eq!(ppc_read_rect(&mut loaded.memory, port + 16), Some((-360, 0, -160, 300)));
+    assert_eq!(ppc_read_rect(&mut loaded.memory, pixmap + 6), Some((-410, -40, 190, 760)));
+    assert_eq!(
+        ppc_read_rect(&mut loaded.memory, port + 16).unwrap().0
+            - ppc_read_rect(&mut loaded.memory, pixmap + 6).unwrap().0,
+        50,
+    );
+}
+
+#[test]
 fn set_origin_keeps_visible_screen_pixels_inside_the_port_region() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SetOrigin")).unwrap();
     let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();

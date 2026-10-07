@@ -40,19 +40,19 @@ pub(super) fn ppc_set_port_origin(memory: &mut PpcSectionMem, port: u32, h: i16,
     let pixmap = memory.read_u32_be(pixmap_handle)?;
     let (pixel_top, pixel_left, pixel_bottom, pixel_right) =
         ppc_read_rect(memory, pixmap.checked_add(6)?)?;
-    let pixel_height = pixel_bottom.wrapping_sub(pixel_top);
-    let pixel_width = pixel_right.wrapping_sub(pixel_left);
+    let (port_top, port_left, port_bottom, port_right) =
+        ppc_read_rect(memory, port.checked_add(16)?)?;
+    let vertical_delta = v.wrapping_sub(port_top);
+    let horizontal_delta = h.wrapping_sub(port_left);
     ppc_write_rect(
         memory,
         pixmap + 6,
-        v,
-        h,
-        v.wrapping_add(pixel_height),
-        h.wrapping_add(pixel_width),
+        pixel_top.wrapping_add(vertical_delta),
+        pixel_left.wrapping_add(horizontal_delta),
+        pixel_bottom.wrapping_add(vertical_delta),
+        pixel_right.wrapping_add(horizontal_delta),
     )?;
 
-    let (port_top, port_left, port_bottom, port_right) =
-        ppc_read_rect(memory, port.checked_add(16)?)?;
     let port_height = port_bottom.wrapping_sub(port_top);
     let port_width = port_right.wrapping_sub(port_left);
     // Inside Macintosh: Imaging With QuickDraw (1994), Basic QuickDraw
@@ -74,8 +74,8 @@ pub(super) fn ppc_set_port_origin(memory: &mut PpcSectionMem, port: u32, h: i16,
         && ppc_offset_rgn(
             memory,
             vis_rgn,
-            h.wrapping_sub(port_left),
-            v.wrapping_sub(port_top),
+            horizontal_delta,
+            vertical_delta,
         ) != PPC_NO_ERR
     {
         return None;
