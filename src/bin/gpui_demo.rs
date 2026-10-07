@@ -143,7 +143,7 @@ mod desktop {
     }
 
     enum Command {
-        Menu(i16, i16),
+        Menu(i16, i16, u32, u64),
         Input(MacintoshInput),
     }
 
@@ -184,8 +184,15 @@ mod desktop {
                 let start = Instant::now();
                 loop {
                     match commands.try_recv() {
-                        Ok(Command::Menu(menu, item)) => {
-                            session.runner_mut().select_guest_menu_item(menu, item);
+                        Ok(Command::Menu(menu, item, guest_id, generation)) => {
+                            if session
+                                .runner_mut()
+                                .guest_menu_snapshot()
+                                .selectable_result_for_guest(menu, item, guest_id, generation)
+                                .is_some()
+                            {
+                                session.runner_mut().select_guest_menu_item(menu, item);
+                            }
                         }
                         Ok(Command::Input(input)) => {
                             session.deliver_input(input);
@@ -488,6 +495,8 @@ mod desktop {
             } else {
                 let commands = commands.clone();
                 let number = item.number;
+                let guest_id = menu.guest_id;
+                let generation = menu.generation;
                 let label = match item.key_equivalent {
                     Some(key) => format!("{}    ⌘{}", item.text, key.to_uppercase()),
                     None => item.text.clone(),
@@ -497,7 +506,7 @@ mod desktop {
                         .checked(item.checked)
                         .disabled(!menu.enabled || !item.enabled)
                         .on_click(move |_, _, _| {
-                            let _ = commands.send(Command::Menu(id, number));
+                            let _ = commands.send(Command::Menu(id, number, guest_id, generation));
                         }),
                 );
             }
@@ -1784,7 +1793,12 @@ mod desktop {
                                             .key_equivalent
                                             .is_some_and(|k| k.eq_ignore_ascii_case(&key))
                                 }) {
-                                    let _ = this.commands.send(Command::Menu(menu.id, item.number));
+                                    let _ = this.commands.send(Command::Menu(
+                                        menu.id,
+                                        item.number,
+                                        menu.guest_id,
+                                        menu.generation,
+                                    ));
                                     cx.stop_propagation();
                                     return;
                                 }
@@ -2852,8 +2866,10 @@ mod desktop {
                     worker_updates,
                 )
             });
-            wait(&updates, |u| u.menus.menus.iter().any(|m| m.id == 129));
-            tx.send(Command::Menu(129, 3)).unwrap();
+            let update = wait(&updates, |u| u.menus.menus.iter().any(|m| m.id == 129));
+            let menu = update.menus.menus.iter().find(|menu| menu.id == 129).unwrap();
+            tx.send(Command::Menu(129, 3, menu.guest_id, menu.generation))
+                .unwrap();
             let update = wait(&updates, |u| u.windows.len() == 3);
             let (top, left, _, _) = update.windows[0].window.bounds;
             tx.send(Command::Input(MacintoshInput::MouseDown {
