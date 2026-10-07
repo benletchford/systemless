@@ -267,8 +267,19 @@ impl PpcToolboxStartupState {
             standard_entry_point: tracking.standard_entry_point,
             bounds: tracking.bounds,
             directory_id: tracking.dir_id,
-            entries: None,
-            selected: None,
+            entries: Some(
+                tracking
+                    .entries
+                    .iter()
+                    .map(|entry| StandardFileEntrySnapshot {
+                        name: crate::mac_roman::decode_mac_roman(&entry.name),
+                        directory_id: entry.dir_id,
+                        is_directory: entry.is_directory,
+                        file_type: entry.file_type,
+                    })
+                    .collect(),
+            ),
+            selected: tracking.selected,
             prompt: Some(crate::mac_roman::decode_mac_roman(&tracking.prompt)),
             name: Some(crate::mac_roman::decode_mac_roman(&tracking.name)),
             name_selection: Some((tracking.sel_start, tracking.sel_end)),

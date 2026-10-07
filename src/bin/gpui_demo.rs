@@ -2006,11 +2006,7 @@ mod desktop {
                 assert_eq!(saving.kind, StandardFileKind::Put);
                 assert!(saving.standard_entry_point);
                 assert!(saving.generation > opened.generation);
-                if powerpc {
-                    assert!(saving.entries.is_none(), "PowerPC Save has no guest list yet");
-                } else {
-                    assert!(saving.entries.as_ref().is_some_and(|entries| !entries.is_empty()));
-                }
+                assert!(saving.entries.as_ref().is_some_and(|entries| !entries.is_empty()));
                 assert!(saving.name.as_ref().is_some_and(|name| !name.is_empty()));
                 assert_eq!(saving.name_selection, Some((0, saving.name.as_ref().unwrap().len())));
                 session.deliver_input(MacintoshInput::KeyDown {
