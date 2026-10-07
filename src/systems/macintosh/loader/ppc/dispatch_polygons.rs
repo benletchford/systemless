@@ -14,6 +14,7 @@ pub(super) struct PpcPolygonDispatchContext<'a> {
     pub(super) gworlds: &'a [PpcGWorldRecord],
     pub(super) current_gworld: u32,
     pub(super) quickdraw_fore_color: &'a PpcRgbColor,
+    pub(super) quickdraw_back_color: &'a PpcRgbColor,
     pub(super) quickdraw_fore_indices: &'a HashMap<u32, u8>,
     pub(super) toolbox_startup: &'a mut PpcToolboxStartupState,
 }
@@ -33,6 +34,7 @@ pub(super) fn dispatch_polygon_import(
         gworlds,
         current_gworld,
         quickdraw_fore_color,
+        quickdraw_back_color,
         quickdraw_fore_indices,
         toolbox_startup,
     } = context;
@@ -85,7 +87,7 @@ pub(super) fn dispatch_polygon_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::PaintPoly | PpcImportDispatcherTarget::FillPoly => {
+        PpcImportDispatcherTarget::PaintPoly => {
             if toolbox_startup.open_region_port == current_gworld {
                 ppc_open_region_include_polygon(toolbox_startup, memory, cpu.gpr[3]);
             } else {
@@ -97,6 +99,30 @@ pub(super) fn dispatch_polygon_import(
                     *quickdraw_fore_color,
                     quickdraw_fore_indices.get(&current_gworld).copied(),
                 );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::FillPoly => {
+            if toolbox_startup.open_region_port == current_gworld {
+                ppc_open_region_include_polygon(toolbox_startup, memory, cpu.gpr[3]);
+            } else {
+                let mut pattern = [0u8; 8];
+                if memory.read_bytes_into(cpu.gpr[4], &mut pattern).is_some() {
+                    let _ = ppc_fill_polygon_pattern(
+                        memory,
+                        gworlds,
+                        current_gworld,
+                        cpu.gpr[3],
+                        pattern,
+                        *quickdraw_fore_color,
+                        quickdraw_fore_indices.get(&current_gworld).copied(),
+                        *quickdraw_back_color,
+                        toolbox_startup
+                            .quickdraw_back_indices
+                            .get(&current_gworld)
+                            .copied(),
+                    );
+                }
             }
             Some(PpcImportAction::ReturnPreserve)
         }
