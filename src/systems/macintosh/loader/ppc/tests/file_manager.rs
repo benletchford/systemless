@@ -7820,6 +7820,9 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         let released_handle = loaded.cpu.gpr[3];
+        let generation = loaded.process_file_system.resource_manager.with_mut(|resources| {
+            resources.menu_generation(released_handle)
+        });
         let released_ptr = loaded.memory.read_u32_be(released_handle).unwrap();
         let allocated_heap_cursor = loaded.heap_cursor();
         assert_ne!(released_handle, 0);
@@ -7844,6 +7847,10 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         assert_eq!(loaded.cpu.gpr[3], released_handle);
         assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.process_file_system.vfs_resources[0].handle, 0);
+        loaded.process_file_system.resource_manager.with_mut(|resources| {
+            assert!(!resources.menu_generations.contains_key(&released_handle));
+            assert_ne!(resources.menu_generation(released_handle), generation);
+        });
         assert!(loaded
             .handles()
             .iter()

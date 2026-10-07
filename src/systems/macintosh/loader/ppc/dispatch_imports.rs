@@ -483,6 +483,7 @@ pub(crate) fn dispatch_supported_import(
             resource_files,
             vfs_resource_files,
             vfs_resources,
+            menu_generations,
             current_resource_refnum,
             resource_policy,
             last_resource_error,
