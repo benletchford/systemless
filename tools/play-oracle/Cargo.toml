@@ -1,0 +1,26 @@
+[package]
+name = "systemless-oracle-tools"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-3.0-or-later"
+description = "Optional classic Macintosh emulator capture adapters"
+
+[workspace]
+
+[dependencies]
+systemless = { version = "0.82.1", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+xattr = "1"
+tempfile = "3"
+flate2 = "1"
+
+[[bin]]
+name = "play-basilisk"
+path = "src/bin/play_basilisk.rs"
+
+[[bin]]
+name = "play-sheepshaver"
+path = "src/bin/play_sheepshaver.rs"

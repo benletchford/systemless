@@ -22,8 +22,12 @@ __pycache__/
 /www/catalogue/incoming/**/*.dat
 
 # Experiment notes stay local.
-/docs/
+/docs/*
+!/docs/headless-play.md
 
 # Native window qualification artifacts.
 /native-window-results/
 /scripts/__pycache__/
+
+# Local structured-play artifacts
+/play-output/

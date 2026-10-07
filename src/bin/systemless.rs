@@ -47,6 +47,8 @@ mod native_termination;
 #[cfg(feature = "test-support")]
 #[path = "desktop/native_window_probe.rs"]
 mod native_window_probe;
+#[path = "desktop/play.rs"]
+mod play;
 #[path = "desktop/runtime_driver.rs"]
 mod runtime_driver;
 #[path = "desktop/runtime_mailbox.rs"]
@@ -283,8 +285,24 @@ struct Cli {
     )]
     headless_start_time: Option<u32>,
 
+    /// Execute a structured JSON scenario using simulated frontend ticks
+    #[arg(long, requires = "headless", conflicts_with_all = ["max_ticks", "max_instructions", "input_script", "tick_input_script", "debug_socket", "reset_preferences"])]
+    play_script: Option<PathBuf>,
+
+    /// New or empty directory for play captures and report.json
+    #[arg(long, requires = "play_script", value_name = "DIR")]
+    play_output: Option<PathBuf>,
+
+    /// Directory of independently captured, exactly named reference PNGs
+    #[arg(long, requires = "play_script", value_name = "DIR")]
+    play_reference: Option<PathBuf>,
+
     /// Prefer a native PowerPC slice when a classic 68K slice is also available (the default)
-    #[arg(long, visible_alias = "prefer-ppc", conflicts_with = "prefer_classic_68k")]
+    #[arg(
+        long,
+        visible_alias = "prefer-ppc",
+        conflicts_with = "prefer_classic_68k"
+    )]
     prefer_powerpc: bool,
 
     /// Prefer the classic 68K slice of a fat application
@@ -3668,6 +3686,27 @@ fn main() {
     } else {
         DEFAULT_GUI_ARROWS_AS_NUMPAD
     };
+
+    if let Some(script) = cli.play_script.as_deref() {
+        let output = cli
+            .play_output
+            .as_deref()
+            .unwrap_or_else(|| std::path::Path::new("play-output"));
+        if let Err(error) = play::run(
+            &game_path,
+            script,
+            output,
+            cli.play_reference.as_deref(),
+            cli.headless_start_time.unwrap_or(3_871_497_600),
+            cli.addressing_24_bit,
+            cli.screen_depth,
+            cli.ui_theme,
+        ) {
+            eprintln!("[PLAY] {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     if !game_path.exists() {
         eprintln!("Error: Game file not found: {}", game_path.display());

@@ -1,0 +1,62 @@
+# BasiliskII image used by `cargo run --bin play-basilisk`.
+#
+# The build clones a pinned macemu revision from GitHub, then applies a
+# host-managed patch set copied into the Docker build context under
+# `macemu-patches/`. This keeps the patch series outside the container
+# while still producing a reproducible image. Interactive support comes
+# from xdotool (keyboard/mouse injection into Xvfb) and imagemagick's
+# `import` (window screenshots).
+
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV SDL_AUDIODRIVER=dummy
+
+ARG MACEMU_REPO=https://github.com/cebix/macemu
+ARG MACEMU_REF=96e512bd6376e78a2869f16dcc8a9028bce5ee72
+LABEL org.opencontainers.image.source="${MACEMU_REPO}" \
+      org.opencontainers.image.revision="${MACEMU_REF}"
+
+RUN apt-get -y update && \
+    apt-get install -y \
+        git \
+        build-essential \
+        autoconf \
+        libsdl1.2-dev \
+        libgtk2.0-dev \
+        xvfb \
+        x11-utils \
+        hfsutils \
+        xdotool \
+        imagemagick \
+        ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Clone, optionally patch, and build BasiliskII.
+#   --disable-vosf: required on SDL1 builds — VOSF's dirty-page tracking
+#                   trips the bus-error handler under our Xvfb setup.
+#   --disable-jit-compiler: JIT doesn't build on aarch64 Linux.
+COPY apply_macemu_patches.sh /opt/apply_macemu_patches.sh
+COPY macemu-patches /opt/macemu-patches
+RUN chmod +x /opt/apply_macemu_patches.sh && \
+    git clone "${MACEMU_REPO}" /opt/macemu && \
+    test -n "${MACEMU_REF}" && \
+    git -C /opt/macemu checkout "${MACEMU_REF}" && \
+    test "$(git -C /opt/macemu rev-parse HEAD)" = "${MACEMU_REF}" && \
+    echo "${MACEMU_REF}" > /opt/macemu-source-commit && \
+    /opt/apply_macemu_patches.sh /opt/macemu /opt/macemu-patches
+WORKDIR /opt/macemu/BasiliskII/src/Unix
+RUN NO_CONFIGURE=1 ./autogen.sh && \
+    ./configure --enable-sdl-video --enable-sdl-audio --disable-vosf --disable-jit-compiler && \
+    make && make install
+
+WORKDIR /
+
+COPY entrypoint_play.sh /entrypoint.sh
+COPY .basilisk_ii_prefs.play /root/.basilisk_ii_prefs
+
+RUN chmod +x /entrypoint.sh
+
+VOLUME ["/mnt/shared"]
+
+ENTRYPOINT ["/entrypoint.sh"]

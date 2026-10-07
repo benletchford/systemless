@@ -1,0 +1,5 @@
+/target/
+/support/*/launcher/
+/support/*/disk/
+/support/*/rom/
+/support/mpw/MPW*

@@ -1,0 +1,46 @@
+diff --git a/BasiliskII/src/disk.cpp b/BasiliskII/src/disk.cpp
+--- a/BasiliskII/src/disk.cpp
++++ b/BasiliskII/src/disk.cpp
+@@ -139,6 +139,20 @@ static void find_hfs_partition(disk_drive_info &info)
+ 			break;
+ 		}
+ 	}
++
++	// Check for HFS+ wrapper embedding in MDB (block 2)
++	if (info.start_byte == 0) {
++		if (Sys_read(info.fh, map, 1024, 512) == 512) {
++			uint16 sig = (map[0] << 8) | map[1];
++			uint16 embed_sig = (map[124] << 8) | map[125];
++			if (sig == 0x4244 && embed_sig == 0x482b) {
++				uint32 al_blk_st = (map[28] << 8) | map[29];
++				uint32 al_blk_sz = (map[20] << 24) | (map[21] << 16) | (map[22] << 8) | map[23];
++				uint32 embed_start_blk = (map[126] << 8) | map[127];
++				uint32 embed_blk_cnt = (map[128] << 8) | map[129];
++				info.start_byte = (loff_t)(al_blk_st * 512) + (loff_t)(embed_start_blk * al_blk_sz);
++				info.num_blocks = (embed_blk_cnt * al_blk_sz) / 512;
++			}
++		}
++	}
+ 	delete[] map;
+ }
+ 
+@@ -194,7 +208,9 @@ bool DiskMountVolume(void *fh)
+ 			find_hfs_partition(*info);
+ 			if (info->start_byte == 0)
+ 				info->num_blocks = uint32(SysGetFileSize(info->fh) / 512);
+-			WriteMacInt16(info->status + dsDriveSize, info->num_blocks & 0xffff);
++			uint16 drive_size = (info->num_blocks > 0xffff && (info->num_blocks & 0xffff) == 0) ? 0xffff : (info->num_blocks & 0xffff);
++			WriteMacInt16(info->status + dsDriveSize, drive_size);
+ 			WriteMacInt16(info->status + dsDriveS1, info->num_blocks >> 16);
+ 			info->to_be_mounted = true;
+ 		}
+@@ -285,7 +301,8 @@ int16 DiskOpen(uint32 pb, uint32 dce)
+ 				info->to_be_mounted = true;
+ 			}
+ 			D(bug(" %d blocks\n", info->num_blocks));
+-			WriteMacInt16(info->status + dsDriveSize, info->num_blocks & 0xffff);
++			uint16 drive_size = (info->num_blocks > 0xffff && (info->num_blocks & 0xffff) == 0) ? 0xffff : (info->num_blocks & 0xffff);
++			WriteMacInt16(info->status + dsDriveSize, drive_size);
+ 			WriteMacInt16(info->status + dsDriveS1, info->num_blocks >> 16);
+ 
+ 			// Add drive to drive queue

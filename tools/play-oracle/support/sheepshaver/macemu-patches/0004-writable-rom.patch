@@ -1,0 +1,57 @@
+diff --git a/SheepShaver/src/Unix/main_unix.cpp b/SheepShaver/src/Unix/main_unix.cpp
+--- a/SheepShaver/src/Unix/main_unix.cpp
++++ b/SheepShaver/src/Unix/main_unix.cpp
+@@ -851,6 +851,11 @@ int RealMain(int argc, char *argv[])
+ 		goto quit;
+ 	}
+ 
++#if DIRECT_ADDRESSING
++	// Pre-map entire 4GB 32-bit Mac address space so all addresses are valid
++	vm_acquire_fixed(Mac2HostAddr(0), 0x100000000ULL);
++#endif
++
+ 	// Create areas for Kernel Data
+ 	if (!kernel_data_init())
+ 		goto quit;
+@@ -996,7 +1001,7 @@ int RealMain(int argc, char *argv[])
+ #if !EMULATED_PPC
+ 	flush_icache_range(ROMBase, ROMBase + ROM_AREA_SIZE);
+ #endif
+-	vm_protect(ROMBaseHost, ROM_AREA_SIZE, VM_PAGE_READ | VM_PAGE_EXECUTE);
++	vm_protect(ROMBaseHost, ROM_AREA_SIZE, VM_PAGE_READ | VM_PAGE_WRITE | VM_PAGE_EXECUTE);
+ 
+ 	// Start 60Hz thread
+ 	tick_thread_cancel = false;
+@@ -1158,26 +1163,10 @@ static void Quit(void)
+ 
+ static bool kernel_data_init(void)
+ {
+-	int error_string = STR_KD_SHMGET_ERR;
+-	uint32 kernel_area_size = (KERNEL_AREA_SIZE + SHMLBA - 1) & -SHMLBA;
+-	int kernel_area = shmget(IPC_PRIVATE, kernel_area_size, 0600);
+-	if (kernel_area != -1) {
+-		bool mapped =
+-			shm_map_address(kernel_area, KERNEL_DATA_BASE & -SHMLBA) &&
+-			shm_map_address(kernel_area, KERNEL_DATA2_BASE & -SHMLBA);
+-
+-		// Mark the shared memory segment for removal. This is safe to do
+-		// because the deletion is not performed while the memory is still
+-		// mapped and so will only be done once the process exits.
+-		shmctl(kernel_area, IPC_RMID, NULL);
+-		if (mapped)
+-			return true;
+-
+-		error_string = STR_KD_SHMAT_ERR;
+-	}
+-
+-	char str[256];
+-	sprintf(str, GetString(error_string), strerror(errno));
+-	ErrorAlert(str);
+-	return false;
++	uint32 kernel_area_size = (KERNEL_AREA_SIZE + getpagesize() - 1) & -getpagesize();
++	if (vm_mac_acquire_fixed(KERNEL_DATA_BASE, kernel_area_size) < 0)
++		return false;
++	if (vm_mac_acquire_fixed(KERNEL_DATA2_BASE, kernel_area_size) < 0)
++		return false;
++	return true;
+ }

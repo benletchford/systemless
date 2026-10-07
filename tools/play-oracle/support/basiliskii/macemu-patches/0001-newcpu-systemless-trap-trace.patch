@@ -1,0 +1,214 @@
+diff --git a/BasiliskII/src/uae_cpu/newcpu.cpp b/BasiliskII/src/uae_cpu/newcpu.cpp
+--- a/BasiliskII/src/uae_cpu/newcpu.cpp
++++ b/BasiliskII/src/uae_cpu/newcpu.cpp
+@@ -23,6 +23,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <stdint.h>
+
+ #include "sysdeps.h"
+
+@@ -1243,11 +1244,131 @@ void m68k_emulop(uae_u32 opcode)
+ 	regs.sr = r.sr;
+ 	MakeFromSR();
+ }
+
++/* --- Systemless oracle: strictly-additive A-trap event tracer ----------- */
++/*                                                                       */
++/* Writes one JSONL event per A-trap dispatch to $SYSTEMLESS_BASILISK_TRACE */
++/* if that env var is set. Schema is intentionally aligned with Systemless's */
++/* OracleEvent (systemless/src/oracle.rs) so the resulting stream can be  */
++/* diff-compared call-for-call against Systemless's own trace.              */
++
++static FILE *systemless_trace_fp = NULL;
++static int   systemless_trace_init_done = 0;
++static uint64_t systemless_trace_trap_count = 0;
++
++static void systemless_trace_init_once(void)
++{
++	if (systemless_trace_init_done) return;
++	systemless_trace_init_done = 1;
++	const char *path = getenv("SYSTEMLESS_BASILISK_TRACE");
++	if (path == NULL || path[0] == '\0') return;
++	systemless_trace_fp = fopen(path, "w");
++	if (systemless_trace_fp == NULL) {
++		write_log("SYSTEMLESS_BASILISK_TRACE: failed to open %s\n", path);
++	}
++}
++
++/* FNV-1a over 8-byte ColorSpec entries, matching systemless
++   src/trap/dispatch.rs::oracle_palette_field_map (big-endian byte order).
++   Computes two hashes in one pass:
++     *hash_all     — all 8 bytes (offsets 0,2,4,6) — matches Systemless table_hash
++     *hash_rgb     — only RGB bytes (offsets 2,4,6) — matches Systemless rgb_only_hash
++   The second hash skips the ColorSpec.value field at offset 0..1 which is
++   often left uninitialised by Pascal callers and may carry stack garbage. */
++static void systemless_trace_table_hashes(uaecptr table_ptr,
++				       int first_index, int last_index,
++				       uint32_t *hash_all, uint32_t *hash_rgb)
++{
++	uint32_t h_all = 0x811C9DC5u;
++	uint32_t h_rgb = 0x811C9DC5u;
++	for (int idx = first_index; idx <= last_index; idx++) {
++		uaecptr entry = table_ptr + (uaecptr)idx * 8u;
++		for (int word_off = 0; word_off < 8; word_off += 2) {
++			uae_u16 w = get_word(entry + word_off);
++			uint8_t hi = (uint8_t)((w >> 8) & 0xff);
++			uint8_t lo = (uint8_t)(w & 0xff);
++			h_all ^= (uint32_t)hi;
++			h_all = h_all * 0x01000193u;
++			h_all ^= (uint32_t)lo;
++			h_all = h_all * 0x01000193u;
++			if (word_off >= 2) {
++				h_rgb ^= (uint32_t)hi;
++				h_rgb = h_rgb * 0x01000193u;
++				h_rgb ^= (uint32_t)lo;
++				h_rgb = h_rgb * 0x01000193u;
++			}
++		}
++	}
++	*hash_all = h_all;
++	*hash_rgb = h_rgb;
++}
++
++static void systemless_trace_palette_rgb(char *buf, size_t bufsize,
++				      uaecptr table_ptr, int index)
++{
++	uaecptr entry = table_ptr + (uaecptr)index * 8u;
++	uae_u16 r = get_word(entry + 2);
++	uae_u16 g = get_word(entry + 4);
++	uae_u16 b = get_word(entry + 6);
++	snprintf(buf, bufsize, "%04X,%04X,%04X",
++		 (unsigned)r, (unsigned)g, (unsigned)b);
++}
++
++static void systemless_trace_emit_a_trap(uae_u32 opcode, uaecptr pc)
++{
++	systemless_trace_init_once();
++	if (systemless_trace_fp == NULL) return;
++
++	systemless_trace_trap_count++;
++	uint64_t tc = systemless_trace_trap_count;
++
++	/* Mac low-memory Ticks (32-bit big-endian at 0x16A). */
++	uae_u32 tick = get_long(0x16A);
++
++	int is_game = (pc < 0x00800000u) ? 1 : 0;
++
++	if (opcode == 0xAA3F) {
++		/* SetEntries(start: INTEGER; count: INTEGER; aTable: CSpecArray)
++		   Pascal stack at A-trap entry (USP):
++		     A7+0: aTable (LONG)
++		     A7+4: count  (INTEGER)
++		     A7+6: start  (INTEGER) */
++		uaecptr usp = m68k_areg(regs, 7);
++		uaecptr table_ptr = get_long(usp + 0);
++		int16_t count = (int16_t)get_word(usp + 4);
++		int16_t start = (int16_t)get_word(usp + 6);
++
++		int first_index = (start < 0) ? 0 : (start > 255 ? 255 : start);
++		int safe_count  = (count < 0) ? 255 : (count > 255 ? 255 : count);
++		int last_index  = first_index + safe_count;
++		if (last_index > 255) last_index = 255;
++		int mid_index = first_index + (last_index - first_index) / 2;
++
++		char first_rgb[32], mid_rgb[32], last_rgb[32];
++		systemless_trace_palette_rgb(first_rgb, sizeof(first_rgb),
++					  table_ptr, first_index);
++		systemless_trace_palette_rgb(mid_rgb, sizeof(mid_rgb),
++					  table_ptr, mid_index);
++		systemless_trace_palette_rgb(last_rgb, sizeof(last_rgb),
++					  table_ptr, last_index);
++		uint32_t table_hash, rgb_only_hash;
++		systemless_trace_table_hashes(table_ptr, first_index, last_index,
++					   &table_hash, &rgb_only_hash);
++
++		/* idx_245_rgb: RGB at index 245 when this call's range covers
++		   it, else the JSON sentinel `null`. Lets a replay-walk of the
++		   set_entries stream reconstruct device_clut[245] at any tick,
++		   which closes the asymmetry in capture_context_diff.py (we
++		   cannot touch video.cpp to read Basilisk's host CLUT). */
++		char idx245_field[48];
++		if (first_index <= 245 && 245 <= last_index) {
++			char idx245_rgb[32];
++			systemless_trace_palette_rgb(idx245_rgb, sizeof(idx245_rgb),
++						  table_ptr, 245);
++			snprintf(idx245_field, sizeof(idx245_field),
++				 "\"%s\"", idx245_rgb);
++		} else {
++			snprintf(idx245_field, sizeof(idx245_field), "null");
++		}
++
++		/* table_rgb: compact RRRRGGGGBBBB hex strings for every index in
++		   [first_index..last_index]. Cost: up to 256 * 12 = 3072 chars
++		   per full-replace event, ~460 KB total across a typical run.
++		   This is the piece that lets a replay tool reconstruct
++		   Basilisk's device_clut at ANY index and ANY tick — needed
++		   for hour-52 / 53's falsify-hypothesis-A investigation where
++		   Systemless's CLUT state at the HUD-draw-tick is known but
++		   Basilisk's was opaque. See
++		   the independently captured palette observations */
++		char table_rgb_buf[256 * 16 + 64];
++		{
++			size_t off = 0;
++			table_rgb_buf[off++] = '[';
++			for (int i = first_index; i <= last_index; i++) {
++				uaecptr entry = table_ptr + (uaecptr)i * 8u;
++				uae_u16 r = get_word(entry + 2);
++				uae_u16 g = get_word(entry + 4);
++				uae_u16 b = get_word(entry + 6);
++				int written = snprintf(
++				    table_rgb_buf + off,
++				    sizeof(table_rgb_buf) - off,
++				    "%s\"%04X%04X%04X\"",
++				    (i == first_index) ? "" : ",",
++				    (unsigned)r, (unsigned)g, (unsigned)b);
++				if (written < 0 ||
++				    (size_t)written >= sizeof(table_rgb_buf) - off)
++					break;
++				off += (size_t)written;
++			}
++			if (off + 1 < sizeof(table_rgb_buf))
++				table_rgb_buf[off++] = ']';
++			table_rgb_buf[off] = '\0';
++		}
++
++		fprintf(systemless_trace_fp,
++			"{\"source\":\"basilisk_ii\",\"event\":\"set_entries\","
++			"\"tick\":%u,\"pc\":%u,\"trap\":\"%04X\","
++			"\"trap_count\":%llu,\"is_game\":%d,"
++			"\"start\":%d,\"count\":%d,"
++			"\"first_index\":%d,\"last_index\":%d,\"mid_index\":%d,"
++			"\"first_rgb\":\"%s\",\"mid_rgb\":\"%s\",\"last_rgb\":\"%s\","
++			"\"idx_245_rgb\":%s,"
++			"\"table_hash\":\"%08X\",\"rgb_only_hash\":\"%08X\","
++			"\"table_ptr\":%u,\"table_rgb\":%s}\n",
++			(unsigned)tick, (unsigned)pc, (unsigned)opcode,
++			(unsigned long long)tc, is_game,
++			(int)start, (int)count, first_index, last_index, mid_index,
++			first_rgb, mid_rgb, last_rgb,
++			idx245_field,
++			(unsigned)table_hash, (unsigned)rgb_only_hash,
++			(unsigned)table_ptr, table_rgb_buf);
++	} else {
++		fprintf(systemless_trace_fp,
++			"{\"source\":\"basilisk_ii\",\"event\":\"a_trap\","
++			"\"tick\":%u,\"pc\":%u,\"trap\":\"%04X\","
++			"\"trap_count\":%llu,\"is_game\":%d}\n",
++			(unsigned)tick, (unsigned)pc, (unsigned)opcode,
++			(unsigned long long)tc, is_game);
++	}
++	fflush(systemless_trace_fp);
++}
++/* --- end Systemless oracle ---------------------------------------------- */
++
+ void REGPARAM2 op_illg (uae_u32 opcode)
+ {
+ 	uaecptr pc = m68k_getpc ();
+
+ 	if ((opcode & 0xF000) == 0xA000) {
++		systemless_trace_emit_a_trap(opcode, pc);
+ 		Exception(0xA,0);
+ 		return;
+ 	}

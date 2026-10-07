@@ -1,0 +1,45 @@
+# BasiliskII configuration for interactive play script runner
+# Used with Escape Velocity and other full games
+
+# ROM file path (mounted from shared directory)
+rom /mnt/shared/rom/MacRom.rom
+
+# Boot disk (Mac OS 8.1 with Startup Items configured)
+# Mounted read-write so games that write back to System Folder
+# (preferences, scoreboards, save games) can complete their save
+# path without erroring. Each play_basilisk run re-extracts the disk
+# from the gzipped fixture, so writes never persist across runs and
+# kill -9 corruption can't accumulate.
+disk /mnt/shared/disk/System_68K.dsk
+
+# Unix filesystem share - maps to "Unix" volume on Mac (game files + output)
+extfs /mnt/extfs
+
+# Screen settings for headless operation
+screen win/800/600
+
+# CPU settings - use 68040 for better compatibility
+cpu 4
+fpu true
+modelid 14
+
+# Memory - 64MB for running full games. Bonkheads_Deluxe peaks above
+# 30 MB during resource-fork merge (894 resources, several individual
+# chunks > 250 KB); 32 MB starved it silently and the screen went
+# 1bpp B&W right after launch. 64 MB matches Systemless's
+# machine_profile so both runners have equal capacity.
+ramsize 67108864
+
+
+# Sound enabled — some games (Marathon) require sound channel allocation.
+# The Docker container uses SDL_AUDIODRIVER=dummy so no real audio is needed.
+nosound false
+
+# Don't show GUI/preferences window
+nogui true
+
+# JIT disabled for compatibility
+jit false
+
+# Idle wait to reduce CPU usage
+idlewait true
