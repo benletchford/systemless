@@ -59,13 +59,33 @@ pub(crate) fn intervals_to_endpoints(mut intervals: Vec<(i16, i16)>) -> Vec<i16>
     endpoints
 }
 
-/// Intersection by a single merge pass. Only intervals that the pass meets
-/// are compared, so the result is the full intersection only when each row's
-/// intervals are sorted and do not overlap (true of every row produced by
-/// [`intervals_to_endpoints`]); unordered rows can lose pieces.
+/// Intersection of any two rows. Rows parsed from guest region storage may
+/// list their intervals out of order; those are compared all-pairs. Rows
+/// whose interval starts never decrease take the merge pass, which gives the
+/// same result.
 pub(crate) fn intersect_rows(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
     let lhs = endpoints_to_intervals(lhs);
     let rhs = endpoints_to_intervals(rhs);
+    let out = if starts_in_order(&lhs) && starts_in_order(&rhs) {
+        merge_intersect_intervals(&lhs, &rhs)
+    } else {
+        all_pairs_intersect_intervals(&lhs, &rhs)
+    };
+    intervals_to_endpoints(out)
+}
+
+/// Whether the interval starts never decrease, which is all the merge pass
+/// needs. The pass moves past an interval once it ends no later than the
+/// other row's current interval; every later interval of the other row
+/// starts no earlier than that current one, so its overlap with the interval
+/// left behind lies inside the overlap the pass already emitted. Touching,
+/// overlapping and nested intervals are therefore fine; only a start below
+/// an earlier one, as in `[5, 6, 0, 1]`, can drop a piece.
+fn starts_in_order(intervals: &[(i16, i16)]) -> bool {
+    intervals.windows(2).all(|pair| pair[0].0 <= pair[1].0)
+}
+
+fn merge_intersect_intervals(lhs: &[(i16, i16)], rhs: &[(i16, i16)]) -> Vec<(i16, i16)> {
     let mut out = Vec::new();
     let mut lhs_index = 0usize;
     let mut rhs_index = 0usize;
@@ -85,7 +105,21 @@ pub(crate) fn intersect_rows(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
         }
     }
 
-    intervals_to_endpoints(out)
+    out
+}
+
+fn all_pairs_intersect_intervals(lhs: &[(i16, i16)], rhs: &[(i16, i16)]) -> Vec<(i16, i16)> {
+    let mut out = Vec::new();
+    for &(lhs_start, lhs_end) in lhs {
+        for &(rhs_start, rhs_end) in rhs {
+            let start = lhs_start.max(rhs_start);
+            let end = lhs_end.min(rhs_end);
+            if start < end {
+                out.push((start, end));
+            }
+        }
+    }
+    out
 }
 
 pub(crate) fn union_rows(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
@@ -130,8 +164,6 @@ pub(crate) fn xor_rows(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
     intervals_to_endpoints(intervals)
 }
 
-/// `Intersection` uses [`intersect_rows`] and so inherits its ordering
-/// precondition.
 pub(crate) fn combine_rows(lhs: &[i16], rhs: &[i16], op: RegionBooleanOp) -> Vec<i16> {
     match op {
         RegionBooleanOp::Intersection => intersect_rows(lhs, rhs),

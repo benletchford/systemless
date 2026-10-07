@@ -3,6 +3,9 @@
 //! `ppc_region_*` functions (PowerPC), kept below as references with their logic unchanged.
 //! The 68K picture parser held a third copy of `merge_region_endpoints`,
 //! identical to the `TrapDispatcher` one.
+//! Intersection is the exception: both paths now take the all-pairs pass
+//! when a row's interval starts fall, so the 68K merge reference is matched
+//! only on rows whose starts are in order.
 
 use super::*;
 
@@ -446,9 +449,18 @@ fn row_operations_match_68k_reference_on_any_rows() {
             reference_68k::endpoints_to_intervals(lhs),
             "{lhs:?}"
         );
+        // The 68K path now takes the all-pairs intersection where a row's
+        // interval starts fall; it agreed with the merge pass everywhere else.
+        let ordered = starts_in_order(&endpoints_to_intervals(lhs))
+            && starts_in_order(&endpoints_to_intervals(rhs));
+        let previous_intersection = if ordered {
+            reference_68k::intersect_region_rows(lhs, rhs)
+        } else {
+            reference_ppc::ppc_region_intersect_rows(lhs, rhs)
+        };
         assert_eq!(
             intersect_rows(lhs, rhs),
-            reference_68k::intersect_region_rows(lhs, rhs),
+            previous_intersection,
             "intersect {lhs:?} {rhs:?}"
         );
         assert_eq!(
@@ -467,9 +479,13 @@ fn row_operations_match_68k_reference_on_any_rows() {
             "xor {lhs:?} {rhs:?}"
         );
         for op in all_ops() {
+            let expected = match op {
+                RegionBooleanOp::Intersection => previous_intersection.clone(),
+                _ => reference_68k::combine_region_rows(lhs, rhs, op),
+            };
             assert_eq!(
                 combine_rows(lhs, rhs, op),
-                reference_68k::combine_region_rows(lhs, rhs, op),
+                expected,
                 "combine {lhs:?} {rhs:?}"
             );
         }
@@ -594,15 +610,15 @@ fn shared_operations_match_ppc_reference_on_any_rows() {
 fn merge_intersection_matches_ppc_all_pairs_on_sorted_rows() {
     for_row_pairs(0x0bc_0002, true, |lhs, rhs| {
         assert_eq!(
-            intersect_rows(lhs, rhs),
+            reference_68k::intersect_region_rows(lhs, rhs),
             reference_ppc::ppc_region_intersect_rows(lhs, rhs),
             "{lhs:?} {rhs:?}"
         );
     });
 }
 
-/// Unsorted rows are where the two intersections part, which is why the
-/// PowerPC path keeps its own.
+/// Unsorted rows are where the two intersections part, which is why
+/// `intersect_rows` checks the ordering before taking the merge pass.
 #[test]
 fn merge_intersection_differs_from_all_pairs_on_unsorted_rows() {
     let lhs = [5, 6, 0, 1];
@@ -611,5 +627,134 @@ fn merge_intersection_differs_from_all_pairs_on_unsorted_rows() {
         reference_ppc::ppc_region_intersect_rows(&lhs, &rhs),
         vec![0, 1, 5, 6]
     );
-    assert_eq!(intersect_rows(&lhs, &rhs), vec![5, 6]);
+    assert_eq!(reference_68k::intersect_region_rows(&lhs, &rhs), vec![5, 6]);
+    assert_eq!(intersect_rows(&lhs, &rhs), vec![0, 1, 5, 6]);
+    assert_eq!(
+        combine_rows(&lhs, &rhs, RegionBooleanOp::Intersection),
+        vec![0, 1, 5, 6]
+    );
+}
+
+/// A row whose non-empty interval starts never decrease, with empty and
+/// inverted pairs mixed in. Those pairs are dropped before either
+/// intersection runs. Unlike `sorted_row`, intervals may overlap or nest.
+fn start_ordered_row(rng: &mut RowRng) -> Vec<i16> {
+    let mut intervals = rng.intervals();
+    for interval in &mut intervals {
+        if interval.0 > interval.1 {
+            *interval = (interval.1, interval.0);
+        }
+    }
+    intervals.sort_unstable_by_key(|interval| interval.0);
+    let mut row = intervals
+        .into_iter()
+        .flat_map(|(start, end)| [start, end])
+        .collect::<Vec<_>>();
+    for _ in 0..rng.next() % 3 {
+        let at = (rng.next() as usize % (row.len() / 2 + 1)) * 2;
+        let (a, b) = (rng.coord(), rng.coord());
+        row.splice(at..at, [a.max(b), a.min(b)]);
+    }
+    if rng.next() % 4 == 0 {
+        row.push(rng.coord());
+    }
+    row
+}
+
+#[test]
+fn intersect_rows_matches_ppc_all_pairs_on_any_rows() {
+    let check = |lhs: &[i16], rhs: &[i16]| {
+        assert_eq!(
+            intersect_rows(lhs, rhs),
+            reference_ppc::ppc_region_intersect_rows(lhs, rhs),
+            "{lhs:?} {rhs:?}"
+        );
+    };
+    for_row_pairs(0x0bc_0004, false, check);
+    for_row_pairs(0x0bc_0005, true, check);
+    let mut rng = RowRng::new(0x0bc_0006);
+    for _ in 0..RANDOM_CASES {
+        let lhs = start_ordered_row(&mut rng);
+        let rhs = start_ordered_row(&mut rng);
+        check(&lhs, &rhs);
+    }
+}
+
+/// Where the merge pass runs, it is the previous 68K code, and that code
+/// agrees with the previous PowerPC all-pairs code.
+#[test]
+fn intersect_rows_matches_68k_merge_on_start_ordered_rows() {
+    let check = |lhs: &[i16], rhs: &[i16]| {
+        assert!(starts_in_order(&endpoints_to_intervals(lhs)), "{lhs:?}");
+        assert!(starts_in_order(&endpoints_to_intervals(rhs)), "{rhs:?}");
+        let merged = reference_68k::intersect_region_rows(lhs, rhs);
+        assert_eq!(intersect_rows(lhs, rhs), merged, "{lhs:?} {rhs:?}");
+        assert_eq!(
+            reference_ppc::ppc_region_intersect_rows(lhs, rhs),
+            merged,
+            "{lhs:?} {rhs:?}"
+        );
+    };
+    for_row_pairs(0x68_0004, true, check);
+    let mut rng = RowRng::new(0x68_0005);
+    for _ in 0..RANDOM_CASES {
+        let lhs = start_ordered_row(&mut rng);
+        let rhs = start_ordered_row(&mut rng);
+        check(&lhs, &rhs);
+    }
+}
+
+#[test]
+fn starts_in_order_allows_overlap_but_not_a_falling_start() {
+    let cases: [(&[i16], bool); 12] = [
+        (&[], true),
+        (&[0, 5], true),
+        (&[0, 5, 5, 10], true),
+        (&[0, 4, 6, 10], true),
+        (&[0, 5, 4, 10], true),
+        (&[0, 10, 2, 3], true),
+        (&[0, 5, 0, 5], true),
+        (&[0, 5, 9, 2, 6, 10], true),
+        (&[0, 5, 6, 10, 1], true),
+        (&[5, 6, 0, 1], false),
+        (&[0, 10, 4, 6, 2, 3], false),
+        (&[0, 5, 4, 10, 3, 6], false),
+    ];
+    for (row, expected) in cases {
+        assert_eq!(
+            starts_in_order(&endpoints_to_intervals(row)),
+            expected,
+            "{row:?}"
+        );
+    }
+}
+
+#[test]
+fn intersect_rows_hand_cases() {
+    let cases: [(&[i16], &[i16], &[i16]); 12] = [
+        (&[5, 6, 0, 1], &[0, 1, 5, 6], &[0, 1, 5, 6]),
+        (&[0, 1, 5, 6], &[5, 6, 0, 1], &[0, 1, 5, 6]),
+        (&[0, 5, 5, 10], &[3, 7], &[3, 7]),
+        (&[0, 4, 6, 10], &[4, 6], &[]),
+        (&[0, 10, 2, 3], &[1, 2, 9, 12], &[1, 2, 9, 10]),
+        (&[0, 5, 4, 10], &[3, 6], &[3, 6]),
+        (&[0, 10, 7], &[5, 20], &[5, 10]),
+        (&[3, 3, 0, 10], &[2, 4], &[2, 4]),
+        (&[8, 12, 0, 4], &[2, 10], &[2, 4, 8, 10]),
+        (&[0, 20, 2, 4], &[3, 5, 1, 2], &[1, 2, 3, 5]),
+        (&[6, 9, 0, 3], &[2, 7], &[2, 3, 6, 7]),
+        (
+            &[i16::MIN, i16::MAX],
+            &[i16::MAX - 1, i16::MAX, 0, 1],
+            &[0, 1, i16::MAX - 1, i16::MAX],
+        ),
+    ];
+    for (lhs, rhs, expected) in cases {
+        assert_eq!(intersect_rows(lhs, rhs), expected, "{lhs:?} {rhs:?}");
+        assert_eq!(
+            reference_ppc::ppc_region_intersect_rows(lhs, rhs),
+            expected,
+            "{lhs:?} {rhs:?}"
+        );
+    }
 }
