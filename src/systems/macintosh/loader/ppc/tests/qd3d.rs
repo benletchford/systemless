@@ -22677,6 +22677,46 @@ fn q3_software_texture_reads_argb16_alpha_bit() {
 }
 
 #[test]
+fn q3_software_texture_sample_puts_v_zero_on_the_bottom_row() {
+    // A one-pixel-wide texture whose upper (first stored) row is red and
+    // whose lower row is green.
+    let pef = synthetic_pef_with_library_import(b"QuickDraw\xaa 3D", b"Q3TriMesh_Submit");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let image_ptr = PPC_DATA_BASE + 0x1000;
+    loaded
+        .memory
+        .add_region(image_ptr, vec![255, 0, 0, 0, 255, 0]);
+    let texture = PpcQ3SoftwareTexture {
+        image_base: image_ptr,
+        valid_size: 6,
+        image_offset: 0,
+        width: 1,
+        height: 2,
+        row_bytes: 3,
+        pixel_type: PPC_Q3_PIXEL_TYPE_RGB24,
+        byte_order: PPC_Q3_ENDIAN_BIG,
+        pixel_bytes: 3,
+    };
+    let sample = |memory: &mut PpcSectionMem, boundary: Option<PpcQ3ShaderBoundaryRecord>, v| {
+        ppc_q3_software_texture_sample(memory, texture, boundary, 0.5, v)
+            .unwrap()
+            .color
+    };
+    let red = (1.0, 0.0, 0.0);
+    let green = (0.0, 1.0, 0.0);
+    assert_eq!(sample(&mut loaded.memory, None, 0.25), green);
+    assert_eq!(sample(&mut loaded.memory, None, 0.75), red);
+    assert_eq!(sample(&mut loaded.memory, None, 0.0), green);
+    assert_eq!(sample(&mut loaded.memory, None, 1.75), red);
+
+    let mut clamp = PpcQ3ShaderBoundaryRecord::new(0);
+    clamp.u_boundary = PPC_Q3_SHADER_UV_BOUNDARY_CLAMP;
+    clamp.v_boundary = PPC_Q3_SHADER_UV_BOUNDARY_CLAMP;
+    assert_eq!(sample(&mut loaded.memory, Some(clamp), -3.0), green);
+    assert_eq!(sample(&mut loaded.memory, Some(clamp), 1.0), red);
+}
+
+#[test]
 fn q3_software_renderer_samples_captured_mipmap_with_vertex_uvs() {
     let view = PPC_Q3_OBJECT_BASE;
     let attribute_set = PPC_Q3_OBJECT_BASE + PPC_Q3_OBJECT_STRIDE;
