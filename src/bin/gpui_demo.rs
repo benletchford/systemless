@@ -1054,18 +1054,22 @@ mod desktop {
                             }
                         }
                     }
-                    if let Some((mac_key, character)) = basic_key(&event.keystroke.key) {
-                        let _ = this.commands.send(Command::Input(MacintoshInput::KeyDown {
-                            mac_key,
-                            character,
-                        }));
+                    if !event.keystroke.modifiers.platform {
+                        if let Some((mac_key, character)) = guest_key(&event.keystroke) {
+                            let _ = this.commands.send(Command::Input(MacintoshInput::KeyDown {
+                                mac_key,
+                                character,
+                            }));
+                        }
                     }
                 }))
                 .on_key_up(cx.listener(|this, event: &KeyUpEvent, _, _| {
-                    if let Some((mac_key, character)) = basic_key(&event.keystroke.key) {
-                        let _ = this
-                            .commands
-                            .send(Command::Input(MacintoshInput::KeyUp { mac_key, character }));
+                    if !event.keystroke.modifiers.platform {
+                        if let Some((mac_key, character)) = guest_key(&event.keystroke) {
+                            let _ = this
+                                .commands
+                                .send(Command::Input(MacintoshInput::KeyUp { mac_key, character }));
+                        }
                     }
                 }))
                 .child(bar)
@@ -1074,15 +1078,93 @@ mod desktop {
         }
     }
 
-    fn basic_key(key: &str) -> Option<(u8, u8)> {
-        match key {
+    // GPUI reports the printed key separately from its typed character.
+    // Keep the Macintosh virtual code tied to the key and pass the typed
+    // character through the existing guest event queue. Inside Macintosh
+    // Volume V (1986), V-191, key-code assignments; Text (1993), pp. 2-32--2-37.
+    fn guest_key(keystroke: &Keystroke) -> Option<(u8, u8)> {
+        let key = keystroke.key.to_ascii_lowercase();
+        let control = match key.as_str() {
             "enter" => Some((0x24, 13)),
             "escape" => Some((0x35, 27)),
             "space" => Some((0x31, 32)),
             "tab" => Some((0x30, 9)),
             "backspace" => Some((0x33, 8)),
+            "left" | "arrowleft" => Some((0x7b, 28)),
+            "right" | "arrowright" => Some((0x7c, 29)),
+            "down" | "arrowdown" => Some((0x7d, 31)),
+            "up" | "arrowup" => Some((0x7e, 30)),
             _ => None,
+        };
+        if control.is_some() {
+            return control;
         }
+        let virtual_key = match key.as_str() {
+            "a" => 0x00,
+            "s" => 0x01,
+            "d" => 0x02,
+            "f" => 0x03,
+            "h" => 0x04,
+            "g" => 0x05,
+            "z" => 0x06,
+            "x" => 0x07,
+            "c" => 0x08,
+            "v" => 0x09,
+            "b" => 0x0b,
+            "q" => 0x0c,
+            "w" => 0x0d,
+            "e" => 0x0e,
+            "r" => 0x0f,
+            "y" => 0x10,
+            "t" => 0x11,
+            "1" => 0x12,
+            "2" => 0x13,
+            "3" => 0x14,
+            "4" => 0x15,
+            "6" => 0x16,
+            "5" => 0x17,
+            "=" => 0x18,
+            "9" => 0x19,
+            "7" => 0x1a,
+            "-" => 0x1b,
+            "8" => 0x1c,
+            "0" => 0x1d,
+            "]" => 0x1e,
+            "o" => 0x1f,
+            "u" => 0x20,
+            "[" => 0x21,
+            "i" => 0x22,
+            "p" => 0x23,
+            "l" => 0x25,
+            "j" => 0x26,
+            "'" => 0x27,
+            "k" => 0x28,
+            ";" => 0x29,
+            "\\" => 0x2a,
+            "," => 0x2b,
+            "/" => 0x2c,
+            "n" => 0x2d,
+            "m" => 0x2e,
+            "." => 0x2f,
+            "`" => 0x32,
+            _ => return None,
+        };
+        let character = if let Some(text) = keystroke.key_char.as_deref() {
+            let mut chars = text.chars();
+            let character = chars.next()?;
+            if !character.is_ascii() || chars.next().is_some() {
+                return None;
+            }
+            character as u8
+        } else {
+            let character = key.as_bytes()[0];
+            if keystroke.modifiers.shift && character.is_ascii_alphabetic() {
+                character.to_ascii_uppercase()
+            } else {
+                character
+            }
+        };
+        Some((virtual_key, character))
     }
 
     #[cfg(feature = "gpui-demo-test")]
@@ -1890,7 +1972,103 @@ mod desktop {
                     .unwrap();
                 assert_eq!(next.generation, first.generation);
                 assert_eq!(next.global_view_rect, first.global_view_rect);
+                session.deliver_input(MacintoshInput::KeyDown {
+                    mac_key: 0x00,
+                    character: b'a',
+                });
+                session.deliver_input(MacintoshInput::KeyUp {
+                    mac_key: 0x00,
+                    character: b'a',
+                });
+                let typed = (0..100)
+                    .find_map(|_| {
+                        session.runner_mut().run_steps(100_000, None);
+                        session
+                            .runner_mut()
+                            .text_edit_snapshot()
+                            .records
+                            .into_iter()
+                            .find(|record| record.guest_id == first.guest_id && record.text != first.text)
+                    })
+                    .expect("guest TextEdit should receive the typed character");
+                assert_eq!(typed.text.len(), first.text.len() + 1);
+                assert!(typed.text.contains(&b'a'));
             }
+        }
+
+        #[test]
+        fn gpui_printable_keys_keep_mac_virtual_and_typed_character() {
+            let key = gpui_kit::Keystroke {
+                key: "a".into(),
+                key_char: Some("A".into()),
+                ..Default::default()
+            };
+            assert_eq!(super::guest_key(&key), Some((0x00, b'A')));
+            let shifted_number = gpui_kit::Keystroke {
+                key: "1".into(),
+                key_char: Some("!".into()),
+                ..Default::default()
+            };
+            assert_eq!(super::guest_key(&shifted_number), Some((0x12, b'!')));
+            let arrow = gpui_kit::Keystroke {
+                key: "left".into(),
+                ..Default::default()
+            };
+            assert_eq!(super::guest_key(&arrow), Some((0x7b, 28)));
+            let non_roman = gpui_kit::Keystroke {
+                key: "a".into(),
+                key_char: Some("あ".into()),
+                ..Default::default()
+            };
+            assert_eq!(super::guest_key(&non_roman), None);
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn gpui_key_event_reaches_guest_queue(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::{test::TestWindowExt, AppContext, Bounds, InputEvent, KeyDownEvent, KeyUpEvent, WindowBounds, WindowOptions};
+
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            cx.update(gpui_kit::init);
+            let (window, view) = cx.update(|cx| {
+                gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                            None,
+                            gpui_kit::size(gpui_kit::px(900.), gpui_kit::px(740.)),
+                            cx,
+                        ))),
+                        ..Default::default()
+                    },
+                    cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(sender, updates, cx)),
+                )
+                .unwrap()
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                view.update(cx, |demo, cx| demo.focus.focus(window, cx));
+                window.render_frame(cx);
+                let key = gpui_kit::Keystroke {
+                    key: "a".into(),
+                    key_char: Some("A".into()),
+                    ..Default::default()
+                };
+                window.dispatch_event(KeyDownEvent {
+                    keystroke: key.clone(),
+                    is_held: false,
+                    prefer_character_input: false,
+                }.to_platform_input(), cx);
+                window.dispatch_event(KeyUpEvent { keystroke: key }.to_platform_input(), cx);
+            }).unwrap();
+            let inputs: Vec<_> = receiver.try_iter().filter_map(|command| match command {
+                super::Command::Input(input) => Some(input),
+                _ => None,
+            }).collect();
+            assert!(matches!(inputs.as_slice(), [
+                MacintoshInput::KeyDown { mac_key: 0x00, character: b'A' },
+                MacintoshInput::KeyUp { mac_key: 0x00, character: b'A' },
+            ]));
         }
 
         #[test]

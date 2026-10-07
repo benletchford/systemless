@@ -43,6 +43,8 @@ zoom hit region; resizing still uses the guest's original lower-right hit region
 - Menu selection through `FixtureRunner::select_guest_menu_item`, which validates
   against current guest state and returns through the normal guest event loop.
 - Command-key equivalents while the game surface has focus.
+- ASCII typing and arrow-key events translated to Macintosh key codes and
+  delivered to the guest TextEdit/event path.
 - Original guest framebuffer content and unsupported dialogs below the new menu bar.
 - A standard `dBoxProc` dialog containing only DITL buttons and static text uses
   GPUI Kit components over the guest item rectangles, with guest input unchanged.
@@ -88,6 +90,12 @@ items. Dialogs with custom items, editable text, or other definitions retain
 guest pixels. The themed alert button is not yet qualified for keyboard or
 accessibility operation through the host control; guest keyboard input and
 click handling remain the operative path.
+
+TextEdit fields still use guest pixels. The GPUI runner now forwards ordinary
+ASCII keys and arrows to the guest, preserving the guest TERec's text and
+selection changes. Mac Roman non-ASCII input, composition, and host modifier
+state need separate qualification before themed editable fields can replace
+those pixels.
 
 The framebuffer is shown at 1:1 with no automatic scaling. Enlarge the window
 if necessary. Keyboard forwarding covers Return, Escape, Space, Tab and
