@@ -62,8 +62,11 @@ frame (Macintosh Toolbox Essentials, pp. 4-10--4-11); custom WDEFs retain
 guest pixels. Visible inactive modeless dialogs can therefore use the same
 GPUI item presentation, clipped beneath front window structure bounds. A
 focused clipping test checks an inactive WDEF 4 dialog, custom item/WDEF
-fallbacks, and a stale window generation. Nested modal
-ordering and nonrectangular visible regions remain unqualified. The
+fallbacks, and a stale window generation. A 68K/PowerPC guest replay now
+checks that a modal dialog opened above a modeless one receives key input,
+that the underlying edit field stays unchanged, and that focus and editing
+return to the modeless dialog on dismissal. Nested modal GPUI composition
+and nonrectangular visible regions remain unqualified. The
 `--capture-modeless-dialog-layout` headless case composes an inactive standard
 dialog behind a front window and checks that its covered item keeps guest
 pixels while the exposed part uses the GPUI overlay. The showcase also opens
