@@ -84,6 +84,12 @@ mod desktop {
         capture_text_edit: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_text_edit_selected: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_text_edit_edited: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_standard_file_save: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -864,7 +870,7 @@ mod desktop {
                                 div().w(px(1.)).h(px(f32::from(record.line_height.max(1)))).bg(cx.theme().foreground)
                             ))
                             .when(!selected.is_empty(), |row| row.child(
-                                div().bg(cx.theme().accent).child(selected)
+                                div().bg(cx.theme().selection).child(selected)
                             ))
                             .child(after),
                     );
@@ -1182,7 +1188,7 @@ mod desktop {
                             if focused && !selected.is_empty() {
                                 field = field.child(
                                     div()
-                                        .bg(cx.theme().accent)
+                                        .bg(cx.theme().selection)
                                         .text_color(cx.theme().foreground)
                                         .child(selected),
                                 );
@@ -1599,7 +1605,7 @@ mod desktop {
                     if focused && !selected.is_empty() {
                         name_field = name_field.child(
                             div()
-                                .bg(cx.theme().accent)
+                                .bg(cx.theme().selection)
                                 .text_color(cx.theme().foreground)
                                 .child(selected),
                         );
@@ -1803,6 +1809,8 @@ mod desktop {
         Lists,
         ListsSelected,
         TextEdit,
+        TextEditSelected,
+        TextEditEdited,
         StandardFileSave,
         StandardFileSaveComposed,
         StandardFileOpenComposed,
@@ -1827,7 +1835,10 @@ mod desktop {
                 | CaptureCase::ControlsHeld
         );
         let lists_page = matches!(capture, CaptureCase::Lists | CaptureCase::ListsSelected);
-        let text_edit_page = matches!(capture, CaptureCase::TextEdit);
+        let text_edit_page = matches!(
+            capture,
+            CaptureCase::TextEdit | CaptureCase::TextEditSelected | CaptureCase::TextEditEdited
+        );
         let standard_file_save = matches!(
             capture,
             CaptureCase::StandardFileSave
@@ -2155,6 +2166,42 @@ mod desktop {
         }
         let controls = session.runner_mut().control_snapshot();
         let lists = session.runner_mut().list_manager_snapshot();
+        if matches!(capture, CaptureCase::TextEditSelected | CaptureCase::TextEditEdited) {
+            // The showcase Reset control invokes TESetText then
+            // TESetSelect(0, 14); send a real guest click through TrackControl.
+            // Inside Macintosh: Text (1993), pp. 2-75--2-78.
+            for input in [
+                MacintoshInput::MouseDown { vertical: 318, horizontal: 337 },
+                MacintoshInput::MouseUp { vertical: 318, horizontal: 337 },
+            ] {
+                session.deliver_input(input);
+                for _ in 0..20 {
+                    session.runner_mut().run_steps(10_000, None);
+                }
+            }
+            assert!((0..100).any(|_| {
+                session.runner_mut().run_steps(100_000, None);
+                session.runner_mut().text_edit_snapshot().records.iter().any(|record| {
+                    record.view_rect == (76, 34, 211, 326) && record.selection == (0, 14)
+                })
+            }));
+            if matches!(capture, CaptureCase::TextEditEdited) {
+                for input in [
+                    MacintoshInput::KeyDown { mac_key: 0x00, character: b'Z' },
+                    MacintoshInput::KeyUp { mac_key: 0x00, character: b'Z' },
+                ] {
+                    session.deliver_input(input);
+                }
+                assert!((0..100).any(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    session.runner_mut().text_edit_snapshot().records.iter().any(|record| {
+                        record.view_rect == (76, 34, 211, 326)
+                            && record.text.first() == Some(&b'Z')
+                            && record.selection == (1, 1)
+                    })
+                }));
+            }
+        }
         let text_edits = session.runner_mut().text_edit_snapshot().records;
         let standard_file = session.runner_mut().standard_file_snapshot();
         let menus = session.runner_mut().guest_menu_snapshot();
@@ -2340,6 +2387,28 @@ mod desktop {
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_text_edit_selected.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::TextEditSelected,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_text_edit_edited.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::TextEditEdited,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_standard_file_save.as_ref() {
             capture_fixture_screen(
                 &args.game,
@@ -2481,6 +2550,8 @@ mod desktop {
                         capture_lists: None,
                         capture_lists_selected: None,
                         capture_text_edit: None,
+                        capture_text_edit_selected: None,
+                        capture_text_edit_edited: None,
                         capture_standard_file_save: None,
                         capture_standard_file_save_composed: None,
                         capture_standard_file_open_composed: None,
@@ -3012,6 +3083,40 @@ mod desktop {
                     .expect("guest TextEdit should receive the typed character");
                 assert_eq!(typed.text.len(), first.text.len() + 1);
                 assert!(typed.text.contains(&b'a'));
+                // Reset invokes guest TESetText/TESetSelect. The next key
+                // replaces the selected bytes through the normal TEKey path.
+                // Inside Macintosh: Text (1993), pp. 2-75--2-78.
+                for input in [
+                    MacintoshInput::MouseDown { vertical: 318, horizontal: 337 },
+                    MacintoshInput::MouseUp { vertical: 318, horizontal: 337 },
+                ] {
+                    session.deliver_input(input);
+                    for _ in 0..20 {
+                        session.runner_mut().run_steps(10_000, None);
+                    }
+                }
+                let selected = (0..100)
+                    .find_map(|_| {
+                        session.runner_mut().run_steps(100_000, None);
+                        session.runner_mut().text_edit_snapshot().records.into_iter().find(|record| {
+                            record.guest_id == first.guest_id && record.selection == (0, 14)
+                        })
+                    })
+                    .expect("guest Reset should select the first fourteen bytes");
+                assert_eq!(selected.text, first.text);
+                session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x00, character: b'Z' });
+                session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x00, character: b'Z' });
+                let replaced = (0..100)
+                    .find_map(|_| {
+                        session.runner_mut().run_steps(100_000, None);
+                        session.runner_mut().text_edit_snapshot().records.into_iter().find(|record| {
+                            record.guest_id == first.guest_id
+                                && record.text.first() == Some(&b'Z')
+                                && record.selection == (1, 1)
+                        })
+                    })
+                    .expect("guest TEKey should replace the selection and move the caret");
+                assert_eq!(replaced.text.len(), first.text.len() - 13);
             }
         }
 
