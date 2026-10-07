@@ -1375,11 +1375,23 @@ pub(crate) fn ppc_snd_start_file_play(
     current_resource_refnum: i16,
     sound: &mut PpcSoundState,
 ) -> i16 {
+    // Inside Macintosh: Sound (1994), p. 2-125: badFileFormat (-208) means
+    // the file is corrupt or unusable, or not AIFF or AIFF-C.
+    const BAD_FILE_FORMAT: i16 = -208;
+
     let channel = cpu.gpr[3];
     let ref_num = cpu.gpr[4] as u16 as i16;
     let resource_id = cpu.gpr[5] as u16 as i16;
+    let playing_file = !(ref_num == 0 && resource_id != 0);
+    if playing_file
+        && ppc_file_data_for_refnum(ref_num, files, vfs_files)
+            .is_some_and(|data| !ppc_is_aiff_form(data))
+    {
+        // Nothing starts, so no completion routine runs for this call.
+        return BAD_FILE_FORMAT;
+    }
     let file_playback_index = u32::try_from(sound.file_playbacks.len()).ok();
-    let (aiff, decoded_sound) = if ref_num == 0 && resource_id != 0 {
+    let (aiff, decoded_sound) = if !playing_file {
         (
             None,
             ppc_snd_resource_playback_for_id(resource_id, vfs_resources, current_resource_refnum),
@@ -1444,21 +1456,30 @@ pub(crate) fn ppc_aiff_playback_for_refnum(
     files: &[PpcFileRecord],
     vfs_files: &[PpcVfsFileRecord],
 ) -> (Option<PpcAiffMetadata>, Option<PpcDecodedAiffData>) {
-    let path = files
-        .iter()
-        .find(|file| file.ref_num == ref_num)
-        .map(|file| file.path.as_str());
-    let Some(path) = path else {
-        return (None, None);
-    };
-    let data = vfs_files
-        .iter()
-        .find(|file| file.path.eq_ignore_ascii_case(path))
-        .map(|file| file.data.as_slice());
-    let Some(data) = data else {
+    let Some(data) = ppc_file_data_for_refnum(ref_num, files, vfs_files) else {
         return (None, None);
     };
     (ppc_parse_aiff_metadata(data), ppc_decode_aiff_samples(data))
+}
+
+fn ppc_file_data_for_refnum<'a>(
+    ref_num: i16,
+    files: &[PpcFileRecord],
+    vfs_files: &'a [PpcVfsFileRecord],
+) -> Option<&'a [u8]> {
+    let path = files
+        .iter()
+        .find(|file| file.ref_num == ref_num)
+        .map(|file| file.path.as_str())?;
+    vfs_files
+        .iter()
+        .find(|file| file.path.eq_ignore_ascii_case(path))
+        .map(|file| file.data.as_slice())
+}
+
+/// Whether a data fork begins with an AIFF or AIFF-C FORM header.
+fn ppc_is_aiff_form(data: &[u8]) -> bool {
+    data.get(0..4) == Some(b"FORM".as_slice()) && matches!(data.get(8..12), Some(b"AIFF" | b"AIFC"))
 }
 
 pub(crate) fn ppc_snd_resource_playback_for_id(
@@ -1477,7 +1498,48 @@ pub(crate) fn ppc_snd_resource_playback_for_id(
 }
 
 pub(crate) fn ppc_decode_aiff_samples(data: &[u8]) -> Option<PpcDecodedAiffData> {
-    let (samples, sample_rate_fixed) = crate::trap::parse_aiff_samples(data)?;
+    if let Some((samples, sample_rate_fixed)) = crate::trap::parse_aiff_samples(data) {
+        return ppc_decoded_sound_data(samples, sample_rate_fixed);
+    }
+    ppc_decode_compressed_aifc_samples(data)
+}
+
+/// Decode an AIFF-C file whose COMM compressionType names a Sound Manager
+/// codec (for example 'ima4' or 'MAC3'), as SndStartFilePlay streams them.
+///
+/// numSampleFrames counts sample frames (Inside Macintosh: Sound (1994),
+/// p. 2-86), and a frame of compressed data holds one packet per channel
+/// (p. 2-10), which is the frame unit `PpcSoundCodec` decodes. When
+/// numSampleFrames claims more packets than the SSND chunk holds, the whole
+/// packets present play (a partial trailing packet is dropped).
+fn ppc_decode_compressed_aifc_samples(data: &[u8]) -> Option<PpcDecodedAiffData> {
+    const AIFC: u32 = u32::from_be_bytes(*b"AIFC");
+
+    let metadata = ppc_parse_aiff_metadata(data)?;
+    if metadata.form_type != AIFC {
+        return None;
+    }
+    let codec = ppc_sound_codec(
+        FIXED_COMPRESSION,
+        metadata.compression_type,
+        metadata.sample_size,
+    )?;
+    if matches!(codec, PpcSoundCodec::Pcm(_)) {
+        // parse_aiff_samples decodes 'NONE' and 'raw ' AIFF-C; other
+        // uncompressed formats such as 'twos' are not supported here.
+        return None;
+    }
+    let channels = usize::from(metadata.channel_count);
+    let bytes_per_frame = codec.bytes_per_frame(channels)?;
+    let start = usize::try_from(metadata.sound_data_offset).ok()?;
+    let size = usize::try_from(metadata.sound_data_size).ok()?;
+    let sound_data = data.get(start..start.checked_add(size)?)?;
+    let frames = usize::try_from(metadata.sample_frame_count)
+        .ok()?
+        .min(sound_data.len() / bytes_per_frame);
+    let samples = codec.to_mono_u8(sound_data, frames, channels)?;
+    let sample_rate_fixed =
+        (u64::from(metadata.sample_rate_hz) << 16).min(u64::from(u32::MAX)) as u32;
     ppc_decoded_sound_data(samples, sample_rate_fixed)
 }
 

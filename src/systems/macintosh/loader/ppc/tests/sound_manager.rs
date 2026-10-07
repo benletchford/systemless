@@ -2022,3 +2022,103 @@ fn queued_sound_command_installs_a_voice_that_a_queued_freq_command_plays() {
         .with_mut(|manager| manager.mix_frame(4));
     assert_eq!(mixed, vec![0xC0; 4]);
 }
+
+/// A mono AIFF-C file with this compressionType and sound data. COMM's
+/// numSampleFrames counts packets for compressed AIFF-C.
+fn compressed_aifc(compression: &[u8; 4], sample_size: u16, packets: u32, data: &[u8]) -> Vec<u8> {
+    let mut comm = Vec::new();
+    comm.extend_from_slice(&1u16.to_be_bytes());
+    comm.extend_from_slice(&packets.to_be_bytes());
+    comm.extend_from_slice(&sample_size.to_be_bytes());
+    // 44100 Hz as an 80-bit extended.
+    comm.extend_from_slice(&[0x40, 0x0e, 0xac, 0x44, 0, 0, 0, 0, 0, 0]);
+    comm.extend_from_slice(compression);
+    comm.extend_from_slice(&[0, 0]); // empty compressionName, padded
+    let mut body = b"AIFC".to_vec();
+    body.extend_from_slice(b"COMM");
+    body.extend_from_slice(&(comm.len() as u32).to_be_bytes());
+    body.extend_from_slice(&comm);
+    body.extend_from_slice(b"SSND");
+    body.extend_from_slice(&(8 + data.len() as u32).to_be_bytes());
+    body.extend_from_slice(&[0; 8]); // offset, blockSize
+    body.extend_from_slice(data);
+    let mut file = b"FORM".to_vec();
+    file.extend_from_slice(&(body.len() as u32).to_be_bytes());
+    file.extend_from_slice(&body);
+    file
+}
+
+#[test]
+fn file_playback_decodes_compressed_aifc_sound_data() {
+    let to_u8 = |sample: i16| ((i32::from(sample) >> 8) + 128) as u8;
+
+    // IMA 4:1: two 34-byte packets of 64 samples each. The header claims
+    // a third packet the data fork does not hold; the whole ones play.
+    let first = ima4_test_packet(0x77);
+    let second = ima4_test_packet(0xff);
+    let data = [first.as_slice(), second.as_slice()].concat();
+    let decoded = ppc_decode_aiff_samples(&compressed_aifc(b"ima4", 16, 3, &data))
+        .expect("IMA4 AIFF-C decodes");
+    let expected_first = ppc_qt_decode_ima4_channel_packet(&first).unwrap();
+    let expected_second = ppc_qt_decode_ima4_channel_packet(&second).unwrap();
+    assert_eq!(decoded.samples.len(), 128);
+    assert_eq!(decoded.samples[63], to_u8(expected_first[63]));
+    assert_eq!(decoded.samples[127], to_u8(expected_second[63]));
+    assert_eq!(decoded.summary.sample_rate_fixed, 44_100 << 16);
+
+    // MACE 3:1: two-byte packets of six samples each.
+    let mace = [0x12, 0x34, 0xa5, 0x5a];
+    let decoded = ppc_decode_aiff_samples(&compressed_aifc(b"MAC3", 8, 2, &mace))
+        .expect("MACE3 AIFF-C decodes");
+    assert_eq!(decoded.samples, crate::trap::decode_mace3_mono_to_u8(&mace));
+    assert_eq!(decoded.samples.len(), 12);
+
+    // A codec the Sound Manager cannot decode still yields no samples.
+    assert!(ppc_decode_aiff_samples(&compressed_aifc(b"QDM2", 16, 1, &first)).is_none());
+}
+
+#[test]
+fn file_playback_rejects_a_data_fork_that_is_not_aiff() {
+    // Inside Macintosh: Sound (1994), p. 2-125: badFileFormat (-208) for a
+    // file that is not AIFF or AIFF-C. Nothing starts, so no completion
+    // routine is scheduled.
+    let pef = synthetic_pef_with_import(b"SndStartFilePlay");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let ref_num = 128i16;
+    let channel = 0x0500_1000;
+    let path = "Data/Audio/Notes.txt";
+    loaded.push_test_open_file(PpcFileRecord {
+        ref_num,
+        path: path.to_string(),
+        position: 0,
+    });
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: path.to_string(),
+        data: b"plain text, not a FORM".to_vec().into(),
+        creator: u32::from_be_bytes(*b"ttxt"),
+        file_type: u32::from_be_bytes(*b"TEXT"),
+        finder_flags: 0,
+        dirty: false,
+    });
+    loaded.cpu.gpr[3] = channel;
+    loaded.cpu.gpr[4] = ref_num as u16 as u32;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = 0;
+    loaded.cpu.gpr[9] = PPC_DATA_BASE + 0x20;
+    loaded.cpu.gpr[10] = 1;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-208));
+    assert!(loaded.sound.file_playbacks.is_empty());
+    assert_eq!(loaded.sound.start_count, 0);
+    assert!(!loaded
+        .sound
+        .manager
+        .channels
+        .iter()
+        .any(|candidate| candidate.guest_ptr == channel && candidate.has_active_playback()));
+}
