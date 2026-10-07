@@ -128,20 +128,6 @@ pub struct PpcSoundState {
     pub double_buffer_play_count: u32,
     pub last_double_buffer_channel: u32,
     pub last_double_buffer_header: u32,
-    /// Sampled sounds installed by soundCmd, one per channel.
-    pub installed_sounds: Vec<PpcInstalledSampledSound>,
-}
-
-/// A sampled sound that soundCmd installed in a channel. freqCmd and
-/// freqDurationCmd play it at a MIDI note relative to its baseFrequency.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PpcInstalledSampledSound {
-    pub channel: u32,
-    pub sample_rate_fixed: u32,
-    /// The header's baseFrequency: the MIDI note at which the samples play
-    /// at their recorded rate.
-    pub base_note: u8,
-    pub samples: Vec<u8>,
 }
 
 impl PartialEq for PpcSoundState {
@@ -159,7 +145,6 @@ impl PartialEq for PpcSoundState {
             && self.double_buffer_play_count == other.double_buffer_play_count
             && self.last_double_buffer_channel == other.last_double_buffer_channel
             && self.last_double_buffer_header == other.last_double_buffer_header
-            && self.installed_sounds == other.installed_sounds
     }
 }
 
@@ -760,12 +745,19 @@ pub(crate) fn ppc_snd_do_immediate(
             return PPC_PARAM_ERR;
         }
     }
-    match command.command {
-        PPC_SOUND_CMD => ppc_install_sampled_sound(memory, sound, channel, command.param2),
-        PPC_FREQ_DURATION_CMD | PPC_FREQ_CMD => {
-            ppc_play_installed_sound(sound, channel, command.param2)
-        }
-        _ => {}
+    if command.command == crate::sound::cmd::SOUND {
+        ppc_install_sampled_sound(memory, sound, channel, command.param2);
+    }
+    if ppc_sound_trace_enabled()
+        && matches!(
+            command.command,
+            crate::sound::cmd::FREQ | crate::sound::cmd::FREQ_DURATION
+        )
+    {
+        eprintln!(
+            "[PPC-SOUND] SndDoImmediate note chan=${channel:08X} cmd={} param1={} note={}",
+            command.command, command.param1, command.param2
+        );
     }
     if let Some(decoded) = ppc_decode_buffer_command(memory, channel, command) {
         sound.manager.play_buffer_command_for_architecture(
@@ -790,88 +782,52 @@ pub(crate) fn ppc_snd_do_immediate(
     PPC_NO_ERR
 }
 
-const PPC_FREQ_DURATION_CMD: u16 = 40;
-const PPC_FREQ_CMD: u16 = 42;
-const PPC_SOUND_CMD: u16 = 80;
-
-/// soundCmd: decode the SoundHeader at `header` and keep it as the
-/// channel's sampled-sound instrument. Installing does not start playback;
-/// a later freqCmd or freqDurationCmd plays it (Inside Macintosh: Sound
+/// soundCmd: decode the SoundHeader at `header` and install it as the
+/// channel's sampled-sound voice. Installing does not start playback; a
+/// later freqCmd or freqDurationCmd plays it (Inside Macintosh: Sound
 /// (1994), pp. 2-44 and 2-97). The book limits soundCmd to noncompressed
 /// data and expects compressed sounds to be expanded first (p. 2-109);
 /// compressed headers are accepted here because they decode to the same
-/// samples. A header that cannot be decoded leaves no instrument installed.
+/// samples. A header that cannot be decoded leaves the channel without a
+/// voice.
 fn ppc_install_sampled_sound(
     memory: &mut PpcSectionMem,
     sound: &mut PpcSoundState,
     channel: u32,
     header: u32,
 ) {
-    sound
-        .installed_sounds
-        .retain(|installed| installed.channel != channel);
-    if header == 0 {
-        return;
+    let instrument = ppc_sampled_instrument_from_header(memory, header);
+    if instrument.is_none() && ppc_sound_trace_enabled() {
+        eprintln!("[PPC-SOUND] could not decode soundCmd header=${header:08X}");
     }
-    let Some(base_note) = header
-        .checked_add(21)
-        .and_then(|address| memory.read_u8(address))
-    else {
-        return;
-    };
-    let Some(decoded) = ppc_decode_snd_header_from_memory(memory, header) else {
-        if ppc_sound_trace_enabled() {
-            eprintln!("[PPC-SOUND] could not decode soundCmd header=${header:08X}");
-        }
-        return;
-    };
-    sound.installed_sounds.push(PpcInstalledSampledSound {
-        channel,
-        sample_rate_fixed: decoded.summary.sample_rate_fixed,
-        base_note,
-        samples: decoded.samples,
+    sound.manager.with_mut(|manager| match instrument {
+        Some(instrument) => manager.install_instrument(channel, instrument),
+        None => manager.remove_instrument(channel),
     });
 }
 
-/// freqCmd / freqDurationCmd: play the channel's installed sampled sound.
-/// param2 is a MIDI note value in the range 0 to 127, middle C being 60
-/// (Inside Macintosh: Sound (1994), pp. 2-41--2-42 and 2-95--2-96). The
-/// header's baseFrequency, in the range 1 to 127, is the note at which
-/// the sample plays at its recorded rate (p. 2-105), so other notes
-/// transpose it in equal-tempered semitones. A note or baseFrequency
-/// outside those ranges plays the sample at its recorded rate.
-fn ppc_play_installed_sound(sound: &mut PpcSoundState, channel: u32, frequency: u32) {
-    let Some(installed) = sound
-        .installed_sounds
-        .iter()
-        .find(|installed| installed.channel == channel)
-    else {
-        return;
-    };
-    const MIDI_NOTES: std::ops::RangeInclusive<u32> = 0..=127;
-    let sample_rate_fixed = if MIDI_NOTES.contains(&frequency)
-        && (1..=127).contains(&installed.base_note)
-    {
-        let semitones = f64::from(frequency) - f64::from(installed.base_note);
-        (f64::from(installed.sample_rate_fixed) * (semitones / 12.0).exp2())
-            .round()
-            .clamp(1.0, f64::from(u32::MAX)) as u32
-    } else {
-        installed.sample_rate_fixed
-    };
-    let samples = installed.samples.clone();
-    if ppc_sound_trace_enabled() {
-        eprintln!(
-            "[PPC-SOUND] play installed sound chan=${channel:08X} frequency=${frequency:08X} rate=${sample_rate_fixed:08X} samples={}",
-            samples.len()
-        );
+/// The voice described by a SoundHeader: its decoded samples, base note,
+/// and loop points. The three header forms share loopStart (offset 12),
+/// loopEnd (16), and baseFrequency (21). Inside Macintosh: Sound (1994),
+/// pp. 2-104, 2-106, and 2-108.
+fn ppc_sampled_instrument_from_header(
+    memory: &mut PpcSectionMem,
+    header: u32,
+) -> Option<crate::sound::SampledInstrument> {
+    if header == 0 {
+        return None;
     }
-    sound.manager.play_buffer_command_for_architecture(
-        channel,
-        samples,
-        sample_rate_fixed,
-        CallbackTaskArchitecture::PowerPc,
-    );
+    let loop_start = memory.read_u32_be(header.checked_add(12)?)?;
+    let loop_end = memory.read_u32_be(header.checked_add(16)?)?;
+    let base_note = memory.read_u8(header.checked_add(21)?)?;
+    let decoded = ppc_decode_snd_header_from_memory(memory, header)?;
+    Some(crate::sound::SampledInstrument {
+        samples: decoded.samples,
+        sample_rate_fixed: decoded.summary.sample_rate_fixed,
+        base_note,
+        loop_start,
+        loop_end,
+    })
 }
 
 pub(crate) fn ppc_snd_do_command(cpu: &PpcCpu, memory: &mut PpcSectionMem, sound: &mut PpcSoundState) -> i16 {
@@ -930,9 +886,6 @@ pub(crate) fn ppc_snd_dispose_channel(cpu: &mut PpcCpu, sound: &mut PpcSoundStat
         .decoded_file_playbacks
         .retain(|record| record.channel != channel);
     sound.file_playbacks.retain(|record| record.channel != channel);
-    sound
-        .installed_sounds
-        .retain(|installed| installed.channel != channel);
     PPC_NO_ERR
 }
 

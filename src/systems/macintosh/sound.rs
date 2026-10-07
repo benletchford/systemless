@@ -62,6 +62,11 @@ pub mod cmd {
     /// no-op so the unhandled-cmds sentinel doesn't trip.
     pub const REST: u16 = 43;
     pub const VOLUME: u16 = 46;
+    /// freqDurationCmd plays the installed voice at a MIDI note for a
+    /// duration; freqCmd plays it indefinitely or changes the pitch of the
+    /// note already playing. Sound 1994, pp. 2-12, 2-95--2-96.
+    pub const FREQ_DURATION: u16 = 40;
+    pub const FREQ: u16 = 42;
     pub const SOUND: u16 = 80;
     pub const BUFFER: u16 = 81;
     pub const RATE: u16 = 82;
@@ -121,6 +126,68 @@ struct PlayingBuffer {
 pub(crate) enum PlaybackKind {
     Buffer,
     File,
+    /// A note played from the channel's installed sampled-sound voice.
+    Note,
+}
+
+/// A sampled sound installed as a channel's voice by soundCmd.
+/// Sound 1994, pp. 2-44 and 2-97.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SampledInstrument {
+    /// Unsigned 8-bit mono samples (silence = 0x80).
+    pub(crate) samples: Vec<u8>,
+    /// Recorded sample rate as Mac Fixed 16.16.
+    pub(crate) sample_rate_fixed: u32,
+    /// The header's baseFrequency: the MIDI note at which the samples play
+    /// at their recorded rate. Sound 1994, p. 2-105.
+    pub(crate) base_note: u8,
+    /// The header's loopStart and loopEnd, in sample frames.
+    pub(crate) loop_start: u32,
+    pub(crate) loop_end: u32,
+}
+
+impl SampledInstrument {
+    /// The frames a note repeats once it has played through, if any.
+    ///
+    /// Sound 1994, p. 2-45: a note longer than the sound replays the part
+    /// between the loop points, which needs an ending point; p. 2-105:
+    /// loopStart = loopEnd = 0 means no loop. loopEnd is treated as
+    /// exclusive, and a loop must span at least two frames: most shipped
+    /// headers carry loopEnd = loopStart + 1, mid-sound or on the last
+    /// frames, and repeating that one frame would cut those sounds short and
+    /// keep the channel busy forever. (Under the inclusive reading of the
+    /// book's Listing 2-17, pp. 2-45--2-46, such a marker spans two frames.)
+    fn loop_frames(&self) -> Option<(u64, u64)> {
+        let end = u64::from(self.loop_end).min(self.samples.len() as u64);
+        let start = u64::from(self.loop_start);
+        (end >= start.saturating_add(2)).then_some((start, end))
+    }
+
+    /// The sample rate that plays `note` (a MIDI note value, 0-127) in
+    /// equal-tempered semitones from `base_note`. Sound 1994, pp. 2-41--2-42
+    /// and 2-105. A note or base outside 0-127/1-127 plays the recorded
+    /// rate.
+    fn sample_rate_for_note(&self, note: u32) -> u32 {
+        if note > 127 || !(1..=127).contains(&self.base_note) {
+            return self.sample_rate_fixed;
+        }
+        let semitones = f64::from(note) - f64::from(self.base_note);
+        (f64::from(self.sample_rate_fixed) * (semitones / 12.0).exp2())
+            .round()
+            .clamp(1.0, f64::from(u32::MAX)) as u32
+    }
+}
+
+/// Loop state for a note that repeats part of its voice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NoteLoop {
+    /// Frames `[start, end)` replayed after the note reaches `end`.
+    start: u64,
+    end: u64,
+    /// Output samples left in a freqDurationCmd note's duration; the loop
+    /// stops repeating when it reaches zero. `None` repeats until the
+    /// channel is quieted (freqCmd).
+    remaining: Option<u64>,
 }
 
 /// Double-buffer playback state for SndPlayDoubleBuffer.
@@ -265,6 +332,10 @@ pub struct SndChannel {
     playing: Option<PlayingBuffer>,
     /// Whether the current playback came from bufferCmd/SndPlay or SndStartFilePlay.
     playback_kind: Option<PlaybackKind>,
+    /// Sampled-sound voice installed by soundCmd.
+    instrument: Option<SampledInstrument>,
+    /// Loop of the note now playing from `instrument`, if it repeats.
+    note_loop: Option<NoteLoop>,
     /// Callback procedure installed by SndNewChannel in the guest channel record.
     pub callback_addr: u32,
     /// Instruction set of the callback procedure. Native PowerPC channels
@@ -329,6 +400,8 @@ impl SndChannel {
             q_tail: 0,
             playing: None,
             playback_kind: None,
+            instrument: None,
+            note_loop: None,
             callback_addr: 0,
             callback_architecture: CallbackTaskArchitecture::M68k,
             volume: FULL_STEREO_VOLUME,
@@ -402,6 +475,7 @@ impl SndChannel {
     pub fn quiet(&mut self) {
         self.playing = None;
         self.playback_kind = None;
+        self.note_loop = None;
         self.pending_callback_cmds.clear();
         self.file_completion_addr = 0;
         self.file_completion_architecture = None;
@@ -437,11 +511,64 @@ impl SndChannel {
             position: 0,
             step: playback_step(sample_rate_fixed, UNITY_RATE_FIXED),
         });
+        self.note_loop = None;
         self.playback_kind = Some(kind);
         self.file_completion_addr = file_completion_addr;
         self.file_completion_architecture =
             (file_completion_addr != 0).then_some(CallbackTaskArchitecture::M68k);
         self.file_paused = false;
+    }
+
+    /// soundCmd: install a sampled sound as the channel's voice without
+    /// playing it. Sound 1994, pp. 2-44 and 2-97.
+    pub(crate) fn install_instrument(&mut self, instrument: SampledInstrument) {
+        self.instrument = Some(instrument);
+    }
+
+    /// freqCmd / freqDurationCmd on the installed voice. A freqCmd while a
+    /// note is playing changes that note's pitch; otherwise the note starts
+    /// at the beginning of the voice (Sound 1994, pp. 2-45 and 2-96).
+    /// `duration` is a freqDurationCmd's length in output samples. Without
+    /// a voice no sound is produced (p. 2-96). The channel's rateCmd rate
+    /// still applies to the note.
+    pub(crate) fn play_note(&mut self, note: u32, duration: Option<u64>) {
+        let Some(instrument) = self.instrument.as_ref() else {
+            return;
+        };
+        let sample_rate_fixed = instrument.sample_rate_for_note(note);
+        if duration.is_none() && self.playback_kind == Some(PlaybackKind::Note) {
+            if let Some(playing) = self.playing.as_mut() {
+                playing.sample_rate_fixed = sample_rate_fixed;
+                playing.step = playback_step(sample_rate_fixed, self.rate_fixed);
+                return;
+            }
+        }
+        let note_loop = instrument.loop_frames().map(|(start, end)| NoteLoop {
+            start,
+            end,
+            remaining: duration,
+        });
+        let samples = instrument
+            .samples
+            .iter()
+            .copied()
+            .map(StereoSample::mono)
+            .collect();
+        self.playing = Some(PlayingBuffer {
+            samples,
+            sample_rate_fixed,
+            position: 0,
+            step: playback_step(sample_rate_fixed, self.rate_fixed),
+        });
+        self.note_loop = note_loop;
+        self.playback_kind = Some(PlaybackKind::Note);
+        self.file_completion_addr = 0;
+        self.file_completion_architecture = None;
+        self.file_paused = false;
+    }
+
+    pub(crate) fn instrument(&self) -> Option<&SampledInstrument> {
+        self.instrument.as_ref()
     }
 
     /// Returns true if this channel is currently producing audio.
@@ -937,8 +1064,24 @@ impl SoundManager {
             cmd::FLUSH => self.flush_channel(guest_ptr),
             cmd::VOLUME => self.ensure_channel_mut(guest_ptr).set_volume(command.param2),
             cmd::RATE => self.ensure_channel_mut(guest_ptr).set_rate(command.param2),
+            cmd::FREQ => self.ensure_channel_mut(guest_ptr).play_note(command.param2, None),
+            cmd::FREQ_DURATION => self
+                .ensure_channel_mut(guest_ptr)
+                .play_note(command.param2, Some(note_duration_samples(command.param1))),
             _ => {}
         }
+    }
+
+    /// soundCmd from a CPU adapter that has decoded the guest SoundHeader.
+    pub(crate) fn install_instrument(&mut self, guest_ptr: u32, instrument: SampledInstrument) {
+        self.ensure_channel_mut(guest_ptr)
+            .install_instrument(instrument);
+    }
+
+    /// soundCmd whose SoundHeader could not be decoded: the channel is left
+    /// without a voice, so later notes are silent.
+    pub(crate) fn remove_instrument(&mut self, guest_ptr: u32) {
+        self.ensure_channel_mut(guest_ptr).instrument = None;
     }
 
     /// Queue a native command on the canonical process channel FIFO.
@@ -1135,6 +1278,14 @@ impl SoundManager {
             if let Some(ref mut buf) = chan.playing {
                 any_active = true;
                 for slot in output.iter_mut().take(num_samples) {
+                    if let Some(note_loop) = chan.note_loop.as_mut() {
+                        if note_loop.remaining != Some(0) && buf.position >> 32 >= note_loop.end {
+                            buf.position -= (note_loop.end - note_loop.start) << 32;
+                        }
+                        if let Some(remaining) = note_loop.remaining.as_mut() {
+                            *remaining = remaining.saturating_sub(1);
+                        }
+                    }
                     let Some(source_sample) =
                         resampled_sample(&buf.samples, buf.position, buf.step)
                     else {
@@ -1157,6 +1308,7 @@ impl SoundManager {
                     let callback_cmds = chan.take_pending_callback_cmds();
                     chan.playing = None;
                     chan.playback_kind = None;
+                    chan.note_loop = None;
                     chan.file_completion_addr = 0;
                     // If this channel has a double-buffer, request callback for
                     // the exhausted buffer and switch to the other one.
@@ -1228,7 +1380,7 @@ impl SoundManager {
             .iter()
             .filter_map(|chan| {
                 let playing = chan.playing.as_ref()?;
-                if playing.step == 0 {
+                if playing.step == 0 || chan.note_loop.is_some() {
                     return None;
                 }
                 let end = (playing.samples.len() as u128) << 32;
@@ -1254,6 +1406,12 @@ fn fixed_div(x: u64, y: u64) -> u64 {
     let remainder = x - y * int_part;
     let frac_part = (remainder << 32) / y;
     (int_part << 32) + frac_part
+}
+
+/// A freqDurationCmd duration, given in half-milliseconds in param1 (an
+/// unsigned 16-bit count; Sound 1994, pp. 2-41 and 2-96), as output samples.
+fn note_duration_samples(param1: i16) -> u64 {
+    u64::from(param1 as u16) * u64::from(OUTPUT_RATE) / 2000
 }
 
 fn playback_step(sample_rate_fixed: u32, rate_fixed: u32) -> u64 {
@@ -3224,5 +3382,100 @@ mod tests {
         let guest_alloc = SndChannel::new(0xDEAD_0000, false);
         assert_eq!(guest_alloc.guest_ptr, 0xDEAD_0000);
         assert!(!guest_alloc.allocated, "allocated=false must propagate");
+    }
+
+    fn ramp_instrument(loop_start: u32, loop_end: u32) -> SampledInstrument {
+        SampledInstrument {
+            samples: vec![0x80, 0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xE0, 0xF0],
+            sample_rate_fixed: OUTPUT_RATE << 16,
+            base_note: 60,
+            loop_start,
+            loop_end,
+        }
+    }
+
+    fn note_command(cmd: u16, param1: i16, note: u32) -> SndCommand {
+        SndCommand {
+            cmd,
+            param1,
+            param2: note,
+        }
+    }
+
+    /// Sound 1994, pp. 2-45 and 2-96: a freqCmd note on a sampled voice
+    /// replays the frames between the loop points until the channel is
+    /// quieted; a freqDurationCmd note replays them only for its duration
+    /// and then plays the rest of the sound.
+    #[test]
+    fn notes_repeat_the_voice_loop_for_their_duration() {
+        let chan = 0x1000;
+        let mut manager = SoundManager::new();
+        manager.install_instrument(chan, ramp_instrument(2, 6));
+
+        manager.execute_immediate_command(chan, note_command(cmd::FREQ, 0, 60));
+        assert_eq!(
+            manager.mix_frame(14),
+            vec![
+                0x80, 0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xA0, 0xB0, 0xC0, 0xD0, 0xA0, 0xB0, 0xC0, 0xD0
+            ]
+        );
+        assert!(
+            manager.channels[0].is_playing(),
+            "freqCmd loops until quieted"
+        );
+        manager.execute_immediate_command(chan, note_command(cmd::QUIET, 0, 0));
+        assert!(!manager.channels[0].is_playing());
+        assert!(
+            manager.channels[0].instrument().is_some(),
+            "quietCmd keeps the voice"
+        );
+
+        // One half-millisecond lasts 11 output samples at 22050 Hz.
+        manager.execute_immediate_command(chan, note_command(cmd::FREQ_DURATION, 1, 60));
+        assert_eq!(
+            manager.mix_frame(16),
+            vec![
+                0x80, 0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xA0, 0xB0, 0xC0, 0xD0, 0xA0, 0xB0, 0xC0, 0xD0,
+                0xE0, 0xF0
+            ]
+        );
+        assert!(!manager.channels[0].is_playing());
+    }
+
+    /// loopStart = loopEnd = 0 means no loop (Sound 1994, p. 2-105), and a
+    /// one-frame loop is an end-of-sound marker: both notes end with the
+    /// sound, freeing the channel.
+    #[test]
+    fn notes_without_a_loop_end_with_the_voice() {
+        for (loop_start, loop_end) in [(0, 0), (6, 7)] {
+            let chan = 0x1000;
+            let mut manager = SoundManager::new();
+            manager.install_instrument(chan, ramp_instrument(loop_start, loop_end));
+            manager.execute_immediate_command(chan, note_command(cmd::FREQ, 0, 60));
+            assert_eq!(manager.mix_frame(8).len(), 8);
+            assert_eq!(manager.mix_frame(4), Vec::<u8>::new());
+            assert!(!manager.channels[0].is_playing());
+        }
+    }
+
+    /// Sound 1994, p. 2-96: freqCmd changes the pitch of the note already
+    /// playing rather than restarting it, and without an installed voice it
+    /// produces no sound.
+    #[test]
+    fn freq_command_repitches_the_playing_note() {
+        let chan = 0x1000;
+        let mut manager = SoundManager::new();
+        manager.execute_immediate_command(chan, note_command(cmd::FREQ, 0, 60));
+        assert!(!manager.channels[0].is_playing());
+
+        manager.install_instrument(chan, ramp_instrument(0, 0));
+        manager.execute_immediate_command(chan, note_command(cmd::FREQ, 0, 60));
+        assert_eq!(manager.mix_frame(3), vec![0x80, 0x90, 0xA0]);
+        manager.execute_immediate_command(chan, note_command(cmd::FREQ, 0, 72));
+        assert_eq!(
+            manager.channels[0].playback_sample_rate(),
+            Some((2 * OUTPUT_RATE) << 16)
+        );
+        assert_eq!(manager.mix_frame(2), vec![0xB0, 0xD0]);
     }
 }

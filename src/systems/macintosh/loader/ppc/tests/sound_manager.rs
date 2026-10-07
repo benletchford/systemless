@@ -1957,8 +1957,16 @@ fn sound_command_installs_a_sampled_sound_that_freq_command_plays() {
     // soundCmd installs the instrument without starting it.
     immediate(&mut loaded, 80, header);
     assert_eq!(playback_rate(&loaded), None);
-    assert_eq!(loaded.sound.installed_sounds.len(), 1);
-    assert_eq!(loaded.sound.installed_sounds[0].samples, samples);
+    let installed = loaded
+        .sound
+        .manager
+        .channels
+        .iter()
+        .find(|candidate| candidate.guest_ptr == channel)
+        .and_then(|candidate| candidate.instrument().cloned())
+        .expect("soundCmd installs a voice");
+    assert_eq!(installed.samples, samples);
+    assert_eq!(installed.base_note, 60);
 
     // freqCmd at the base note plays at the recorded rate; an octave
     // above doubles it.
@@ -1968,10 +1976,6 @@ fn sound_command_installs_a_sampled_sound_that_freq_command_plays() {
     assert_eq!(playback_rate(&loaded), None);
     immediate(&mut loaded, 40, 72); // freqDurationCmd
     assert_eq!(playback_rate(&loaded), Some(0xAC44_0000));
-
-    // Installing a new header replaces the channel's instrument.
-    immediate(&mut loaded, 80, header);
-    assert_eq!(loaded.sound.installed_sounds.len(), 1);
 
     // param2 outside the MIDI note range, or a baseFrequency outside
     // 1-127, plays the sample at its recorded rate.
