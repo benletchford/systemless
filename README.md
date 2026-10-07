@@ -127,8 +127,7 @@ preserved native menu and resize response, with
 AppKit Quit completing after owner release. Native pilot save/restart checks
 passed; broader input, fullscreen-exit and cross-display/platform coverage
 remain limited. The default remains the same-thread
-compatibility path; leave the variable unset to use it. See
-[review qualification](HOST_RESPONSIVENESS_REVIEW.md) for the scope and limits.
+compatibility path; leave the variable unset to use it.
 
 For intermittent desktop stalls, set `SYSTEMLESS_PROFILE_FRAMES=1` when launching.
 The terminal reports CPU, compositing, outline rendering and Metal drawable-wait
