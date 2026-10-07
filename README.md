@@ -171,7 +171,7 @@ compare equal game progress and outputs, and verify windowed CPU separately.
 
 Structured JSON scenarios add bounded visual waits, named screenshots, assertions,
 and machine-readable reports through `--play-script`. See the
-[headless play guide](docs/headless-play.md) and the repository
+[headless play guide](.agents/skills/systemless-headless/references/headless-play.md) and the repository
 [agent skill](.agents/skills/systemless-headless/SKILL.md).
 
 ## How it works

@@ -5,7 +5,7 @@ description: Drive classic Macintosh applications headlessly in Systemless to re
 
 # Headless Systemless
 
-Run commands from the Systemless repository root. Read [the play guide](../../../docs/headless-play.md) for the JSON action schema, output contract, and oracle setup.
+Run commands from the Systemless repository root. Read [the play guide](references/headless-play.md) for the JSON action schema, output contract, and oracle setup.
 
 ## Start with a known fixture
 

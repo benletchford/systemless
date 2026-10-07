@@ -23,7 +23,6 @@ __pycache__/
 
 # Experiment notes stay local.
 /docs/*
-!/docs/headless-play.md
 
 # Native window qualification artifacts.
 /native-window-results/
