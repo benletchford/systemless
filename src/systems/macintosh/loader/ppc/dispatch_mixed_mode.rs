@@ -1522,7 +1522,9 @@ fn ppc_begin_m68k_universal_proc_inner(
         stack_result: None,
     });
     let pascal_result_sp = if pascal && result_size != PPC_PROCINFO_SIZE_NONE {
-        let value_address = ppc_reserve_m68k_stack_value(memory, &mut sp, result_size, false)?;
+        // Pascal byte results occupy the high-order byte of their word slot.
+        // Inside Macintosh: Operating System Utilities (1994), p. 8-19.
+        let value_address = ppc_reserve_m68k_stack_value(memory, &mut sp, result_size, true)?;
         result = Some(M68kResultSource::Memory {
             address: value_address,
             size: ppc_procinfo_value_size(result_size)?,
@@ -1775,4 +1777,17 @@ fn ppc_call_os_trap_universal_proc(
         // 2-42--2-43: a raw universal pointer is direct 680x0 code.
         GuestIsa::M68k,
     )
+}
+
+#[cfg(test)]
+#[test]
+fn pascal_boolean_result_uses_high_byte_of_stack_word() {
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(0x8000, vec![0xaa; 2]);
+    let mut sp = 0x8002;
+    let address = ppc_reserve_m68k_stack_value(&mut memory, &mut sp, PPC_PROCINFO_SIZE_ONE, true)
+        .unwrap();
+    assert_eq!((address, sp), (0x8000, 0x8000));
+    memory.write_u8(address, 1).unwrap();
+    assert_eq!(memory.read_u16_be(sp), Some(0x0100));
 }
