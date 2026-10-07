@@ -3741,17 +3741,15 @@ impl super::TrapDispatcher {
             // agree): both consume the 2-byte mbResID and preserve A7
             // across the call.
             //
-            // Apple-vs-BasiliskII divergence on the side effect:
-            // BasiliskII System 7.5.3 ROM Menu Manager allocates the
-            // MenuList if not yet allocated, stores mbResID, and (when
-            // the high 13 bits select a non-default MBDF) loads the
-            // 'MBDF' resource. Systemless HLE is a true pop-2-and-return
-            // stub because the host runtime draws the menu bar
-            // directly from the Rust menu list — there is no separate
-            // MBDF resource to honour. The visible "MBDF resource
-            // gets loaded" path is intentionally not modeled.
+            // Store mbResID in the live MenuList so guest reads and frontend
+            // fallback observe the requested definition. Loading and
+            // executing a custom MBDF remain separate runtime work.
             (true, 0x008) => {
                 let sp = cpu.read_reg(Register::A7);
+                let mb_res_id = bus.read_word(sp) as i16;
+                let mut menu_list = self.current_menu_list(bus).unwrap_or_default();
+                menu_list.mb_res_id = mb_res_id;
+                self.replace_current_menu_list(bus, &menu_list);
                 cpu.write_reg(Register::A7, sp + 2);
                 Ok(())
             }
