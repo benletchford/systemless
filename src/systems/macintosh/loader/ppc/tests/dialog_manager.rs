@@ -1940,6 +1940,40 @@ fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
         ),
         Some(b"ADlias".to_vec())
     );
+    // Redrawing the edited second field must leave guest drawing over the
+    // first item intact. A whole-dialog repaint would overwrite this mark.
+    let surface = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+    let marker = ppc_quickdraw_surface_color_pixel(
+        &mut loaded.memory,
+        surface,
+        PpcRgbColor {
+            red: 0xffff,
+            green: 0,
+            blue: 0xffff,
+        },
+    )
+    .unwrap();
+    assert!(ppc_quickdraw_write_raw_pixel(
+        &mut loaded.memory,
+        surface.front_buffer,
+        (40, 20),
+        marker,
+    ));
+    assert!(ppc_draw_dialog_selected(
+        &mut loaded.memory,
+        &test_handle_records!(loaded),
+        &loaded.controls.records(),
+        &loaded.gworlds,
+        &loaded.screen_clut,
+        &loaded.process_file_system.vfs_resources,
+        *loaded.process_file_system.current_resource_file,
+        dialog,
+        Some(2),
+    ));
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (40, 20)),
+        Some(marker),
+    );
     assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(0));
 
     loaded.set_event_queue([PpcQueuedEvent {
