@@ -1,6 +1,7 @@
 ---
 id: tomb-raider-gold-demo
 kind: game
+launch_enabled: true
 title: Tomb Raider Gold Demo
 summary: >-
   Explore part of Tomb Raider Gold's second level in the original PowerPC Mac

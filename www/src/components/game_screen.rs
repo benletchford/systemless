@@ -90,7 +90,7 @@ pub fn GameScreen(game: &'static Game) -> impl IntoView {
                                                 );
                                             } else {
                                                 local_archive_message.set(
-                                                    "Archive verified. Starting game…".into()
+                                                    "Archive verified. The file stays in this browser tab.".into()
                                                 );
                                                 selected_local_archive.set(Some(Rc::new(bytes)));
                                             }
