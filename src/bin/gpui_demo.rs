@@ -340,7 +340,9 @@ mod desktop {
             dialog.visible
                 && dialog.active
                 && windows.iter().any(|frame| {
-                    frame.guest_id == dialog.guest_id && frame.definition_id == Some(1)
+                    frame.guest_id == dialog.guest_id
+                        && frame.generation == dialog.generation
+                        && frame.definition_id == Some(1)
                 })
                 && !dialog.items.is_empty()
                 && dialog.items.iter().all(|item| {
@@ -802,9 +804,9 @@ mod desktop {
                         .bg(cx.theme().background);
                     overlay = match item.kind {
                         DialogItemKind::Button => overlay.child(
-                            Button::new((
-                                "guest-dialog-button",
-                                ((dialog.guest_id as usize) << 16) | item.number as usize,
+                            Button::new(format!(
+                                "guest-dialog-button-{}-{}-{}",
+                                dialog.guest_id, dialog.generation, item.number
                             ))
                             .label(item.text.clone())
                             .small()
@@ -1217,6 +1219,7 @@ mod desktop {
             assert_eq!(before.len(), 3);
             assert_eq!(before[0].window.title, "Stacked Inspector");
             assert_ne!(before[0].guest_id, 0);
+            assert!(before.iter().all(|frame| frame.generation != 0));
             assert!(before.iter().all(|frame| {
                 before
                     .iter()
@@ -1245,6 +1248,7 @@ mod desktop {
             settle(session);
             let moved = session.runner_mut().window_frame_snapshot();
             assert_eq!(moved[0].guest_id, before[0].guest_id);
+            assert_eq!(moved[0].generation, before[0].generation);
             assert_eq!(
                 moved[0].window.bounds,
                 (top + 12, left + 16, bottom + 12, right + 16)
@@ -1437,6 +1441,7 @@ mod desktop {
                     })
                     .expect("About alert should expose a live dialog snapshot");
                 assert_ne!(dialog.guest_id, 0);
+                assert_ne!(dialog.generation, 0);
                 assert_eq!(dialog.default_item, Some(1));
                 assert_eq!(dialog.items.len(), 2);
                 assert_eq!(dialog.items[0].kind, DialogItemKind::Button);
@@ -1446,6 +1451,14 @@ mod desktop {
                 assert_eq!(dialog.items[1].kind, DialogItemKind::StaticText);
                 assert!(!dialog.items[1].enabled);
                 let windows = session.runner_mut().window_frame_snapshot();
+                assert_eq!(
+                    windows
+                        .iter()
+                        .find(|window| window.guest_id == dialog.guest_id)
+                        .unwrap()
+                        .generation,
+                    dialog.generation
+                );
                 assert_eq!(
                     super::standard_dbox_dialog(&[dialog.clone()], &windows)
                         .map(|selected| selected.guest_id),
@@ -1503,6 +1516,7 @@ mod desktop {
                     let bounds = (130, 150, 260, 450);
                     demo.windows = vec![WindowFrameSnapshot {
                         guest_id: 7,
+                        generation: 1,
                         window: WindowSnapshot {
                             title: String::new(),
                             bounds,
@@ -1517,6 +1531,7 @@ mod desktop {
                     }];
                     demo.dialogs = vec![DialogSnapshot {
                         guest_id: 7,
+                        generation: 1,
                         bounds,
                         visible: true,
                         active: true,
@@ -1541,7 +1556,7 @@ mod desktop {
                 });
             });
             cx.update_window(window.into(), |_, window, cx| {
-                window.click(("guest-dialog-button", ((7 << 16) | 1) as usize), cx);
+                window.click("guest-dialog-button-7-1-1", cx);
             })
             .unwrap();
             let inputs: Vec<_> = receiver
@@ -1598,6 +1613,7 @@ mod desktop {
                     let bounds = (50, 40, 420, 600);
                     demo.windows = vec![WindowFrameSnapshot {
                         guest_id: 7,
+                        generation: 1,
                         window: WindowSnapshot {
                             title: "Controls".into(),
                             bounds,

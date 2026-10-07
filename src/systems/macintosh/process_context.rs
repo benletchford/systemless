@@ -26,6 +26,15 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::hash::Hash;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_WINDOW_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+fn new_window_generation() -> u64 {
+    NEXT_WINDOW_GENERATION
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| next.checked_add(1))
+        .expect("window lifetime generation exhausted")
+}
 
 #[derive(Debug)]
 struct ProcessMemoryRegion {
@@ -1893,7 +1902,10 @@ pub(crate) struct SharedProcessEventQueue(SharedProcessValue<EventQueue>);
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SharedProcessMenuTracking(crate::guest_call::SharedMenuTracking);
 #[derive(Clone, Default)]
-pub(crate) struct SharedProcessWindowList(SharedProcessValue<Vec<u32>>);
+pub(crate) struct SharedProcessWindowList(
+    SharedProcessValue<Vec<u32>>,
+    SharedProcessValue<HashMap<u32, u64>>,
+);
 pub(crate) struct SharedProcessInputState(SharedProcessValue<ProcessInputState>);
 /// Detached-by-default attachment handle for Time Manager tasks.
 ///
@@ -4485,19 +4497,42 @@ impl<const N: usize> PartialEq<[u32; N]> for SharedProcessWindowList {
 #[allow(dead_code)]
 impl SharedProcessWindowList {
     pub(crate) fn from_value(windows: Vec<u32>) -> Self {
-        Self(SharedProcessValue::from_value(windows))
+        Self(SharedProcessValue::from_value(windows), Default::default())
     }
 
     pub(crate) fn shared_handle(&self) -> Self {
-        Self(self.0.shared_handle())
+        Self(self.0.shared_handle(), self.1.shared_handle())
     }
 
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
-        self.0.ptr_eq(&other.0)
+        self.0.ptr_eq(&other.0) && self.1.ptr_eq(&other.1)
     }
 
     pub(crate) fn attach_to(&mut self, process_state: &Self) {
         self.0.attach_to(&process_state.0, Vec::is_empty);
+        self.1.attach_to(&process_state.1, HashMap::is_empty);
+    }
+
+    /// Register a newly created WindowRecord, including caller-supplied
+    /// storage that may reuse an earlier WindowPtr. The guest address remains
+    /// authoritative; this token is presentation identity only.
+    pub(crate) fn register_new_window(&self, window: u32) -> u64 {
+        let generation = new_window_generation();
+        self.1.with_mut(|lifetimes| lifetimes.insert(window, generation));
+        generation
+    }
+
+    /// Seed windows installed by tests or older paths before snapshotting.
+    pub(crate) fn generation_for_window(&self, window: u32) -> u64 {
+        self.1.with_mut(|lifetimes| {
+            *lifetimes.entry(window).or_insert_with(new_window_generation)
+        })
+    }
+
+    fn prune_window_generations(&self) {
+        let windows = self.windows();
+        self.1
+            .with_mut(|lifetimes| lifetimes.retain(|window, _| windows.contains(window)));
     }
 
     pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&[u32]) -> R) -> R {
@@ -4569,25 +4604,33 @@ impl SharedProcessWindowList {
 
     pub(crate) fn clear(&self) {
         self.with_mut(Vec::clear);
+        self.1.with_mut(HashMap::clear);
     }
 
     pub(crate) fn replace(&self, windows: Vec<u32>) {
         self.with_mut(|current| *current = windows);
+        self.prune_window_generations();
     }
 
     pub(crate) fn remove(&self, index: usize) -> u32 {
-        self.with_mut(|windows| windows.remove(index))
+        let removed = self.with_mut(|windows| windows.remove(index));
+        self.prune_window_generations();
+        removed
     }
 
     pub(crate) fn remove_window(&self, window: u32) -> bool {
-        self.with_mut(|windows| {
+        let removed = self.with_mut(|windows| {
             if let Some(pos) = windows.iter().position(|&w| w == window) {
                 windows.remove(pos);
                 true
             } else {
                 false
             }
-        })
+        });
+        if removed {
+            self.1.with_mut(|lifetimes| lifetimes.remove(&window));
+        }
+        removed
     }
 
     pub(crate) fn retain<F>(&self, predicate: F)
@@ -4595,10 +4638,15 @@ impl SharedProcessWindowList {
         F: FnMut(&u32) -> bool,
     {
         self.with_mut(|windows| windows.retain(predicate));
+        self.prune_window_generations();
     }
 
     pub(crate) fn pop(&self) -> Option<u32> {
-        self.with_mut(Vec::pop)
+        let removed = self.with_mut(Vec::pop);
+        if removed.is_some() {
+            self.prune_window_generations();
+        }
+        removed
     }
 
     pub(crate) fn swap(&self, a: usize, b: usize) {
@@ -13946,6 +13994,26 @@ mod tests {
         assert_eq!(classic, [0x3000, 0x1000, 0x4000]);
         assert_eq!(native, [0x3000, 0x1000, 0x4000]);
         assert_eq!(detached, [0x1000, 0x2000]);
+    }
+
+    #[test]
+    fn window_generations_survive_reordering_and_change_on_reuse() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessWindowList::default();
+        let mut native = SharedProcessWindowList::default();
+        context.attach_window_list(&mut classic);
+        context.attach_window_list(&mut native);
+
+        classic.push(0x1000);
+        let first = classic.register_new_window(0x1000);
+        native.bring_to_front(0x1000);
+        assert_eq!(native.generation_for_window(0x1000), first);
+
+        native.remove_window(0x1000);
+        native.push(0x1000);
+        let second = native.register_new_window(0x1000);
+        assert_ne!(first, second);
+        assert_eq!(classic.generation_for_window(0x1000), second);
     }
 
     #[test]

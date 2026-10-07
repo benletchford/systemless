@@ -2407,6 +2407,7 @@ impl FixtureRunner {
                 ) != 0;
                 crate::window_manager::WindowFrameSnapshot {
                     guest_id: pointer,
+                    generation: self.dispatcher.window_list.generation_for_window(pointer),
                     window,
                     definition_id,
                     close_box,
@@ -2530,6 +2531,7 @@ impl FixtureRunner {
                     .map(|index| index + 1);
                 Some(DialogSnapshot {
                     guest_id,
+                    generation: frame.generation,
                     bounds,
                     visible: frame.window.visible,
                     active: frame.window.active,

@@ -3694,6 +3694,7 @@ impl super::TrapDispatcher {
         self.window_title = wind_title.to_string();
         self.window_bounds = (wind_top, wind_left, wind_bottom, wind_right);
         self.window_proc_id = wind_proc_id;
+        self.window_list.register_new_window(window_ptr);
         self.ensure_window_aux_record(bus, window_ptr, gd_ctab_handle);
         self.go_away_flag = go_away_flag;
 

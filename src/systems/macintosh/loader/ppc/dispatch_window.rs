@@ -1631,6 +1631,7 @@ pub(super) fn ppc_new_cwindow_with_parameters(
         pixels_no_purge: true,
     });
     ppc_reorder_window(gworlds, window_list, port, behind, false);
+    window_list.register_new_window(port);
     if visible && proc_id == 1 {
         ppc_draw_existing_window_frame(memory, gworlds, window_list, port, false);
     }
@@ -5673,7 +5674,7 @@ pub(super) fn ppc_close_window(
                 || gworld.port == PPC_DSP_BACK_GWORLD
                 || gworld.port != window
         });
-        window_list.with_mut(|windows| windows.retain(|candidate| *candidate != window));
+        window_list.retain(|candidate| *candidate != window);
         ppc_recalculate_window_vis_regions(
             process_memory_manager,
             memory,
@@ -5820,7 +5821,7 @@ pub(super) fn ppc_dispose_window(
     gworlds.retain(|record| {
         record.port != window || matches!(record.port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
     });
-    window_list.with_mut(|windows| windows.retain(|candidate| *candidate != window));
+    window_list.retain(|candidate| *candidate != window);
     if *current_gworld == window {
         *current_gworld =
             ppc_front_visible_process_window(memory, window_list).unwrap_or(PPC_MAIN_GWORLD);
