@@ -135,6 +135,32 @@ pub fn scrollbar_geometry(control: &ControlSnapshot) -> ScrollbarGeometry {
     }
 }
 
+/// Position the moving thumb outline while TrackControl holds the value.
+/// The standard CDEF cancels the outline when the pointer leaves the
+/// perpendicular 30-pixel slop region.
+/// Macintosh Toolbox Essentials (1992), pp. 5-7--5-10, 5-58--5-61.
+pub fn scrollbar_drag_outline(
+    control: &ControlSnapshot,
+    start: (i16, i16),
+    current: (i16, i16),
+) -> Option<i32> {
+    let rect = Rect::from(control.bounds);
+    let geometry = scrollbar_geometry(control);
+    let (start_axis, current_axis, cross, cross_min, cross_max) = if geometry.vertical {
+        (i32::from(start.0), i32::from(current.0), i32::from(current.1), rect.left, rect.right)
+    } else {
+        (i32::from(start.1), i32::from(current.1), i32::from(current.0), rect.top, rect.bottom)
+    };
+    if cross < cross_min - 30 || cross >= cross_max + 30 {
+        return None;
+    }
+    let travel = geometry.track_extent - geometry.thumb_extent;
+    Some((geometry.thumb_start + current_axis - start_axis).clamp(
+        geometry.track_start,
+        geometry.track_start + travel.max(0),
+    ))
+}
+
 /// Only standard CDEF-owned rectangles are eligible for replacement. Clip
 /// them to their owning content and remove the structures of front windows.
 /// The control registry follows creation order, so reverse it to match
@@ -316,7 +342,7 @@ pub fn frame_pieces(windows: &[WindowFrameSnapshot], viewport: Rect) -> Vec<Fram
 
 #[cfg(test)]
 mod tests {
-    use super::{control_pieces, frame_pieces, gutter_pieces, scrollbar_geometry, GutterKind, Rect};
+    use super::{control_pieces, frame_pieces, gutter_pieces, scrollbar_drag_outline, scrollbar_geometry, GutterKind, Rect};
     use systemless::runner::{ControlSnapshot, WindowFrameSnapshot, WindowSnapshot};
 
     fn window(
@@ -411,6 +437,17 @@ mod tests {
         bar.value = 10;
         let end = scrollbar_geometry(&bar);
         assert_eq!(end.thumb_start, 428);
+    }
+
+    #[test]
+    fn scrollbar_drag_outline_clamps_and_cancels_without_changing_value() {
+        let bar = control(1, 16, (360, 80, 376, 540));
+        let start = (368, 104);
+        assert_eq!(scrollbar_drag_outline(&bar, start, start), Some(16));
+        assert_eq!(scrollbar_drag_outline(&bar, start, (368, 500)), Some(412));
+        assert_eq!(scrollbar_drag_outline(&bar, start, (368, 600)), Some(428));
+        assert_eq!(scrollbar_drag_outline(&bar, start, (329, 500)), None);
+        assert_eq!(bar.value, 0);
     }
 
     #[test]

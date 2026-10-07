@@ -199,6 +199,7 @@ mod desktop {
         focus: FocusHandle,
         mouse_down: bool,
         mouse_position: (i16, i16),
+        scrollbar_drag: Option<(u32, u64, (i16, i16))>,
         _poll: Task<()>,
     }
 
@@ -268,6 +269,7 @@ mod desktop {
                 focus: cx.focus_handle(),
                 mouse_down: false,
                 mouse_position: (0, 0),
+                scrollbar_drag: None,
                 _poll: poll,
             }
         }
@@ -277,6 +279,44 @@ mod desktop {
             let x = f32::from(position.x).clamp(0., self.width.saturating_sub(1) as f32);
             let y = (f32::from(position.y) - 36.).clamp(0., self.height.saturating_sub(1) as f32);
             ((y as u32 + self.crop_top) as i16, x as i16)
+        }
+
+        fn scrollbar_at(&self, point: (i16, i16)) -> Option<(u32, u64, (i16, i16))> {
+            let viewport = super::frames::Rect {
+                top: self.crop_top as i32,
+                left: 0,
+                bottom: (self.crop_top + self.height) as i32,
+                right: self.width as i32,
+            };
+            super::frames::control_pieces(&self.controls, &self.windows, viewport)
+                .into_iter()
+                .find_map(|piece| {
+                    let control = &self.controls[piece.control];
+                    if control.proc_id != 16
+                        || !control.enabled
+                        || control.minimum >= control.maximum
+                    {
+                        return None;
+                    }
+                    let p = (i32::from(point.0), i32::from(point.1));
+                    if p.0 < piece.clip.top
+                        || p.0 >= piece.clip.bottom
+                        || p.1 < piece.clip.left
+                        || p.1 >= piece.clip.right
+                    {
+                        return None;
+                    }
+                    let geometry = super::frames::scrollbar_geometry(control);
+                    let source = piece.source;
+                    let axis = if geometry.vertical {
+                        p.0 - source.top
+                    } else {
+                        p.1 - source.left
+                    };
+                    (axis >= geometry.thumb_start
+                        && axis < geometry.thumb_start + geometry.thumb_extent)
+                        .then_some((control.guest_id, control.generation, point))
+                })
         }
     }
 
@@ -403,9 +443,12 @@ mod desktop {
                 .w(px(self.width as f32))
                 .h(px(self.height as f32))
                 .flex_shrink_0()
-                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, _| {
+                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
                     let (vertical, horizontal) = this.pointer(event.position);
                     this.mouse_position = (vertical, horizontal);
+                    if this.scrollbar_drag.is_some() {
+                        cx.notify();
+                    }
                     let _ = this
                         .commands
                         .send(Command::Input(MacintoshInput::MouseMove {
@@ -420,6 +463,8 @@ mod desktop {
                         this.focus.focus(window, cx);
                         let (vertical, horizontal) = this.pointer(event.position);
                         this.mouse_position = (vertical, horizontal);
+                        this.scrollbar_drag = this.scrollbar_at((vertical, horizontal));
+                        cx.notify();
                         let _ = this
                             .commands
                             .send(Command::Input(MacintoshInput::MouseDown {
@@ -430,8 +475,10 @@ mod desktop {
                 )
                 .on_mouse_up(
                     MouseButton::Left,
-                    cx.listener(|this, event: &MouseUpEvent, _, _| {
+                    cx.listener(|this, event: &MouseUpEvent, _, cx| {
                         this.mouse_down = false;
+                        this.scrollbar_drag = None;
+                        cx.notify();
                         let (vertical, horizontal) = this.pointer(event.position);
                         let _ = this.commands.send(Command::Input(MacintoshInput::MouseUp {
                             vertical,
@@ -441,9 +488,11 @@ mod desktop {
                 )
                 .on_mouse_up_out(
                     MouseButton::Left,
-                    cx.listener(|this, event: &MouseUpEvent, _, _| {
+                    cx.listener(|this, event: &MouseUpEvent, _, cx| {
                         if this.mouse_down {
                             this.mouse_down = false;
+                            this.scrollbar_drag = None;
+                            cx.notify();
                             let (vertical, horizontal) = this.pointer(event.position);
                             let _ = this.commands.send(Command::Input(MacintoshInput::MouseUp {
                                 vertical,
@@ -753,6 +802,31 @@ mod desktop {
                                     .border_1()
                                     .border_color(cx.theme().border),
                             );
+                            if let Some((id, generation, start)) = self.scrollbar_drag {
+                                if control.guest_id == id && control.generation == generation {
+                                    if let Some(position) = super::frames::scrollbar_drag_outline(
+                                        control,
+                                        start,
+                                        self.mouse_position,
+                                    ) {
+                                        let (left, top) = if geometry.vertical {
+                                            (0., position as f32)
+                                        } else {
+                                            (position as f32, 0.)
+                                        };
+                                        overlay = overlay.child(
+                                            div()
+                                                .absolute()
+                                                .left(px(left))
+                                                .top(px(top))
+                                                .w(px(thumb_width))
+                                                .h(px(thumb_height))
+                                                .border_2()
+                                                .border_color(cx.theme().foreground),
+                                        );
+                                    }
+                                }
+                            }
                         }
                     }
                     _ => unreachable!(),
