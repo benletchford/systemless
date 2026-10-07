@@ -1351,164 +1351,134 @@ mod desktop {
                 // The single-line edit field is a read-only GPUI presentation;
                 // pointer and keyboard events still enter the guest Dialog Manager.
                 // Macintosh Toolbox Essentials (1992), pp. 6-13--6-15, 6-79--6-80.
-                if let Some(dialog) = standard_dbox_dialog(&self.dialogs, &self.windows) {
-                    for item in &dialog.items {
-                        if !item.visible {
-                            continue;
-                        }
-                        if item.kind == DialogItemKind::EditText
-                            && (item.text.contains('\r') || item.bounds.2 - item.bounds.0 > 24)
-                        {
-                            continue;
-                        }
-                        let item_rect = super::frames::Rect::from(item.bounds);
-                        // The Dialog Manager draws the default button outline
-                        // outside its DITL rectangle. Cover those pixels too.
-                        let source = if item.kind == DialogItemKind::Button
-                            && dialog.default_item == Some(item.number)
-                        {
-                            super::frames::Rect {
-                                top: item_rect.top - 4,
-                                left: item_rect.left - 4,
-                                bottom: item_rect.bottom + 4,
-                                right: item_rect.right + 4,
-                            }
-                        } else if item.kind == DialogItemKind::EditText {
-                            super::frames::Rect {
-                                top: item_rect.top - 4,
-                                left: item_rect.left - 4,
-                                bottom: item_rect.bottom + 4,
-                                right: item_rect.right + 4,
-                            }
-                        } else {
-                            item_rect
-                        };
-                        let Some(clip) = source
-                            .intersection(dialog.bounds.into())
-                            .and_then(|rect| rect.intersection(viewport))
-                        else {
-                            continue;
-                        };
-                        let mut overlay = div()
+                for piece in
+                    super::frames::dialog_item_pieces(&self.dialogs, &self.windows, viewport)
+                {
+                    let dialog = &self.dialogs[piece.dialog];
+                    let item = &dialog.items[piece.item];
+                    let item_rect = super::frames::Rect::from(item.bounds);
+                    let source = piece.source;
+                    let clip = piece.clip;
+                    let mut overlay = div()
+                        .absolute()
+                        .left(px((source.left - clip.left) as f32))
+                        .top(px((source.top - clip.top) as f32))
+                        .w(px(source.width() as f32))
+                        .h(px(source.height() as f32))
+                        .bg(cx.theme().background);
+                    overlay = match item.kind {
+                        DialogItemKind::Button => overlay.child(
+                            Button::new(format!(
+                                "guest-dialog-button-{}-{}-{}",
+                                dialog.guest_id, dialog.generation, item.number
+                            ))
+                            .label(item.text.clone())
+                            .small()
+                            .compact()
+                            .tab_stop(false)
+                            .disabled(!item.enabled)
                             .absolute()
-                            .left(px((source.left - clip.left) as f32))
-                            .top(px((source.top - clip.top) as f32))
-                            .w(px(source.width() as f32))
-                            .h(px(source.height() as f32))
-                            .bg(cx.theme().background);
-                        overlay = match item.kind {
-                            DialogItemKind::Button => overlay.child(
-                                Button::new(format!(
-                                    "guest-dialog-button-{}-{}-{}",
+                            .left(px((item_rect.left - source.left) as f32))
+                            .top(px((item_rect.top - source.top) as f32))
+                            .w(px(item_rect.width() as f32))
+                            .h(px(item_rect.height() as f32)),
+                        ),
+                        DialogItemKind::StaticText => overlay
+                            .text_size(px(13.))
+                            .text_color(cx.theme().foreground)
+                            .child(item.text.replace('\r', "\n")),
+                        DialogItemKind::EditText => {
+                            let focused = dialog.active
+                                && dialog.edit_field == Some(item.number)
+                                && item.enabled
+                                && item.selection.is_some();
+                            let selection = item.selection.unwrap_or((0, 0));
+                            let (prefix, selected, suffix) = save_name_segments(
+                                &item.text,
+                                (selection.0.max(0) as usize, selection.1.max(0) as usize),
+                                focused,
+                            );
+                            let mut field = div()
+                                .id(format!(
+                                    "guest-dialog-edit-{}-{}-{}",
                                     dialog.guest_id, dialog.generation, item.number
                                 ))
-                                .label(item.text.clone())
-                                .small()
-                                .compact()
-                                .tab_stop(false)
-                                .disabled(!item.enabled)
+                                .test_support()
                                 .absolute()
                                 .left(px((item_rect.left - source.left) as f32))
                                 .top(px((item_rect.top - source.top) as f32))
                                 .w(px(item_rect.width() as f32))
-                                .h(px(item_rect.height() as f32)),
-                            ),
-                            DialogItemKind::StaticText => overlay
-                                .text_size(px(13.))
-                                .text_color(cx.theme().foreground)
-                                .child(item.text.replace('\r', "\n")),
-                            DialogItemKind::EditText => {
-                                let focused = dialog.edit_field == Some(item.number)
-                                    && item.enabled
-                                    && item.selection.is_some();
-                                let selection = item.selection.unwrap_or((0, 0));
-                                let (prefix, selected, suffix) = save_name_segments(
-                                    &item.text,
-                                    (selection.0.max(0) as usize, selection.1.max(0) as usize),
-                                    focused,
-                                );
-                                let mut field = div()
-                                    .id(format!(
-                                        "guest-dialog-edit-{}-{}-{}",
-                                        dialog.guest_id, dialog.generation, item.number
-                                    ))
-                                    .test_support()
-                                    .absolute()
-                                    .left(px((item_rect.left - source.left) as f32))
-                                    .top(px((item_rect.top - source.top) as f32))
-                                    .w(px(item_rect.width() as f32))
-                                    .h(px(item_rect.height() as f32))
-                                    .overflow_hidden()
-                                    .flex()
-                                    .items_center()
-                                    .px_1()
-                                    .border_1()
-                                    .border_color(if focused {
-                                        cx.theme().accent
-                                    } else {
-                                        cx.theme().border
-                                    })
-                                    .bg(cx.theme().background)
-                                    .text_size(px(13.))
-                                    .text_color(if item.enabled {
-                                        cx.theme().foreground
-                                    } else {
-                                        cx.theme().muted_foreground
-                                    })
-                                    .child(prefix);
-                                if focused && !selected.is_empty() {
-                                    field = field.child(
-                                        div()
-                                            .bg(cx.theme().selection)
-                                            .text_color(cx.theme().foreground)
-                                            .child(selected),
-                                    );
-                                } else if focused {
-                                    field = field.child(
-                                        div().w(px(1.)).h(px(14.)).bg(cx.theme().foreground),
-                                    );
-                                }
-                                overlay.child(field.child(suffix))
-                            }
-                            DialogItemKind::Checkbox => overlay.child(
-                                Checkbox::new(format!(
-                                    "guest-dialog-checkbox-{}-{}-{}",
-                                    dialog.guest_id, dialog.generation, item.number
-                                ))
-                                .label(item.text.clone())
-                                .checked(item.value.unwrap() != 0)
-                                .disabled(!item.enabled)
-                                .tab_stop(false)
-                                .small()
-                                .w_full()
-                                .h_full(),
-                            ),
-                            DialogItemKind::RadioButton => overlay.child(
-                                Radio::new(format!(
-                                    "guest-dialog-radio-{}-{}-{}",
-                                    dialog.guest_id, dialog.generation, item.number
-                                ))
-                                .label(item.text.clone())
-                                .checked(item.value.unwrap() != 0)
-                                .disabled(!item.enabled)
-                                .tab_stop(false)
-                                .small()
-                                .w_full()
-                                .h_full(),
-                            ),
-                            _ => unreachable!(),
-                        };
-                        screen = screen.child(
-                            div()
-                                .absolute()
+                                .h(px(item_rect.height() as f32))
                                 .overflow_hidden()
-                                .left(px(clip.left as f32))
-                                .top(px((clip.top - self.crop_top as i32) as f32))
-                                .w(px(clip.width() as f32))
-                                .h(px(clip.height() as f32))
-                                .child(overlay),
-                        );
-                    }
+                                .flex()
+                                .items_center()
+                                .px_1()
+                                .border_1()
+                                .border_color(if focused {
+                                    cx.theme().accent
+                                } else {
+                                    cx.theme().border
+                                })
+                                .bg(cx.theme().background)
+                                .text_size(px(13.))
+                                .text_color(if item.enabled {
+                                    cx.theme().foreground
+                                } else {
+                                    cx.theme().muted_foreground
+                                })
+                                .child(prefix);
+                            if focused && !selected.is_empty() {
+                                field = field.child(
+                                    div()
+                                        .bg(cx.theme().selection)
+                                        .text_color(cx.theme().foreground)
+                                        .child(selected),
+                                );
+                            } else if focused {
+                                field = field.child(
+                                    div().w(px(1.)).h(px(14.)).bg(cx.theme().foreground),
+                                );
+                            }
+                            overlay.child(field.child(suffix))
+                        }
+                        DialogItemKind::Checkbox => overlay.child(
+                            Checkbox::new(format!(
+                                "guest-dialog-checkbox-{}-{}-{}",
+                                dialog.guest_id, dialog.generation, item.number
+                            ))
+                            .label(item.text.clone())
+                            .checked(item.value.unwrap() != 0)
+                            .disabled(!item.enabled)
+                            .tab_stop(false)
+                            .small()
+                            .w_full()
+                            .h_full(),
+                        ),
+                        DialogItemKind::RadioButton => overlay.child(
+                            Radio::new(format!(
+                                "guest-dialog-radio-{}-{}-{}",
+                                dialog.guest_id, dialog.generation, item.number
+                            ))
+                            .label(item.text.clone())
+                            .checked(item.value.unwrap() != 0)
+                            .disabled(!item.enabled)
+                            .tab_stop(false)
+                            .small()
+                            .w_full()
+                            .h_full(),
+                        ),
+                        _ => unreachable!(),
+                    };
+                    screen = screen.child(
+                        div()
+                            .absolute()
+                            .overflow_hidden()
+                            .left(px(clip.left as f32))
+                            .top(px((clip.top - self.crop_top as i32) as f32))
+                            .w(px(clip.width() as f32))
+                            .h(px(clip.height() as f32))
+                            .child(overlay),
+                    );
                 }
                 if let Some(panel) = self.standard_file.as_ref().filter(|panel| {
                     panel.kind == StandardFileKind::Get

@@ -1,6 +1,6 @@
 //! Rectangular guest-frame overlays. Content pixels and input remain guest-owned.
 
-use systemless::runner::{ControlSnapshot, DialogSnapshot, ListManagerSnapshot, TextEditSnapshot, WindowFrameSnapshot};
+use systemless::runner::{ControlSnapshot, DialogItemKind, DialogSnapshot, ListManagerSnapshot, TextEditSnapshot, WindowFrameSnapshot};
 use systemless::menu_model::GuestMenuSnapshot;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -132,6 +132,89 @@ pub struct TextEditPiece {
     pub record: usize,
     pub source: Rect,
     pub clip: Rect,
+}
+
+pub struct DialogItemPiece {
+    pub dialog: usize,
+    pub item: usize,
+    pub source: Rect,
+    pub clip: Rect,
+}
+
+/// Clip standard DITL presentation to its owning dialog and all windows in
+/// front of it. Unknown items and WDEFs keep their guest pixels. Macintosh
+/// Toolbox Essentials (1992), pp. 4-19, 4-40, 6-13--6-15.
+pub fn dialog_item_pieces(
+    dialogs: &[DialogSnapshot],
+    windows: &[WindowFrameSnapshot],
+    viewport: Rect,
+) -> Vec<DialogItemPiece> {
+    let mut pieces = Vec::new();
+    let mut covers = Vec::new();
+    for frame in windows {
+        if !frame.window.visible {
+            continue;
+        }
+        let Some(structure) = frame.window.structure_bounds.map(Rect::from) else {
+            continue;
+        };
+        if frame.definition_id == Some(1) {
+            if let Some((dialog_index, dialog)) = dialogs.iter().enumerate().find(|(_, dialog)| {
+                dialog.visible
+                    && dialog.guest_id == frame.guest_id
+                    && dialog.generation == frame.generation
+                    && !dialog.items.is_empty()
+                    && dialog.items.iter().all(|item| match item.kind {
+                        DialogItemKind::Button
+                        | DialogItemKind::StaticText
+                        | DialogItemKind::EditText => true,
+                        DialogItemKind::Checkbox | DialogItemKind::RadioButton => {
+                            item.value.is_some()
+                        }
+                        _ => false,
+                    })
+            }) {
+                for (item_index, item) in dialog.items.iter().enumerate() {
+                    if !item.visible
+                        || (item.kind == DialogItemKind::EditText
+                            && (item.text.contains('\r') || item.bounds.2 - item.bounds.0 > 24))
+                    {
+                        continue;
+                    }
+                    let item_rect = Rect::from(item.bounds);
+                    let source = if (item.kind == DialogItemKind::Button
+                        && dialog.default_item == Some(item.number))
+                        || item.kind == DialogItemKind::EditText
+                    {
+                        Rect {
+                            top: item_rect.top - 4,
+                            left: item_rect.left - 4,
+                            bottom: item_rect.bottom + 4,
+                            right: item_rect.right + 4,
+                        }
+                    } else {
+                        item_rect
+                    };
+                    let mut clips: Vec<_> = source
+                        .intersection(Rect::from(dialog.bounds))
+                        .and_then(|rect| rect.intersection(viewport))
+                        .into_iter()
+                        .collect();
+                    for cover in &covers {
+                        clips = clips.into_iter().flat_map(|clip| clip.subtract(*cover)).collect();
+                    }
+                    pieces.extend(clips.into_iter().map(|clip| DialogItemPiece {
+                        dialog: dialog_index,
+                        item: item_index,
+                        source,
+                        clip,
+                    }));
+                }
+            }
+        }
+        covers.push(structure);
+    }
+    pieces
 }
 
 /// Present only ordinary unstyled TextEdit records in standard document
@@ -511,9 +594,9 @@ pub fn frame_pieces(windows: &[WindowFrameSnapshot], viewport: Rect) -> Vec<Fram
 
 #[cfg(test)]
 mod tests {
-    use super::{control_pieces, frame_pieces, gutter_pieces, list_pieces, popup_control_label, scrollbar_drag_outline, scrollbar_geometry, text_edit_pieces, GutterKind, Rect};
+    use super::{control_pieces, dialog_item_pieces, frame_pieces, gutter_pieces, list_pieces, popup_control_label, scrollbar_drag_outline, scrollbar_geometry, text_edit_pieces, GutterKind, Rect};
     use systemless::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
-    use systemless::runner::{ControlSnapshot, ListManagerSnapshot, TextEditSnapshot, WindowFrameSnapshot, WindowSnapshot};
+    use systemless::runner::{ControlSnapshot, DialogItemKind, DialogItemSnapshot, DialogSnapshot, ListManagerSnapshot, TextEditSnapshot, WindowFrameSnapshot, WindowSnapshot};
 
     fn window(
         bounds: (i16, i16, i16, i16),
@@ -556,6 +639,46 @@ mod tests {
             popup_menu_id: None,
             popup_title_width: None,
         }
+    }
+
+    #[test]
+    fn inactive_standard_dialog_items_clip_below_front_window() {
+        let mut front = window((80, 80, 130, 150), true, 0);
+        front.guest_id = 2;
+        let mut back = window((50, 50, 180, 220), true, 1);
+        back.window.active = false;
+        let windows = [front, back];
+        let mut dialog = DialogSnapshot {
+            guest_id: 1,
+            generation: 1,
+            bounds: (50, 50, 180, 220),
+            visible: true,
+            active: false,
+            default_item: None,
+            cancel_item: None,
+            edit_field: None,
+            items: vec![DialogItemSnapshot {
+                number: 1,
+                kind: DialogItemKind::StaticText,
+                bounds: (90, 90, 110, 180),
+                text: "Behind".into(),
+                enabled: false,
+                visible: true,
+                value: None,
+                selection: None,
+            }],
+        };
+        let viewport = Rect::from((0, 0, 300, 300));
+        let pieces = dialog_item_pieces(&[dialog.clone()], &windows, viewport);
+        assert_eq!(pieces.len(), 1);
+        assert_eq!(pieces[0].source, Rect::from((90, 90, 110, 180)));
+        assert_eq!(pieces[0].clip, Rect::from((90, 152, 110, 180)));
+
+        dialog.items[0].kind = DialogItemKind::UserItem;
+        assert!(dialog_item_pieces(&[dialog.clone()], &windows, viewport).is_empty());
+        dialog.items[0].kind = DialogItemKind::StaticText;
+        dialog.generation += 1;
+        assert!(dialog_item_pieces(&[dialog], &windows, viewport).is_empty());
     }
 
     #[test]

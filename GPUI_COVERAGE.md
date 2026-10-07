@@ -52,6 +52,13 @@ queue and clears local scrollbar/popup tracking, with a test for exactly one
 release. Scroll-wheel translation still needs a defined guest event route;
 the frontend does not synthesize direct scrollbar value changes.
 
+Standard DITL items are now selected by their owning window identity and
+generation rather than by the active-dialog flag. Visible inactive modeless
+dialogs can therefore use the same GPUI item presentation, clipped beneath
+front window structure bounds. A focused clipping test checks an inactive
+dialog, a custom-item fallback, and a stale window generation. Nested modal
+ordering and nonrectangular visible regions remain unqualified.
+
 The dependency order is menus, frames, dialogs, controls, lists/TextEdit, then
 Standard File. The first end-to-end gate is one standard modal dialog on each
 CPU alongside menus and windows. For every row, record at least one 68K and
