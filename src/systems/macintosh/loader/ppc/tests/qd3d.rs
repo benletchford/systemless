@@ -16898,13 +16898,13 @@ fn q3_software_renderer_respects_backfacing_remove_style() {
         remove_loaded
             .memory
             .read_u16_be(remove_front_base + 5 * 16 + 2),
-        Some(0)
+        Some(0x03e0)
     );
     assert_eq!(
         remove_loaded
             .memory
             .read_u16_be(remove_front_base + 5 * 16 + 5 * 2),
-        Some(0x03e0)
+        Some(0)
     );
 
     let (mut clockwise_loaded, clockwise_front_base, clockwise_stats) =
@@ -16917,14 +16917,204 @@ fn q3_software_renderer_respects_backfacing_remove_style() {
         clockwise_loaded
             .memory
             .read_u16_be(clockwise_front_base + 5 * 16 + 2),
-        Some(0x03e0)
+        Some(0)
     );
     assert_eq!(
         clockwise_loaded
             .memory
             .read_u16_be(clockwise_front_base + 5 * 16 + 5 * 2),
-        Some(0)
+        Some(0x03e0)
     );
+}
+
+#[test]
+fn q3_software_renderer_culls_faces_turned_away_from_the_camera() {
+    // Two triangles in the z = 0 plane: the left one winds counterclockwise
+    // and the right one clockwise when seen from +z.  With backface removal,
+    // a camera on +z sees only the counterclockwise one and a camera on -z
+    // sees only the clockwise one.
+    fn render_from(camera_z: f32) -> (usize, usize, PpcQ3SoftwareRenderStats) {
+        let view = PPC_Q3_OBJECT_BASE;
+        let camera = PPC_Q3_OBJECT_BASE + PPC_Q3_OBJECT_STRIDE;
+        let style = PPC_Q3_OBJECT_BASE + PPC_Q3_OBJECT_STRIDE * 2;
+        let attribute_set = PPC_Q3_OBJECT_BASE + PPC_Q3_OBJECT_STRIDE * 3;
+        let trimesh_data = PPC_DATA_BASE + 0x1000;
+        let points_ptr = PPC_DATA_BASE + 0x1080;
+        let triangles_ptr = PPC_DATA_BASE + 0x1100;
+        let triangle_attrs_ptr = PPC_DATA_BASE + 0x1180;
+        let colors_ptr = PPC_DATA_BASE + 0x11c0;
+        let front_base = PPC_HEAP_BASE + 0x1000;
+        let pef = synthetic_pef_with_library_import(b"QuickDraw\xaa 3D", b"Q3TriMesh_Submit");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.memory.add_region(trimesh_data, vec![0; 0x400]);
+        loaded.memory.add_region(front_base, vec![0; 16 * 16 * 2]);
+        loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+            port: PPC_MAIN_GWORLD,
+            pixmap_handle: 0,
+            pixmap: 0,
+            base_addr: front_base,
+            gdevice: PPC_MAIN_GDEVICE,
+            width: 16,
+            height: 16,
+            depth: 16,
+            row_bytes: 32,
+            pixels_locked: false,
+            pixels_no_purge: false,
+        }];
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
+
+        let memory = &mut loaded.memory;
+        for (offset, value) in [
+            (PPC_Q3_TRIMESH_NUM_TRIANGLES_OFFSET, 2),
+            (PPC_Q3_TRIMESH_TRIANGLES_OFFSET, triangles_ptr),
+            (PPC_Q3_TRIMESH_NUM_TRIANGLE_ATTRIBUTE_TYPES_OFFSET, 1),
+            (
+                PPC_Q3_TRIMESH_TRIANGLE_ATTRIBUTE_TYPES_OFFSET,
+                triangle_attrs_ptr,
+            ),
+            (PPC_Q3_TRIMESH_NUM_POINTS_OFFSET, 6),
+            (PPC_Q3_TRIMESH_POINTS_OFFSET, points_ptr),
+        ] {
+            memory.write_u32_be(trimesh_data + offset, value).unwrap();
+        }
+        for (index, point) in [
+            (-0.9, -0.8, 0.0),
+            (-0.1, -0.8, 0.0),
+            (-0.5, 0.8, 0.0),
+            (0.1, -0.8, 0.0),
+            (0.5, 0.8, 0.0),
+            (0.9, -0.8, 0.0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            ppc_write_q3_vector3d(
+                memory,
+                points_ptr + index as u32 * PPC_Q3_POINT3D_SIZE,
+                point,
+            )
+            .unwrap();
+        }
+        for (offset, index) in [0u32, 1, 2, 3, 4, 5].into_iter().enumerate() {
+            memory
+                .write_u32_be(triangles_ptr + offset as u32 * 4, index)
+                .unwrap();
+        }
+        memory
+            .write_u32_be(triangle_attrs_ptr, PPC_Q3_ATTRIBUTE_TYPE_DIFFUSE_COLOR)
+            .unwrap();
+        memory
+            .write_u32_be(triangle_attrs_ptr + 4, colors_ptr)
+            .unwrap();
+        memory.write_u32_be(triangle_attrs_ptr + 8, 0).unwrap();
+        for (index, color) in [(0.0, 1.0, 0.0), (1.0, 0.0, 0.0)].into_iter().enumerate() {
+            ppc_write_q3_vector3d(
+                memory,
+                colors_ptr + index as u32 * PPC_Q3_POINT3D_SIZE,
+                color,
+            )
+            .unwrap();
+        }
+
+        let mut view_state = PpcQ3ViewStateRecord::new(view);
+        view_state.camera = camera;
+        loaded.q3_views.push(view_state);
+        loaded.q3_cameras.push(PpcQ3CameraRecord {
+            camera,
+            camera_type: PPC_Q3_CAMERA_TYPE_VIEW_ANGLE_ASPECT,
+            placement: PpcQ3CameraPlacement {
+                camera_location: (0.0, 0.0, camera_z),
+                point_of_interest: (0.0, 0.0, 0.0),
+                up_vector: (0.0, 1.0, 0.0),
+            },
+            range_hither: 1.0,
+            range_yon: 10.0,
+            viewport_origin: (-1.0, 1.0),
+            viewport_width: 2.0,
+            viewport_height: 2.0,
+            projection: PpcQ3CameraProjection::ViewAngleAspect {
+                fov: std::f32::consts::FRAC_PI_2,
+                aspect_ratio_x_to_y: 1.0,
+            },
+        });
+        loaded.q3_submissions.push(PpcQ3SubmissionRecord {
+            view,
+            kind: PpcQ3SubmissionKind::TriMesh,
+            primary: trimesh_data,
+            secondary: 0,
+        });
+        loaded
+            .q3_submission_transforms
+            .push(PpcQ3SubmissionTransformRecord {
+                view,
+                kind: PpcQ3SubmissionKind::TriMesh,
+                primary: trimesh_data,
+                secondary: 0,
+                local_to_world: ppc_q3_matrix4x4_identity(),
+            });
+        loaded
+            .q3_submission_materials
+            .push(PpcQ3SubmissionMaterialRecord {
+                view,
+                kind: PpcQ3SubmissionKind::TriMesh,
+                primary: trimesh_data,
+                secondary: 0,
+                shader: 0,
+                illumination_type: PPC_Q3_ILLUMINATION_TYPE_NULL,
+                styles: vec![PpcQ3StyleRecord {
+                    style,
+                    kind: PpcQ3StyleKind::Backfacing,
+                    value: PPC_Q3_BACKFACING_STYLE_REMOVE,
+                }],
+                fog_style: None,
+                attributes: vec![PpcQ3AttributeRecord {
+                    attribute_set,
+                    attribute_type: PPC_Q3_ATTRIBUTE_TYPE_DIFFUSE_COLOR,
+                    data: [0.5f32, 0.5, 0.5]
+                        .iter()
+                        .flat_map(|value| value.to_bits().to_be_bytes())
+                        .collect(),
+                }],
+                shader_uv_transform: None,
+                shader_boundary: None,
+                texture_shader: None,
+                mipmap_texture: None,
+            });
+        loaded
+            .q3_submission_lights
+            .push(PpcQ3SubmissionLightRecord {
+                view,
+                kind: PpcQ3SubmissionKind::TriMesh,
+                primary: trimesh_data,
+                secondary: 0,
+                light_group: 0,
+                lights: Vec::new(),
+            });
+
+        let stats = loaded.render_q3_scene_commands_to_front_buffer();
+        let (mut green, mut red) = (0, 0);
+        for offset in (0..16 * 16 * 2).step_by(2) {
+            match loaded.memory.read_u16_be(front_base + offset) {
+                Some(0x03e0) => green += 1,
+                Some(0x7c00) => red += 1,
+                _ => {}
+            }
+        }
+        (green, red, stats)
+    }
+
+    let (green, red, stats) = render_from(5.0);
+    assert_eq!(stats.triangles, 1);
+    assert!(green > 0);
+    assert_eq!(red, 0);
+
+    let (green, red, stats) = render_from(-5.0);
+    assert_eq!(stats.triangles, 1);
+    assert_eq!(green, 0);
+    assert!(red > 0);
 }
 
 #[test]
@@ -17019,7 +17209,8 @@ fn q3_software_renderer_flips_backfacing_normals_for_flip_style() {
             .unwrap();
         loaded.memory.write_u32_be(vertex_attrs_ptr + 8, 0).unwrap();
 
-        for (index, point) in [(0.1, -0.8, 0.0), (0.9, -0.8, 0.0), (0.1, 0.8, 0.0)]
+        // Clockwise as seen from the viewer on +z, so this is the back face.
+        for (index, point) in [(0.1, -0.8, 0.0), (0.1, 0.8, 0.0), (0.9, -0.8, 0.0)]
             .into_iter()
             .enumerate()
         {
