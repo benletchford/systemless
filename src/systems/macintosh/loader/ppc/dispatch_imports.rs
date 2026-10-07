@@ -563,6 +563,7 @@ pub(crate) fn dispatch_supported_import(
             gworlds,
             current_gworld: *current_gworld,
             quickdraw_fore_color,
+            quickdraw_back_color,
             quickdraw_fore_indices,
             toolbox_startup,
         })

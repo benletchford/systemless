@@ -1413,6 +1413,75 @@ pub(super) fn ppc_paint_polygon(
     color: PpcRgbColor,
     explicit_index: Option<u8>,
 ) -> bool {
+    ppc_fill_polygon_interior(
+        memory,
+        gworlds,
+        current_gworld,
+        handle,
+        |memory, surface| {
+            let color_pixel =
+                ppc_quickdraw_surface_fore_pixel(memory, surface, color, explicit_index)?;
+            Some(move |_: &mut PpcSectionMem, _: (i32, i32)| Some(color_pixel))
+        },
+    )
+}
+
+/// FillPoly draws the polygon's interior with the caller's pattern in
+/// patCopy mode, ignoring the port's pen pattern, pen mode and background
+/// pattern (Inside Macintosh Volume I (1985), p. I-192; Imaging With QuickDraw
+/// (1994), p. 3-83). Above 1 bit per pixel, patCopy gives black pattern bits
+/// the foreground color and white bits the background color (Imaging With
+/// QuickDraw, p. 4-32).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_fill_polygon_pattern(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    handle: u32,
+    pattern: [u8; 8],
+    fore_color: PpcRgbColor,
+    explicit_fore_index: Option<u8>,
+    back_color: PpcRgbColor,
+    explicit_back_index: Option<u8>,
+) -> bool {
+    ppc_fill_polygon_interior(
+        memory,
+        gworlds,
+        current_gworld,
+        handle,
+        |memory, surface| {
+            let fore =
+                ppc_quickdraw_surface_fore_pixel(memory, surface, fore_color, explicit_fore_index)?;
+            // A solid pattern never samples the background.
+            let back = if pattern == [0xff; 8] {
+                fore
+            } else {
+                ppc_quickdraw_surface_fore_pixel(memory, surface, back_color, explicit_back_index)?
+            };
+            // Patterns align to the port's coordinate system.
+            let (origin_x, origin_y) = (i32::from(surface.left), i32::from(surface.top));
+            Some(move |_: &mut PpcSectionMem, (x, y): (i32, i32)| {
+                let row = pattern[(y + origin_y).rem_euclid(8) as usize];
+                let set = row & (0x80 >> (x + origin_x).rem_euclid(8)) != 0;
+                Some(if set { fore } else { back })
+            })
+        },
+    )
+}
+
+/// Writes every pixel inside the polygon (even-odd rule over its bounding
+/// box) with the value `pixel_for` chooses for that surface-relative point.
+fn ppc_fill_polygon_interior<P, F>(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    handle: u32,
+    prepare: P,
+) -> bool
+where
+    P: FnOnce(&mut PpcSectionMem, PpcQuickDrawSurface) -> Option<F>,
+    F: FnMut(&mut PpcSectionMem, (i32, i32)) -> Option<u16>,
+{
     let Some(points) = ppc_polygon_points(memory, handle).filter(|points| points.len() >= 3) else {
         return false;
     };
@@ -1426,9 +1495,7 @@ pub(super) fn ppc_paint_polygon(
         return false;
     };
     let front_buffer = surface.front_buffer;
-    let Some(color_pixel) =
-        ppc_quickdraw_surface_fore_pixel(memory, surface, color, explicit_index)
-    else {
+    let Some(mut pixel_for) = prepare(memory, surface) else {
         return false;
     };
     let (top, left, bottom, right) = surface.local_rect(bounds);
@@ -1458,7 +1525,9 @@ pub(super) fn ppc_paint_polygon(
                 }
             }
             if crossings & 1 != 0 {
-                wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), color_pixel);
+                if let Some(pixel) = pixel_for(memory, (x, y)) {
+                    wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), pixel);
+                }
             }
         }
     }

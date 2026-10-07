@@ -1882,13 +1882,43 @@ fn hle_import_runner_records_and_fills_classic_quickdraw_polygons() {
     loaded.run_with_hle_imports(64);
     assert_eq!(loaded.memory.read_u32_be(PPC_MAIN_GWORLD + 100), Some(0));
 
+    // FillPoly takes its pattern from the caller, not the pen.
+    let pattern_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(pattern_ptr, vec![0xff; 16]);
+    loaded
+        .memory
+        .write_bytes(
+            pattern_ptr + 8,
+            &[0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55],
+        )
+        .unwrap();
     loaded.cpu.pc = loaded.entry_pc;
     loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::FillPoly;
     loaded.cpu.gpr[3] = polygon;
+    loaded.cpu.gpr[4] = pattern_ptr;
     loaded.run_with_hle_imports(64);
     let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
     assert_eq!(
         ppc_quickdraw_read_pixel(&mut loaded.memory, front, (3, 3)),
+        Some(103)
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (4, 3)),
+        Some(103)
+    );
+
+    // A checkerboard alternates foreground and background along a row
+    // (row 3 is 0x55: column 3 set, column 4 clear).
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = polygon;
+    loaded.cpu.gpr[4] = pattern_ptr + 8;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (3, 3)),
+        Some(103)
+    );
+    assert_ne!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (4, 3)),
         Some(103)
     );
 
