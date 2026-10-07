@@ -745,6 +745,20 @@ pub(crate) fn ppc_snd_do_immediate(
             return PPC_PARAM_ERR;
         }
     }
+    if command.command == crate::sound::cmd::SOUND {
+        ppc_install_sampled_sound(memory, sound, channel, command.param2);
+    }
+    if ppc_sound_trace_enabled()
+        && matches!(
+            command.command,
+            crate::sound::cmd::FREQ | crate::sound::cmd::FREQ_DURATION
+        )
+    {
+        eprintln!(
+            "[PPC-SOUND] SndDoImmediate note chan=${channel:08X} cmd={} param1={} note={}",
+            command.command, command.param1, command.param2
+        );
+    }
     if let Some(decoded) = ppc_decode_buffer_command(memory, channel, command) {
         sound.manager.play_buffer_command_for_architecture(
             channel,
@@ -766,6 +780,54 @@ pub(crate) fn ppc_snd_do_immediate(
         .immediate_commands
         .push(PpcSndCommandRecord { channel, ..command });
     PPC_NO_ERR
+}
+
+/// soundCmd: decode the SoundHeader at `header` and install it as the
+/// channel's sampled-sound voice. Installing does not start playback; a
+/// later freqCmd or freqDurationCmd plays it (Inside Macintosh: Sound
+/// (1994), pp. 2-44 and 2-97). The book limits soundCmd to noncompressed
+/// data and expects compressed sounds to be expanded first (p. 2-109);
+/// compressed headers are accepted here because they decode to the same
+/// samples. A header that cannot be decoded leaves the channel without a
+/// voice.
+fn ppc_install_sampled_sound(
+    memory: &mut PpcSectionMem,
+    sound: &mut PpcSoundState,
+    channel: u32,
+    header: u32,
+) {
+    let instrument = ppc_sampled_instrument_from_header(memory, header);
+    if instrument.is_none() && ppc_sound_trace_enabled() {
+        eprintln!("[PPC-SOUND] could not decode soundCmd header=${header:08X}");
+    }
+    sound.manager.with_mut(|manager| match instrument {
+        Some(instrument) => manager.install_instrument(channel, instrument),
+        None => manager.remove_instrument(channel),
+    });
+}
+
+/// The voice described by a SoundHeader: its decoded samples, base note,
+/// and loop points. The three header forms share loopStart (offset 12),
+/// loopEnd (16), and baseFrequency (21). Inside Macintosh: Sound (1994),
+/// pp. 2-104, 2-106, and 2-108.
+fn ppc_sampled_instrument_from_header(
+    memory: &mut PpcSectionMem,
+    header: u32,
+) -> Option<crate::sound::SampledInstrument> {
+    if header == 0 {
+        return None;
+    }
+    let loop_start = memory.read_u32_be(header.checked_add(12)?)?;
+    let loop_end = memory.read_u32_be(header.checked_add(16)?)?;
+    let base_note = memory.read_u8(header.checked_add(21)?)?;
+    let decoded = ppc_decode_snd_header_from_memory(memory, header)?;
+    Some(crate::sound::SampledInstrument {
+        samples: decoded.samples,
+        sample_rate_fixed: decoded.summary.sample_rate_fixed,
+        base_note,
+        loop_start,
+        loop_end,
+    })
 }
 
 pub(crate) fn ppc_snd_do_command(cpu: &PpcCpu, memory: &mut PpcSectionMem, sound: &mut PpcSoundState) -> i16 {
@@ -790,7 +852,23 @@ pub(crate) fn ppc_snd_do_command(cpu: &PpcCpu, memory: &mut PpcSectionMem, sound
     // `noWait` controls whether the classic implementation may sleep until
     // a FIFO slot opens. The host runner cannot block the guest, so both
     // variants return queueFull when the process-owned FIFO is full.
-    if let Some(decoded) = ppc_decode_buffer_command(memory, channel, command) {
+    // soundCmd's header is decoded now, while the guest's pointer is known
+    // to be current; the queue installs the voice in order.
+    if command.command == crate::sound::cmd::SOUND {
+        let instrument = ppc_sampled_instrument_from_header(memory, command.param2);
+        if instrument.is_none() && ppc_sound_trace_enabled() {
+            eprintln!(
+                "[PPC-SOUND] could not decode soundCmd header=${:08X}",
+                command.param2
+            );
+        }
+        if !sound
+            .manager
+            .with_mut(|manager| manager.enqueue_instrument(channel, instrument))
+        {
+            return -203; // queueFull
+        }
+    } else if let Some(decoded) = ppc_decode_buffer_command(memory, channel, command) {
         if !sound.manager.enqueue_buffer_command_for_architecture(
             channel,
             decoded.samples,

@@ -1916,3 +1916,109 @@ fn ima4_and_mu_law_decode_through_the_sound_codec() {
     let decoded = ppc_decode_snd_header_at(&header, 0).unwrap();
     assert_eq!(decoded.samples, vec![0x80, 0x02, 0xfd]);
 }
+
+#[test]
+fn sound_command_installs_a_sampled_sound_that_freq_command_plays() {
+    let pef = synthetic_pef_with_import(b"SndDoImmediate");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let channel = 0x0500_1000;
+    let cmd_ptr = PPC_DATA_BASE + 0x1000;
+    let header = PPC_DATA_BASE + 0x1100;
+    let samples = [0x80, 0xa0, 0x60, 0x80];
+    let mut bytes = vec![0u8; 22];
+    bytes[4..8].copy_from_slice(&(samples.len() as u32).to_be_bytes());
+    bytes[8..12].copy_from_slice(&0x5622_0000u32.to_be_bytes());
+    bytes[20] = 0x00; // stdSH
+    bytes[21] = 60; // baseFrequency: middle C
+    bytes.extend_from_slice(&samples);
+    loaded.memory.add_region(cmd_ptr, vec![0; 8]);
+    loaded.memory.add_region(header, bytes);
+    let immediate = |loaded: &mut PpcLoadedApp, command: u16, param2: u32| {
+        loaded.memory.write_u16_be(cmd_ptr, command).unwrap();
+        loaded.memory.write_u16_be(cmd_ptr + 2, 0).unwrap();
+        loaded.memory.write_u32_be(cmd_ptr + 4, param2).unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.gpr[3] = channel;
+        loaded.cpu.gpr[4] = cmd_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    };
+    let playback_rate = |loaded: &PpcLoadedApp| {
+        loaded
+            .sound
+            .manager
+            .channels
+            .iter()
+            .find(|candidate| candidate.guest_ptr == channel)
+            .and_then(|candidate| candidate.playback_sample_rate())
+    };
+
+    // soundCmd installs the instrument without starting it.
+    immediate(&mut loaded, 80, header);
+    assert_eq!(playback_rate(&loaded), None);
+    let installed = loaded
+        .sound
+        .manager
+        .channels
+        .iter()
+        .find(|candidate| candidate.guest_ptr == channel)
+        .and_then(|candidate| candidate.instrument().cloned())
+        .expect("soundCmd installs a voice");
+    assert_eq!(installed.samples, samples);
+    assert_eq!(installed.base_note, 60);
+
+    // freqCmd at the base note plays at the recorded rate; an octave
+    // above doubles it.
+    immediate(&mut loaded, 42, 60);
+    assert_eq!(playback_rate(&loaded), Some(0x5622_0000));
+    immediate(&mut loaded, 3, 0); // quietCmd
+    assert_eq!(playback_rate(&loaded), None);
+    immediate(&mut loaded, 40, 72); // freqDurationCmd
+    assert_eq!(playback_rate(&loaded), Some(0xAC44_0000));
+
+    // param2 outside the MIDI note range, or a baseFrequency outside
+    // 1-127, plays the sample at its recorded rate.
+    immediate(&mut loaded, 3, 0);
+    immediate(&mut loaded, 42, 0x0100_0048);
+    assert_eq!(playback_rate(&loaded), Some(0x5622_0000));
+    immediate(&mut loaded, 3, 0);
+    loaded.memory.write_u8(header + 21, 200).unwrap();
+    immediate(&mut loaded, 80, header);
+    immediate(&mut loaded, 42, 72);
+    assert_eq!(playback_rate(&loaded), Some(0x5622_0000));
+}
+
+#[test]
+fn queued_sound_command_installs_a_voice_that_a_queued_freq_command_plays() {
+    let pef = synthetic_pef_with_import(b"SndDoCommand");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let channel = 0x0500_1000;
+    let cmd_ptr = PPC_DATA_BASE + 0x1000;
+    let header = PPC_DATA_BASE + 0x1100;
+    let mut bytes = vec![0u8; 22];
+    bytes[4..8].copy_from_slice(&4u32.to_be_bytes());
+    bytes[8..12].copy_from_slice(&(crate::sound::OUTPUT_RATE << 16).to_be_bytes());
+    bytes[21] = 60;
+    bytes.extend_from_slice(&[0xC0; 4]);
+    loaded.memory.add_region(cmd_ptr, vec![0; 8]);
+    loaded.memory.add_region(header, bytes);
+    for (command, param2) in [(80u16, header), (42, 60)] {
+        loaded.memory.write_u16_be(cmd_ptr, command).unwrap();
+        loaded.memory.write_u16_be(cmd_ptr + 2, 0).unwrap();
+        loaded.memory.write_u32_be(cmd_ptr + 4, param2).unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.gpr[3] = channel;
+        loaded.cpu.gpr[4] = cmd_ptr;
+        loaded.cpu.gpr[5] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    }
+
+    let mixed = loaded
+        .sound
+        .manager
+        .with_mut(|manager| manager.mix_frame(4));
+    assert_eq!(mixed, vec![0xC0; 4]);
+}
