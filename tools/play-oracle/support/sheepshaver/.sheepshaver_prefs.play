@@ -1,0 +1,42 @@
+# SheepShaver configuration for interactive play script runner
+# Used for PowerPC game testing
+
+# ROM file path (mounted from shared directory)
+rom /mnt/shared/rom/PowerMac.rom
+
+# Boot disk (PowerPC Mac OS with Startup Items configured)
+disk /mnt/shared/disk/System_PPC.dsk
+
+# Unix filesystem share - maps to "Unix" volume on Mac (game files + output)
+extfs /mnt/extfs
+
+# Screen settings for headless operation
+screen win/800/600
+
+# Memory - 64MB for running full games
+ramsize 67108864
+
+# Sound enabled
+nosound false
+
+# Don't show GUI/preferences window
+nogui true
+
+# JIT disabled for compatibility & determinism
+jit false
+
+# Enable 68k emulator so 68k launcher FixtureGen runs and launches PowerPC apps
+jit68k true
+
+# Ignore memory faults and illegal instructions for resilience
+ignoresegv true
+ignoreillegal true
+
+# Idle wait
+idlewait true
+
+# Disable networking
+nonet true
+
+# Disable CD-ROM polling
+nocdrom true

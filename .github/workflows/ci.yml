@@ -29,6 +29,17 @@ jobs:
           rust-version: "1.93"
           command: check licenses
 
+  oracle-tools:
+    name: optional oracle adapter tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/play-oracle
+      - run: cargo test --locked --manifest-path tools/play-oracle/Cargo.toml
+
   test:
     name: build & test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -80,6 +91,9 @@ jobs:
 
       - name: Run debugger desktop tests
         run: cargo test --locked --bin systemless --features debug-server
+
+      - name: Test structured headless play
+        run: cargo test --locked --profile ci-test --test headless_play
 
       # Both Systemless runtime configurations use this exact optimized executable.
       # Keep ordinary library/desktop tests in the checked debug profile above.

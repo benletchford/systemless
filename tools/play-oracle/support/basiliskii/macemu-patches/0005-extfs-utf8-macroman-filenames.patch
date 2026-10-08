@@ -1,0 +1,186 @@
+diff --git a/BasiliskII/src/Unix/extfs_unix.cpp b/BasiliskII/src/Unix/extfs_unix.cpp
+--- a/BasiliskII/src/Unix/extfs_unix.cpp
++++ b/BasiliskII/src/Unix/extfs_unix.cpp
+@@ -38,9 +38,184 @@
+-// Default Finder flags
+-const uint16 DEFAULT_FINDER_FLAGS = kHasBeenInited;
+-
+-
+-/*
+- *  Initialization
+- */
+-
++// Default Finder flags
++const uint16 DEFAULT_FINDER_FLAGS = kHasBeenInited;
++
++// Unicode code points for MacRoman bytes 0x80..0xFF.
++static const uint32 mac_roman_high[128] = {
++	0x00C4, 0x00C5, 0x00C7, 0x00C9, 0x00D1, 0x00D6, 0x00DC, 0x00E1,
++	0x00E0, 0x00E2, 0x00E4, 0x00E3, 0x00E5, 0x00E7, 0x00E9, 0x00E8,
++	0x00EA, 0x00EB, 0x00ED, 0x00EC, 0x00EE, 0x00EF, 0x00F1, 0x00F3,
++	0x00F2, 0x00F4, 0x00F6, 0x00F5, 0x00FA, 0x00F9, 0x00FB, 0x00FC,
++	0x2020, 0x00B0, 0x00A2, 0x00A3, 0x00A7, 0x2022, 0x00B6, 0x00DF,
++	0x00AE, 0x00A9, 0x2122, 0x00B4, 0x00A8, 0x2260, 0x00C6, 0x00D8,
++	0x221E, 0x00B1, 0x2264, 0x2265, 0x00A5, 0x00B5, 0x2202, 0x2211,
++	0x220F, 0x03C0, 0x222B, 0x00AA, 0x00BA, 0x03A9, 0x00E6, 0x00F8,
++	0x00BF, 0x00A1, 0x00AC, 0x221A, 0x0192, 0x2248, 0x2206, 0x00AB,
++	0x00BB, 0x2026, 0x00A0, 0x00C0, 0x00C3, 0x00D5, 0x0152, 0x0153,
++	0x2013, 0x2014, 0x201C, 0x201D, 0x2018, 0x2019, 0x00F7, 0x25CA,
++	0x00FF, 0x0178, 0x2044, 0x20AC, 0x2039, 0x203A, 0xFB01, 0xFB02,
++	0x2021, 0x00B7, 0x201A, 0x201E, 0x2030, 0x00C2, 0x00CA, 0x00C1,
++	0x00CB, 0x00C8, 0x00CD, 0x00CE, 0x00CF, 0x00CC, 0x00D3, 0x00D4,
++	0xF8FF, 0x00D2, 0x00DA, 0x00DB, 0x00D9, 0x0131, 0x02C6, 0x02DC,
++	0x00AF, 0x02D8, 0x02D9, 0x02DA, 0x00B8, 0x02DD, 0x02DB, 0x02C7,
++};
++
++static void append_byte(char *buffer, int &pos, unsigned char byte)
++{
++	if (pos >= MAX_PATH_LENGTH - 1)
++		return;
++	buffer[pos++] = (char)byte;
++	buffer[pos] = 0;
++}
++
++static void append_utf8(char *buffer, int &pos, uint32 cp)
++{
++	if (cp <= 0x7F) {
++		append_byte(buffer, pos, (unsigned char)cp);
++	} else if (cp <= 0x7FF) {
++		append_byte(buffer, pos, (unsigned char)(0xC0 | (cp >> 6)));
++		append_byte(buffer, pos, (unsigned char)(0x80 | (cp & 0x3F)));
++	} else if (cp <= 0xFFFF) {
++		append_byte(buffer, pos, (unsigned char)(0xE0 | (cp >> 12)));
++		append_byte(buffer, pos, (unsigned char)(0x80 | ((cp >> 6) & 0x3F)));
++		append_byte(buffer, pos, (unsigned char)(0x80 | (cp & 0x3F)));
++	} else {
++		append_byte(buffer, pos, (unsigned char)(0xF0 | (cp >> 18)));
++		append_byte(buffer, pos, (unsigned char)(0x80 | ((cp >> 12) & 0x3F)));
++		append_byte(buffer, pos, (unsigned char)(0x80 | ((cp >> 6) & 0x3F)));
++		append_byte(buffer, pos, (unsigned char)(0x80 | (cp & 0x3F)));
++	}
++}
++
++static bool utf8_cont(unsigned char c)
++{
++	return (c & 0xC0) == 0x80;
++}
++
++static uint32 decode_utf8_or_raw(const unsigned char *bytes, int len, int &pos, bool &raw)
++{
++	unsigned char c = bytes[pos++];
++	raw = false;
++	if (c < 0x80)
++		return c;
++
++	if ((c & 0xE0) == 0xC0) {
++		if (pos < len && utf8_cont(bytes[pos])) {
++			uint32 cp = ((uint32)(c & 0x1F) << 6) | (uint32)(bytes[pos++] & 0x3F);
++			if (cp >= 0x80)
++				return cp;
++		}
++	} else if ((c & 0xF0) == 0xE0) {
++		if (pos + 1 < len && utf8_cont(bytes[pos]) && utf8_cont(bytes[pos + 1])) {
++			uint32 cp = ((uint32)(c & 0x0F) << 12) |
++			            ((uint32)(bytes[pos] & 0x3F) << 6) |
++			            (uint32)(bytes[pos + 1] & 0x3F);
++			pos += 2;
++			if (cp >= 0x800 && !(cp >= 0xD800 && cp <= 0xDFFF))
++				return cp;
++		}
++	} else if ((c & 0xF8) == 0xF0) {
++		if (pos + 2 < len && utf8_cont(bytes[pos]) &&
++		    utf8_cont(bytes[pos + 1]) && utf8_cont(bytes[pos + 2])) {
++			uint32 cp = ((uint32)(c & 0x07) << 18) |
++			            ((uint32)(bytes[pos] & 0x3F) << 12) |
++			            ((uint32)(bytes[pos + 1] & 0x3F) << 6) |
++			            (uint32)(bytes[pos + 2] & 0x3F);
++			pos += 3;
++			if (cp >= 0x10000 && cp <= 0x10FFFF)
++				return cp;
++		}
++	}
++
++	raw = true;
++	return c;
++}
++
++static unsigned char unicode_to_macroman(uint32 cp)
++{
++	if (cp <= 0x7F)
++		return (unsigned char)cp;
++	for (int i = 0; i < 128; i++) {
++		if (mac_roman_high[i] == cp)
++			return (unsigned char)(0x80 + i);
++	}
++	return '?';
++}
++
++static const char *utf8_to_macroman(const char *filename)
++{
++	static char buffer[MAX_PATH_LENGTH];
++	const unsigned char *bytes = (const unsigned char *)filename;
++	int len = strlen(filename);
++	int in = 0;
++	int out = 0;
++
++	buffer[0] = 0;
++	while (in < len && out < MAX_PATH_LENGTH - 1) {
++		bool raw = false;
++		uint32 cp = decode_utf8_or_raw(bytes, len, in, raw);
++		append_byte(buffer, out, raw ? (unsigned char)cp : unicode_to_macroman(cp));
++	}
++	buffer[out] = 0;
++	return buffer;
++}
++
++static const char *macroman_to_utf8(const char *filename)
++{
++	static char buffer[MAX_PATH_LENGTH];
++	int len = strlen(filename);
++	int out = 0;
++
++	buffer[0] = 0;
++	for (int i = 0; i < len && out < MAX_PATH_LENGTH - 1; i++) {
++		unsigned char byte = (unsigned char)filename[i];
++		if (byte < 0x80)
++			append_byte(buffer, out, byte);
++		else
++			append_utf8(buffer, out, mac_roman_high[byte - 0x80]);
++	}
++	buffer[out] = 0;
++	return buffer;
++}
++
++
++/*
++ *  Initialization
++ */
++
+ void extfs_init(void)
+@@ -389,11 +564,15 @@
+-// Convert from the host OS filename encoding to MacRoman
+-const char *host_encoding_to_macroman(const char *filename)
+-{
+-	return filename;
+-}
+-
+-// Convert from MacRoman to host OS filename encoding
+-const char *macroman_to_host_encoding(const char *filename)
+-{
+-	return filename;
+-}
++/*
++ *  Strings (filenames) conversion
++ */
++
++// Convert from UTF-8 host OS filename encoding to MacRoman.
++const char *host_encoding_to_macroman(const char *filename)
++{
++	return utf8_to_macroman(filename);
++}
++
++// Convert from MacRoman to UTF-8 host OS filename encoding.
++const char *macroman_to_host_encoding(const char *filename)
++{
++	return macroman_to_utf8(filename);
++}

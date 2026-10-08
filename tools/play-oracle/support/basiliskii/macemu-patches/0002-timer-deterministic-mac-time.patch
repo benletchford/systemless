@@ -1,0 +1,35 @@
+diff --git a/BasiliskII/src/Unix/timer_unix.cpp b/BasiliskII/src/Unix/timer_unix.cpp
+--- a/BasiliskII/src/Unix/timer_unix.cpp
++++ b/BasiliskII/src/Unix/timer_unix.cpp
+@@ -19,6 +19,7 @@
+  */
+
+ #include "sysdeps.h"
++#include <stdlib.h>
+ #include "macos_util.h"
+ #include "timer.h"
+
+@@ -77,11 +78,22 @@ static inline void mach_current_time(tm_time_t &t) {
+
+ /*
+  *  Return local date/time in Mac format (seconds since 1.1.1904)
++ *
++ *  Systemless convergence loop h993: when SYSTEMLESS_BASILISK_MAC_TIME is
++ *  set, return that value verbatim instead of host wall-clock time.
++ *  Closes the BasiliskII analog of Systemless's pre-h985 Mac-time-pin
++ *  bug — pinned per the h981 PRIMARY OBJECTIVE axis 2 contract.
+  */
+
+ uint32 TimerDateTime(void)
+ {
+-	return TimeToMacTime(time(NULL));
++	const char *env = getenv("SYSTEMLESS_BASILISK_MAC_TIME");
++	if (env != NULL && env[0] != '\0') {
++		char *end = NULL;
++		unsigned long pinned = strtoul(env, &end, 10);
++		if (end != env && *end == '\0') {
++			return (uint32)pinned;
++		}
++	}
++	return TimeToMacTime(time(NULL));
+ }

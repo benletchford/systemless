@@ -11,7 +11,11 @@ use super::{
     InputAction, ScriptedInput, UiThemeId, AUDIO_CALLBACK_CHUNK_SAMPLES,
 };
 
-fn deliver(runner: &mut FixtureRunner, mouse: &mut HostMouseReleaseLatch, action: InputAction) {
+pub(super) fn deliver(
+    runner: &mut FixtureRunner,
+    mouse: &mut HostMouseReleaseLatch,
+    action: InputAction,
+) {
     match action {
         InputAction::MouseMove { v, h } => runner.set_mouse_position(v, h),
         InputAction::MouseDown { v, h } => {
@@ -31,8 +35,8 @@ fn deliver(runner: &mut FixtureRunner, mouse: &mut HostMouseReleaseLatch, action
 #[derive(Debug, Default)]
 pub(super) struct FrameWork {
     instructions: usize,
-    foreground: usize,
-    budget_exhausted: bool,
+    pub(super) foreground: usize,
+    pub(super) budget_exhausted: bool,
 }
 
 fn service_sound(runner: &mut FixtureRunner, total: &mut usize, reserve_used: &mut usize) {

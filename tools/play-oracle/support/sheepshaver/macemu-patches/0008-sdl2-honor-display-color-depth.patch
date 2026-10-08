@@ -1,0 +1,32 @@
+diff --git a/BasiliskII/src/SDL/video_sdl2.cpp b/BasiliskII/src/SDL/video_sdl2.cpp
+index 15589379..243aa9a6 100644
+--- a/BasiliskII/src/SDL/video_sdl2.cpp
++++ b/BasiliskII/src/SDL/video_sdl2.cpp
+@@ -1440,6 +1440,8 @@ bool VideoInit(void)
+ 		default_depth =  VIDEO_DEPTH_1BIT;
+ 		break;
+ 	}
++	// An explicit profile depth is also the guest-visible capability ceiling.
++	default_depth = get_customized_color_depth(default_depth);
+ 
+ 	// Initialize list of video modes to try
+ 	struct {
+diff --git a/SheepShaver/src/prefs_items.cpp b/SheepShaver/src/prefs_items.cpp
+index d04eb8e1..bb96de7a 100644
+--- a/SheepShaver/src/prefs_items.cpp
++++ b/SheepShaver/src/prefs_items.cpp
+@@ -25,6 +25,7 @@
+ // Common preferences items (those which exist on all platforms)
+ prefs_desc common_prefs_items[] = {
++	{"displaycolordepth", TYPE_INT32, false, "display color depth"},
+ 	{"disk", TYPE_STRING, true,         "device/file name of Mac volume"},
+ 	{"floppy", TYPE_STRING, true,       "device/file name of Mac floppy drive"},
+ 	{"cdrom", TYPE_STRING, true,        "device/file names of Mac CD-ROM drive"},
+@@ -62,6 +63,7 @@ void AddPrefsDefaults(void)
+ #ifndef PREFS_EDITOR
+ 	SysAddSerialPrefs();
+ #endif
++	PrefsAddInt32("displaycolordepth", 0);
+ 	PrefsAddInt32("bootdriver", 0);
+ 	PrefsAddInt32("bootdrive", 0);
+ 	PrefsAddInt32("ramsize", 16 * 1024 * 1024);

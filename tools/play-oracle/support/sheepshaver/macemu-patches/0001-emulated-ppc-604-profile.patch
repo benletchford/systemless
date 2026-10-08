@@ -1,0 +1,9 @@
+diff --git a/SheepShaver/src/Unix/main_unix.cpp b/SheepShaver/src/Unix/main_unix.cpp
+index b6de430b..8990d242 100644
+--- a/SheepShaver/src/Unix/main_unix.cpp
++++ b/SheepShaver/src/Unix/main_unix.cpp
+@@ -397,3 +397,3 @@ static void get_system_info(void)
+ #if EMULATED_PPC
+-	PVR = 0x000c0000;			// Default: 7400 (with AltiVec)
++	PVR = 0x00040000;			// FULL-TRAP profile: 604
+ #elif defined(__APPLE__) && defined(__MACH__)

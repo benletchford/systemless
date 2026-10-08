@@ -127,8 +127,7 @@ preserved native menu and resize response, with
 AppKit Quit completing after owner release. Native pilot save/restart checks
 passed; broader input, fullscreen-exit and cross-display/platform coverage
 remain limited. The default remains the same-thread
-compatibility path; leave the variable unset to use it. See
-[review qualification](HOST_RESPONSIVENESS_REVIEW.md) for the scope and limits.
+compatibility path; leave the variable unset to use it.
 
 For intermittent desktop stalls, set `SYSTEMLESS_PROFILE_FRAMES=1` when launching.
 The terminal reports CPU, compositing, outline rendering and Metal drawable-wait
@@ -168,6 +167,11 @@ so its CPU totals are **not a proxy for GUI or gameplay CPU usage**. Tick
 scripts and instruction scripts cannot be combined. Time-based headless
 results still exclude the host window, compositor, and physical audio device;
 compare equal game progress and outputs, and verify windowed CPU separately.
+
+Structured JSON scenarios add bounded visual waits, named screenshots, assertions,
+and machine-readable reports through `--play-script`. See the
+[headless play guide](.agents/skills/systemless-headless/references/headless-play.md) and the repository
+[agent skill](.agents/skills/systemless-headless/SKILL.md).
 
 ## How it works
 

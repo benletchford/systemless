@@ -1,0 +1,108 @@
+diff --git a/BasiliskII/src/Unix/main_unix.cpp b/BasiliskII/src/Unix/main_unix.cpp
+--- a/BasiliskII/src/Unix/main_unix.cpp
++++ b/BasiliskII/src/Unix/main_unix.cpp
+@@ -21,8 +21,10 @@
+ 
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <fcntl.h>
+ #include <signal.h>
+ #include <errno.h>
++#include <unistd.h>
+ #include <sstream>
+ 
+ #ifdef USE_SDL
+@@ -308,6 +310,44 @@ static void sigsegv_dump_state(sigsegv_info_t *sip)
+  *  Update virtual clock and trigger interrupts if necessary
+  */
+ 
++uint64 systemless_retired_instructions = 0;
++static int systemless_clock_fd = -2;
++
++static inline void systemless_init_clock(void)
++{
++	if (systemless_clock_fd != -2)
++		return;
++	const char *path = getenv("SYSTEMLESS_BASILISK_CLOCK");
++	if (path == NULL || path[0] == '\0') {
++		systemless_clock_fd = -1;
++		return;
++	}
++	systemless_clock_fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
++	if (systemless_clock_fd < 0)
++		perror("SYSTEMLESS_BASILISK_CLOCK");
++}
++
++static inline void systemless_write_clock(void)
++{
++	systemless_init_clock();
++	if (systemless_clock_fd < 0)
++		return;
++	uint32 tick = ReadMacInt32(0x016a);
++	uint64 retired = __atomic_load_n(&systemless_retired_instructions, __ATOMIC_RELAXED);
++	char record[64];
++	int length = snprintf(
++		record,
++		sizeof(record),
++		"%08x %016llx %08x %016llx\n",
++		tick,
++		(unsigned long long)retired,
++		tick,
++		(unsigned long long)retired
++	);
++	if (length > 0 && length < (int)sizeof(record))
++		(void)pwrite(systemless_clock_fd, record, length, 0);
++}
++
+ #ifdef USE_CPU_EMUL_SERVICES
+ static uint64 n_check_ticks = 0;
+ static uint64 emulated_ticks_start = 0;
+@@ -377,5 +417,6 @@ void cpu_do_check_ticks(void)
+ 		if (emulated_ticks <= 0)
+ 			emulated_ticks += emulated_ticks_quantum;
++		systemless_write_clock();
+ 		return;
+ 	}
+ 
+@@ -402,6 +443,8 @@ void cpu_do_check_ticks(void)
+ 	// Update countdown
+ 	if (emulated_ticks <= 0)
+ 		emulated_ticks += emulated_ticks_quantum;
++
++	systemless_write_clock();
+ }
+ #endif
+ 
+@@ -1297,6 +1340,7 @@ static void *tick_func(void *arg)
+ 	uint64 next = GetTicks_usec();
+ 	while (!tick_thread_cancel) {
+ 		one_tick();
++		systemless_write_clock();
+ 		next += 16625;
+ 		int64 delay = next - GetTicks_usec();
+ 		if (deterministic) {
+diff --git a/BasiliskII/src/uae_cpu/newcpu.h b/BasiliskII/src/uae_cpu/newcpu.h
+--- a/BasiliskII/src/uae_cpu/newcpu.h
++++ b/BasiliskII/src/uae_cpu/newcpu.h
+@@ -337,5 +337,6 @@ extern void m68k_execute(void);
+ extern void m68k_compile_execute(void);
+ #endif
++extern uint64 systemless_retired_instructions;
+ #ifdef USE_CPU_EMUL_SERVICES
+ extern int32 emulated_ticks;
+ extern void cpu_do_check_ticks(void);
+@@ -344,9 +345,13 @@ extern void cpu_do_check_ticks(void);
+ static inline void cpu_check_ticks(void)
+ {
++	__atomic_add_fetch(&systemless_retired_instructions, 1, __ATOMIC_RELAXED);
+ 	if (--emulated_ticks <= 0)
+ 		cpu_do_check_ticks();
+ }
+ #else
+-#define cpu_check_ticks()
++static inline void cpu_check_ticks(void)
++{
++	__atomic_add_fetch(&systemless_retired_instructions, 1, __ATOMIC_RELAXED);
++}
+ #define cpu_do_check_ticks()
+ #endif

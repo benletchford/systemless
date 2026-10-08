@@ -1,0 +1,68 @@
+diff --git a/BasiliskII/src/Unix/main_unix.cpp b/BasiliskII/src/Unix/main_unix.cpp
+--- a/BasiliskII/src/Unix/main_unix.cpp
++++ b/BasiliskII/src/Unix/main_unix.cpp
+@@ -316,11 +316,41 @@ static int64 emulated_ticks_current = 0;
+ static int32 emulated_ticks_quantum = 1000;
+ int32 emulated_ticks = emulated_ticks_quantum;
+
++// Systemless convergence loop h998 (axis 2 / Target 2 — corrected):
++// when SYSTEMLESS_BASILISK_DETERMINISTIC_TICKS is set, fire one_tick()
++// every SYSTEMLESS_BASILISK_INSTRUCTIONS_PER_TICK (default 28000)
++// M68K instructions, instead of every 16.625ms wall-clock. See
++// the independently captured palette observations and the
++// h998 follow-up.
++static bool systemless_det_ticks_inited = false;
++static bool systemless_det_ticks_enabled = false;
++static int64 systemless_inst_per_tick = 28000;
++static int64 systemless_inst_since_last_tick = 0;
++
++static inline void systemless_init_det_ticks(void)
++{
++	if (systemless_det_ticks_inited)
++		return;
++	systemless_det_ticks_inited = true;
++	const char *env = getenv("SYSTEMLESS_BASILISK_DETERMINISTIC_TICKS");
++	systemless_det_ticks_enabled = (env != NULL && env[0] != '\0' && env[0] != '0');
++	const char *ipt_env = getenv("SYSTEMLESS_BASILISK_INSTRUCTIONS_PER_TICK");
++	if (ipt_env != NULL && ipt_env[0] != '\0') {
++		char *end = NULL;
++		long ipt = strtol(ipt_env, &end, 10);
++		if (end != ipt_env && *end == '\0' && ipt > 0)
++			systemless_inst_per_tick = ipt;
++	}
++}
++
+ void cpu_do_check_ticks(void)
+ {
+ #if DEBUG
+ 	n_check_ticks++;
+ #endif
++	systemless_init_det_ticks();
+
+ 	uint64 now;
+ 	static uint64 next = 0;
+ 	if (next == 0)
+ 		next = emulated_ticks_start = GetTicks_usec();
+
+@@ -337,6 +367,17 @@ void cpu_do_check_ticks(void)
+ 			goto recalibrate_quantum;
+ 		}
+ 	}
++
++	// Systemless h998 deterministic-tick path: fire one_tick() based
++	// purely on M68K instruction count, bypassing the wall-clock
++	// arithmetic below. Increment the per-quantum counter and
++	// fire one_tick() each time we cross the threshold.
++	if (systemless_det_ticks_enabled) {
++		systemless_inst_since_last_tick += emulated_ticks_quantum;
++		while (systemless_inst_since_last_tick >= systemless_inst_per_tick) {
++			systemless_inst_since_last_tick -= systemless_inst_per_tick;
++			one_tick();
++		}
++		if (emulated_ticks <= 0)
++			emulated_ticks += emulated_ticks_quantum;
++		return;
++	}
+
+ 	// Check for interrupt opportunity
+ 	now = GetTicks_usec();

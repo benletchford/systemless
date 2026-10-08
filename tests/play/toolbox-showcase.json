@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "clock": "frontend_ticks",
+  "max_ticks": 300,
+  "actions": [
+    {
+      "type": "run_until_pixel",
+      "x": 305,
+      "y": 145,
+      "rgb": [
+        255,
+        84,
+        84
+      ],
+      "tolerance": 2,
+      "timeout_ticks": 120
+    },
+    {
+      "type": "run",
+      "ticks": 10
+    },
+    {
+      "type": "screenshot",
+      "name": "graphics"
+    },
+    {
+      "type": "assert_pixel",
+      "x": 305,
+      "y": 145,
+      "rgb": [
+        255,
+        84,
+        84
+      ]
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 56
+    },
+    {
+      "type": "run",
+      "ticks": 2
+    },
+    {
+      "type": "mouse_move",
+      "v": 44,
+      "h": 56
+    },
+    {
+      "type": "run",
+      "ticks": 2
+    },
+    {
+      "type": "mouse_up",
+      "v": 44,
+      "h": 56
+    },
+    {
+      "type": "run",
+      "ticks": 20
+    },
+    {
+      "type": "screenshot",
+      "name": "controls"
+    },
+    {
+      "type": "assert_pixel",
+      "x": 305,
+      "y": 145,
+      "rgb": [
+        255,
+        255,
+        255
+      ]
+    }
+  ]
+}

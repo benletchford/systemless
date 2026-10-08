@@ -1,0 +1,33 @@
+diff --git a/BasiliskII/src/Unix/main_unix.cpp b/BasiliskII/src/Unix/main_unix.cpp
+--- a/BasiliskII/src/Unix/main_unix.cpp
++++ b/BasiliskII/src/Unix/main_unix.cpp
+@@ -1239,15 +1239,28 @@ static void one_tick(...)
+ #ifdef USE_PTHREADS_SERVICES
+ static void *tick_func(void *arg)
+ {
++	// Systemless convergence loop h997 (axis 2 / Target 2):
++	// when SYSTEMLESS_BASILISK_DETERMINISTIC_TICKS is set, replace
++	// the wall-clock-compensated Delay_usec(next - GetTicks_usec())
++	// with a fixed Delay_usec(16625). See
++	// the independently captured palette observations and
++	// the h996→h997 revision narrative therein.
++	const char *det_env = getenv("SYSTEMLESS_BASILISK_DETERMINISTIC_TICKS");
++	bool deterministic = (det_env != NULL && det_env[0] != '\0' && det_env[0] != '0');
++
+ 	uint64 start = GetTicks_usec();
+ 	int64 ticks = 0;
+ 	uint64 next = GetTicks_usec();
+ 	while (!tick_thread_cancel) {
+ 		one_tick();
+ 		next += 16625;
+ 		int64 delay = next - GetTicks_usec();
+-		if (delay > 0)
++		if (deterministic) {
++			// Fixed-cadence sleep — no wall-clock compensation.
++			Delay_usec(16625);
++		} else if (delay > 0)
+ 			Delay_usec(delay);
+ 		else if (delay < -16625)
+ 			next = GetTicks_usec();
+ 		ticks++;
+ 	}

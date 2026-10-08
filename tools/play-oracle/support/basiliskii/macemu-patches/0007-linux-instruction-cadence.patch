@@ -1,0 +1,109 @@
+diff --git a/BasiliskII/src/Unix/main_unix.cpp b/BasiliskII/src/Unix/main_unix.cpp
+--- a/BasiliskII/src/Unix/main_unix.cpp
++++ b/BasiliskII/src/Unix/main_unix.cpp
+@@ -345,6 +345,27 @@ static inline void systemless_write_clock(void)
+ 	if (length > 0 && length < (int)sizeof(record))
+ 		(void)pwrite(systemless_clock_fd, record, length, 0);
+ }
++
++bool systemless_instruction_ticks_enabled = false;
++int64 systemless_instructions_until_tick = 0x7fffffffffffffffLL;
++static int64 systemless_instructions_per_tick = 28000;
++
++static void systemless_init_instruction_ticks(void)
++{
++	const char *enabled = getenv("SYSTEMLESS_BASILISK_DETERMINISTIC_TICKS");
++	systemless_instruction_ticks_enabled =
++		enabled != NULL && enabled[0] != '\0' && enabled[0] != '0';
++	if (!systemless_instruction_ticks_enabled)
++		return;
++	const char *budget = getenv("SYSTEMLESS_BASILISK_INSTRUCTIONS_PER_TICK");
++	if (budget != NULL && budget[0] != '\0') {
++		char *end = NULL;
++		long long parsed = strtoll(budget, &end, 10);
++		if (end != budget && *end == '\0' && parsed > 0)
++			systemless_instructions_per_tick = parsed;
++	}
++	systemless_instructions_until_tick = systemless_instructions_per_tick;
++}
+ 
+ #ifdef USE_CPU_EMUL_SERVICES
+ static uint64 n_check_ticks = 0;
+@@ -881,5 +902,7 @@ int main(int argc, char **argv)
+ 	sigint_sa.sa_flags = 0;
+ 	sigaction(SIGINT, &sigint_sa, NULL);
+ #endif
+ 
++	systemless_init_instruction_ticks();
++
+ #ifndef USE_CPU_EMUL_SERVICES
+@@ -879,13 +902,15 @@ int main(int argc, char **argv)
+ 
+ 	// POSIX threads available, start 60Hz thread
+-	Set_pthread_attr(&tick_thread_attr, 0);
+-	tick_thread_active = (pthread_create(&tick_thread, &tick_thread_attr, tick_func, NULL) == 0);
+-	if (!tick_thread_active) {
+-		sprintf(str, GetString(STR_TICK_THREAD_ERR), strerror(errno));
+-		ErrorAlert(str);
+-		QuitEmulator();
++	if (!systemless_instruction_ticks_enabled) {
++		Set_pthread_attr(&tick_thread_attr, 0);
++		tick_thread_active = (pthread_create(&tick_thread, &tick_thread_attr, tick_func, NULL) == 0);
++		if (!tick_thread_active) {
++			sprintf(str, GetString(STR_TICK_THREAD_ERR), strerror(errno));
++			ErrorAlert(str);
++			QuitEmulator();
++		}
++		D(bug("60Hz thread started\n"));
+ 	}
+-	D(bug("60Hz thread started\n"));
+ 
+ #elif defined(HAVE_TIMER_CREATE) && defined(_POSIX_REALTIME_SIGNALS)
+ 
+@@ -1291,6 +1316,13 @@ static void one_tick(...)
+ 	}
+ }
+ 
++void systemless_instruction_tick(void)
++{
++	systemless_instructions_until_tick += systemless_instructions_per_tick;
++	one_tick();
++	systemless_write_clock();
++}
++
+ #ifdef USE_PTHREADS_SERVICES
+ static void *tick_func(void *arg)
+ {
+diff --git a/BasiliskII/src/Unix/timer_unix.cpp b/BasiliskII/src/Unix/timer_unix.cpp
+--- a/BasiliskII/src/Unix/timer_unix.cpp
++++ b/BasiliskII/src/Unix/timer_unix.cpp
+@@ -369,6 +369,10 @@ static int idle_sem_ok = -1;
+ 
+ void idle_wait(void)
+ {
++	extern bool systemless_instruction_ticks_enabled;
++	if (systemless_instruction_ticks_enabled)
++		return;
++
+ #ifdef IDLE_USES_COND_WAIT
+ 	pthread_mutex_lock(&idle_lock);
+ 	pthread_cond_wait(&idle_cond, &idle_lock);
+diff --git a/BasiliskII/src/uae_cpu/newcpu.h b/BasiliskII/src/uae_cpu/newcpu.h
+--- a/BasiliskII/src/uae_cpu/newcpu.h
++++ b/BasiliskII/src/uae_cpu/newcpu.h
+@@ -338,6 +338,8 @@ extern void m68k_compile_execute(void);
+ #endif
+ extern uint64 systemless_retired_instructions;
++extern int64 systemless_instructions_until_tick;
++extern void systemless_instruction_tick(void);
+ #ifdef USE_CPU_EMUL_SERVICES
+ extern int32 emulated_ticks;
+ extern void cpu_do_check_ticks(void);
+@@ -351,6 +353,8 @@ static inline void cpu_check_ticks(void)
+ {
+ 	__atomic_add_fetch(&systemless_retired_instructions, 1, __ATOMIC_RELAXED);
++	if (--systemless_instructions_until_tick <= 0)
++		systemless_instruction_tick();
+ }
+ #define cpu_do_check_ticks()
+ #endif

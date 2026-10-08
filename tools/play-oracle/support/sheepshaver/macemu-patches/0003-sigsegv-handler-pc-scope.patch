@@ -1,0 +1,71 @@
+diff --git a/BasiliskII/src/CrossPlatform/sigsegv.cpp b/BasiliskII/src/CrossPlatform/sigsegv.cpp
+--- a/BasiliskII/src/CrossPlatform/sigsegv.cpp
++++ b/BasiliskII/src/CrossPlatform/sigsegv.cpp
+@@ -2523,6 +2523,11 @@ static bool aarch64_skip_instruction(unsigned long *regs) {
+     ts->__pc += 4;
+     return true;
+ }
++#elif (defined(__aarch64__) && defined(__linux__))
++static bool aarch64_skip_instruction(unsigned long *regs) {
++    regs[32] += 4;
++    return true;
++}
+ #endif
+ 
+ // Fallbacks
+diff --git a/SheepShaver/src/kpx_cpu/sheepshaver_glue.cpp b/SheepShaver/src/kpx_cpu/sheepshaver_glue.cpp
+--- a/SheepShaver/src/kpx_cpu/sheepshaver_glue.cpp
++++ b/SheepShaver/src/kpx_cpu/sheepshaver_glue.cpp
+@@ -765,14 +765,14 @@ sigsegv_return_t sigsegv_handler(sigsegv_info_t *sip)
+ #endif
+ 
+ 	const uintptr addr = (uintptr)sigsegv_get_fault_address(sip);
++	sheepshaver_cpu * const cpu = ppc_cpu;
++	const uint32 pc = cpu ? cpu->pc() : 0;
++
+ #if HAVE_SIGSEGV_SKIP_INSTRUCTION
+ 	// Ignore writes to ROM
+ 	if ((addr - (uintptr)ROMBaseHost) < ROM_SIZE)
+ 		return SIGSEGV_RETURN_SKIP_INSTRUCTION;
+ 
+-	// Get program counter of target CPU
+-	sheepshaver_cpu * const cpu = ppc_cpu;
+-	const uint32 pc = cpu->pc();
+-	
+ 	// Fault in Mac ROM or RAM?
+-	bool mac_fault = (pc >= ROMBase && pc < (ROMBase + ROM_AREA_SIZE)) || (pc >= RAMBase && pc < (RAMBase + RAMSize)) || (pc >= DR_CACHE_BASE && pc < (DR_CACHE_BASE + DR_CACHE_SIZE));
++	bool mac_fault = (pc >= ROMBase && pc < (ROMBase + ROM_AREA_SIZE)) || (pc >= RAMBase && pc < (RAMBase + RAMSize)) || (pc >= DR_CACHE_BASE && pc < (DR_CACHE_BASE + DR_CACHE_SIZE)) || (pc >= KERNEL_DATA_BASE && pc < (KERNEL_DATA_BASE + KERNEL_AREA_SIZE));
+ 	if (mac_fault) {
+@@ -807,7 +807,6 @@ sigsegv_return_t sigsegv_handler(sigsegv_info_t *sip)
+ 		// Ignore all other faults, if requested
+ 		if (PrefsFindBool("ignoresegv"))
+ 			return SIGSEGV_RETURN_SKIP_INSTRUCTION;
+ 	}
+-#else
+-#error "FIXME: You don't have the capability to skip instruction within signal handlers"
+ #endif
+ 
+ 	fprintf(stderr, "SIGSEGV\n");
+diff --git a/SheepShaver/src/kpx_cpu/src/cpu/ppc/ppc-execute.cpp b/SheepShaver/src/kpx_cpu/src/cpu/ppc/ppc-execute.cpp
+--- a/SheepShaver/src/kpx_cpu/src/cpu/ppc/ppc-execute.cpp
++++ b/SheepShaver/src/kpx_cpu/src/cpu/ppc/ppc-execute.cpp
+@@ -55,14 +55,14 @@
+ void powerpc_cpu::execute_illegal(uint32 opcode)
+ {
++#ifdef SHEEPSHAVER
++	if (PrefsFindBool("ignoreillegal")) {
++		increment_pc(4);
++		return;
++	}
++#endif
+ 	fprintf(stderr, "Illegal instruction at %08x, opcode = %08x\n", pc(), opcode);
+-
+-#ifdef SHEEPSHAVER
+-	if (PrefsFindBool("ignoreillegal")) {
+-		increment_pc(4);
+-		return;
+-	}
+-#endif
+ 
+ #if ENABLE_MON
+ 	disass_ppc(stdout, pc(), opcode);
