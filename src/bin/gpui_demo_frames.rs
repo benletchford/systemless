@@ -22,6 +22,21 @@ impl From<(i16, i16, i16, i16)> for Rect {
     }
 }
 
+/// Prepare only compositor-owned pixels; coordinates outside these clipped
+/// rectangles retain their original bytes, including custom guest content.
+pub fn fill_texture_clips(pixels: &mut [u8], width: u32, height: u32, clips: &[Rect], color: [u8; 4]) {
+    let viewport = Rect { top: 0, left: 0, bottom: height as i32, right: width as i32 };
+    assert_eq!(pixels.len(), width as usize * height as usize * 4);
+    for clip in clips {
+        let Some(rect) = clip.intersection(viewport) else { continue; };
+        for y in rect.top..rect.bottom {
+            let start = (y as usize * width as usize + rect.left as usize) * 4;
+            let end = (y as usize * width as usize + rect.right as usize) * 4;
+            for pixel in pixels[start..end].chunks_exact_mut(4) { pixel.copy_from_slice(&color); }
+        }
+    }
+}
+
 impl Rect {
     pub fn width(self) -> i32 {
         self.right - self.left
@@ -682,6 +697,32 @@ mod tests {
             popup_menu_id: None,
             popup_title_width: None,
         }
+    }
+
+    #[test]
+    fn texture_preparation_preserves_unowned_pixels_and_clip_holes() {
+        let original: Vec<u8> = (0..8 * 6 * 4).map(|index| index as u8).collect();
+        let mut pixels = original.clone();
+        let clips = [
+            Rect { top: -2, left: -3, bottom: 2, right: 3 },
+            Rect { top: 3, left: 4, bottom: 9, right: 10 },
+        ];
+        let color = [12, 34, 56, 255];
+        super::fill_texture_clips(&mut pixels, 8, 6, &clips, color);
+        for y in 0..6 {
+            for x in 0..8 {
+                let offset = (y * 8 + x) * 4;
+                let owned = (y < 2 && x < 3) || (y >= 3 && x >= 4);
+                assert_eq!(&pixels[offset..offset + 4], if owned {
+                    &color[..]
+                } else {
+                    &original[offset..offset + 4]
+                });
+            }
+        }
+        super::fill_texture_clips(&mut pixels, 8, 6, &[], [0; 4]);
+        assert_eq!(&pixels[(2 * 8 + 3) * 4..(2 * 8 + 4) * 4],
+            &original[(2 * 8 + 3) * 4..(2 * 8 + 4) * 4]);
     }
 
     #[test]
