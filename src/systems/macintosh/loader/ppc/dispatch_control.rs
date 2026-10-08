@@ -3,6 +3,18 @@
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PpcSimpleControlTrackingState {
+    handle: u32,
+    pointer: u32,
+    generation: u64,
+    return_address: u32,
+    stack_pointer: u32,
+    bounds: (i16, i16, i16, i16),
+    part: i16,
+    saved_hilite: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PpcScrollbarThumbTrackingState {
     handle: u32,
     pointer: u32,
@@ -1039,6 +1051,38 @@ pub(super) fn ppc_dispatch_legacy_control(
             Some(PpcImportAction::Return(ppc_i16_result(part)))
         }
         PpcLegacyControlOperation::TrackControl => {
+            // Nil-action standard controls retain their import until release.
+            // Macintosh Toolbox Essentials (1992), pp. 5-73--5-74, 5-90--5-92.
+            if let Some(tracking) = toolbox_startup.simple_control_tracking.take() {
+                if tracking.handle != cpu.gpr[3] || tracking.return_address != cpu.lr
+                    || tracking.stack_pointer != cpu.gpr[1]
+                    || ppc_control_ptr(memory, tracking.handle) != Some(tracking.pointer)
+                    || !controls.iter().any(|record| record.active && record.handle == tracking.handle
+                        && record.pointer == tracking.pointer && record.generation == tracking.generation)
+                {
+                    return Some(PpcImportAction::Return(0));
+                }
+                let release = event_queue.iter().position(|event| event.what == 2);
+                let held = input.mouse_button && release.is_none();
+                let point = if !held {
+                    release.and_then(|index| event_queue.remove(index))
+                        .map(|event| (event.where_v, event.where_h))
+                        .unwrap_or((input.mouse_v, input.mouse_h))
+                } else { (input.mouse_v, input.mouse_h) };
+                let (top, left, bottom, right) = tracking.bounds;
+                let inside = point.0 >= top && point.0 < bottom && point.1 >= left && point.1 < right;
+                let hilite = if held && inside { tracking.part as u8 } else { tracking.saved_hilite };
+                if memory.read_u8(tracking.pointer + PPC_CONTROL_HILITE_OFFSET) != Some(hilite) {
+                    let _ = memory.write_u8(tracking.pointer + PPC_CONTROL_HILITE_OFFSET, hilite);
+                    let _ = ppc_draw_control(memory, handles, controls, gworlds, vfs_resources,
+                        current_resource_refnum, tracking.handle);
+                }
+                if held {
+                    toolbox_startup.simple_control_tracking = Some(tracking);
+                    return Some(PpcImportAction::Yield(u64::MAX));
+                }
+                return Some(PpcImportAction::Return(ppc_i16_result(if inside { tracking.part } else { 0 })));
+            }
             // Retain the import frame until mouse-up so the scroll-box value
             // follows the release displacement, as TrackControl specifies.
             // Macintosh Toolbox Essentials (1992), pp. 5-36, 5-89--5-90.
@@ -1160,6 +1204,29 @@ pub(super) fn ppc_dispatch_legacy_control(
                     h,
                 );
                 return Some(PpcImportAction::Return(ppc_i16_result(part)));
+            }
+            if matches!(part, 10 | 11) && action_proc == 0 && input.mouse_button {
+                let handle = cpu.gpr[3];
+                if let Some(record) = controls.iter().find(|record| record.active && record.handle == handle
+                    && matches!(record.proc_id, 0 | 1 | 2)) {
+                    if let Some(pointer) = ppc_control_ptr(memory, handle) {
+                        let owner = memory.read_u32_be(pointer + PPC_CONTROL_OWNER_OFFSET)?;
+                        let surface = ppc_live_quickdraw_surface(memory, gworlds, owner)?;
+                        let bounds = surface.local_rect(ppc_read_rect(memory, pointer + PPC_CONTROL_RECT_OFFSET)?);
+                        let tracking = PpcSimpleControlTrackingState {
+                            handle, pointer, generation: record.generation,
+                            return_address: cpu.lr, stack_pointer: cpu.gpr[1],
+                            bounds: (ppc_i32_to_i16_saturating(bounds.0), ppc_i32_to_i16_saturating(bounds.1),
+                                ppc_i32_to_i16_saturating(bounds.2), ppc_i32_to_i16_saturating(bounds.3)),
+                            part, saved_hilite: memory.read_u8(pointer + PPC_CONTROL_HILITE_OFFSET).unwrap_or(0),
+                        };
+                        let _ = memory.write_u8(pointer + PPC_CONTROL_HILITE_OFFSET, part as u8);
+                        let _ = ppc_draw_control(memory, handles, controls, gworlds, vfs_resources,
+                            current_resource_refnum, handle);
+                        toolbox_startup.simple_control_tracking = Some(tracking);
+                        return Some(PpcImportAction::Yield(u64::MAX));
+                    }
+                }
             }
             if part == 0 || action_proc == 0 || action_proc == u32::MAX {
                 return Some(PpcImportAction::Return(ppc_i16_result(part)));

@@ -1843,7 +1843,7 @@ fn track_control_button_systemless_theme_tracks_pressed_state_until_release() {
     );
     assert!(disp.control_tracking.is_some());
     assert_eq!(bus.read_word(sp + 12), 0xBEEF);
-    assert_eq!(bus.read_byte(ctrl_ptr + 17), 1);
+    assert_eq!(bus.read_byte(ctrl_ptr + 17), 10);
     assert!(
         screen_pixel_is_set(&bus, base, row_bytes, probe_x, probe_y),
         "held simple TrackControl should route pressed button chrome through the provider"
@@ -1864,7 +1864,7 @@ fn track_control_button_systemless_theme_tracks_pressed_state_until_release() {
     disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
         .unwrap()
         .unwrap();
-    assert_eq!(bus.read_byte(ctrl_ptr + 17), 1);
+    assert_eq!(bus.read_byte(ctrl_ptr + 17), 10);
     assert!(
         screen_pixel_is_set(&bus, base, row_bytes, probe_x, probe_y),
         "dragging back inside should restore provider pressed chrome"

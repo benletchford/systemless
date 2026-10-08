@@ -938,14 +938,16 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         highlighted: bool,
     ) {
-        let Some((ctrl_ptr, saved_hilite)) = self
+        let Some((ctrl_ptr, saved_hilite, part)) = self
             .control_tracking
             .as_ref()
-            .map(|tracking| (tracking.ctrl_ptr, tracking.saved_hilite))
+            .map(|tracking| (tracking.ctrl_ptr, tracking.saved_hilite, tracking.simple_part))
         else {
             return;
         };
-        bus.write_byte(ctrl_ptr + 17, if highlighted { 1 } else { saved_hilite });
+        // contrlHilite contains the tracked part code, not a boolean.
+        // Macintosh Toolbox Essentials (1992), pp. 5-73--5-74, 5-89.
+        bus.write_byte(ctrl_ptr + 17, if highlighted { part as u8 } else { saved_hilite });
         self.draw_control(cpu, bus, ctrl_ptr);
         if let Some(tracking) = self.control_tracking.as_mut() {
             tracking.simple_highlighted = highlighted;
@@ -1455,7 +1457,7 @@ impl super::TrapDispatcher {
                     scr_top + box_top + box_size,
                     scr_left + box_left + box_size,
                     hilite != 255,
-                    hilite == 1,
+                    matches!(hilite, 1 | 11),
                     checked,
                     false,
                 ) {
@@ -1497,7 +1499,7 @@ impl super::TrapDispatcher {
                     hilite == 255,
                 );
 
-                if self.ui_theme_id() == crate::ui_theme::UiThemeId::ClassicSystem7 && hilite == 1 {
+                if self.ui_theme_id() == crate::ui_theme::UiThemeId::ClassicSystem7 && matches!(hilite, 1 | 11) {
                     // Pressed: invert the checkbox box area
                     self.draw_rect(cpu, bus, &box_r, ShapeOp::Invert);
                 }
@@ -1525,7 +1527,7 @@ impl super::TrapDispatcher {
                     scr_top + circle_top + circle_size,
                     scr_left + circle_left + circle_size,
                     hilite != 255,
-                    hilite == 1,
+                    matches!(hilite, 1 | 11),
                     selected,
                     false,
                 ) {
@@ -1573,7 +1575,7 @@ impl super::TrapDispatcher {
                     hilite == 255,
                 );
 
-                if self.ui_theme_id() == crate::ui_theme::UiThemeId::ClassicSystem7 && hilite == 1 {
+                if self.ui_theme_id() == crate::ui_theme::UiThemeId::ClassicSystem7 && matches!(hilite, 1 | 11) {
                     // Pressed: invert the circle area
                     self.draw_oval(cpu, bus, &circle_r, ShapeOp::Invert);
                 }
@@ -1745,7 +1747,7 @@ impl super::TrapDispatcher {
             abs_bottom,
             abs_right,
             hilite != 255,
-            hilite == 1,
+            matches!(hilite, 1 | 10),
             false,
         ) {
             self.draw_control_text(bus, abs_top, abs_left, abs_bottom, abs_right, title);
@@ -1825,7 +1827,7 @@ impl super::TrapDispatcher {
 
         self.draw_control_text(bus, abs_top, abs_left, abs_bottom, abs_right, title);
 
-        if hilite == 1 {
+        if matches!(hilite, 1 | 10) {
             // Pressed: invert the interior.
             let inv = Rect {
                 top: r.top + 1,
