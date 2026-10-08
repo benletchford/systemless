@@ -530,3 +530,26 @@ retained-tracking disposal/identity-reuse qualification remain open.
 The full 58-test GPUI suite passes after these changes, including the new radio
 tracking regression and strengthened checkbox assertion. The ordinary desktop
 frontend also passes its build check.
+
+Radio pressed presentation now shares the Systemless choice-control visual
+implementation with checkboxes, using separate GPUI Kit Checkbox and Radio
+semantic bases. Document and dialog radios read guest tracking independently
+from their selected value. The shared visual layer retains Kit's checkmark
+convention, uses a circular radio indicator, and scales the indicator and label
+in guest coordinates. No host callback changes guest values.
+
+The composed capture path adds `--capture-radio-held`, `--capture-radio-outside`
+and `--capture-radio-selected`, driving the preferences page through guest menu
+selection and mouse events and checking the resulting value and highlight.
+Nine reviewed captures cover these states in monochrome 68K, colour 68K and PPC.
+The radio tracking regression and all seven dialog regressions pass. A fresh
+held-checkbox capture is pixel-identical to the prior reviewed colour 68K
+capture after extracting the shared presentation module.
+
+This verifies the document-radio state transition at the existing light-theme
+capture scale, not complete scene readiness. The preferences captures expose
+white overlay rectangles against guest-drawn grey panels and the previously
+unqualified monochrome black panel backgrounds; these remain composition and
+guest-drawing qualification gaps. Dialog-radio fixtures, already-selected held
+radios, disabled/inactive states, other scales/themes, and accessibility actions
+still require qualification.
