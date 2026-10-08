@@ -316,3 +316,10 @@ the matching tracking call on both CPU paths. Regression checks verify restored
 pixels, cleared tracking, a false LClick result and unchanged selection.
 Custom-definition callback execution, mixed-mode callback disposal and broader
 lifecycle/overlap behaviour still require qualification.
+
+Composed list-thumb capture modes now cover held and cancelled guest drags.
+Monochrome 68K, colour 68K and PPC captures assert unchanged origin and selection, and show
+stationary rows during the drag and a removed outline after cancellation.
+Visual review exposed a clipped right edge on the held GPUI outline in all
+three modes. This remains a presentation defect; these diagnostic captures
+do not establish full thumb readiness or overlap/scaling qualification.

@@ -108,6 +108,12 @@ mod desktop {
         capture_lists_selected: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_lists_held: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_lists_cancelled: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_text_edit: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -2218,6 +2224,8 @@ mod desktop {
         ControlsHeld,
         Lists,
         ListsSelected,
+        ListsHeld,
+        ListsCancelled,
         TextEdit,
         TextEditSelected,
         TextEditEdited,
@@ -2285,7 +2293,7 @@ mod desktop {
                 | CaptureCase::WindowsPromoted
                 | CaptureCase::WindowsMainPromoted
         );
-        let lists_page = matches!(capture, CaptureCase::Lists | CaptureCase::ListsSelected);
+        let lists_page = matches!(capture, CaptureCase::Lists | CaptureCase::ListsSelected | CaptureCase::ListsHeld | CaptureCase::ListsCancelled);
         let text_edit_page = matches!(
             capture,
             CaptureCase::TextEdit | CaptureCase::TextEditSelected | CaptureCase::TextEditEdited
@@ -2942,6 +2950,42 @@ mod desktop {
             );
         }
         let mut held_drag = None;
+        if matches!(capture, CaptureCase::ListsHeld | CaptureCase::ListsCancelled) {
+            let list = session.runner_mut().list_manager_snapshot().into_iter()
+                .find(|list| list.draw_enabled && list.definition_id == 0).unwrap();
+            let bounds = list.global_view_rect.unwrap();
+            let bar = session.runner_mut().control_snapshot().into_iter()
+                .find(|control| control.visible && control.proc_id == 16
+                    && control.bounds.1 == bounds.3
+                    && super::frames::scrollbar_geometry(control).vertical).unwrap();
+            let thumb = super::frames::scrollbar_geometry(&bar);
+            assert!(bar.maximum > bar.minimum);
+            let from = (bar.bounds.0 + thumb.thumb_start as i16 + 8,
+                (bar.bounds.1 + bar.bounds.3) / 2);
+            let to = (bar.bounds.2 - 24, from.1);
+            let cancelled = matches!(capture, CaptureCase::ListsCancelled);
+            let mut inputs = vec![
+                MacintoshInput::MouseDown { vertical: from.0, horizontal: from.1 },
+                MacintoshInput::MouseMove { vertical: to.0, horizontal: to.1 },
+            ];
+            if cancelled {
+                let outside = bar.bounds.3 + 40;
+                inputs.push(MacintoshInput::MouseMove { vertical: to.0, horizontal: outside });
+                inputs.push(MacintoshInput::MouseUp { vertical: to.0, horizontal: outside });
+            }
+            for input in inputs {
+                session.deliver_input(input);
+                for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
+            }
+            let after = session.runner_mut().list_manager_snapshot().into_iter()
+                .find(|after| after.guest_id == list.guest_id).unwrap();
+            assert_eq!(after.visible, list.visible);
+            assert_eq!(after.selected, list.selected);
+            if !cancelled {
+                held_drag = Some((bar.guest_id, bar.generation, from, to));
+            }
+        }
+
         if controls_dragged || controls_held {
             let controls = session.runner_mut().control_snapshot();
             let bar = controls
@@ -3359,6 +3403,18 @@ mod desktop {
                 args.screen_depth,
                 CaptureCase::ListsSelected,
             );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_lists_held.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc,
+                args.screen_depth, CaptureCase::ListsHeld);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_lists_cancelled.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc,
+                args.screen_depth, CaptureCase::ListsCancelled);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -3915,6 +3971,8 @@ mod desktop {
                         capture_controls_held: None,
                         capture_lists: None,
                         capture_lists_selected: None,
+                        capture_lists_held: None,
+                        capture_lists_cancelled: None,
                         capture_text_edit: None,
                         capture_text_edit_selected: None,
                         capture_text_edit_edited: None,
