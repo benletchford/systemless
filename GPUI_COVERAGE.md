@@ -661,3 +661,12 @@ The broader library menu run passed 431 tests and failed
 the result is 0 rather than 1000. An isolated rerun with the classic renderer
 change removed reproduces the identical failure. This pre-existing readiness
 failure remains unresolved; the menu suite is not recorded as fully passing.
+
+The menu-resource test failure above is resolved as a stale assertion, with no
+runtime change. DynamicMenuList offset +4 is `mbResID`, the MBDF identifier and
+variant, not the MBAR resource ID (Macintosh Toolbox Essentials, pp. 3-97--3-98,
+3-104, 3-111). Loading MBAR 1000 with the standard definition must leave this
+field zero. The corrected import-level test also asserts that the frontend
+snapshot does not classify this standard bar as custom. All 432 library tests
+matching `menu` now pass. This closes that specific test failure, not the broader
+menu interaction, accessibility or popup presentation qualification gaps.

@@ -4514,7 +4514,9 @@ fn hle_import_runner_builds_and_draws_mbar_resources() {
     ppc_set_current_menu_list(&mut loaded.memory, menu_list_handle);
     let menu_list = loaded.memory.read_u32_be(menu_list_handle).unwrap();
     assert_eq!(loaded.memory.read_u16_be(menu_list), Some(12));
-    assert_eq!(loaded.memory.read_u16_be(menu_list + 4), Some(1000));
+    // DynamicMenuList.mbResID identifies MBDF, not the MBAR resource.
+    // Macintosh Toolbox Essentials (1992), pp. 3-97--3-98, 3-104, 3-111.
+    assert_eq!(loaded.memory.read_u16_be(menu_list + 4), Some(0));
     let file_menu = ppc_get_menu_handle(&mut loaded.memory, menu_list_handle, 128);
     assert_ne!(file_menu, 0);
     assert_ne!(
@@ -4554,6 +4556,7 @@ fn hle_import_runner_builds_and_draws_mbar_resources() {
     );
     assert_eq!(standard_menu_title_advance(&[0x14]), 11);
     let snapshot = loaded.guest_menu_snapshot();
+    assert!(!snapshot.custom_bar_definition);
     assert_eq!(snapshot.menus.len(), 2);
     assert_eq!(snapshot.menus[0].title, "Systemless");
     assert_eq!(snapshot.menus[1].title, "File");
