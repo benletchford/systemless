@@ -1470,6 +1470,9 @@ mod desktop {
                 // Macintosh Toolbox Essentials (1992), pp. 5-58--5-64.
                 for piece in super::frames::control_pieces(&self.controls, &self.menus, &self.windows, viewport) {
                     let control = &self.controls[piece.control];
+                    let semantic_enabled = control.enabled && self.windows.iter().any(|frame| {
+                        frame.guest_id == control.owner_id && frame.window.visible && frame.window.active
+                    });
                     if (1008..=1023).contains(&control.proc_id)
                         && (self.popup_tracking == Some((control.guest_id, control.generation))
                             || control.hilite == 1)
@@ -1552,7 +1555,7 @@ mod desktop {
                                     format!("guest-control-checkbox-{}-{}", control.guest_id, control.generation),
                                     control.title.clone(), control.value != 0, control.enabled,
                                     control.hilite == 11, scene_scale, cx,
-                                ).on_change({
+                                ).disabled(!semantic_enabled).on_change({
                                     let sender = self.commands.clone();
                                     let (id, generation) = (control.guest_id, control.generation);
                                     move |_, event, _, _| {
@@ -1560,7 +1563,7 @@ mod desktop {
                                             let _ = sender.send(Command::ActivateControl(id, generation));
                                         }
                                     }
-                                }).when(control.enabled, |choice| {
+                                }).when(semantic_enabled, |choice| {
                                     let sender = self.commands.clone();
                                     let (id, generation) = (control.guest_id, control.generation);
                                     choice.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
@@ -1575,7 +1578,7 @@ mod desktop {
                                     format!("guest-control-radio-{}-{}", control.guest_id, control.generation),
                                     control.title.clone(), control.value != 0, control.enabled,
                                     control.hilite == 11, scene_scale, cx,
-                                ).on_change({
+                                ).disabled(!semantic_enabled).on_change({
                                     let sender = self.commands.clone();
                                     let (id, generation) = (control.guest_id, control.generation);
                                     move |_, event, _, _| {
@@ -1583,7 +1586,7 @@ mod desktop {
                                             let _ = sender.send(Command::ActivateControl(id, generation));
                                         }
                                     }
-                                }).when(control.enabled, |choice| {
+                                }).when(semantic_enabled, |choice| {
                                     let sender = self.commands.clone();
                                     let (id, generation) = (control.guest_id, control.generation);
                                     choice.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
@@ -1837,7 +1840,7 @@ mod desktop {
                                 format!("guest-dialog-checkbox-{}-{}-{}", dialog.guest_id, dialog.generation, item.number),
                                 item.text.clone(), item.value.unwrap() != 0, item.enabled,
                                 dialog.active && item.pressed, scene_scale, cx,
-                            ).on_change({
+                            ).disabled(!item.enabled || !dialog.active).on_change({
                                 let sender = self.commands.clone();
                                 let (id, generation, number) = (dialog.guest_id, dialog.generation, item.number);
                                 let identity = item.control_identity;
@@ -1860,7 +1863,7 @@ mod desktop {
                                 format!("guest-dialog-radio-{}-{}-{}", dialog.guest_id, dialog.generation, item.number),
                                 item.text.clone(), item.value.unwrap() != 0, item.enabled,
                                 dialog.active && item.pressed, scene_scale, cx,
-                            ).on_change({
+                            ).disabled(!item.enabled || !dialog.active).on_change({
                                 let sender = self.commands.clone();
                                 let (id, generation, number) = (dialog.guest_id, dialog.generation, item.number);
                                 let identity = item.control_identity;
@@ -8631,6 +8634,33 @@ mod desktop {
                     .count(),
                 1
             );
+            cx.update_window(window.into(), |_, window, cx| {
+                view.update(cx, |demo, cx| {
+                    demo.windows[0].window.active = false;
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                assert_eq!(window.find("guest-control-checkbox-22-1").focused(), None,
+                    "inactive guest controls must not expose host focus");
+                window.click("guest-control-checkbox-22-1", cx);
+            }).unwrap();
+            let commands: Vec<_> = receiver.try_iter().collect();
+            assert!(!commands.iter().any(|command| matches!(command, super::Command::ActivateControl(..))));
+            assert_eq!(commands.iter().filter(|command| matches!(command,
+                super::Command::Input(MacintoshInput::MouseDown { .. })
+            )).count(), 1, "inactive window activation still belongs to the guest");
+            for enabled in [true, false, true] {
+                cx.update_window(window.into(), |_, window, cx| {
+                    view.update(cx, |demo, cx| {
+                        demo.windows[0].window.active = true;
+                        demo.controls[0].enabled = enabled;
+                        cx.notify();
+                    });
+                    window.render_frame(cx);
+                    assert_eq!(window.find("guest-control-checkbox-22-1").focused(),
+                        enabled.then_some(false), "host focus availability must follow live guest state");
+                }).unwrap();
+            }
         }
     }
 }
