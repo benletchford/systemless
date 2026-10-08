@@ -6196,6 +6196,23 @@ mod desktop {
                     horizontal: point.1,
                 });
                 settle(&mut session);
+                let held = session.runner_mut().dialog_snapshot().into_iter()
+                    .find(|current| current.guest_id == dialog.guest_id).unwrap();
+                let held_checkbox = held.items.iter().find(|item| item.number == checkbox.number).unwrap();
+                assert_eq!(held_checkbox.value, Some(0), "checkbox changed before release: PPC={powerpc}, depth={depth:?}");
+                assert!(held_checkbox.pressed, "held checkbox lacks guest highlight: PPC={powerpc}, depth={depth:?}");
+                let outside_checkbox = (checkbox.bounds.0 - 5, checkbox.bounds.1 - 5);
+                session.deliver_input(MacintoshInput::MouseMove { vertical: outside_checkbox.0, horizontal: outside_checkbox.1 });
+                settle(&mut session);
+                session.deliver_input(MacintoshInput::MouseUp { vertical: outside_checkbox.0, horizontal: outside_checkbox.1 });
+                settle(&mut session);
+                let cancelled = session.runner_mut().dialog_snapshot().into_iter()
+                    .find(|current| current.guest_id == dialog.guest_id).unwrap();
+                let cancelled_checkbox = cancelled.items.iter().find(|item| item.number == checkbox.number).unwrap();
+                assert_eq!(cancelled_checkbox.value, Some(0), "outside release toggled checkbox: PPC={powerpc}, depth={depth:?}");
+                assert!(!cancelled_checkbox.pressed);
+                session.deliver_input(MacintoshInput::MouseDown { vertical: point.0, horizontal: point.1 });
+                settle(&mut session);
                 session.deliver_input(MacintoshInput::MouseUp {
                     vertical: point.0,
                     horizontal: point.1,

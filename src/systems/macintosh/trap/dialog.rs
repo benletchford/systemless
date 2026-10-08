@@ -4174,7 +4174,7 @@ impl super::TrapDispatcher {
             .as_ref()
             .is_some_and(|tracking| tracking.active_button.is_some())
         {
-            self.handle_dialog_button_tracking(bus);
+            self.handle_dialog_button_tracking(cpu, bus);
             return;
         }
 
@@ -10554,7 +10554,7 @@ impl super::TrapDispatcher {
         cpu.write_reg(Register::A7, saved.stack_ptr + 8);
     }
 
-    fn handle_dialog_button_tracking(&mut self, bus: &mut MacMemoryBus) {
+    fn handle_dialog_button_tracking<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
         let Some((
             dialog_ptr,
             bounds,
@@ -10591,6 +10591,41 @@ impl super::TrapDispatcher {
         let (top, left, bottom, right) = Self::dialog_item_screen_rect(bounds, rect);
         let (mouse_v, mouse_h) = self.input_state.mouse_position();
         let inside = mouse_v >= top && mouse_v < bottom && mouse_h >= left && mouse_h < right;
+
+        if matches!(dialog_item_base_type(item_type), DIALOG_ITEM_CHECKBOX | DIALOG_ITEM_RADIO) {
+            // HIG (1992), pp. 205, 209--212: track without changing the
+            // value; only the application acts on a completed inside release.
+            let pressed = self.input_state.mouse_button_pressed() && inside;
+            if let Some(handle) = self.dialog_control_handle_for_item(dialog_ptr, item_no) {
+                let pointer = bus.read_long(handle);
+                if pointer != 0 {
+                    let highlight = if pressed { 11 } else { 0 };
+                    if bus.read_byte(pointer + 17) != highlight {
+                        bus.write_byte(pointer + 17, highlight);
+                        self.draw_control(cpu, bus, pointer);
+                    }
+                }
+            }
+            if let Some(button) = self.dialog_tracking.as_mut().and_then(|tracking| tracking.active_button.as_mut()) {
+                button.highlighted = pressed;
+            }
+            if self.input_state.mouse_button_pressed() { return; }
+            self.consume_or_retain_dialog_mouse_up(&mouse_down);
+            self.dialog_tracking.as_mut().unwrap().active_button = None;
+            if !inside { return; }
+            let (edit_item, edit_text, items) = {
+                let tracking = self.dialog_tracking.as_mut().unwrap();
+                Self::sync_tracking_active_edit_item(tracking);
+                (tracking.edit_item, tracking.edit_text.clone(), tracking.items.clone())
+            };
+            self.flush_dialog_edit_item_texts(bus, dialog_ptr, &items, edit_item, &edit_text);
+            let saved = self.dialog_tracking.take().unwrap();
+            self.persist_visible_dialog_snapshot(bus, &saved);
+            self.dialog_saved_pixels.insert(dialog_ptr, saved.saved_pixels);
+            if saved.item_hit_ptr != 0 { bus.write_word(saved.item_hit_ptr, item_no as u16); }
+            cpu.write_reg(Register::A7, saved.stack_ptr + 8);
+            return;
+        }
 
         if self.input_state.mouse_button_pressed() {
             if inside != highlighted {
@@ -12194,7 +12229,7 @@ impl super::TrapDispatcher {
 
                 if let Some(ref tracking) = self.dialog_tracking {
                     if tracking.active_button.is_some() {
-                        self.handle_dialog_button_tracking(bus);
+                        self.handle_dialog_button_tracking(cpu, bus);
                         return Some(Ok(()));
                     }
 
@@ -12682,11 +12717,20 @@ impl super::TrapDispatcher {
                                                     );
                                                 }
                                             }
-                                            // Checkbox click: return item number immediately
-                                            // The dialog stays on screen — the app toggles
-                                            // the checkbox value and calls ModalDialog again.
-                                            // Inside Macintosh Volume I, I-415
-                                            5 => {
+                                            // Checkbox/radio values remain application-owned.
+                                            // Return the item only after tracking completes.
+                                            // Inside Macintosh Volume I, I-415; HIG (1992), p. 205.
+                                            DIALOG_ITEM_CHECKBOX | DIALOG_ITEM_RADIO => {
+                                                if self.input_state.mouse_button_pressed() {
+                                                    self.dialog_tracking.as_mut().unwrap().active_button = Some(
+                                                        super::dispatch::DialogButtonTrackingState {
+                                                            mouse_down: e.clone(), item_no: hit,
+                                                            rect: item.rect, title: item.text.clone(),
+                                                            is_default: false, highlighted: false,
+                                                        });
+                                                    self.handle_dialog_button_tracking(cpu, bus);
+                                                    return Some(Ok(()));
+                                                }
                                                 let (dlg_ptr, edit_item, edit_text, items) = {
                                                     let tracking =
                                                         self.dialog_tracking.as_mut().unwrap();

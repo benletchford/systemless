@@ -12508,7 +12508,7 @@
 
     #[test]
     fn modal_dialog_button_tracking_systemless_theme_routes_pressed_state_through_provider() {
-        let (mut disp, _cpu, mut bus) = setup();
+        let (mut disp, mut cpu, mut bus) = setup();
         let screen_base = 0x300000u32;
         let row_bytes = 64u32;
         let bounds = (0, 0, 100, 220);
@@ -12568,7 +12568,7 @@
 
         disp.input_state.set_mouse_button_for_test(true);
         disp.input_state.set_mouse_position_for_test((probe_y, probe_x));
-        disp.handle_dialog_button_tracking(&mut bus);
+        disp.handle_dialog_button_tracking(&mut cpu, &mut bus);
 
         assert!(
             screen_pixel_is_set(&bus, screen_base, row_bytes, probe_x, probe_y),
@@ -12583,7 +12583,7 @@
         );
 
         disp.input_state.set_mouse_position_for_test((40, 50));
-        disp.handle_dialog_button_tracking(&mut bus);
+        disp.handle_dialog_button_tracking(&mut cpu, &mut bus);
 
         assert!(
             !screen_pixel_is_set(&bus, screen_base, row_bytes, probe_x, probe_y),
