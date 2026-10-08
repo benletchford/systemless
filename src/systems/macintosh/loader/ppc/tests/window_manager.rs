@@ -2289,7 +2289,7 @@ fn ppc_zoom_window_recalculates_visibility_and_queues_redraw() {
 
     assert_eq!(
         ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
-        Some((20, 0, ppc_main_screen_height() as i16, ppc_main_screen_width() as i16)),
+        Some((41, 3, ppc_main_screen_height() as i16 - 3, ppc_main_screen_width() as i16 - 3)),
     );
     assert_ne!(
         ppc_read_rgn_bbox(&mut loaded.memory, vis_rgn),
@@ -4646,7 +4646,7 @@ fn window_sizing_positioning_and_zooming_commands_dispatch_with_canonical_evalua
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(
                 ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
-                Some((20, 0, ppc_main_screen_height() as i16, ppc_main_screen_width() as i16)),
+                Some((41, 3, ppc_main_screen_height() as i16 - 3, ppc_main_screen_width() as i16 - 3)),
             );
 
             // ZoomWindow with window = 0 returns gracefully

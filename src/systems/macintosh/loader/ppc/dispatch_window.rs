@@ -2526,6 +2526,26 @@ pub(super) fn ppc_get_new_cwindow(
     window
 }
 
+fn ppc_update_window_user_state(
+    memory: &mut PpcSectionMem,
+    window: u32,
+    bounds: (i16, i16, i16, i16),
+) {
+    // The Window Manager updates WStateData.userState when the user changes
+    // a zoomable window's bounds. MTE (1992), pp. 4-53--4-54.
+    if !matches!(ppc_window_proc_id(memory, window), 8 | 12) {
+        return;
+    }
+    let data = memory
+        .read_u32_be(window.wrapping_add(PPC_CWINDOW_STATE_HANDLE_OFFSET))
+        .filter(|handle| *handle != 0)
+        .and_then(|handle| memory.read_u32_be(handle))
+        .filter(|data| *data != 0);
+    if let Some(data) = data {
+        let _ = ppc_write_rect(memory, data, bounds.0, bounds.1, bounds.2, bounds.3);
+    }
+}
+
 pub(super) fn ppc_size_window_dimensions(
     memory: &mut PpcSectionMem,
     gworlds: &mut [PpcGWorldRecord],
@@ -2576,6 +2596,16 @@ pub(super) fn ppc_size_window_dimensions(
             ppc_i32_to_i16_saturating(i32::from(global_left).saturating_add(width as i32)),
         ),
     )?;
+    ppc_update_window_user_state(
+        memory,
+        window_ptr,
+        (
+            global_top,
+            global_left,
+            ppc_i32_to_i16_saturating(i32::from(global_top).saturating_add(height as i32)),
+            ppc_i32_to_i16_saturating(i32::from(global_left).saturating_add(width as i32)),
+        ),
+    );
 
     if ppc_hle_trace_enabled() {
         eprintln!(
@@ -2646,6 +2676,20 @@ pub(super) fn ppc_move_window_coordinates(
             ),
         ),
     )?;
+    ppc_update_window_user_state(
+        memory,
+        window_ptr,
+        (
+            new_top,
+            new_left,
+            ppc_i32_to_i16_saturating(
+                i32::from(new_top).saturating_add(i32::from(port_bottom.saturating_sub(port_top))),
+            ),
+            ppc_i32_to_i16_saturating(
+                i32::from(new_left).saturating_add(i32::from(port_right.saturating_sub(port_left))),
+            ),
+        ),
+    );
 
     // portRect is guest-writable and describes local coordinates, not the
     // allocated backing surface. It may legitimately differ from the cached
@@ -3197,7 +3241,16 @@ pub(super) fn ppc_find_window_at_point(
                 && h >= right.saturating_sub(24)
                 && h < right.saturating_sub(6)
             {
-                return (7, window);
+                // FindWindow reports inZoomIn only when the content already
+                // matches WStateData.stdState; otherwise it reports inZoomOut.
+                // Macintosh Toolbox Essentials (1992), pp. 4-53--4-54.
+                let standard = memory
+                    .read_u32_be(window.wrapping_add(PPC_CWINDOW_STATE_HANDLE_OFFSET))
+                    .filter(|handle| *handle != 0)
+                    .and_then(|handle| memory.read_u32_be(handle))
+                    .filter(|state| *state != 0)
+                    .and_then(|state| ppc_read_rect(memory, state + 8));
+                return (if standard == Some((top, left, bottom, right)) { 7 } else { 8 }, window);
             }
             return (4, window);
         }
@@ -6631,6 +6684,7 @@ pub(super) fn ppc_zoom_window(
         .and_then(|handle| memory.read_u32_be(handle))
         .filter(|state| *state != 0);
     let state = state?;
+    let user_state = ppc_read_rect(memory, state)?;
     let offset = if part == 8 { 8 } else { 0 };
     let (top, left, bottom, right) = ppc_read_rect(memory, state + offset)?;
     let mut move_cpu = cpu.clone();
@@ -6641,5 +6695,13 @@ pub(super) fn ppc_zoom_window(
     size_cpu.gpr[4] = right.saturating_sub(left) as u16 as u32;
     size_cpu.gpr[5] = bottom.saturating_sub(top) as u16 as u32;
     ppc_size_window(&size_cpu, memory, gworlds)?;
+    ppc_write_rect(
+        memory,
+        state,
+        user_state.0,
+        user_state.1,
+        user_state.2,
+        user_state.3,
+    )?;
     Some(())
 }

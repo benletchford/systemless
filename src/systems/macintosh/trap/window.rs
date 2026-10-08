@@ -2089,6 +2089,28 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn update_window_user_state(
+        &self,
+        bus: &mut MacMemoryBus,
+        window: u32,
+        bounds: (i16, i16, i16, i16),
+    ) {
+        // WStateData.userState follows a user's move or resize. ZoomWindow
+        // reads this rectangle to restore the window after its standard state.
+        // Macintosh Toolbox Essentials (1992), pp. 4-53--4-54.
+        if !matches!(self.window_proc_ids.get(&window), Some(8 | 12)) {
+            return;
+        }
+        let handle = bus.read_long(window + Self::WINDOW_DATA_HANDLE_OFFSET);
+        let data = if handle != 0 { bus.read_long(handle) } else { 0 };
+        if data == 0 {
+            return;
+        }
+        for (offset, value) in [(0, bounds.0), (2, bounds.1), (4, bounds.2), (6, bounds.3)] {
+            bus.write_word(data + offset, value as u16);
+        }
+    }
+
     pub(crate) fn move_window_to_global(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -2153,6 +2175,7 @@ impl super::TrapDispatcher {
 
         // portRect, visRgn, clipRgn stay in local coords — no update needed.
         let global_content = self.window_local_rect_to_global(bus, the_window, local_content_rect);
+        self.update_window_user_state(bus, the_window, global_content);
         let global_structure =
             self.window_structure_global_rect_for_window(bus, the_window, global_content);
         Self::write_region_handle_rect(
@@ -4931,6 +4954,7 @@ impl super::TrapDispatcher {
                     let content_rect = (content_top, 0, h, w);
                     let global_content =
                         self.window_local_rect_to_global(bus, the_window, content_rect);
+                    self.update_window_user_state(bus, the_window, global_content);
                     let global_structure = self.window_structure_global_rect_for_window(
                         bus,
                         the_window,
