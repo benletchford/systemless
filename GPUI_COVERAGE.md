@@ -287,3 +287,13 @@ tests pass, the latter with one test thread. An earlier concurrent run during
 additional compilation timed out in the live worker test; that test passed
 in isolation and in the complete sequential rerun. This is not performance
 qualification under load.
+
+GPUI scrollbar preview and retained list-thumb release now share the same
+architecture-neutral drag-position calculation. Native PPC confirms that a
+compact vertical bar dragged from `(150,522)` to `(300,522)` cancels rather than
+committing the end value. GPUI previously kept its outline at the end in that
+case; it now cancels on either axis using the guest's thirty-pixel allowance.
+Boundary tests cover both orientations and large signed control ranges without
+intermediate multiplication overflow. The loaded three-mode interaction test
+also covers cancellation beyond the end of the bar. This aligns preview
+geometry; guest-rendered moving outlines still remain unfinished.

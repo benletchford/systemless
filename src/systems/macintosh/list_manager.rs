@@ -179,38 +179,23 @@ impl ListScrollbarTracking {
         if self.part != 129 || record.scrollbar_limits(self.vertical) != self.start_limits {
             return None;
         }
-        let (top, left, bottom, right) = self.bounds;
-        if point.0 < top.saturating_sub(30)
-            || point.0 >= bottom.saturating_add(30)
-            || point.1 < left.saturating_sub(30)
-            || point.1 >= right.saturating_add(30)
-        {
-            return None;
-        }
-        let (start, end, delta) = if self.vertical {
-            (
-                top,
-                bottom,
-                i32::from(point.0) - i32::from(self.start_mouse.0),
-            )
+        let position = super::control_manager::scrollbar_drag_position(
+            self.bounds,
+            self.vertical,
+            self.start_limits,
+            self.start_mouse,
+            point,
+        )? - 16;
+        let travel = if self.vertical {
+            i32::from(self.bounds.2) - i32::from(self.bounds.0) - 48
         } else {
-            (
-                left,
-                right,
-                i32::from(point.1) - i32::from(self.start_mouse.1),
-            )
+            i32::from(self.bounds.3) - i32::from(self.bounds.1) - 48
         };
-        let travel = i32::from(end) - i32::from(start) - 48;
         let (value, minimum, maximum) = self.start_limits;
         let range = i32::from(maximum) - i32::from(minimum);
-        if travel <= 0 || range <= 0 {
-            return None;
-        }
-        let initial =
-            i64::from(i32::from(value) - i32::from(minimum)) * i64::from(travel) / i64::from(range);
-        let position = (initial + i64::from(delta)).clamp(0, i64::from(travel));
         let target = i32::from(minimum)
-            + ((position * i64::from(range) + i64::from(travel / 2)) / i64::from(travel)) as i32;
+            + ((i64::from(position) * i64::from(range) + i64::from(travel / 2)) / i64::from(travel))
+                as i32;
         Some(target - i32::from(value))
     }
 

@@ -328,7 +328,9 @@ pub fn scrollbar_geometry(control: &ControlSnapshot) -> ScrollbarGeometry {
     let span = i32::from(control.maximum) - i32::from(control.minimum);
     let value = (i32::from(control.value) - i32::from(control.minimum)).clamp(0, span.max(0));
     let travel = track_extent - thumb_extent;
-    let thumb_start = track_start + if span > 0 { value * travel / span } else { 0 };
+    let thumb_start = track_start + if span > 0 {
+        (i64::from(value) * i64::from(travel) / i64::from(span)) as i32
+    } else { 0 };
     ScrollbarGeometry {
         vertical,
         arrow_extent,
@@ -341,28 +343,21 @@ pub fn scrollbar_geometry(control: &ControlSnapshot) -> ScrollbarGeometry {
 
 /// Position the moving thumb outline while TrackControl holds the value.
 /// The standard CDEF cancels the outline when the pointer leaves the
-/// perpendicular 30-pixel slop region.
+/// 30-pixel slop region on either axis.
 /// Macintosh Toolbox Essentials (1992), pp. 5-7--5-10, 5-58--5-61.
 pub fn scrollbar_drag_outline(
     control: &ControlSnapshot,
     start: (i16, i16),
     current: (i16, i16),
 ) -> Option<i32> {
-    let rect = Rect::from(control.bounds);
     let geometry = scrollbar_geometry(control);
-    let (start_axis, current_axis, cross, cross_min, cross_max) = if geometry.vertical {
-        (i32::from(start.0), i32::from(current.0), i32::from(current.1), rect.left, rect.right)
-    } else {
-        (i32::from(start.1), i32::from(current.1), i32::from(current.0), rect.top, rect.bottom)
-    };
-    if cross < cross_min - 30 || cross >= cross_max + 30 {
-        return None;
-    }
-    let travel = geometry.track_extent - geometry.thumb_extent;
-    Some((geometry.thumb_start + current_axis - start_axis).clamp(
-        geometry.track_start,
-        geometry.track_start + travel.max(0),
-    ))
+    systemless::runner::scrollbar_drag_position(
+        control.bounds,
+        geometry.vertical,
+        (control.value, control.minimum, control.maximum),
+        start,
+        current,
+    )
 }
 
 /// Only standard CDEF-owned rectangles are eligible for replacement. Clip
@@ -902,8 +897,19 @@ mod tests {
         let start = (368, 104);
         assert_eq!(scrollbar_drag_outline(&bar, start, start), Some(16));
         assert_eq!(scrollbar_drag_outline(&bar, start, (368, 500)), Some(412));
-        assert_eq!(scrollbar_drag_outline(&bar, start, (368, 600)), Some(428));
+        assert_eq!(scrollbar_drag_outline(&bar, start, (368, 569)), Some(428));
+        assert_eq!(scrollbar_drag_outline(&bar, start, (368, 570)), None);
+        assert_eq!(scrollbar_drag_outline(&bar, start, (368, 600)), None);
         assert_eq!(scrollbar_drag_outline(&bar, start, (329, 500)), None);
+        let vertical = control(2, 16, (128, 514, 242, 530));
+        assert_eq!(scrollbar_drag_outline(&vertical, (150, 522), (271, 522)), Some(82));
+        assert_eq!(scrollbar_drag_outline(&vertical, (150, 522), (272, 522)), None);
+        assert_eq!(scrollbar_drag_outline(&vertical, (150, 522), (218, 560)), None);
+        let mut wide = control(3, 16, (i16::MIN, 0, i16::MAX, 16));
+        wide.minimum = i16::MIN;
+        wide.maximum = i16::MAX;
+        wide.value = i16::MAX;
+        assert_eq!(scrollbar_geometry(&wide).thumb_start, 65503);
         assert_eq!(bar.value, 0);
     }
 

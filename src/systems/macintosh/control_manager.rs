@@ -5,6 +5,44 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Shared cadence for standard scrollbar action procedures, in guest ticks.
 pub(crate) const SCROLLBAR_ACTION_REPEAT_TICKS: u32 = 3;
 
+/// Standard scroll-box preview position relative to the control's axis origin.
+/// The same geometry is used for retained guest tracking and frontend feedback.
+/// Macintosh Toolbox Essentials (1992), pp. 5-89--5-90; native Mac OS 8.1 PPC
+/// cancels outside the thirty-pixel allowance on both axes.
+#[doc(hidden)]
+pub fn scrollbar_drag_position(
+    bounds: (i16, i16, i16, i16),
+    vertical: bool,
+    limits: (i16, i16, i16),
+    start_mouse: (i16, i16),
+    point: (i16, i16),
+) -> Option<i32> {
+    let (top, left, bottom, right) = (
+        i32::from(bounds.0),
+        i32::from(bounds.1),
+        i32::from(bounds.2),
+        i32::from(bounds.3),
+    );
+    let (v, h) = (i32::from(point.0), i32::from(point.1));
+    if v < top - 30 || v >= bottom + 30 || h < left - 30 || h >= right + 30 {
+        return None;
+    }
+    let (extent, delta) = if vertical {
+        (bottom - top, v - i32::from(start_mouse.0))
+    } else {
+        (right - left, h - i32::from(start_mouse.1))
+    };
+    let (value, minimum, maximum) = limits;
+    let range = i32::from(maximum) - i32::from(minimum);
+    let travel = extent - 48;
+    if travel <= 0 || range <= 0 {
+        return None;
+    }
+    let value = i32::from(value.clamp(minimum, maximum)) - i32::from(minimum);
+    let initial = i64::from(value) * i64::from(travel) / i64::from(range);
+    Some(16 + (initial + i64::from(delta)).clamp(0, i64::from(travel)) as i32)
+}
+
 static NEXT_CONTROL_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn new_control_generation() -> u64 {
