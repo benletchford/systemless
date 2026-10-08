@@ -3329,6 +3329,20 @@ mod desktop {
         }
         let menu_presented = session.runner().guest_menu_bar_presented();
         let menu_height = session.runner().bus().read_word(MBAR_HEIGHT);
+        if !matches!(capture, CaptureCase::StandardFileSave) {
+            // Preserve the exact pre-compositor frame alongside the themed
+            // capture so an overlay cannot conceal a guest-painting defect.
+            let guest_output = output.with_extension("guest.png");
+            image::save_buffer(
+                &guest_output,
+                &frame.pixels,
+                frame.width,
+                frame.height,
+                image::ColorType::Rgba8,
+            )
+            .unwrap();
+            eprintln!("saved guest frame to {}", guest_output.display());
+        }
         let pixels = gpui_pixels(frame.pixels);
         let frame_height = frame.height;
         if matches!(capture, CaptureCase::StandardFileSave) {
