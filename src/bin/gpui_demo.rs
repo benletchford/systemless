@@ -169,6 +169,9 @@ mod desktop {
         capture_popup_controls_open: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_popup_controls_scrolled: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_standard_file_save: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -2184,7 +2187,15 @@ mod desktop {
                     }
                 }
             }
+            let mut bar = Some(bar);
             if let Some(popup) = self.guest_popup.as_ref() {
+                // A screen-height guest popup may cover the menu bar. Keep it
+                // above that bar without moving it out of the scene input layer.
+                if !guest_menu_fallback && self.menu_presented {
+                    screen = screen.child(super::metrics::SceneMetrics::new(
+                        bar.take().unwrap().absolute().top_0().left_0(), window.rem_size(),
+                    ));
+                }
                 screen = screen.child(super::popup::popup(popup, scene_scale, cx));
             }
             let menu_hovered = (self.menu_hovered || !self.open_menus.is_empty())
@@ -2252,8 +2263,8 @@ mod desktop {
                     this.sync_host_modifiers(event.modifiers);
                 }))
                 .child(super::metrics::SceneMetrics::new(screen, window.rem_size() * scene_scale))
-                .when(!guest_menu_fallback && (self.menu_presented || menu_hovered), |root| {
-                    root.child(bar.absolute().top_0().left_0().when(self.menu_presented, |bar| {
+                .when(!guest_menu_fallback && self.guest_popup.is_none() && (self.menu_presented || menu_hovered), |root| {
+                    root.child(bar.unwrap().absolute().top_0().left_0().when(self.menu_presented, |bar| {
                         bar.top(px(self.display_origin.1)).left(px(self.display_origin.0))
                     }))
                 })
@@ -2313,6 +2324,7 @@ mod desktop {
         PopupControls,
         PopupControlsSelected,
         PopupControlsOpen,
+        PopupControlsScrolled,
         StandardFileSave,
         StandardFileSaveComposed,
         StandardFileOpenComposed,
@@ -2361,6 +2373,46 @@ mod desktop {
     }
 
     #[cfg(feature = "gpui-demo-test")]
+    fn scroll_showcase_theme_popup(session: &mut MacintoshSession) -> (i16, i16) {
+        let runner = session.runner_mut();
+        let (top, left, _, _) = runner.window_bounds();
+        runner.push_mouse_down(top + 148, left + 280);
+        let opened = (0..100)
+            .find_map(|_| {
+                runner.run_steps(50_000, None);
+                runner.guest_popup_snapshot()
+            })
+            .expect("long Theme popup should open");
+        assert_eq!(opened.menu.id, 144);
+        assert_eq!(opened.menu.items.len(), 55);
+        assert!(opened.scroll_indicators().1);
+        runner.set_mouse_position(opened.bounds.2 - 4, opened.bounds.1 + 30);
+        let scrolled = (0..100)
+            .find_map(|_| {
+                runner.run_steps(50_000, None);
+                runner
+                    .guest_popup_snapshot()
+                    .filter(|popup| !popup.scroll_indicators().1)
+            })
+            .expect("held down arrow should reveal the end of the popup");
+        assert!(scrolled.scroll_indicators().0);
+        assert!(scrolled.content_top < opened.content_top);
+        let last = scrolled.row_heights.len() - 1;
+        let point = (
+            scrolled.content_top
+                + scrolled.row_heights[..last].iter().sum::<i16>()
+                + scrolled.row_heights[last] / 2,
+            scrolled.bounds.1 + 30,
+        );
+        runner.set_mouse_position(point.0, point.1);
+        for _ in 0..20 {
+            runner.run_steps(50_000, None);
+        }
+        assert_eq!(runner.guest_popup_snapshot().unwrap().highlighted_item, 55);
+        point
+    }
+
+    #[cfg(feature = "gpui-demo-test")]
     fn capture_fixture_screen(
         game: &std::path::Path,
         output: &std::path::Path,
@@ -2397,7 +2449,7 @@ mod desktop {
         );
         let popup_page = matches!(
             capture,
-            CaptureCase::PopupControls | CaptureCase::PopupControlsSelected | CaptureCase::PopupControlsOpen
+            CaptureCase::PopupControls | CaptureCase::PopupControlsSelected | CaptureCase::PopupControlsOpen | CaptureCase::PopupControlsScrolled
         );
         let standard_file_save = matches!(
             capture,
@@ -3080,6 +3132,9 @@ mod desktop {
                 .iter()
                 .any(|list| list.guest_id == list_id && list.selected.contains(&(7, 0))));
         }
+        if matches!(capture, CaptureCase::PopupControlsScrolled) {
+            scroll_showcase_theme_popup(&mut session);
+        }
         if matches!(capture, CaptureCase::PopupControlsOpen) {
             let runner = session.runner_mut();
             let (top, left, _, _) = runner.window_bounds();
@@ -3699,6 +3754,12 @@ mod desktop {
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_popup_controls_scrolled.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc,
+                args.screen_depth, CaptureCase::PopupControlsScrolled);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_popup_controls_open.as_ref() {
             capture_fixture_screen(&args.game, output, args.prefer_powerpc,
                 args.screen_depth, CaptureCase::PopupControlsOpen);
@@ -4234,6 +4295,7 @@ mod desktop {
                         capture_popup_controls: None,
                         capture_popup_controls_selected: None,
                         capture_popup_controls_open: None,
+                        capture_popup_controls_scrolled: None,
                         capture_standard_file_save: None,
                         capture_standard_file_save_composed: None,
                         capture_standard_file_open_composed: None,
@@ -4983,6 +5045,50 @@ mod desktop {
                         Some("Long-range Expedition Loadout"),
                     );
                 }
+            }
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[test]
+        fn popup_scrolling_reaches_last_item_across_cpu_modes() {
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session
+                    .load_path(
+                        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("tests/toolbox-showcase/toolbox-showcase.sit"),
+                    )
+                    .unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 16));
+                wait_for_menu(&mut session, 129, 16, true);
+                settle(&mut session);
+                let point = super::scroll_showcase_theme_popup(&mut session);
+                assert_eq!(
+                    session
+                        .runner_mut()
+                        .control_snapshot()
+                        .iter()
+                        .find(|control| { control.visible && control.popup_menu_id == Some(144) })
+                        .unwrap()
+                        .value,
+                    1,
+                    "scrolling must not commit the highlighted value"
+                );
+                session.runner_mut().push_mouse_up(point.0, point.1);
+                assert!((0..100).any(|_| {
+                    session.runner_mut().run_steps(50_000, None);
+                    session
+                        .runner_mut()
+                        .control_snapshot()
+                        .iter()
+                        .any(|control| {
+                            control.visible && control.popup_menu_id == Some(144) && control.value == 55
+                        })
+                }));
+                assert!(session.runner_mut().guest_popup_snapshot().is_none());
             }
         }
 

@@ -701,3 +701,21 @@ fully-fitting content (including a shorter separator row). The rendered popup
 host-pointer regression still passes across all three modes (50.60 seconds).
 Long-popup captures, sustained auto-scrolling and release near arrow boundaries
 remain unqualified; this implementation does not close those inventory items.
+
+The existing 55-item programmatic Theme popup now supplies a reproducible long
+popup check: `popup_scrolling_reaches_last_item_across_cpu_modes` and
+`--capture-popup-controls-scrolled`. Held input reaches the bottom, exposes only
+the up indicator, highlights item 55 without changing the control value, then
+commits 55 on release on monochrome 68K, colour 68K and PPC (50.54 seconds).
+Reviewed composed captures exposed the host menu bar obscuring the up arrow.
+The bar now sits below the tracked popup within the same scene input layer,
+with its original host text metrics preserved. Fresh three-mode captures show
+the arrow, complete rows and last-item highlight; a final colour capture also
+verifies unchanged menu-bar text scale. The rendered host pointer regression
+passes (50.26 seconds), as does the fullscreen menu-reveal regression.
+
+This does not establish complete long-popup parity: the guest-computed Theme
+popup width differs between classic and PPC, and reverse scrolling, arrow-boundary
+release, font metrics and asynchronous input timing still need qualification.
+Existing native reference captures remain available; this run did not generate
+a new BasiliskII or SheepShaver oracle comparison.
