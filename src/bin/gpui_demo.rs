@@ -5139,7 +5139,7 @@ mod desktop {
 
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
-        fn themed_title_drag_moves_showcase_window_on_both_cpus(
+        fn themed_window_drag_and_activation_follow_guest_on_both_cpus(
             cx: &mut gpui_kit::TestAppContext,
         ) {
             use gpui_kit::{test::TestWindowExt, AppContext, Bounds, WindowBounds, WindowOptions};
@@ -5240,6 +5240,29 @@ mod desktop {
                     (top + 12, left + 16, bottom + 12, right + 16),
                     "powerpc={powerpc}"
                 );
+
+                cx.update(|cx| {
+                    view.update(cx, |demo, cx| {
+                        demo.windows = moved;
+                        cx.notify();
+                    });
+                });
+                // tests/toolbox-showcase/oracle/windows.json uses this exposed
+                // auxiliary content point to exercise FindWindow/SelectWindow.
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.drag(host((240, 210)), host((240, 210)), cx);
+                })
+                .unwrap();
+                for command in receiver.try_iter() {
+                    if let super::Command::Input(input) = command {
+                        session.deliver_input(input);
+                        settle(&mut session);
+                    }
+                }
+                let activated = session.runner_mut().window_frame_snapshot();
+                assert_eq!(activated[0].guest_id, before[1].guest_id, "powerpc={powerpc}");
+                assert!(activated[0].window.active, "powerpc={powerpc}");
+                assert!(!activated[1].window.active, "powerpc={powerpc}");
             }
         }
 

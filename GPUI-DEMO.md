@@ -102,7 +102,9 @@ and [PowerPC moved](tests/toolbox-showcase/reference/gpui-demo/21-windows-moved-
 The scripted capture drag enters the guest directly. Separate GPUI interaction
 tests check title-bar pointer translation and held-button routing, then drive
 the live showcase through the host drag path and verify the guest window moves
-on both CPUs. Activation and off-pane drag capture remain to be qualified.
+on both CPUs. They also click an exposed rear content region and verify that
+the guest promotes and activates its owner window. Off-pane drag capture and
+composed activation images remain to be qualified.
 The gutter overlays are presentation only: scrollbar tracks do not invent a
 thumb or scroll state, and input in those areas still reaches the guest. Real
 standard scrollbar controls in document windows now show a guest-value thumb;
