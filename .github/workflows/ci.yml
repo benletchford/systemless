@@ -37,8 +37,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: tools/play-oracle
-      - run: cargo test --locked --manifest-path tools/play-oracle/Cargo.toml
+          workspaces: .agents/tools/play-oracle
+      - run: cargo test --locked --manifest-path .agents/tools/play-oracle/Cargo.toml
 
   test:
     name: build & test (${{ matrix.os }})

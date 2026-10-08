@@ -113,7 +113,7 @@ a focused test change explicitly needs a reviewed redistributable reference.
 
 ## Optional BasiliskII and SheepShaver capture
 
-The source-only adapters in [tools/play-oracle](../../../../tools/play-oracle/README.md)
+The source-only adapters in [play-oracle](../../../tools/play-oracle/README.md)
 run independently of the main Cargo workspace. They require Docker, host archive
 utilities, and system media supplied by the user. Ordinary play runs do not need
 these dependencies. Their scripts use `clock: guest_ticks` (or explicit SheepShaver `wall_time`), named
