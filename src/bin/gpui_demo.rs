@@ -16,6 +16,10 @@ fn main() {
 mod input;
 
 #[cfg(target_os = "macos")]
+#[path = "gpui_demo_scroll.rs"]
+mod scroll;
+
+#[cfg(target_os = "macos")]
 #[path = "gpui_demo_frames.rs"]
 mod frames;
 
@@ -204,6 +208,8 @@ mod desktop {
     enum Command {
         Menu(i16, i16, u32, u64),
         Input(MacintoshInput),
+        Wheel(super::scroll::WheelRequest),
+        CancelWheel,
         Shutdown,
     }
 
@@ -287,10 +293,41 @@ mod desktop {
             let mut epoch = Instant::now();
             let mut initial_tick = session.runner().guest_tick();
             let mut previous = epoch;
+            let mut queued = std::collections::VecDeque::new();
+            let mut wheel: Option<super::scroll::WheelClick> = None;
+            let mut pointer_down = false;
             loop {
                 let start = Instant::now();
                 loop {
                     match commands.try_recv() {
+                        Ok(Command::CancelWheel) => {
+                            queued.retain(|command| !matches!(command, Command::Wheel(_)));
+                            if let Some(click) = wheel.as_mut() { click.stop_repeating(); }
+                        }
+                        Ok(Command::Wheel(request)) => {
+                            if let Some(Command::Wheel(previous)) = queued.back_mut() {
+                                if previous.target == request.target && previous.origin == request.origin {
+                                    previous.steps = previous.steps.saturating_add(request.steps).clamp(-4, 4);
+                                    continue;
+                                }
+                            }
+                            queued.push_back(Command::Wheel(request));
+                        }
+                        Ok(command) => queued.push_back(command),
+                        Err(mpsc::TryRecvError::Empty) => break,
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            queued.push_back(Command::Shutdown);
+                            break;
+                        }
+                    }
+                }
+                if let Some(mut click) = wheel.take() {
+                    if !queued.is_empty() { click.stop_repeating(); }
+                    wheel = click.advance(&mut session);
+                }
+                while wheel.is_none() {
+                    match queued.pop_front().ok_or(mpsc::TryRecvError::Empty) {
+                        Ok(Command::CancelWheel) => {}
                         Ok(Command::Menu(menu, item, guest_id, generation)) => {
                             if session
                                 .runner_mut()
@@ -301,7 +338,17 @@ mod desktop {
                                 session.runner_mut().select_guest_menu_item(menu, item);
                             }
                         }
+                        Ok(Command::Wheel(request)) => {
+                            if !pointer_down && !session.runner().is_ui_tracking_active() {
+                                wheel = super::scroll::WheelClick::begin(&mut session, request);
+                            }
+                        }
                         Ok(Command::Input(input)) => {
+                            match input {
+                                MacintoshInput::MouseDown { .. } => pointer_down = true,
+                                MacintoshInput::MouseUp { .. } => pointer_down = false,
+                                _ => {}
+                            }
                             session.deliver_input(input);
                             // Tracking and autoKey must observe a held input
                             // before a queued release clears it (IM:I, I-246).
@@ -446,6 +493,7 @@ mod desktop {
         scrollbar_drag: Option<(u32, u64, (i16, i16))>,
         popup_tracking: Option<(u32, u64)>,
         keyboard: super::input::KeyboardState,
+        wheel: super::scroll::WheelAccumulator,
         _focus_out: Option<Subscription>,
         _focus_lost: Option<Subscription>,
         _poll: Task<()>,
@@ -535,6 +583,7 @@ mod desktop {
                 scrollbar_drag: None,
                 popup_tracking: None,
                 keyboard: super::input::KeyboardState::default(),
+                wheel: super::scroll::WheelAccumulator::default(),
                 _focus_out: None,
                 _focus_lost: None,
                 _poll: poll,
@@ -589,6 +638,8 @@ mod desktop {
         }
 
         fn release_host_input(&mut self) {
+            self.wheel.reset();
+            let _ = self.commands.send(Command::CancelWheel);
             if self.mouse_down {
                 self.mouse_down = false;
                 self.scrollbar_drag = None;
@@ -866,6 +917,36 @@ mod desktop {
                 .when(fill_display, |screen| {
                     screen.ml(px(self.display_origin.0)).mt(px(self.display_origin.1))
                 })
+                .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, _| {
+                    if event.touch_phase == TouchPhase::Cancelled {
+                        this.wheel.reset();
+                        let _ = this.commands.send(Command::CancelWheel);
+                        return;
+                    }
+                    if event.touch_phase == TouchPhase::Started { this.wheel.reset(); }
+                    if this.mouse_down || !this.open_menus.is_empty() || this.guest_menu_tracking {
+                        this.wheel.reset();
+                        return;
+                    }
+                    let origin = this.pointer(event.position);
+                    let (x, y) = match event.delta {
+                        ScrollDelta::Lines(delta) => (delta.x, delta.y),
+                        ScrollDelta::Pixels(delta) => (f32::from(delta.x) / 40., f32::from(delta.y) / 40.),
+                    };
+                    let vertical = y.abs() >= x.abs();
+                    let viewport = super::frames::Rect {
+                        top: 0, left: 0, bottom: this.height as i32, right: this.width as i32,
+                    };
+                    let Some(target) = super::scroll::target(
+                        &this.controls, &this.menus, &this.windows, viewport, origin, vertical,
+                    ) else { this.wheel.reset(); return; };
+                    let steps = this.wheel.push(target, -(if vertical { y } else { x }));
+                    if steps != 0 {
+                        let _ = this.commands.send(Command::Wheel(super::scroll::WheelRequest {
+                            target, origin, steps,
+                        }));
+                    }
+                }))
                 .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
                     let (vertical, horizontal) = this.pointer(event.position);
                     this.mouse_position = (vertical, horizontal);
@@ -3812,6 +3893,7 @@ mod desktop {
                     std::thread::sleep(Duration::from_millis(10));
                 }
             }
+            for powerpc in [false, true] {
             let updates = Arc::new(Mutex::new(None));
             let (tx, rx) = mpsc::channel();
             let worker_updates = updates.clone();
@@ -3820,7 +3902,7 @@ mod desktop {
                     Args {
                         game: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                             .join("tests/toolbox-showcase/toolbox-showcase.sit"),
-                        prefer_powerpc: false,
+                        prefer_powerpc: powerpc,
                         screen_depth: Some(8),
                         capture_about_alert: None,
                         capture_modal_dialog: None,
@@ -3861,7 +3943,18 @@ mod desktop {
                     false,
                 )
             });
-            wait(&updates, |u| u.menus.menus.iter().any(|m| m.id == 129));
+            let initial = wait(&updates, |u| u.menus.menus.iter().any(|m| m.id == 129));
+            let menu = initial.menus.menus.iter().find(|m| m.id == 129).unwrap();
+            tx.send(Command::Menu(129, 2, menu.guest_id, menu.generation)).unwrap();
+            let controls = wait(&updates, |u| u.controls.iter().any(|c| c.visible && c.proc_id == 16));
+            let bar = controls.controls.iter().find(|c| c.visible && c.proc_id == 16).unwrap();
+            tx.send(Command::Wheel(super::super::scroll::WheelRequest {
+                target: super::super::scroll::ScrollTarget {
+                    id: bar.guest_id, generation: bar.generation, vertical: false,
+                },
+                origin: (368, 300), steps: 1,
+            })).unwrap();
+            wait(&updates, |u| u.controls.iter().any(|c| c.guest_id == bar.guest_id && c.value > 0));
             tx.send(Command::Input(MacintoshInput::KeyDown {
                 mac_key: 0x37,
                 character: 0,
@@ -3908,6 +4001,7 @@ mod desktop {
             tx.send(Command::Shutdown).unwrap();
             drop(tx);
             worker.join().unwrap();
+            }
         }
 
         fn settle(session: &mut MacintoshSession) {
@@ -4149,6 +4243,63 @@ mod desktop {
                     .chunks_exact(4)
                     .any(|p| p != &frame.pixels[..4]));
                 check_frames(&mut session);
+            }
+        }
+
+        #[test]
+        fn wheel_scroll_uses_guest_controls_on_all_cpu_modes() {
+            use super::super::scroll::{arrow, ScrollTarget, WheelClick, WheelRequest};
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 2));
+                wait_for_menu(&mut session, 129, 2, true);
+                let bar = session.runner_mut().control_snapshot().into_iter()
+                    .find(|c| c.visible && c.proc_id == 16).unwrap();
+                let request = WheelRequest {
+                    target: ScrollTarget { id: bar.guest_id, generation: bar.generation, vertical: false },
+                    origin: (368, 300), steps: 1,
+                };
+                let viewport = super::super::frames::Rect { top: 0, left: 0, bottom: 600, right: 800 };
+                let controls = session.runner_mut().control_snapshot();
+                let menus = session.runner_mut().guest_menu_snapshot();
+                let windows = session.runner_mut().window_frame_snapshot();
+                assert_eq!(super::super::scroll::target(&controls, &menus, &windows, viewport,
+                    request.origin, false), Some(request.target));
+                let mut obscured = windows.clone();
+                obscured[0].visible_content_rects = Some(Vec::new());
+                assert!(super::super::scroll::target(&controls, &menus, &obscured, viewport,
+                    request.origin, false).is_none());
+                let mut disabled = controls.clone();
+                disabled.iter_mut().find(|c| c.guest_id == bar.guest_id).unwrap().enabled = false;
+                assert!(super::super::scroll::target(&disabled, &menus, &windows, viewport,
+                    request.origin, false).is_none());
+                let mut inactive = windows.clone();
+                for window in &mut inactive { window.window.active = false; }
+                assert!(super::super::scroll::target(&controls, &menus, &inactive, viewport,
+                    request.origin, false).is_none());
+                let mut stale = request;
+                stale.target.generation += 1;
+                assert!(arrow(&mut session, stale).is_none());
+                assert!(arrow(&mut session, WheelRequest { steps: -1, ..request }).is_none());
+                assert!(arrow(&mut session, request).is_some(), "powerpc={powerpc}");
+                let click = WheelClick::begin(&mut session, request).unwrap();
+                settle(&mut session);
+                let click = click.advance(&mut session).unwrap();
+                settle(&mut session);
+                assert!(click.advance(&mut session).is_none());
+                let changed = session.runner_mut().control_snapshot().into_iter()
+                    .find(|c| c.guest_id == bar.guest_id).unwrap();
+                assert!(changed.value > bar.value, "powerpc={powerpc}");
+                assert_eq!(changed.generation, bar.generation);
+                assert_eq!(session.runner().dispatcher().mouse_position(), request.origin);
+                assert!(session.runner_mut().select_guest_menu_item(129, 1));
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(arrow(&mut session, request).is_none(), "hidden control");
             }
         }
 
@@ -5166,6 +5317,57 @@ mod desktop {
                 receiver.try_recv(),
                 Ok(super::Command::Menu(130, 1, 0x2000, 2))
             ));
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn gpui_wheel_event_reaches_guest_scrollbar(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::{test::TestWindowExt, AppContext, InputEvent, ScrollDelta, ScrollWheelEvent, TouchPhase};
+            let mut session = MacintoshSession::new(true, Some(8));
+            let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+            session.initialize(&app);
+            wait_for_menu(&mut session, 129, 1, true);
+            assert!(session.runner_mut().select_guest_menu_item(129, 2));
+            wait_for_menu(&mut session, 129, 2, true);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            cx.update(gpui_kit::init);
+            let (window, view) = cx.update(|cx| {
+                gpui_kit::open_window(Default::default(), cx, |_, cx| {
+                    cx.new(|cx| super::Demo::new(sender, Default::default(), cx))
+                }).unwrap()
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                view.update(cx, |demo, _| {
+                    demo.width = 800;
+                    demo.height = 600;
+                    demo.controls = session.runner_mut().control_snapshot();
+                    demo.windows = session.runner_mut().window_frame_snapshot();
+                    demo.menus = session.runner_mut().guest_menu_snapshot();
+                });
+                window.render_frame(cx);
+                let position = view.update(cx, |demo, _| gpui_kit::point(
+                    gpui_kit::px(demo.display_origin.0 + 300. * demo.display_scale),
+                    gpui_kit::px(demo.display_origin.1 + 368. * demo.display_scale),
+                ));
+                let event = ScrollWheelEvent {
+                    position, delta: ScrollDelta::Lines(gpui_kit::point(-0.5, 0.)),
+                    modifiers: Default::default(), touch_phase: TouchPhase::Moved,
+                };
+                window.dispatch_event(event.clone().to_platform_input(), cx);
+                window.dispatch_event(event.clone().to_platform_input(), cx);
+                let requests: Vec<_> = receiver.try_iter().filter_map(|command| match command {
+                    super::Command::Wheel(request) => Some(request), _ => None,
+                }).collect();
+                assert_eq!(requests.len(), 1);
+                assert_eq!(requests[0].steps, 1);
+                assert_eq!(requests[0].origin, (368, 300));
+                view.update(cx, |demo, _| demo.mouse_down = true);
+                window.dispatch_event(event.to_platform_input(), cx);
+                assert!(!receiver.try_iter().any(|command| matches!(command, super::Command::Wheel(_))));
+                view.update(cx, |demo, _| { demo.mouse_down = false; demo.release_host_input(); });
+                assert!(receiver.try_iter().any(|command| matches!(command, super::Command::CancelWheel)));
+            }).unwrap();
         }
 
         #[cfg(feature = "gpui-demo-test")]
