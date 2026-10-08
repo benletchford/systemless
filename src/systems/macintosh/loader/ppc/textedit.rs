@@ -2220,7 +2220,9 @@ pub(super) fn ppc_te_draw(
             .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
             .unwrap_or(0),
     );
-    if active && sel_start == sel_end {
+    if active && sel_start == sel_end
+        && memory.read_u16_be(te_ptr + PPC_TE_CARET_STATE_OFFSET).unwrap_or(0) == 0
+    {
         for line in 0..line_count {
             let start = usize::from(
                 memory
@@ -2432,4 +2434,35 @@ pub(super) fn ppc_te_dispose(
         handles,
         te_handle,
     );
+}
+
+// Text (1993), p. 2-84: blink active insertion points at the guest idle interval.
+pub(super) fn ppc_te_idle(memory: &mut PpcSectionMem, handle: u32, tick_count: u32) -> bool {
+    if let Some(te_ptr) = ppc_te_record_ptr(memory, handle) {
+        let active = memory
+            .read_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET)
+            .unwrap_or(0)
+            != 0;
+        let start = memory
+            .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
+            .unwrap_or(0);
+        let end = memory
+            .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
+            .unwrap_or(0);
+        let previous = memory
+            .read_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET)
+            .unwrap_or(0);
+        if active && start == end && tick_count.wrapping_sub(previous) >= 32 {
+            let caret = memory
+                .read_u16_be(te_ptr + PPC_TE_CARET_STATE_OFFSET)
+                .unwrap_or(0);
+            let _ = memory.write_u16_be(
+                te_ptr + PPC_TE_CARET_STATE_OFFSET,
+                if caret == 0 { 1 } else { 0 },
+            );
+            let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, tick_count);
+            return true;
+        }
+    }
+    false
 }

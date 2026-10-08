@@ -5173,6 +5173,15 @@ fn ppc_modal_dialog(
             event
         }
     };
+    // ModalDialog owns idle processing while it retains the caller.
+    // Toolbox Essentials (1992), pp. 6-79--6-85; Text (1993), p. 2-84.
+    if event.is_none() && filter_proc == 0 {
+        let handle = memory.read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET).unwrap_or(0);
+        if ppc_te_idle(memory, handle, tick_count) {
+            ppc_te_draw(memory, handles, gworlds, handle, dialog, fore_color, fore_indices);
+        }
+    }
+
     let mut handled_edit_event = false;
     let hit = match event.as_ref().map(|event| event.what) {
         Some(1) => event.as_ref().and_then(|event| {
