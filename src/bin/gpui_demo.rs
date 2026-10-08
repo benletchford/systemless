@@ -1555,7 +1555,7 @@ mod desktop {
                         }
                         1 => {
                             overlay = overlay.child(
-                                super::choices::guest_checkbox(
+                                super::a11y::AccessibleComponent::new(super::choices::guest_checkbox(
                                     format!("guest-control-checkbox-{}-{}", control.guest_id, control.generation),
                                     control.title.clone(), control.value != 0, control.enabled,
                                     control.hilite == 11, scene_scale, cx,
@@ -1573,12 +1573,12 @@ mod desktop {
                                     choice.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
                                         let _ = sender.send(Command::ActivateControl(id, generation));
                                     })
-                                }),
+                                }), !semantic_enabled),
                             );
                         }
                         2 => {
                             overlay = overlay.child(
-                                super::choices::guest_radio(
+                                super::a11y::AccessibleComponent::new(super::choices::guest_radio(
                                     format!("guest-control-radio-{}-{}", control.guest_id, control.generation),
                                     control.title.clone(), control.value != 0, control.enabled,
                                     control.hilite == 11, scene_scale, cx,
@@ -1596,7 +1596,7 @@ mod desktop {
                                     choice.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
                                         let _ = sender.send(Command::ActivateControl(id, generation));
                                     })
-                                }),
+                                }), !semantic_enabled),
                             );
                         }
                         16 => {
@@ -1840,7 +1840,7 @@ mod desktop {
                             overlay.child(field.child(suffix))
                         }
                         DialogItemKind::Checkbox => overlay.child(
-                            super::choices::guest_checkbox(
+                            super::a11y::AccessibleComponent::new(super::choices::guest_checkbox(
                                 format!("guest-dialog-checkbox-{}-{}-{}", dialog.guest_id, dialog.generation, item.number),
                                 item.text.clone(), item.value.unwrap() != 0, item.enabled,
                                 dialog.active && item.pressed, scene_scale, cx,
@@ -1860,10 +1860,10 @@ mod desktop {
                                 choice.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
                                     let _ = sender.send(Command::ActivateDialog(id, generation, number, identity));
                                 })
-                            }),
+                            }), !item.enabled || !dialog.active),
                         ),
                         DialogItemKind::RadioButton => overlay.child(
-                            super::choices::guest_radio(
+                            super::a11y::AccessibleComponent::new(super::choices::guest_radio(
                                 format!("guest-dialog-radio-{}-{}-{}", dialog.guest_id, dialog.generation, item.number),
                                 item.text.clone(), item.value.unwrap() != 0, item.enabled,
                                 dialog.active && item.pressed, scene_scale, cx,
@@ -1883,7 +1883,7 @@ mod desktop {
                                 choice.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
                                     let _ = sender.send(Command::ActivateDialog(id, generation, number, identity));
                                 })
-                            }),
+                            }), !item.enabled || !dialog.active),
                         ),
                         _ => unreachable!(),
                     };
@@ -8664,6 +8664,28 @@ mod desktop {
                     window.render_frame(cx);
                     assert_eq!(window.find("guest-control-checkbox-22-1").focused(),
                         enabled.then_some(false), "host focus availability must follow live guest state");
+                    let choice = super::super::choices::guest_checkbox(
+                        "a11y-state-probe".into(), "Sound".into(), true, enabled, false, 1., cx,
+                    ).track_focus(&cx.focus_handle());
+                    let component = super::super::a11y::AccessibleComponent::new(choice, !enabled);
+                    let rendered = gpui_kit::IntoElement::into_element(gpui_kit::RenderOnce::render(component, window, cx));
+                    let mut node = gpui_kit::accesskit::Node::new(gpui_kit::Element::a11y_role(&rendered).unwrap());
+                    gpui_kit::Element::write_a11y_info(&rendered, &mut node);
+                    assert_eq!(node.role(), gpui_kit::Role::CheckBox);
+                    assert_eq!(node.toggled(), Some(gpui_kit::Toggled::True));
+                    assert_eq!(node.is_disabled(), !enabled);
+                    for checked in [false, true] {
+                        let radio = super::super::choices::guest_radio(
+                            "a11y-radio-probe".into(), "Music".into(), checked, enabled, false, 1., cx,
+                        ).track_focus(&cx.focus_handle());
+                        let component = super::super::a11y::AccessibleComponent::new(radio, !enabled);
+                        let rendered = gpui_kit::IntoElement::into_element(gpui_kit::RenderOnce::render(component, window, cx));
+                        let mut node = gpui_kit::accesskit::Node::new(gpui_kit::Element::a11y_role(&rendered).unwrap());
+                        gpui_kit::Element::write_a11y_info(&rendered, &mut node);
+                        assert_eq!(node.role(), gpui_kit::Role::RadioButton);
+                        assert_eq!(node.toggled(), Some(if checked { gpui_kit::Toggled::True } else { gpui_kit::Toggled::False }));
+                        assert_eq!(node.is_disabled(), !enabled);
+                    }
                 }).unwrap();
             }
         }

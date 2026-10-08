@@ -4,6 +4,26 @@ use gpui_kit::{
     GlobalElementId, InspectorElementId, IntoElement, LayoutId, Pixels, Role, Window,
 };
 
+/// Preserve a Kit component's native role and actions while supplying the
+/// disabled state missing from its rendered root.
+#[derive(gpui_kit::IntoElement)]
+pub struct AccessibleComponent<C: gpui_kit::RenderOnce + 'static> {
+    inner: C,
+    disabled: bool,
+}
+
+impl<C: gpui_kit::RenderOnce + 'static> AccessibleComponent<C> {
+    pub fn new(inner: C, disabled: bool) -> Self {
+        Self { inner, disabled }
+    }
+}
+
+impl<C: gpui_kit::RenderOnce + 'static> gpui_kit::RenderOnce for AccessibleComponent<C> {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        AccessibleState::new(self.inner.render(window, cx).into_element(), self.disabled)
+    }
+}
+
 pub struct AccessibleState<E> {
     inner: E,
     disabled: bool,

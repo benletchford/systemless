@@ -1240,3 +1240,17 @@ window activation. The document-checkbox interaction regression covers an
 inactive owner, reactivation, disabling, and re-enabling without changing the
 control identity. It verifies focus availability and a single forwarded press;
 this is not a native accessibility or complete focus-traversal qualification.
+
+
+### Choice accessibility disabled state
+
+Document and dialog checkboxes and radio buttons now use a shared
+`AccessibleComponent` adapter to add the disabled flag missing from Kit's
+rendered accessibility node. It preserves the component's role, value, label,
+actions and layout delegation. Inactive guest owners also disable semantic
+interaction without suppressing guest pointer forwarding for activation.
+The rendered-node regression verifies checkbox state and both selected and
+unselected radio states across enabled, disabled and re-enabled transitions.
+All seven `themed_` interaction regressions pass, including dialog pointer
+forwarding, window dragging, lists and standard file actions. These tests do
+not qualify native screen-reader dispatch or complete keyboard navigation.
