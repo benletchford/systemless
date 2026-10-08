@@ -164,3 +164,10 @@ All 52 existing GPUI/save-store tests pass, plus a temporary-directory roundtrip
 covering loaded monochrome 68K, colour 68K and PowerPC sessions, both forks and
 metadata. Real-game save/relaunch, write-failure recovery, and abnormal process
 termination remain unqualified.
+
+GPUI forwards Command, Shift, Option and Control transitions through guest key
+input. Duplicate host modifier notifications do not duplicate key presses;
+focus cleanup releases each held modifier once. A GPUI event test covers host
+notifications and cleanup, and loaded 68K/PPC tests confirm held modifier bits
+survive guest execution until release. Caps Lock, text composition, non-ASCII
+input and comprehensive modified-text behaviour remain unqualified.
