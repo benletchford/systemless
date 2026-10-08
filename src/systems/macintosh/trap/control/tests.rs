@@ -4336,3 +4336,46 @@ fn track_control_standard_controls_consume_queued_release_position() {
         }
     }
 }
+
+#[test]
+fn track_control_standard_controls_reject_disposed_or_replaced_records() {
+    for mutation in ["dispose", "generation", "pointer"] {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let window = *disp.current_port;
+        let (handle, ptr) = alloc_button_control(&mut disp, &mut bus, window, (20, 20, 40, 80));
+        disp.control_manager.set_proc_id(ptr, 2);
+        let sp = 0x300000;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, 0);
+        bus.write_word(sp + 4, 30);
+        bus.write_word(sp + 6, 30);
+        bus.write_long(sp + 8, handle);
+        disp.input_state.set_mouse_button_for_test(true);
+        disp.input_state.set_mouse_position_for_test((30, 30));
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_byte(ptr + 17), 11);
+        match mutation {
+            "dispose" => disp.dispose_control_handle(&mut bus, handle),
+            "generation" => {
+                disp.control_manager.remove_pointer(ptr);
+                disp.control_manager.register(handle, ptr, 2, 0);
+            }
+            _ => bus.write_long(handle, ptr + 4),
+        }
+        let before: Vec<_> = (0..48).map(|offset| bus.read_byte(ptr + offset)).collect();
+        disp.input_state.set_mouse_button_for_test(false);
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        assert_eq!(bus.read_word(sp + 12), 0, "{mutation}");
+        assert!(disp.control_tracking.is_none());
+        let after: Vec<_> = (0..48).map(|offset| bus.read_byte(ptr + offset)).collect();
+        assert_eq!(
+            before, after,
+            "must not restore highlight into stale record: {mutation}"
+        );
+    }
+}

@@ -3732,6 +3732,24 @@ impl super::TrapDispatcher {
                             self.finish_popup_control_tracking(cpu, bus, selected_item);
                         }
                     } else {
+                        // DisposeControl releases the record; never restore tracking
+                        // feedback into it or a subsequent control at the same address.
+                        // Inside Macintosh Volume I, I-332.
+                        let tracking = self.control_tracking.as_ref().unwrap();
+                        let generation = self.control_manager.with_ref(|manager| {
+                            manager.iter()
+                                .find(|record| record.pointer == tracking.ctrl_ptr)
+                                .map(|record| record.generation)
+                        });
+                        if bus.read_long(tracking.ctrl_handle) != tracking.ctrl_ptr
+                            || generation != tracking.simple_generation
+                        {
+                            let stack_ptr = tracking.stack_ptr;
+                            self.control_tracking = None;
+                            bus.write_word(stack_ptr + 12, 0);
+                            cpu.write_reg(Register::A7, stack_ptr + 12);
+                            return Some(Ok(()));
+                        }
                         let ctrl_handle = self
                             .control_tracking
                             .as_ref()
@@ -3863,6 +3881,7 @@ impl super::TrapDispatcher {
                                             callback_return_pc,
                                         ) {
                                             self.control_tracking = Some(ControlTrackingState {
+                                                simple_generation: None,
                                                 ctrl_handle,
                                                 ctrl_ptr,
                                                 popup_tracking: false,
@@ -3981,6 +4000,7 @@ impl super::TrapDispatcher {
                                         };
                                         let saved = self.save_dropdown_pixels(bus, dropdown_rect);
                                         self.control_tracking = Some(ControlTrackingState {
+                                            simple_generation: None,
                                             ctrl_handle,
                                             ctrl_ptr,
                                             popup_tracking: true,
@@ -4060,7 +4080,13 @@ impl super::TrapDispatcher {
                                         scr_top + r_bottom,
                                         scr_left + r_right,
                                     );
+                                    let simple_generation = self.control_manager.with_ref(|manager| {
+                                        manager.iter()
+                                            .find(|record| record.pointer == ctrl_ptr)
+                                            .map(|record| record.generation)
+                                    });
                                     self.control_tracking = Some(ControlTrackingState {
+                                        simple_generation,
                                         ctrl_handle,
                                         ctrl_ptr,
                                         popup_tracking: false,

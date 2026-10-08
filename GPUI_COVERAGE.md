@@ -609,3 +609,15 @@ parity for these standard nil-action controls; it does not qualify callback
 repetition, custom definitions or all control lifetime cases.
 The seven GPUI control tests and the three-mode radio tracking regression also
 pass with the 68K release-position change.
+
+Retained 68K simple-control tracking now snapshots the registered control lifetime
+and validates it and the handle pointer before further drawing or completion.
+A direct trap regression disposes a held radio control, replaces its registered
+lifetime at the same address, or changes its handle pointer. Every case must
+return zero, clear tracking, finish the original stack frame and leave the old
+record bytes untouched. Before the fix, disposal still returned part 11. All 247
+library tests matching `control` pass. As with the PPC lifetime tests, simulated
+address reuse is not proof of every allocator-driven reuse path; scrollbar,
+popup and nested callback lifetime qualification remains separate work.
+The seven GPUI control tests and radio tracking regression pass with the lifetime
+validation enabled.

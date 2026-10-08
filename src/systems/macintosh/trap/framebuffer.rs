@@ -6574,6 +6574,7 @@ mod redraw_chrome_tests {
         disp.menus = vec![overlay_test_menu(702, "Popup", "Choice", false, false)];
         let dropdown_rect = (80, 250, 98, 340);
         disp.control_tracking = Some(ControlTrackingState {
+            simple_generation: None,
             ctrl_handle: 0x1234,
             ctrl_ptr: 0x5678,
             popup_tracking: true,
@@ -6641,6 +6642,7 @@ mod redraw_chrome_tests {
         disp.menus = vec![overlay_test_menu(703, "Popup", "Choice", false, false)];
         let dropdown_rect = (100, 10, 118, 70);
         disp.control_tracking = Some(ControlTrackingState {
+            simple_generation: None,
             ctrl_handle: 0x1234,
             ctrl_ptr: 0x5678,
             popup_tracking: true,
