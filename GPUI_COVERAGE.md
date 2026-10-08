@@ -321,5 +321,8 @@ Composed list-thumb capture modes now cover held and cancelled guest drags.
 Monochrome 68K, colour 68K and PPC captures assert unchanged origin and selection, and show
 stationary rows during the drag and a removed outline after cancellation.
 Visual review exposed a clipped right edge on the held GPUI outline in all
-three modes. This remains a presentation defect; these diagnostic captures
-do not establish full thumb readiness or overlap/scaling qualification.
+three modes. The scrollbar container border was insetting its full-width
+children; painting the frame separately now preserves guest-coordinate layout.
+Reviewed held captures show all four outline edges in all three modes and on
+a horizontal PPC control. The focused drag geometry test also passes. This
+fix does not establish full thumb readiness or overlap/scaling qualification.

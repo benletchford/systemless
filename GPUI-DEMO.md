@@ -300,9 +300,9 @@ before and after a guest selection: [68K initial](tests/toolbox-showcase/referen
 Use `--capture-lists-held` and `--capture-lists-cancelled` to exercise a standard
 list thumb drag through guest input and capture the live composition. Both
 assert unchanged list origin and selection. Add `--prefer-powerpc` for PPC or
-`--screen-depth 1` for monochrome 68K. The held capture currently exposes a
-clipped right edge on the GPUI drag outline; it is diagnostic evidence, not an
-approved visual reference.
+`--screen-depth 1` for monochrome 68K. The scrollbar frame is painted separately
+from its children so the border does not inset or clip the guest-coordinate
+thumb outline.
 
 For the Standard File Save panel, capture either its guest framebuffer or the
 composed GPUI surface:

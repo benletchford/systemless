@@ -1491,8 +1491,9 @@ mod desktop {
                             };
                             overlay = overlay
                                 .bg(cx.theme().secondary)
-                                .border_1()
-                                .border_color(cx.theme().border)
+                                // Paint the frame without insetting the guest-coordinate children.
+                                .child(div().absolute().top_0().left_0().w_full().h_full()
+                                    .border_1().border_color(cx.theme().border))
                                 .child(
                                     div()
                                         .absolute()
