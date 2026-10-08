@@ -1459,6 +1459,7 @@ mod desktop {
                             let Some(selected) = super::frames::popup_control_label(control, &self.menus) else {
                                 continue;
                             };
+                            let font_size = f32::from(control.popup_font.unwrap_or_default().point_size());
                             let title_width = i32::from(control.popup_title_width.unwrap_or(0))
                                 .clamp(0, source.width().saturating_sub(20));
                             overlay = overlay
@@ -1469,7 +1470,7 @@ mod desktop {
                                         .w(guest_px(title_width as f32))
                                         .overflow_hidden()
                                         .text_ellipsis()
-                                        .text_size(guest_px(12.))
+                                        .text_size(guest_px(font_size))
                                         .text_color(if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })
                                         .child(control.title.clone()),
                                 )
@@ -1490,7 +1491,7 @@ mod desktop {
                                                 .overflow_hidden()
                                                 .text_ellipsis()
                                                 .px_1()
-                                                .text_size(guest_px(12.))
+                                                .text_size(guest_px(font_size))
                                                 .text_color(if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })
                                                 .child(selected.to_owned()),
                                         )
@@ -5027,6 +5028,7 @@ mod desktop {
                     assert!((1008..=1023).contains(&control.proc_id));
                     assert_eq!(control.title, title);
                     assert_eq!(control.popup_title_width, Some(width));
+                    assert_eq!(control.popup_font.unwrap().point_size(), if id == 144 { 9 } else { 12 });
                     assert_eq!(control.value, 1);
                     let menu = menus.menus.iter().find(|menu| menu.id == id)
                         .expect("popup should reference its live guest menu");
@@ -8278,6 +8280,7 @@ mod desktop {
                         title: "Checkbox".into(),
                         popup_menu_id: None,
                         popup_title_width: None,
+                        popup_font: None,
                     }];
                     demo.width = 800;
                     demo.height = 600;

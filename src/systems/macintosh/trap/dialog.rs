@@ -6843,6 +6843,7 @@ impl super::TrapDispatcher {
                                 hilite,
                             ),
                             proc_id if Self::is_popup_menu_proc_id(proc_id) => {
+                                let font = self.popup_control_font(bus, ctrl_ptr);
                                 let menu_id = self.popup_control_menu_id(bus, ctrl_ptr, min);
                                 let selected = value.max(1) as usize;
                                 let item_title = self.popup_menu_item_title(bus, menu_id, selected);
@@ -6858,7 +6859,7 @@ impl super::TrapDispatcher {
                                         title_width,
                                         proc_id,
                                     );
-                                self.draw_popup_control_label(
+                                self.draw_popup_control_label_with_font(
                                     bus,
                                     abs_top,
                                     abs_left,
@@ -6866,8 +6867,9 @@ impl super::TrapDispatcher {
                                     draw_left,
                                     &title,
                                     enabled && hilite != 255,
+                                    font,
                                 );
-                                self.draw_popup_control_with_state(
+                                self.draw_popup_control_with_font(
                                     bus,
                                     draw_top,
                                     draw_left,
@@ -6876,6 +6878,7 @@ impl super::TrapDispatcher {
                                     &item_title.unwrap_or_default(),
                                     enabled && hilite != 255,
                                     hilite == 1,
+                                    font,
                                 );
                             }
                             // For controls with custom/unhandled CDEFs (e.g. proc_id 16000),
@@ -7072,6 +7075,7 @@ impl super::TrapDispatcher {
                                 hilite,
                             ),
                             proc_id if Self::is_popup_menu_proc_id(proc_id) => {
+                                let font = self.popup_control_font(bus, ctrl_ptr);
                                 let menu_id = self.popup_control_menu_id(bus, ctrl_ptr, min);
                                 let selected = value.max(1) as usize;
                                 let item_title = self.popup_menu_item_title(bus, menu_id, selected);
@@ -7087,7 +7091,7 @@ impl super::TrapDispatcher {
                                         title_width,
                                         proc_id,
                                     );
-                                self.draw_popup_control_label(
+                                self.draw_popup_control_label_with_font(
                                     bus,
                                     abs_top,
                                     abs_left,
@@ -7095,8 +7099,9 @@ impl super::TrapDispatcher {
                                     draw_left,
                                     &title,
                                     enabled && hilite != 255,
+                                    font,
                                 );
-                                self.draw_popup_control_with_state(
+                                self.draw_popup_control_with_font(
                                     bus,
                                     draw_top,
                                     draw_left,
@@ -7105,6 +7110,7 @@ impl super::TrapDispatcher {
                                     &item_title.unwrap_or_default(),
                                     enabled && hilite != 255,
                                     hilite == 1,
+                                    font,
                                 );
                             }
                             // For controls with custom/unhandled CDEFs (e.g. proc_id 16000),
@@ -7680,7 +7686,7 @@ impl super::TrapDispatcher {
         max_width
     }
 
-    pub(crate) fn draw_popup_control_label(
+    pub(crate) fn draw_popup_control_label_with_font(
         &self,
         bus: &mut MacMemoryBus,
         top: i16,
@@ -7689,18 +7695,21 @@ impl super::TrapDispatcher {
         popup_left: i16,
         title: &str,
         enabled: bool,
+        font: crate::menu_model::GuestMenuFont,
     ) {
         if title.is_empty() || popup_left <= left + 4 {
             return;
         }
 
-        let font_id = 0i16;
-        let font_size = 12i16;
-        let metrics = get_font_metrics(font_id, font_size);
+        let font_id = font.family;
+        let font_size = font.point_size();
+        let metrics = font.metrics();
         let text_width = Self::fb_measure_string(title, font_id, font_size);
         let text_right = popup_left - 6;
         let text_x = (text_right - text_width).max(left);
-        let text_y = top + ((bottom - top) + metrics.ascent - metrics.descent) / 2;
+        let text_y = crate::control_manager::centered_control_label_origin(
+            (top, left, bottom, popup_left), 0, metrics.ascent, metrics.descent,
+        ).1;
 
         self.draw_control_label_text(
             bus, top, left, bottom, popup_left, text_x, text_y, title, font_id, font_size, !enabled,
@@ -7718,11 +7727,26 @@ impl super::TrapDispatcher {
         enabled: bool,
         pressed: bool,
     ) {
+        self.draw_popup_control_with_font(bus, top, left, bottom, right, title, enabled, pressed, Default::default());
+    }
+
+    pub(crate) fn draw_popup_control_with_font(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        title: &str,
+        enabled: bool,
+        pressed: bool,
+        font: crate::menu_model::GuestMenuFont,
+    ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
 
-        let font_id = 0i16;
-        let font_size = 12i16;
+        let font_id = font.family;
+        let font_size = font.point_size();
         let text_x = left + 15;
         // The standard arrow occupies the right side of the box. Inside
         // Macintosh Volume VI (1991), p. 3-17 requires popupFixedWidth item
@@ -7911,9 +7935,10 @@ impl super::TrapDispatcher {
         // Selected item text inside the box
         // Macintosh Toolbox Essentials 1992, 5-26
         if !display_title.is_empty() {
-            let metrics = get_font_metrics(font_id, font_size);
-            let text_y =
-                top + (bottom - top - (metrics.ascent + metrics.descent)) / 2 + metrics.ascent - 1;
+            let metrics = font.metrics();
+            let text_y = crate::control_manager::centered_control_label_origin(
+                (top, left, bottom, right), 0, metrics.ascent, metrics.descent,
+            ).1.saturating_sub(1);
             if enabled {
                 Self::fb_draw_string_clipped(
                     bus,

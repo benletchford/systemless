@@ -273,6 +273,23 @@ pub(super) fn ppc_set_control_title(
     *last_mem_error = if wrote { PPC_NO_ERR } else { PPC_PARAM_ERR };
 }
 
+fn ppc_popup_control_font(
+    memory: &mut PpcSectionMem,
+    owner: u32,
+    proc_id: i16,
+) -> crate::menu_model::GuestMenuFont {
+    // popupUseWFont covers title, selected value and active dropdown.
+    // Inside Macintosh VI (1991), p. 3-18.
+    if proc_id & 8 != 0 {
+        crate::menu_model::GuestMenuFont {
+            family: memory.read_u16_be(owner + 68).unwrap_or(0) as i16,
+            size: memory.read_u16_be(owner + 74).unwrap_or(0) as i16,
+        }
+    } else {
+        Default::default()
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn ppc_dispatch_popup_track_control(
     cpu: &PpcCpu,
@@ -330,14 +347,7 @@ fn ppc_dispatch_popup_track_control(
         .unwrap_or(1) as u32;
     let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
     let menu_colors = MenuColorTable::new(&menu_color_bytes);
-    let font = if record.proc_id & 8 != 0 {
-        crate::menu_model::GuestMenuFont {
-            family: memory.read_u16_be(owner + 68).unwrap_or(0) as i16,
-            size: memory.read_u16_be(owner + 74).unwrap_or(0) as i16,
-        }
-    } else {
-        Default::default()
-    };
+    let font = ppc_popup_control_font(memory, owner, record.proc_id);
     let action = ppc_dispatch_pop_up_menu_select_with_font(
         &popup_cpu,
         memory,
@@ -3437,6 +3447,7 @@ pub(super) fn ppc_draw_control_inner(
     let palette = ppc_ui_theme(gworlds).provider().palette();
     let record = controls.iter().find(|record| record.handle == handle);
     let proc_id = record.map_or(0, |record| record.proc_id) & 0x0fff;
+    let popup_font = ppc_popup_control_font(memory, owner, proc_id);
     // Appearance Manager DeactivateControl dims a control without touching
     // contrlHilite. Draw its frame and title with the same 50% blend the 68K
     // control manager uses for an inactive title, so a non-hittable control
@@ -3846,17 +3857,22 @@ pub(super) fn ppc_draw_control_inner(
                 let display_title = ppc_popup_control_display_title(
                     &selected_text,
                     text_right.saturating_sub(text_left),
-                    PPC_QD_TEXT_FONT_DEFAULT,
-                    PPC_QD_TEXT_SIZE_SYSTEM,
+                    popup_font.family,
+                    popup_font.point_size(),
                 );
                 if !display_title.is_empty() {
+                    let metrics = popup_font.metrics();
+                    let baseline = crate::control_manager::centered_control_label_origin(
+                        (draw_top, draw_left, draw_bottom, draw_right),
+                        0, metrics.ascent, metrics.descent,
+                    ).1.saturating_sub(1);
                     let _ = ppc_draw_text_bytes(
                         memory,
                         gworlds,
                         draw_owner,
-                        (text_left, draw_top.saturating_add(14)),
-                        PPC_QD_TEXT_FONT_DEFAULT,
-                        PPC_QD_TEXT_SIZE_SYSTEM,
+                        (text_left, baseline),
+                        popup_font.family,
+                        popup_font.point_size(),
                         PPC_QD_TEXT_MODE_SRC_OR,
                         ppc_theme_rgb(palette.frame_dark),
                         None,
@@ -3896,10 +3912,14 @@ pub(super) fn ppc_draw_control_inner(
                 }
             })
             .collect::<Vec<_>>();
-        let title_style = ppc_control_title_style(
+        let mut title_style = ppc_control_title_style(
             proc_id,
             record.and_then(|record| record.font_style.as_ref()),
         );
+        if (1008..=1023).contains(&proc_id) && proc_id & 8 != 0 {
+            title_style.font = popup_font.family;
+            title_style.size = popup_font.point_size();
+        }
         let advance =
             ppc_text_width_bytes(title_style.font, title_style.size, title_style.face, &title);
         let metrics = get_font_metrics(title_style.font, title_style.size);

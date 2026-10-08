@@ -94,6 +94,8 @@ pub struct ControlSnapshot {
     /// Standard popup CDEF's associated menu and label width, if applicable.
     pub popup_menu_id: Option<i16>,
     pub popup_title_width: Option<i16>,
+    /// Font resolved from the live owner port and popup CDEF variation.
+    pub popup_font: Option<crate::menu_model::GuestMenuFont>,
 }
 
 /// Read the live ControlRecord through the architecture's byte adapter. The
@@ -178,6 +180,19 @@ pub(crate) fn snapshot_control_record(
             .then(|| private_popup_menu_id.or((popup_menu_id != 0).then_some(popup_menu_id)))
             .flatten(),
         popup_title_width: popup.then_some(popup_title_width.unwrap_or(0)),
+        // GrafPort and CGrafPort share txFont/txSize offsets. The popup
+        // variation uses the owner font for both title and selected item.
+        // Inside Macintosh VI (1991), p. 3-18.
+        popup_font: popup.then(|| {
+            if proc_id & 8 != 0 {
+                crate::menu_model::GuestMenuFont {
+                    family: word(&mut read, owner_id.wrapping_add(68)).unwrap_or(0),
+                    size: word(&mut read, owner_id.wrapping_add(74)).unwrap_or(0),
+                }
+            } else {
+                Default::default()
+            }
+        }),
     })
 }
 

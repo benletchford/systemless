@@ -888,3 +888,28 @@ The three-mode scrolling/selection test passes with all three geometry
 assertions (51.59 seconds). The example build passes, and fresh colour-68k
 and PPC composed captures were reviewed: both retain the partial top row,
 up arrow and last-item highlight at the corrected fixed width.
+
+
+### Closed popup owner-font rendering
+
+Closed standard popup controls now retain their live owner-port font in the
+shared control snapshot when `popupUseWFont` is set, following Inside Macintosh
+VI, p. 3-18. GPUI uses the resolved point size for both the title and selected
+value. The 68k control/dialog painters and PPC control painter also use the
+resolved font for selected-text measurement, truncation and drawing. Baselines
+use the shared saturating control-label positioning helper. Unflagged popups
+retain the system font.
+
+All 47 focused popup library tests and 248 control library tests pass. The
+existing live-menu linkage test passes across monochrome 68k, colour 68k and
+PPC and now checks Theme at 9 points versus Loadout at 12 points. The example
+build passes. Composed captures after selection were reviewed in all three
+modes: Theme title/value are smaller, while Loadout retains its larger text
+and selected-value truncation. These captures qualify the shared GPUI output,
+not exact native font-family or pixel parity.
+
+Remaining typography work includes title justification/style flags, automatic
+control geometry, arbitrary font scaling and fallback, font mutation and
+lifetime cases, Appearance font-style precedence, exact GPUI family mapping,
+and native comparisons of guest pixel rendering. This does not close the
+broader popup or frontend readiness requirements.

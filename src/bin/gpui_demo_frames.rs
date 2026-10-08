@@ -696,6 +696,7 @@ mod tests {
             title: String::new(),
             popup_menu_id: None,
             popup_title_width: None,
+            popup_font: None,
         }
     }
 
