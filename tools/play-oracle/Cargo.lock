@@ -321,15 +321,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ieee-apsqrt"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4328941c554aaeea28ca420cd1f10e932fa38874faf8c75e3ed184c64c5c6cec"
-dependencies = [
- "rustc_apfloat",
-]
-
-[[package]]
 name = "image"
 version = "0.25.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -488,11 +479,10 @@ dependencies = [
 
 [[package]]
 name = "ppc"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4bd8b664857d6a3b10a809b6873087d913460e792479a8c2f02cd31741b2b998"
+checksum = "8e032ef11815dc86d99818aaf78d1ecab118b35e49b7db01f90aeb78c9fbe58f"
 dependencies = [
- "ieee-apsqrt",
  "rustc_apfloat",
 ]
 
