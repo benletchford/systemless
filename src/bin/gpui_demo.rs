@@ -132,6 +132,15 @@ mod desktop {
         capture_windows_activated: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_windows_grown: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_windows_promoted: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_windows_main_promoted: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_modeless_dialog_layout: Option<PathBuf>,
     }
 
@@ -2001,6 +2010,9 @@ mod desktop {
         Windows,
         WindowsMoved,
         WindowsActivated,
+        WindowsGrown,
+        WindowsPromoted,
+        WindowsMainPromoted,
         ModalDialog,
         ModalDialogChecked,
         ModelessDialog,
@@ -2067,7 +2079,12 @@ mod desktop {
         );
         let windows_page = matches!(
             capture,
-            CaptureCase::Windows | CaptureCase::WindowsMoved | CaptureCase::WindowsActivated
+            CaptureCase::Windows
+                | CaptureCase::WindowsMoved
+                | CaptureCase::WindowsActivated
+                | CaptureCase::WindowsGrown
+                | CaptureCase::WindowsPromoted
+                | CaptureCase::WindowsMainPromoted
         );
         let lists_page = matches!(capture, CaptureCase::Lists | CaptureCase::ListsSelected);
         let text_edit_page = matches!(
@@ -2173,7 +2190,7 @@ mod desktop {
                     moved[0].window.bounds,
                     (top + 12, left + 16, bottom + 12, right + 16)
                 );
-            } else if matches!(capture, CaptureCase::WindowsActivated) {
+            } else if matches!(capture, CaptureCase::WindowsActivated | CaptureCase::WindowsGrown) {
                 // tests/toolbox-showcase/oracle/windows.json activates the
                 // exposed auxiliary content at this guest coordinate.
                 for input in [
@@ -2200,6 +2217,85 @@ mod desktop {
                 assert_eq!(activated[0].guest_id, before[1].guest_id);
                 assert!(activated[0].window.active);
                 assert!(!activated[1].window.active);
+                if matches!(capture, CaptureCase::WindowsGrown) {
+                    let (top, left, bottom, right) = activated[0].window.bounds;
+                    let from = (bottom - 5, right - 10);
+                    for input in [
+                        MacintoshInput::MouseDown {
+                            vertical: from.0,
+                            horizontal: from.1,
+                        },
+                        MacintoshInput::MouseMove {
+                            vertical: from.0 + 25,
+                            horizontal: from.1 + 25,
+                        },
+                        MacintoshInput::MouseUp {
+                            vertical: from.0 + 25,
+                            horizontal: from.1 + 25,
+                        },
+                    ] {
+                        session.deliver_input(input);
+                        let start = session.runner().guest_tick();
+                        assert!(
+                            (0..100).any(|_| {
+                                session.runner_mut().run_steps(10_000, None);
+                                session.runner().guest_tick().wrapping_sub(start) >= 2
+                            }),
+                            "guest should advance during window growth"
+                        );
+                    }
+                    let grown = session.runner_mut().window_frame_snapshot();
+                    assert_eq!(grown[0].guest_id, activated[0].guest_id);
+                    assert_eq!(grown[0].generation, activated[0].generation);
+                    assert_eq!(
+                        grown[0].window.bounds,
+                        (top, left, bottom + 25, right + 25)
+                    );
+                }
+            } else if matches!(
+                capture,
+                CaptureCase::WindowsPromoted | CaptureCase::WindowsMainPromoted
+            ) {
+                let mut expected_front = before[1].guest_id;
+                let mut expected_count = 2;
+                let close_count = if matches!(capture, CaptureCase::WindowsMainPromoted) {
+                    2
+                } else {
+                    1
+                };
+                for close_index in 0..close_count {
+                    let frames = session.runner_mut().window_frame_snapshot();
+                    let (top, left, _, _) = frames[0].window.bounds;
+                    let close = (top - 9, left + 9);
+                    for input in [
+                        MacintoshInput::MouseDown {
+                            vertical: close.0,
+                            horizontal: close.1,
+                        },
+                        MacintoshInput::MouseUp {
+                            vertical: close.0,
+                            horizontal: close.1,
+                        },
+                    ] {
+                        session.deliver_input(input);
+                        let start = session.runner().guest_tick();
+                        assert!(
+                            (0..100).any(|_| {
+                                session.runner_mut().run_steps(10_000, None);
+                                session.runner().guest_tick().wrapping_sub(start) >= 2
+                            }),
+                            "guest should advance during close tracking"
+                        );
+                    }
+                    let promoted = session.runner_mut().window_frame_snapshot();
+                    assert_eq!(promoted.len(), expected_count);
+                    assert_eq!(promoted[0].guest_id, expected_front);
+                    assert!(promoted[0].window.active);
+                    if close_index == 0 {
+                        expected_front = before[2].guest_id;
+                        expected_count = 1;
+                    }
+                }
             }
             Vec::new()
         } else if matches!(
@@ -2718,6 +2814,39 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::WindowsActivated,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_windows_grown.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::WindowsGrown,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_windows_promoted.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::WindowsPromoted,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_windows_main_promoted.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::WindowsMainPromoted,
             );
             return;
         }
@@ -3378,6 +3507,9 @@ mod desktop {
                         capture_windows: None,
                         capture_windows_moved: None,
                         capture_windows_activated: None,
+                        capture_windows_grown: None,
+                        capture_windows_promoted: None,
+                        capture_windows_main_promoted: None,
                         capture_modeless_dialog_layout: None,
                     },
                     rx,
