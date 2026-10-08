@@ -201,6 +201,7 @@ mod desktop {
     #[derive(Default)]
     struct Update {
         menus: GuestMenuSnapshot,
+        menu_presented: bool,
         guest_menu_tracking: bool,
         windows: Vec<WindowFrameSnapshot>,
         dialogs: Vec<DialogSnapshot>,
@@ -271,12 +272,13 @@ mod desktop {
                     .run_gui_slice_with_audio(100_000, deadline, 367);
                 session.drain_audio();
                 let menus = session.runner_mut().guest_menu_snapshot();
+                let menu_presented = session.runner().guest_menu_bar_presented();
                 let guest_menu_fallback = menus.requires_guest_menu_rendering();
                 let guest_menu_tracking = session.runner().guest_menu_tracking_active();
                 let frame = session.video_frame().map(|frame| {
                     // Preserve guest MBarHeight and crop only the displayed image,
                     // as the native menu frontend does (Inside Macintosh V, V-245).
-                    let top = if guest_menu_fallback {
+                    let top = if guest_menu_fallback || !menu_presented {
                         0
                     } else {
                         u32::from(session.runner().bus().read_word(MBAR_HEIGHT))
@@ -297,6 +299,7 @@ mod desktop {
                 let standard_file = session.runner_mut().standard_file_snapshot();
                 *updates.lock().unwrap() = Some(Update {
                     menus,
+                    menu_presented,
                     guest_menu_tracking,
                     windows,
                     dialogs,
@@ -330,6 +333,8 @@ mod desktop {
     struct Demo {
         commands: mpsc::Sender<Command>,
         menus: GuestMenuSnapshot,
+        menu_presented: bool,
+        menu_hovered: bool,
         guest_menu_tracking: bool,
         windows: Vec<WindowFrameSnapshot>,
         dialogs: Vec<DialogSnapshot>,
@@ -342,6 +347,9 @@ mod desktop {
         width: u32,
         height: u32,
         crop_top: u32,
+        display_origin: (f32, f32),
+        display_scale: f32,
+        display_size: (f32, f32),
         status: String,
         focus: FocusHandle,
         mouse_down: bool,
@@ -370,6 +378,7 @@ mod desktop {
                     .update(cx, |this, cx| {
                         if let Some(update) = update {
                             this.menus = update.menus;
+                            this.menu_presented = update.menu_presented;
                             this.guest_menu_tracking = update.guest_menu_tracking;
                             this.windows = update.windows;
                             this.dialogs = update.dialogs;
@@ -409,6 +418,8 @@ mod desktop {
             Self {
                 commands,
                 menus: Default::default(),
+                menu_presented: true,
+                menu_hovered: false,
                 guest_menu_tracking: false,
                 windows: Vec::new(),
                 dialogs: Vec::new(),
@@ -425,6 +436,9 @@ mod desktop {
                 width: 640,
                 height: 460,
                 crop_top: 20,
+                display_origin: (0., 0.),
+                display_scale: 1.,
+                display_size: (640., 460.),
                 status: "Loading guest…".into(),
                 focus: cx.focus_handle(),
                 mouse_down: false,
@@ -440,11 +454,17 @@ mod desktop {
         }
 
         fn pointer(&self, position: Point<Pixels>) -> (i16, i16) {
-            // The framebuffer is displayed at 1:1; custom MDEFs retain the
-            // guest menu bar and therefore have no host-bar offset.
-            let x = f32::from(position.x).clamp(0., self.width.saturating_sub(1) as f32);
-            let bar_height = if self.guest_menu_fallback() { 0. } else { 36. };
-            let y = (f32::from(position.y) - bar_height)
+            // Convert the aspect-fit host position back to guest coordinates.
+            // Custom MDEFs retain the guest menu bar and have no host-bar offset.
+            let x = ((f32::from(position.x) - self.display_origin.0) / self.display_scale)
+                .clamp(0., self.width.saturating_sub(1) as f32);
+            let bar_height = if self.guest_menu_fallback() || !self.menu_presented {
+                0.
+            } else {
+                36.
+            };
+            let y = ((f32::from(position.y) - self.display_origin.1 - bar_height)
+                / self.display_scale)
                 .clamp(0., self.height.saturating_sub(1) as f32);
             ((y as u32 + self.crop_top) as i16, x as i16)
         }
@@ -452,11 +472,15 @@ mod desktop {
         fn inside_guest_pane(&self, position: Point<Pixels>) -> bool {
             let x = f32::from(position.x);
             let y = f32::from(position.y);
-            let bar_height = if self.guest_menu_fallback() { 0. } else { 36. };
-            x >= 0.
-                && x < self.width as f32
-                && y >= bar_height
-                && y < bar_height + self.height as f32
+            let bar_height = if self.guest_menu_fallback() || !self.menu_presented {
+                0.
+            } else {
+                36.
+            };
+            x >= self.display_origin.0
+                && x < self.display_origin.0 + self.display_size.0
+                && y >= self.display_origin.1 + bar_height
+                && y < self.display_origin.1 + bar_height + self.display_size.1
         }
 
         fn guest_menu_fallback(&self) -> bool {
@@ -718,13 +742,49 @@ mod desktop {
                         }),
                 );
             }
+            let guest_menu_fallback = self.guest_menu_fallback();
+            let fill_display = self.image.is_some()
+                && !self.menu_presented
+                && !guest_menu_fallback
+                && self.windows.is_empty()
+                && self.dialogs.is_empty()
+                && self.controls.is_empty()
+                && self.lists.is_empty()
+                && self.text_edits.is_empty()
+                && self.standard_file.is_none();
+            let (screen_width, screen_height) = if fill_display {
+                let viewport = window.viewport_size();
+                let available_width = f32::from(viewport.width);
+                let available_height = f32::from(viewport.height);
+                let scale = (available_width / self.width as f32)
+                    .min(available_height / self.height as f32);
+                self.display_scale = scale;
+                self.display_size = (self.width as f32 * scale, self.height as f32 * scale);
+                self.display_origin = (
+                    (available_width - self.display_size.0) / 2.,
+                    (available_height - self.display_size.1) / 2.,
+                );
+                self.display_size
+            } else {
+                self.display_scale = 1.;
+                self.display_size = (self.width as f32, self.height as f32);
+                self.display_origin = (0., 0.);
+                self.display_size
+            };
             let mut screen = div()
                 .id("guest-screen")
+                .test_support()
                 .relative()
                 .overflow_hidden()
-                .w(px(self.width as f32))
-                .h(px(self.height as f32))
+                .w(px(screen_width))
+                .h(px(screen_height))
                 .flex_shrink_0()
+                .when(fill_display, |screen| {
+                    screen.ml(px(self.display_origin.0)).mt(px(self.display_origin.1))
+                })
+                .when(self.menu_presented && !self.guest_menu_fallback(), |screen| {
+                    screen.mt(px(36.))
+                })
                 .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
                     let (vertical, horizontal) = this.pointer(event.position);
                     this.mouse_position = (vertical, horizontal);
@@ -1876,15 +1936,24 @@ mod desktop {
                     }
                 }
             }
-            let guest_menu_fallback = self.guest_menu_fallback();
+            let menu_hovered = self.menu_hovered && !self.menu_presented;
             div()
                 .flex()
                 .flex_col()
                 .size_full()
-                .bg(cx.theme().background)
+                .relative()
+                .bg(rgb(0x000000))
                 .text_color(cx.theme().foreground)
                 .track_focus(&self.focus)
                 .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                    let hover = !this.menu_presented
+                        && !this.guest_menu_fallback()
+                        && this.menus.menus.iter().any(|menu| menu.visible_in_menu_bar)
+                        && f32::from(event.position.y) < 36.;
+                    if this.menu_hovered != hover {
+                        this.menu_hovered = hover;
+                        cx.notify();
+                    }
                     if !this.mouse_down || this.inside_guest_pane(event.position) {
                         return;
                     }
@@ -1899,6 +1968,12 @@ mod desktop {
                             vertical,
                             horizontal,
                         }));
+                }))
+                .on_mouse_exit(cx.listener(|this, _: &MouseExitEvent, _, cx| {
+                    if this.menu_hovered {
+                        this.menu_hovered = false;
+                        cx.notify();
+                    }
                 }))
                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                     this.sync_command_key(event.keystroke.modifiers.platform);
@@ -1922,17 +1997,21 @@ mod desktop {
                 .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, _| {
                     this.sync_command_key(event.modifiers.platform);
                 }))
-                .when(!guest_menu_fallback, |root| root.child(bar))
                 .child(screen)
-                .child(
-                    div()
-                        .id("guest-status")
-                        .test_support()
-                        .px_3()
-                        .py_1()
-                        .text_xs()
-                        .child(self.status.clone()),
-                )
+                .when(!guest_menu_fallback && (self.menu_presented || menu_hovered), |root| {
+                    root.child(bar.absolute().top_0().left_0())
+                })
+                .when(self.image.is_none(), |root| {
+                    root.child(
+                        div()
+                            .id("guest-status")
+                            .test_support()
+                            .px_3()
+                            .py_1()
+                            .text_xs()
+                            .child(self.status.clone()),
+                    )
+                })
         }
     }
 
@@ -3309,15 +3388,15 @@ mod desktop {
                     }
                 })
                 .detach();
-                gpui_kit::open_window(
+                let (handle, _view) = gpui_kit::open_window(
                     WindowOptions {
                         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                             None,
-                            size(px(900.), px(740.)),
+                            size(px(800.), px(600.)),
                             cx,
                         ))),
                         titlebar: Some(TitlebarOptions {
-                            title: Some("Systemless · GPUI UI demo".into()),
+                            title: Some("Systemless".into()),
                             ..Default::default()
                         }),
                         ..Default::default()
@@ -3331,6 +3410,10 @@ mod desktop {
                     },
                 )
                 .expect("open GPUI demo window");
+                cx.update_window(handle.into(), |_, window, _| {
+                    window.toggle_simple_fullscreen();
+                })
+                .expect("enter borderless fullscreen");
                 cx.activate(true);
             });
     }
@@ -4509,6 +4592,92 @@ mod desktop {
                 ..Default::default()
             };
             assert_eq!(super::guest_key(&non_roman), None);
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn fullscreen_guest_menu_reveals_only_at_top_edge(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::{test::TestWindowExt, AppContext, Bounds, WindowBounds, WindowOptions};
+            use systemless::menu_model::{GuestMenu, GuestMenuSnapshot};
+
+            let (sender, _receiver) = std::sync::mpsc::channel();
+            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            cx.update(gpui_kit::init);
+            let (window, view) = cx.update(|cx| {
+                gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                            None,
+                            gpui_kit::size(gpui_kit::px(800.), gpui_kit::px(600.)),
+                            cx,
+                        ))),
+                        ..Default::default()
+                    },
+                    cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(sender, updates, cx)),
+                )
+                .unwrap()
+            });
+            cx.update(|cx| {
+                view.update(cx, |demo, cx| {
+                    demo.menu_presented = false;
+                    demo.width = 800;
+                    demo.height = 600;
+                    demo.crop_top = 0;
+                    demo.image = Some(std::sync::Arc::new(gpui_kit::RenderImage::new(vec![
+                        image::Frame::new(image::RgbaImage::new(800, 600)),
+                    ])));
+                    demo.menus = GuestMenuSnapshot {
+                        menus: vec![GuestMenu {
+                            guest_id: 1,
+                            generation: 1,
+                            id: 128,
+                            title: "File".into(),
+                            enabled: true,
+                            standard_definition: true,
+                            hierarchical: false,
+                            visible_in_menu_bar: true,
+                            items: vec![],
+                        }],
+                        ..Default::default()
+                    };
+                    cx.notify();
+                });
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert!(window.try_find("guest-menu-1-1").is_none());
+                assert!(window.try_find("guest-status").is_none());
+                let screen = window.find("guest-screen");
+                assert_eq!(screen.bounds().size.width, gpui_kit::px(800.));
+                assert_eq!(screen.bounds().size.height, gpui_kit::px(600.));
+                window.dispatch_event(gpui_kit::PlatformInput::MouseMove(
+                    gpui_kit::MouseMoveEvent {
+                        position: gpui_kit::point(gpui_kit::px(100.), gpui_kit::px(2.)),
+                        ..Default::default()
+                    },
+                ), cx);
+                window.render_frame(cx);
+                assert!(window.try_find("guest-menu-1-1").is_some());
+                window.dispatch_event(gpui_kit::PlatformInput::MouseMove(
+                    gpui_kit::MouseMoveEvent {
+                        position: gpui_kit::point(gpui_kit::px(100.), gpui_kit::px(100.)),
+                        ..Default::default()
+                    },
+                ), cx);
+                window.render_frame(cx);
+                assert!(window.try_find("guest-menu-1-1").is_none());
+            }).unwrap();
+            cx.update(|cx| {
+                view.update(cx, |demo, cx| {
+                    demo.menu_presented = true;
+                    cx.notify();
+                });
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert!(window.try_find("guest-menu-1-1").is_some());
+            }).unwrap();
         }
 
         #[cfg(feature = "gpui-demo-test")]

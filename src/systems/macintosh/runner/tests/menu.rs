@@ -5,6 +5,23 @@ use crate::runner::MenuBarPolicy;
 use crate::systems::macintosh::runner::{NativeEngineRole, UiThemeId};
 
 #[test]
+fn presented_menu_follows_guest_height_and_fullscreen_state() {
+    use crate::memory::globals::addr;
+
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.bus.write_word(addr::MBAR_HEIGHT, 20);
+    assert!(runner.guest_menu_bar_presented());
+    runner.bus.write_word(addr::MBAR_HEIGHT, 0);
+    assert!(!runner.guest_menu_bar_presented());
+    runner.bus.write_word(addr::MBAR_HEIGHT, 20);
+    runner.dispatcher.fullscreen_locked = true;
+    assert!(!runner.guest_menu_bar_presented());
+    runner.dispatcher.fullscreen_locked = false;
+    runner.set_menu_bar_policy(MenuBarPolicy::ForceHidden);
+    assert!(!runner.guest_menu_bar_presented());
+}
+
+#[test]
 fn ppc_initialization_attaches_both_cpu_adapters_to_one_native_menu_selection() {
     let app = halted_ppc_app_with_sound(PpcSoundState::default());
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());

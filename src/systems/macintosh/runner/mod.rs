@@ -2651,6 +2651,20 @@ impl FixtureRunner {
         !self.dispatcher.menu_bar_hidden
     }
 
+    /// Whether the guest currently presents its menu bar on the screen.
+    /// Host policy alone is insufficient: games can hide it through
+    /// `MBarHeight` or take over the display (Inside Macintosh V, V-253).
+    pub fn guest_menu_bar_presented(&self) -> bool {
+        self.menu_bar_visible()
+            && self.bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) > 0
+            && !self.dispatcher.fullscreen_locked
+            && !self.dispatcher.screen_takeover_active
+            && !self
+                .native
+                .application()
+                .is_some_and(|app| app.draw_sprocket.active_context.is_some())
+    }
+
     /// Disassemble `count` M68K instructions starting at `pc`.
     ///
     /// Returns `(pc, mnemonic, size_in_bytes)` for each instruction. The size
