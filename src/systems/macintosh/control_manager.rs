@@ -870,6 +870,54 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
+    fn popup_snapshot_tracks_owner_font_changes_and_rejects_replaced_records() {
+        // Both CPU adapters use this reader. A retained control must resolve
+        // its current owning port, not cache the font seen at creation.
+        // Inside Macintosh VI (1991), p. 3-18: popupUseWFont.
+        let mut memory = vec![0u8; 1024];
+        memory[32..36].copy_from_slice(&128u32.to_be_bytes());
+        memory[132..136].copy_from_slice(&512u32.to_be_bytes());
+        memory[144] = 1;
+        let snapshot = |memory: &[u8], proc_id| {
+            snapshot_control_record(
+                32,
+                128,
+                7,
+                proc_id,
+                144,
+                Some(52),
+                |owner| matches!(owner, 512 | 768).then_some(((20, 40, 300, 400), true)),
+                |address| memory.get(address as usize).copied(),
+            )
+        };
+        for (family, size) in [(3i16, 9i16), (4, 18), (0, 0)] {
+            memory[580..582].copy_from_slice(&family.to_be_bytes());
+            memory[586..588].copy_from_slice(&size.to_be_bytes());
+            let current = snapshot(&memory, 1017).unwrap();
+            let font = current.popup_font.unwrap();
+            assert_eq!((font.family, font.size), (family, size));
+            assert_eq!(font.point_size(), if size == 0 { 12 } else { size });
+            assert_eq!((current.guest_id, current.generation), (32, 7));
+            assert_eq!(
+                snapshot(&memory, 1009).unwrap().popup_font,
+                Some(Default::default())
+            );
+        }
+        memory[132..136].copy_from_slice(&768u32.to_be_bytes());
+        memory[836..838].copy_from_slice(&3i16.to_be_bytes());
+        memory[842..844].copy_from_slice(&24i16.to_be_bytes());
+        let moved = snapshot(&memory, 1017).unwrap();
+        assert_eq!(moved.owner_id, 768);
+        assert_eq!(moved.popup_font.unwrap().point_size(), 24);
+        assert_eq!(snapshot(&memory, 0).unwrap().popup_font, None);
+        // A disposed or repointed handle must not project the old identity.
+        for pointer in [0u32, 256] {
+            memory[32..36].copy_from_slice(&pointer.to_be_bytes());
+            assert!(snapshot(&memory, 1017).is_none());
+        }
+    }
+
+    #[test]
     fn fixed_popup_menu_width_matches_native_control_probes() {
         // The same dual-CPU fixture, changing only the control's right edge.
         for (right, expected) in [(400, 140), (500, 240)] {

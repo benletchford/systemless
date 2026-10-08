@@ -913,3 +913,24 @@ control geometry, arbitrary font scaling and fallback, font mutation and
 lifetime cases, Appearance font-style precedence, exact GPUI family mapping,
 and native comparisons of guest pixel rendering. This does not close the
 broader popup or frontend readiness requirements.
+
+
+### Popup font mutation and automatic geometry audit
+
+The shared snapshot reader now has a passing regression for successive owner
+font changes, zero-size resolution, owner replacement, unflagged system-font
+controls, non-popup controls and disposed/repointed handles. Both CPU adapters
+call this same reader. This is memory-model coverage, not proof of guest API
+callback timing, redraw after mutation or native rendering equivalence.
+
+Automatic closed-popup geometry remains a confirmed implementation gap. The
+68k `popup_control_box_rect` calls `popup_menu_max_item_width`, which measures
+Chicago 12 regardless of `popupUseWFont`; it then applies a minimum width of
+80 and 40 pixels of padding. The PPC popup painter instead uses the supplied
+control rectangle minus the title area and edge insets. These paths therefore
+do not share an automatic-sizing rule. Inside Macintosh VI, pp. 3-18--3-19,
+requires recalculation on redraw and describes sizing from the longest menu
+item, title, arrow and whitespace. Before replacing these rules, compare
+non-fixed controls at multiple owner fonts and title widths in both native
+oracles, including menu mutation after creation. The earlier fixed-width
+probe does not establish automatic-width behavior.
