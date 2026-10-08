@@ -28,6 +28,10 @@ mod frames;
 mod metrics;
 
 #[cfg(target_os = "macos")]
+#[path = "gpui_demo_popup.rs"]
+mod popup;
+
+#[cfg(target_os = "macos")]
 #[path = "gpui_demo_choices.rs"]
 mod choices;
 
@@ -162,6 +166,9 @@ mod desktop {
         capture_popup_controls_selected: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_popup_controls_open: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_standard_file_save: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -271,6 +278,7 @@ mod desktop {
         menu_presented: bool,
         menu_height: u16,
         guest_menu_tracking: bool,
+        guest_popup: Option<systemless::menu_model::GuestPopupSnapshot>,
         windows: Vec<WindowFrameSnapshot>,
         dialogs: Vec<DialogSnapshot>,
         controls: Vec<ControlSnapshot>,
@@ -464,6 +472,7 @@ mod desktop {
                 let menu_presented = session.runner().guest_menu_bar_presented();
                 let menu_height = session.runner().bus().read_word(MBAR_HEIGHT);
                 let guest_menu_tracking = session.runner().guest_menu_tracking_active();
+                let guest_popup = session.runner_mut().guest_popup_snapshot();
                 let frame = session.video_frame().map(|frame| {
                     (frame.width, frame.height, gpui_pixels(frame.pixels))
                 });
@@ -479,6 +488,7 @@ mod desktop {
                     menu_presented,
                     menu_height,
                     guest_menu_tracking,
+                    guest_popup,
                     windows,
                     dialogs,
                     controls,
@@ -519,6 +529,7 @@ mod desktop {
         menu_hovered: bool,
         open_menus: HashSet<String>,
         guest_menu_tracking: bool,
+        guest_popup: Option<systemless::menu_model::GuestPopupSnapshot>,
         windows: Vec<WindowFrameSnapshot>,
         dialogs: Vec<DialogSnapshot>,
         controls: Vec<ControlSnapshot>,
@@ -564,6 +575,7 @@ mod desktop {
                             this.menu_presented = update.menu_presented;
                             this.menu_height = update.menu_height;
                             this.guest_menu_tracking = update.guest_menu_tracking;
+                            this.guest_popup = update.guest_popup;
                             this.windows = update.windows;
                             this.dialogs = update.dialogs;
                             this.controls = update.controls;
@@ -606,6 +618,7 @@ mod desktop {
                 menu_hovered: false,
                 open_menus: HashSet::new(),
                 guest_menu_tracking: false,
+                guest_popup: None,
                 windows: Vec::new(),
                 dialogs: Vec::new(),
                 controls: Vec::new(),
@@ -2168,6 +2181,9 @@ mod desktop {
                     }
                 }
             }
+            if let Some(popup) = self.guest_popup.as_ref() {
+                screen = screen.child(super::popup::popup(popup, scene_scale, cx));
+            }
             let menu_hovered = (self.menu_hovered || !self.open_menus.is_empty())
                 && !self.menu_presented;
             div()
@@ -2293,6 +2309,7 @@ mod desktop {
         TextEditEdited,
         PopupControls,
         PopupControlsSelected,
+        PopupControlsOpen,
         StandardFileSave,
         StandardFileSaveComposed,
         StandardFileOpenComposed,
@@ -2309,10 +2326,24 @@ mod desktop {
         for _ in 0..20 {
             runner.run_steps(50_000, None);
         }
+        let opened = runner.guest_popup_snapshot().expect("open standard popup geometry");
+        assert_eq!(opened.menu.id, 143);
+        assert_eq!(opened.row_heights.len(), opened.menu.items.len());
+        assert!(opened.row_heights.iter().all(|height| *height > 0));
+        assert!(opened.bounds.0 <= vertical && vertical < opened.bounds.2);
+        assert!(opened.bounds.1 <= horizontal && horizontal < opened.bounds.3);
+        assert_eq!(runner.control_snapshot().iter().find(|control| {
+            control.visible && control.popup_menu_id == Some(143)
+        }).unwrap().value, 1, "opening must not commit a value");
         runner.set_mouse_position(window_top + 146, horizontal);
         for _ in 0..20 {
             runner.run_steps(50_000, None);
         }
+        let highlighted = runner.guest_popup_snapshot().expect("tracked popup geometry");
+        assert_eq!(highlighted.menu.guest_id, opened.menu.guest_id);
+        assert_eq!(highlighted.menu.generation, opened.menu.generation);
+        assert_eq!(highlighted.highlighted_item, 4);
+        assert_eq!(highlighted.bounds, opened.bounds);
         runner.push_mouse_up(window_top + 146, horizontal);
         assert!(
             (0..300).any(|_| {
@@ -2323,6 +2354,7 @@ mod desktop {
             }),
             "guest should select the popup's long item"
         );
+        assert!(runner.guest_popup_snapshot().is_none(), "completed popup must disappear");
     }
 
     #[cfg(feature = "gpui-demo-test")]
@@ -2362,7 +2394,7 @@ mod desktop {
         );
         let popup_page = matches!(
             capture,
-            CaptureCase::PopupControls | CaptureCase::PopupControlsSelected
+            CaptureCase::PopupControls | CaptureCase::PopupControlsSelected | CaptureCase::PopupControlsOpen
         );
         let standard_file_save = matches!(
             capture,
@@ -3045,6 +3077,15 @@ mod desktop {
                 .iter()
                 .any(|list| list.guest_id == list_id && list.selected.contains(&(7, 0))));
         }
+        if matches!(capture, CaptureCase::PopupControlsOpen) {
+            let runner = session.runner_mut();
+            let (top, left, _, _) = runner.window_bounds();
+            runner.push_mouse_down(top + 112, left + 280);
+            for _ in 0..20 { runner.run_steps(50_000, None); }
+            runner.set_mouse_position(top + 146, left + 280);
+            for _ in 0..20 { runner.run_steps(50_000, None); }
+            assert_eq!(runner.guest_popup_snapshot().unwrap().highlighted_item, 4);
+        }
         if matches!(capture, CaptureCase::PopupControlsSelected) {
             select_showcase_resource_popup_long(&mut session);
             let controls = session.runner_mut().control_snapshot();
@@ -3206,6 +3247,7 @@ mod desktop {
         let text_edits = session.runner_mut().text_edit_snapshot().records;
         let standard_file = session.runner_mut().standard_file_snapshot();
         let menus = session.runner_mut().guest_menu_snapshot();
+        let guest_popup = session.runner_mut().guest_popup_snapshot();
         let frame = session.video_frame().unwrap();
         if matches!(capture, CaptureCase::WindowsZoomRestored) {
             // This exposed main-window point used to retain the zoomed
@@ -3252,6 +3294,7 @@ mod desktop {
             view.update(cx, |demo, cx| {
                 demo.menus = menus;
                 demo.guest_menu_tracking = guest_menu_tracking;
+                demo.guest_popup = guest_popup;
                 demo.windows = windows;
                 demo.dialogs = dialogs;
                 demo.controls = controls;
@@ -3650,6 +3693,12 @@ mod desktop {
                 args.screen_depth,
                 CaptureCase::PopupControls,
             );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_popup_controls_open.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc,
+                args.screen_depth, CaptureCase::PopupControlsOpen);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -4181,6 +4230,7 @@ mod desktop {
                         capture_text_edit_edited: None,
                         capture_popup_controls: None,
                         capture_popup_controls_selected: None,
+                        capture_popup_controls_open: None,
                         capture_standard_file_save: None,
                         capture_standard_file_save_composed: None,
                         capture_standard_file_open_composed: None,

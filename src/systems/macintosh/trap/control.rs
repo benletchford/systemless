@@ -923,6 +923,29 @@ impl super::TrapDispatcher {
         cpu.write_reg(Register::A7, tracking.stack_ptr + 12);
     }
 
+    pub(crate) fn popup_control_snapshot(
+        &self,
+        bus: &MacMemoryBus,
+        menus: &crate::menu_model::GuestMenuSnapshot,
+    ) -> Option<crate::menu_model::GuestPopupSnapshot> {
+        let tracking = self.control_tracking.as_ref().filter(|state| state.popup_tracking)?;
+        let tracked_menu = self.menus.get(tracking.active_menu)?;
+        if tracked_menu.items.iter().any(|item| item.icon != 0 || item.style != 0) {
+            return None;
+        }
+        let menu = menus.menus.iter().find(|menu| {
+            menu.guest_id == tracked_menu.handle && menu.standard_definition
+        })?.clone();
+        let rows = self.menu_rows(bus, &tracked_menu.items);
+        Some(crate::menu_model::GuestPopupSnapshot {
+            menu,
+            bounds: tracking.dropdown_rect,
+            content_top: tracking.popup_content_top,
+            row_heights: (1..=rows.len()).map(|item| rows.height(item as i16, 0)).collect(),
+            highlighted_item: tracking.highlighted_item,
+        })
+    }
+
     fn simple_control_tracking_inside(&self, bus: &MacMemoryBus) -> bool {
         let Some(tracking) = self.control_tracking.as_ref() else {
             return false;

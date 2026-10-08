@@ -50,6 +50,20 @@ impl GuestMenuSnapshot {
     }
 }
 
+/// Read-only geometry of an open standard popup. Pointer input must still pass
+/// through the guest tracker; this snapshot never commits a menu selection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GuestPopupSnapshot {
+    pub menu: GuestMenu,
+    /// Global guest coordinates: top, left, bottom, right.
+    pub bounds: (i16, i16, i16, i16),
+    /// Global top of the first row, including the guest's scrolling offset.
+    pub content_top: i16,
+    pub row_heights: Vec<i16>,
+    /// One-based item number, or zero when no item is highlighted.
+    pub highlighted_item: i16,
+}
+
 /// One menu in the guest's current menu list.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GuestMenu {

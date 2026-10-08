@@ -3222,6 +3222,41 @@ impl FixtureRunner {
         }
     }
 
+    /// Inspect an open standard popup without replacing its guest tracker.
+    /// Custom definitions and open hierarchical chains retain guest rendering.
+    #[doc(hidden)]
+    pub fn guest_popup_snapshot(&mut self) -> Option<crate::menu_model::GuestPopupSnapshot> {
+        let menus = self.guest_menu_snapshot();
+        if let Some(snapshot) = self.dispatcher.popup_control_snapshot(&self.bus, &menus) {
+            return Some(snapshot);
+        }
+        self.process_context.menu_tracking().with_ref(|tracking| {
+            let tracking = tracking?;
+            if tracking.kind != crate::menu_manager::MenuTrackingKind::PopUp
+                || tracking.definition.is_some() || !tracking.submenus.is_empty()
+                || tracking.item_appearances.iter().any(|item| item.icon.is_some())
+            {
+                return None;
+            }
+            let menu = menus.menus.into_iter().find(|menu| {
+                menu.guest_id == tracking.menu_handle && menu.standard_definition
+            })?;
+            let row_heights: Vec<_> = tracking.item_appearances.iter().map(|item| item.height).collect();
+            if row_heights.len() != menu.items.len() {
+                return None;
+            }
+            Some(crate::menu_model::GuestPopupSnapshot {
+                menu,
+                bounds: (tracking.popup_top, tracking.popup_left,
+                    tracking.popup_top.saturating_add(tracking.popup_height),
+                    tracking.popup_left.saturating_add(tracking.popup_width)),
+                content_top: tracking.content_top,
+                row_heights,
+                highlighted_item: tracking.highlighted_item,
+            })
+        })
+    }
+
     /// A guest menu tracker may paint its own dropdown over window content.
     /// Frontends can retain guest pixels during that interval without
     /// disabling standard window presentation whenever a custom MDEF exists.

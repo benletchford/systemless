@@ -621,3 +621,27 @@ address reuse is not proof of every allocator-driven reuse path; scrollbar,
 popup and nested callback lifetime qualification remains separate work.
 The seven GPUI control tests and radio tracking regression pass with the lifetime
 validation enabled.
+
+Open standard popup controls now have a shared read-only geometry snapshot and
+GPUI presentation, in addition to the closed-control presentation. The snapshot
+contains the live menu identity, guest pane rectangle, scrolling origin, exact
+row heights and tracked highlight. The PPC adapter borrows retained tracking
+state without cloning its saved framebuffer pixels. The live worker and composed
+capture path feed the same popup component; pointer events still bubble into
+the scene and the guest tracker owns cancellation and value changes.
+
+The three-mode popup regression verifies that opening leaves value 1 unchanged,
+tracking exposes highlight 4 with stable menu identity and bounds, release
+commits value 4 through the guest, and completed tracking removes the snapshot.
+The test passes on monochrome 68K, colour 68K and PPC. Reviewed captures from
+`--capture-popup-controls-open` show consistent text, checkmarks, separator,
+disabled row and fourth-row highlight in all three modes. The build also passes.
+
+This is not complete popup qualification. Visual review found residual guest
+border/shadow pixels at the right edge, especially on PPC. Scrolling indicators,
+icons, styled rows, hierarchical chains, accessibility actions and broader live
+input/cancellation coverage remain open. Custom definitions and PPC open submenu
+chains retain guest rendering; icon-bearing snapshots and styled classic rows
+are conservatively excluded. Styled PPC rows still need explicit presentation
+metadata. These standard-component gaps must be completed, not reclassified as
+permanent custom-definition fallback.
