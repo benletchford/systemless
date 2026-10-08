@@ -40,6 +40,10 @@ mod popup;
 mod choices;
 
 #[cfg(target_os = "macos")]
+#[path = "gpui_demo_activation.rs"]
+mod activation;
+
+#[cfg(target_os = "macos")]
 #[path = "desktop/desktop_save_store.rs"]
 mod desktop_save_store;
 
@@ -262,6 +266,7 @@ mod desktop {
         Menu(i16, i16, u32, u64),
         Input(MacintoshInput),
         Wheel(super::scroll::WheelRequest),
+        ActivateControl(u32, u64),
         CancelWheel,
         Shutdown,
     }
@@ -356,6 +361,7 @@ mod desktop {
             let mut previous = epoch;
             let mut queued = std::collections::VecDeque::new();
             let mut wheel: Option<super::scroll::WheelClick> = None;
+            let mut activation: Option<super::activation::ControlActivation> = None;
             let mut pointer_down = false;
             loop {
                 let start = Instant::now();
@@ -386,7 +392,10 @@ mod desktop {
                     if !queued.is_empty() { click.stop_repeating(); }
                     wheel = click.advance(&mut session);
                 }
-                while wheel.is_none() {
+                if let Some(click) = activation.take() {
+                    activation = click.advance(&mut session);
+                }
+                while wheel.is_none() && activation.is_none() {
                     match queued.pop_front().ok_or(mpsc::TryRecvError::Empty) {
                         Ok(Command::CancelWheel) => {}
                         Ok(Command::Menu(menu, item, guest_id, generation)) => {
@@ -402,6 +411,11 @@ mod desktop {
                         Ok(Command::Wheel(request)) => {
                             if !pointer_down && !session.runner().is_ui_tracking_active() {
                                 wheel = super::scroll::WheelClick::begin(&mut session, request);
+                            }
+                        }
+                        Ok(Command::ActivateControl(id, generation)) => {
+                            if !pointer_down {
+                                activation = super::activation::ControlActivation::begin(&mut session, id, generation);
                             }
                         }
                         Ok(Command::Input(input)) => {
@@ -1529,7 +1543,21 @@ mod desktop {
                                     format!("guest-control-checkbox-{}-{}", control.guest_id, control.generation),
                                     control.title.clone(), control.value != 0, control.enabled,
                                     control.hilite == 11, scene_scale, cx,
-                                ),
+                                ).on_change({
+                                    let sender = self.commands.clone();
+                                    let (id, generation) = (control.guest_id, control.generation);
+                                    move |_, event, _, _| {
+                                        if matches!(event, ClickEvent::Keyboard(_)) {
+                                            let _ = sender.send(Command::ActivateControl(id, generation));
+                                        }
+                                    }
+                                }).when(control.enabled, |choice| {
+                                    let sender = self.commands.clone();
+                                    let (id, generation) = (control.guest_id, control.generation);
+                                    choice.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
+                                        let _ = sender.send(Command::ActivateControl(id, generation));
+                                    })
+                                }),
                             );
                         }
                         2 => {
@@ -1538,7 +1566,21 @@ mod desktop {
                                     format!("guest-control-radio-{}-{}", control.guest_id, control.generation),
                                     control.title.clone(), control.value != 0, control.enabled,
                                     control.hilite == 11, scene_scale, cx,
-                                ),
+                                ).on_change({
+                                    let sender = self.commands.clone();
+                                    let (id, generation) = (control.guest_id, control.generation);
+                                    move |_, event, _, _| {
+                                        if matches!(event, ClickEvent::Keyboard(_)) {
+                                            let _ = sender.send(Command::ActivateControl(id, generation));
+                                        }
+                                    }
+                                }).when(control.enabled, |choice| {
+                                    let sender = self.commands.clone();
+                                    let (id, generation) = (control.guest_id, control.generation);
+                                    choice.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
+                                        let _ = sender.send(Command::ActivateControl(id, generation));
+                                    })
+                                }),
                             );
                         }
                         16 => {
@@ -4830,6 +4872,38 @@ mod desktop {
         }
 
         #[test]
+        fn semantic_radio_activation_preserves_guest_tracking_across_cpus() {
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 5));
+                wait_for_menu(&mut session, 129, 5, true);
+                let controls = session.runner_mut().control_snapshot();
+                let target = controls.iter().find(|c| c.visible && c.title == "Recruit (Easy)").unwrap();
+                let (id, generation) = (target.guest_id, target.generation);
+                let origin = session.runner().dispatcher().mouse_position();
+                assert!(super::super::activation::ControlActivation::begin(&mut session, id, generation + 1).is_none());
+                let click = super::super::activation::ControlActivation::begin(&mut session, id, generation).unwrap();
+                settle(&mut session);
+                let held = session.runner_mut().control_snapshot();
+                let target = held.iter().find(|c| c.guest_id == id).unwrap();
+                assert_eq!((target.value, target.hilite), (0, 11));
+                assert!(super::super::activation::ControlActivation::begin(&mut session, id, generation).is_none());
+                let click = click.advance(&mut session).unwrap();
+                settle(&mut session);
+                assert!(click.advance(&mut session).is_none());
+                assert_eq!(session.runner().dispatcher().mouse_position(), origin);
+                let updated = session.runner_mut().control_snapshot();
+                assert_eq!(updated.iter().find(|c| c.guest_id == id).unwrap().value, 1);
+                assert_eq!(updated.iter().find(|c| c.visible && c.title == "Veteran (Normal)").unwrap().value, 0);
+            }
+        }
+
+        #[test]
         fn radio_tracking_preserves_guest_group_until_release() {
             for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
                 let mut session = MacintoshSession::new(true, depth);
@@ -7645,6 +7719,7 @@ mod desktop {
                 .try_iter()
                 .filter_map(|command| match command {
                     super::Command::Input(input) => Some(input),
+                    super::Command::ActivateControl(..) => panic!("pointer click duplicated as semantic activation"),
                     _ => None,
                 })
                 .collect();
@@ -7714,6 +7789,7 @@ mod desktop {
                 .try_iter()
                 .filter_map(|command| match command {
                     super::Command::Input(input) => Some(input),
+                    super::Command::ActivateControl(..) => panic!("pointer click duplicated as semantic activation"),
                     _ => None,
                 })
                 .collect();
@@ -7864,6 +7940,7 @@ mod desktop {
                 .try_iter()
                 .filter_map(|command| match command {
                     super::Command::Input(input) => Some(input),
+                    super::Command::ActivateControl(..) => panic!("pointer click duplicated as semantic activation"),
                     _ => None,
                 })
                 .collect();
@@ -8262,6 +8339,7 @@ mod desktop {
                 .try_iter()
                 .filter_map(|command| match command {
                     super::Command::Input(input) => Some(input),
+                    super::Command::ActivateControl(..) => panic!("pointer click duplicated as semantic activation"),
                     _ => None,
                 })
                 .collect();
@@ -8371,6 +8449,7 @@ mod desktop {
                 .try_iter()
                 .filter_map(|command| match command {
                     super::Command::Input(input) => Some(input),
+                    super::Command::ActivateControl(..) => panic!("pointer click duplicated as semantic activation"),
                     _ => None,
                 })
                 .collect();
