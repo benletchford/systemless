@@ -3246,7 +3246,7 @@ impl FixtureRunner {
                 return None;
             }
             Some(crate::menu_model::GuestPopupSnapshot {
-                font: crate::menu_model::GuestMenuFont::default(),
+                font: tracking.item_appearances.first().map(|item| item.font).unwrap_or_default(),
                 menu,
                 bounds: (tracking.popup_top, tracking.popup_left,
                     tracking.popup_top.saturating_add(tracking.popup_height),

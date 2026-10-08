@@ -777,6 +777,21 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn popup_control_font(&self, bus: &MacMemoryBus, ctrl_ptr: u32) -> crate::menu_model::GuestMenuFont {
+        let proc_id = self.control_manager.proc_id(ctrl_ptr);
+        let owner = bus.read_long(ctrl_ptr + 4);
+        // popupUseWFont applies to the active menu as well as its title.
+        // Inside Macintosh VI (1991), p. 3-18.
+        if proc_id & 8 != 0 && owner != 0 {
+            crate::menu_model::GuestMenuFont {
+                family: bus.read_word(owner + 68) as i16,
+                size: bus.read_word(owner + 74) as i16,
+            }
+        } else {
+            Default::default()
+        }
+    }
+
     pub(crate) fn popup_control_dropdown_rect(
         &self,
         bus: &MacMemoryBus,
@@ -805,13 +820,14 @@ impl super::TrapDispatcher {
             .saturating_add(r_left)
             .saturating_add(title_width.max(0));
 
+        let font = self.popup_control_font(bus, ctrl_ptr);
         let mut width = 80;
         if let Some(menu) = self.menus.get(menu_idx) {
-            width = self.standard_menu_width(bus, &menu.items);
+            width = self.standard_menu_width_with_font(bus, &menu.items, font);
             // The standard popup CDEF opens the live menu with the current
             // value's item aligned to the popup box, matching the Menu
             // Manager's PopUpMenuSelect(top, left, popUpItem) convention.
-            let rows = self.menu_rows(bus, &menu.items);
+            let rows = self.menu_rows_with_font(bus, &menu.items, font);
             if let Some(layout) = standard_popup_menu_layout(
                 &rows,
                 width,
@@ -856,7 +872,7 @@ impl super::TrapDispatcher {
         let Some(menu) = self.menus.get(active_menu) else {
             return 0;
         };
-        let rows = self.menu_rows(bus, &menu.items);
+        let rows = self.menu_rows_with_font(bus, &menu.items, self.control_tracking.as_ref().unwrap().popup_font);
         let Some(update) = self.control_tracking.as_mut().map(|tracking| {
             rows.track_pointer(
                 dropdown_rect,
@@ -943,9 +959,9 @@ impl super::TrapDispatcher {
         let menu = menus.menus.iter().find(|menu| {
             menu.guest_id == tracked_menu.handle && menu.standard_definition
         })?.clone();
-        let rows = self.menu_rows(bus, &tracked_menu.items);
+        let rows = self.menu_rows_with_font(bus, &tracked_menu.items, tracking.popup_font);
         Some(crate::menu_model::GuestPopupSnapshot {
-            font: crate::menu_model::GuestMenuFont::default(),
+            font: tracking.popup_font,
             menu,
             bounds: tracking.dropdown_rect,
             content_top: tracking.popup_content_top,
@@ -3916,6 +3932,7 @@ impl super::TrapDispatcher {
                                                 ctrl_handle,
                                                 ctrl_ptr,
                                                 popup_tracking: false,
+                                                popup_font: Default::default(),
                                                 active_menu: 0,
                                                 highlighted_item: 0,
                                                 saved_pixels: Default::default(),
@@ -4011,6 +4028,7 @@ impl super::TrapDispatcher {
                                     if let Some(menu_idx) =
                                         self.menus.iter().rposition(|menu| menu.id == menu_id)
                                     {
+                                        let popup_font = self.popup_control_font(bus, ctrl_ptr);
                                         let dropdown_rect = self
                                             .popup_control_dropdown_rect(bus, ctrl_ptr, menu_idx);
                                         let popup_content_top = {
@@ -4020,7 +4038,7 @@ impl super::TrapDispatcher {
                                             let anchor_top = owner_top
                                                 .saturating_add(bus.read_word(ctrl_ptr + 8) as i16);
                                             let selected = bus.read_word(ctrl_ptr + 18) as i16;
-                                            let rows = self.menu_rows(bus, &self.menus[menu_idx].items);
+                                            let rows = self.menu_rows_with_font(bus, &self.menus[menu_idx].items, popup_font);
                                             if rows.total_height()
                                                 > dropdown_rect.2.saturating_sub(dropdown_rect.0)
                                             {
@@ -4035,6 +4053,7 @@ impl super::TrapDispatcher {
                                             ctrl_handle,
                                             ctrl_ptr,
                                             popup_tracking: true,
+                                            popup_font,
                                             active_menu: menu_idx,
                                             highlighted_item: 0,
                                             saved_pixels: saved,
@@ -4121,6 +4140,7 @@ impl super::TrapDispatcher {
                                         ctrl_handle,
                                         ctrl_ptr,
                                         popup_tracking: false,
+                                        popup_font: Default::default(),
                                         active_menu: 0,
                                         highlighted_item: 0,
                                         saved_pixels: Default::default(),

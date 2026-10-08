@@ -847,6 +847,7 @@ pub(crate) enum TrackedMenuIcon {
 /// Presentation snapshot retained for one native standard-menu item.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TrackedMenuItemAppearance {
+    pub(crate) font: crate::menu_model::GuestMenuFont,
     pub(crate) height: i16,
     pub(crate) icon_kind: StandardMenuIconKind,
     pub(crate) icon: Option<TrackedMenuIcon>,
@@ -1658,6 +1659,31 @@ impl StandardMenuIconKind {
             Self::Normal => 32,
             Self::Reduced | Self::Small => 16,
         }
+    }
+
+    pub(crate) fn row_height_for_font(
+        self,
+        style: QuickDrawTextStyle,
+        font: crate::menu_model::GuestMenuFont,
+    ) -> i16 {
+        if font == crate::menu_model::GuestMenuFont::default() {
+            return self.row_height(style);
+        }
+        let metrics = font.metrics();
+        self.row_height_for_text(style, metrics.ascent.saturating_add(metrics.descent)
+            .saturating_add(metrics.leading))
+    }
+
+    pub(crate) fn row_height_for_text(self, style: QuickDrawTextStyle, text: i16) -> i16 {
+        // Menu rows follow ascent + descent + leading; icon slots retain
+        // their minimum geometry. Inside Macintosh V (1986), V-249.
+        let icon = match self {
+            Self::None => 0,
+            Self::Normal => 34,
+            Self::Color { height, .. } => height.max(16),
+            Self::Reduced | Self::Small => 16,
+        };
+        text.max(1).saturating_add(if style.shadow() { 5 } else { 0 }).max(icon)
     }
 
     pub(crate) fn row_height(self, style: QuickDrawTextStyle) -> i16 {

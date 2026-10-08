@@ -13,7 +13,7 @@ use crate::menu_manager::{
     merge_menu_color_entries as shared_merge_menu_color_entries, new_standard_menu_record,
     standard_menu_gray_pattern_is_ink, standard_menu_height as shared_standard_menu_height,
     standard_menu_highlighted_value, standard_menu_icon_kind, standard_menu_icon_resource_id,
-    standard_menu_item_layout, standard_menu_text_advance as shared_standard_menu_text_advance,
+    standard_menu_item_layout,
     standard_menu_width as shared_standard_menu_width, standard_popup_menu_layout,
     standard_pull_down_menu_layout, standard_submenu_layout,
     ColorIconLayout as SharedColorIconLayout, MenuBarBuild as SharedMenuBarBuild,
@@ -4245,11 +4245,27 @@ impl super::TrapDispatcher {
     }
 
     pub(super) fn menu_rows(&self, bus: &MacMemoryBus, items: &[MenuItem]) -> SharedMenuRows {
+        self.menu_rows_with_font(bus, items, Default::default())
+    }
+
+    pub(super) fn menu_rows_with_font(
+        &self, bus: &MacMemoryBus, items: &[MenuItem], font: crate::menu_model::GuestMenuFont,
+    ) -> SharedMenuRows {
+        let text_height = if font == crate::menu_model::GuestMenuFont::default() {
+            16
+        } else {
+            let metrics = font.metrics();
+            metrics.ascent.saturating_add(metrics.descent).saturating_add(metrics.leading)
+        };
         SharedMenuRows::new(
             Self::laid_out_items(items)
                 .iter()
                 .map(|item| SharedMenuRow {
-                    height: self.menu_item_height(bus, item),
+                    height: if item.text == "-" { STANDARD_MENU_SEPARATOR_HEIGHT } else {
+                        self.menu_item_icon_kind(bus, item).row_height_for_text(
+                            QuickDrawTextStyle::from_bits(item.style), text_height,
+                        )
+                    },
                     selectable: item.enabled && item.text != "-",
                 }),
         )
@@ -4298,9 +4314,15 @@ impl super::TrapDispatcher {
     }
 
     pub(super) fn standard_menu_width(&self, bus: &MacMemoryBus, items: &[MenuItem]) -> i16 {
+        self.standard_menu_width_with_font(bus, items, Default::default())
+    }
+
+    pub(super) fn standard_menu_width_with_font(
+        &self, bus: &MacMemoryBus, items: &[MenuItem], font: crate::menu_model::GuestMenuFont,
+    ) -> i16 {
         shared_standard_menu_width(Self::laid_out_items(items).iter().map(|item| {
             StandardMenuItemWidth {
-                text: shared_standard_menu_text_advance(&internal_menu_string_bytes(&item.text)),
+                text: font.text_advance(&internal_menu_string_bytes(&item.text)),
                 icon: self.menu_item_icon_width(bus, item),
                 command: item.key_equiv,
             }
@@ -5209,10 +5231,13 @@ impl super::TrapDispatcher {
             None
         };
 
-        // Draw items
-        let font_id: i16 = 0;
-        let font_size: i16 = 12;
-        let metrics = crate::quickdraw::text::get_font_metrics(font_id, font_size);
+        // The retained popup font owns both layout and guest painting.
+        let font = self.control_tracking.as_ref()
+            .filter(|tracking| tracking.popup_tracking && tracking.active_menu == menu_idx)
+            .map(|tracking| tracking.popup_font).unwrap_or_default();
+        let font_id = font.family;
+        let font_size = font.point_size();
+        let metrics = font.metrics();
         let (highlighted_item, content_top) = self
             .menu_tracking
             .as_ref()
@@ -5245,7 +5270,7 @@ impl super::TrapDispatcher {
                     .map(|popup| (popup.highlighted_item, top))
             })
             .unwrap_or((0, top));
-        let rows = self.menu_rows(bus, &menu.items);
+        let rows = self.menu_rows_with_font(bus, &menu.items, font);
         let (scroll_up, scroll_down) = rows.scroll_indicators(rect, content_top);
         let visible_item_top = top.saturating_add(if scroll_up { MENU_ROW_HEIGHT } else { 0 });
         let visible_item_bottom =
@@ -5254,7 +5279,7 @@ impl super::TrapDispatcher {
         let mut item_top = content_top;
         for (i, item) in Self::laid_out_items(&menu.items).iter().enumerate() {
             let item_no = i as i16 + 1;
-            let item_height = self.menu_item_height(bus, item);
+            let item_height = rows.height(item_no, 0);
             let item_bottom = item_top.saturating_add(item_height);
             if item_bottom <= top {
                 item_top = item_bottom;

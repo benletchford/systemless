@@ -676,12 +676,14 @@ pub(crate) fn ppc_menu_resource_data<'a>(
     Some(&resources.get(index)?.data)
 }
 
-pub(crate) fn ppc_menu_item_appearance(
+
+pub(crate) fn ppc_menu_item_appearance_with_font(
     memory: &mut PpcSectionMem,
     menu_handle: u32,
     item: i16,
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
+    font: crate::menu_model::GuestMenuFont,
 ) -> PpcTrackedMenuItemAppearance {
     let is_separator = ppc_menu_item_is_separator(memory, menu_handle, item);
     let icon = ppc_menu_item_attribute_address(memory, menu_handle, item, 0)
@@ -730,10 +732,11 @@ pub(crate) fn ppc_menu_item_appearance(
             }),
     };
     PpcTrackedMenuItemAppearance {
+        font,
         height: if is_separator {
             STANDARD_MENU_SEPARATOR_HEIGHT
         } else {
-            icon_kind.row_height(QuickDrawTextStyle::from_bits(style))
+            icon_kind.row_height_for_font(QuickDrawTextStyle::from_bits(style), font)
         },
         icon_kind,
         icon: tracked_icon,
@@ -746,15 +749,26 @@ pub(crate) fn ppc_menu_item_appearances(
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
 ) -> Vec<PpcTrackedMenuItemAppearance> {
+    ppc_menu_item_appearances_with_font(memory, menu_handle, resources, current_resource_refnum, Default::default())
+}
+
+pub(crate) fn ppc_menu_item_appearances_with_font(
+    memory: &mut PpcSectionMem,
+    menu_handle: u32,
+    resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    font: crate::menu_model::GuestMenuFont,
+) -> Vec<PpcTrackedMenuItemAppearance> {
     let mut items = (1..=ppc_count_menu_items(memory, menu_handle) as i16)
         .map(|item| {
             (
-                ppc_menu_item_appearance(
+                ppc_menu_item_appearance_with_font(
                     memory,
                     menu_handle,
                     item,
                     resources,
                     current_resource_refnum,
+                    font,
                 ),
                 ppc_menu_item_is_separator(memory, menu_handle, item),
             )
@@ -825,11 +839,21 @@ pub(crate) fn ppc_calc_menu_size_with_resources(
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
 ) {
+    ppc_calc_menu_size_for_font(memory, menu_handle, resources, current_resource_refnum, Default::default())
+}
+
+pub(crate) fn ppc_calc_menu_size_for_font(
+    memory: &mut PpcSectionMem,
+    menu_handle: u32,
+    resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    font: crate::menu_model::GuestMenuFont,
+) {
     let Some(menu) = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0) else {
         return;
     };
     let appearances =
-        ppc_menu_item_appearances(memory, menu_handle, resources, current_resource_refnum);
+        ppc_menu_item_appearances_with_font(memory, menu_handle, resources, current_resource_refnum, font);
     let width = standard_menu_width((1..=appearances.len()).filter_map(|item| {
         let item = i16::try_from(item).ok()?;
         let (address, len) = ppc_menu_item(memory, menu_handle, item)?;
@@ -842,7 +866,7 @@ pub(crate) fn ppc_calc_menu_size_with_resources(
             .map(|appearance| appearance.icon_kind.width())
             .unwrap_or(0);
         Some(StandardMenuItemWidth {
-            text: standard_menu_text_advance(&text),
+            text: font.text_advance(&text),
             icon,
             command,
         })
@@ -1769,12 +1793,14 @@ pub(crate) fn ppc_popup_menu_is_inserted(
     })
 }
 
-pub(crate) fn ppc_popup_menu_layout_with_resources(
+
+pub(crate) fn ppc_popup_menu_layout_for_font(
     memory: &mut PpcSectionMem,
     request: PopupMenuRequest,
     front: PpcFrontBuffer,
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
+    font: crate::menu_model::GuestMenuFont,
 ) -> Option<(i16, i16, i16, i16, i16, i16)> {
     let menu_handle = request.menu_handle;
     let menu = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0)?;
@@ -1783,9 +1809,9 @@ pub(crate) fn ppc_popup_menu_layout_with_resources(
         return None;
     }
 
-    ppc_calc_menu_size_with_resources(memory, menu_handle, resources, current_resource_refnum);
+    ppc_calc_menu_size_for_font(memory, menu_handle, resources, current_resource_refnum, font);
     let appearances =
-        ppc_menu_item_appearances(memory, menu_handle, resources, current_resource_refnum);
+        ppc_menu_item_appearances_with_font(memory, menu_handle, resources, current_resource_refnum, font);
     let rows = ppc_menu_rows_for_appearances(&appearances);
     let layout = standard_popup_menu_layout(
         &rows,
@@ -2137,6 +2163,21 @@ pub(crate) fn ppc_dispatch_pop_up_menu_select(
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
 ) -> PpcImportAction {
+    ppc_dispatch_pop_up_menu_select_with_font(cpu, memory, gworlds, screen_clut, menu_colors, startup, input, resources, current_resource_refnum, Default::default())
+}
+
+pub(crate) fn ppc_dispatch_pop_up_menu_select_with_font(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    screen_clut: &[[u16; 3]; 256],
+    menu_colors: MenuColorTable<'_>,
+    startup: &mut PpcToolboxStartupState,
+    input: PpcInputSnapshot,
+    resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    font: crate::menu_model::GuestMenuFont,
+) -> PpcImportAction {
     let menu_handle = cpu.gpr[3];
     let call = ppc_popup_menu_call(cpu);
     let current_menu_list = ppc_current_menu_list(memory);
@@ -2297,12 +2338,13 @@ pub(crate) fn ppc_dispatch_pop_up_menu_select(
         return PpcImportAction::Return(0);
     };
     let Some((popup_left, popup_top, popup_width, popup_height, requested_item, content_top)) =
-        ppc_popup_menu_layout_with_resources(
+        ppc_popup_menu_layout_for_font(
             memory,
             call.popup_request().unwrap(),
             front,
             resources,
             current_resource_refnum,
+            font,
         )
     else {
         return PpcImportAction::Return(0);
@@ -2313,7 +2355,7 @@ pub(crate) fn ppc_dispatch_pop_up_menu_select(
         0
     };
     let appearances =
-        ppc_menu_item_appearances(memory, menu_handle, resources, current_resource_refnum);
+        ppc_menu_item_appearances_with_font(memory, menu_handle, resources, current_resource_refnum, font);
     let Some(state) = ppc_begin_tracked_menu_with_appearances(
         memory,
         front,
@@ -2938,10 +2980,11 @@ pub(crate) fn ppc_draw_tracked_menu(
                 }
             }
         }
-        let metrics = get_font_metrics(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
         let appearance = usize::try_from(item.saturating_sub(1))
             .ok()
             .and_then(|index| state.item_appearances().get(index));
+        let font = appearance.map(|item| item.font).unwrap_or_default();
+        let metrics = font.metrics();
         let layout = standard_menu_item_layout(
             (
                 state.popup_left(),
@@ -2996,8 +3039,8 @@ pub(crate) fn ppc_draw_tracked_menu(
                 gworlds,
                 PPC_MAIN_GWORLD,
                 (layout.mark_left, text_baseline),
-                PPC_QD_TEXT_FONT_DEFAULT,
-                PPC_QD_TEXT_SIZE_SYSTEM,
+                font.family,
+                font.point_size(),
                 PPC_QD_TEXT_MODE_SRC_OR,
                 mark_color,
                 mark_index,
@@ -3024,8 +3067,8 @@ pub(crate) fn ppc_draw_tracked_menu(
             gworlds,
             PPC_MAIN_GWORLD,
             (layout.text_left, text_baseline),
-            PPC_QD_TEXT_FONT_DEFAULT,
-            PPC_QD_TEXT_SIZE_SYSTEM,
+            font.family,
+            font.point_size(),
             mode,
             name_color,
             name_index,
@@ -3052,8 +3095,8 @@ pub(crate) fn ppc_draw_tracked_menu(
                 gworlds,
                 PPC_MAIN_GWORLD,
                 (layout.command_left, text_baseline),
-                PPC_QD_TEXT_FONT_DEFAULT,
-                PPC_QD_TEXT_SIZE_SYSTEM,
+                font.family,
+                font.point_size(),
                 mode,
                 command_color,
                 command_index,

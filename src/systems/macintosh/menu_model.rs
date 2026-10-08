@@ -75,6 +75,21 @@ impl GuestMenuFont {
         }
     }
 
+    pub(crate) fn metrics(self) -> crate::quickdraw::fonts::FontMetrics {
+        let (face, numerator, denominator) =
+            crate::quickdraw::fonts::get_font_face_scale_ratio(self.family, self.point_size());
+        let scale = |value: i16| {
+            ((i32::from(value) * numerator + denominator / 2) / denominator)
+                .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+        };
+        crate::quickdraw::fonts::FontMetrics {
+            ascent: scale(face.metrics.ascent),
+            descent: scale(face.metrics.descent),
+            leading: scale(face.metrics.leading),
+            wid_max: scale(face.metrics.wid_max),
+        }
+    }
+
     pub(crate) fn text_advance(self, text: &[u8]) -> i16 {
         let (face, numerator, denominator) =
             crate::quickdraw::fonts::get_font_face_scale_ratio(self.family, self.point_size());

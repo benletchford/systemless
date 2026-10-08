@@ -2389,6 +2389,8 @@ mod desktop {
             .expect("long Theme popup should open");
         assert_eq!(opened.menu.id, 144);
         assert_eq!(opened.menu.items.len(), 55);
+        assert_eq!(opened.font.point_size(), 9, "popupUseWFont must retain the owner size");
+        assert_eq!(opened.row_heights[0], 12, "Geneva 9 must use native 12-pixel menu rows");
         assert!(opened.scroll_indicators().1);
         runner.set_mouse_position(opened.bounds.2 - 4, opened.bounds.1 + 30);
         let scrolled = (0..100)

@@ -813,3 +813,29 @@ control typography and the native comparison gates above remain unfinished.
 
 The existing held-popup selection test also passes on monochrome 68k, colour
 68k and PPC after this plumbing change (48.42 seconds).
+
+
+The open control-popup path now retains `popupUseWFont` from the owner port on
+both CPUs. Classic control tracking stores the descriptor; native tracking
+stores it with each item appearance. Width measurement, row geometry, guest
+painting and `GuestPopupSnapshot` consume that font. Ordinary menu entry
+points continue to provide the system default. Font metrics are resolved once
+per classic row-layout pass rather than once per item. No owner port fields
+are changed to present the menu.
+
+The existing long-popup showcase test now asserts the requested 9-point font
+and native 12-pixel row height before scrolling to and selecting item 55 on
+monochrome 68k, colour 68k and PPC; it passes (107.79 seconds). All 434 library
+menu tests pass. Fresh composed colour 68k and PPC captures were reviewed and
+show matching small text, smaller rows, the up arrow and final-item highlight.
+
+This is not complete native popup parity. The new font-aware width is narrower
+than the existing native Theme reference; the native reference also displays
+a partial row below its scroll indicator while the current compositor skips
+partial rows. Resolve native popup minimum-width/closed-box relationships and
+partial-row clipping with oracle evidence. Closed-control title/value fonts,
+hierarchical inheritance, styled/icon rows, font mutation/lifetime cases,
+exact GPUI font-family mapping and performance remain unqualified.
+
+The reverse-scroll / down-arrow release / reopen-and-select regression also
+passes across all three modes with the changed font metrics (104.05 seconds).
