@@ -3737,8 +3737,19 @@ impl super::TrapDispatcher {
                             .as_ref()
                             .map(|tracking| tracking.ctrl_handle)
                             .unwrap_or(0);
-                        let inside = self.simple_control_tracking_inside(bus);
-                        if self.control_tracking_button_down(bus) {
+                        let release_index = self.event_queue.iter().position(|event| event.what == 2);
+                        let inside = if let Some(index) = release_index {
+                            let release = self.event_queue.remove(index).unwrap();
+                            let (top, left, bottom, right) =
+                                self.control_tracking.as_ref().unwrap().simple_screen_rect;
+                            release.where_v >= top
+                                && release.where_v < bottom
+                                && release.where_h >= left
+                                && release.where_h < right
+                        } else {
+                            self.simple_control_tracking_inside(bus)
+                        };
+                        if release_index.is_none() && self.control_tracking_button_down(bus) {
                             let highlighted = self
                                 .control_tracking
                                 .as_ref()
@@ -4005,12 +4016,36 @@ impl super::TrapDispatcher {
                                     }
                                 }
 
-                                // IM:I I-323: TrackControl follows mouse
-                                // movement, highlights simple controls, and
-                                // returns the part code only after mouse-up.
-                                // Preserve the old immediate path when the
-                                // mouse is already up; scripted callers that
-                                // model a real mouse-down take the refire path.
+                                // Use the mouse-up location even if host input advanced
+                                // before the guest entered TrackControl.
+                                // Macintosh Toolbox Essentials (1992), pp. 5-90--5-92.
+                                if action_proc == 0 && matches!(proc_id, 0 | 1 | 2) {
+                                    let release_index = self.event_queue.iter()
+                                        .position(|event| event.what == 2);
+                                    if let Some(index) = release_index {
+                                        let release = self.event_queue.remove(index).unwrap();
+                                        let window_ptr = bus.read_long(ctrl_ptr + 4);
+                                        let (top, left, _, _) = Self::dialog_screen_bounds(bus, window_ptr);
+                                        let inside = release.where_v >= top + r_top
+                                            && release.where_v < top + r_bottom
+                                            && release.where_h >= left + r_left
+                                            && release.where_h < left + r_right;
+                                        let part = if inside {
+                                            self.standard_testcontrol_part_code(ctrl_ptr)
+                                        } else {
+                                            0
+                                        };
+                                        self.record_trackcontrol_input_trace(
+                                            bus, "start", ctrl_handle,
+                                            Some((pt_v, pt_h)), action_proc,
+                                            Some(part), None, "simple_early_release",
+                                        );
+                                        bus.write_word(sp + 12, part);
+                                        cpu.write_reg(Register::A7, sp + 12);
+                                        return Some(Ok(()));
+                                    }
+                                }
+
                                 if self.input_state.mouse_button_pressed()
                                     && action_proc == 0
                                     && (matches!(proc_id, 0 | 1 | 2) || Self::is_popup_menu_proc_id(proc_id))
@@ -4060,9 +4095,9 @@ impl super::TrapDispatcher {
                                     return Some(Ok(()));
                                 }
 
-                                // Return inButton (10) for simple controls.
-                                // Inside Macintosh Volume I, I-316
-                                part = 10;
+                                // Standard buttons return 10; checkboxes and radios return 11.
+                                // Macintosh Toolbox Essentials (1992), p. 5-89.
+                                part = self.standard_testcontrol_part_code(ctrl_ptr);
                                 outcome = "visible_active_hit";
                             }
                         }

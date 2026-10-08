@@ -4265,3 +4265,74 @@ fn getcvariant_function_protocol_pops_handle_and_writes_integer_result() {
         "trap must not write past the 2-byte INTEGER result slot"
     );
 }
+
+#[test]
+fn track_control_standard_controls_consume_queued_release_position() {
+    for proc_id in [0, 1, 2] {
+        for release_before_entry in [false, true] {
+            for release_inside in [false, true] {
+                let (mut disp, mut cpu, mut bus) = setup_with_port();
+                let window = *disp.current_port;
+                let (handle, ptr) =
+                    alloc_button_control(&mut disp, &mut bus, window, (20, 20, 40, 80));
+                disp.control_manager.set_proc_id(ptr, proc_id);
+                bus.write_word(ptr + 18, 1);
+                let sp = 0x300000;
+                cpu.write_reg(Register::A7, sp);
+                bus.write_long(sp, 0);
+                bus.write_word(sp + 4, 30);
+                bus.write_word(sp + 6, 30);
+                bus.write_long(sp + 8, handle);
+                bus.write_word(sp + 12, 0xBEEF);
+                disp.input_state.set_mouse_button_for_test(true);
+                disp.input_state.set_mouse_position_for_test((30, 30));
+                if !release_before_entry {
+                    disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(cpu.read_reg(Register::A7), sp);
+                    assert_eq!(bus.read_word(sp + 12), 0xBEEF);
+                    assert_eq!(bus.read_byte(ptr + 17), if proc_id == 0 { 10 } else { 11 });
+                }
+                disp.input_state.set_mouse_button_for_test(false);
+                // The pointer may have moved again after the release was queued.
+                disp.input_state
+                    .set_mouse_position_for_test(if release_inside { (10, 10) } else { (30, 30) });
+                disp.event_queue
+                    .push_back(crate::trap::dispatch::QueuedEvent {
+                        what: 2,
+                        message: 0,
+                        when: 0,
+                        where_v: if release_inside { 30 } else { 10 },
+                        where_h: 30,
+                        modifiers: 0,
+                    });
+                disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+                assert_eq!(
+                    bus.read_word(sp + 12),
+                    if release_inside {
+                        if proc_id == 0 {
+                            10
+                        } else {
+                            11
+                        }
+                    } else {
+                        0
+                    },
+                    "proc={proc_id}, early={release_before_entry}, inside={release_inside}"
+                );
+                assert_eq!(bus.read_byte(ptr + 17), 0);
+                assert_eq!(
+                    bus.read_word(ptr + 18),
+                    1,
+                    "TrackControl must leave the value to the caller"
+                );
+                assert!(disp.control_tracking.is_none());
+                assert!(!disp.event_queue.iter().any(|event| event.what == 2));
+            }
+        }
+    }
+}
