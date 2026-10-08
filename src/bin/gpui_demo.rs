@@ -41,8 +41,8 @@ mod desktop {
     use systemless::{
         memory::{globals::addr::MBAR_HEIGHT, MemoryBus},
         menu_model::{GuestMenu, GuestMenuSnapshot},
-        runner::{ControlSnapshot, DialogItemKind, DialogSnapshot, ListManagerSnapshot, StandardFileKind, StandardFileSnapshot, TextEditSnapshot, WindowFrameSnapshot},
-        systems::macintosh::session::{MacintoshInput, MacintoshSession},
+        runner::{default_realtime_instructions_per_tick, ControlSnapshot, DialogItemKind, DialogSnapshot, ListManagerSnapshot, StandardFileKind, StandardFileSnapshot, TextEditSnapshot, WindowFrameSnapshot},
+        systems::macintosh::{game, session::{MacintoshInput, MacintoshSession}},
     };
 
     include!("gpui_demo_menu.rs");
@@ -213,6 +213,15 @@ mod desktop {
         status: String,
     }
 
+    fn configure_realtime_execution(session: &mut MacintoshSession) -> u32 {
+        let instructions_per_tick =
+            default_realtime_instructions_per_tick(session.runner().is_powerpc_app());
+        session
+            .runner_mut()
+            .set_instructions_per_tick(instructions_per_tick);
+        instructions_per_tick
+    }
+
     fn run_guest(
         args: Args,
         commands: mpsc::Receiver<Command>,
@@ -225,13 +234,14 @@ mod desktop {
                 .set_prefer_powerpc_executables(args.prefer_powerpc);
             let app = session.load_path(&args.game)?;
             session.initialize(&app);
+            let instructions_per_tick = configure_realtime_execution(&mut session);
             let architecture = if session.status().powerpc_application {
                 "PowerPC"
             } else {
                 "68k"
             };
-            let epoch = Instant::now();
-            let initial_tick = session.runner().guest_tick();
+            let mut epoch = Instant::now();
+            let mut initial_tick = session.runner().guest_tick();
             let mut previous = epoch;
             loop {
                 let start = Instant::now();
@@ -265,11 +275,45 @@ mod desktop {
                     .runner_mut()
                     .advance_menu_presentation_clock(start.duration_since(previous));
                 previous = start;
-                let deadline =
-                    initial_tick.wrapping_add((epoch.elapsed().as_secs_f64() * 60.) as u32);
-                session
-                    .runner_mut()
-                    .run_gui_slice_with_audio(100_000, deadline, 367);
+                let current_tick = session.runner().guest_tick();
+                let mut due_tick = initial_tick
+                    .saturating_add((epoch.elapsed().as_secs_f64() * 60.) as u32)
+                    .saturating_add(1);
+                if due_tick.saturating_sub(current_tick) > 4 {
+                    // A late frame must not make the worker chase an ever-growing
+                    // backlog. The ordinary desktop runner also rebases here.
+                    epoch = start;
+                    initial_tick = current_tick;
+                    due_tick = current_tick.saturating_add(1);
+                }
+                let deadline = due_tick.min(current_tick.saturating_add(2));
+                let batch = if session.runner().is_powerpc_app() {
+                    (instructions_per_tick as usize).div_ceil(16)
+                } else {
+                    10_000
+                };
+                let cpu_deadline = start + Duration::from_millis(12);
+                let mut steps = 0;
+                while session.runner().guest_tick() < deadline
+                    && steps < game::MAX_INSTRUCTIONS_PER_FRAME
+                    && Instant::now() < cpu_deadline
+                {
+                    let remaining = game::MAX_INSTRUCTIONS_PER_FRAME - steps;
+                    let (executed, running) = session
+                        .runner_mut()
+                        .run_gui_cpu_slice(batch.min(remaining), deadline);
+                    steps += executed;
+                    if executed == 0 || !running || session.runner().is_ui_tracking_active() {
+                        break;
+                    }
+                }
+                session.runner_mut().mix_gui_audio_slice(367);
+                if session.runner().has_pending_sound_work()
+                    && Instant::now() < cpu_deadline
+                {
+                    session.runner_mut().run_gui_pending_sound_work(10_000);
+                }
+                session.runner_mut().finish_gui_frame();
                 session.drain_audio();
                 let menus = session.runner_mut().guest_menu_snapshot();
                 let menu_presented = session.runner().guest_menu_bar_presented();
@@ -284,7 +328,10 @@ mod desktop {
                         u32::from(session.runner().bus().read_word(MBAR_HEIGHT))
                     };
                     let top = if top < frame.height { top } else { 0 };
-                    let mut pixels = frame.pixels[(top * frame.width * 4) as usize..].to_vec();
+                    let mut pixels = frame.pixels;
+                    if top > 0 {
+                        pixels.drain(..(top * frame.width * 4) as usize);
+                    }
                     for pixel in pixels.chunks_exact_mut(4) {
                         pixel.swap(0, 2);
                     }
@@ -3388,11 +3435,11 @@ mod desktop {
                     }
                 })
                 .detach();
-                let (handle, _view) = gpui_kit::open_window(
+                gpui_kit::open_window(
                     WindowOptions {
                         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                             None,
-                            size(px(800.), px(600.)),
+                            size(px(800.), px(616.)),
                             cx,
                         ))),
                         titlebar: Some(TitlebarOptions {
@@ -3410,10 +3457,6 @@ mod desktop {
                     },
                 )
                 .expect("open GPUI demo window");
-                cx.update_window(handle.into(), |_, window, _| {
-                    window.toggle_simple_fullscreen();
-                })
-                .expect("enter borderless fullscreen");
                 cx.activate(true);
             });
     }
@@ -3760,6 +3803,24 @@ mod desktop {
                 super::save_name_segments("Résumé", (1, 4), false),
                 ("Résumé".into(), String::new(), String::new())
             );
+        }
+
+        #[test]
+        fn gpui_uses_realtime_guest_rate_on_both_cpus() {
+            let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/toolbox-showcase/toolbox-showcase.sit");
+            for powerpc in [false, true] {
+                let mut session = MacintoshSession::new(true, Some(8));
+                session
+                    .runner_mut()
+                    .set_prefer_powerpc_executables(powerpc);
+                let app = session.load_path(&fixture).unwrap();
+                session.initialize(&app);
+                assert_eq!(session.runner().is_powerpc_app(), powerpc);
+                let expected = super::default_realtime_instructions_per_tick(powerpc);
+                assert_eq!(super::configure_realtime_execution(&mut session), expected);
+                assert_eq!(session.runner().instructions_per_tick(), expected);
+            }
         }
 
         #[test]

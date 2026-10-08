@@ -19,13 +19,15 @@ geometry and behaviour remain guest-owned.
 From a checkout of [systemless](https://github.com/benletchford/systemless):
 
 ```sh
-cargo run --no-default-features --features gpui-demo --example gpui-menu-demo -- tests/toolbox-showcase/toolbox-showcase.sit
+cargo run --release --no-default-features --features gpui-demo --example gpui-menu-demo -- tests/toolbox-showcase/toolbox-showcase.sit
 ```
 
 Add `--prefer-powerpc` before the archive path to run the PPC slice, or
 `--screen-depth 1` to try monochrome 68k presentation. Other supported game
-archives can replace the showcase path. Use `--release` for faster guest
-execution after the initial build.
+archives can replace the showcase path. The release build is important for
+guest execution speed; the default development build runs the emulator much
+more slowly. The demo opens in a normal window, which can be enlarged or put
+into macOS fullscreen manually.
 
 Open **Pages → Controls** and reopen Pages to see the guest update its checkmark.
 Use **Options → Difficulty** to try nested menus. Open the Apple menu's About
@@ -217,8 +219,9 @@ shows the guest's selection span and caret; caret blink, text composition,
 replacement confirmation, New Folder, and full keyboard navigation need more
 work before this can replace the ordinary frontend.
 
-The framebuffer is shown at 1:1 with no automatic scaling. Enlarge the window
-if necessary. Keyboard forwarding covers Return, Escape, Space, Tab and
+Guest-owned fullscreen scenes scale to fit the window while preserving their
+aspect ratio. Standard window and control overlays retain 1:1 guest geometry.
+Keyboard forwarding covers Return, Escape, Space, Tab and
 Backspace; this is not a full game-input frontend. Audio is serviced but muted,
 saves are not persisted, and host-native window integration is not included.
 The prototype has not been ported to the browser. GPUI dependencies are optional
