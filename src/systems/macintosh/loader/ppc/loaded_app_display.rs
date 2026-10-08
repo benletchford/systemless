@@ -21,6 +21,11 @@ impl PpcLoadedApp {
             .read_u16_be(dialog + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET)
             .filter(|index| *index != u16::MAX)
             .map(usize::from);
+        let caret_visible = self.memory
+            .read_u32_be(dialog + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET)
+            .and_then(|handle| ppc_te_record_ptr(&mut self.memory, handle))
+            .and_then(|ptr| self.memory.read_u16_be(ptr + PPC_TE_CARET_STATE_OFFSET))
+            .map(|state| state == 0);
         let active_selection = self
             .memory
             .read_u32_be(dialog + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET)
@@ -67,6 +72,7 @@ impl PpcLoadedApp {
                         enabled: item.is_enabled(),
                         visible: !crate::dialog_manager::is_dialog_item_rect_hidden(item.rect),
                         value,
+                        caret_visible: (active_edit_index == Some(index)).then_some(caret_visible).flatten(),
                         selection: (kind == crate::dialog_manager::DialogItemKind::EditText
                             && active_edit_index == Some(index))
                             .then_some(active_selection)

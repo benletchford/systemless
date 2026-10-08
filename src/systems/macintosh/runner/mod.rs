@@ -2532,6 +2532,12 @@ impl FixtureRunner {
                         )
                     } else {
                         let items = self.dispatcher.dialog_items.get(&guest_id)?;
+                        // DialogRecord.textH is the active edit field's TERec.
+                        // Toolbox Essentials (1992), pp. 6-101--6-102; Text (1993), p. 2-84.
+                        let edit_index = self.bus.read_word(guest_id + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET);
+                        let text_handle = self.bus.read_long(guest_id + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+                        let text_ptr = if text_handle != 0 { self.bus.read_long(text_handle) } else { 0 };
+                        let caret_visible = (text_ptr != 0).then(|| self.bus.read_word(text_ptr + 0x38) == 0);
                         let snapshots = items
                             .iter()
                             .enumerate()
@@ -2553,6 +2559,7 @@ impl FixtureRunner {
                                         .dialog_control_values
                                         .get(&(guest_id, number))
                                         .copied(),
+                                    caret_visible: (edit_index as usize == index).then_some(caret_visible).flatten(),
                                     selection: item
                                         .is_edit_text()
                                         .then_some((item.sel_start, item.sel_end)),
