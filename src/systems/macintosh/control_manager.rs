@@ -2,6 +2,24 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Fixed popup menus exclude the title and the arrow/end-cap area.
+/// Inside Macintosh VI (1991), pp. 3-17--3-18 defines popupFixedWidth.
+/// Native Mac OS 8.1 68k/PPC probes with 210- and 310-pixel controls and
+/// 52-pixel titles yield 140- and 240-pixel dropdowns: an 18-pixel end cap.
+pub(crate) fn fixed_popup_menu_width(
+    proc_id: i16,
+    left: i16,
+    right: i16,
+    title_width: i16,
+) -> Option<i16> {
+    (proc_id & 1 != 0).then(|| {
+        right.saturating_sub(left)
+            .saturating_sub(title_width.max(0))
+            .saturating_sub(18)
+            .max(1)
+    })
+}
+
 /// Shared cadence for standard scrollbar action procedures, in guest ticks.
 pub(crate) const SCROLLBAR_ACTION_REPEAT_TICKS: u32 = 3;
 
@@ -835,6 +853,16 @@ where
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn fixed_popup_menu_width_matches_native_control_probes() {
+        // The same dual-CPU fixture, changing only the control's right edge.
+        for (right, expected) in [(400, 140), (500, 240)] {
+            assert_eq!(fixed_popup_menu_width(1017, 190, right, 52), Some(expected));
+        }
+        assert_eq!(fixed_popup_menu_width(1008, 190, 400, 52), None);
+        assert_eq!(fixed_popup_menu_width(1016, 190, 400, 52), None);
+    }
 
     #[test]
     fn draw_order_preserves_the_newest_first_guest_chain() {

@@ -313,7 +313,7 @@ fn ppc_dispatch_popup_track_control(
     // coordinates. Reuse the standard retained popup session so CDEF-backed
     // controls get the same disabled/separator hit testing, save-under, and
     // repaint behavior as a direct PopUpMenuSelect call.
-    let (control_top, control_left, _, _) =
+    let (control_top, control_left, _, control_right) =
         ppc_read_rect(memory, control + PPC_CONTROL_RECT_OFFSET)?;
     // Anchor at the selection box after the title, not at the label.
     // Macintosh Toolbox Essentials (1992), pp. 5-25--5-27.
@@ -349,6 +349,10 @@ fn ppc_dispatch_popup_track_control(
         vfs_resources,
         current_resource_refnum,
         font,
+        crate::control_manager::fixed_popup_menu_width(
+            record.proc_id, control_left, control_right,
+            record.popup_title_width.unwrap_or(0),
+        ),
     );
     Some(match action {
         PpcImportAction::Return(result) => {

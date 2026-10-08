@@ -811,8 +811,8 @@ impl super::TrapDispatcher {
         let selected_index = selected_value.max(0) as usize;
         let abs_top = owner_top + r_top;
         // The popup title precedes the selection box; only the box anchors
-        // the open menu. popupFixedWidth constrains the closed control, not
-        // the Menu Manager's dropdown. Macintosh Toolbox Essentials (1992),
+        // the open menu. The fixed-width CDEF also excludes its arrow area
+        // from the dropdown. Macintosh Toolbox Essentials (1992),
         // pp. 5-25--5-27.
         let title_width =
             self.popup_control_title_width(ctrl_ptr, bus.read_word(ctrl_ptr + 22) as i16);
@@ -823,7 +823,10 @@ impl super::TrapDispatcher {
         let font = self.popup_control_font(bus, ctrl_ptr);
         let mut width = 80;
         if let Some(menu) = self.menus.get(menu_idx) {
-            width = self.standard_menu_width_with_font(bus, &menu.items, font);
+            width = crate::control_manager::fixed_popup_menu_width(
+                self.control_manager.proc_id(ctrl_ptr), r_left,
+                bus.read_word(ctrl_ptr + 14) as i16, title_width,
+            ).unwrap_or_else(|| self.standard_menu_width_with_font(bus, &menu.items, font));
             // The standard popup CDEF opens the live menu with the current
             // value's item aligned to the popup box, matching the Menu
             // Manager's PopUpMenuSelect(top, left, popUpItem) convention.

@@ -1801,6 +1801,7 @@ pub(crate) fn ppc_popup_menu_layout_for_font(
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
     font: crate::menu_model::GuestMenuFont,
+    fixed_width: Option<i16>,
 ) -> Option<(i16, i16, i16, i16, i16, i16)> {
     let menu_handle = request.menu_handle;
     let menu = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0)?;
@@ -1815,7 +1816,7 @@ pub(crate) fn ppc_popup_menu_layout_for_font(
     let rows = ppc_menu_rows_for_appearances(&appearances);
     let layout = standard_popup_menu_layout(
         &rows,
-        i16::try_from(memory.read_u16_be(menu + 2)?.max(32)).ok()?,
+        fixed_width.unwrap_or(i16::try_from(memory.read_u16_be(menu + 2)?.max(32)).ok()?),
         (
             ppc_u32_to_i16_saturating(front.width),
             ppc_u32_to_i16_saturating(front.height),
@@ -2163,7 +2164,7 @@ pub(crate) fn ppc_dispatch_pop_up_menu_select(
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
 ) -> PpcImportAction {
-    ppc_dispatch_pop_up_menu_select_with_font(cpu, memory, gworlds, screen_clut, menu_colors, startup, input, resources, current_resource_refnum, Default::default())
+    ppc_dispatch_pop_up_menu_select_with_font(cpu, memory, gworlds, screen_clut, menu_colors, startup, input, resources, current_resource_refnum, Default::default(), None)
 }
 
 pub(crate) fn ppc_dispatch_pop_up_menu_select_with_font(
@@ -2177,6 +2178,7 @@ pub(crate) fn ppc_dispatch_pop_up_menu_select_with_font(
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
     font: crate::menu_model::GuestMenuFont,
+    fixed_width: Option<i16>,
 ) -> PpcImportAction {
     let menu_handle = cpu.gpr[3];
     let call = ppc_popup_menu_call(cpu);
@@ -2345,6 +2347,7 @@ pub(crate) fn ppc_dispatch_pop_up_menu_select_with_font(
             resources,
             current_resource_refnum,
             font,
+            fixed_width,
         )
     else {
         return PpcImportAction::Return(0);
