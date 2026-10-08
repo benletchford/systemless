@@ -670,3 +670,14 @@ field zero. The corrected import-level test also asserts that the frontend
 snapshot does not classify this standard bar as custom. All 432 library tests
 matching `menu` now pass. This closes that specific test failure, not the broader
 menu interaction, accessibility or popup presentation qualification gaps.
+
+Popup cancellation now has a loaded-application regression across monochrome
+68K, colour 68K and PPC. Each mode reopens the resource popup and releases outside,
+on its disabled row, and on its separator. The held snapshot must report no
+highlight while retaining menu identity; release must remove the popup snapshot,
+leave the control value at 1 and preserve only the first item's checkmark.
+Repeated reopening is part of the same sequence. All nine cases pass in
+`popup_cancellation_preserves_guest_value_across_cpu_modes` (84.54 seconds).
+This exercises the guest input/tracking and frontend snapshot boundary. It does
+not establish host pointer routing, keyboard or accessibility cancellation,
+rapid queued-release ordering, scrolling, or custom-menu behaviour.

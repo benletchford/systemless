@@ -4987,6 +4987,99 @@ mod desktop {
         }
 
         #[test]
+        fn popup_cancellation_preserves_guest_value_across_cpu_modes() {
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session
+                    .load_path(
+                        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("tests/toolbox-showcase/toolbox-showcase.sit"),
+                    )
+                    .unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 16));
+                wait_for_menu(&mut session, 129, 16, true);
+                settle(&mut session);
+                let runner = session.runner_mut();
+                let (top, left, _, _) = runner.window_bounds();
+                for target in ["outside", "disabled", "separator"] {
+                    runner.push_mouse_down(top + 112, left + 280);
+                    let opened = (0..100)
+                        .find_map(|_| {
+                            runner.run_steps(50_000, None);
+                            runner.guest_popup_snapshot()
+                        })
+                        .expect("popup should open after a cancelled selection");
+                    let point = if target == "outside" {
+                        (opened.bounds.2 + 10, opened.bounds.3 + 10)
+                    } else {
+                        let index = opened
+                            .menu
+                            .items
+                            .iter()
+                            .position(|item| {
+                                if target == "disabled" {
+                                    !item.enabled && !item.separator
+                                } else {
+                                    item.separator
+                                }
+                            })
+                            .expect("fixture must contain the target row");
+                        let y = opened.content_top
+                            + opened.row_heights[..index].iter().sum::<i16>()
+                            + opened.row_heights[index] / 2;
+                        (y, opened.bounds.1 + 30)
+                    };
+                    runner.set_mouse_position(point.0, point.1);
+                    for _ in 0..20 {
+                        runner.run_steps(50_000, None);
+                    }
+                    let tracking = runner
+                        .guest_popup_snapshot()
+                        .expect("held popup remains open");
+                    assert_eq!(
+                        tracking.highlighted_item, 0,
+                        "{powerpc:?}/{depth:?}/{target}"
+                    );
+                    assert_eq!(tracking.menu.guest_id, opened.menu.guest_id);
+                    assert_eq!(tracking.menu.generation, opened.menu.generation);
+                    runner.push_mouse_up(point.0, point.1);
+                    assert!(
+                        (0..100).any(|_| {
+                            runner.run_steps(50_000, None);
+                            runner.guest_popup_snapshot().is_none()
+                        }),
+                        "cancelled popup must close: {powerpc:?}/{depth:?}/{target}"
+                    );
+                    for _ in 0..20 {
+                        runner.run_steps(50_000, None);
+                    }
+                    let control = runner
+                        .control_snapshot()
+                        .into_iter()
+                        .find(|control| control.visible && control.popup_menu_id == Some(143))
+                        .unwrap();
+                    assert_eq!(
+                        control.value, 1,
+                        "cancellation must preserve value: {powerpc:?}/{depth:?}/{target}"
+                    );
+                    let menus = runner.guest_menu_snapshot();
+                    let menu = menus.menus.iter().find(|menu| menu.id == 143).unwrap();
+                    assert_eq!(
+                        menu.items
+                            .iter()
+                            .filter(|item| item.checked)
+                            .map(|item| item.number)
+                            .collect::<Vec<_>>(),
+                        vec![1]
+                    );
+                }
+            }
+        }
+
+        #[test]
         fn standard_file_snapshots_follow_modal_guest_state_on_both_cpus() {
             use systemless::runner::StandardFileKind;
 
