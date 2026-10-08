@@ -147,3 +147,26 @@ fn choice_content(
                 .child(label),
         )
 }
+
+/// Guest buttons keep pointer delivery even when semantic activation is unavailable.
+pub fn guest_button(
+    id: String, label: String, enabled: bool, active: bool,
+    pressed: bool, primary: bool, scale: f32, cx: &App,
+) -> gpui_kit::base::Button {
+    let theme = cx.theme();
+    let foreground = if !enabled { theme.muted_foreground }
+        else if primary { theme.primary_foreground } else { theme.foreground };
+    let background = if primary && pressed { theme.primary_active }
+        else if primary { theme.primary }
+        else if pressed { theme.secondary } else { theme.background };
+    // The guest owns tracking and activation, including inactive-window clicks.
+    // Macintosh Toolbox Essentials (1992), pp. 5-55--5-59.
+    gpui_kit::base::Button::new(id)
+        .accessibility_label(label.clone())
+        .focusable(enabled && active)
+        .tab_stop(false)
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+        .border_1().border_color(theme.border).rounded(theme.radius)
+        .bg(background).text_color(foreground).text_size(px(12. * scale))
+        .overflow_hidden().child(label)
+}
