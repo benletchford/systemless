@@ -444,6 +444,44 @@ pub fn control_pieces(
     result
 }
 
+/// Resolve an action only within the current active standard dialog.
+/// DialogSelect owns control tracking and item delivery (Macintosh Toolbox
+/// Essentials, pp. 6-139--6-141); host actions never update item values.
+pub fn dialog_activation_point(
+    id: u32,
+    generation: u64,
+    number: i16,
+    identity: (u32, u64),
+    dialogs: &[DialogSnapshot],
+    windows: &[WindowFrameSnapshot],
+    viewport: Rect,
+) -> Option<(i16, i16)> {
+    let dialog = dialogs.iter().find(|d| d.guest_id == id && d.generation == generation)?;
+    if !dialog.active || !dialog.visible || !windows.iter().any(|frame| {
+        frame.guest_id == id && frame.generation == generation && frame.window.active && frame.window.visible
+    }) {
+        return None;
+    }
+    let item = dialog.items.iter().find(|item| item.number == number)?;
+    if item.control_identity != Some(identity) || !item.enabled || !item.visible || item.pressed
+        || !matches!(item.kind, DialogItemKind::Button | DialogItemKind::Checkbox | DialogItemKind::RadioButton)
+    {
+        return None;
+    }
+    dialog_item_pieces(dialogs, windows, viewport).into_iter()
+        .filter(|piece| dialogs[piece.dialog].guest_id == id
+            && dialogs[piece.dialog].items[piece.item].number == number)
+        .find_map(|piece| {
+            let mut regions: Vec<_> = piece.clip.intersection(Rect::from(item.bounds)).into_iter().collect();
+            for other in dialog.items.iter().filter(|other| other.number != number && other.visible) {
+                regions = regions.into_iter().flat_map(|region| region.subtract(Rect::from(other.bounds))).collect();
+            }
+            let region = regions.into_iter().max_by_key(|r| i64::from(r.width()) * i64::from(r.height()))?;
+            Some((i16::try_from((region.top + region.bottom) / 2).ok()?,
+                i16::try_from((region.left + region.right) / 2).ok()?))
+        })
+}
+
 /// Resolve semantic activation to an exposed guest hit point, never a cached
 /// host coordinate. The caller must also reject active tracking/modal input.
 /// FindControl and TrackControl retain guest ownership of the action and value
@@ -774,6 +812,61 @@ mod tests {
     }
 
     #[test]
+    fn dialog_activation_rejects_stale_disabled_obscured_and_inactive_items() {
+        let mut windows = vec![window((50, 50, 180, 220), true, 1)];
+        let mut dialogs = vec![DialogSnapshot {
+            guest_id: 1, generation: 1, bounds: (50, 50, 180, 220),
+            visible: true, active: true, default_item: Some(1),
+            cancel_item: None, edit_field: None,
+            items: vec![DialogItemSnapshot {
+                control_identity: Some((10, 1)),
+                pressed: false, number: 1, kind: DialogItemKind::Button,
+                bounds: (90, 90, 110, 180), text: "OK".into(),
+                enabled: true, visible: true, value: None,
+                selection: None, caret_visible: None,
+            }],
+        }];
+        let resolve = |dialogs: &[DialogSnapshot], windows: &[WindowFrameSnapshot]| {
+            super::dialog_activation_point(1, 1, 1, (10, 1), dialogs, windows, Rect::from((0, 0, 300, 300)))
+        };
+        assert_eq!(resolve(&dialogs, &windows), Some((100, 135)));
+        dialogs[0].items[0].control_identity = Some((11, 1));
+        assert_eq!(resolve(&dialogs, &windows), None);
+        dialogs[0].items[0].control_identity = Some((10, 2));
+        assert_eq!(resolve(&dialogs, &windows), None);
+        dialogs[0].items[0].control_identity = Some((10, 1));
+        dialogs[0].generation = 2;
+        assert_eq!(resolve(&dialogs, &windows), None);
+        dialogs[0].generation = 1;
+        dialogs[0].items[0].enabled = false;
+        assert_eq!(resolve(&dialogs, &windows), None);
+        dialogs[0].items[0].enabled = true;
+        dialogs[0].items[0].pressed = true;
+        assert_eq!(resolve(&dialogs, &windows), None);
+        dialogs[0].items[0].pressed = false;
+        dialogs[0].active = false;
+        assert_eq!(resolve(&dialogs, &windows), None);
+        dialogs[0].active = true;
+        windows[0].window.active = false;
+        assert_eq!(resolve(&dialogs, &windows), None);
+        windows[0].window.active = true;
+        let mut cover = window((80, 80, 130, 200), true, 1);
+        cover.guest_id = 2;
+        windows.insert(0, cover);
+        assert_eq!(resolve(&dialogs, &windows), None);
+        windows.remove(0);
+        // A clip consisting solely of the default-button halo is not clickable.
+        windows[0].visible_content_rects = Some(vec![(86, 86, 90, 184)]);
+        assert_eq!(resolve(&dialogs, &windows), None);
+        windows[0].visible_content_rects = Some(vec![(90, 90, 110, 120)]);
+        assert_eq!(resolve(&dialogs, &windows), Some((100, 105)));
+        let mut overlap = dialogs[0].items[0].clone();
+        overlap.number = 2;
+        dialogs[0].items.push(overlap);
+        assert_eq!(resolve(&dialogs, &windows), None);
+    }
+
+    #[test]
     fn inactive_standard_dialog_items_clip_below_front_window() {
         let mut front = window((80, 80, 130, 150), true, 0);
         front.guest_id = 2;
@@ -790,6 +883,7 @@ mod tests {
             cancel_item: None,
             edit_field: None,
             items: vec![DialogItemSnapshot {
+                control_identity: None,
                 pressed: false,
                 number: 1,
                 kind: DialogItemKind::StaticText,

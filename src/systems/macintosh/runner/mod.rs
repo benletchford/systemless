@@ -2544,6 +2544,17 @@ impl FixtureRunner {
                             .map(|(index, item)| {
                                 let number = (index + 1) as i16;
                                 DialogItemSnapshot {
+                                    // DITL item handles may change without replacing the dialog.
+                                    // MTE (1992), pp. 6-122--6-123; ControlRecord, pp. 5-60--5-64.
+                                    control_identity: TrapDispatcher::dialog_item_handle_addr(&self.bus, guest_id, number)
+                                        .map(|address| self.bus.read_long(address))
+                                        .and_then(|handle| self.dispatcher.control_manager.with_ref(|state| {
+                                            state.iter().find(|record| record.handle == handle
+                                                && record.pointer != 0
+                                                && self.bus.read_long(handle) == record.pointer
+                                                && self.bus.read_long(record.pointer + 4) == guest_id)
+                                                .map(|record| (record.handle, record.generation))
+                                        })),
                                     pressed: self.dispatcher.retained_modal_dialog_click.as_ref().is_some_and(|click| {
                                         click.dialog_ptr == guest_id && click.item_no == number && click.highlighted
                                     }) || self.dispatcher.dialog_tracking.as_ref().is_some_and(|tracking| {

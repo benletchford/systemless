@@ -702,7 +702,7 @@ impl super::TrapDispatcher {
         Some(bus.read_bytes(data_ptr, len))
     }
 
-    fn dialog_item_handle_addr(bus: &MacMemoryBus, dialog_ptr: u32, item_no: i16) -> Option<u32> {
+    pub(crate) fn dialog_item_handle_addr(bus: &MacMemoryBus, dialog_ptr: u32, item_no: i16) -> Option<u32> {
         if item_no <= 0 {
             return None;
         }
