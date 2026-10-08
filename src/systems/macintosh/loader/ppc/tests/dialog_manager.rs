@@ -688,7 +688,7 @@ fn modal_dialog_offers_each_event_to_its_filter_before_hit_testing() {
     let caller_sp = loaded.cpu.gpr[1];
     // A click in the OK button (dialog global origin 60, 80).
     let click = modal_filter_mouse_down(60 + 20, 80 + 50);
-    loaded.set_event_queue([click]);
+    loaded.set_event_queue([click, PpcQueuedEvent { what: 2, ..click }]);
 
     let probe = loaded.run_with_hle_imports(512);
 
@@ -711,6 +711,35 @@ fn modal_dialog_offers_each_event_to_its_filter_before_hit_testing() {
     assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(1));
     assert_eq!(loaded.cpu.gpr[1], caller_sp);
     assert_eq!(loaded.cpu.gpr[3..5], [filter, item_hit_ptr]);
+    assert!(loaded.dialog_callback_stack.is_empty());
+}
+
+#[test]
+fn modal_dialog_filters_a_held_button_press_only_once() {
+    // Toolbox Essentials (1992), pp. 5-33--5-36, 6-79--6-80:
+    // ModalDialog delegates the accepted mouse-down to control tracking.
+    let filter = PPC_CODE_BASE + 0x1000;
+    let record = PPC_DATA_BASE + 0x1800;
+    let (mut loaded, _, item_hit_ptr) = modal_dialog_with_filter(filter);
+    install_recording_modal_filter(&mut loaded, filter, record, MODAL_FILTER_FALSE, None);
+    let click = modal_filter_mouse_down(80, 130);
+    loaded.set_event_queue([click]);
+    loaded.set_input_snapshot(PpcInputSnapshot {
+        mouse_button: true, mouse_v: click.where_v, mouse_h: click.where_h,
+        ..PpcInputSnapshot::default()
+    });
+    for _ in 0..3 {
+        let probe = loaded.run_with_hle_imports(512);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        assert_eq!(recorded_modal_filter_call(&mut loaded, record).count, 1);
+        assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(0));
+    }
+    loaded.event_queue.push_back(PpcQueuedEvent { what: 2, ..click });
+    loaded.set_input_snapshot(PpcInputSnapshot::default());
+    let probe = loaded.run_with_hle_imports(512);
+    assert!(matches!(probe.result, PpcRunResult::Halted { pc: PPC_HALT_PC, .. }));
+    assert_eq!(recorded_modal_filter_call(&mut loaded, record).count, 1);
+    assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(1));
     assert!(loaded.dialog_callback_stack.is_empty());
 }
 
