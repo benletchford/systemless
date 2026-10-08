@@ -4356,6 +4356,22 @@ mod desktop {
                 session.deliver_input(MacintoshInput::MouseUp { vertical: down.0, horizontal: down.1 });
                 settle(&mut session);
                 assert!(!session.runner().is_ui_tracking_active(), "LClick did not return after release: {powerpc}");
+                session.deliver_input(MacintoshInput::MouseDown { vertical: 304, horizontal: 496 });
+                settle(&mut session);
+                session.deliver_input(MacintoshInput::MouseUp { vertical: 304, horizontal: 496 });
+                settle(&mut session);
+                // The compact view fits six whole rows plus a clipped row;
+                // paging retains one row of overlap, including at the last page.
+                for (point, expected) in [((160, 522), 0), ((208, 522), 6), ((160, 522), 0)] {
+                    session.deliver_input(MacintoshInput::MouseDown { vertical: point.0, horizontal: point.1 });
+                    for _ in 0..4 { settle(&mut session); }
+                    assert!(session.runner().is_ui_tracking_active());
+                    session.deliver_input(MacintoshInput::MouseUp { vertical: point.0, horizontal: point.1 });
+                    settle(&mut session);
+                    let page = session.runner_mut().list_manager_snapshot().remove(0);
+                    assert_eq!(page.visible.0, expected, "list page click {point:?}, powerpc={powerpc}");
+                    assert_eq!(page.selected, initial.selected);
+                }
             }
         }
 

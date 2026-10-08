@@ -4047,9 +4047,9 @@ impl super::TrapDispatcher {
         )
     }
 
-    // LClick retains standard scrollbar arrow tracking through release.
+    // LClick retains standard scrollbar arrow and page tracking through release.
     // More Macintosh Toolbox (1993), pp. 4-84--4-85.
-    fn track_list_scrollbar_arrow<C: CpuOps>(
+    fn track_list_scrollbar<C: CpuOps>(
         &mut self,
         cpu: &mut C,
         bus: &mut MacMemoryBus,
@@ -4135,7 +4135,12 @@ impl super::TrapDispatcher {
                     bus.read_word(pointer + 12) as i16,
                     bus.read_word(pointer + 14) as i16,
                 );
-                let Some(direction) = ListScrollbarTracking::arrow(bounds, point, vertical) else {
+                let Some(part) = ListScrollbarTracking::part(
+                    bounds,
+                    point,
+                    vertical,
+                    state.scrollbar_limits(vertical),
+                ) else {
                     continue;
                 };
                 found = Some(ListScrollbarTracking {
@@ -4148,7 +4153,7 @@ impl super::TrapDispatcher {
                     classic: true,
                     frame: (sp, 0),
                     bounds: snapshot_local_rect_to_global(bounds, origin),
-                    direction,
+                    part,
                     last_tick: tick.wrapping_sub(
                         crate::systems::macintosh::control_manager::SCROLLBAR_ACTION_REPEAT_TICKS,
                     ),
@@ -4194,7 +4199,7 @@ impl super::TrapDispatcher {
             self.input_state.mouse_position()
         };
         let delta = if valid && (initial || down) {
-            tracking.step(mouse, tick)
+            tracking.step(mouse, tick, &state)
         } else {
             None
         };
@@ -4218,17 +4223,11 @@ impl super::TrapDispatcher {
         }
         if valid {
             let highlighted = down
-                && ListScrollbarTracking::arrow(tracking.bounds, mouse, tracking.vertical)
-                    == Some(tracking.direction);
-            let hilite = if highlighted {
-                if tracking.direction < 0 {
-                    20
-                } else {
-                    21
-                }
-            } else {
-                0
-            };
+                && self
+                    .list_states
+                    .with_record_ref(list_handle, |state| tracking.hit(mouse, state))
+                    .unwrap_or(false);
+            let hilite = if highlighted { tracking.part } else { 0 };
             let needs_draw = changed || bus.read_byte(tracking.pointer + 17) != hilite;
             bus.write_byte(tracking.pointer + 17, hilite);
             if needs_draw {
@@ -12504,7 +12503,7 @@ impl super::TrapDispatcher {
                         let modifiers = bus.read_word(sp + 6);
                         let point = Self::read_stack_point(bus, sp + 8);
                         let result_addr = sp + 12;
-                        if self.track_list_scrollbar_arrow(cpu, bus, list_handle, point, sp) {
+                        if self.track_list_scrollbar(cpu, bus, list_handle, point, sp) {
                             return Some(Ok(()));
                         }
                         let list_ptr = Self::list_record_ptr(bus, list_handle);

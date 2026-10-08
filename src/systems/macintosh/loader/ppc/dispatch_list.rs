@@ -463,12 +463,12 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                         if memory.read_u8(pointer + PPC_CONTROL_VISIBLE_OFFSET).unwrap_or(0) == 0
                             || memory.read_u8(pointer + PPC_CONTROL_HILITE_OFFSET) == Some(255) { continue; }
                         let Some(bounds) = ppc_read_rect(memory, pointer + PPC_CONTROL_RECT_OFFSET) else { continue; };
-                        let Some(direction) = ListScrollbarTracking::arrow(bounds, (v, h), vertical) else { continue; };
+                        let Some(part) = ListScrollbarTracking::part(bounds, (v, h), vertical, record.scrollbar_limits(vertical)) else { continue; };
                         found = Some(ListScrollbarTracking {
                             list: record.handle, generation: record.generation, control: handle, pointer,
                             control_generation: control.generation, vertical, classic: false,
                             frame: (cpu.gpr[1], cpu.lr), bounds: snapshot_local_rect_to_global(bounds, origin),
-                            direction, last_tick: tick_count.wrapping_sub(crate::systems::macintosh::control_manager::SCROLLBAR_ACTION_REPEAT_TICKS),
+                            part, last_tick: tick_count.wrapping_sub(crate::systems::macintosh::control_manager::SCROLLBAR_ACTION_REPEAT_TICKS),
                         });
                         break;
                     }
@@ -489,7 +489,7 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                     else { (input.mouse_v, input.mouse_h) };
                 let before = record.visible;
                 if valid && (initial || down) {
-                    if let Some(delta) = tracking.step(mouse, tick_count) {
+                    if let Some(delta) = tracking.step(mouse, tick_count, record) {
                         record.set_visible_origin(
                             record.visible.0.saturating_add(if tracking.vertical { delta } else { 0 }),
                             record.visible.1.saturating_add(if tracking.vertical { 0 } else { delta }),
@@ -498,8 +498,8 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                     }
                 }
                 if valid {
-                    let highlighted = down && ListScrollbarTracking::arrow(tracking.bounds, mouse, tracking.vertical) == Some(tracking.direction);
-                    let hilite = if highlighted { if tracking.direction < 0 { 20 } else { 21 } } else { 0 };
+                    let highlighted = down && tracking.hit(mouse, record);
+                    let hilite = if highlighted { tracking.part } else { 0 };
                     let needs_draw = record.visible != before || memory.read_u8(tracking.pointer + PPC_CONTROL_HILITE_OFFSET) != Some(hilite);
                     let _ = memory.write_u8(tracking.pointer + PPC_CONTROL_HILITE_OFFSET, hilite);
                     if record.draw_enabled && needs_draw {
