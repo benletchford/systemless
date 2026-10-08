@@ -39,7 +39,8 @@ zoom hit region; resizing still uses the guest's original lower-right hit region
 ## What the demo exercises
 
 - Real `GuestMenuSnapshot` titles, items, checkmarks, enabled states and separators.
-- GPUI Kit buttons and popup menus, including nested and scrollable menus.
+- GPUI Kit buttons and a Systemless-owned themed popup, including nested and
+  scrollable menus. Selected guest items survive live label and checkmark updates.
 - Menu selection through `FixtureRunner::select_guest_menu_item`, which validates
   against current guest state and returns through the normal guest event loop.
 - Command-key equivalents while the game surface has focus.
@@ -74,9 +75,14 @@ zoom hit region; resizing still uses the guest's original lower-right hit region
 
 This macOS-only example is an in-window GPUI menu bar, not a replacement for the macOS system menu
 bar. Root menus open on click; cross-title hover switching is not implemented.
-An open popup holds its opening snapshot; the guest still validates selections
-against live state. Reopening a menu refreshes its checkmarks and enabled states.
+Open standard menus follow live guest checkmarks, labels, and enabled states;
+the guest still validates selections against current Toolbox state.
 Custom guest MDEF drawing is not reproduced.
+
+Use `--capture-standard-menu` to capture the open Pages menu with Systemless's
+headless GPUI renderer. Reviewed composed captures use the same showcase on
+[68K](tests/toolbox-showcase/reference/gpui-demo/20-standard-menu-68k.png) and
+[PowerPC](tests/toolbox-showcase/reference/gpui-demo/20-standard-menu-ppc.png).
 
 Frame overlays preserve the original compact guest geometry; they do not enlarge
 title bars or detach windows. Unknown/custom
