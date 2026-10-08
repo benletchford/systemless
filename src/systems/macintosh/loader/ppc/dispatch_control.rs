@@ -315,8 +315,12 @@ fn ppc_dispatch_popup_track_control(
     // repaint behavior as a direct PopUpMenuSelect call.
     let (control_top, control_left, _, _) =
         ppc_read_rect(memory, control + PPC_CONTROL_RECT_OFFSET)?;
-    let (global_h, global_v) =
-        surface.local_point((i32::from(control_left), i32::from(control_top)));
+    // Anchor at the selection box after the title, not at the label.
+    // Macintosh Toolbox Essentials (1992), pp. 5-25--5-27.
+    let (global_h, global_v) = surface.local_point((
+        i32::from(control_left) + i32::from(record.popup_title_width.unwrap_or(0).max(0)),
+        i32::from(control_top),
+    ));
     let mut popup_cpu = cpu.clone();
     popup_cpu.gpr[3] = menu_handle;
     popup_cpu.gpr[4] = u32::from(ppc_i32_to_i16_saturating(global_v) as u16);

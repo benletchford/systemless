@@ -792,15 +792,22 @@ impl super::TrapDispatcher {
         };
         let r_top = bus.read_word(ctrl_ptr + 8) as i16;
         let r_left = bus.read_word(ctrl_ptr + 10) as i16;
-        let r_right = bus.read_word(ctrl_ptr + 14) as i16;
         let selected_value = bus.read_word(ctrl_ptr + 18) as i16;
         let selected_index = selected_value.max(0) as usize;
         let abs_top = owner_top + r_top;
-        let abs_left = owner_left + r_left;
+        // The popup title precedes the selection box; only the box anchors
+        // the open menu. popupFixedWidth constrains the closed control, not
+        // the Menu Manager's dropdown. Macintosh Toolbox Essentials (1992),
+        // pp. 5-25--5-27.
+        let title_width =
+            self.popup_control_title_width(ctrl_ptr, bus.read_word(ctrl_ptr + 22) as i16);
+        let abs_left = owner_left
+            .saturating_add(r_left)
+            .saturating_add(title_width.max(0));
 
-        let mut width = (r_right - r_left).max(80);
+        let mut width = 80;
         if let Some(menu) = self.menus.get(menu_idx) {
-            width = width.max(self.standard_menu_width(bus, &menu.items));
+            width = self.standard_menu_width(bus, &menu.items);
             // The standard popup CDEF opens the live menu with the current
             // value's item aligned to the popup box, matching the Menu
             // Manager's PopUpMenuSelect(top, left, popUpItem) convention.

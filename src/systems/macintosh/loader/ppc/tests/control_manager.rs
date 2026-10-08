@@ -1192,6 +1192,11 @@ fn popup_track_control_requires_a_visible_enabled_hit_and_cdef_action() {
 
         if opens {
             assert!(loaded.toolbox_startup.execution.menu().is_some(), "{label}");
+            let tracking = loaded.toolbox_startup.execution.menu().as_ref().unwrap();
+            assert_eq!(
+                tracking.popup_left, 6 + 52,
+                "popup must anchor after the control title"
+            );
             assert!(
                 loaded
                     .toolbox_startup

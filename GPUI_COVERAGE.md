@@ -719,3 +719,23 @@ popup width differs between classic and PPC, and reverse scrolling, arrow-bounda
 release, font metrics and asynchronous input timing still need qualification.
 Existing native reference captures remain available; this run did not generate
 a new BasiliskII or SheepShaver oracle comparison.
+
+
+Popup geometry follow-up: both control adapters now anchor their dropdown at
+control-left plus the retained popup title width. The classic adapter sizes the
+open menu from its menu items rather than the entire closed control rectangle;
+`popupFixedWidth` still governs the closed box. This follows the title/box split
+in Macintosh Toolbox Essentials (1992), pp. 5-25--5-27, and the existing native
+Theme popup references. Focused classic and PPC tests assert the title offset;
+the classic test also rejects expansion to the closed control width. The
+showcase held-selection regression passes across monochrome 68k, colour 68k
+and PPC (45.50 seconds), asserting the Loadout dropdown starts after its
+60-pixel title and still commits item 4 only on release. This does not qualify
+window-font metrics, reverse scrolling, arrow-boundary release or asynchronous
+input timing.
+
+Fresh composed long-popup captures for colour 68k and PPC were reviewed after
+this correction: the Theme dropdowns now have matching placement and width,
+leave the title visible, and retain the up arrow and last-item highlight.
+All 46 focused library popup tests pass. The remaining native row-height/font
+mismatch is not resolved by this geometry correction.
