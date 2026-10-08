@@ -35,11 +35,14 @@ selection to the guest MenuHandle generation and item number, reconciles that
 selection after each update, and clears it if the selected item is disabled or
 disposed. The popup preserves keyboard and hover selection when labels or
 checkmarks change, skips disabled items, and routes leaf commands through the
-guest queue. A keyboard test covers hierarchical navigation with Right and
-Enter; a live-update test covers item changes and an unrelated menu appearing
-while the popup is open. Offscreen composed captures of the real showcase menu
-cover both 68K and PowerPC. The interaction test also verifies that removing the guest menu unmounts
-the open popup; replacement with a reused MenuHandle still needs qualification. Selections still pass through
+guest queue. Disabled rows omit GPUI click handlers. A keyboard test covers
+hierarchical navigation with Right and Enter; a live-update test covers item
+changes and an unrelated menu appearing while the popup is open. Offscreen
+composed captures of the real showcase menu
+cover both 68K and PowerPC. An interaction test confirms a 40-item menu scrolls
+its last keyboard-selected item into view. The interaction test also verifies
+that removing the guest menu unmounts the open popup; replacement with a reused
+MenuHandle still needs qualification. Selections still pass through
 `FixtureRunner::select_guest_menu_item` for guest-side validation and Toolbox
 event ordering. Inside Macintosh Volume I, I-352 and I-356–I-358, defines
 menu lifetime, item state, and `MenuSelect` tracking; a visual refresh must

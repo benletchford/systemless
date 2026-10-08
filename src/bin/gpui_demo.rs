@@ -4125,6 +4125,36 @@ mod desktop {
             .unwrap();
             cx.update(|cx| {
                 view.update(cx, |demo, cx| {
+                    demo.menus.menus[0].items = (1..=40)
+                        .map(|number| GuestMenuItem {
+                            number,
+                            text: format!("Item {number}"),
+                            enabled: true,
+                            checked: false,
+                            key_equivalent: None,
+                            submenu_id: None,
+                            separator: false,
+                        })
+                        .collect();
+                    cx.notify();
+                });
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                for _ in 0..40 {
+                    window.within("guest-popup-menu").press("down", cx);
+                }
+                let last = window.find("guest-popup-item-129-40");
+                assert_eq!(last.selected(), Some(true));
+                assert!(
+                    last.visible(),
+                    "keyboard selection must scroll into view: {:?}",
+                    last.bounds()
+                );
+            })
+            .unwrap();
+            cx.update(|cx| {
+                view.update(cx, |demo, cx| {
                     demo.menus.menus.clear();
                     cx.notify();
                 });
