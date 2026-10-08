@@ -141,6 +141,12 @@ mod desktop {
         capture_windows_zoom_restored: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_windows_custom_zoomed: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_windows_custom_zoom_restored: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_windows_promoted: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -2019,6 +2025,8 @@ mod desktop {
         WindowsGrown,
         WindowsZoomed,
         WindowsZoomRestored,
+        WindowsCustomZoomed,
+        WindowsCustomZoomRestored,
         WindowsPromoted,
         WindowsMainPromoted,
         ModalDialog,
@@ -2093,6 +2101,8 @@ mod desktop {
                 | CaptureCase::WindowsGrown
                 | CaptureCase::WindowsZoomed
                 | CaptureCase::WindowsZoomRestored
+                | CaptureCase::WindowsCustomZoomed
+                | CaptureCase::WindowsCustomZoomRestored
                 | CaptureCase::WindowsPromoted
                 | CaptureCase::WindowsMainPromoted
         );
@@ -2166,7 +2176,65 @@ mod desktop {
                     (frames.len() == 3).then_some(frames)
                 })
                 .expect("three showcase windows should become visible");
-            if matches!(capture, CaptureCase::WindowsMoved) {
+            if matches!(
+                capture,
+                CaptureCase::WindowsCustomZoomed | CaptureCase::WindowsCustomZoomRestored
+            ) {
+                let original = before[0].window.bounds;
+                let zoom = (original.0 - 9, original.3 - 7);
+                for input in [
+                    MacintoshInput::MouseDown {
+                        vertical: zoom.0,
+                        horizontal: zoom.1,
+                    },
+                    MacintoshInput::MouseUp {
+                        vertical: zoom.0,
+                        horizontal: zoom.1,
+                    },
+                ] {
+                    session.deliver_input(input);
+                    let start = session.runner().guest_tick();
+                    assert!(
+                        (0..100).any(|_| {
+                            session.runner_mut().run_steps(10_000, None);
+                            session.runner().guest_tick().wrapping_sub(start) >= 2
+                        }),
+                        "guest should advance during custom window zoom"
+                    );
+                }
+                let zoomed = session.runner_mut().window_frame_snapshot();
+                assert_eq!(zoomed[0].guest_id, before[0].guest_id);
+                assert_eq!(zoomed[0].generation, before[0].generation);
+                assert_eq!(zoomed[0].window.bounds, (100, 100, 520, 700));
+                if matches!(capture, CaptureCase::WindowsCustomZoomRestored) {
+                    let bounds = zoomed[0].window.bounds;
+                    let restore = (bounds.0 - 9, bounds.3 - 7);
+                    for input in [
+                        MacintoshInput::MouseDown {
+                            vertical: restore.0,
+                            horizontal: restore.1,
+                        },
+                        MacintoshInput::MouseUp {
+                            vertical: restore.0,
+                            horizontal: restore.1,
+                        },
+                    ] {
+                        session.deliver_input(input);
+                        let start = session.runner().guest_tick();
+                        assert!(
+                            (0..100).any(|_| {
+                                session.runner_mut().run_steps(10_000, None);
+                                session.runner().guest_tick().wrapping_sub(start) >= 2
+                            }),
+                            "guest should advance during custom window zoom restore"
+                        );
+                    }
+                    let restored = session.runner_mut().window_frame_snapshot();
+                    assert_eq!(restored[0].guest_id, before[0].guest_id);
+                    assert_eq!(restored[0].generation, before[0].generation);
+                    assert_eq!(restored[0].window.bounds, original);
+                }
+            } else if matches!(capture, CaptureCase::WindowsMoved) {
                 let (top, left, bottom, right) = before[0].window.bounds;
                 let from = (top - 9, (left + right) / 2);
                 for input in [
@@ -2581,7 +2649,10 @@ mod desktop {
         };
         if matches!(
             capture,
-            CaptureCase::WindowsZoomed | CaptureCase::WindowsZoomRestored
+            CaptureCase::WindowsZoomed
+                | CaptureCase::WindowsZoomRestored
+                | CaptureCase::WindowsCustomZoomed
+                | CaptureCase::WindowsCustomZoomRestored
         ) {
             for _ in 0..20 {
                 session.runner_mut().run_steps(100_000, None);
@@ -2942,6 +3013,28 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::WindowsZoomRestored,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_windows_custom_zoomed.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::WindowsCustomZoomed,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_windows_custom_zoom_restored.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::WindowsCustomZoomRestored,
             );
             return;
         }
@@ -3627,6 +3720,8 @@ mod desktop {
                         capture_windows_grown: None,
                         capture_windows_zoomed: None,
                         capture_windows_zoom_restored: None,
+                        capture_windows_custom_zoomed: None,
+                        capture_windows_custom_zoom_restored: None,
                         capture_windows_promoted: None,
                         capture_windows_main_promoted: None,
                         capture_modeless_dialog_layout: None,

@@ -18,7 +18,9 @@ test protocol. Its Pages menu selects sixteen interactive views:
    actions appear as checkmarks in the State menu.
 3. Windows creates three visibly overlapping document windows; the scripted
    contract activates, moves, resizes, hit-tests, and closes them while
-   checking Window Manager order and repaint state.
+   checking Window Manager order and repaint state. The stacked inspector
+   writes an application-defined `WStateData.stdState` rectangle, allowing
+   zoom and restore to exercise guest-owned bounds on both CPU slices.
 4. Drawing & 3D Bevels exercises polygons, arcs, regions, pictures, icons,
    fonts, styles, and metrics. The PowerPC slice also builds and submits a lit
    QuickDraw 3D TriMesh through a view, camera, renderer, and draw context,
