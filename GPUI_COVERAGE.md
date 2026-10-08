@@ -956,3 +956,29 @@ title widths or live item mutation. The added control-record diagnostic was
 partly clipped by the window bottom and is not evidence for record mutation.
 The automatic-sizing implementation gap remains open pending those probes
 and a shared geometry implementation.
+
+
+### Native owner-font and item-mutation sizing
+
+The same automatic-width probe was rebuilt with `TextFont(applFont)` and
+`TextSize(12)` immediately before `DrawControls`. After the existing Loadout
+selection sets value 4, its page redraw calls `SetMenuItemText` on Theme item
+36, changing `Deep Field Archive` to `Deep Field Archive Extended`. This uses
+the documented Menu Manager mutation path (Macintosh Toolbox Essentials,
+Changing Menu Items), without disposing or recreating Theme. Both native
+play runners completed; before/after closed captures and the final open
+dropdown were reviewed on both CPUs.
+
+Both show the closed Theme box growing from approximately x=282..442 to
+x=282..501 after mutation, versus x=282..400 in the Geneva-9 baseline. The
+final open dropdown reaches approximately x=500. The now-visible diagnostic
+reports `contrlRect.left/right = 190/500` before and after mutation, while
+`MenuInfo.menuWidth` changes from 143 to 205. Automatic presentation geometry
+therefore changes without rewriting the guest's supplied control rectangle.
+A shared implementation must preserve that separation and recalculate from
+live menu content and the owner font.
+
+The separate longest-text diagnostic overlapped existing page text, so these
+captures do not establish its numeric value. Do not infer an exact padding
+formula from them. Narrow-rectangle clamping, exact font measurement, title
+placement and hit testing outside the displayed box remain to be qualified.
