@@ -103,6 +103,12 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
             Some(PpcImportAction::Return(list))
         }
         PpcImportDispatcherTarget::LDispose => {
+            if list_manager.scroll_tracking.as_ref().is_some_and(|tracking| tracking.list == cpu.gpr[3] && !tracking.classic) {
+                if let Some(outline) = list_manager.scroll_tracking.take().and_then(|tracking| tracking.outline) {
+                    let front = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD);
+                    ppc_restore_list_outline(memory, front, outline);
+                }
+            }
             if let Some(record) = list_manager.remove_record(cpu.gpr[3]) {
                 let mut allocator = PpcProcessAllocatorView {
                     memory_manager: process_memory_manager,

@@ -305,3 +305,11 @@ Boundary tests cover both orientations and large signed control ranges without
 intermediate multiplication overflow. The loaded three-mode interaction test
 also covers cancellation beyond the end of the bar. This aligns preview
 geometry; the raster feedback qualification above covers ordinary standard lists.
+
+List disposal now restores saved thumb-outline pixels before removing tracking
+and freeing the list/control records. Regression checks exercise both classic
+Pack0/Pack1 disposal entry points and the native PPC LDispose dispatcher, and
+verify pixel restoration plus cleared tracking. All 48 list tests pass.
+This closes the retained-outline disposal leak; custom-definition changes,
+mixed-mode callback disposal and broader lifecycle/overlap behaviour still
+require qualification.

@@ -7612,6 +7612,35 @@
     }
 
     #[test]
+    fn list_dispose_restores_retained_outline_pixels() {
+        for trap in [0x1e7, 0x1e8] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let base = bus.alloc(32 * 32);
+            disp.screen_mode = (base, 32, 32, 32, 8);
+            let handle = bus.alloc(4);
+            bus.write_long(handle, 0);
+            bus.write_byte(base + 33, 42);
+            let pixels = disp.save_window_drag_outline_pixels(&bus, (1, 1, 2, 2));
+            bus.write_byte(base + 33, 99);
+            disp.list_states.with_mut(|manager| manager.scroll_tracking = Some(crate::list_manager::ListScrollbarTracking {
+                list: handle, generation: 1, control: 0, pointer: 0, control_generation: 1,
+                vertical: true, classic: true, frame: (TEST_SP, 0), bounds: (0, 0, 100, 16),
+                part: 129, last_tick: 0, start_mouse: (20, 8), start_limits: (0, 0, 10),
+                outline: Some(crate::list_manager::ListScrollbarOutline {
+                    rect: (1, 1, 2, 2), surface: (base, 32, 32, 32, 8),
+                    pixels: crate::list_manager::ListScrollbarPixels::IndexedStrips(pixels),
+                }),
+            }));
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(TEST_SP, 0x28);
+            bus.write_long(TEST_SP + 2, handle);
+            assert!(disp.dispatch_toolbox(true, trap, &mut cpu, &mut bus).unwrap().is_ok());
+            assert_eq!(bus.read_byte(base + 33), 42, "Pack trap {trap:x} left outline pixels");
+            assert!(disp.list_states.with_ref(|manager| manager.scroll_tracking.is_none()));
+        }
+    }
+
+    #[test]
     fn list_custom_draw_excludes_cells_beyond_data_bounds() {
         let state = super::super::dispatch::ListState {
             generation: crate::list_manager::new_list_generation(),

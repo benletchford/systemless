@@ -4047,6 +4047,37 @@ impl super::TrapDispatcher {
         )
     }
 
+    fn cancel_list_scrollbar_tracking(&mut self, bus: &mut MacMemoryBus, list_handle: u32) {
+        let tracking = self.list_states.with_mut(|manager| {
+            if manager
+                .scroll_tracking
+                .as_ref()
+                .is_some_and(|tracking| tracking.list == list_handle && tracking.classic)
+            {
+                manager.scroll_tracking.take()
+            } else {
+                None
+            }
+        });
+        if let Some(outline) = tracking.and_then(|tracking| tracking.outline) {
+            let (base, row_bytes, width, height, depth) = self.get_screen_params();
+            if outline.surface
+                == (
+                    base,
+                    row_bytes,
+                    width as u32,
+                    height as u32,
+                    u32::from(depth),
+                )
+            {
+                if let crate::list_manager::ListScrollbarPixels::IndexedStrips(pixels) = outline.pixels
+                {
+                    self.restore_window_drag_outline_pixels(bus, &pixels);
+                }
+            }
+        }
+    }
+
     // LClick retains standard scrollbar arrow and page tracking through release.
     // More Macintosh Toolbox (1993), pp. 4-84--4-85.
     fn track_list_scrollbar<C: CpuOps>(
@@ -12837,6 +12868,7 @@ impl super::TrapDispatcher {
                         } else {
                             (0, 0)
                         };
+                        self.cancel_list_scrollbar_tracking(bus, list_handle);
                         self.list_states.remove_record(list_handle);
                         self.dispose_control_handle(bus, v_scroll);
                         self.dispose_control_handle(bus, h_scroll);
@@ -13020,6 +13052,7 @@ impl super::TrapDispatcher {
                         } else {
                             (0, 0)
                         };
+                        self.cancel_list_scrollbar_tracking(bus, list_handle);
                         self.list_states.remove_record(list_handle);
                         self.dispose_control_handle(bus, v_scroll);
                         self.dispose_control_handle(bus, h_scroll);
