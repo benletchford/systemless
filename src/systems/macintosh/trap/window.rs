@@ -6115,6 +6115,14 @@ impl super::TrapDispatcher {
                     if data_handle != 0 {
                         let data_ptr = bus.read_long(data_handle);
                         if data_ptr != 0 {
+                            let old_structure = self.window_structure_rect(bus, the_window);
+                            let windows_behind = self
+                                .window_list
+                                .windows()
+                                .into_iter()
+                                .skip_while(|window| *window != the_window)
+                                .skip(1)
+                                .collect::<Vec<_>>();
                             // WStateData: userState at +0 (8 bytes), stdState at +8 (8 bytes)
                             // inZoomIn=7 → userState; inZoomOut=8 → stdState
                             // Rect field order in memory: top(+0), left(+2), bottom(+4), right(+6)
@@ -6176,7 +6184,6 @@ impl super::TrapDispatcher {
                                 bus.read_long(the_window + Self::WINDOW_STRUC_RGN_OFFSET),
                                 Some(global_structure),
                             );
-
                             // visRgn and clipRgn in local coords
                             let local_rect = Some((0i16, 0i16, new_h, new_w));
                             Self::write_region_handle_rect(
@@ -6189,6 +6196,13 @@ impl super::TrapDispatcher {
                                 bus.read_long(the_window + 28),
                                 local_rect,
                             );
+
+                            // Shrinking a zoomed window exposes windows below
+                            // its old structure. Rebuild visibility and ask
+                            // those applications to repaint the uncovered area.
+                            // Inside Macintosh Volume I (1985), I-293, I-297.
+                            self.recalculate_window_vis_regions(bus);
+                            self.invalidate_exposed_windows(bus, &windows_behind, old_structure);
 
                             // Keep FindWindow hit-test bounds in sync
                             if the_window == self.front_window {
