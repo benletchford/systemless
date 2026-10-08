@@ -739,3 +739,15 @@ this correction: the Theme dropdowns now have matching placement and width,
 leave the title visible, and retain the up arrow and last-item highlight.
 All 46 focused library popup tests pass. The remaining native row-height/font
 mismatch is not resolved by this geometry correction.
+
+
+Long-popup reverse scrolling and cancellation are now exercised by
+`popup_reverse_scrolling_and_arrow_release_preserve_value_across_cpu_modes`.
+The same showcase sequence runs on monochrome 68k, colour 68k and PPC: scroll
+to item 55, reverse to the beginning, verify stable menu identity and bounds,
+release on the down-arrow area, verify tracking closes with value 1 unchanged,
+then reopen and successfully select item 55. The test passes in 105.02 seconds.
+This qualifies the guest tracking/snapshot path for those sequences; it does
+not establish native timing parity, host asynchronous pointer routing, every
+arrow boundary pixel, or window-font metrics. No runtime behavior changed in
+this follow-up.
