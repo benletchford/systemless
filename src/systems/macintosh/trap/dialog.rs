@@ -11982,7 +11982,10 @@ impl super::TrapDispatcher {
             //   SP+8..9:  itemType
             //   SP+10..11: itemNo
             //   SP+12..15: theDialog
-            // SetDItem ($A98E): Stores item type, rect, and proc_ptr (for userItem); updates both dialog_items and active tracking state
+            // SetDialogItem (0xA98E)
+            // Installs an item's type, handle and display rectangle without drawing it.
+            // PROCEDURE SetDialogItem (theDialog: DialogPtr; itemNo: Integer; itemType: Integer; item: Handle; box: Rect);
+            // Macintosh Toolbox Essentials (1992), pp. 6-122--6-123.
             (true, 0x18E) => {
                 let sp = cpu.read_reg(Register::A7);
                 let box_ptr = bus.read_long(sp);

@@ -4978,6 +4978,51 @@ fn dialog_item_and_text_access_commands_dispatch_with_canonical_evaluation() {
         Some((15, 25, 35, 85))
     );
 
+    // SetDialogItem installs even an unregistered handle, but frontend actions
+    // must not acquire a control lifetime from that raw DITL value.
+    // Macintosh Toolbox Essentials (1992), pp. 6-122--6-123.
+    let snapshot = loaded.dialog_items_snapshot(dialog_ptr, (0, 0, 400, 600)).unwrap();
+    assert_eq!(snapshot[0].kind, crate::dialog_manager::DialogItemKind::Button);
+    assert_eq!(snapshot[0].bounds, (15, 25, 35, 85));
+    assert_eq!(snapshot[0].control_identity, None);
+
+    let mut previous_identity = None;
+    for _ in 0..2 {
+        let mut error = loaded.last_mem_error();
+        let handle = with_test_controls!(loaded, |controls| ppc_new_control_record_values(
+            None, &mut loaded.memory, test_heap_cursor!(loaded), test_heap_limit!(loaded),
+            &mut error, test_handles!(loaded), controls, dialog_ptr,
+            (15, 25, 35, 85), b"Replacement", true, 0, 0, 1, 0, 0,
+        ));
+        loaded.cpu.gpr[3] = dialog_ptr;
+        loaded.cpu.gpr[4] = 1;
+        loaded.cpu.gpr[5] = u32::from(PPC_DIALOG_ITEM_BUTTON);
+        loaded.cpu.gpr[6] = handle;
+        loaded.cpu.gpr[7] = new_rect_ptr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogItem);
+        let identity = loaded.dialog_items_snapshot(dialog_ptr, (0, 0, 400, 600))
+            .unwrap()[0].control_identity.expect("installed live control must expose its lifetime");
+        assert_eq!(identity.0, handle);
+        assert_ne!(Some(identity), previous_identity);
+        previous_identity = Some(identity);
+
+        // Reinstalling the same control with changed geometry preserves its lifetime.
+        assert!(ppc_write_rect(&mut loaded.memory, new_rect_ptr, 16, 26, 36, 86).is_some());
+        loaded.cpu.gpr[3] = dialog_ptr;
+        loaded.cpu.gpr[4] = 1;
+        loaded.cpu.gpr[5] = u32::from(PPC_DIALOG_ITEM_BUTTON);
+        loaded.cpu.gpr[6] = handle;
+        loaded.cpu.gpr[7] = new_rect_ptr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogItem);
+        let changed = loaded.dialog_items_snapshot(dialog_ptr, (0, 0, 400, 600)).unwrap();
+        assert_eq!(changed[0].control_identity, Some(identity));
+        assert_eq!(changed[0].bounds, (16, 26, 36, 86));
+        loaded.cpu.gpr[3] = handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DisposeControl));
+        assert_eq!(loaded.dialog_items_snapshot(dialog_ptr, (0, 0, 400, 600))
+            .unwrap()[0].control_identity, None);
+    }
+
     // 5. Test GetDialogItemText:
     // 5a. Safe no-op on NULL text_out_ptr
     loaded.cpu.gpr[3] = text_handle;

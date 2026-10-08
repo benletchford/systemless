@@ -1293,3 +1293,16 @@ monochrome qualification remains open.
 The document-button regression also verifies the rendered accessibility node's
 Button role, label and disabled flag through inactive, disabled and re-enabled
 states. This checks node metadata, not native screen-reader dispatch.
+
+
+### PPC SetDialogItem lifetime qualification
+
+The PPC dialog import regression now checks frontend snapshots after actual
+SetDialogItem dispatch: an unregistered handle has no control identity; two
+successive live replacement controls expose different identities; reinstalling
+the same control with changed geometry preserves its identity; and DisposeControl
+removes that identity while the DITL still references the disposed handle.
+This focused regression passes. The existing 68K text/control record replacement
+regression also passes, but does not yet exercise the frontend lifetime snapshot.
+Neither result closes queued GPUI action rejection across replacement, DITL
+shortening/reappend, handle reuse, or process replacement qualification.
