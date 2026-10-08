@@ -901,13 +901,16 @@ mod desktop {
                         .top(px((source.top - clip.top) as f32))
                         .w(px(source.width() as f32))
                         .h(px(source.height() as f32))
-                        .bg(cx.theme().secondary)
+                        .bg(cx.theme().border)
                         .border_color(cx.theme().border);
                     gutter = match piece.kind {
-                        super::frames::GutterKind::Vertical => gutter.border_l_1(),
-                        super::frames::GutterKind::Horizontal => gutter.border_t_1(),
+                        super::frames::GutterKind::Vertical
+                        | super::frames::GutterKind::Horizontal => gutter,
                         super::frames::GutterKind::GrowBox => {
-                            let mut corner = gutter.border_l_1().border_t_1();
+                            let mut corner = gutter
+                                .bg(cx.theme().secondary)
+                                .border_l_1()
+                                .border_t_1();
                             if self.windows[piece.window].window.active {
                                 for (left, top) in [
                                     (4., 10.),
