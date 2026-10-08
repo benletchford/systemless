@@ -84,6 +84,12 @@ mod desktop {
         capture_modal_dialog_checked: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_modal_dialog_caret_visible: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_modal_dialog_caret_hidden: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_modeless_dialog: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -2220,6 +2226,8 @@ mod desktop {
         WindowsMainPromoted,
         ModalDialog,
         ModalDialogChecked,
+        ModalDialogCaretVisible,
+        ModalDialogCaretHidden,
         ModelessDialog,
         NestedModalDialog,
         Controls,
@@ -2345,7 +2353,7 @@ mod desktop {
             CaptureCase::ModelessDialog | CaptureCase::NestedModalDialog
         ) {
             (132, 7)
-        } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked) {
+        } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked | CaptureCase::ModalDialogCaretVisible | CaptureCase::ModalDialogCaretHidden) {
             (129, 6)
         } else if lists_page {
             (129, 9)
@@ -2673,7 +2681,7 @@ mod desktop {
             } else {
                 modeless
             }
-        } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked) {
+        } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked | CaptureCase::ModalDialogCaretVisible | CaptureCase::ModalDialogCaretHidden) {
             assert!((0..300).any(|_| {
                 session.runner_mut().run_steps(100_000, None);
                 session.runner_mut().guest_menu_snapshot().menus.iter().any(|menu| {
@@ -2720,6 +2728,24 @@ mod desktop {
                         }).then_some(current)
                     })
                     .expect("guest should check the modal dialog control");
+            }
+            if matches!(capture, CaptureCase::ModalDialogCaretVisible | CaptureCase::ModalDialogCaretHidden) {
+                let visible = matches!(capture, CaptureCase::ModalDialogCaretVisible);
+                dialogs = (0..65).find_map(|_| {
+                    let current = session.runner_mut().dialog_snapshot();
+                    if current.iter().any(|dialog| {
+                        dialog.visible && dialog.active
+                            && dialog.items.iter().any(|item| {
+                                item.number == 7 && item.selection == Some((0, 0))
+                                    && item.caret_visible == Some(visible)
+                            })
+                    }) {
+                        return Some(current);
+                    }
+                    session.runner_mut().force_advance_guest_tick();
+                    session.runner_mut().run_steps(1_000, None);
+                    None
+                }).expect("modal edit field should reach the requested guest caret phase");
             }
             dialogs
         } else if standard_file_page {
@@ -3307,6 +3333,22 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::ModalDialog,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_modal_dialog_caret_visible.as_ref() {
+            capture_fixture_screen(
+                &args.game, output, args.prefer_powerpc, args.screen_depth,
+                CaptureCase::ModalDialogCaretVisible,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_modal_dialog_caret_hidden.as_ref() {
+            capture_fixture_screen(
+                &args.game, output, args.prefer_powerpc, args.screen_depth,
+                CaptureCase::ModalDialogCaretHidden,
             );
             return;
         }
@@ -3968,6 +4010,8 @@ mod desktop {
                         capture_about_alert: None,
                         capture_modal_dialog: None,
                         capture_modal_dialog_checked: None,
+                        capture_modal_dialog_caret_visible: None,
+                        capture_modal_dialog_caret_hidden: None,
                         capture_modeless_dialog: None,
                         capture_nested_modal_dialog: None,
                         capture_controls: None,
