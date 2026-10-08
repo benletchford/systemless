@@ -5355,6 +5355,51 @@ mod desktop {
                     "off-pane drag should move guest window on powerpc={powerpc}: {:?}",
                     off_pane_moved[0].window.bounds
                 );
+
+                let edge_bounds = off_pane_moved[0].window.bounds;
+                let edge_title = (edge_bounds.0 - 9, (edge_bounds.1 + edge_bounds.3) / 2);
+                cx.update(|cx| {
+                    view.update(cx, |demo, cx| {
+                        demo.windows = off_pane_moved.clone();
+                        cx.notify();
+                    });
+                });
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.drag(
+                        host(edge_title),
+                        gpui_kit::point(gpui_kit::px(-50.), host(edge_title).y),
+                        cx,
+                    );
+                })
+                .unwrap();
+                let mut presses = 0;
+                let mut release_at = None;
+                for command in receiver.try_iter() {
+                    if let super::Command::Input(input) = command {
+                        match input {
+                            MacintoshInput::MouseDown { .. } => presses += 1,
+                            MacintoshInput::MouseUp {
+                                vertical,
+                                horizontal,
+                            } => {
+                                assert!(release_at.is_none(), "duplicate release on {powerpc}");
+                                release_at = Some((vertical, horizontal));
+                            }
+                            _ => {}
+                        }
+                        session.deliver_input(input);
+                        settle(&mut session);
+                    }
+                }
+                assert_eq!(presses, 1, "powerpc={powerpc}");
+                assert_eq!(release_at, Some((edge_title.0, 0)), "powerpc={powerpc}");
+                let outside_moved = session.runner_mut().window_frame_snapshot();
+                assert_eq!(outside_moved[0].guest_id, off_pane_moved[0].guest_id);
+                assert!(
+                    outside_moved[0].window.bounds.1 < edge_bounds.1,
+                    "outer-window drag should move guest window on powerpc={powerpc}: {:?}",
+                    outside_moved[0].window.bounds
+                );
             }
         }
 
