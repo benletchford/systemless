@@ -2098,7 +2098,7 @@ mod desktop {
                     }
                 }))
                 .on_key_up(cx.listener(|this, event: &KeyUpEvent, _, _| {
-                    if let Some((mac_key, _)) = guest_key(&event.keystroke) {
+                    if let Some(mac_key) = guest_virtual_key(&event.keystroke.key.to_ascii_lowercase()) {
                         this.release_host_key(mac_key);
                     }
                     this.sync_host_modifiers(event.keystroke.modifiers);
@@ -2130,24 +2130,17 @@ mod desktop {
     // Keep the Macintosh virtual code tied to the key and pass the typed
     // character through the existing guest event queue. Inside Macintosh
     // Volume V (1986), V-191, key-code assignments; Text (1993), pp. 2-32--2-37.
-    fn guest_key(keystroke: &Keystroke) -> Option<(u8, u8)> {
-        let key = keystroke.key.to_ascii_lowercase();
-        let control = match key.as_str() {
-            "enter" => Some((0x24, 13)),
-            "escape" => Some((0x35, 27)),
-            "space" => Some((0x31, 32)),
-            "tab" => Some((0x30, 9)),
-            "backspace" => Some((0x33, 8)),
-            "left" | "arrowleft" => Some((0x7b, 28)),
-            "right" | "arrowright" => Some((0x7c, 29)),
-            "down" | "arrowdown" => Some((0x7d, 31)),
-            "up" | "arrowup" => Some((0x7e, 30)),
-            _ => None,
-        };
-        if control.is_some() {
-            return control;
-        }
-        let virtual_key = match key.as_str() {
+    fn guest_virtual_key(key: &str) -> Option<u8> {
+        Some(match key {
+            "enter" => 0x24,
+            "escape" => 0x35,
+            "space" => 0x31,
+            "tab" => 0x30,
+            "backspace" => 0x33,
+            "left" | "arrowleft" => 0x7b,
+            "right" | "arrowright" => 0x7c,
+            "down" | "arrowdown" => 0x7d,
+            "up" | "arrowup" => 0x7e,
             "a" => 0x00,
             "s" => 0x01,
             "d" => 0x02,
@@ -2196,14 +2189,34 @@ mod desktop {
             "." => 0x2f,
             "`" => 0x32,
             _ => return None,
+        })
+    }
+
+    fn guest_key(keystroke: &Keystroke) -> Option<(u8, u8)> {
+        let key = keystroke.key.to_ascii_lowercase();
+        let control = match key.as_str() {
+            "enter" => Some((0x24, 13)),
+            "escape" => Some((0x35, 27)),
+            "space" => Some((0x31, 32)),
+            "tab" => Some((0x30, 9)),
+            "backspace" => Some((0x33, 8)),
+            "left" | "arrowleft" => Some((0x7b, 28)),
+            "right" | "arrowright" => Some((0x7c, 29)),
+            "down" | "arrowdown" => Some((0x7d, 31)),
+            "up" | "arrowup" => Some((0x7e, 30)),
+            _ => None,
         };
+        if control.is_some() {
+            return control;
+        }
+        let virtual_key = guest_virtual_key(&key)?;
         let character = if let Some(text) = keystroke.key_char.as_deref() {
             let mut chars = text.chars();
             let character = chars.next()?;
-            if !character.is_ascii() || chars.next().is_some() {
+            if chars.next().is_some() {
                 return None;
             }
-            character as u8
+            systemless::systems::macintosh::mac_roman::encode_mac_roman_char(character)?
         } else {
             let character = key.as_bytes()[0];
             if keystroke.modifiers.shift && character.is_ascii_alphabetic() {
@@ -4748,6 +4761,13 @@ mod desktop {
                 ..Default::default()
             };
             assert_eq!(super::guest_key(&arrow), Some((0x7b, 28)));
+            for (text, expected) in [("é", 0x8e), ("£", 0xa3), ("π", 0xb9)] {
+                let key = gpui_kit::Keystroke {
+                    key: "e".into(), key_char: Some(text.into()),
+                    ..Default::default()
+                };
+                assert_eq!(super::guest_key(&key), Some((0x0e, expected)));
+            }
             let non_roman = gpui_kit::Keystroke {
                 key: "a".into(),
                 key_char: Some("あ".into()),
@@ -5276,7 +5296,9 @@ mod desktop {
                     is_held: false,
                     prefer_character_input: false,
                 }.to_platform_input(), cx);
-                window.dispatch_event(KeyUpEvent { keystroke: key }.to_platform_input(), cx);
+                let mut released = key;
+                released.key_char = Some("あ".into());
+                window.dispatch_event(KeyUpEvent { keystroke: released }.to_platform_input(), cx);
             }).unwrap();
             let inputs: Vec<_> = receiver.try_iter().filter_map(|command| match command {
                 super::Command::Input(input) => Some(input),

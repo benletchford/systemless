@@ -171,3 +171,12 @@ focus cleanup releases each held modifier once. A GPUI event test covers host
 notifications and cleanup, and loaded 68K/PPC tests confirm held modifier bits
 survive guest execution until release. Caps Lock, text composition, non-ASCII
 input and comprehensive modified-text behaviour remain unqualified.
+
+Recognized GPUI key identities now carry single Unicode characters through the
+shared exact Mac Roman encoder instead of rejecting all non-ASCII input.
+Unrepresentable or multi-character text is still rejected by this key-event
+path. Key release depends only on key identity and uses the character retained
+at key-down, preventing changed/unrepresentable release text from leaving a
+key held. Three focused GPUI tests pass, including é/£/π translation and release
+after incompatible text. IME composition and non-US key identities still need
+a proper text-input integration and guest TextEdit qualification.

@@ -27,7 +27,7 @@ pub(crate) mod guest_call;
 pub(crate) mod guest_procedure;
 pub(crate) mod list_manager;
 pub mod loader;
-pub(crate) mod mac_roman;
+pub mod mac_roman;
 pub mod machine_profile;
 pub mod managers;
 pub mod memory;
