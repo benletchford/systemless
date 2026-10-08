@@ -65,6 +65,8 @@ pub struct WindowFrameSnapshot {
     /// Unknown or application-defined WDEFs must retain guest presentation.
     pub definition_id: Option<i16>,
     pub close_box: bool,
+    /// The guest drew the standard grow icon at these current content bounds.
+    pub grow_icon_drawn: bool,
 }
 
 const WINDOW_VISIBLE_OFFSET: u32 = WINDOW_VISIBLE_FLAG_OFFSET;

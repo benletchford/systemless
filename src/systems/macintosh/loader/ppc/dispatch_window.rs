@@ -1804,6 +1804,7 @@ pub(super) fn ppc_draw_grow_icon(
             ppc_restore_saved_detail(memory, saved.front_buffer, (x, y), &saved.pixels, index);
         }
     }
+    window_list.record_grow_icon(window, content);
 }
 
 pub(super) fn ppc_draw_existing_window_frame(

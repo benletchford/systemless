@@ -481,8 +481,9 @@ pub fn list_pieces(
     pieces
 }
 
-/// Restyle the content-edge areas reserved for standard document scrollbars
-/// and DrawGrowIcon without painting over another window or a custom WDEF.
+/// Restyle standard document edges only after the guest draws its grow icon;
+/// the WDEF alone does not reserve content pixels for scrollbars or a size box.
+/// Macintosh Toolbox Essentials (1992), pp. 4-4--4-5, 4-12, 4-111--4-112.
 pub fn gutter_pieces(windows: &[WindowFrameSnapshot], viewport: Rect) -> Vec<GutterPiece> {
     let mut result = Vec::new();
     let mut covers = Vec::new();
@@ -495,7 +496,8 @@ pub fn gutter_pieces(windows: &[WindowFrameSnapshot], viewport: Rect) -> Vec<Gut
             continue;
         };
         let content = Rect::from(window.bounds);
-        if matches!(frame.definition_id, Some(0 | 4 | 8 | 12))
+        if frame.grow_icon_drawn
+            && matches!(frame.definition_id, Some(0 | 8))
             && content.width() > 30
             && content.height() > 30
             && structure.intersection(content) == Some(content)
@@ -618,6 +620,7 @@ mod tests {
             },
             definition_id: Some(definition_id),
             close_box: true,
+            grow_icon_drawn: false,
         }
     }
 
@@ -905,11 +908,14 @@ mod tests {
 
     #[test]
     fn gutters_stay_on_standard_document_edges_and_below_front_windows() {
-        let windows = [
+        let mut windows = [
             window((60, 60, 120, 120), true, 8),
             window((40, 40, 140, 140), true, 8),
             window((20, 20, 160, 160), true, 99),
         ];
+        assert!(gutter_pieces(&windows, Rect::from((0, 0, 180, 180))).is_empty());
+        windows[0].grow_icon_drawn = true;
+        windows[1].grow_icon_drawn = true;
         let pieces = gutter_pieces(&windows, Rect::from((0, 0, 180, 180)));
         assert!(pieces
             .iter()

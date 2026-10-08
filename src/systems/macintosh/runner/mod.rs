@@ -2421,12 +2421,17 @@ impl FixtureRunner {
                 let close_box = self.bus.read_byte(
                     pointer.wrapping_add(crate::window_manager::WINDOW_GO_AWAY_FLAG_OFFSET),
                 ) != 0;
+                let grow_icon_drawn = self
+                    .dispatcher
+                    .window_list
+                    .grow_icon_drawn_at(pointer, window.bounds);
                 crate::window_manager::WindowFrameSnapshot {
                     guest_id: pointer,
                     generation: self.dispatcher.window_list.generation_for_window(pointer),
                     window,
                     definition_id,
                     close_box,
+                    grow_icon_drawn,
                 }
             })
             .collect();

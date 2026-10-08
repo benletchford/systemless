@@ -1482,6 +1482,10 @@ fn test_toolbox_showcase() {
         is_dark_chrome(screen_rgb(&mut runner, 493, 562)),
         "DrawGrowIcon must draw the active window's diagonal size grip"
     );
+    assert!(
+        runner.window_frame_snapshot()[0].grow_icon_drawn,
+        "the presentation model must record the guest DrawGrowIcon call"
+    );
 
     // The overlap at (260, 360) must show the front stacked inspector, while
     // these two probes sample each window's unique colored body.  This is an

@@ -3368,6 +3368,7 @@ mod desktop {
                         },
                         definition_id: Some(0),
                         close_box: true,
+                        grow_icon_drawn: false,
                     },
                     WindowFrameSnapshot {
                         guest_id: 1,
@@ -3383,6 +3384,7 @@ mod desktop {
                         },
                         definition_id: Some(4),
                         close_box: false,
+                        grow_icon_drawn: false,
                     },
                 ];
                 demo.dialogs = vec![DialogSnapshot {
@@ -3576,6 +3578,7 @@ mod desktop {
                     },
                     definition_id: Some(0),
                     close_box: true,
+                    grow_icon_drawn: false,
                 }];
                 let mut pixels = image::RgbaImage::new(64, 64);
                 for (index, pixel) in pixels.pixels_mut().enumerate() {
@@ -5894,6 +5897,7 @@ mod desktop {
                         },
                         definition_id: Some(8),
                         close_box: true,
+                        grow_icon_drawn: false,
                     }];
                     demo.width = 800;
                     demo.height = 580;
@@ -6171,6 +6175,7 @@ mod desktop {
                         },
                         definition_id: Some(1),
                         close_box: false,
+                        grow_icon_drawn: false,
                     }];
                     demo.dialogs = vec![DialogSnapshot {
                         guest_id: 7,
@@ -6270,6 +6275,7 @@ mod desktop {
                         },
                         definition_id: Some(1),
                         close_box: false,
+                        grow_icon_drawn: false,
                     }];
                     demo.dialogs = vec![DialogSnapshot {
                         guest_id: 7,
@@ -6560,6 +6566,7 @@ mod desktop {
                         },
                         definition_id: Some(0),
                         close_box: false,
+                        grow_icon_drawn: false,
                     }];
                     demo.lists = vec![ListManagerSnapshot {
                         guest_id: 10,
@@ -6663,6 +6670,7 @@ mod desktop {
                         },
                         definition_id: Some(0),
                         close_box: false,
+                        grow_icon_drawn: false,
                     }];
                     demo.controls = vec![ControlSnapshot {
                         guest_id: 22,
