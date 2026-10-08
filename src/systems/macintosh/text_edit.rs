@@ -308,6 +308,8 @@ pub struct TextEditSnapshot {
     pub text: Vec<u8>,
     pub selection: (usize, usize),
     pub active: bool,
+    /// Guest-controlled blink phase; Systemless TEIdle uses zero for visible.
+    pub caret_visible: bool,
     pub justification: i16,
     pub line_count: usize,
     /// Guest byte offsets for the start of each line and the final end offset.
@@ -414,6 +416,8 @@ pub(crate) fn snapshot_guest_records(
                     usize::from(word(read, ptr + 0x22)?),
                 ),
                 active: word(read, ptr + 0x24)? != 0,
+                // TERec internal caretState: Text (1993), pp. 2-64--2-69, 2-84.
+                caret_visible: word(read, ptr + 0x38)? == 0,
                 justification: word(read, ptr + 0x3a)? as i16,
                 line_count,
                 line_starts,
