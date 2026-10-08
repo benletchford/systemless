@@ -4159,6 +4159,7 @@ impl super::TrapDispatcher {
                         point.1.wrapping_sub(origin.1),
                     ),
                     start_limits: state.scrollbar_limits(vertical),
+                    outline: None,
                     last_tick: tick.wrapping_sub(
                         crate::systems::macintosh::control_manager::SCROLLBAR_ACTION_REPEAT_TICKS,
                     ),
@@ -4210,6 +4211,38 @@ impl super::TrapDispatcher {
         } else {
             None
         };
+        let next_outline = if valid && down {
+            tracking.outline_rect(mouse, &state)
+        } else {
+            None
+        };
+        let (base, row_bytes, width, height, depth) = self.get_screen_params();
+        // The classic save/restore helpers support indexed surfaces only.
+        let next_outline = next_outline.filter(|_| matches!(depth, 1 | 2 | 4 | 8));
+        let surface = (
+            base,
+            row_bytes,
+            width as u32,
+            height as u32,
+            u32::from(depth),
+        );
+        // Restore before control redraw; retain stationary feedback without
+        // repeatedly capturing its own pixels. MTE, pp. 5-89--5-90.
+        if tracking
+            .outline
+            .as_ref()
+            .is_some_and(|outline| Some(outline.rect) != next_outline || outline.surface != surface)
+        {
+            if let Some(outline) = tracking.outline.take() {
+                if outline.surface == surface {
+                    if let crate::list_manager::ListScrollbarPixels::IndexedStrips(pixels) =
+                        outline.pixels
+                    {
+                        self.restore_window_drag_outline_pixels(bus, &pixels);
+                    }
+                }
+            }
+        }
         let mut changed = false;
         if let Some(delta) = delta {
             self.list_states.with_record_mut(list_handle, |state| {
@@ -4234,6 +4267,15 @@ impl super::TrapDispatcher {
             let needs_draw = changed || bus.read_byte(tracking.pointer + 17) != hilite;
             bus.write_byte(tracking.pointer + 17, hilite);
             if needs_draw {
+                if let Some(outline) = tracking.outline.take() {
+                    if outline.surface == surface {
+                        if let crate::list_manager::ListScrollbarPixels::IndexedStrips(pixels) =
+                            outline.pixels
+                        {
+                            self.restore_window_drag_outline_pixels(bus, &pixels);
+                        }
+                    }
+                }
                 self.draw_list_scrollbars(cpu, bus, list_handle);
             }
         }
@@ -4244,6 +4286,17 @@ impl super::TrapDispatcher {
                 .filter(|state| state.draw_enabled)
             {
                 self.draw_list_fallback(cpu, bus, &state, None);
+            }
+        }
+        if tracking.outline.is_none() {
+            if let Some(rect) = next_outline {
+                let pixels = self.save_window_drag_outline_pixels(bus, rect);
+                self.draw_window_drag_outline(bus, rect);
+                tracking.outline = Some(crate::list_manager::ListScrollbarOutline {
+                    rect,
+                    surface,
+                    pixels: crate::list_manager::ListScrollbarPixels::IndexedStrips(pixels),
+                });
             }
         }
         bus.write_word(sp + 12, 0);

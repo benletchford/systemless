@@ -277,10 +277,18 @@ comparison replays now reach row six on release and row zero on cancellation
 in both Systemless CPU adapters. Shared geometry tests cover horizontal motion,
 changed list limits and signed ranges wider than an i16 delta.
 
-Full thumb readiness remains open: ordinary guest-rendered captures still need
-the moving outline while held. The existing GPUI pointer overlay draws its own
-outline, but this change does not qualify that visual path against the native
-replay or close custom CDEF/LDEF and click-loop behaviour.
+Standard list-thumb tracking now also paints and restores a moving raster
+outline on both CPU paths. Pixel snapshots retain presentation detail and are
+restored before moving, cancelling, releasing or redrawing the control; a
+framebuffer with changed address, dimensions, row stride or depth is not
+restored from an old snapshot. The loaded three-mode
+regression checks that an outline appears, cancellation restores the track
+exactly, and held feedback leaves the list content and application border
+unchanged. PPC highlight-only updates now redraw the control rather than
+repainting list cells. Reviewed headless 68K/PPC captures cover held and cancelled
+states. Full thumb readiness still requires composed GPUI list-drag captures,
+overlap/lifecycle qualification, direct-colour classic surfaces beyond the
+indexed save/restore helper, and custom CDEF/LDEF and click-loop behaviour.
 
 Validation for retained list-thumb release: all 47 list tests and all 56 GPUI
 tests pass, the latter with one test thread. An earlier concurrent run during
@@ -296,4 +304,4 @@ case; it now cancels on either axis using the guest's thirty-pixel allowance.
 Boundary tests cover both orientations and large signed control ranges without
 intermediate multiplication overflow. The loaded three-mode interaction test
 also covers cancellation beyond the end of the bar. This aligns preview
-geometry; guest-rendered moving outlines still remain unfinished.
+geometry; the raster feedback qualification above covers ordinary standard lists.
