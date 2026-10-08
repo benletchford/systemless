@@ -59,7 +59,6 @@ mod desktop {
     };
 
     use clap::Parser;
-    use gpui_kit::base::Selectable;
     use gpui_kit::{
         component::{
             button::{Button, ButtonVariants},
@@ -8684,6 +8683,17 @@ mod desktop {
                     });
                     window.render_frame(cx);
                     assert_eq!(window.find("guest-control-button-22-1").focused(), (active && enabled).then_some(false));
+                    let button = super::super::choices::guest_button(
+                        "button-state-probe".into(), "Activate".into(), enabled, active,
+                        false, false, 1., cx,
+                    ).track_focus(&cx.focus_handle());
+                    let component = super::super::a11y::AccessibleComponent::new(button, !active || !enabled);
+                    let rendered = gpui_kit::IntoElement::into_element(gpui_kit::RenderOnce::render(component, window, cx));
+                    let mut node = gpui_kit::accesskit::Node::new(gpui_kit::Element::a11y_role(&rendered).unwrap());
+                    gpui_kit::Element::write_a11y_info(&rendered, &mut node);
+                    assert_eq!(node.role(), gpui_kit::Role::Button);
+                    assert_eq!(node.label(), Some("Activate"));
+                    assert_eq!(node.is_disabled(), !active || !enabled);
                     window.click("guest-control-button-22-1", cx);
                 }).unwrap();
                 let commands: Vec<_> = receiver.try_iter().collect();
