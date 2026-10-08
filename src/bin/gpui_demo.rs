@@ -936,6 +936,9 @@ mod desktop {
                                             demo.open_menus.insert(identity.clone());
                                         } else {
                                             demo.open_menus.remove(&identity);
+                                            if demo.open_menus.is_empty() {
+                                                demo.focus.focus(window, cx);
+                                            }
                                             demo.menu_hovered = f32::from(window.mouse_position().y) < 36.;
                                         }
                                         cx.notify();
@@ -2349,8 +2352,12 @@ mod desktop {
                         }
                         return;
                     }
-                    if let Some((mac_key, character)) = guest_key(&event.keystroke) {
-                        this.press_host_key(mac_key, character);
+                    // A focused host control owns its ordinary keys. Its semantic
+                    // callback queues guest input separately after validation.
+                    if this.focus.is_focused(window) {
+                        if let Some((mac_key, character)) = guest_key(&event.keystroke) {
+                            this.press_host_key(mac_key, character);
+                        }
                     }
                 }))
                 .on_key_up(cx.listener(|this, event: &KeyUpEvent, _, _| {
@@ -6235,6 +6242,8 @@ mod desktop {
                 window.click("guest-menu-4096-1", cx);
                 window.render_frame(cx);
                 assert_eq!(window.find("guest-popup-item-129-1").expanded(), Some(false));
+                window.within("guest-popup-menu").press("z", cx);
+                assert!(receiver.try_recv().is_err(), "host-focused menu must not leak ordinary keys to the guest");
                 window.within("guest-popup-menu").press("down", cx);
                 window.within("guest-popup-menu").press("right", cx);
                 window.render_frame(cx);
@@ -6259,6 +6268,31 @@ mod desktop {
                 receiver.try_recv(),
                 Ok(super::Command::Menu(130, 1, 0x2000, 2))
             ));
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window.press("z", cx);
+            }).unwrap();
+            assert!(receiver.try_iter().any(|command| matches!(command,
+                super::Command::Input(MacintoshInput::KeyDown { character: b'z', .. })
+            )), "closing a menu must restore guest keyboard input");
+            cx.update_window(window.into(), |_, window, cx| {
+                window.click("guest-menu-4096-1", cx);
+                window.render_frame(cx);
+                window.within("guest-popup-menu").press("escape", cx);
+            }).unwrap();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                view.update(cx, |demo, _| {
+                    assert!(demo.open_menus.is_empty(), "Escape left menus open: {:?}", demo.open_menus);
+                    assert!(demo.focus.is_focused(window), "Escape did not restore scene focus");
+                });
+                window.press("x", cx);
+            }).unwrap();
+            let commands: Vec<_> = receiver.try_iter().collect();
+            assert!(!commands.iter().any(|command| matches!(command, super::Command::Menu(..))));
+            assert!(commands.iter().any(|command| matches!(command,
+                super::Command::Input(MacintoshInput::KeyDown { character: b'x', .. })
+            )), "cancelled menus must restore guest keyboard input");
         }
 
         #[cfg(feature = "gpui-demo-test")]
