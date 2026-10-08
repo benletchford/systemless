@@ -1658,6 +1658,9 @@ mod desktop {
                                 "guest-dialog-button-{}-{}-{}",
                                 dialog.guest_id, dialog.generation, item.number
                             ))
+                            // HIG (1992), p. 205: distinguish the guest's default
+                            // action visually; Return still follows guest event handling.
+                            .when(dialog.active && item.enabled && dialog.default_item == Some(item.number), |button| button.primary())
                             .label(item.text.clone())
                             .small()
                             .compact()
