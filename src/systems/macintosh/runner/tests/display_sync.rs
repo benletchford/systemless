@@ -401,6 +401,7 @@ fn ppc_completed_q3_frame_renders_before_host_front_buffer_sync() {
         q3_submission_lights: Vec::new(),
         q3_view_state_stack: Vec::new(),
         q3_completed_frames: vec![PpcQ3CompletedFrameRecord {
+            view_snapshot: None,
             view,
             submissions: vec![PpcQ3SubmissionRecord {
                 view,

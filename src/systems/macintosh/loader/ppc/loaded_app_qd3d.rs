@@ -53,6 +53,7 @@ impl PpcLoadedApp {
             &self.q3_submission_materials.clone(),
             &self.q3_submission_lights.clone(),
             &[],
+            None,
         )
     }
 
@@ -63,6 +64,7 @@ impl PpcLoadedApp {
         materials: &[PpcQ3SubmissionMaterialRecord],
         lights: &[PpcQ3SubmissionLightRecord],
         retained_trimeshes: &[PpcQ3TriMeshRecord],
+        view_snapshot: Option<PpcQ3FrameViewSnapshot>,
     ) -> Vec<PpcQ3SceneCommand> {
         submissions
             .iter()
@@ -75,6 +77,7 @@ impl PpcLoadedApp {
                     materials,
                     lights,
                     retained_trimeshes,
+                    view_snapshot,
                 )
             })
             .collect()
@@ -999,6 +1002,7 @@ impl PpcLoadedApp {
             &frame.submission_materials,
             &frame.submission_lights,
             &frame.retained_trimeshes,
+            frame.view_snapshot,
         )
     }
 
@@ -1024,12 +1028,12 @@ impl PpcLoadedApp {
         materials: &[PpcQ3SubmissionMaterialRecord],
         lights: &[PpcQ3SubmissionLightRecord],
         retained_trimeshes: &[PpcQ3TriMeshRecord],
+        view_snapshot: Option<PpcQ3FrameViewSnapshot>,
     ) -> Option<PpcQ3SceneCommand> {
-        let view_state = self
-            .q3_views
-            .iter()
-            .find(|record| record.view == submission.view)
-            .copied()?;
+        let view_snapshot = view_snapshot.filter(|snapshot| snapshot.view_state.view == submission.view);
+        let view_state = view_snapshot.map(|snapshot| snapshot.view_state).or_else(|| {
+            self.q3_views.iter().find(|record| record.view == submission.view).copied()
+        })?;
         let transform = Self::q3_submission_transform_from_slice(transforms, index, submission)?;
         let material = Self::q3_submission_material_from_slice(materials, index, submission)?;
         let lights = Self::q3_submission_lights_from_slice(lights, index, submission)?;
@@ -1040,7 +1044,9 @@ impl PpcLoadedApp {
                     submission.secondary,
                     retained_trimeshes,
                 )?;
-                let camera = if view_state.camera == 0 {
+                let camera = if let Some(snapshot) = view_snapshot {
+                    snapshot.camera
+                } else if view_state.camera == 0 {
                     None
                 } else {
                     self.q3_cameras
