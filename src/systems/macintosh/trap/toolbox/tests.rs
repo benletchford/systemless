@@ -7612,6 +7612,31 @@
     }
 
     #[test]
+    fn list_custom_draw_excludes_cells_beyond_data_bounds() {
+        let state = super::super::dispatch::ListState {
+            generation: crate::list_manager::new_list_generation(),
+            definition_id: 1,
+            handle: 0,
+            cells_handle: 0,
+            view_rect: (0, 0, 114, 114),
+            data_bounds: (0, 0, 12, 12),
+            cell_size: (18, 18),
+            visible: (6, 6, 13, 13),
+            port: 0,
+            draw_enabled: true,
+            active: true,
+            cells: Default::default(),
+            selected: Default::default(),
+            last_click: (-1, -1),
+            last_click_tick: 0,
+        };
+        let cells = TrapDispatcher::list_cells_to_draw(&state, None);
+        assert_eq!(cells.len(), 36);
+        assert!(cells.iter().all(|&(row, col)| (6..12).contains(&row) && (6..12).contains(&col)));
+        assert!(TrapDispatcher::list_cells_to_draw(&state, Some((12, 6))).is_empty());
+    }
+
+    #[test]
     fn pack0_lnextcell_advances_across_rows() {
         let (mut disp, mut cpu, mut bus) = setup();
         let handle = 0x350000;

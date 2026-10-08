@@ -4629,7 +4629,9 @@ impl super::TrapDispatcher {
         let mut cells = Vec::new();
         for row in state.visible.0..state.visible.2 {
             for col in state.visible.1..state.visible.3 {
-                cells.push((row, col));
+                if Self::list_cell_is_valid(state, row, col) {
+                    cells.push((row, col));
+                }
             }
         }
         cells

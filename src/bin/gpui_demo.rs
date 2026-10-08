@@ -4370,6 +4370,7 @@ mod desktop {
                     settle(&mut session);
                     let page = session.runner_mut().list_manager_snapshot().remove(0);
                     assert_eq!(page.visible.0, expected, "list page click {point:?}, powerpc={powerpc}");
+                    assert_eq!(page.visible.2, expected + 7, "visible extent must retain the clipped row: powerpc={powerpc}");
                     assert_eq!(page.selected, initial.selected);
                 }
             }
