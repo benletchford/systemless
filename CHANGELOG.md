@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.83.0](https://github.com/benletchford/systemless/compare/v0.82.1...v0.83.0) (2026-10-08)
+
+
+### Features
+
+* add structured headless play and agent guidance ([#4202](https://github.com/benletchford/systemless/issues/4202)) ([8ba8f8e](https://github.com/benletchford/systemless/commit/8ba8f8ec9880b687186f8b9c50bfd9c82c81537d))
+
+
+### Bug Fixes
+
+* **qd3d:** cull the faces that turn away from the camera ([#4191](https://github.com/benletchford/systemless/issues/4191)) ([f46ce3f](https://github.com/benletchford/systemless/commit/f46ce3fbf761cab018dd6d16a6211bb49f1dcb98))
+* **qd3d:** read the fog color as ARGB ([#4193](https://github.com/benletchford/systemless/issues/4193)) ([5312783](https://github.com/benletchford/systemless/commit/531278323028b4563578c2dae4f24a3df6bfcc08))
+* **qd3d:** render immediate trimeshes as they were when submitted ([9d7f5fb](https://github.com/benletchford/systemless/commit/9d7f5fbdcc020f2e51a8aed5ef8af802992d516b))
+* **qd3d:** sample textures with v = 0 at the bottom row ([#4192](https://github.com/benletchford/systemless/issues/4192)) ([4f151d0](https://github.com/benletchford/systemless/commit/4f151d046c48f799c242a5c3882dda5c9c3fdd83))
+* **site:** require hosted game archives ([#4197](https://github.com/benletchford/systemless/issues/4197)) ([b8d7ee2](https://github.com/benletchford/systemless/commit/b8d7ee29ecb7ebabbbd9d4cbb1d74d8a62a8427d))
+* **sound:** decode compressed AIFF-C file playback and reject invalid data forks ([#4204](https://github.com/benletchford/systemless/issues/4204)) ([dc7a16a](https://github.com/benletchford/systemless/commit/dc7a16a14f4944d4b10ebc2f2ebf6a52c2d78cc8))
+* **sound:** play sampled-sound instruments for PowerPC soundCmd and note commands ([#4205](https://github.com/benletchford/systemless/issues/4205)) ([d4cfcaf](https://github.com/benletchford/systemless/commit/d4cfcafba0be20b9b67939426b219aa0c22da468))
+
+
+### Code Refactoring
+
+* **quickdraw:** share one row intersection between 68K and PowerPC ([#4182](https://github.com/benletchford/systemless/issues/4182) follow-up) ([#4206](https://github.com/benletchford/systemless/issues/4206)) ([a42eee8](https://github.com/benletchford/systemless/commit/a42eee8225905be448d4e412b665921eade9263d))
+
 ## [0.82.1](https://github.com/benletchford/systemless/compare/v0.82.0...v0.82.1) (2026-10-07)
 
 
