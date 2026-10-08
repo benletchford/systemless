@@ -681,3 +681,13 @@ Repeated reopening is part of the same sequence. All nine cases pass in
 This exercises the guest input/tracking and frontend snapshot boundary. It does
 not establish host pointer routing, keyboard or accessibility cancellation,
 rapid queued-release ordering, scrolling, or custom-menu behaviour.
+
+A rendered GPUI event test now covers popup pointer routing on monochrome 68K,
+colour 68K and PPC. Platform mouse-down, held movement and mouse-up events enter
+the Demo window at positions derived from its display origin and scale. The test
+checks the emitted guest coordinates, delivers those commands to the loaded
+application, refreshes the live popup snapshot between phases, and verifies
+highlight 4, committed value 4 and removed tracking after release. It passes in
+50.24 seconds. This establishes event propagation through the rendered dropdown
+and scene transform; asynchronous worker scheduling, outside-window capture,
+keyboard and accessibility routes remain separate qualification work.
