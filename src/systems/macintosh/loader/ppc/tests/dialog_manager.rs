@@ -185,6 +185,21 @@ fn standard_alert_preserves_optional_button_ids_for_keyboard_and_mouse() {
             where_h: point.1,
             modifiers: 0,
         }]);
+        if key == 0 {
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: true, mouse_v: point.0, mouse_h: point.1,
+                ..PpcInputSnapshot::default()
+            });
+            loaded.run_with_hle_imports(128);
+            assert!(ppc_window_is_visible(&mut loaded.memory, dialog));
+            assert_eq!(loaded.memory.read_u16_be(base), Some(0));
+            loaded.event_queue.push_back(PpcQueuedEvent {
+                what: 2, message: 0, when: 1,
+                where_v: point.0, where_h: point.1, modifiers: 0,
+            });
+            // The release event, not a later pointer move, determines the hit.
+            loaded.set_input_snapshot(PpcInputSnapshot::default());
+        }
         loaded.run_with_hle_imports(128);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
         assert_eq!(loaded.memory.read_u16_be(base), Some(expected));

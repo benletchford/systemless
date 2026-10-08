@@ -432,3 +432,20 @@ All seven GPUI dialog tests pass. Composed preferences captures on monochrome
 68K, colour 68K and PPC show the designated OK action emphasized and Cancel
 unchanged. Dynamic default changes, disabled defaults and nested inactive
 state still need dedicated visual qualification.
+
+A retained-press regression found that PPC ModalDialog returned standard
+button hits on mouseDown while both 68K modes waited for release. PPC now
+retains that event while the synchronous import tracks the button, returns
+an item only for release inside the original item, and consumes the release
+without returning a hit when it occurs outside. Queued mouseUp coordinates
+take precedence over later host pointer state. The guest controls still own
+the action and resulting value changes; no frontend record mutation is used.
+The extended three-mode preferences regression holds Cancel, moves outside
+and releases without dismissing, then clicks and releases inside to dismiss.
+All seven GPUI dialog tests pass. This qualifies release semantics for standard
+DITL buttons; pressed-state snapshot/rendering, custom filters and resource
+control definitions remain separate open work.
+All 633 library dialog tests also pass. The optional-button StandardAlert
+regression now sends a real press/release sequence, checks that the alert and
+output remain unchanged while held, and verifies the queued release selects
+the correct button even after the current pointer has moved elsewhere.
