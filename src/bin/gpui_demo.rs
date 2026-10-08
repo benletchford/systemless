@@ -1971,6 +1971,10 @@ mod desktop {
                         let entries = panel.entries.as_ref().unwrap();
                         let list_width = i32::from(layout.list.3 - layout.list.1);
                         let mut list = at(layout.list)
+                            .id(format!("guest-standard-open-list-{}-{}", panel.guest_id, panel.generation))
+                            .test_support()
+                            .role(Role::ListBox)
+                            .aria_label("Files")
                             .overflow_hidden()
                             .bg(cx.theme().background)
                             .border_1()
@@ -1990,7 +1994,7 @@ mod desktop {
                                         panel.guest_id, panel.generation, index
                                     ))
                                     .test_support()
-                                    .role(Role::ListItem)
+                                    .role(Role::ListBoxOption)
                                     .aria_label(entry.name.clone())
                                     .aria_selected(selected)
                                     .absolute()
@@ -2143,6 +2147,10 @@ mod desktop {
                         let entries = panel.entries.as_ref().unwrap();
                         let list_width = i32::from(layout.list.3 - layout.list.1);
                         let mut list = at(layout.list)
+                            .id(format!("guest-standard-save-list-{}-{}", panel.guest_id, panel.generation))
+                            .test_support()
+                            .role(Role::ListBox)
+                            .aria_label("Files")
                             .overflow_hidden()
                             .bg(cx.theme().background)
                             .border_1()
@@ -2162,7 +2170,7 @@ mod desktop {
                                         panel.guest_id, panel.generation, index
                                     ))
                                     .test_support()
-                                    .role(Role::ListItem)
+                                    .role(Role::ListBoxOption)
                                     .aria_label(entry.name.clone())
                                     .aria_selected(selected)
                                     .absolute()
@@ -8415,6 +8423,10 @@ mod desktop {
             });
             cx.update_window(window.into(), |_, window, cx| {
                 window.render_frame(cx);
+                assert_eq!(window.find("guest-standard-open-list-7-1").role(), Some(gpui_kit::Role::ListBox));
+                let row = window.find("guest-standard-open-entry-7-1-0");
+                assert_eq!(row.role(), Some(gpui_kit::Role::ListBoxOption));
+                assert_eq!(row.selected(), Some(true));
                 window.click("guest-standard-open-7-1-Open", cx);
             })
             .unwrap();
@@ -8470,6 +8482,7 @@ mod desktop {
             });
             cx.update_window(window.into(), |_, window, cx| {
                 window.render_frame(cx);
+                assert_eq!(window.find("guest-standard-save-list-8-2").role(), Some(gpui_kit::Role::ListBox));
                 window.click("guest-standard-save-8-2-Save", cx);
             })
             .unwrap();
@@ -8488,6 +8501,25 @@ mod desktop {
                 MacintoshInput::MouseDown { vertical: 320..=341, horizontal: 358..=437 },
                 MacintoshInput::MouseUp { vertical: 320..=341, horizontal: 358..=437 },
             ]), "{save_inputs:?}");
+            for selected in [None, Some(0), None] {
+                cx.update_window(window.into(), |_, window, cx| {
+                    view.update(cx, |demo, cx| {
+                        let panel = demo.standard_file.as_mut().unwrap();
+                        panel.entries = Some(vec![StandardFileEntrySnapshot {
+                            name: "Documents".into(), directory_id: 3,
+                            is_directory: true, file_type: 0,
+                        }]);
+                        panel.selected = selected;
+                        cx.notify();
+                    });
+                    window.render_frame(cx);
+                    let row = window.find("guest-standard-save-entry-8-2-0");
+                    assert_eq!(row.role(), Some(gpui_kit::Role::ListBoxOption));
+                    assert_eq!(row.selected(), Some(selected == Some(0)));
+                }).unwrap();
+            }
+            assert!(!receiver.try_iter().any(|command| matches!(command, super::Command::Input(_))),
+                "presenting guest selection changes must not emit guest input");
         }
 
         #[cfg(feature = "gpui-demo-test")]
