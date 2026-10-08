@@ -382,7 +382,7 @@ fn hle_import_runner_creates_window_title_and_zoom_state() {
     loaded.cpu.gpr[4] = scratch;
     loaded.cpu.gpr[5] = scratch + 8;
     loaded.cpu.gpr[6] = 1;
-    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[7] = 8;
     loaded.cpu.gpr[8] = u32::MAX;
     loaded.cpu.gpr[9] = 1;
     loaded.cpu.gpr[10] = 0x4455_6677;
@@ -433,6 +433,61 @@ fn hle_import_runner_creates_window_title_and_zoom_state() {
             ppc_main_screen_width() as i16 - 3,
         ))
     );
+
+    // An application may replace stdState before ZoomWindow. FindWindow
+    // must report the matching zoom direction, and zooming back must retain
+    // the original userState. MTE (1992), pp. 4-53--4-55.
+    zoom_cpu.gpr[4] = 7;
+    ppc_zoom_window(&zoom_cpu, &mut loaded.memory, &mut loaded.gworlds).unwrap();
+    assert_eq!(
+        ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
+        Some((40, 50, 240, 350))
+    );
+    let custom_standard = (70, 80, 370, 580);
+    ppc_write_rect(
+        &mut loaded.memory,
+        state + 8,
+        custom_standard.0,
+        custom_standard.1,
+        custom_standard.2,
+        custom_standard.3,
+    )
+    .unwrap();
+    assert_eq!(
+        ppc_find_window_at_point(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &loaded.window_list,
+            31,
+            343,
+            20,
+        ),
+        (8, window),
+    );
+    zoom_cpu.gpr[4] = 8;
+    ppc_zoom_window(&zoom_cpu, &mut loaded.memory, &mut loaded.gworlds).unwrap();
+    assert_eq!(
+        ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
+        Some(custom_standard),
+    );
+    assert_eq!(
+        ppc_find_window_at_point(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &loaded.window_list,
+            61,
+            573,
+            20,
+        ),
+        (7, window),
+    );
+    zoom_cpu.gpr[4] = 7;
+    ppc_zoom_window(&zoom_cpu, &mut loaded.memory, &mut loaded.gworlds).unwrap();
+    assert_eq!(
+        ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
+        Some((40, 50, 240, 350)),
+    );
+    assert_eq!(ppc_read_rect(&mut loaded.memory, state + 8), Some(custom_standard));
 }
 
 #[test]
