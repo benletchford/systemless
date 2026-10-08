@@ -5437,10 +5437,49 @@ mod desktop {
                         settle(&mut session);
                     }
                 }
-                let activated = session.runner_mut().window_frame_snapshot();
+                let mut activated = session.runner_mut().window_frame_snapshot();
                 assert_eq!(activated[0].guest_id, before[1].guest_id, "powerpc={powerpc}");
                 assert!(activated[0].window.active, "powerpc={powerpc}");
                 assert!(!activated[1].window.active, "powerpc={powerpc}");
+
+                let grow_bounds = activated[0].window.bounds;
+                let grow_from = (grow_bounds.2 - 5, grow_bounds.3 - 10);
+                cx.update(|cx| {
+                    view.update(cx, |demo, cx| {
+                        demo.windows = activated.clone();
+                        cx.notify();
+                    });
+                });
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.drag(
+                        host(grow_from),
+                        host((grow_from.0 + 25, grow_from.1 + 25)),
+                        cx,
+                    );
+                })
+                .unwrap();
+                let mut grow_presses = 0;
+                let mut grow_releases = 0;
+                for command in receiver.try_iter() {
+                    if let super::Command::Input(input) = command {
+                        match input {
+                            MacintoshInput::MouseDown { .. } => grow_presses += 1,
+                            MacintoshInput::MouseUp { .. } => grow_releases += 1,
+                            _ => {}
+                        }
+                        session.deliver_input(input);
+                        settle(&mut session);
+                    }
+                }
+                assert_eq!((grow_presses, grow_releases), (1, 1), "powerpc={powerpc}");
+                activated = session.runner_mut().window_frame_snapshot();
+                assert_eq!(activated[0].guest_id, before[1].guest_id, "powerpc={powerpc}");
+                assert_eq!(activated[0].generation, before[1].generation, "powerpc={powerpc}");
+                assert_eq!(
+                    activated[0].window.bounds,
+                    (grow_bounds.0, grow_bounds.1, grow_bounds.2 + 25, grow_bounds.3 + 25),
+                    "powerpc={powerpc}"
+                );
 
                 let aux_bounds = activated[0].window.bounds;
                 let aux_title = (aux_bounds.0 - 9, (aux_bounds.1 + aux_bounds.3) / 2);
