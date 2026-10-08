@@ -98,6 +98,7 @@ pub(super) struct PpcQ3SubmitDispatchContext<'a> {
     pub(super) q3_trimeshes: &'a [PpcQ3TriMeshRecord],
     pub(super) q3_fog_styles: &'a mut Vec<PpcQ3FogStyleRecord>,
     pub(super) q3_lights: &'a [PpcQ3LightRecord],
+    pub(super) q3_immediate_trimeshes: &'a mut PpcQ3ImmediateTriMeshStore,
     pub(super) q3_error_state: &'a mut PpcQ3ErrorState,
 }
 
@@ -127,6 +128,7 @@ pub(super) fn dispatch_q3_submit_import_fast(
         q3_trimeshes,
         q3_fog_styles,
         q3_lights,
+        q3_immediate_trimeshes,
         q3_error_state,
     } = context;
     let kind = match target {
@@ -279,6 +281,7 @@ pub(super) fn dispatch_q3_submit_import_fast(
         q3_mipmap_textures,
         q3_trimeshes,
         q3_lights,
+        q3_immediate_trimeshes,
         q3_error_state,
         kind,
     ))))

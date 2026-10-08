@@ -235,6 +235,7 @@ pub(super) fn halted_ppc_app_with_sound(sound: PpcSoundState) -> LoadedApp {
         q3_retained_frames: Vec::new(),
         q3_state_only_completed_frame_batches: Vec::new(),
         q3_fog_styles: Vec::new(),
+        q3_immediate_trimeshes: Default::default(),
         q3_attributes: Vec::new(),
         q3_shader_uv_transforms: Vec::new(),
         q3_shader_boundaries: Vec::new(),

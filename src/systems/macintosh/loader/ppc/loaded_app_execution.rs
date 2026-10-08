@@ -309,6 +309,7 @@ impl PpcLoadedApp {
         let mut q3_state_only_completed_frame_batches =
             std::mem::take(&mut self.q3_state_only_completed_frame_batches);
         let mut q3_fog_styles = std::mem::take(&mut self.q3_fog_styles);
+        let mut q3_immediate_trimeshes = std::mem::take(&mut self.q3_immediate_trimeshes);
         let mut q3_attributes = std::mem::take(&mut self.q3_attributes);
         let mut q3_shader_uv_transforms = std::mem::take(&mut self.q3_shader_uv_transforms);
         let mut q3_shader_boundaries = std::mem::take(&mut self.q3_shader_boundaries);
@@ -1775,6 +1776,7 @@ impl PpcLoadedApp {
                         q3_trimeshes: &q3_trimeshes,
                         q3_fog_styles: &mut q3_fog_styles,
                         q3_lights: &q3_lights,
+                        q3_immediate_trimeshes: &mut q3_immediate_trimeshes,
                         q3_error_state: &mut q3_error_state,
                     },
                 ) {
@@ -2359,6 +2361,7 @@ impl PpcLoadedApp {
         self.q3_retained_frames = q3_retained_frames;
         self.q3_state_only_completed_frame_batches = q3_state_only_completed_frame_batches;
         self.q3_fog_styles = q3_fog_styles;
+        self.q3_immediate_trimeshes = q3_immediate_trimeshes;
         self.q3_attributes = q3_attributes;
         self.q3_shader_uv_transforms = q3_shader_uv_transforms;
         self.q3_shader_boundaries = q3_shader_boundaries;

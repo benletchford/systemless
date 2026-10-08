@@ -163,6 +163,7 @@ impl PpcLoadedApp {
             let frame_stats = self.render_q3_scene_commands_to_front_buffer_inner(commands);
             stats.merge_frame_stats(frame_stats, &mut saw_missing_target);
         }
+        self.prune_q3_immediate_trimeshes();
         stats
     }
 
@@ -188,6 +189,7 @@ impl PpcLoadedApp {
             let frame_stats = self.replay_q3_scene_replay_to_front_buffer(&replay);
             stats.merge_frame_stats(frame_stats, &mut saw_missing_target);
         }
+        self.prune_q3_immediate_trimeshes();
         stats
     }
 
@@ -209,6 +211,7 @@ impl PpcLoadedApp {
         let gpu_frame = self.prepare_q3_gpu_frame(commands)?;
         self.q3_completed_frames.clear();
         self.q3_state_only_completed_frame_batches.clear();
+        self.prune_q3_immediate_trimeshes();
         Some(gpu_frame)
     }
 
@@ -1032,8 +1035,11 @@ impl PpcLoadedApp {
         let lights = Self::q3_submission_lights_from_slice(lights, index, submission)?;
         match submission.kind {
             PpcQ3SubmissionKind::TriMesh => {
-                let geometry =
-                    self.q3_scene_trimesh_geometry(submission.primary, retained_trimeshes)?;
+                let geometry = self.q3_scene_trimesh_geometry(
+                    submission.primary,
+                    submission.secondary,
+                    retained_trimeshes,
+                )?;
                 let camera = if view_state.camera == 0 {
                     None
                 } else {
@@ -1117,8 +1123,16 @@ impl PpcLoadedApp {
     fn q3_scene_trimesh_geometry(
         &mut self,
         primary: u32,
+        secondary: u32,
         retained_trimeshes: &[PpcQ3TriMeshRecord],
     ) -> Option<PpcQ3SceneTriMeshGeometry> {
+        if let Some(record) = self.q3_immediate_trimeshes.get(secondary, primary) {
+            return Some(PpcQ3SceneTriMeshGeometry {
+                source: PpcQ3SceneTriMeshSource::DataPtr(primary),
+                data: record.data.clone(),
+                memory_regions: record.memory_regions.clone(),
+            });
+        }
         if let Some(object) = self
             .q3_objects
             .iter()
@@ -1140,6 +1154,7 @@ impl PpcLoadedApp {
             return Some(PpcQ3SceneTriMeshGeometry {
                 source: PpcQ3SceneTriMeshSource::Object(primary),
                 data,
+                memory_regions: Vec::new(),
             });
         }
         if let Some(record) = retained_trimeshes
@@ -1149,12 +1164,14 @@ impl PpcLoadedApp {
             return Some(PpcQ3SceneTriMeshGeometry {
                 source: PpcQ3SceneTriMeshSource::Object(primary),
                 data: record.data.clone(),
+                memory_regions: Vec::new(),
             });
         }
         self.q3_scene_read_bytes(primary, PPC_Q3_TRIMESH_DATA_SIZE)
             .map(|data| PpcQ3SceneTriMeshGeometry {
                 source: PpcQ3SceneTriMeshSource::DataPtr(primary),
                 data,
+                memory_regions: Vec::new(),
             })
     }
 
@@ -1171,124 +1188,19 @@ impl PpcLoadedApp {
         memory_regions: &mut Vec<PpcQ3SceneReplayMemoryRegion>,
         command: &PpcQ3SceneTriMeshCommand,
     ) {
-        let point_count =
-            ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_NUM_POINTS_OFFSET)
-                .unwrap_or(0);
-        let triangle_count =
-            ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_NUM_TRIANGLES_OFFSET)
-                .unwrap_or(0);
-        let edge_count =
-            ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_NUM_EDGES_OFFSET)
-                .unwrap_or(0);
-
-        if point_count != 0 && point_count <= PPC_Q3_SOFTWARE_RENDER_MAX_POINTS {
-            if let Some(points_ptr) =
-                ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_POINTS_OFFSET)
-            {
-                self.capture_q3_replay_memory_region(
-                    memory_regions,
-                    points_ptr,
-                    point_count.saturating_mul(PPC_Q3_POINT3D_SIZE),
-                );
-            }
-        }
-        if triangle_count != 0 && triangle_count <= PPC_Q3_SOFTWARE_RENDER_MAX_TRIANGLES {
-            if let Some(triangles_ptr) =
-                ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_TRIANGLES_OFFSET)
-            {
-                self.capture_q3_replay_memory_region(
-                    memory_regions,
-                    triangles_ptr,
-                    triangle_count.saturating_mul(PPC_Q3_TRIMESH_TRIANGLE_DATA_SIZE),
-                );
-            }
-        }
-        if edge_count != 0 && edge_count <= PPC_Q3_SOFTWARE_RENDER_MAX_EDGES {
-            if let Some(edges_ptr) =
-                ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_EDGES_OFFSET)
-            {
-                self.capture_q3_replay_memory_region(
-                    memory_regions,
-                    edges_ptr,
-                    edge_count.saturating_mul(PPC_Q3_TRIMESH_EDGE_DATA_SIZE),
-                );
-            }
-        }
-
-        self.capture_q3_trimesh_attribute_replay_memory(
-            memory_regions,
-            &command.geometry.data,
-            PPC_Q3_TRIMESH_NUM_TRIANGLE_ATTRIBUTE_TYPES_OFFSET,
-            PPC_Q3_TRIMESH_TRIANGLE_ATTRIBUTE_TYPES_OFFSET,
-            triangle_count,
-        );
-        self.capture_q3_trimesh_attribute_replay_memory(
-            memory_regions,
-            &command.geometry.data,
-            PPC_Q3_TRIMESH_NUM_EDGE_ATTRIBUTE_TYPES_OFFSET,
-            PPC_Q3_TRIMESH_EDGE_ATTRIBUTE_TYPES_OFFSET,
-            edge_count,
-        );
-        self.capture_q3_trimesh_attribute_replay_memory(
-            memory_regions,
-            &command.geometry.data,
-            PPC_Q3_TRIMESH_NUM_VERTEX_ATTRIBUTE_TYPES_OFFSET,
-            PPC_Q3_TRIMESH_VERTEX_ATTRIBUTE_TYPES_OFFSET,
-            point_count,
-        );
-    }
-
-    fn capture_q3_trimesh_attribute_replay_memory(
-        &mut self,
-        memory_regions: &mut Vec<PpcQ3SceneReplayMemoryRegion>,
-        geometry: &[u8],
-        count_offset: u32,
-        table_offset: u32,
-        element_count: u32,
-    ) {
-        if element_count == 0 {
+        if !command.geometry.memory_regions.is_empty() {
+            // The command already carries its submit-time arrays.
             return;
         }
-        let Some(attr_count) = ppc_q3_trimesh_header_u32(geometry, count_offset) else {
-            return;
-        };
-        let Some(attr_ptr) = ppc_q3_trimesh_header_u32(geometry, table_offset) else {
-            return;
-        };
-        if attr_count == 0
-            || attr_count > PPC_Q3_SOFTWARE_RENDER_MAX_ATTRIBUTE_TYPES
-            || attr_ptr == 0
+        for region in
+            ppc_q3_capture_trimesh_memory_regions(&mut self.memory, &command.geometry.data)
         {
-            return;
-        }
-        self.capture_q3_replay_memory_region(
-            memory_regions,
-            attr_ptr,
-            attr_count.saturating_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE),
-        );
-        for index in 0..attr_count {
-            let Some(entry_ptr) =
-                attr_ptr.checked_add(index.saturating_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE))
-            else {
-                return;
-            };
-            let Some(attr_type) = self.memory.read_u32_be(entry_ptr) else {
-                continue;
-            };
-            let Some(data_ptr) = self.memory.read_u32_be(entry_ptr.saturating_add(4)) else {
-                continue;
-            };
-            if data_ptr == 0 {
-                continue;
+            if !memory_regions.iter().any(|existing| {
+                existing.base_addr == region.base_addr && existing.data.len() >= region.data.len()
+            }) {
+                memory_regions.retain(|existing| existing.base_addr != region.base_addr);
+                memory_regions.push(region);
             }
-            let Some(attr_size) = ppc_q3_attribute_data_size(attr_type) else {
-                continue;
-            };
-            self.capture_q3_replay_memory_region(
-                memory_regions,
-                data_ptr,
-                element_count.saturating_mul(attr_size),
-            );
         }
     }
 
@@ -1327,30 +1239,7 @@ impl PpcLoadedApp {
         base_addr: u32,
         byte_count: u32,
     ) {
-        if base_addr == 0 || byte_count == 0 {
-            return;
-        }
-        let Ok(byte_count) = usize::try_from(byte_count) else {
-            return;
-        };
-        if let Some(region) = memory_regions
-            .iter_mut()
-            .find(|region| region.base_addr == base_addr)
-        {
-            if region.data.len() >= byte_count {
-                return;
-            }
-            let mut data = vec![0; byte_count];
-            if self.memory.read_bytes_into(base_addr, &mut data).is_some() {
-                region.data = data;
-            }
-            return;
-        }
-
-        let mut data = vec![0; byte_count];
-        if self.memory.read_bytes_into(base_addr, &mut data).is_some() {
-            memory_regions.push(PpcQ3SceneReplayMemoryRegion { base_addr, data });
-        }
+        ppc_q3_capture_memory_region(&mut self.memory, memory_regions, base_addr, byte_count);
     }
 
     fn install_q3_scene_replay_memory_region(&mut self, region: &PpcQ3SceneReplayMemoryRegion) {
@@ -1369,10 +1258,74 @@ impl PpcLoadedApp {
             .add_region(region.base_addr, region.data.clone());
     }
 
+    /// Read trimesh geometry from the submit-time copy when the command has
+    /// one, and from live guest memory otherwise.
+    fn q3_geometry_read_u32(
+        &mut self,
+        regions: &[PpcQ3SceneReplayMemoryRegion],
+        addr: u32,
+    ) -> Option<u32> {
+        ppc_q3_captured_u32(regions, addr).or_else(|| self.memory.read_u32_be(addr))
+    }
+
+    fn q3_geometry_read_f32(
+        &mut self,
+        regions: &[PpcQ3SceneReplayMemoryRegion],
+        addr: u32,
+    ) -> Option<f32> {
+        self.q3_geometry_read_u32(regions, addr).map(f32::from_bits)
+    }
+
+    fn q3_geometry_read_vector2d(
+        &mut self,
+        regions: &[PpcQ3SceneReplayMemoryRegion],
+        addr: u32,
+    ) -> Option<(f32, f32)> {
+        Some((
+            self.q3_geometry_read_f32(regions, addr)?,
+            self.q3_geometry_read_f32(regions, addr.checked_add(4)?)?,
+        ))
+    }
+
+    fn q3_geometry_read_vector3d(
+        &mut self,
+        regions: &[PpcQ3SceneReplayMemoryRegion],
+        addr: u32,
+    ) -> Option<(f32, f32, f32)> {
+        Some((
+            self.q3_geometry_read_f32(regions, addr)?,
+            self.q3_geometry_read_f32(regions, addr.checked_add(4)?)?,
+            self.q3_geometry_read_f32(regions, addr.checked_add(8)?)?,
+        ))
+    }
+
+    /// Drop submit-time trimesh copies once no queued, completed, or
+    /// retained frame names them.
+    fn prune_q3_immediate_trimeshes(&mut self) {
+        if self.q3_immediate_trimeshes.is_empty() {
+            return;
+        }
+        let submissions = self
+            .q3_submissions
+            .iter()
+            .chain(
+                self.q3_completed_frames
+                    .iter()
+                    .flat_map(|frame| frame.submissions.iter()),
+            )
+            .chain(
+                self.q3_retained_frames
+                    .iter()
+                    .flat_map(|record| record.frame.submissions.iter()),
+            );
+        self.q3_immediate_trimeshes.retain_referenced(submissions);
+    }
+
     fn q3_software_trimesh_points(
         &mut self,
         command: &PpcQ3SceneTriMeshCommand,
     ) -> Option<Vec<(f32, f32, f32)>> {
+        let regions = &command.geometry.memory_regions;
         let count =
             ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_NUM_POINTS_OFFSET)?;
         let points_ptr =
@@ -1384,7 +1337,7 @@ impl PpcLoadedApp {
         for index in 0..count {
             let point_ptr = points_ptr.checked_add(index.checked_mul(PPC_Q3_POINT3D_SIZE)?)?;
             point_ptr.checked_add(PPC_Q3_POINT3D_SIZE.saturating_sub(1))?;
-            let point = ppc_read_q3_vector3d(&mut self.memory, point_ptr)?;
+            let point = self.q3_geometry_read_vector3d(regions, point_ptr)?;
             if !ppc_q3_point_finite(point) {
                 return None;
             }
@@ -1398,6 +1351,7 @@ impl PpcLoadedApp {
         command: &PpcQ3SceneTriMeshCommand,
         point_count: usize,
     ) -> Vec<PpcQ3SoftwareTriangle> {
+        let regions = &command.geometry.memory_regions;
         let Some(count) =
             ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_NUM_TRIANGLES_OFFSET)
         else {
@@ -1419,7 +1373,7 @@ impl PpcLoadedApp {
             let Some(triangle_ptr) = triangles_ptr.checked_add(triangle_offset) else {
                 break;
             };
-            let Some(a) = self.memory.read_u32_be(triangle_ptr) else {
+            let Some(a) = self.q3_geometry_read_u32(regions, triangle_ptr) else {
                 continue;
             };
             let Some(b_ptr) = triangle_ptr.checked_add(4) else {
@@ -1428,10 +1382,10 @@ impl PpcLoadedApp {
             let Some(c_ptr) = triangle_ptr.checked_add(8) else {
                 continue;
             };
-            let Some(b) = self.memory.read_u32_be(b_ptr) else {
+            let Some(b) = self.q3_geometry_read_u32(regions, b_ptr) else {
                 continue;
             };
-            let Some(c) = self.memory.read_u32_be(c_ptr) else {
+            let Some(c) = self.q3_geometry_read_u32(regions, c_ptr) else {
                 continue;
             };
             let Ok(a) = usize::try_from(a) else {
@@ -1461,6 +1415,7 @@ impl PpcLoadedApp {
         command: &PpcQ3SceneTriMeshCommand,
         point_count: usize,
     ) -> Vec<PpcQ3SoftwareEdge> {
+        let regions = &command.geometry.memory_regions;
         let Some(count) =
             ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_NUM_EDGES_OFFSET)
         else {
@@ -1482,13 +1437,13 @@ impl PpcLoadedApp {
             let Some(edge_ptr) = edges_ptr.checked_add(edge_offset) else {
                 break;
             };
-            let Some(a) = self.memory.read_u32_be(edge_ptr) else {
+            let Some(a) = self.q3_geometry_read_u32(regions, edge_ptr) else {
                 continue;
             };
             let Some(b_ptr) = edge_ptr.checked_add(4) else {
                 continue;
             };
-            let Some(b) = self.memory.read_u32_be(b_ptr) else {
+            let Some(b) = self.q3_geometry_read_u32(regions, b_ptr) else {
                 continue;
             };
             let Ok(a) = usize::try_from(a) else {
@@ -1514,6 +1469,7 @@ impl PpcLoadedApp {
         &mut self,
         command: &PpcQ3SceneTriMeshCommand,
     ) -> Option<Vec<(f32, f32, f32)>> {
+        let regions = &command.geometry.memory_regions;
         let triangle_count =
             ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_NUM_TRIANGLES_OFFSET)?;
         let attr_count = ppc_q3_trimesh_header_u32(
@@ -1536,11 +1492,11 @@ impl PpcLoadedApp {
         for index in 0..attr_count {
             let entry_ptr =
                 attr_ptr.checked_add(index.checked_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE)?)?;
-            let attr_type = self.memory.read_u32_be(entry_ptr)?;
-            let data_ptr = self.memory.read_u32_be(entry_ptr.checked_add(4)?)?;
+            let attr_type = self.q3_geometry_read_u32(regions, entry_ptr)?;
+            let data_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(4)?)?;
             if attr_type == PPC_Q3_ATTRIBUTE_TYPE_DIFFUSE_COLOR && data_ptr != 0 {
                 let triangle_count = usize::try_from(triangle_count).ok()?;
-                return self.q3_software_read_vertex_colors(data_ptr, triangle_count);
+                return self.q3_software_read_vertex_colors(regions, data_ptr, triangle_count);
             }
         }
         None
@@ -1550,6 +1506,7 @@ impl PpcLoadedApp {
         &mut self,
         command: &PpcQ3SceneTriMeshCommand,
     ) -> Option<Vec<f32>> {
+        let regions = &command.geometry.memory_regions;
         let triangle_count =
             ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_NUM_TRIANGLES_OFFSET)?;
         let attr_count = ppc_q3_trimesh_header_u32(
@@ -1572,11 +1529,15 @@ impl PpcLoadedApp {
         for index in 0..attr_count {
             let entry_ptr =
                 attr_ptr.checked_add(index.checked_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE)?)?;
-            let attr_type = self.memory.read_u32_be(entry_ptr)?;
-            let data_ptr = self.memory.read_u32_be(entry_ptr.checked_add(4)?)?;
+            let attr_type = self.q3_geometry_read_u32(regions, entry_ptr)?;
+            let data_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(4)?)?;
             if attr_type == PPC_Q3_ATTRIBUTE_TYPE_AMBIENT_COEFFICIENT && data_ptr != 0 {
                 let triangle_count = usize::try_from(triangle_count).ok()?;
-                return self.q3_software_read_vertex_unit_scalars(data_ptr, triangle_count);
+                return self.q3_software_read_vertex_unit_scalars(
+                    regions,
+                    data_ptr,
+                    triangle_count,
+                );
             }
         }
         None
@@ -1586,6 +1547,7 @@ impl PpcLoadedApp {
         &mut self,
         command: &PpcQ3SceneTriMeshCommand,
     ) -> Option<Vec<(f32, f32, f32)>> {
+        let regions = &command.geometry.memory_regions;
         let triangle_count =
             ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_NUM_TRIANGLES_OFFSET)?;
         let attr_count = ppc_q3_trimesh_header_u32(
@@ -1608,11 +1570,11 @@ impl PpcLoadedApp {
         for index in 0..attr_count {
             let entry_ptr =
                 attr_ptr.checked_add(index.checked_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE)?)?;
-            let attr_type = self.memory.read_u32_be(entry_ptr)?;
-            let data_ptr = self.memory.read_u32_be(entry_ptr.checked_add(4)?)?;
+            let attr_type = self.q3_geometry_read_u32(regions, entry_ptr)?;
+            let data_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(4)?)?;
             if attr_type == PPC_Q3_ATTRIBUTE_TYPE_NORMAL && data_ptr != 0 {
                 let triangle_count = usize::try_from(triangle_count).ok()?;
-                return self.q3_software_read_vertex_normals(data_ptr, triangle_count);
+                return self.q3_software_read_vertex_normals(regions, data_ptr, triangle_count);
             }
         }
         None
@@ -1622,6 +1584,7 @@ impl PpcLoadedApp {
         &mut self,
         command: &PpcQ3SceneTriMeshCommand,
     ) -> Option<Vec<bool>> {
+        let regions = &command.geometry.memory_regions;
         let triangle_count =
             ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_NUM_TRIANGLES_OFFSET)?;
         let attr_count = ppc_q3_trimesh_header_u32(
@@ -1644,11 +1607,11 @@ impl PpcLoadedApp {
         for index in 0..attr_count {
             let entry_ptr =
                 attr_ptr.checked_add(index.checked_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE)?)?;
-            let attr_type = self.memory.read_u32_be(entry_ptr)?;
-            let data_ptr = self.memory.read_u32_be(entry_ptr.checked_add(4)?)?;
+            let attr_type = self.q3_geometry_read_u32(regions, entry_ptr)?;
+            let data_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(4)?)?;
             if attr_type == PPC_Q3_ATTRIBUTE_TYPE_HIGHLIGHT_STATE && data_ptr != 0 {
                 let triangle_count = usize::try_from(triangle_count).ok()?;
-                return self.q3_software_read_vertex_switches(data_ptr, triangle_count);
+                return self.q3_software_read_vertex_switches(regions, data_ptr, triangle_count);
             }
         }
         None
@@ -1658,6 +1621,7 @@ impl PpcLoadedApp {
         &mut self,
         command: &PpcQ3SceneTriMeshCommand,
     ) -> Option<Vec<(f32, f32, f32)>> {
+        let regions = &command.geometry.memory_regions;
         let edge_count =
             ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_NUM_EDGES_OFFSET)?;
         let attr_count = ppc_q3_trimesh_header_u32(
@@ -1680,11 +1644,11 @@ impl PpcLoadedApp {
         for index in 0..attr_count {
             let entry_ptr =
                 attr_ptr.checked_add(index.checked_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE)?)?;
-            let attr_type = self.memory.read_u32_be(entry_ptr)?;
-            let data_ptr = self.memory.read_u32_be(entry_ptr.checked_add(4)?)?;
+            let attr_type = self.q3_geometry_read_u32(regions, entry_ptr)?;
+            let data_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(4)?)?;
             if attr_type == PPC_Q3_ATTRIBUTE_TYPE_DIFFUSE_COLOR && data_ptr != 0 {
                 let edge_count = usize::try_from(edge_count).ok()?;
-                return self.q3_software_read_vertex_colors(data_ptr, edge_count);
+                return self.q3_software_read_vertex_colors(regions, data_ptr, edge_count);
             }
         }
         None
@@ -1694,6 +1658,7 @@ impl PpcLoadedApp {
         &mut self,
         command: &PpcQ3SceneTriMeshCommand,
     ) -> Option<Vec<f32>> {
+        let regions = &command.geometry.memory_regions;
         let edge_count =
             ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_NUM_EDGES_OFFSET)?;
         let attr_count = ppc_q3_trimesh_header_u32(
@@ -1716,11 +1681,11 @@ impl PpcLoadedApp {
         for index in 0..attr_count {
             let entry_ptr =
                 attr_ptr.checked_add(index.checked_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE)?)?;
-            let attr_type = self.memory.read_u32_be(entry_ptr)?;
-            let data_ptr = self.memory.read_u32_be(entry_ptr.checked_add(4)?)?;
+            let attr_type = self.q3_geometry_read_u32(regions, entry_ptr)?;
+            let data_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(4)?)?;
             if attr_type == PPC_Q3_ATTRIBUTE_TYPE_AMBIENT_COEFFICIENT && data_ptr != 0 {
                 let edge_count = usize::try_from(edge_count).ok()?;
-                return self.q3_software_read_vertex_unit_scalars(data_ptr, edge_count);
+                return self.q3_software_read_vertex_unit_scalars(regions, data_ptr, edge_count);
             }
         }
         None
@@ -1730,6 +1695,7 @@ impl PpcLoadedApp {
         &mut self,
         command: &PpcQ3SceneTriMeshCommand,
     ) -> Option<Vec<(f32, f32, f32)>> {
+        let regions = &command.geometry.memory_regions;
         let edge_count =
             ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_NUM_EDGES_OFFSET)?;
         let attr_count = ppc_q3_trimesh_header_u32(
@@ -1752,11 +1718,11 @@ impl PpcLoadedApp {
         for index in 0..attr_count {
             let entry_ptr =
                 attr_ptr.checked_add(index.checked_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE)?)?;
-            let attr_type = self.memory.read_u32_be(entry_ptr)?;
-            let data_ptr = self.memory.read_u32_be(entry_ptr.checked_add(4)?)?;
+            let attr_type = self.q3_geometry_read_u32(regions, entry_ptr)?;
+            let data_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(4)?)?;
             if attr_type == PPC_Q3_ATTRIBUTE_TYPE_SPECULAR_COLOR && data_ptr != 0 {
                 let edge_count = usize::try_from(edge_count).ok()?;
-                return self.q3_software_read_vertex_colors(data_ptr, edge_count);
+                return self.q3_software_read_vertex_colors(regions, data_ptr, edge_count);
             }
         }
         None
@@ -1766,6 +1732,7 @@ impl PpcLoadedApp {
         &mut self,
         command: &PpcQ3SceneTriMeshCommand,
     ) -> Option<Vec<f32>> {
+        let regions = &command.geometry.memory_regions;
         let edge_count =
             ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_NUM_EDGES_OFFSET)?;
         let attr_count = ppc_q3_trimesh_header_u32(
@@ -1788,11 +1755,11 @@ impl PpcLoadedApp {
         for index in 0..attr_count {
             let entry_ptr =
                 attr_ptr.checked_add(index.checked_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE)?)?;
-            let attr_type = self.memory.read_u32_be(entry_ptr)?;
-            let data_ptr = self.memory.read_u32_be(entry_ptr.checked_add(4)?)?;
+            let attr_type = self.q3_geometry_read_u32(regions, entry_ptr)?;
+            let data_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(4)?)?;
             if attr_type == PPC_Q3_ATTRIBUTE_TYPE_SPECULAR_CONTROL && data_ptr != 0 {
                 let edge_count = usize::try_from(edge_count).ok()?;
-                return self.q3_software_read_vertex_scalars(data_ptr, edge_count);
+                return self.q3_software_read_vertex_scalars(regions, data_ptr, edge_count);
             }
         }
         None
@@ -1802,6 +1769,7 @@ impl PpcLoadedApp {
         &mut self,
         command: &PpcQ3SceneTriMeshCommand,
     ) -> Option<Vec<(f32, f32, f32)>> {
+        let regions = &command.geometry.memory_regions;
         let edge_count =
             ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_NUM_EDGES_OFFSET)?;
         let attr_count = ppc_q3_trimesh_header_u32(
@@ -1824,11 +1792,11 @@ impl PpcLoadedApp {
         for index in 0..attr_count {
             let entry_ptr =
                 attr_ptr.checked_add(index.checked_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE)?)?;
-            let attr_type = self.memory.read_u32_be(entry_ptr)?;
-            let data_ptr = self.memory.read_u32_be(entry_ptr.checked_add(4)?)?;
+            let attr_type = self.q3_geometry_read_u32(regions, entry_ptr)?;
+            let data_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(4)?)?;
             if attr_type == PPC_Q3_ATTRIBUTE_TYPE_NORMAL && data_ptr != 0 {
                 let edge_count = usize::try_from(edge_count).ok()?;
-                return self.q3_software_read_vertex_normals(data_ptr, edge_count);
+                return self.q3_software_read_vertex_normals(regions, data_ptr, edge_count);
             }
         }
         None
@@ -1838,6 +1806,7 @@ impl PpcLoadedApp {
         &mut self,
         command: &PpcQ3SceneTriMeshCommand,
     ) -> Option<Vec<bool>> {
+        let regions = &command.geometry.memory_regions;
         let edge_count =
             ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_NUM_EDGES_OFFSET)?;
         let attr_count = ppc_q3_trimesh_header_u32(
@@ -1860,11 +1829,11 @@ impl PpcLoadedApp {
         for index in 0..attr_count {
             let entry_ptr =
                 attr_ptr.checked_add(index.checked_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE)?)?;
-            let attr_type = self.memory.read_u32_be(entry_ptr)?;
-            let data_ptr = self.memory.read_u32_be(entry_ptr.checked_add(4)?)?;
+            let attr_type = self.q3_geometry_read_u32(regions, entry_ptr)?;
+            let data_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(4)?)?;
             if attr_type == PPC_Q3_ATTRIBUTE_TYPE_HIGHLIGHT_STATE && data_ptr != 0 {
                 let edge_count = usize::try_from(edge_count).ok()?;
-                return self.q3_software_read_vertex_switches(data_ptr, edge_count);
+                return self.q3_software_read_vertex_switches(regions, data_ptr, edge_count);
             }
         }
         None
@@ -1874,6 +1843,7 @@ impl PpcLoadedApp {
         &mut self,
         command: &PpcQ3SceneTriMeshCommand,
     ) -> Option<Vec<(f32, f32, f32)>> {
+        let regions = &command.geometry.memory_regions;
         let triangle_count =
             ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_NUM_TRIANGLES_OFFSET)?;
         let attr_count = ppc_q3_trimesh_header_u32(
@@ -1896,11 +1866,11 @@ impl PpcLoadedApp {
         for index in 0..attr_count {
             let entry_ptr =
                 attr_ptr.checked_add(index.checked_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE)?)?;
-            let attr_type = self.memory.read_u32_be(entry_ptr)?;
-            let data_ptr = self.memory.read_u32_be(entry_ptr.checked_add(4)?)?;
+            let attr_type = self.q3_geometry_read_u32(regions, entry_ptr)?;
+            let data_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(4)?)?;
             if attr_type == PPC_Q3_ATTRIBUTE_TYPE_SPECULAR_COLOR && data_ptr != 0 {
                 let triangle_count = usize::try_from(triangle_count).ok()?;
-                return self.q3_software_read_vertex_colors(data_ptr, triangle_count);
+                return self.q3_software_read_vertex_colors(regions, data_ptr, triangle_count);
             }
         }
         None
@@ -1910,6 +1880,7 @@ impl PpcLoadedApp {
         &mut self,
         command: &PpcQ3SceneTriMeshCommand,
     ) -> Option<Vec<f32>> {
+        let regions = &command.geometry.memory_regions;
         let triangle_count =
             ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_NUM_TRIANGLES_OFFSET)?;
         let attr_count = ppc_q3_trimesh_header_u32(
@@ -1932,11 +1903,11 @@ impl PpcLoadedApp {
         for index in 0..attr_count {
             let entry_ptr =
                 attr_ptr.checked_add(index.checked_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE)?)?;
-            let attr_type = self.memory.read_u32_be(entry_ptr)?;
-            let data_ptr = self.memory.read_u32_be(entry_ptr.checked_add(4)?)?;
+            let attr_type = self.q3_geometry_read_u32(regions, entry_ptr)?;
+            let data_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(4)?)?;
             if attr_type == PPC_Q3_ATTRIBUTE_TYPE_SPECULAR_CONTROL && data_ptr != 0 {
                 let triangle_count = usize::try_from(triangle_count).ok()?;
-                return self.q3_software_read_vertex_scalars(data_ptr, triangle_count);
+                return self.q3_software_read_vertex_scalars(regions, data_ptr, triangle_count);
             }
         }
         None
@@ -1946,6 +1917,7 @@ impl PpcLoadedApp {
         &mut self,
         command: &PpcQ3SceneTriMeshCommand,
     ) -> Option<Vec<f32>> {
+        let regions = &command.geometry.memory_regions;
         let triangle_count =
             ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_NUM_TRIANGLES_OFFSET)?;
         let attr_count = ppc_q3_trimesh_header_u32(
@@ -1968,11 +1940,11 @@ impl PpcLoadedApp {
         for index in 0..attr_count {
             let entry_ptr =
                 attr_ptr.checked_add(index.checked_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE)?)?;
-            let attr_type = self.memory.read_u32_be(entry_ptr)?;
-            let data_ptr = self.memory.read_u32_be(entry_ptr.checked_add(4)?)?;
+            let attr_type = self.q3_geometry_read_u32(regions, entry_ptr)?;
+            let data_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(4)?)?;
             if attr_type == PPC_Q3_ATTRIBUTE_TYPE_TRANSPARENCY_COLOR && data_ptr != 0 {
                 let triangle_count = usize::try_from(triangle_count).ok()?;
-                return self.q3_software_read_vertex_alphas(data_ptr, triangle_count);
+                return self.q3_software_read_vertex_alphas(regions, data_ptr, triangle_count);
             }
         }
         None
@@ -1982,6 +1954,7 @@ impl PpcLoadedApp {
         &mut self,
         command: &PpcQ3SceneTriMeshCommand,
     ) -> Option<Vec<f32>> {
+        let regions = &command.geometry.memory_regions;
         let edge_count =
             ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_NUM_EDGES_OFFSET)?;
         let attr_count = ppc_q3_trimesh_header_u32(
@@ -2004,11 +1977,11 @@ impl PpcLoadedApp {
         for index in 0..attr_count {
             let entry_ptr =
                 attr_ptr.checked_add(index.checked_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE)?)?;
-            let attr_type = self.memory.read_u32_be(entry_ptr)?;
-            let data_ptr = self.memory.read_u32_be(entry_ptr.checked_add(4)?)?;
+            let attr_type = self.q3_geometry_read_u32(regions, entry_ptr)?;
+            let data_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(4)?)?;
             if attr_type == PPC_Q3_ATTRIBUTE_TYPE_TRANSPARENCY_COLOR && data_ptr != 0 {
                 let edge_count = usize::try_from(edge_count).ok()?;
-                return self.q3_software_read_vertex_alphas(data_ptr, edge_count);
+                return self.q3_software_read_vertex_alphas(regions, data_ptr, edge_count);
             }
         }
         None
@@ -2019,6 +1992,7 @@ impl PpcLoadedApp {
         command: &PpcQ3SceneTriMeshCommand,
         point_count: usize,
     ) -> Option<Vec<(f32, f32)>> {
+        let regions = &command.geometry.memory_regions;
         let attr_count = ppc_q3_trimesh_header_u32(
             &command.geometry.data,
             PPC_Q3_TRIMESH_NUM_VERTEX_ATTRIBUTE_TYPES_OFFSET,
@@ -2038,17 +2012,17 @@ impl PpcLoadedApp {
         for index in 0..attr_count {
             let entry_ptr =
                 attr_ptr.checked_add(index.checked_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE)?)?;
-            let attr_type = self.memory.read_u32_be(entry_ptr)?;
-            let data_ptr = self.memory.read_u32_be(entry_ptr.checked_add(4)?)?;
+            let attr_type = self.q3_geometry_read_u32(regions, entry_ptr)?;
+            let data_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(4)?)?;
             if data_ptr == 0 {
                 continue;
             }
             match attr_type {
                 PPC_Q3_ATTRIBUTE_TYPE_SURFACE_UV => {
-                    return self.q3_software_read_vertex_uvs(data_ptr, point_count);
+                    return self.q3_software_read_vertex_uvs(regions, data_ptr, point_count);
                 }
                 PPC_Q3_ATTRIBUTE_TYPE_SHADING_UV if shading_uvs.is_none() => {
-                    shading_uvs = self.q3_software_read_vertex_uvs(data_ptr, point_count);
+                    shading_uvs = self.q3_software_read_vertex_uvs(regions, data_ptr, point_count);
                 }
                 _ => {}
             }
@@ -2058,6 +2032,7 @@ impl PpcLoadedApp {
 
     fn q3_software_read_vertex_uvs(
         &mut self,
+        regions: &[PpcQ3SceneReplayMemoryRegion],
         data_ptr: u32,
         point_count: usize,
     ) -> Option<Vec<(f32, f32)>> {
@@ -2065,7 +2040,7 @@ impl PpcLoadedApp {
         let mut uvs = Vec::with_capacity(point_count);
         for index in 0..count {
             let uv_ptr = data_ptr.checked_add(index.checked_mul(PPC_Q3_VECTOR2D_SIZE)?)?;
-            let uv = ppc_read_q3_vector2d(&mut self.memory, uv_ptr)?;
+            let uv = self.q3_geometry_read_vector2d(regions, uv_ptr)?;
             if !uv.0.is_finite() || !uv.1.is_finite() {
                 return None;
             }
@@ -2079,6 +2054,7 @@ impl PpcLoadedApp {
         command: &PpcQ3SceneTriMeshCommand,
         point_count: usize,
     ) -> Option<Vec<(f32, f32, f32)>> {
+        let regions = &command.geometry.memory_regions;
         let attr_count = ppc_q3_trimesh_header_u32(
             &command.geometry.data,
             PPC_Q3_TRIMESH_NUM_VERTEX_ATTRIBUTE_TYPES_OFFSET,
@@ -2097,10 +2073,10 @@ impl PpcLoadedApp {
         for index in 0..attr_count {
             let entry_ptr =
                 attr_ptr.checked_add(index.checked_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE)?)?;
-            let attr_type = self.memory.read_u32_be(entry_ptr)?;
-            let data_ptr = self.memory.read_u32_be(entry_ptr.checked_add(4)?)?;
+            let attr_type = self.q3_geometry_read_u32(regions, entry_ptr)?;
+            let data_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(4)?)?;
             if attr_type == PPC_Q3_ATTRIBUTE_TYPE_DIFFUSE_COLOR && data_ptr != 0 {
-                return self.q3_software_read_vertex_colors(data_ptr, point_count);
+                return self.q3_software_read_vertex_colors(regions, data_ptr, point_count);
             }
         }
         None
@@ -2111,6 +2087,7 @@ impl PpcLoadedApp {
         command: &PpcQ3SceneTriMeshCommand,
         point_count: usize,
     ) -> Option<Vec<f32>> {
+        let regions = &command.geometry.memory_regions;
         let attr_count = ppc_q3_trimesh_header_u32(
             &command.geometry.data,
             PPC_Q3_TRIMESH_NUM_VERTEX_ATTRIBUTE_TYPES_OFFSET,
@@ -2129,10 +2106,10 @@ impl PpcLoadedApp {
         for index in 0..attr_count {
             let entry_ptr =
                 attr_ptr.checked_add(index.checked_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE)?)?;
-            let attr_type = self.memory.read_u32_be(entry_ptr)?;
-            let data_ptr = self.memory.read_u32_be(entry_ptr.checked_add(4)?)?;
+            let attr_type = self.q3_geometry_read_u32(regions, entry_ptr)?;
+            let data_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(4)?)?;
             if attr_type == PPC_Q3_ATTRIBUTE_TYPE_AMBIENT_COEFFICIENT && data_ptr != 0 {
-                return self.q3_software_read_vertex_unit_scalars(data_ptr, point_count);
+                return self.q3_software_read_vertex_unit_scalars(regions, data_ptr, point_count);
             }
         }
         None
@@ -2140,6 +2117,7 @@ impl PpcLoadedApp {
 
     fn q3_software_read_vertex_colors(
         &mut self,
+        regions: &[PpcQ3SceneReplayMemoryRegion],
         data_ptr: u32,
         point_count: usize,
     ) -> Option<Vec<(f32, f32, f32)>> {
@@ -2147,7 +2125,7 @@ impl PpcLoadedApp {
         let mut colors = Vec::with_capacity(point_count);
         for index in 0..count {
             let color_ptr = data_ptr.checked_add(index.checked_mul(PPC_Q3_POINT3D_SIZE)?)?;
-            let color = ppc_read_q3_color_rgb(&mut self.memory, color_ptr)?;
+            let color = self.q3_geometry_read_vector3d(regions, color_ptr)?;
             if !ppc_q3_color_finite(color) {
                 return None;
             }
@@ -2161,6 +2139,7 @@ impl PpcLoadedApp {
         command: &PpcQ3SceneTriMeshCommand,
         point_count: usize,
     ) -> Option<Vec<(f32, f32, f32)>> {
+        let regions = &command.geometry.memory_regions;
         let attr_count = ppc_q3_trimesh_header_u32(
             &command.geometry.data,
             PPC_Q3_TRIMESH_NUM_VERTEX_ATTRIBUTE_TYPES_OFFSET,
@@ -2179,10 +2158,10 @@ impl PpcLoadedApp {
         for index in 0..attr_count {
             let entry_ptr =
                 attr_ptr.checked_add(index.checked_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE)?)?;
-            let attr_type = self.memory.read_u32_be(entry_ptr)?;
-            let data_ptr = self.memory.read_u32_be(entry_ptr.checked_add(4)?)?;
+            let attr_type = self.q3_geometry_read_u32(regions, entry_ptr)?;
+            let data_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(4)?)?;
             if attr_type == PPC_Q3_ATTRIBUTE_TYPE_SPECULAR_COLOR && data_ptr != 0 {
-                return self.q3_software_read_vertex_colors(data_ptr, point_count);
+                return self.q3_software_read_vertex_colors(regions, data_ptr, point_count);
             }
         }
         None
@@ -2193,6 +2172,7 @@ impl PpcLoadedApp {
         command: &PpcQ3SceneTriMeshCommand,
         point_count: usize,
     ) -> Option<Vec<f32>> {
+        let regions = &command.geometry.memory_regions;
         let attr_count = ppc_q3_trimesh_header_u32(
             &command.geometry.data,
             PPC_Q3_TRIMESH_NUM_VERTEX_ATTRIBUTE_TYPES_OFFSET,
@@ -2211,10 +2191,10 @@ impl PpcLoadedApp {
         for index in 0..attr_count {
             let entry_ptr =
                 attr_ptr.checked_add(index.checked_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE)?)?;
-            let attr_type = self.memory.read_u32_be(entry_ptr)?;
-            let data_ptr = self.memory.read_u32_be(entry_ptr.checked_add(4)?)?;
+            let attr_type = self.q3_geometry_read_u32(regions, entry_ptr)?;
+            let data_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(4)?)?;
             if attr_type == PPC_Q3_ATTRIBUTE_TYPE_SPECULAR_CONTROL && data_ptr != 0 {
-                return self.q3_software_read_vertex_scalars(data_ptr, point_count);
+                return self.q3_software_read_vertex_scalars(regions, data_ptr, point_count);
             }
         }
         None
@@ -2225,6 +2205,7 @@ impl PpcLoadedApp {
         command: &PpcQ3SceneTriMeshCommand,
         point_count: usize,
     ) -> Option<Vec<bool>> {
+        let regions = &command.geometry.memory_regions;
         let attr_count = ppc_q3_trimesh_header_u32(
             &command.geometry.data,
             PPC_Q3_TRIMESH_NUM_VERTEX_ATTRIBUTE_TYPES_OFFSET,
@@ -2243,10 +2224,10 @@ impl PpcLoadedApp {
         for index in 0..attr_count {
             let entry_ptr =
                 attr_ptr.checked_add(index.checked_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE)?)?;
-            let attr_type = self.memory.read_u32_be(entry_ptr)?;
-            let data_ptr = self.memory.read_u32_be(entry_ptr.checked_add(4)?)?;
+            let attr_type = self.q3_geometry_read_u32(regions, entry_ptr)?;
+            let data_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(4)?)?;
             if attr_type == PPC_Q3_ATTRIBUTE_TYPE_HIGHLIGHT_STATE && data_ptr != 0 {
-                return self.q3_software_read_vertex_switches(data_ptr, point_count);
+                return self.q3_software_read_vertex_switches(regions, data_ptr, point_count);
             }
         }
         None
@@ -2254,6 +2235,7 @@ impl PpcLoadedApp {
 
     fn q3_software_read_vertex_scalars(
         &mut self,
+        regions: &[PpcQ3SceneReplayMemoryRegion],
         data_ptr: u32,
         point_count: usize,
     ) -> Option<Vec<f32>> {
@@ -2261,7 +2243,7 @@ impl PpcLoadedApp {
         let mut values = Vec::with_capacity(point_count);
         for index in 0..count {
             let scalar_ptr = data_ptr.checked_add(index.checked_mul(4)?)?;
-            let value = ppc_read_f32_be(&mut self.memory, scalar_ptr)?;
+            let value = self.q3_geometry_read_f32(regions, scalar_ptr)?;
             if !value.is_finite() {
                 return None;
             }
@@ -2272,10 +2254,11 @@ impl PpcLoadedApp {
 
     fn q3_software_read_vertex_unit_scalars(
         &mut self,
+        regions: &[PpcQ3SceneReplayMemoryRegion],
         data_ptr: u32,
         point_count: usize,
     ) -> Option<Vec<f32>> {
-        self.q3_software_read_vertex_scalars(data_ptr, point_count)
+        self.q3_software_read_vertex_scalars(regions, data_ptr, point_count)
             .map(|mut values| {
                 for value in &mut values {
                     *value = value.clamp(0.0, 1.0);
@@ -2286,6 +2269,7 @@ impl PpcLoadedApp {
 
     fn q3_software_read_vertex_switches(
         &mut self,
+        regions: &[PpcQ3SceneReplayMemoryRegion],
         data_ptr: u32,
         point_count: usize,
     ) -> Option<Vec<bool>> {
@@ -2293,7 +2277,7 @@ impl PpcLoadedApp {
         let mut values = Vec::with_capacity(point_count);
         for index in 0..count {
             let scalar_ptr = data_ptr.checked_add(index.checked_mul(4)?)?;
-            let value = self.memory.read_u32_be(scalar_ptr)?;
+            let value = self.q3_geometry_read_u32(regions, scalar_ptr)?;
             values.push(value != 0);
         }
         Some(values)
@@ -2304,6 +2288,7 @@ impl PpcLoadedApp {
         command: &PpcQ3SceneTriMeshCommand,
         point_count: usize,
     ) -> Option<Vec<(f32, f32, f32)>> {
+        let regions = &command.geometry.memory_regions;
         let attr_count = ppc_q3_trimesh_header_u32(
             &command.geometry.data,
             PPC_Q3_TRIMESH_NUM_VERTEX_ATTRIBUTE_TYPES_OFFSET,
@@ -2322,10 +2307,10 @@ impl PpcLoadedApp {
         for index in 0..attr_count {
             let entry_ptr =
                 attr_ptr.checked_add(index.checked_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE)?)?;
-            let attr_type = self.memory.read_u32_be(entry_ptr)?;
-            let data_ptr = self.memory.read_u32_be(entry_ptr.checked_add(4)?)?;
+            let attr_type = self.q3_geometry_read_u32(regions, entry_ptr)?;
+            let data_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(4)?)?;
             if attr_type == PPC_Q3_ATTRIBUTE_TYPE_NORMAL && data_ptr != 0 {
-                return self.q3_software_read_vertex_normals(data_ptr, point_count);
+                return self.q3_software_read_vertex_normals(regions, data_ptr, point_count);
             }
         }
         None
@@ -2333,6 +2318,7 @@ impl PpcLoadedApp {
 
     fn q3_software_read_vertex_normals(
         &mut self,
+        regions: &[PpcQ3SceneReplayMemoryRegion],
         data_ptr: u32,
         point_count: usize,
     ) -> Option<Vec<(f32, f32, f32)>> {
@@ -2340,7 +2326,7 @@ impl PpcLoadedApp {
         let mut normals = Vec::with_capacity(point_count);
         for index in 0..count {
             let normal_ptr = data_ptr.checked_add(index.checked_mul(PPC_Q3_POINT3D_SIZE)?)?;
-            let normal = ppc_read_q3_vector3d(&mut self.memory, normal_ptr)?;
+            let normal = self.q3_geometry_read_vector3d(regions, normal_ptr)?;
             normals.push(ppc_q3_vector3d_normalized_value(normal)?);
         }
         Some(normals)
@@ -2351,6 +2337,7 @@ impl PpcLoadedApp {
         command: &PpcQ3SceneTriMeshCommand,
         point_count: usize,
     ) -> Option<Vec<f32>> {
+        let regions = &command.geometry.memory_regions;
         let attr_count = ppc_q3_trimesh_header_u32(
             &command.geometry.data,
             PPC_Q3_TRIMESH_NUM_VERTEX_ATTRIBUTE_TYPES_OFFSET,
@@ -2369,10 +2356,10 @@ impl PpcLoadedApp {
         for index in 0..attr_count {
             let entry_ptr =
                 attr_ptr.checked_add(index.checked_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE)?)?;
-            let attr_type = self.memory.read_u32_be(entry_ptr)?;
-            let data_ptr = self.memory.read_u32_be(entry_ptr.checked_add(4)?)?;
+            let attr_type = self.q3_geometry_read_u32(regions, entry_ptr)?;
+            let data_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(4)?)?;
             if attr_type == PPC_Q3_ATTRIBUTE_TYPE_TRANSPARENCY_COLOR && data_ptr != 0 {
-                return self.q3_software_read_vertex_alphas(data_ptr, point_count);
+                return self.q3_software_read_vertex_alphas(regions, data_ptr, point_count);
             }
         }
         None
@@ -2380,6 +2367,7 @@ impl PpcLoadedApp {
 
     fn q3_software_read_vertex_alphas(
         &mut self,
+        regions: &[PpcQ3SceneReplayMemoryRegion],
         data_ptr: u32,
         point_count: usize,
     ) -> Option<Vec<f32>> {
@@ -2387,7 +2375,7 @@ impl PpcLoadedApp {
         let mut alphas = Vec::with_capacity(point_count);
         for index in 0..count {
             let color_ptr = data_ptr.checked_add(index.checked_mul(PPC_Q3_POINT3D_SIZE)?)?;
-            let color = ppc_read_q3_color_rgb(&mut self.memory, color_ptr)?;
+            let color = self.q3_geometry_read_vector3d(regions, color_ptr)?;
             alphas.push(ppc_q3_software_transparency_color_alpha(color)?);
         }
         Some(alphas)

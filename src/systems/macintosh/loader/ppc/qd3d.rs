@@ -304,6 +304,12 @@ pub struct PpcQ3SceneSubmissionCommand {
 pub struct PpcQ3SceneTriMeshGeometry {
     pub source: PpcQ3SceneTriMeshSource,
     pub data: Vec<u8>,
+    /// Guest arrays captured when an immediate trimesh was submitted. The
+    /// renderer reads the arrays named by `data` from these copies before it
+    /// falls back to live guest memory, which the application may have
+    /// rewritten or released since the submit.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub memory_regions: Vec<PpcQ3SceneReplayMemoryRegion>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -316,6 +322,265 @@ pub enum PpcQ3SceneTriMeshSource {
 pub struct PpcQ3SceneReplayMemoryRegion {
     pub base_addr: u32,
     pub data: Vec<u8>,
+}
+
+/// An immediate trimesh as it stood when `Q3TriMesh_Submit` was called.
+///
+/// In immediate mode the application itself maintains the model data and
+/// can change it at any time, so the submit is where its contents count;
+/// "3D Graphics Programming with QuickDraw 3D" (1.5.4), Introduction,
+/// "Retained and Immediate Modes". Frames render after the guest has run
+/// on, so the header and the arrays it names are copied here and the
+/// submission's `secondary` field carries `id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PpcQ3ImmediateTriMeshRecord {
+    pub id: u32,
+    pub data_ptr: u32,
+    pub data: Vec<u8>,
+    pub memory_regions: Vec<PpcQ3SceneReplayMemoryRegion>,
+}
+
+/// Immediate trimesh copies awaiting render, keyed by submission id.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PpcQ3ImmediateTriMeshStore {
+    next_id: u32,
+    records: Vec<PpcQ3ImmediateTriMeshRecord>,
+}
+
+impl PpcQ3ImmediateTriMeshStore {
+    /// Ids stay below the QD3D object handle range so a submission's
+    /// `secondary` field never matches a disposed object's handle.
+    const MAX_ID: u32 = PPC_Q3_OBJECT_BASE - 1;
+
+    /// Copy the immediate trimesh at `data_ptr` and return its id, or `None`
+    /// when the header cannot be read.
+    pub fn capture(&mut self, memory: &mut PpcSectionMem, data_ptr: u32) -> Option<u32> {
+        let data = ppc_q3_read_bytes(memory, data_ptr, PPC_Q3_TRIMESH_DATA_SIZE)?;
+        let memory_regions = ppc_q3_capture_trimesh_memory_regions(memory, &data);
+        self.next_id = if self.next_id >= Self::MAX_ID {
+            1
+        } else {
+            self.next_id + 1
+        };
+        let id = self.next_id;
+        self.records.retain(|record| record.id != id);
+        self.records.push(PpcQ3ImmediateTriMeshRecord {
+            id,
+            data_ptr,
+            data,
+            memory_regions,
+        });
+        Some(id)
+    }
+
+    pub fn get(&self, id: u32, data_ptr: u32) -> Option<&PpcQ3ImmediateTriMeshRecord> {
+        if id == 0 {
+            return None;
+        }
+        self.records
+            .iter()
+            .find(|record| record.id == id && record.data_ptr == data_ptr)
+    }
+
+    /// Drop the copies no queued, completed, or retained submission names.
+    pub fn retain_referenced<'a>(
+        &mut self,
+        submissions: impl IntoIterator<Item = &'a PpcQ3SubmissionRecord>,
+    ) {
+        if self.records.is_empty() {
+            return;
+        }
+        let referenced: Vec<(u32, u32)> = submissions
+            .into_iter()
+            .filter(|submission| {
+                submission.kind == PpcQ3SubmissionKind::TriMesh && submission.secondary != 0
+            })
+            .map(|submission| (submission.secondary, submission.primary))
+            .collect();
+        self.records
+            .retain(|record| referenced.contains(&(record.id, record.data_ptr)));
+    }
+
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+}
+
+/// Copy the guest arrays a trimesh header names, as the software renderer
+/// reads them: points, triangles, edges, and each attribute table with its
+/// per-element data.
+pub fn ppc_q3_capture_trimesh_memory_regions(
+    memory: &mut PpcSectionMem,
+    header: &[u8],
+) -> Vec<PpcQ3SceneReplayMemoryRegion> {
+    let mut memory_regions = Vec::new();
+    let point_count =
+        ppc_q3_trimesh_header_u32(header, PPC_Q3_TRIMESH_NUM_POINTS_OFFSET).unwrap_or(0);
+    let triangle_count =
+        ppc_q3_trimesh_header_u32(header, PPC_Q3_TRIMESH_NUM_TRIANGLES_OFFSET).unwrap_or(0);
+    let edge_count =
+        ppc_q3_trimesh_header_u32(header, PPC_Q3_TRIMESH_NUM_EDGES_OFFSET).unwrap_or(0);
+
+    if point_count != 0 && point_count <= PPC_Q3_SOFTWARE_RENDER_MAX_POINTS {
+        if let Some(points_ptr) = ppc_q3_trimesh_header_u32(header, PPC_Q3_TRIMESH_POINTS_OFFSET) {
+            ppc_q3_capture_memory_region(
+                memory,
+                &mut memory_regions,
+                points_ptr,
+                point_count.saturating_mul(PPC_Q3_POINT3D_SIZE),
+            );
+        }
+    }
+    if triangle_count != 0 && triangle_count <= PPC_Q3_SOFTWARE_RENDER_MAX_TRIANGLES {
+        if let Some(triangles_ptr) =
+            ppc_q3_trimesh_header_u32(header, PPC_Q3_TRIMESH_TRIANGLES_OFFSET)
+        {
+            ppc_q3_capture_memory_region(
+                memory,
+                &mut memory_regions,
+                triangles_ptr,
+                triangle_count.saturating_mul(PPC_Q3_TRIMESH_TRIANGLE_DATA_SIZE),
+            );
+        }
+    }
+    if edge_count != 0 && edge_count <= PPC_Q3_SOFTWARE_RENDER_MAX_EDGES {
+        if let Some(edges_ptr) = ppc_q3_trimesh_header_u32(header, PPC_Q3_TRIMESH_EDGES_OFFSET) {
+            ppc_q3_capture_memory_region(
+                memory,
+                &mut memory_regions,
+                edges_ptr,
+                edge_count.saturating_mul(PPC_Q3_TRIMESH_EDGE_DATA_SIZE),
+            );
+        }
+    }
+    for (count_offset, table_offset, element_count) in [
+        (
+            PPC_Q3_TRIMESH_NUM_TRIANGLE_ATTRIBUTE_TYPES_OFFSET,
+            PPC_Q3_TRIMESH_TRIANGLE_ATTRIBUTE_TYPES_OFFSET,
+            triangle_count,
+        ),
+        (
+            PPC_Q3_TRIMESH_NUM_EDGE_ATTRIBUTE_TYPES_OFFSET,
+            PPC_Q3_TRIMESH_EDGE_ATTRIBUTE_TYPES_OFFSET,
+            edge_count,
+        ),
+        (
+            PPC_Q3_TRIMESH_NUM_VERTEX_ATTRIBUTE_TYPES_OFFSET,
+            PPC_Q3_TRIMESH_VERTEX_ATTRIBUTE_TYPES_OFFSET,
+            point_count,
+        ),
+    ] {
+        ppc_q3_capture_trimesh_attribute_memory(
+            memory,
+            &mut memory_regions,
+            header,
+            count_offset,
+            table_offset,
+            element_count,
+        );
+    }
+    memory_regions
+}
+
+fn ppc_q3_capture_trimesh_attribute_memory(
+    memory: &mut PpcSectionMem,
+    memory_regions: &mut Vec<PpcQ3SceneReplayMemoryRegion>,
+    header: &[u8],
+    count_offset: u32,
+    table_offset: u32,
+    element_count: u32,
+) {
+    if element_count == 0 {
+        return;
+    }
+    let Some(attr_count) = ppc_q3_trimesh_header_u32(header, count_offset) else {
+        return;
+    };
+    let Some(attr_ptr) = ppc_q3_trimesh_header_u32(header, table_offset) else {
+        return;
+    };
+    if attr_count == 0 || attr_count > PPC_Q3_SOFTWARE_RENDER_MAX_ATTRIBUTE_TYPES || attr_ptr == 0 {
+        return;
+    }
+    ppc_q3_capture_memory_region(
+        memory,
+        memory_regions,
+        attr_ptr,
+        attr_count.saturating_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE),
+    );
+    for index in 0..attr_count {
+        let Some(entry_ptr) =
+            attr_ptr.checked_add(index.saturating_mul(PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE))
+        else {
+            return;
+        };
+        let Some(attr_type) = memory.read_u32_be(entry_ptr) else {
+            continue;
+        };
+        let Some(data_ptr) = memory.read_u32_be(entry_ptr.saturating_add(4)) else {
+            continue;
+        };
+        if data_ptr == 0 {
+            continue;
+        }
+        let Some(attr_size) = ppc_q3_attribute_data_size(attr_type) else {
+            continue;
+        };
+        ppc_q3_capture_memory_region(
+            memory,
+            memory_regions,
+            data_ptr,
+            element_count.saturating_mul(attr_size),
+        );
+    }
+}
+
+/// Copy `byte_count` guest bytes at `base_addr` into `memory_regions`,
+/// growing an existing copy that starts at the same address.
+pub fn ppc_q3_capture_memory_region(
+    memory: &mut PpcSectionMem,
+    memory_regions: &mut Vec<PpcQ3SceneReplayMemoryRegion>,
+    base_addr: u32,
+    byte_count: u32,
+) {
+    if base_addr == 0 || byte_count == 0 {
+        return;
+    }
+    let Ok(byte_count) = usize::try_from(byte_count) else {
+        return;
+    };
+    if let Some(region) = memory_regions
+        .iter_mut()
+        .find(|region| region.base_addr == base_addr)
+    {
+        if region.data.len() >= byte_count {
+            return;
+        }
+        let mut data = vec![0; byte_count];
+        if memory.read_bytes_into(base_addr, &mut data).is_some() {
+            region.data = data;
+        }
+        return;
+    }
+
+    let mut data = vec![0; byte_count];
+    if memory.read_bytes_into(base_addr, &mut data).is_some() {
+        memory_regions.push(PpcQ3SceneReplayMemoryRegion { base_addr, data });
+    }
+}
+
+/// The big-endian word at `addr` from the first captured region holding all
+/// four bytes.
+pub fn ppc_q3_captured_u32(regions: &[PpcQ3SceneReplayMemoryRegion], addr: u32) -> Option<u32> {
+    regions.iter().find_map(|region| {
+        let offset = usize::try_from(addr.checked_sub(region.base_addr)?).ok()?;
+        let bytes = region.data.get(offset..offset.checked_add(4)?)?;
+        Some(u32::from_be_bytes(bytes.try_into().ok()?))
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -14018,10 +14283,11 @@ pub fn ppc_q3_submit(
     q3_mipmap_textures: &[PpcQ3MipmapTextureRecord],
     q3_trimeshes: &[PpcQ3TriMeshRecord],
     q3_lights: &[PpcQ3LightRecord],
+    q3_immediate_trimeshes: &mut PpcQ3ImmediateTriMeshStore,
     q3_error_state: &mut PpcQ3ErrorState,
     kind: PpcQ3SubmissionKind,
 ) -> bool {
-    let (view, primary, secondary) = match kind {
+    let (view, primary, mut secondary) = match kind {
         PpcQ3SubmissionKind::ResetTransform
         | PpcQ3SubmissionKind::Push
         | PpcQ3SubmissionKind::Pop => (cpu.gpr[3], 0, 0),
@@ -14081,6 +14347,13 @@ pub fn ppc_q3_submit(
         | PpcQ3SubmissionKind::TriMesh
         | PpcQ3SubmissionKind::Object => ppc_q3_view_transform_current(q3_view_transforms, view),
     };
+    if kind == PpcQ3SubmissionKind::TriMesh
+        && ppc_q3_object_type_for_handle(q3_objects, primary) != PPC_Q3_TYPE_TRIMESH
+    {
+        // An immediate trimesh: copy it now, since the frame renders after
+        // the application may have changed or released it.
+        secondary = q3_immediate_trimeshes.capture(memory, primary).unwrap_or(0);
+    }
     let light_snapshot = ppc_q3_submission_light_snapshot(
         q3_views,
         q3_group_memberships,
