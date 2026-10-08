@@ -310,6 +310,9 @@ List disposal now restores saved thumb-outline pixels before removing tracking
 and freeing the list/control records. Regression checks exercise both classic
 Pack0/Pack1 disposal entry points and the native PPC LDispose dispatcher, and
 verify pixel restoration plus cleared tracking. All 48 list tests pass.
-This closes the retained-outline disposal leak; custom-definition changes,
-mixed-mode callback disposal and broader lifecycle/overlap behaviour still
-require qualification.
+This closes the retained-outline disposal leak. Switching a retained standard
+list to a custom definition now also restores the outline before cancelling
+the matching tracking call on both CPU paths. Regression checks verify restored
+pixels, cleared tracking, a false LClick result and unchanged selection.
+Custom-definition callback execution, mixed-mode callback disposal and broader
+lifecycle/overlap behaviour still require qualification.

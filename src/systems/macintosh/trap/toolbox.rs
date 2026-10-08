@@ -4098,17 +4098,13 @@ impl super::TrapDispatcher {
         if state.definition_id != 0
             || Self::proc_entry_looks_callable(bus, Self::list_def_proc_addr(bus, list_handle))
         {
-            let retained = self.list_states.with_mut(|manager| {
-                if manager.scroll_tracking.as_ref().is_some_and(|tracking| {
+            let retained = self.list_states.with_ref(|manager| {
+                manager.scroll_tracking.as_ref().is_some_and(|tracking| {
                     tracking.list == list_handle && tracking.classic && tracking.frame == (sp, 0)
-                }) {
-                    manager.scroll_tracking = None;
-                    true
-                } else {
-                    false
-                }
+                })
             });
             if retained {
+                self.cancel_list_scrollbar_tracking(bus, list_handle);
                 bus.write_word(sp + 12, 0);
                 cpu.write_reg(Register::A7, sp + 12);
             }

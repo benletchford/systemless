@@ -7612,8 +7612,8 @@
     }
 
     #[test]
-    fn list_dispose_restores_retained_outline_pixels() {
-        for trap in [0x1e7, 0x1e8] {
+    fn list_tracking_cleanup_restores_retained_outline_pixels() {
+        for (trap, definition_change) in [(0x1e7, false), (0x1e8, false), (0x1e7, true)] {
             let (mut disp, mut cpu, mut bus) = setup();
             let base = bus.alloc(32 * 32);
             disp.screen_mode = (base, 32, 32, 32, 8);
@@ -7631,12 +7631,26 @@
                     pixels: crate::list_manager::ListScrollbarPixels::IndexedStrips(pixels),
                 }),
             }));
+            if definition_change {
+                disp.list_states.insert_record(handle, crate::list_manager::ProcessListRecord {
+                    handle, generation: 1, definition_id: 1, cells_handle: 0,
+                    view_rect: (0, 0, 100, 100), data_bounds: (0, 0, 20, 1),
+                    cell_size: (10, 100), visible: (0, 0, 10, 1), port: 0,
+                    draw_enabled: true, active: true, cells: Default::default(),
+                    selected: Default::default(), last_click: (-1, -1), last_click_tick: 0,
+                });
+            }
             cpu.write_reg(Register::A7, TEST_SP);
-            bus.write_word(TEST_SP, 0x28);
+            bus.write_word(TEST_SP, if definition_change { 0x18 } else { 0x28 });
             bus.write_long(TEST_SP + 2, handle);
             assert!(disp.dispatch_toolbox(true, trap, &mut cpu, &mut bus).unwrap().is_ok());
             assert_eq!(bus.read_byte(base + 33), 42, "Pack trap {trap:x} left outline pixels");
             assert!(disp.list_states.with_ref(|manager| manager.scroll_tracking.is_none()));
+            if definition_change {
+                assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+                assert_eq!(bus.read_word(TEST_SP + 12), 0);
+                assert!(disp.list_states.get_record(handle).unwrap().selected.is_empty());
+            }
         }
     }
 

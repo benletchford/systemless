@@ -446,7 +446,10 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                 if record.definition_id != 0 {
                     if existing.as_ref().is_some_and(|tracking| !tracking.classic
                         && tracking.list == record.handle && tracking.frame == (cpu.gpr[1], cpu.lr)) {
-                        existing = None;
+                        if let Some(outline) = existing.take().and_then(|tracking| tracking.outline) {
+                            let front = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD);
+                            ppc_restore_list_outline(memory, front, outline);
+                        }
                         handled = true;
                     }
                     return;
