@@ -667,6 +667,8 @@ pub enum DialogItemKind {
 #[doc(hidden)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DialogItemSnapshot {
+    /// Current guest-owned button tracking highlight.
+    pub pressed: bool,
     pub number: i16,
     pub kind: DialogItemKind,
     pub bounds: (i16, i16, i16, i16),

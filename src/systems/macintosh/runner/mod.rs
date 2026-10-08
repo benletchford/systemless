@@ -2544,6 +2544,12 @@ impl FixtureRunner {
                             .map(|(index, item)| {
                                 let number = (index + 1) as i16;
                                 DialogItemSnapshot {
+                                    pressed: self.dispatcher.retained_modal_dialog_click.as_ref().is_some_and(|click| {
+                                        click.dialog_ptr == guest_id && click.item_no == number && click.highlighted
+                                    }) || self.dispatcher.dialog_tracking.as_ref().is_some_and(|tracking| {
+                                        tracking.dialog_ptr == guest_id && tracking.active_button.as_ref()
+                                            .is_some_and(|button| button.item_no == number && button.highlighted)
+                                    }),
                                     number,
                                     kind: crate::dialog_manager::DialogItemKind::from_raw_type(
                                         item.item_type,

@@ -193,6 +193,10 @@ fn standard_alert_preserves_optional_button_ids_for_keyboard_and_mouse() {
             loaded.run_with_hle_imports(128);
             assert!(ppc_window_is_visible(&mut loaded.memory, dialog));
             assert_eq!(loaded.memory.read_u16_be(base), Some(0));
+            let handles = loaded.handles();
+            let items = ppc_dialog_items_for_dialog(&mut loaded.memory, &handles, dialog).unwrap();
+            let control = ppc_control_ptr(&mut loaded.memory, items[2].handle).unwrap();
+            assert_eq!(loaded.memory.read_u8(control + PPC_CONTROL_HILITE_OFFSET), Some(10));
             loaded.event_queue.push_back(PpcQueuedEvent {
                 what: 2, message: 0, when: 1,
                 where_v: point.0, where_h: point.1, modifiers: 0,

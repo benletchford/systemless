@@ -742,6 +742,7 @@ mod tests {
             cancel_item: None,
             edit_field: None,
             items: vec![DialogItemSnapshot {
+                pressed: false,
                 number: 1,
                 kind: DialogItemKind::StaticText,
                 bounds: (90, 90, 110, 180),
