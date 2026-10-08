@@ -1001,3 +1001,14 @@ probe's final dropdown reached approximately x=500, whereas this otherwise
 equivalent narrow probe reaches x=486. Reconcile that native difference
 before treating measured text plus constant padding as the full open-menu
 rule. No guessed sizing rule has been added to the runtime.
+
+
+The narrow-boundary probe was extended to measure the item immediately before
+and after `DrawControls`, record `txFace`, and obtain `GetFontInfo.widMax`.
+Both native runners completed and their diagnostics agree: the mutated text
+measures 175 on both sides of drawing, the face remains 0 (plain), and widMax
+is 15. The 68k initial capture similarly reports 116 before/after drawing.
+This rules out a changed font face or a post-draw text-measurement artifact as
+the cause of the wide/narrow dropdown difference. Native open-menu layout
+and its relationship to the closed box still need resolution; these readings
+are evidence, not a justified constant-padding implementation.
