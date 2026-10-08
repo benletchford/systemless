@@ -145,3 +145,12 @@ systems, 4-40 describes update regions, 5-7 through 5-10 describe scrollbar
 parts and values, and 6-1 onward covers dialog items and event handling.
 
 Palette restoration now selects the active indexed depth and color/grayscale personality on both CPUs instead of installing an eight-bit palette on a monochrome screen. Tests cover default-window activation and explicit device restoration across 1-, 2-, 4-, and 8-bit modes. A one-bit BasiliskII run, after correcting the oracle's host pixel conversion, reproduces the showcase's solid-black custom panel interiors and hidden captions. The attempted nearest-colour shape change was therefore withdrawn: a more readable image was not faithful evidence. The colour-resolution semantics still need a focused guest probe. The refreshed monochrome GPUI reference has been reviewed and preserves this native custom drawing. A focused regression covers the observed light-grey PaintRect fallback and preserves neighbouring bits; all 758 existing QuickDraw tests also pass. The broader monochrome mode remains unqualified.
+
+Interactive GPUI startup now attaches the existing native stereo audio backend
+on the guest worker, shared with the ordinary desktop frontend through the
+`native-audio` feature. Headless captures do not open an output device. Nine
+buffer/resampling tests pass; an opt-in hardware smoke test confirms that the
+macOS output callback consumes queued silent stereo frames and that stopping
+clears the queue. Both GPUI and ordinary desktop builds pass. These checks do
+not establish audible fidelity, sustained game playback, or latency under UI
+load; those remain qualification requirements.

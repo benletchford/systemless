@@ -64,7 +64,7 @@ default = ["gui", "jit"]
 gui = [
     "winit",
     "softbuffer",
-    "cpal",
+    "native-audio",
     "dep:objc2",
     "dep:objc2-foundation",
     "dep:objc2-app-kit",
@@ -72,6 +72,8 @@ gui = [
     "dep:objc2-quartz-core",
     "dep:windows",
 ]
+# Shared host audio output for native frontends.
+native-audio = ["cpal"]
 # Compile hot 68K traces to native code. Embeddings constrained by executable-
 # memory policy can omit this feature and use m68k's portable trace executor.
 jit = ["m68k/jit"]
@@ -84,7 +86,7 @@ debug = []
 # Debugger socket transport (Unix-domain sockets). Implies `debug`.
 debug-server = ["debug"]
 # Experimental standalone guest menu presentation demo.
-gpui-demo = ["dep:gpui-kit"]
+gpui-demo = ["dep:gpui-kit", "native-audio"]
 # Host-control interaction tests without adding GPUI's test harness to the
 # ordinary demo build.
 gpui-demo-test = ["gpui-demo", "gpui-kit/test-support"]
