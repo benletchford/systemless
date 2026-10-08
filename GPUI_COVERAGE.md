@@ -1306,3 +1306,18 @@ This focused regression passes. The existing 68K text/control record replacement
 regression also passes, but does not yet exercise the frontend lifetime snapshot.
 Neither result closes queued GPUI action rejection across replacement, DITL
 shortening/reappend, handle reuse, or process replacement qualification.
+
+
+The semantic-dialog integration regression now changes a live DITL checkbox
+slot to another registered control on monochrome and colour 68K. The snapshot
+must expose the replacement identity, and an action carrying the original
+identity must be rejected without moving the guest pointer. Restoring the slot
+allows the existing guest tracking/value-change checks to complete. This test
+passes across its three-mode run; PPC retains the normal activation checks.
+The 68K replacement is injected directly into DITL memory, not performed by a
+guest SetDialogItem call, so end-to-end replacement qualification remains open.
+
+The full 70-test GPUI suite passed after the shared button changes (189.36s).
+The subsequent live-DITL stale-action assertions passed in their focused
+three-mode semantic-dialog regression. These results do not close the remaining
+readiness gaps listed above.
