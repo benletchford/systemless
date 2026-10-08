@@ -718,29 +718,50 @@ fn modal_dialog_offers_each_event_to_its_filter_before_hit_testing() {
 fn modal_dialog_filters_a_held_button_press_only_once() {
     // Toolbox Essentials (1992), pp. 5-33--5-36, 6-79--6-80:
     // ModalDialog delegates the accepted mouse-down to control tracking.
-    let filter = PPC_CODE_BASE + 0x1000;
-    let record = PPC_DATA_BASE + 0x1800;
-    let (mut loaded, _, item_hit_ptr) = modal_dialog_with_filter(filter);
-    install_recording_modal_filter(&mut loaded, filter, record, MODAL_FILTER_FALSE, None);
-    let click = modal_filter_mouse_down(80, 130);
-    loaded.set_event_queue([click]);
-    loaded.set_input_snapshot(PpcInputSnapshot {
-        mouse_button: true, mouse_v: click.where_v, mouse_h: click.where_h,
-        ..PpcInputSnapshot::default()
-    });
-    for _ in 0..3 {
+    for release_inside in [true, false] {
+        let filter = PPC_CODE_BASE + 0x1000;
+        let record = PPC_DATA_BASE + 0x1800;
+        let (mut loaded, dialog, item_hit_ptr) = modal_dialog_with_filter(filter);
+        install_recording_modal_filter(&mut loaded, filter, record, MODAL_FILTER_FALSE, None);
+        let click = modal_filter_mouse_down(80, 130);
+        loaded.set_event_queue([click]);
+        let handles = loaded.handles();
+        let items = ppc_dialog_items_for_dialog(&mut loaded.memory, &handles, dialog).unwrap();
+        let control = ppc_control_ptr(&mut loaded.memory, items[0].handle).unwrap();
+        for (v, h, expected_highlight) in [(80, 130, 10), (0, 0, 0), (80, 130, 10)] {
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: true, mouse_v: v, mouse_h: h,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(512);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+            assert_eq!(recorded_modal_filter_call(&mut loaded, record).count, 1);
+            assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(0));
+            assert_eq!(loaded.memory.read_u8(control + PPC_CONTROL_HILITE_OFFSET), Some(expected_highlight));
+        }
+        let (v, h) = if release_inside { (80, 130) } else { (0, 0) };
+        loaded.event_queue.push_back(PpcQueuedEvent {
+            what: 2, where_v: v, where_h: h, ..click
+        });
+        loaded.set_input_snapshot(PpcInputSnapshot::default());
         let probe = loaded.run_with_hle_imports(512);
-        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        if release_inside {
+            assert!(matches!(probe.result, PpcRunResult::Halted { pc: PPC_HALT_PC, .. }));
+        } else {
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        }
         assert_eq!(recorded_modal_filter_call(&mut loaded, record).count, 1);
-        assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(0));
+        assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(u16::from(release_inside)));
+        assert_eq!(loaded.memory.read_u8(control + PPC_CONTROL_HILITE_OFFSET), Some(0));
+        assert!(loaded.dialog_callback_stack.is_empty());
+        assert!(loaded.event_queue.is_empty());
+        if !release_inside {
+            loaded.run_with_hle_imports(512);
+            let call = recorded_modal_filter_call(&mut loaded, record);
+            assert_eq!(call.count, 2);
+            assert_eq!(call.event.what, 0);
+        }
     }
-    loaded.event_queue.push_back(PpcQueuedEvent { what: 2, ..click });
-    loaded.set_input_snapshot(PpcInputSnapshot::default());
-    let probe = loaded.run_with_hle_imports(512);
-    assert!(matches!(probe.result, PpcRunResult::Halted { pc: PPC_HALT_PC, .. }));
-    assert_eq!(recorded_modal_filter_call(&mut loaded, record).count, 1);
-    assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(1));
-    assert!(loaded.dialog_callback_stack.is_empty());
 }
 
 #[test]
