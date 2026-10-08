@@ -248,3 +248,13 @@ cell enumeration still exclude nonexistent cells. The loaded three-mode GPUI
 regression checks the seven-row visible extent after every compact page click.
 The native thumb rendering/hit-region discrepancy remains unresolved; matching
 logical scrollbar values alone does not qualify complete native equivalence.
+
+A separate native ordinary-scrollbar diagnostic also reaches value/minimum/
+maximum `10/0/10` after four page clicks while leaving its thumb at the start.
+The same replay reaches `10/0/10` in Systemless with the thumb at the end.
+Explicitly changing and restoring the native list control value after LClick
+also leaves its thumb at the start. Thus the observed native thumb anomaly is
+not specific to List Manager, nor explained by an omitted value refresh.
+Its cause remains unqualified; do not infer a required HLE thumb-position change
+from these native captures alone. Logical paging and visual thumb positioning
+must continue to be evaluated separately.
