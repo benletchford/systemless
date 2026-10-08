@@ -269,7 +269,21 @@ its cause remains open, and these PPC results do not qualify that environment.
 A deterministic native PPC list-thumb replay now demonstrates down/up dragging
 and cancellation outside the drag allowance. The list stays stationary while
 a separate thumb outline follows the pointer, then scrolls on release. A
-cancelled drag preserves the original origin. Systemless's same downward replay
-remains at row zero instead of native row six, confirming that LClick thumb
-tracking is still missing. Completing it must include retained tracking,
-release-time commit, cancellation and visible drag feedback on both CPUs.
+cancelled drag preserves the original origin. The shared LClick implementation
+now retains thumb tracking, leaves content stationary while held, commits on
+release, and cancels outside the drag allowance. Loaded monochrome 68K,
+colour 68K and PPC tests cover down/up/cancel and unchanged selection. Native
+comparison replays now reach row six on release and row zero on cancellation
+in both Systemless CPU adapters. Shared geometry tests cover horizontal motion,
+changed list limits and signed ranges wider than an i16 delta.
+
+Full thumb readiness remains open: ordinary guest-rendered captures still need
+the moving outline while held. The existing GPUI pointer overlay draws its own
+outline, but this change does not qualify that visual path against the native
+replay or close custom CDEF/LDEF and click-loop behaviour.
+
+Validation for retained list-thumb release: all 47 list tests and all 56 GPUI
+tests pass, the latter with one test thread. An earlier concurrent run during
+additional compilation timed out in the live worker test; that test passed
+in isolation and in the complete sequential rerun. This is not performance
+qualification under load.

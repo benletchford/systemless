@@ -468,6 +468,8 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                             list: record.handle, generation: record.generation, control: handle, pointer,
                             control_generation: control.generation, vertical, classic: false,
                             frame: (cpu.gpr[1], cpu.lr), bounds: snapshot_local_rect_to_global(bounds, origin),
+                            start_mouse: (v.wrapping_sub(origin.0), h.wrapping_sub(origin.1)),
+                            start_limits: record.scrollbar_limits(vertical),
                             part, last_tick: tick_count.wrapping_sub(crate::systems::macintosh::control_manager::SCROLLBAR_ACTION_REPEAT_TICKS),
                         });
                         break;
@@ -488,14 +490,17 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                 let mouse = if initial { (v.wrapping_sub(origin.0), h.wrapping_sub(origin.1)) }
                     else { (input.mouse_v, input.mouse_h) };
                 let before = record.visible;
-                if valid && (initial || down) {
-                    if let Some(delta) = tracking.step(mouse, tick_count, record) {
-                        record.set_visible_origin(
-                            record.visible.0.saturating_add(if tracking.vertical { delta } else { 0 }),
-                            record.visible.1.saturating_add(if tracking.vertical { 0 } else { delta }),
-                        );
-                        *last_mem_error = ppc_list_sync_guest_visible(memory, record);
-                    }
+                let delta = if valid && !down && !initial && tracking.part == 129 {
+                    tracking.release_delta(mouse, record)
+                } else if valid && (initial || down) {
+                    tracking.step(mouse, tick_count, record).map(i32::from)
+                } else { None };
+                if let Some(delta) = delta {
+                    record.set_visible_origin(
+                        (i32::from(record.visible.0) + if tracking.vertical { delta } else { 0 }).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+                        (i32::from(record.visible.1) + if tracking.vertical { 0 } else { delta }).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+                    );
+                    *last_mem_error = ppc_list_sync_guest_visible(memory, record);
                 }
                 if valid {
                     let highlighted = down && tracking.hit(mouse, record);

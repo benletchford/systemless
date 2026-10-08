@@ -4154,6 +4154,11 @@ impl super::TrapDispatcher {
                     frame: (sp, 0),
                     bounds: snapshot_local_rect_to_global(bounds, origin),
                     part,
+                    start_mouse: (
+                        point.0.wrapping_sub(origin.0),
+                        point.1.wrapping_sub(origin.1),
+                    ),
+                    start_limits: state.scrollbar_limits(vertical),
                     last_tick: tick.wrapping_sub(
                         crate::systems::macintosh::control_manager::SCROLLBAR_ACTION_REPEAT_TICKS,
                     ),
@@ -4188,8 +4193,8 @@ impl super::TrapDispatcher {
             ) == tracking.bounds
             && bus.read_byte(tracking.pointer + 16) != 0
             && bus.read_byte(tracking.pointer + 17) != 255;
-        let down = valid
-            && (self.input_state.mouse_button_pressed() || bus.read_byte(addr::MB_STATE) == 0);
+        let down =
+            valid && (self.input_state.mouse_button_pressed() || bus.read_byte(addr::MB_STATE) == 0);
         let mouse = if initial {
             (
                 point.0.wrapping_sub(origin.0),
@@ -4198,8 +4203,10 @@ impl super::TrapDispatcher {
         } else {
             self.input_state.mouse_position()
         };
-        let delta = if valid && (initial || down) {
-            tracking.step(mouse, tick, &state)
+        let delta = if valid && !down && !initial && tracking.part == 129 {
+            tracking.release_delta(mouse, &state)
+        } else if valid && (initial || down) {
+            tracking.step(mouse, tick, &state).map(i32::from)
         } else {
             None
         };
@@ -4208,14 +4215,10 @@ impl super::TrapDispatcher {
             self.list_states.with_record_mut(list_handle, |state| {
                 let before = state.visible;
                 state.set_visible_origin(
-                    state
-                        .visible
-                        .0
-                        .saturating_add(if tracking.vertical { delta } else { 0 }),
-                    state
-                        .visible
-                        .1
-                        .saturating_add(if tracking.vertical { 0 } else { delta }),
+                    (i32::from(state.visible.0) + if tracking.vertical { delta } else { 0 })
+                        .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+                    (i32::from(state.visible.1) + if tracking.vertical { 0 } else { delta })
+                        .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
                 );
                 changed = state.visible != before;
                 Self::sync_list_state_to_guest(bus, list_handle, state);

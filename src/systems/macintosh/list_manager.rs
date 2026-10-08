@@ -95,7 +95,7 @@ impl ProcessListRecord {
     }
 }
 
-/// Retained standard list-scrollbar arrow and page tracking. LClick owns the
+/// Retained standard list-scrollbar tracking. LClick owns the
 /// call until release and scrolls without changing selection.
 /// More Macintosh Toolbox (1993), pp. 4-84--4-85.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -111,6 +111,8 @@ pub(crate) struct ListScrollbarTracking {
     pub bounds: (i16, i16, i16, i16),
     pub part: u8,
     pub last_tick: u32,
+    pub start_mouse: (i16, i16),
+    pub start_limits: (i16, i16, i16),
 }
 
 impl ListScrollbarTracking {
@@ -151,11 +153,14 @@ impl ListScrollbarTracking {
         } else if axis >= thumb + 16 {
             Some(23)
         } else {
-            None
+            Some(129)
         }
     }
 
     pub(crate) fn hit(&self, point: (i16, i16), record: &ProcessListRecord) -> bool {
+        if self.part == 129 {
+            return self.release_delta(point, record).is_some();
+        }
         Self::part(
             self.bounds,
             point,
@@ -164,13 +169,59 @@ impl ListScrollbarTracking {
         ) == Some(self.part)
     }
 
+    /// Commit a scroll-box drag only on release. MTE (1992), pp. 5-89--5-90;
+    /// native Mac OS 8.1 PPC LClick preserves list content during the drag.
+    pub(crate) fn release_delta(
+        &self,
+        point: (i16, i16),
+        record: &ProcessListRecord,
+    ) -> Option<i32> {
+        if self.part != 129 || record.scrollbar_limits(self.vertical) != self.start_limits {
+            return None;
+        }
+        let (top, left, bottom, right) = self.bounds;
+        if point.0 < top.saturating_sub(30)
+            || point.0 >= bottom.saturating_add(30)
+            || point.1 < left.saturating_sub(30)
+            || point.1 >= right.saturating_add(30)
+        {
+            return None;
+        }
+        let (start, end, delta) = if self.vertical {
+            (
+                top,
+                bottom,
+                i32::from(point.0) - i32::from(self.start_mouse.0),
+            )
+        } else {
+            (
+                left,
+                right,
+                i32::from(point.1) - i32::from(self.start_mouse.1),
+            )
+        };
+        let travel = i32::from(end) - i32::from(start) - 48;
+        let (value, minimum, maximum) = self.start_limits;
+        let range = i32::from(maximum) - i32::from(minimum);
+        if travel <= 0 || range <= 0 {
+            return None;
+        }
+        let initial =
+            i64::from(i32::from(value) - i32::from(minimum)) * i64::from(travel) / i64::from(range);
+        let position = (initial + i64::from(delta)).clamp(0, i64::from(travel));
+        let target = i32::from(minimum)
+            + ((position * i64::from(range) + i64::from(travel / 2)) / i64::from(travel)) as i32;
+        Some(target - i32::from(value))
+    }
+
     pub(crate) fn step(
         &mut self,
         point: (i16, i16),
         tick: u32,
         record: &ProcessListRecord,
     ) -> Option<i16> {
-        if !self.hit(point, record)
+        if self.part == 129
+            || !self.hit(point, record)
             || tick.wrapping_sub(self.last_tick)
                 < super::control_manager::SCROLLBAR_ACTION_REPEAT_TICKS
         {
@@ -296,6 +347,8 @@ mod tests {
             bounds: (10, 20, 110, 36),
             part: 21,
             last_tick: u32::MAX - 2,
+            start_mouse: (0, 0),
+            start_limits: (0, 0, 10),
         };
         let record = ProcessListRecord {
             handle: 1,
@@ -365,7 +418,37 @@ mod tests {
             bounds: (128, 514, 242, 530),
             part: 23,
             last_tick: 0,
+            start_mouse: (150, 522),
+            start_limits: (0, 0, 6),
         };
+        let mut thumb = tracking.clone();
+        thumb.part = 129;
+        assert_eq!(
+            ListScrollbarTracking::part(thumb.bounds, (150, 522), true, (0, 0, 6)),
+            Some(129)
+        );
+        assert_eq!(thumb.step((218, 522), 3, &record), None);
+        assert_eq!(thumb.release_delta((218, 522), &record), Some(6));
+        assert_eq!(thumb.release_delta((150, 522), &record), Some(0));
+        assert_eq!(thumb.release_delta((218, 650), &record), None);
+        let mut mutated = record.clone();
+        mutated.set_visible_origin(1, 0);
+        assert_eq!(thumb.release_delta((218, 522), &mutated), None);
+        let mut wide = record.clone();
+        wide.data_bounds = (i16::MIN, 0, i16::MAX, 1);
+        wide.set_visible_origin(i16::MIN, 0);
+        thumb.start_limits = wide.scrollbar_limits(true);
+        assert_eq!(thumb.release_delta((218, 522), &wide), Some(65529));
+        thumb.start_limits = record.scrollbar_limits(true);
+        thumb.vertical = false;
+        thumb.bounds = (514, 128, 530, 242);
+        thumb.start_mouse = (522, 150);
+        let mut horizontal = record.clone();
+        horizontal.view_rect = (0, 0, 450, 114);
+        horizontal.cell_size = (450, 18);
+        horizontal.data_bounds = (0, 0, 1, 12);
+        horizontal.set_visible_origin(0, 0);
+        assert_eq!(thumb.release_delta((522, 218), &horizontal), Some(6));
         assert_eq!(tracking.step((208, 522), 3, &record), Some(6));
         record.set_visible_origin(6, 0);
         assert_eq!(tracking.step((208, 522), 6, &record), None);

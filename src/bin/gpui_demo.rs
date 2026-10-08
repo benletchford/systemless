@@ -4373,6 +4373,23 @@ mod desktop {
                     assert_eq!(page.visible.2, expected + 7, "visible extent must retain the clipped row: powerpc={powerpc}");
                     assert_eq!(page.selected, initial.selected);
                 }
+                // Native PPC LClick leaves content stationary while dragging,
+                // commits on release, and cancels beyond the drag allowance.
+                for (start, end, release_h, expected) in [(150, 218, 522, 6), (218, 150, 522, 0), (150, 218, 650, 0)] {
+                    let before = session.runner_mut().list_manager_snapshot().remove(0);
+                    session.deliver_input(MacintoshInput::MouseDown { vertical: start, horizontal: 522 });
+                    settle(&mut session);
+                    assert!(session.runner().is_ui_tracking_active());
+                    session.deliver_input(MacintoshInput::MouseMove { vertical: end, horizontal: release_h });
+                    for _ in 0..4 { settle(&mut session); }
+                    assert_eq!(session.runner_mut().list_manager_snapshot().remove(0).visible, before.visible);
+                    session.deliver_input(MacintoshInput::MouseUp { vertical: end, horizontal: release_h });
+                    settle(&mut session);
+                    assert!(!session.runner().is_ui_tracking_active());
+                    let after = session.runner_mut().list_manager_snapshot().remove(0);
+                    assert_eq!(after.visible.0, expected, "thumb release on powerpc={powerpc}");
+                    assert_eq!(after.selected, initial.selected);
+                }
             }
         }
 
