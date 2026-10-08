@@ -30,7 +30,7 @@ include = [
 
 [workspace]
 members = ["www/tools/catalogue", "www"]
-exclude = ["tests/toolbox-showcase/packer", "tools/play-oracle"]
+exclude = ["tests/toolbox-showcase/packer", ".agents/tools/play-oracle"]
 default-members = ["."]
 resolver = "2"
 
