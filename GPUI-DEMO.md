@@ -9,9 +9,10 @@ Frames use GPUI elements and GPUI Kit theme colours over the guest's existing
 frame rectangles. Standard document windows receive thin themed separators
 and a resize grip only after the guest calls `DrawGrowIcon` at their current
 bounds. The rest of each content edge remains guest-painted. Guest-created
-scrollbars are modeled separately. The frames do not use the Kit's host
-`TitleBar`, which moves the actual OS window. Window content, geometry and
-behaviour remain guest-owned.
+scrollbars are modeled separately, and visible guest controls take precedence
+where their recorded bounds cross the grow pixels. The frames do not use the
+Kit's host `TitleBar`, which moves the actual OS window. Window content,
+geometry and behaviour remain guest-owned.
 
 ## Try it on macOS
 
