@@ -4550,7 +4550,13 @@ mod desktop {
                     )
                     .unwrap();
                 session.initialize(&app);
+                if depth == Some(1) {
+                    assert_eq!(session.runner().dispatcher().device_clut[1], [0; 3], "initial monochrome black");
+                }
                 wait_for_menu(&mut session, 129, 1, true);
+                if depth == Some(1) {
+                    assert_eq!(session.runner().dispatcher().device_clut[1], [0; 3], "monochrome black after showing the window");
+                }
                 let records = session.runner_mut().text_edit_snapshot().records;
                 let windows = session.runner_mut().window_frame_snapshot();
                 let dialogs = session.runner_mut().dialog_snapshot();

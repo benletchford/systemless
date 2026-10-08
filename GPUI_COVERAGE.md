@@ -144,4 +144,4 @@ Reference behavior: *Macintosh Toolbox Essentials* (1992), chapters 3–6
 systems, 4-40 describes update regions, 5-7 through 5-10 describe scrollbar
 parts and values, and 6-1 onward covers dialog items and event handling.
 
-The current monochrome TextEdit composed capture exposes pale-yellow guest framebuffer content rather than black. GPUI text and radio labels are legible, but monochrome visual readiness remains blocked pending palette/rendering diagnosis; the monochrome reference must not be treated as current visual acceptance evidence.
+Palette restoration now selects the active indexed depth and color/grayscale personality on both CPUs instead of installing an eight-bit palette on a monochrome screen. Tests cover default-window activation and explicit device restoration across 1-, 2-, 4-, and 8-bit modes. The fresh monochrome TextEdit capture restores black text and a black-and-white desktop; custom-drawn panels still appear solid black and require oracle comparison. The historical monochrome reference remains unqualified as current visual acceptance evidence.

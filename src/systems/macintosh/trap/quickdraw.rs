@@ -6697,13 +6697,17 @@ impl super::TrapDispatcher {
                     // restores all screens.
                     //
                     // Systemless models a single active CLUT device, so both
-                    // NIL and the main GDevice restore to the canonical
-                    // system 8bpp CLUT.
+                    // NIL and the main GDevice restore defaults for the
+                    // active indexed depth and color/grayscale personality.
                     let gdh = bus.read_long(sp);
                     cpu.write_reg(Register::A7, sp + 4);
                     let main = self.ensure_main_gdevice(bus);
                     if gdh == 0 || gdh == main {
-                        self.install_application_clut(bus, Self::standard_mac_8bpp_clut());
+                        let gd = bus.read_long(main);
+                        let is_color = bus.read_word(gd + 20) & 1 != 0;
+                        if let Some((clut, _)) = Self::standard_screen_depth_clut(self.screen_mode.4, is_color) {
+                            self.install_application_clut(bus, clut);
+                        }
                     }
                     return Some(Ok(()));
                 }
@@ -19872,7 +19876,7 @@ impl super::TrapDispatcher {
         )
     }
 
-    fn standard_screen_depth_clut(depth: u16, is_color: bool) -> Option<([[u16; 3]; 256], usize)> {
+    pub(crate) fn standard_screen_depth_clut(depth: u16, is_color: bool) -> Option<([[u16; 3]; 256], usize)> {
         let (mut clut, entry_count) = Self::standard_mac_indexed_clut(depth)?;
         if !is_color {
             let last = u32::try_from(entry_count.checked_sub(1)?).ok()?;

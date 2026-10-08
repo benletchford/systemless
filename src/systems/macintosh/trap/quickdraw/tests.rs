@@ -26931,3 +26931,25 @@ fn copy_bits_converts_between_direct_color_depths() {
             "NQDMisc should leave the sentinel byte unchanged on the no-op path"
         );
     }
+
+    #[test]
+    fn explicit_palette_restore_uses_indexed_depth_and_device_personality() {
+        for depth in [1, 2, 4, 8] {
+            for color in [false, true] {
+                let (mut d, mut cpu, mut bus) = setup();
+                d.screen_mode.4 = depth;
+                let gdh = d.ensure_main_gdevice(&mut bus);
+                let gd = bus.read_long(gdh);
+                let flags = (bus.read_word(gd + 20) & !1) | u16::from(color);
+                bus.write_word(gd + 20, flags);
+                let expected = TrapDispatcher::standard_screen_depth_clut(depth, color).unwrap().0;
+                d.device_clut.replace([[0x5678; 3]; 256]);
+                cpu.write_reg(Register::D0, 2);
+                bus.write_long(TEST_SP, gdh);
+                assert!(d.dispatch_quickdraw(true, 0x2a2, &mut cpu, &mut bus).unwrap().is_ok());
+                assert_eq!(*d.device_clut, expected, "explicit restore depth={depth}, color={color}");
+                assert_eq!(*d.color_manager_clut, expected);
+                assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+            }
+        }
+    }
