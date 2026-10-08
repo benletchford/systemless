@@ -26953,3 +26953,52 @@ fn copy_bits_converts_between_direct_color_depths() {
             }
         }
     }
+
+    #[test]
+    fn one_bit_color_port_shapes_use_resolved_foreground_and_background() {
+        // Imaging With QuickDraw (1994), Color QuickDraw: a one-bit indexed
+        // device resolves RGB through its two-entry CLUT, just like other depths.
+        let (mut d, mut cpu, mut bus) = setup();
+        let pixels = bus.alloc(2);
+        let ctab = make_test_ctab_handle(&mut bus, &[[0xffff; 3], [0; 3]], 1, 0);
+        let pm_handle = bus.alloc(4);
+        let pm = bus.alloc(50);
+        bus.write_long(pm_handle, pm);
+        write_pixmap_8(&mut bus, pm, pixels, 1, 2, ctab);
+        bus.write_word(pm + 12, 8);
+        bus.write_word(pm + 32, 1);
+        bus.write_word(pm + 36, 1);
+        let port = bus.alloc(96);
+        bus.write_long(port + 2, pm_handle);
+        bus.write_word(port + 6, 0xc000);
+        write_rect(&mut bus, port + 16, 0, 0, 2, 8);
+        let vis = make_complex_rgn(&mut bus, (0, 0, 2, 8), &[]);
+        let clip = make_complex_rgn(&mut bus, (0, 0, 2, 8), &[]);
+        bus.write_long(port + 24, vis);
+        bus.write_long(port + 28, clip);
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+        d.pn_pat = [0xff; 8];
+        d.bk_pat = [0; 8];
+        d.pn_mode = 0;
+        let rgb = bus.alloc(6);
+        let rect = bus.alloc(8);
+        write_rect(&mut bus, rect, 0, 1, 2, 7);
+        for (color_trap, shape_trap, component, expected) in [
+            (0x214, 0x0a2, 0xeeee, 0x81),
+            (0x214, 0x0a2, 0x1111, 0xff),
+            (0x215, 0x0a3, 0xffff, 0x81),
+            (0x215, 0x0a3, 0x0000, 0xff),
+        ] {
+            for offset in [0, 2, 4] { bus.write_word(rgb + offset, component); }
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, rgb);
+            assert!(d.dispatch_quickdraw(true, color_trap, &mut cpu, &mut bus).unwrap().is_ok());
+            bus.write_byte(pixels, 0xff);
+            bus.write_byte(pixels + 1, 0xff);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, rect);
+            assert!(d.dispatch_quickdraw(true, shape_trap, &mut cpu, &mut bus).unwrap().is_ok());
+            assert_eq!(bus.read_byte(pixels), expected, "shape={shape_trap:x}, RGB={component:x}");
+            assert_eq!(bus.read_byte(pixels + 1), expected);
+        }
+    }

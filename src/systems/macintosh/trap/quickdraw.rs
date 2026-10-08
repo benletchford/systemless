@@ -20281,7 +20281,7 @@ impl super::TrapDispatcher {
         } else {
             0
         };
-        let (resolution_clut, screen_itable) = if pixmap != 0 {
+        let (resolution_clut, screen_itable, depth) = if pixmap != 0 {
             let base = Self::offscreen_pixmap_base_ptr(bus, pixmap);
             let row_bytes = (bus.read_word(pixmap + 4) & 0x3FFF) as u32;
             let pixel_size = bus.read_word(pixmap + 32);
@@ -20289,13 +20289,18 @@ impl super::TrapDispatcher {
                 && row_bytes == self.screen_mode.1
                 && pixel_size == self.screen_mode.4;
             if screen_backed {
-                (*self.device_clut, pixel_size == 8)
+                (*self.device_clut, pixel_size == 8, pixel_size)
             } else {
-                (self.read_port_clut(bus, bus.read_long(pixmap + 42)), false)
+                (
+                    self.read_port_clut(bus, bus.read_long(pixmap + 42)),
+                    false,
+                    pixel_size,
+                )
             }
         } else {
-            (*self.device_clut, self.screen_mode.4 == 8)
+            (*self.device_clut, self.screen_mode.4 == 8, self.screen_mode.4)
         };
+        let entry_count = 1usize << depth.min(8);
         let logical_screen_clut = *self.color_manager_clut;
 
         if foreground {
@@ -20306,7 +20311,7 @@ impl super::TrapDispatcher {
                 // Inside Macintosh: Advanced Color Imaging, "Inverse Tables".
                 Self::screen_itable_index(&logical_screen_clut, rgb)
             } else {
-                Self::nearest_palette_index(&resolution_clut, rgb)
+                Self::nearest_palette_index_with_entry_count(&resolution_clut, rgb, entry_count)
             };
             bus.write_long(port + 80, u32::from(pixel));
             *self.resolved_port_color_fields.entry(port).or_default() |= 0x01;
@@ -20316,7 +20321,7 @@ impl super::TrapDispatcher {
             let pixel = if use_screen_itable && screen_itable {
                 Self::screen_itable_index(&logical_screen_clut, rgb)
             } else {
-                Self::nearest_palette_index(&resolution_clut, rgb)
+                Self::nearest_palette_index_with_entry_count(&resolution_clut, rgb, entry_count)
             };
             bus.write_long(port + 84, u32::from(pixel));
             *self.resolved_port_color_fields.entry(port).or_default() |= 0x02;
