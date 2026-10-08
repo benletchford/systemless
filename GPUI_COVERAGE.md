@@ -21,6 +21,17 @@ retaining paired guest/composed PNGs, per-checkpoint logs and a manifest with
 the fixture hash, image hashes and dimensions. These are review artifacts,
 not an automatic visual-parity verdict.
 
+Hosted macOS qualification on revision `07723508b4cdd1738346b98f930b61587ce0c45a`
+passed all 64 GPUI interaction tests and the six-checkpoint popup capture matrix
+([CI run 37843689878](https://github.com/benletchford/systemless/actions/runs/37843689878)).
+The downloaded `gpui-popup-captures` artifact contains all twelve guest/composed
+images; every manifest hash was verified and every image is byte-identical to
+the corresponding locally reviewed capture. This qualifies the popup matrix,
+not the unfinished components below or other host platforms. The same CI run
+still failed native capture provenance validation against an older showcase
+archive, and its scripted checkbox trace required a release-event correction;
+those failures must be cleared separately.
+
 | System UI | Existing state and presentation path | Missing GPUI work | Status |
 | --- | --- | --- | --- |
 | Menu bar and standard menus | `menu_model.rs` supplies `GuestMenuSnapshot`, including live, resource-aware standard MDEF classification on both CPUs, the current menu list's MBDF ID, and each MenuHandle with a process-shared lifetime generation. GPUI menu button identity and queued command validation follow the handle and generation instead of the reusable menu ID; both CPU menu disposal, resource-release, and direct handle-disposal paths invalidate the generation. `gpui_demo.rs` retains a Systemless-owned GPUI Kit popup and reconciles its selected guest item when the menu snapshot changes, renders standard menu buttons and items, and dispatches selected items to the guest. A headless GPUI interaction test confirms live item text, dismissal/reopening, and removal when the guest menu disappears. Translatable Command-key presses and releases enter the guest KeyMap/event path instead of synthesizing a menu click; the showcase responds to Command+P on both CPUs, and a held-key test checks that both guest KeyMap bits remain set through further execution and clear on release. GPUI modifier changes and focus loss clear held keys, and host repeat callbacks do not duplicate guest keyDown events. A custom MDEF or MBDF selects the full guest framebuffer at original coordinates so GPUI chrome cannot cover it. Classic `InitProcMenu` retains the ID and loads its MBDF resource. A synthetic headless composed capture checks placement and pointer translation. Focused guest tests confirm fallback selection during a real 68K MDEF callback in a PowerPC app and during a native PowerPC MDEF invocation; the cross-CPU tracking test confirms live menu pixels and save-under restoration. | Custom MBDF message execution is not implemented: Inside Macintosh V-250 defines Draw, Hit, Calc, Init, Dispose, Hilite, Height, Save, Restore, Rect, SaveAlt, ResetAlt, and MenuRgn messages. Verify a real guest composed capture and standalone 68K custom MDEF tracking; qualify guest autoKey timing during real held shortcuts, submenus, and tracking order. Qualify submenu contents, hover selection, disabled-state transitions, focus, and menu scrolling in composed and interaction tests across real applications. | Demo only |
