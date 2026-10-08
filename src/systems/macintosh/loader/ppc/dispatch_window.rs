@@ -5489,10 +5489,12 @@ pub(super) fn ppc_new_window_from_cpu(
         && ppc_write_rect(
             memory,
             state + 8,
-            20,
-            0,
-            ppc_main_screen_height() as i16,
-            ppc_main_screen_width() as i16,
+            // Leave the standard document title bar below the menu bar.
+            // Macintosh Toolbox Essentials (1992), Listing 4-12, p. 4-55.
+            41,
+            3,
+            (ppc_main_screen_height() as i16).saturating_sub(3),
+            (ppc_main_screen_width() as i16).saturating_sub(3),
         )
         .is_some()
         && memory

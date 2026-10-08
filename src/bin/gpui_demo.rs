@@ -5571,6 +5571,40 @@ mod desktop {
                     "outer-window drag should move guest window on powerpc={powerpc}: {:?}",
                     outside_moved[0].window.bounds
                 );
+
+                let zoom_bounds = outside_moved[0].window.bounds;
+                let zoom_point = (zoom_bounds.0 - 9, zoom_bounds.3 - 7);
+                cx.update(|cx| {
+                    view.update(cx, |demo, cx| {
+                        demo.windows = outside_moved.clone();
+                        cx.notify();
+                    });
+                });
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.drag(host(zoom_point), host((zoom_point.0, zoom_point.1 + 1)), cx);
+                })
+                .unwrap();
+                let mut zoom_presses = 0;
+                let mut zoom_releases = 0;
+                for command in receiver.try_iter() {
+                    if let super::Command::Input(input) = command {
+                        match input {
+                            MacintoshInput::MouseDown { .. } => zoom_presses += 1,
+                            MacintoshInput::MouseUp { .. } => zoom_releases += 1,
+                            _ => {}
+                        }
+                        session.deliver_input(input);
+                        settle(&mut session);
+                    }
+                }
+                assert_eq!((zoom_presses, zoom_releases), (1, 1), "powerpc={powerpc}");
+                let zoomed = session.runner_mut().window_frame_snapshot();
+                assert_eq!(zoomed[0].guest_id, outside_moved[0].guest_id, "powerpc={powerpc}");
+                assert_eq!(zoomed[0].generation, outside_moved[0].generation, "powerpc={powerpc}");
+                assert_ne!(zoomed[0].window.bounds, zoom_bounds, "powerpc={powerpc}");
+                assert!(zoomed[0].window.bounds.0 >= 40, "powerpc={powerpc}");
+
+
             }
         }
 

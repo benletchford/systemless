@@ -7706,8 +7706,8 @@ fn standard_zoom_window_creation_installs_wstate_data() {
             bus.read_word(state + 12) as i16,
             bus.read_word(state + 14) as i16,
         ),
-        (23, 3, screen_height as i16 - 3, screen_width as i16 - 3),
-        "stdState must default to the gray region inset by three pixels"
+        (41, 3, screen_height as i16 - 3, screen_width as i16 - 3),
+        "stdState must leave the title below the menu bar"
     );
     bus.write_byte(
         window + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET,

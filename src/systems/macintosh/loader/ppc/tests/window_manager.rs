@@ -413,10 +413,10 @@ fn hle_import_runner_creates_window_title_and_zoom_state() {
     assert_eq!(
         ppc_read_rect(&mut loaded.memory, state + 8),
         Some((
-            20,
-            0,
-            ppc_main_screen_height() as i16,
-            ppc_main_screen_width() as i16,
+            41,
+            3,
+            ppc_main_screen_height() as i16 - 3,
+            ppc_main_screen_width() as i16 - 3,
         ))
     );
 
@@ -427,10 +427,10 @@ fn hle_import_runner_creates_window_title_and_zoom_state() {
     assert_eq!(
         ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
         Some((
-            20,
-            0,
-            ppc_main_screen_height() as i16,
-            ppc_main_screen_width() as i16,
+            41,
+            3,
+            ppc_main_screen_height() as i16 - 3,
+            ppc_main_screen_width() as i16 - 3,
         ))
     );
 }
