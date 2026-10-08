@@ -266,7 +266,8 @@ pub fn text_edit_pieces(
             continue;
         }
         for (index, record) in records.iter().enumerate() {
-            if record.owner_port != frame.guest_id
+            if !record.drawing_intact
+                || record.owner_port != frame.guest_id
                 || record.styled
                 || record.face != 0
                 || record.justification != 0
@@ -290,6 +291,8 @@ pub fn text_edit_pieces(
                 .and_then(|rect| rect.intersection(viewport))
                 .into_iter()
                 .collect();
+            let clips = clips.into_iter().flat_map(|clip| record.painted_regions.iter()
+                .filter_map(move |painted| clip.intersection(Rect::from(*painted)))).collect();
             let mut clips = clip_to_guest_visible_content(clips, frame);
             for cover in &covers {
                 clips = clips.into_iter().flat_map(|clip| clip.subtract(*cover)).collect();
@@ -822,6 +825,8 @@ mod tests {
         let mut back = window((65, 10, 150, 170), true, 0);
         back.guest_id = 2;
         let record = TextEditSnapshot {
+            drawing_intact: true,
+            painted_regions: vec![(70, 20, 130, 160)],
             guest_id: 10,
             generation: 1,
             owner_port: 2,
@@ -848,6 +853,11 @@ mod tests {
         let mut custom = back.clone();
         custom.definition_id = Some(128);
         assert!(text_edit_pieces(&[record.clone()], &[], &[], &[front, custom], viewport).is_empty());
+        let mut partial = record.clone();
+        partial.painted_regions = vec![(100, 30, 110, 70)];
+        let partial_pieces = text_edit_pieces(&[partial], &[], &[], &[back.clone()], viewport);
+        assert_eq!(partial_pieces.len(), 1);
+        assert_eq!(partial_pieces[0].clip, Rect::from((100, 30, 110, 70)));
         let mut styled = record;
         styled.styled = true;
         assert!(text_edit_pieces(&[styled], &[], &[], &[back], viewport).is_empty());

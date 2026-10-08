@@ -2382,6 +2382,7 @@ impl super::TrapDispatcher {
         bus.write_word(te_ptr + Self::TE_TX_SIZE_OFFSET, self.tx_size as u16);
         bus.write_long(te_ptr + Self::TE_IN_PORT_OFFSET, *self.current_port);
         self.textedit_states.remove(&te_handle);
+        bus.forget_text_edit_drawing(te_handle);
     }
 
     fn initialize_styled_te_record(
@@ -2556,6 +2557,7 @@ impl super::TrapDispatcher {
         bus.write_word(te_ptr + Self::TE_N_LINES_OFFSET, 0);
         bus.write_word(te_ptr + Self::TE_LINE_STARTS_OFFSET, 0);
         self.textedit_states.remove(&te_handle);
+        bus.forget_text_edit_drawing(te_handle);
     }
 
     fn te_text_length(bus: &MacMemoryBus, te_handle: u32) -> usize {
@@ -3456,6 +3458,8 @@ impl super::TrapDispatcher {
             );
         }
 
+        // Text (1993), p. 2-88: allocation is not evidence of painted text.
+        bus.record_text_edit_drawing(te_handle, te_port, view_rect);
         if switched_port {
             self.set_current_port_state(bus, cpu, previous_port, Some(previous_gdevice));
         }
@@ -4475,6 +4479,7 @@ impl super::TrapDispatcher {
         }
         bus.free(te_handle);
         self.textedit_states.remove(&te_handle);
+        bus.forget_text_edit_drawing(te_handle);
     }
 
     fn dispose_dialog_control_storage(&mut self, bus: &mut MacMemoryBus, ctrl_handle: u32) {
@@ -14183,6 +14188,7 @@ impl super::TrapDispatcher {
                 let (dest_rect, view_rect, stack_pop) = Self::te_new_rect_args(bus, sp);
                 self.initialize_te_record(bus, handle, dest_rect, view_rect);
                 self.textedit_states.register(handle);
+                bus.forget_text_edit_drawing(handle);
                 bus.write_long(sp + stack_pop, handle);
                 cpu.write_reg(Register::A7, sp + stack_pop);
                 Ok(())
@@ -14237,6 +14243,7 @@ impl super::TrapDispatcher {
                 let (dest_rect, view_rect, stack_pop) = Self::te_new_rect_args(bus, sp);
                 self.initialize_styled_te_record(bus, handle, dest_rect, view_rect);
                 self.textedit_states.register(handle);
+                bus.forget_text_edit_drawing(handle);
                 bus.write_long(sp + stack_pop, handle);
                 cpu.write_reg(Register::A7, sp + stack_pop);
                 Ok(())
@@ -15314,6 +15321,7 @@ impl super::TrapDispatcher {
                     }
                     bus.free(te_handle);
                     self.textedit_states.remove(&te_handle);
+                    bus.forget_text_edit_drawing(te_handle);
                 }
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())

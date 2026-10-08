@@ -3253,6 +3253,15 @@ impl FixtureRunner {
             };
             record.global_dest_rect = Some(snapshot_local_rect_to_global(record.dest_rect, origin));
             record.global_view_rect = Some(snapshot_local_rect_to_global(record.view_rect, origin));
+            record.painted_regions = if let Some(app) = self.native.application_mut() {
+                let drawing = crate::text_edit::TextEditDrawing::capture(record.owner_port, record.view_rect, |addr| app.memory.read_u8(addr));
+                app.presented_front_buffer().map(|front| {
+                    app.memory.presentation().text_edit_drawing_regions(record.guest_id, drawing, front.base_addr)
+                }).unwrap_or_default()
+            } else {
+                self.bus.text_edit_drawing_regions(record.guest_id, record.owner_port, record.view_rect, self.dispatcher.screen_mode.0)
+            };
+            record.drawing_intact = !record.painted_regions.is_empty();
         }
         snapshot
     }
