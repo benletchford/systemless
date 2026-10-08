@@ -2416,6 +2416,10 @@ impl FixtureRunner {
                     pointer,
                     |address| self.bus.read_byte(address),
                 );
+                let visible_content_rects = crate::window_manager::snapshot_visible_region_rects(
+                    pointer,
+                    |address| self.bus.read_byte(address),
+                );
                 let definition_id = if let Some(app) = self.native.application_mut() {
                     Some(app.window_definition_id(pointer))
                 } else {
@@ -2435,6 +2439,7 @@ impl FixtureRunner {
                     window,
                     definition_id,
                     rectangular_regions: rectangular,
+                    visible_content_rects,
                     close_box,
                     grow_icon_drawn,
                 }

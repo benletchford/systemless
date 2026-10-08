@@ -270,6 +270,14 @@ fn runner_window_snapshot_matches_classic_and_native_window_operations() {
         native_snapshot[0].visible_region,
         Some((105, 207, 115, 217))
     );
+    assert_eq!(
+        classic.window_frame_snapshot()[0].visible_content_rects,
+        Some(vec![(105, 207, 115, 217)])
+    );
+    assert_eq!(
+        native.window_frame_snapshot()[0].visible_content_rects,
+        Some(vec![(105, 207, 115, 217)])
+    );
     assert!(native_snapshot[0].visible);
     assert!(native_snapshot[0].active);
     assert_eq!(

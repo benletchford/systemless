@@ -141,6 +141,23 @@ pub struct DialogItemPiece {
     pub clip: Rect,
 }
 
+fn clip_to_guest_visible_content(
+    clips: Vec<Rect>,
+    frame: &WindowFrameSnapshot,
+) -> Vec<Rect> {
+    let Some(visible) = frame.visible_content_rects.as_ref() else {
+        return Vec::new();
+    };
+    clips
+        .into_iter()
+        .flat_map(|clip| {
+            visible
+                .iter()
+                .filter_map(move |rect| clip.intersection(Rect::from(*rect)))
+        })
+        .collect()
+}
+
 /// Clip standard DITL presentation to its owning dialog and all windows in
 /// front of it. Standard modeless dialogs use noGrowDocProc (4), while modal
 /// dialogs commonly use dBoxProc (1); custom WDEFs keep their guest pixels.
@@ -199,11 +216,12 @@ pub fn dialog_item_pieces(
                     } else {
                         item_rect
                     };
-                    let mut clips: Vec<_> = source
+                    let clips: Vec<_> = source
                         .intersection(Rect::from(dialog.bounds))
                         .and_then(|rect| rect.intersection(viewport))
                         .into_iter()
                         .collect();
+                    let mut clips = clip_to_guest_visible_content(clips, frame);
                     for cover in &covers {
                         clips = clips.into_iter().flat_map(|clip| clip.subtract(*cover)).collect();
                     }
@@ -267,14 +285,12 @@ pub fn text_edit_pieces(
             }) {
                 continue;
             }
-            let mut clips: Vec<_> = source
+            let clips: Vec<_> = source
                 .intersection(Rect::from(window.bounds))
                 .and_then(|rect| rect.intersection(viewport))
                 .into_iter()
                 .collect();
-            if let Some(visible) = window.visible_region.map(Rect::from) {
-                clips = clips.into_iter().filter_map(|clip| clip.intersection(visible)).collect();
-            }
+            let mut clips = clip_to_guest_visible_content(clips, frame);
             for cover in &covers {
                 clips = clips.into_iter().flat_map(|clip| clip.subtract(*cover)).collect();
             }
@@ -392,11 +408,12 @@ pub fn control_pieces(
             }) {
                 continue;
             }
-            let mut clips: Vec<_> = source
+            let clips: Vec<_> = source
                 .intersection(content)
                 .and_then(|rect| rect.intersection(viewport))
                 .into_iter()
                 .collect();
+            let mut clips = clip_to_guest_visible_content(clips, frame);
             for cover in &covers {
                 clips = clips
                     .into_iter()
@@ -456,17 +473,12 @@ pub fn list_pieces(
             }) {
                 continue;
             }
-            let mut clips: Vec<_> = source
+            let clips: Vec<_> = source
                 .intersection(Rect::from(window.bounds))
                 .and_then(|rect| rect.intersection(viewport))
                 .into_iter()
                 .collect();
-            if let Some(visible) = window.visible_region.map(Rect::from) {
-                clips = clips
-                    .into_iter()
-                    .filter_map(|clip| clip.intersection(visible))
-                    .collect();
-            }
+            let mut clips = clip_to_guest_visible_content(clips, frame);
             for cover in &covers {
                 clips = clips
                     .into_iter()
@@ -542,7 +554,8 @@ pub fn gutter_pieces(
                     },
                 ),
             ] {
-                let mut clips: Vec<_> = source.intersection(viewport).into_iter().collect();
+                let clips: Vec<_> = source.intersection(viewport).into_iter().collect();
+                let mut clips = clip_to_guest_visible_content(clips, frame);
                 for cover in &covers {
                     clips = clips
                         .into_iter()
@@ -646,6 +659,7 @@ mod tests {
             },
             definition_id: Some(definition_id),
             rectangular_regions: true,
+            visible_content_rects: Some(vec![bounds]),
             close_box: true,
             grow_icon_drawn: false,
         }
@@ -907,6 +921,39 @@ mod tests {
             &GuestMenuSnapshot::default(),
             &[frame],
             viewport
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn visible_region_hole_never_receives_control_or_grow_overlay() {
+        let mut frame = window((40, 40, 180, 240), true, 0);
+        frame.grow_icon_drawn = true;
+        frame.visible_content_rects = Some(vec![(40, 40, 180, 100), (40, 140, 180, 240)]);
+        let viewport = Rect::from((20, 0, 200, 260));
+        let hole = Rect::from((40, 100, 180, 140));
+        let controls = [control(1, 0, (60, 80, 100, 160))];
+        let themed_controls = control_pieces(
+            &controls,
+            &GuestMenuSnapshot::default(),
+            &[frame.clone()],
+            viewport,
+        );
+        assert_eq!(themed_controls.len(), 2);
+        assert!(themed_controls
+            .iter()
+            .all(|piece| piece.clip.intersection(hole).is_none()));
+        assert!(gutter_pieces(&[frame.clone()], &controls, viewport)
+            .iter()
+            .all(|piece| piece.clip.intersection(hole).is_none()));
+
+        frame.visible_content_rects = None;
+        assert!(frame_pieces(&[frame.clone()], viewport).is_empty());
+        assert!(control_pieces(
+            &controls,
+            &GuestMenuSnapshot::default(),
+            &[frame],
+            viewport,
         )
         .is_empty());
     }
