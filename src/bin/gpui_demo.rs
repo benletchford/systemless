@@ -123,6 +123,12 @@ mod desktop {
         capture_standard_menu: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_windows: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_windows_moved: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_modeless_dialog_layout: Option<PathBuf>,
     }
 
@@ -1989,6 +1995,8 @@ mod desktop {
     #[derive(Clone, Copy)]
     enum CaptureCase {
         Alert,
+        Windows,
+        WindowsMoved,
         ModalDialog,
         ModalDialogChecked,
         ModelessDialog,
@@ -2053,6 +2061,7 @@ mod desktop {
                 | CaptureCase::ControlsDragged
                 | CaptureCase::ControlsHeld
         );
+        let windows_page = matches!(capture, CaptureCase::Windows | CaptureCase::WindowsMoved);
         let lists_page = matches!(capture, CaptureCase::Lists | CaptureCase::ListsSelected);
         let text_edit_page = matches!(
             capture,
@@ -2094,6 +2103,8 @@ mod desktop {
         }
         let (menu_id, item) = if standard_file_page {
             (129, 12)
+        } else if windows_page {
+            (129, 3)
         } else if matches!(
             capture,
             CaptureCase::ModelessDialog | CaptureCase::NestedModalDialog
@@ -2113,7 +2124,51 @@ mod desktop {
             (128, 1)
         };
         assert!(session.runner_mut().select_guest_menu_item(menu_id, item));
-        let dialogs = if matches!(
+        let dialogs = if windows_page {
+            let before = (0..300)
+                .find_map(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    let frames = session.runner_mut().window_frame_snapshot();
+                    (frames.len() == 3).then_some(frames)
+                })
+                .expect("three showcase windows should become visible");
+            if matches!(capture, CaptureCase::WindowsMoved) {
+                let (top, left, bottom, right) = before[0].window.bounds;
+                let from = (top - 9, (left + right) / 2);
+                for input in [
+                    MacintoshInput::MouseDown {
+                        vertical: from.0,
+                        horizontal: from.1,
+                    },
+                    MacintoshInput::MouseMove {
+                        vertical: from.0 + 12,
+                        horizontal: from.1 + 16,
+                    },
+                    MacintoshInput::MouseUp {
+                        vertical: from.0 + 12,
+                        horizontal: from.1 + 16,
+                    },
+                ] {
+                    session.deliver_input(input);
+                    let start = session.runner().guest_tick();
+                    assert!(
+                        (0..100).any(|_| {
+                            session.runner_mut().run_steps(10_000, None);
+                            session.runner().guest_tick().wrapping_sub(start) >= 2
+                        }),
+                        "guest should advance during window tracking"
+                    );
+                }
+                let moved = session.runner_mut().window_frame_snapshot();
+                assert_eq!(moved[0].guest_id, before[0].guest_id);
+                assert_eq!(moved[0].generation, before[0].generation);
+                assert_eq!(
+                    moved[0].window.bounds,
+                    (top + 12, left + 16, bottom + 12, right + 16)
+                );
+            }
+            Vec::new()
+        } else if matches!(
             capture,
             CaptureCase::ModelessDialog | CaptureCase::NestedModalDialog
         ) {
@@ -2324,7 +2379,13 @@ mod desktop {
                 super::frames::Rect::from((0, 0, 600, 800)),
             )
             .is_empty());
-        } else if !controls_page && !lists_page && !text_edit_page && !popup_page && !standard_file_page {
+        } else if !windows_page
+            && !controls_page
+            && !lists_page
+            && !text_edit_page
+            && !popup_page
+            && !standard_file_page
+        {
             assert!(standard_dbox_dialog(&dialogs, &windows).is_some());
         }
         if controls_changed {
@@ -2591,6 +2652,28 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_standard_menu.as_ref() {
             capture_standard_menu(&args.game, output, args.prefer_powerpc, args.screen_depth);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_windows.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::Windows,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_windows_moved.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::WindowsMoved,
+            );
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -3247,6 +3330,8 @@ mod desktop {
                         capture_standard_file_save_edited_composed: None,
                         capture_custom_menu_fallback: None,
                         capture_standard_menu: None,
+                        capture_windows: None,
+                        capture_windows_moved: None,
                         capture_modeless_dialog_layout: None,
                     },
                     rx,
