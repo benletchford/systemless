@@ -180,3 +180,10 @@ at key-down, preventing changed/unrepresentable release text from leaving a
 key held. Three focused GPUI tests pass, including é/£/π translation and release
 after incompatible text. IME composition and non-US key identities still need
 a proper text-input integration and guest TextEdit qualification.
+
+Further input qualification confirms exact é/£/π bytes and caret movement in
+loaded guest TextEdit on monochrome 68K, colour 68K and PPC. Caps Lock now tracks
+host latch changes (including the window's state at key-down) through guest
+press/release pairs; duplicate notifications and focus cleanup do not retoggle
+it. Host-event and loaded 68K/PPC latch tests pass. These checks do not cover
+IME composition or non-US physical key identities.
