@@ -202,3 +202,23 @@ horizontal deltas combine into one guest request at the scaled scene position,
 and a held mouse button suppresses wheel translation. Focus loss clears pending
 wheel work; a cancelled touch gesture takes the same cancellation route. These
 checks do not establish complete modal, list or Standard File wheel support.
+
+List scrollbar qualification found that both LClick implementations ignored
+scrollbar clicks. Standard default-list arrow tracking now retains the call
+through release, repeats using the shared Control Manager cadence, pauses
+outside the original arrow and resumes on re-entry. It preserves selection,
+synchronizes the visible cell origin and scrollbar value, redraws changed
+state, and validates control lifetime and geometry. GPUI retained-list loops
+advance guest ticks so held scrolling continues in the live frontend.
+Loaded monochrome 68K, colour 68K and PPC tests cover the gesture lifecycle;
+the live-worker test checks wheel and held-arrow scrolling on both CPUs.
+The 45 List Manager tests, four existing LClick tests and 56 GPUI tests pass.
+
+The deterministic native Mac OS 8.1 replay scrolls down, back to the first row,
+and to the final page while held. Systemless now reaches those qualitative
+states and preserves empty selection. Exact native equivalence is not yet
+established: the short native press moves two rows versus one in Systemless,
+and the native scrollbar thumb position differs in the captured replay.
+Timed guest-state probes are still needed to explain those differences.
+Page clicks, thumb tracking, custom definitions and click-loop callbacks
+remain unfinished. More Macintosh Toolbox (1993), pp. 4-84--4-85.

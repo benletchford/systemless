@@ -1264,7 +1264,7 @@ fn tracking_refire_uses_dialog_callbacks(opcode: u16) -> bool {
 fn tracking_refire_advances_gui_idle_tick(opcode: u16) -> bool {
     matches!(
         opcode & !0x0400,
-        0xA991 | 0xA985 | 0xA986 | 0xA987 | 0xA988 | 0xA9EA
+        0xA991 | 0xA985 | 0xA986 | 0xA987 | 0xA988 | 0xA9EA | 0xA9E7
     )
 }
 
@@ -3764,6 +3764,7 @@ impl FixtureRunner {
             || self.dispatcher.is_grow_window_tracking()
             || self.dispatcher.is_region_tracking()
             || self.dispatcher.textedit_states.has_click_tracking()
+            || self.dispatcher.list_states.with_ref(|manager| manager.scroll_tracking.is_some())
     }
 
     /// Advance the guest tick counter by one, firing VBL and timer tasks.

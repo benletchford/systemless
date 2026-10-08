@@ -4218,7 +4218,9 @@ impl TrapDispatcher {
         let is_track_box_refire = trap_no_autopop == 0xA83B;
         let is_grow_window_refire = trap_no_autopop == 0xA92B;
         let is_region_refire = matches!(trap_no_autopop, 0xA905 | 0xA926);
-        (is_dialog_refire && self.is_dialog_tracking())
+        (trap_no_autopop == 0xA9E7 && self.list_states.with_ref(|manager|
+            manager.scroll_tracking.as_ref().is_some_and(|tracking| tracking.classic)))
+            || (is_dialog_refire && self.is_dialog_tracking())
             || (is_standard_file_refire
                 && (self.is_standard_file_put_tracking() || self.is_standard_file_get_tracking()))
             || (is_control_refire

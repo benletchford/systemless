@@ -4047,6 +4047,213 @@ impl super::TrapDispatcher {
         )
     }
 
+    // LClick retains standard scrollbar arrow tracking through release.
+    // More Macintosh Toolbox (1993), pp. 4-84--4-85.
+    fn track_list_scrollbar_arrow<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        list_handle: u32,
+        point: (i16, i16),
+        sp: u32,
+    ) -> bool {
+        use crate::systems::macintosh::list_manager::ListScrollbarTracking;
+        use crate::systems::macintosh::window_manager::{
+            snapshot_local_rect_to_global, snapshot_port_bounds_origin,
+        };
+        let Some(state) = self.list_states.get_record(list_handle) else {
+            return false;
+        };
+        if state.definition_id != 0
+            || Self::proc_entry_looks_callable(bus, Self::list_def_proc_addr(bus, list_handle))
+        {
+            let retained = self.list_states.with_mut(|manager| {
+                if manager.scroll_tracking.as_ref().is_some_and(|tracking| {
+                    tracking.list == list_handle && tracking.classic && tracking.frame == (sp, 0)
+                }) {
+                    manager.scroll_tracking = None;
+                    true
+                } else {
+                    false
+                }
+            });
+            if retained {
+                bus.write_word(sp + 12, 0);
+                cpu.write_reg(Register::A7, sp + 12);
+            }
+            return retained;
+        }
+        let existing = self
+            .list_states
+            .with_mut(|manager| manager.scroll_tracking.take());
+        let initial = existing.is_none();
+        let list_ptr = Self::list_record_ptr(bus, list_handle);
+        let tick = self.current_tick();
+        let origin = snapshot_port_bounds_origin(&mut |address| bus.read_byte(address), state.port);
+        let mut tracking = if let Some(tracking) = existing {
+            if !tracking.classic || tracking.frame != (sp, 0) || tracking.list != list_handle {
+                self.list_states
+                    .with_mut(|manager| manager.scroll_tracking = Some(tracking));
+                return false;
+            }
+            tracking
+        } else {
+            if !state.active || list_ptr == 0 {
+                return false;
+            }
+            let mut found = None;
+            for (offset, vertical) in [
+                (Self::LIST_VSCROLL_OFFSET, true),
+                (Self::LIST_HSCROLL_OFFSET, false),
+            ] {
+                let handle = bus.read_long(list_ptr + offset);
+                let pointer = if handle == 0 {
+                    0
+                } else {
+                    bus.read_long(handle)
+                };
+                let generation = self.control_manager.with_ref(|manager| {
+                    manager
+                        .iter()
+                        .find(|control| {
+                            control.handle == handle
+                                && control.pointer == pointer
+                                && control.active
+                                && control.proc_id == 16
+                        })
+                        .map(|control| control.generation)
+                });
+                let Some(control_generation) = generation else {
+                    continue;
+                };
+                if bus.read_byte(pointer + 16) == 0 || bus.read_byte(pointer + 17) == 255 {
+                    continue;
+                }
+                let bounds = (
+                    bus.read_word(pointer + 8) as i16,
+                    bus.read_word(pointer + 10) as i16,
+                    bus.read_word(pointer + 12) as i16,
+                    bus.read_word(pointer + 14) as i16,
+                );
+                let Some(direction) = ListScrollbarTracking::arrow(bounds, point, vertical) else {
+                    continue;
+                };
+                found = Some(ListScrollbarTracking {
+                    list: list_handle,
+                    generation: state.generation,
+                    control: handle,
+                    pointer,
+                    control_generation,
+                    vertical,
+                    classic: true,
+                    frame: (sp, 0),
+                    bounds: snapshot_local_rect_to_global(bounds, origin),
+                    direction,
+                    last_tick: tick.wrapping_sub(
+                        crate::systems::macintosh::control_manager::SCROLLBAR_ACTION_REPEAT_TICKS,
+                    ),
+                });
+                break;
+            }
+            let Some(tracking) = found else {
+                return false;
+            };
+            tracking
+        };
+        let valid = state.generation == tracking.generation
+            && state.active
+            && bus.read_long(tracking.control) == tracking.pointer
+            && self.control_manager.with_ref(|manager| {
+                manager.iter().any(|control| {
+                    control.handle == tracking.control
+                        && control.pointer == tracking.pointer
+                        && control.generation == tracking.control_generation
+                        && control.active
+                        && control.proc_id == 16
+                })
+            })
+            && snapshot_local_rect_to_global(
+                (
+                    bus.read_word(tracking.pointer + 8) as i16,
+                    bus.read_word(tracking.pointer + 10) as i16,
+                    bus.read_word(tracking.pointer + 12) as i16,
+                    bus.read_word(tracking.pointer + 14) as i16,
+                ),
+                origin,
+            ) == tracking.bounds
+            && bus.read_byte(tracking.pointer + 16) != 0
+            && bus.read_byte(tracking.pointer + 17) != 255;
+        let down = valid
+            && (self.input_state.mouse_button_pressed() || bus.read_byte(addr::MB_STATE) == 0);
+        let mouse = if initial {
+            (
+                point.0.wrapping_sub(origin.0),
+                point.1.wrapping_sub(origin.1),
+            )
+        } else {
+            self.input_state.mouse_position()
+        };
+        let delta = if valid && (initial || down) {
+            tracking.step(mouse, tick)
+        } else {
+            None
+        };
+        let mut changed = false;
+        if let Some(delta) = delta {
+            self.list_states.with_record_mut(list_handle, |state| {
+                let before = state.visible;
+                state.set_visible_origin(
+                    state
+                        .visible
+                        .0
+                        .saturating_add(if tracking.vertical { delta } else { 0 }),
+                    state
+                        .visible
+                        .1
+                        .saturating_add(if tracking.vertical { 0 } else { delta }),
+                );
+                changed = state.visible != before;
+                Self::sync_list_state_to_guest(bus, list_handle, state);
+            });
+        }
+        if valid {
+            let highlighted = down
+                && ListScrollbarTracking::arrow(tracking.bounds, mouse, tracking.vertical)
+                    == Some(tracking.direction);
+            let hilite = if highlighted {
+                if tracking.direction < 0 {
+                    20
+                } else {
+                    21
+                }
+            } else {
+                0
+            };
+            let needs_draw = changed || bus.read_byte(tracking.pointer + 17) != hilite;
+            bus.write_byte(tracking.pointer + 17, hilite);
+            if needs_draw {
+                self.draw_list_scrollbars(cpu, bus, list_handle);
+            }
+        }
+        if changed {
+            if let Some(state) = self
+                .list_states
+                .get_record(list_handle)
+                .filter(|state| state.draw_enabled)
+            {
+                self.draw_list_fallback(cpu, bus, &state, None);
+            }
+        }
+        bus.write_word(sp + 12, 0);
+        if down {
+            self.list_states
+                .with_mut(|manager| manager.scroll_tracking = Some(tracking));
+        } else {
+            cpu.write_reg(Register::A7, sp + 12);
+        }
+        true
+    }
+
     fn list_scrollbar_limits(
         state: &super::dispatch::ListState,
         vertical: bool,
@@ -12297,6 +12504,9 @@ impl super::TrapDispatcher {
                         let modifiers = bus.read_word(sp + 6);
                         let point = Self::read_stack_point(bus, sp + 8);
                         let result_addr = sp + 12;
+                        if self.track_list_scrollbar_arrow(cpu, bus, list_handle, point, sp) {
+                            return Some(Ok(()));
+                        }
                         let list_ptr = Self::list_record_ptr(bus, list_handle);
                         let mut double_click = false;
                         let mut draw_state = None;

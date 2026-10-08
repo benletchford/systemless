@@ -574,7 +574,8 @@ impl super::TrapDispatcher {
         true
     }
 
-    const SCROLLBAR_ACTION_REPEAT_TICKS: u32 = 3;
+    const SCROLLBAR_ACTION_REPEAT_TICKS: u32 =
+        crate::systems::macintosh::control_manager::SCROLLBAR_ACTION_REPEAT_TICKS;
 
     fn scrollbar_tracking_part(&self, bus: &MacMemoryBus) -> u16 {
         let Some(tracking) = self.control_tracking.as_ref() else {
