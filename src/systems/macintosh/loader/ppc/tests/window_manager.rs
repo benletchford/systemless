@@ -4617,6 +4617,44 @@ fn import_bindings_classify_window_sizing_positioning_and_zooming_imports() {
 }
 
 #[test]
+fn size_window_away_and_back_does_not_restore_old_grow_icon() {
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"SizeWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+    let window = create_test_cwindow(
+        &mut loaded,
+        bounds_ptr,
+        (20, 20, 120, 220),
+        0,
+        true,
+        u32::MAX,
+    );
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::SizeWindow;
+    let original_bounds =
+        ppc_window_global_content_bounds(&mut loaded.memory, &loaded.gworlds, window).unwrap();
+    loaded.window_list.record_grow_icon(window, original_bounds);
+
+    for (width, height) in [(300, 200), (200, 100)] {
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = window;
+        loaded.cpu.gpr[4] = width;
+        loaded.cpu.gpr[5] = height;
+        loaded.cpu.gpr[6] = 1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+    }
+
+    assert_eq!(
+        ppc_window_global_content_bounds(&mut loaded.memory, &loaded.gworlds, window),
+        Some(original_bounds)
+    );
+    assert!(!loaded.window_list.grow_icon_drawn_at(window, original_bounds));
+}
+
+#[test]
 fn window_sizing_positioning_and_zooming_commands_dispatch_with_canonical_evaluation() {
     for lib in [
         b"InterfaceLib".as_slice(),

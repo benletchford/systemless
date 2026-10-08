@@ -772,6 +772,34 @@ fn showwindow_setorigin_preserves_expanded_near_fullscreen_clip_region() {
 }
 
 #[test]
+fn moving_window_away_and_back_does_not_restore_old_grow_icon() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let window = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus,
+        &mut cpu,
+        window,
+        disp.screen_mode.0,
+        46,
+        42,
+        388,
+        554,
+        "Document",
+        3,
+        false,
+        false,
+        false,
+        0,
+    );
+    let bounds = disp.window_content_rect(&mut bus, window).unwrap();
+    disp.window_list.record_grow_icon(window, bounds);
+    disp.move_window_to_global(&mut bus, window, 100, 100, false);
+    disp.move_window_to_global(&mut bus, window, bounds.1, bounds.0, false);
+    assert_eq!(disp.window_content_rect(&mut bus, window), Some(bounds));
+    assert!(!disp.window_list.grow_icon_drawn_at(window, bounds));
+}
+
+#[test]
 fn hidden_window_setorigin_preserves_global_regions_before_showwindow() {
     let (mut disp, mut cpu, mut bus) = setup();
     let window_addr = bus.alloc(256);

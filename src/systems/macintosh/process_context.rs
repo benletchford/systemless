@@ -4568,6 +4568,13 @@ impl SharedProcessWindowList {
         self.2.with_mut(|icons| icons.insert(window, (generation, bounds)));
     }
 
+    /// Geometry changes erase the old size box even if a later change restores
+    /// the same bounds before the presentation thread samples the window.
+    /// Macintosh Toolbox Essentials (1992), pp. 4-57--4-58, 4-111--4-112.
+    pub(crate) fn invalidate_grow_icon(&self, window: u32) {
+        self.2.with_mut(|icons| icons.remove(&window));
+    }
+
     pub(crate) fn grow_icon_drawn_at(
         &self,
         window: u32,
@@ -14090,6 +14097,9 @@ mod tests {
         assert!(!native.grow_icon_drawn_at(0x1000, bounds));
         classic.record_grow_icon(0x1000, bounds);
         assert!(native.grow_icon_drawn_at(0x1000, bounds));
+        native.invalidate_grow_icon(0x1000);
+        assert!(!classic.grow_icon_drawn_at(0x1000, bounds));
+        classic.record_grow_icon(0x1000, bounds);
         assert!(!native.grow_icon_drawn_at(0x1000, (40, 50, 200, 300)));
         assert!(!classic.grow_icon_drawn_at(0x1000, bounds));
         native.bring_to_front(0x1000);

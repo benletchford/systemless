@@ -2175,6 +2175,9 @@ impl super::TrapDispatcher {
 
         // portRect, visRgn, clipRgn stay in local coords — no update needed.
         let global_content = self.window_local_rect_to_global(bus, the_window, local_content_rect);
+        if delta_v != 0 || delta_h != 0 {
+            self.window_list.invalidate_grow_icon(the_window);
+        }
         self.update_window_user_state(bus, the_window, global_content);
         let global_structure =
             self.window_structure_global_rect_for_window(bus, the_window, global_content);
@@ -4894,14 +4897,10 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // MoveWindow ($A91B)
+            // MoveWindow (0xA91B)
+            // Moves the window to global coordinates and optionally selects it.
             // PROCEDURE MoveWindow(theWindow: WindowPtr; hGlobal, vGlobal: INTEGER; front: BOOLEAN);
-            // Stack (auto-pop): SP+0=front(2), SP+2=vGlobal(2), SP+4=hGlobal(2), SP+6=theWindow(4)
-            //
-            // Honor the `front` parameter per IM:I I-287. "If front is
-            // TRUE, the window is made the active window ... equivalent
-            // to calling SelectWindow."
-            // MoveWindow ($A91B): Updates portRect, visRgn, clipRgn, and FindWindow hit-test bounds
+            // Inside Macintosh Volume I, I-287
             (true, 0x11B) => {
                 let sp = cpu.read_reg(Register::A7);
                 // Pascal BOOLEAN in high byte of 2-byte stack slot
@@ -4917,18 +4916,10 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // SizeWindow ($A91D)
+            // SizeWindow (0xA91D)
+            // Resizes the window and optionally invalidates newly exposed content.
             // PROCEDURE SizeWindow(theWindow: WindowPtr; w, h: INTEGER; fUpdate: BOOLEAN);
-            // Stack (auto-pop): SP+0=fUpdate(2), SP+2=h(2), SP+4=w(2), SP+6=theWindow(4)
-            //
-            // Honor fUpdate per IM:I I-287. "If fUpdate is TRUE,
-            // SizeWindow calls InvalRect on the window for any part that
-            // is newly uncovered." Conservative implementation:
-            // invalidate the full new content rect when fUpdate=TRUE.
-            // That's a superset of the strictly newly-uncovered area
-            // but bbox-approx region storage can't represent the precise
-            // diff anyway.
-            // SizeWindow ($A91D): Updates portRect, visRgn, clipRgn, and FindWindow hit-test bounds
+            // Inside Macintosh Volume I, I-287
             (true, 0x11D) => {
                 let sp = cpu.read_reg(Register::A7);
                 // Pascal BOOLEAN in high byte (MPW C convention).
@@ -4954,6 +4945,9 @@ impl super::TrapDispatcher {
                     let content_rect = (content_top, 0, h, w);
                     let global_content =
                         self.window_local_rect_to_global(bus, the_window, content_rect);
+                    if old_content_rect != Some(global_content) {
+                        self.window_list.invalidate_grow_icon(the_window);
+                    }
                     self.update_window_user_state(bus, the_window, global_content);
                     let global_structure = self.window_structure_global_rect_for_window(
                         bus,
@@ -6096,13 +6090,10 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // ZoomWindow ($A83A)
-            // Moves a window between user state and standard state using
-            // the WStateData record stored in the window's dataHandle.
+            // ZoomWindow (0xA83A)
+            // Switches between the window's user and standard state rectangles.
             // PROCEDURE ZoomWindow(theWindow: WindowPtr; partCode: INTEGER; front: BOOLEAN);
-            // Stack: SP+0=front(2), SP+2=partCode(2), SP+4=theWindow(4). Pop 8.
             // Inside Macintosh Volume IV, IV-66
-            // ZoomWindow ($A83A): Reads WStateData from dataHandle, updates portRect/pixmap/regions for inZoomIn(7)/inZoomOut(8) per IM:IV IV-66
             (true, 0x03A) => {
                 let sp = cpu.read_reg(Register::A7);
                 let front_flag = bus.read_byte(sp) != 0;
@@ -6116,6 +6107,7 @@ impl super::TrapDispatcher {
                         let data_ptr = bus.read_long(data_handle);
                         if data_ptr != 0 {
                             let old_structure = self.window_structure_rect(bus, the_window);
+                            let old_content = self.window_content_rect(bus, the_window);
                             let windows_behind = self
                                 .window_list
                                 .windows()
@@ -6169,6 +6161,9 @@ impl super::TrapDispatcher {
                             // WindowRecord manager regions are in global coords.
                             let global_content =
                                 (v_global, h_global, v_global + new_h, h_global + new_w);
+                            if old_content != Some(global_content) {
+                                self.window_list.invalidate_grow_icon(the_window);
+                            }
                             let global_structure = self.window_structure_global_rect_for_window(
                                 bus,
                                 the_window,
