@@ -159,7 +159,10 @@ pub fn dialog_item_pieces(
         let Some(structure) = frame.window.structure_bounds.map(Rect::from) else {
             continue;
         };
-        if matches!(frame.definition_id, Some(0 | 1 | 2 | 3 | 4 | 5 | 8 | 12 | 16)) {
+        if matches!(
+            frame.presentation_definition_id(),
+            Some(0 | 1 | 2 | 3 | 4 | 5 | 8 | 12 | 16)
+        ) {
             if let Some((dialog_index, dialog)) = dialogs.iter().enumerate().find(|(_, dialog)| {
                 dialog.visible
                     && dialog.guest_id == frame.guest_id
@@ -238,7 +241,7 @@ pub fn text_edit_pieces(
         let Some(structure) = window.structure_bounds.map(Rect::from) else {
             continue;
         };
-        if !matches!(frame.definition_id, Some(0 | 4 | 8 | 12 | 16))
+        if !matches!(frame.presentation_definition_id(), Some(0 | 4 | 8 | 12 | 16))
             || dialogs.iter().any(|dialog| dialog.guest_id == frame.guest_id)
         {
             covers.push(structure);
@@ -366,7 +369,7 @@ pub fn control_pieces(
         let Some(structure) = window.structure_bounds.map(Rect::from) else {
             continue;
         };
-        if !matches!(frame.definition_id, Some(0 | 4 | 8 | 12 | 16)) {
+        if !matches!(frame.presentation_definition_id(), Some(0 | 4 | 8 | 12 | 16)) {
             covers.push(structure);
             continue;
         }
@@ -430,7 +433,7 @@ pub fn list_pieces(
         let Some(structure) = window.structure_bounds.map(Rect::from) else {
             continue;
         };
-        if !matches!(frame.definition_id, Some(0 | 4 | 8 | 12 | 16)) {
+        if !matches!(frame.presentation_definition_id(), Some(0 | 4 | 8 | 12 | 16)) {
             covers.push(structure);
             continue;
         }
@@ -503,7 +506,7 @@ pub fn gutter_pieces(
         };
         let content = Rect::from(window.bounds);
         if frame.grow_icon_drawn
-            && matches!(frame.definition_id, Some(0 | 8))
+            && matches!(frame.presentation_definition_id(), Some(0 | 8))
             && content.width() > 30
             && content.height() > 30
             && structure.intersection(content) == Some(content)
@@ -586,11 +589,14 @@ pub fn frame_pieces(windows: &[WindowFrameSnapshot], viewport: Rect) -> Vec<Fram
         };
         let content = Rect::from(window.bounds);
         let supported = matches!(
-            frame.definition_id,
+            frame.presentation_definition_id(),
             Some(0 | 1 | 2 | 3 | 4 | 5 | 8 | 12 | 16)
         );
         if supported && structure.intersection(content) == Some(content) {
-            let has_title = matches!(frame.definition_id, Some(0 | 4 | 5 | 8 | 12 | 16));
+            let has_title = matches!(
+                frame.presentation_definition_id(),
+                Some(0 | 4 | 5 | 8 | 12 | 16)
+            );
             for source in structure.subtract(content) {
                 let title = has_title && source.bottom == content.top;
                 let mut clips: Vec<_> = source.intersection(viewport).into_iter().collect();
@@ -639,6 +645,7 @@ mod tests {
                 active: true,
             },
             definition_id: Some(definition_id),
+            rectangular_regions: true,
             close_box: true,
             grow_icon_drawn: false,
         }
@@ -874,6 +881,34 @@ mod tests {
         assert_eq!(scrollbar_drag_outline(&bar, start, (368, 600)), Some(428));
         assert_eq!(scrollbar_drag_outline(&bar, start, (329, 500)), None);
         assert_eq!(bar.value, 0);
+    }
+
+    #[test]
+    fn nonrectangular_window_regions_retain_guest_pixels() {
+        let mut frame = window((40, 40, 180, 240), true, 0);
+        frame.grow_icon_drawn = true;
+        let viewport = Rect::from((20, 0, 200, 260));
+        let controls = [control(1, 0, (60, 60, 100, 140))];
+        assert!(!frame_pieces(&[frame.clone()], viewport).is_empty());
+        assert!(!gutter_pieces(&[frame.clone()], &controls, viewport).is_empty());
+        assert!(!control_pieces(
+            &controls,
+            &GuestMenuSnapshot::default(),
+            &[frame.clone()],
+            viewport
+        )
+        .is_empty());
+
+        frame.rectangular_regions = false;
+        assert!(frame_pieces(&[frame.clone()], viewport).is_empty());
+        assert!(gutter_pieces(&[frame.clone()], &controls, viewport).is_empty());
+        assert!(control_pieces(
+            &controls,
+            &GuestMenuSnapshot::default(),
+            &[frame],
+            viewport
+        )
+        .is_empty());
     }
 
     #[test]

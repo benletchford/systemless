@@ -2412,6 +2412,10 @@ impl FixtureRunner {
             .filter(|window| *window != 0)
             .zip(snapshots)
             .map(|(pointer, window)| {
+                let rectangular = crate::window_manager::snapshot_window_regions_rectangular(
+                    pointer,
+                    |address| self.bus.read_byte(address),
+                );
                 let definition_id = if let Some(app) = self.native.application_mut() {
                     Some(app.window_definition_id(pointer))
                 } else {
@@ -2430,6 +2434,7 @@ impl FixtureRunner {
                     generation: self.dispatcher.window_list.generation_for_window(pointer),
                     window,
                     definition_id,
+                    rectangular_regions: rectangular,
                     close_box,
                     grow_icon_drawn,
                 }
