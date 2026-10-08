@@ -26955,9 +26955,9 @@ fn copy_bits_converts_between_direct_color_depths() {
     }
 
     #[test]
-    fn one_bit_color_port_shapes_use_resolved_foreground_and_background() {
-        // Imaging With QuickDraw (1994), Color QuickDraw: a one-bit indexed
-        // device resolves RGB through its two-entry CLUT, just like other depths.
+    fn one_bit_color_port_light_gray_fill_matches_native_pattern_fallback() {
+        // BasiliskII, Mac OS 8.1, one-bit colour display: the showcase
+        // RGBForeColor(0xeeee) + PaintRect retains a black pen-pattern fill.
         let (mut d, mut cpu, mut bus) = setup();
         let pixels = bus.alloc(2);
         let ctab = make_test_ctab_handle(&mut bus, &[[0xffff; 3], [0; 3]], 1, 0);
@@ -26984,17 +26984,14 @@ fn copy_bits_converts_between_direct_color_depths() {
         let rect = bus.alloc(8);
         write_rect(&mut bus, rect, 0, 1, 2, 7);
         for (color_trap, shape_trap, component, expected) in [
-            (0x214, 0x0a2, 0xeeee, 0x81),
-            (0x214, 0x0a2, 0x1111, 0xff),
-            (0x215, 0x0a3, 0xffff, 0x81),
-            (0x215, 0x0a3, 0x0000, 0xff),
+            (0x214, 0x0a2, 0xeeee, 0x7e),
         ] {
             for offset in [0, 2, 4] { bus.write_word(rgb + offset, component); }
             cpu.write_reg(Register::A7, TEST_SP);
             bus.write_long(TEST_SP, rgb);
             assert!(d.dispatch_quickdraw(true, color_trap, &mut cpu, &mut bus).unwrap().is_ok());
-            bus.write_byte(pixels, 0xff);
-            bus.write_byte(pixels + 1, 0xff);
+            bus.write_byte(pixels, 0);
+            bus.write_byte(pixels + 1, 0);
             cpu.write_reg(Register::A7, TEST_SP);
             bus.write_long(TEST_SP, rect);
             assert!(d.dispatch_quickdraw(true, shape_trap, &mut cpu, &mut bus).unwrap().is_ok());

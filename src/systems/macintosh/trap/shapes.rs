@@ -1185,13 +1185,6 @@ impl super::TrapDispatcher {
         } else {
             None
         };
-        // Color QuickDraw maps requested colors to the indexed device even
-        // at one bit per pixel (Imaging With QuickDraw 1994, chapter 1,
-        // “Colors”). Generated PixPats retain their monochrome fallback.
-        let indexed_one_bit = pixel_size == 1
-            && is_color
-            && generated_pen_rgb.is_none()
-            && generated_back_rgb.is_none();
         let effective_pn_pat = if generated_pen_rgb.is_some() {
             [0xFF; 8]
         } else {
@@ -1352,7 +1345,7 @@ impl super::TrapDispatcher {
         let fg_idx;
         let bg_idx;
         let mut indexed_clut = None;
-        if indexed_one_bit || matches!(pixel_size, 2 | 4 | 8) {
+        if matches!(pixel_size, 2 | 4 | 8) {
             let is_screen_port = pix_base == self.screen_mode.0
                 && pix_row_bytes == self.screen_mode.1
                 && pixel_size == self.screen_mode.4;
@@ -1585,7 +1578,7 @@ impl super::TrapDispatcher {
         // between, exactly what `apply_boolean_transfer_1` yields per pixel.
         // EV Override clears its 1-bit offscreen buffers at boot with an
         // EraseRect + InvertRect pair over 8.3 M pixels each.
-        if pixel_size == 1 && !indexed_one_bit && full_rect_coverage && !has_complex_port_clip {
+        if pixel_size == 1 && full_rect_coverage && !has_complex_port_clip {
             let bit_op = match op {
                 ShapeOp::Invert => Some(BitRowOp::Toggle),
                 ShapeOp::Erase => solid_bit_row_op(self.bk_pat),
@@ -1885,7 +1878,7 @@ impl super::TrapDispatcher {
                         }
                         ShapeOp::Invert => bus.invert_screen_byte(addr),
                     }
-                } else if indexed_one_bit || matches!(pixel_size, 2 | 4) {
+                } else if matches!(pixel_size, 2 | 4) {
                     let bits = u32::from(pixel_size);
                     let pixels_per_byte = 8 / bits;
                     let byte_col = dx / pixels_per_byte;
