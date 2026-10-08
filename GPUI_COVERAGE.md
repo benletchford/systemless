@@ -483,3 +483,24 @@ property means checked value and must not be used as a transient press flag.
 Dedicated radio-button interaction and capture qualification also remain open.
 All 633 library dialog tests pass after this tracking change, including the
 existing push-button provider feedback test.
+
+Checkbox pressed presentation now uses a shared Systemless component built on
+GPUI Kit's semantic Checkbox and CheckboxIndicator bases. Both document controls
+and dialog items supply guest value and tracking state independently. Holding an
+unchecked box adds a foreground outline and secondary fill without a checkmark;
+holding a checked box uses the active primary fill while retaining its checkmark.
+Disabled controls suppress pressed feedback. Indicator, label and gap dimensions
+follow the scene scale. The semantic checkbox role, accessible label and toggled
+value are retained; accessibility action routing remains unfinished.
+
+The existing composed capture path now accepts
+`--capture-modal-dialog-checkbox-held`,
+`--capture-modal-dialog-checkbox-outside`, and
+`--capture-modal-dialog-checkbox-checked-held`. These drive guest input and assert
+the exposed tracking state, without synthesizing host hover or press state.
+Reviewed captures cover those three states and the existing
+`--capture-modal-dialog-checked` state on monochrome 68K, colour 68K and PPC
+(12 captures total). All seven GPUI dialog regression tests pass. This qualifies
+the modal showcase at the existing capture scale and light theme; document
+checkbox tracking, other scales/themes, disabled-state captures, radio pressed
+presentation and operable accessibility still require qualification.
