@@ -329,13 +329,15 @@ impl Render for GuestMenuPopup {
                     Some(key) => format!("{}    ⌘{}", item.text, key.to_uppercase()),
                     None => item.text.clone(),
                 };
-                column = column.child(
+                column = column.child(super::a11y::AccessibleState::new(
                     div()
                         .id(format!("guest-popup-item-{menu_id}-{item_number}"))
-                        .test_support()
                         .role(Role::MenuItem)
                         .aria_label(label.clone())
                         .aria_selected(selected)
+                        .when(item.checked, |row| {
+                            row.role(Role::MenuItemCheckBox).aria_toggled(gpui_kit::Toggled::True)
+                        })
                         .flex()
                         .items_center()
                         .h(px(26.))
@@ -361,8 +363,9 @@ impl Render for GuestMenuPopup {
                         })
                         .child(if item.checked { "✓ " } else { "  " })
                         .child(label)
-                        .when(item.submenu_id.is_some(), |row| row.child("  ›")),
-                );
+                        .when(item.submenu_id.is_some(), |row| row.child("  ›").aria_expanded(selected)),
+                    !enabled,
+                ).test_support());
             }
             panel = panel.child(column.vertical_scrollbar(&scroll));
             let Some(next) = self.selection.get(depth).and_then(|selected| {
