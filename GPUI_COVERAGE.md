@@ -1012,3 +1012,23 @@ This rules out a changed font face or a post-draw text-measurement artifact as
 the cause of the wide/narrow dropdown difference. Native open-menu layout
 and its relationship to the closed box still need resolution; these readings
 are evidence, not a justified constant-padding implementation.
+
+
+### PPC partial-row guest painting
+
+The PPC standard-menu painter no longer discards an entire row when a scroll
+slot covers part of it. It preserves the original baseline and icon origin,
+clips text/marks/commands through the existing QuickDraw clipping path, and
+bounds icons, separators, hierarchy indicators, selection and dimming to the
+visible item area. Attached-menu first-row icon pixels remain intact. This
+brings guest painting closer to the already-corrected GPUI partial-row
+compositor and the reviewed native scrolling captures.
+
+A pixel regression mutates a partially exposed row from blank text to ink and
+requires nonempty changes exclusively inside its visible strip, protecting
+the scroll slot and surrounding pixels. All five tracked-menu tests pass,
+including icon precedence/variable rows at 1/2/4/8/16-bit depths; all 436 menu
+library tests pass. The initial extra top inset failed the icon test and was
+removed before this validation. No new composed capture is claimed here.
+The 68k framebuffer painter still omits partial rows and requires equivalent
+clipping; cross-CPU partial-row visual qualification remains open.

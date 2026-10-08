@@ -1957,6 +1957,80 @@ fn native_popup_draws_from_the_live_shared_menu_color_table() {
 }
 
 #[test]
+fn tracked_menu_draws_partial_text_without_overwriting_scroll_slots() {
+    let pef = synthetic_pef_with_import(b"NewMenu");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let menu = install_test_menu(
+        &mut loaded,
+        PPC_DATA_BASE + 0x1000,
+        128,
+        b"File",
+        b"    ;    ;    ;    ",
+    );
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let appearances = ppc_menu_item_appearances(&mut loaded.memory, menu, &[], 0);
+    let mut state = ppc_begin_tracked_menu_with_appearances(
+        &mut loaded.memory,
+        front,
+        MenuTrackingKind::MenuBar,
+        menu,
+        11,
+        20,
+        20,
+        120,
+        64,
+        0,
+        appearances,
+    )
+    .unwrap();
+    state.content_top = 12;
+    let render = |loaded: &mut PpcLoadedApp| {
+        ppc_draw_tracked_menu(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &loaded.screen_clut,
+            MenuColorTable::new(&[]),
+            StandardMenuPaneKind::PullDown,
+            &state,
+            0,
+        );
+        let mut pixels = Vec::new();
+        for y in 10..90 {
+            for x in 10..150 {
+                pixels.push((
+                    x,
+                    y,
+                    ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)),
+                ));
+            }
+        }
+        pixels
+    };
+    let before = render(&mut loaded);
+    let (address, length) = ppc_menu_item(&mut loaded.memory, menu, 2).unwrap();
+    assert_eq!(length, 4);
+    for offset in 1..=4 {
+        loaded.memory.write_u8(address + offset, b'M').unwrap();
+    }
+    let after = render(&mut loaded);
+    let changed = before
+        .iter()
+        .zip(&after)
+        .filter(|(a, b)| a.2 != b.2)
+        .collect::<Vec<_>>();
+    assert!(
+        !changed.is_empty(),
+        "the exposed part of row 2 must contain text"
+    );
+    for (pixel, _) in changed {
+        assert!(
+            (21..139).contains(&pixel.0) && (36..44).contains(&pixel.1),
+            "partial text escaped its visible row: {pixel:?}"
+        );
+    }
+}
+
+#[test]
 fn tracked_menu_renders_each_standard_text_style() {
     let pef = synthetic_pef_with_import(b"NewMenu");
     let mut loaded = load_pef_application(&pef).unwrap();

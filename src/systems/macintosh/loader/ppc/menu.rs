@@ -2700,6 +2700,7 @@ pub(crate) fn ppc_draw_tracked_menu_icon(
     top: i16,
     left: i16,
     content_pixel: u16,
+    clip: (i16, i16, i16, i16),
 ) {
     // The shared standard-MDEF sampler owns monochrome resource validation,
     // reduced-ICON scaling, and SICN first-image selection. This adapter owns
@@ -2727,6 +2728,13 @@ pub(crate) fn ppc_draw_tracked_menu_icon(
                     .sample_with(|offset| data.get(offset).copied(), x, y)
                     .unwrap_or(false)
                 {
+                    if i32::from(top) + (y as i32) < i32::from(clip.0)
+                        || i32::from(top) + y as i32 >= i32::from(clip.2)
+                        || i32::from(left) + (x as i32) < i32::from(clip.1)
+                        || i32::from(left) + x as i32 >= i32::from(clip.3)
+                    {
+                        continue;
+                    }
                     let _ = ppc_quickdraw_write_raw_pixel(
                         memory,
                         front,
@@ -2768,6 +2776,13 @@ pub(crate) fn ppc_draw_tracked_menu_icon(
                             })
                     };
                     if let Some(pixel) = pixel {
+                        if i32::from(top) + (y as i32) < i32::from(clip.0)
+                            || i32::from(top) + y as i32 >= i32::from(clip.2)
+                            || i32::from(left) + (x as i32) < i32::from(clip.1)
+                            || i32::from(left) + x as i32 >= i32::from(clip.3)
+                        {
+                            continue;
+                        }
                         let _ = ppc_quickdraw_write_raw_pixel(
                             memory,
                             front,
@@ -2876,6 +2891,14 @@ pub(crate) fn ppc_draw_tracked_menu(
         .popup_top()
         .saturating_add(state.popup_height())
         .saturating_sub(if scroll_down { 16 } else { 0 });
+    // Scroll slots and pane borders are outside item drawing, including
+    // partially exposed rows. Inside Macintosh V (1986), pp. V-248--V-249.
+    let item_clip = (
+        visible_item_top,
+        rect.1.saturating_add(1),
+        visible_item_bottom.min(rect.2.saturating_sub(1)),
+        rect.3.saturating_sub(1),
+    );
     for y in 1..i32::from(state.popup_height()).saturating_sub(1) {
         let absolute_y = state
             .popup_top()
@@ -2912,10 +2935,11 @@ pub(crate) fn ppc_draw_tracked_menu(
         if row_top >= popup_bottom.saturating_sub(1) {
             break;
         }
-        if row_top < visible_item_top || row_top.saturating_add(row_height) > visible_item_bottom {
+        if row_top >= item_clip.2 || row_top.saturating_add(row_height) <= item_clip.0 {
             continue;
         }
-        let row_bottom = row_top.saturating_add(row_height).min(popup_bottom - 1);
+        let row_bottom = row_top.saturating_add(row_height).min(item_clip.2);
+        let paint_top = row_top.max(item_clip.0);
         let command = memory.read_u8(address + 2 + u32::from(len)).unwrap_or(0);
         let mark = memory.read_u8(address + 3 + u32::from(len)).unwrap_or(0);
         let style = memory.read_u8(address + 4 + u32::from(len)).unwrap_or(0);
@@ -2967,7 +2991,7 @@ pub(crate) fn ppc_draw_tracked_menu(
                 screen_clut,
             )
             .unwrap_or(black);
-            for y in row_top..row_bottom {
+            for y in paint_top..row_bottom {
                 for x in state.popup_left().saturating_add(1)
                     ..state
                         .popup_left()
@@ -3005,6 +3029,9 @@ pub(crate) fn ppc_draw_tracked_menu(
 
         if is_separator {
             let separator_y = layout.separator_y;
+            if separator_y < item_clip.0 || separator_y >= item_clip.2 {
+                continue;
+            }
             for x in 1..state.popup_width().saturating_sub(1) {
                 if front.depth == 1
                     && !standard_menu_gray_pattern_is_ink(
@@ -3047,7 +3074,7 @@ pub(crate) fn ppc_draw_tracked_menu(
                 PPC_QD_TEXT_MODE_SRC_OR,
                 mark_color,
                 mark_index,
-                None,
+                Some(item_clip),
                 std::iter::once(mark_char),
             ));
         }
@@ -3061,11 +3088,12 @@ pub(crate) fn ppc_draw_tracked_menu(
                 row_top,
                 layout.icon_left,
                 name_pixel,
+                item_clip,
             );
         }
 
         let mode = PPC_QD_TEXT_MODE_SRC_OR;
-        let _ = ppc_with_unclipped_screen_port(memory, |memory| ppc_draw_text_bytes_styled(
+        let _ = ppc_with_unclipped_screen_port(memory, |memory| ppc_draw_text_bytes_styled_clipped(
             memory,
             gworlds,
             PPC_MAIN_GWORLD,
@@ -3076,6 +3104,7 @@ pub(crate) fn ppc_draw_tracked_menu(
             name_color,
             name_index,
             style,
+            Some(item_clip),
             &text,
         ));
 
@@ -3084,6 +3113,9 @@ pub(crate) fn ppc_draw_tracked_menu(
                 layout.indicator_left,
                 layout.indicator_mid_y,
                 |x, y| {
+                    if y < item_clip.0 || y >= item_clip.2 || x < item_clip.1 || x >= item_clip.3 {
+                        return;
+                    }
                     let _ = ppc_quickdraw_write_raw_pixel(
                         memory,
                         front,
@@ -3103,7 +3135,7 @@ pub(crate) fn ppc_draw_tracked_menu(
                 mode,
                 command_color,
                 command_index,
-                None,
+                Some(item_clip),
                 ['\u{2318}', char::from(command)],
             ));
         }
@@ -3112,7 +3144,7 @@ pub(crate) fn ppc_draw_tracked_menu(
         // the 50-percent gray pattern because no intermediate color exists.
         // Macintosh Toolbox Essentials (1992), pp. 3-13 and 3-150.
         if dimmed && front.depth == 1 {
-            for y in row_top..row_bottom {
+            for y in paint_top..row_bottom {
                 for x in state.popup_left().saturating_add(1)
                     ..state
                         .popup_left()
