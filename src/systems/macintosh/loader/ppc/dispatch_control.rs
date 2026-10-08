@@ -1205,7 +1205,7 @@ pub(super) fn ppc_dispatch_legacy_control(
                 );
                 return Some(PpcImportAction::Return(ppc_i16_result(part)));
             }
-            if matches!(part, 10 | 11) && action_proc == 0 && input.mouse_button {
+            if matches!(part, 10 | 11) && action_proc == 0 {
                 let handle = cpu.gpr[3];
                 if let Some(record) = controls.iter().find(|record| record.active && record.handle == handle
                     && matches!(record.proc_id, 0 | 1 | 2)) {
@@ -1213,6 +1213,19 @@ pub(super) fn ppc_dispatch_legacy_control(
                         let owner = memory.read_u32_be(pointer + PPC_CONTROL_OWNER_OFFSET)?;
                         let surface = ppc_live_quickdraw_surface(memory, gworlds, owner)?;
                         let bounds = surface.local_rect(ppc_read_rect(memory, pointer + PPC_CONTROL_RECT_OFFSET)?);
+                        // A fast host click can queue mouse-up before the guest
+                        // reaches TrackControl. Consume its release point now.
+                        // Macintosh Toolbox Essentials (1992), pp. 5-90--5-92.
+                        if let Some(index) = event_queue.iter().position(|event| event.what == 2) {
+                            let release = event_queue.remove(index).unwrap();
+                            let point = (i32::from(release.where_v), i32::from(release.where_h));
+                            let inside = point.0 >= bounds.0 && point.0 < bounds.2
+                                && point.1 >= bounds.1 && point.1 < bounds.3;
+                            return Some(PpcImportAction::Return(ppc_i16_result(if inside { part } else { 0 })));
+                        }
+                        if !input.mouse_button {
+                            return Some(PpcImportAction::Return(ppc_i16_result(part)));
+                        }
                         let tracking = PpcSimpleControlTrackingState {
                             handle, pointer, generation: record.generation,
                             return_address: cpu.lr, stack_pointer: cpu.gpr[1],
