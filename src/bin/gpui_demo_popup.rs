@@ -42,15 +42,16 @@ pub fn popup(popup: &GuestPopupSnapshot, scale: f32, cx: &App) -> Div {
         .h(unit(i32::from(bottom) - i32::from(top)))
         .overflow_hidden()
         .bg(cx.theme().background);
-    // Standard MDEF reserves one 16-pixel row for each scrolling arrow and
-    // presents only complete rows between them. Inside Macintosh V, V-248--V-249.
+    // Standard MDEF reserves scrolling-arrow slots. Draw intersecting rows
+    // beneath the arrow overlays so their exposed portions remain visible,
+    // matching the guest hit regions. Inside Macintosh V, V-248--V-249.
     let (scroll_up, scroll_down) = popup.scroll_indicators();
     let height = i32::from(bottom) - i32::from(top);
     let visible_top = if scroll_up { 16 } else { 0 };
     let visible_bottom = height - if scroll_down { 16 } else { 0 };
     let mut offset = i32::from(popup.content_top) - i32::from(top);
     for (item, height) in popup.menu.items.iter().zip(&popup.row_heights) {
-        if offset < visible_top || offset + i32::from(*height) > visible_bottom {
+        if offset + i32::from(*height) <= visible_top || offset >= visible_bottom {
             offset += i32::from(*height);
             continue;
         }
