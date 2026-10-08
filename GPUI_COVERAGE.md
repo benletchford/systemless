@@ -794,3 +794,22 @@ rows; scrolling and cancellation with the changed row heights; unchanged
 ordinary menu metrics and owner port state; and reviewed composed captures
 against the existing native references. This audit establishes the root cause
 and implementation scope, not completion of typography support.
+
+
+Popup typography implementation has begun with `GuestMenuFont`, an explicit
+family/size descriptor carried by `GuestPopupSnapshot`. GPUI row text now uses
+that descriptor's point size instead of its own literal 12. Standard menu text
+measurement delegates to the descriptor, using the existing font resolver and
+QuickDraw scaling. Tests cover size-zero normalization, different sizes, empty
+text, saturated widths, and agreement with native QuickDraw measurement for
+five font families, five sizes, and ASCII/Mac Roman/empty strings. All 434
+library menu tests pass.
+
+This is shared infrastructure, not a claim that `popupUseWFont` works yet:
+both snapshot adapters still provide the system default. The next required
+change is to retain the owner font when control tracking starts and thread it
+through row/width layout, guest painting, and snapshots on both CPUs. Closed
+control typography and the native comparison gates above remain unfinished.
+
+The existing held-popup selection test also passes on monochrome 68k, colour
+68k and PPC after this plumbing change (48.42 seconds).

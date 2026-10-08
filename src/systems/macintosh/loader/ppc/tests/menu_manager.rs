@@ -10375,3 +10375,19 @@ fn menu_tracking_and_popup_selection_commands_dispatch_with_canonical_evaluation
     run_test_import(&mut loaded, PpcImportDispatcherTarget::PopUpMenuSelect);
     assert_eq!(loaded.cpu.gpr[3], 0);
 }
+
+#[test]
+fn shared_menu_font_measurement_matches_native_quickdraw() {
+    for family in [0, 1, 3, 4, 128] {
+        for size in [0, 9, 12, 17, 24] {
+            let font = crate::menu_model::GuestMenuFont { family, size };
+            for text in [b"Deep Field Archive".as_slice(), &[0x80, 0x8e, 0xae, 0xc9], b""] {
+                assert_eq!(
+                    font.text_advance(text),
+                    ppc_text_bytes_advance_for_font(text, family, size),
+                    "font family {family}, size {size}, bytes {text:?}"
+                );
+            }
+        }
+    }
+}

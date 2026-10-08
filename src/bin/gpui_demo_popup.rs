@@ -64,7 +64,7 @@ pub fn popup(popup: &GuestPopupSnapshot, scale: f32, cx: &App) -> Div {
             .h(unit(i32::from(*height)))
             .flex()
             .items_center()
-            .text_size(unit(12))
+            .text_size(unit(i32::from(popup.font.point_size())))
             .text_color(if enabled {
                 cx.theme().foreground
             } else {
@@ -165,6 +165,7 @@ mod tests {
     #[test]
     fn popup_scroll_indicators_follow_guest_content_origin() {
         let mut popup = GuestPopupSnapshot {
+            font: Default::default(),
             menu: GuestMenu {
                 guest_id: 1,
                 generation: 1,

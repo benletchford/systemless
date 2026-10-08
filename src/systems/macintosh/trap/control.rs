@@ -945,6 +945,7 @@ impl super::TrapDispatcher {
         })?.clone();
         let rows = self.menu_rows(bus, &tracked_menu.items);
         Some(crate::menu_model::GuestPopupSnapshot {
+            font: crate::menu_model::GuestMenuFont::default(),
             menu,
             bounds: tracking.dropdown_rect,
             content_top: tracking.popup_content_top,
