@@ -414,7 +414,8 @@ impl PpcToolboxStartupState {
     }
 
     pub(crate) fn retained_host_overlay_rects(&self) -> Vec<(i16, i16, i16, i16)> {
-        self.standard_file_get_tracking
+        let mut rects: Vec<_> = self
+            .standard_file_get_tracking
             .iter()
             .map(|tracking| tracking.bounds)
             .chain(
@@ -422,7 +423,27 @@ impl PpcToolboxStartupState {
                     .iter()
                     .map(|tracking| tracking.bounds),
             )
-            .collect()
+            .collect();
+        // Menus own screen pixels outside WindowList too, including the
+        // saved shadow strip. Keep the host desktop pass beneath every pane.
+        // Macintosh Toolbox Essentials (1992), pp. 3-122--3-123 and 4-118--4-119.
+        if let Some(menu) = self.execution.menu().as_ref() {
+            rects.push((
+                menu.popup_top,
+                menu.popup_left,
+                menu.popup_top.saturating_add(menu.saved_height),
+                menu.popup_left.saturating_add(menu.saved_width),
+            ));
+            rects.extend(menu.submenus.iter().map(|pane| {
+                (
+                    pane.popup_top,
+                    pane.popup_left,
+                    pane.popup_top.saturating_add(pane.saved_height),
+                    pane.popup_left.saturating_add(pane.saved_width),
+                )
+            }));
+        }
+        rects
     }
 
     pub(crate) fn active_menu_definition(&self) -> Option<&MenuDefinitionTracking> {

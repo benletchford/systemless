@@ -1078,3 +1078,28 @@ Investigate `retained_host_overlay_rects` and the subsequent host chrome pass:
 the current PPC retained-overlay list includes Standard File panels but no
 menu panes. This is a suspected compositing cause, not yet a verified fix.
 PPC raw-frame parity remains incomplete despite the correct themed overlay.
+
+
+### Native PPC menus survive host composition
+
+PPC retained host-overlay bounds now include the active root menu and every
+submenu, using their saved extents to protect the shadow strips as well. The
+host desktop pass therefore leaves native menu pixels outside WindowList
+untouched. When a retained native overlay overlaps the menu bar, the classic
+bar repaint is deferred: the native adapter has already painted that area.
+Normal repaint resumes when the overlay is removed.
+
+The native submenu regression verifies both pane extents and removal of all
+protection after tracking is cleared. A framebuffer regression verifies that
+a native pane crossing the bar survives composition and that the same pixels
+repaint after disposal. All 438 menu library tests and 104 framebuffer tests
+pass, and the GPUI capture example builds.
+
+Fresh paired PPC captures were reviewed. The raw scrolling frame now retains
+the full menu above and below the application window, the partial Archive 09
+row, upper arrow, bottom highlight on Archive 55 and shadow. A separate
+post-selection capture shows the Loadout value updated to 4, no residual menu
+and restored desktop/window pixels. This resolves the specific clipping by
+host composition exposed by the preceding paired captures. Broad nested
+custom-definition visual qualification and automatic popup sizing remain
+open.

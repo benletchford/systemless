@@ -3484,18 +3484,20 @@ fn tracked_submenu_aligns_after_a_variable_height_icon_row() {
     loaded.set_current_resource_refnum(5);
     let mut icon = vec![0; 128];
     icon[0] = 0x80;
-    loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
-        ref_num: 5,
-        path: "Menu Icons".to_owned(),
-        res_type: u32::from_be_bytes(*b"ICON"),
-        res_id: 257,
-        name: Vec::new(),
-        data: icon,
-        raw_data: None,
-        raw_attrs: None,
-        attrs: 0,
-        handle: 0,
-    });
+    loaded
+        .process_file_system
+        .push_vfs_resource(PpcVfsResourceRecord {
+            ref_num: 5,
+            path: "Menu Icons".to_owned(),
+            res_type: u32::from_be_bytes(*b"ICON"),
+            res_id: 257,
+            name: Vec::new(),
+            data: icon,
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
     ppc_track_menu_while_held_with_resources(
         &mut loaded.memory,
         &loaded.gworlds,
@@ -3535,6 +3537,29 @@ fn tracked_submenu_aligns_after_a_variable_height_icon_row() {
     let child = tracking.submenus.first().expect("submenu did not open");
     assert_eq!(tracking.highlighted_item, 2);
     assert_eq!(child.popup_top, parent_top);
+    assert_eq!(
+        loaded.toolbox_startup.retained_host_overlay_rects(),
+        vec![
+            (
+                tracking.popup_top,
+                tracking.popup_left,
+                tracking.popup_top + tracking.saved_height,
+                tracking.popup_left + tracking.saved_width
+            ),
+            (
+                child.popup_top,
+                child.popup_left,
+                child.popup_top + child.saved_height,
+                child.popup_left + child.saved_width
+            ),
+        ],
+        "all menu panes and saved shadow strips must survive desktop composition"
+    );
+    loaded.toolbox_startup.execution.menu().set(None);
+    assert!(loaded
+        .toolbox_startup
+        .retained_host_overlay_rects()
+        .is_empty());
 }
 
 #[test]

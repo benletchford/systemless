@@ -6159,7 +6159,19 @@ impl super::TrapDispatcher {
         self.restore_kiosk_dialog_desktop_background(bus);
         self.restore_window_manager_desktop(bus);
 
-        if !self.menus.is_empty() && !self.fullscreen_locked && !self.menu_bar_hidden {
+        // A native menu can extend over the bar. Its adapter has already
+        // painted the current bar and menu; a classic repaint would erase
+        // the top of that retained pane. MTE (1992), pp. 3-122--3-123.
+        let native_overlay_covers_bar = self.external_host_overlay_rects.iter().any(
+            |&(top, left, bottom, right)| {
+                top < menu_bar_height && bottom > 0 && left < screen_w as i16 && right > 0
+            },
+        );
+        if !self.menus.is_empty()
+            && !self.fullscreen_locked
+            && !self.menu_bar_hidden
+            && !native_overlay_covers_bar
+        {
             self.refresh_menus_from_memory(bus);
             self.draw_menu_bar_to_fb(bus);
         }
@@ -8850,6 +8862,41 @@ mod redraw_chrome_tests {
             "the save-under snapshot must retain the blue desktop"
         );
         assert_eq!(screen_w, 800, "test assumes the default 800-wide screen");
+    }
+
+    #[test]
+    fn redraw_chrome_preserves_native_menu_over_the_menu_bar() {
+        let (mut disp, mut bus, base) = text_fixture();
+        disp.front_window = 0;
+        disp.fullscreen_locked = false;
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.menus.push(super::super::menu::Menu {
+            id: 1,
+            title: "File".into(),
+            items: Vec::new(),
+            enabled: true,
+            handle: 0,
+            in_menu_bar: true,
+            hierarchical: false,
+            visible_in_menu_bar: true,
+        });
+        disp.external_host_overlay_rects = vec![(10, 200, 200, 300)];
+        let probe = base + 15 * 800 + 250;
+        bus.write_byte(probe, 0x7e);
+        disp.redraw_chrome(&mut bus);
+        assert_eq!(
+            bus.read_byte(probe),
+            0x7e,
+            "bar repaint erased a native menu"
+        );
+        disp.external_host_overlay_rects.clear();
+        disp.redraw_chrome(&mut bus);
+        assert_ne!(
+            bus.read_byte(probe),
+            0x7e,
+            "bar must repaint after menu disposal"
+        );
     }
 
     #[test]
