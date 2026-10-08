@@ -791,7 +791,7 @@ impl super::TrapDispatcher {
             let (edit_text, edit_item, default_item) =
                 Self::dialog_edit_state(bus, dialog_ptr, &items);
             if self.dialogs_drawn_by_app.contains(&dialog_ptr)
-                && Self::dialog_is_game_managed(bounds, &items)
+                && items.iter().any(|item| dialog_item_base_type(item.item_type) == DIALOG_ITEM_USER_ITEM)
             {
                 // ShowWindow may follow a complete application composition
                 // into a still-hidden dialog port. Preserve those pixels and
@@ -6640,7 +6640,7 @@ impl super::TrapDispatcher {
                         abs_right,
                         display_text,
                         selection_range,
-                        false,
+                        None,
                         enabled,
                     );
                 }
@@ -7178,7 +7178,7 @@ impl super::TrapDispatcher {
                         abs_right,
                         display_text,
                         selection_range,
-                        false,
+                        None,
                         enabled,
                     );
                 }
@@ -8884,6 +8884,7 @@ impl super::TrapDispatcher {
     }
 
     /// Draw an editable text field with border and text.
+    #[cfg(test)]
     pub(crate) fn draw_edit_text(
         &self,
         bus: &mut MacMemoryBus,
@@ -8903,12 +8904,12 @@ impl super::TrapDispatcher {
             right,
             text,
             selection_range,
-            !selected,
+            (!selected).then_some(encode_mac_roman_lossy(text).len()),
             true,
         );
     }
 
-    fn draw_edit_text_with_cursor(
+    pub(crate) fn draw_edit_text_with_cursor(
         &self,
         bus: &mut MacMemoryBus,
         top: i16,
@@ -8917,7 +8918,7 @@ impl super::TrapDispatcher {
         right: i16,
         text: &str,
         selection_range: Option<(usize, usize)>,
-        show_cursor: bool,
+        cursor_offset: Option<usize>,
         enabled: bool,
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
@@ -8936,7 +8937,7 @@ impl super::TrapDispatcher {
             frame_bottom,
             frame_right,
             enabled,
-            selection_range.is_some() || show_cursor,
+            selection_range.is_some() || cursor_offset.is_some(),
         ) {
             // White fill
             Self::fb_fill_rect(
@@ -9028,10 +9029,11 @@ impl super::TrapDispatcher {
                     }
                 }
             }
-        } else if show_cursor {
-            // Draw cursor bar at end of text
-            let text_width = Self::fb_measure_string(text, font_id, font_size);
-            let cursor_x = left + 3 + text_width;
+        } else if let Some(offset) = cursor_offset {
+            // Roman text offsets are guest bytes, each decoding to one character.
+            let prefix: String = text.chars().take(offset).collect();
+            let text_width = Self::fb_measure_string(&prefix, font_id, font_size);
+            let cursor_x = left + 1 + text_width;
             if cursor_x < right - 1
                 && !self.draw_theme_caret(bus, top + 2, cursor_x, bottom - 1, cursor_x + 1)
             {

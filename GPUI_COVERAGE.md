@@ -353,3 +353,25 @@ regression observes a phase change with unchanged text and selection, then
 continues its existing editing and checkbox interaction checks. Filter-driven
 idle, callback ordering, composed blink pairs and saved-pixel visual review
 remain unqualified; this is not full dialog readiness.
+
+Pixel-level modal blink regression identified the presentation overwrite:
+after restoring saved pixels, classic dialog chrome redrew the active field
+as select-all until modified, ignoring the TERec selection and blink phase.
+That redraw now reads the active TERec and positions its caret at the guest
+byte offset. The three-mode regression requires changed pixels within the
+active field, no changed pixels outside it, and exact restoration after a full
+blink cycle. Broader custom filters, nested callbacks, font metrics and composed
+GPUI visible/hidden image review remain qualification work.
+The full-cycle assertion now passes on monochrome 68K, colour 68K and PPC.
+PPC initial drawing now uses the active TextEdit record, and modal idle
+repaints only that edit item, clearing the previous caret before drawing the
+current phase. This removes the discrepancy between initial and idle painting.
+The regression also completes its typing, deletion and checkbox interactions.
+
+The mixed-content redraw gate honors recorded application ownership when the
+dialog contains custom items, without requiring the entire dialog to classify
+as fully custom. Standard controls still repaint, while the application-composed
+background is retained. Standard-only dialogs keep their existing exposed-background
+repaint behaviour. All 633 library dialog tests passed with this distinction;
+both focused edit-field provider tests also passed.
+All seven GPUI dialog regressions pass after the PPC painter consolidation.

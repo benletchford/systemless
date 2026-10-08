@@ -6278,14 +6278,19 @@ impl super::TrapDispatcher {
                         let abs_left = tracking.bounds.1 + item.rect.1;
                         let abs_bottom = tracking.bounds.0 + item.rect.2;
                         let abs_right = tracking.bounds.1 + item.rect.3;
-                        self.draw_edit_text(
-                            bus,
-                            abs_top,
-                            abs_left,
-                            abs_bottom,
-                            abs_right,
-                            &tracking.edit_text,
-                            !tracking.edit_text_modified,
+                        // DialogRecord.textH owns the current selection and blink phase.
+                        // Toolbox Essentials (1992), pp. 6-101--6-102; Text (1993), p. 2-84.
+                        let handle = bus.read_long(tracking.dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+                        let ptr = if handle != 0 { bus.read_long(handle) } else { 0 };
+                        let length = crate::mac_roman::encode_mac_roman_lossy(&tracking.edit_text).len();
+                        let start = if ptr != 0 { usize::from(bus.read_word(ptr + 0x20)).min(length) } else { 0 };
+                        let end = if ptr != 0 { usize::from(bus.read_word(ptr + 0x22)).min(length) } else { 0 };
+                        let active = ptr != 0 && bus.read_word(ptr + 0x24) != 0;
+                        let selection = (active && start < end).then_some((start, end));
+                        let cursor = (active && start == end && bus.read_word(ptr + 0x38) == 0).then_some(start);
+                        self.draw_edit_text_with_cursor(
+                            bus, abs_top, abs_left, abs_bottom, abs_right,
+                            &tracking.edit_text, selection, cursor, item.is_enabled(),
                         );
                     }
                 }
