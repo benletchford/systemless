@@ -2783,6 +2783,12 @@ mod desktop {
         let standard_file = session.runner_mut().standard_file_snapshot();
         let menus = session.runner_mut().guest_menu_snapshot();
         let frame = session.video_frame().unwrap();
+        if matches!(capture, CaptureCase::WindowsZoomRestored) {
+            // This exposed main-window point used to retain the zoomed
+            // auxiliary window's blue pixels after the 68K zoom-back.
+            let offset = ((100 * frame.width + 100) * 4) as usize;
+            assert_eq!(&frame.pixels[offset..offset + 3], &[255, 255, 255]);
+        }
         let guest_menu_tracking = session.runner().guest_menu_tracking_active();
         if matches!(capture, CaptureCase::NestedModalDialog) {
             assert!(!menus.requires_guest_menu_rendering());

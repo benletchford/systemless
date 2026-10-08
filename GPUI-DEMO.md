@@ -119,6 +119,9 @@ that the grown bounds and window identity return. The composed
 [68K](tests/toolbox-showcase/reference/gpui-demo/27-windows-zoom-restored-68k.png)
 and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/27-windows-zoom-restored-ppc.png)
 captures show the re-exposed window stack.
+The restored capture also asserts that a point newly exposed in the main
+window has its guest-painted white background rather than stale auxiliary
+pixels.
 `--capture-windows-promoted` closes the inspector, leaving the auxiliary window
 frontmost on [68K](tests/toolbox-showcase/reference/gpui-demo/24-windows-promoted-68k.png)
 and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/24-windows-promoted-ppc.png).
