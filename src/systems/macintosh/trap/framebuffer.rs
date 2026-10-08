@@ -2866,7 +2866,12 @@ impl super::TrapDispatcher {
         style: QuickDrawTextStyle,
         pixel_index_override: Option<u8>,
         black: bool,
+        clip: Option<(i16, i16, i16, i16)>,
     ) -> i16 {
+        let (clip_top, clip_left, clip_bottom, clip_right) =
+            clip.unwrap_or((0, 0, screen_height, screen_width));
+        let inside =
+            |px: i16, py: i16| px >= clip_left && px < clip_right && py >= clip_top && py < clip_bottom;
         let (glyph_hit, synthetic_italic) = if style.italic() {
             if let Some(hit) = get_glyph_italic(font_id, font_size, ch) {
                 (Some(hit), None)
@@ -2887,7 +2892,15 @@ impl super::TrapDispatcher {
         // Without a per-glyph style bit the styled painter's pixel set is
         // exactly the glyph bitmap; on an 8-bit screen let the row painter
         // write it instead of building the set.
-        if pixel_size == 8 && !style.has_per_glyph_effect() {
+        let glyph_inside_clip = clip.is_none_or(|(top, left, bottom, right)| {
+            let gx = i32::from(x) + i32::from(glyph.origin_x);
+            let gy = i32::from(y) + i32::from(glyph.origin_y);
+            gx >= i32::from(left)
+                && gy >= i32::from(top)
+                && gx + i32::from(glyph.width) <= i32::from(right)
+                && gy + i32::from(glyph.height) <= i32::from(bottom)
+        });
+        if pixel_size == 8 && !style.has_per_glyph_effect() && glyph_inside_clip {
             Self::fb_draw_glyph_bitmap_with_slant(
                 bus,
                 screen_base,
@@ -2905,8 +2918,7 @@ impl super::TrapDispatcher {
                 black,
             );
             bus.end_outline_glyph();
-            return i16::try_from(style.glyph_advance(i32::from(glyph.advance)))
-                .unwrap_or(i16::MAX);
+            return i16::try_from(style.glyph_advance(i32::from(glyph.advance))).unwrap_or(i16::MAX);
         }
 
         if matches!(pixel_size, 8 | 16 | 32) {
@@ -2923,8 +2935,16 @@ impl super::TrapDispatcher {
                         Self::logical_white_pixel_index(bus)
                     }
                 });
-                for py in top.max(0)..bottom.min(i32::from(screen_height)) {
-                    for px in left.max(0)..right.min(i32::from(screen_width)) {
+                for py in top.max(0).max(i32::from(clip_top))
+                    ..bottom
+                        .min(i32::from(screen_height))
+                        .min(i32::from(clip_bottom))
+                {
+                    for px in left.max(0).max(i32::from(clip_left))
+                        ..right
+                            .min(i32::from(screen_width))
+                            .min(i32::from(clip_right))
+                    {
                         let lanes = u32::from(pixel_size / 8);
                         for lane in 0..lanes {
                             bus.outline_glyph_pixel(
@@ -2951,6 +2971,9 @@ impl super::TrapDispatcher {
 
         let Some(smear_max) = style.smear_max() else {
             for (px, py) in base_pixels.iter().copied() {
+                if !inside(px, py) {
+                    continue;
+                }
                 Self::fb_set_styled_text_pixel(
                     bus,
                     screen_base,
@@ -2965,8 +2988,7 @@ impl super::TrapDispatcher {
                 );
             }
             bus.end_outline_glyph();
-            return i16::try_from(style.glyph_advance(i32::from(glyph.advance)))
-                .unwrap_or(i16::MAX);
+            return i16::try_from(style.glyph_advance(i32::from(glyph.advance))).unwrap_or(i16::MAX);
         };
 
         // QuickDraw outlines/shadows text by smearing a 1-bit glyph mask,
@@ -2993,7 +3015,7 @@ impl super::TrapDispatcher {
                         }
                     }
                 }
-                if smeared {
+                if smeared && inside(px, py) {
                     Self::fb_set_styled_text_pixel(
                         bus,
                         screen_base,
@@ -3186,6 +3208,7 @@ impl super::TrapDispatcher {
             style,
             None,
             true,
+            None,
         )
     }
 
@@ -3219,6 +3242,7 @@ impl super::TrapDispatcher {
             style,
             None,
             black,
+            None,
         )
     }
 
@@ -3252,10 +3276,11 @@ impl super::TrapDispatcher {
             style,
             Some(pixel_index),
             true,
+            None,
         )
     }
 
-    fn fb_draw_string_styled_with_index(
+    pub(crate) fn fb_draw_string_styled_with_index(
         bus: &mut MacMemoryBus,
         screen_base: u32,
         row_bytes: u32,
@@ -3270,6 +3295,7 @@ impl super::TrapDispatcher {
         style: u8,
         pixel_index_override: Option<u8>,
         black: bool,
+        clip: Option<(i16, i16, i16, i16)>,
     ) -> i16 {
         let style = QuickDrawTextStyle::from_bits(style);
         let mut cx = x;
@@ -3289,48 +3315,29 @@ impl super::TrapDispatcher {
                 style,
                 pixel_index_override,
                 black,
+                clip,
             );
         }
 
         if style.underline() && cx > x {
+            let (top, left, bottom, right) = clip.unwrap_or((0, 0, screen_height, screen_width));
             let thickness = get_underline_thickness(font_id, font_size).max(1);
             for dy in 1..=thickness {
-                if let Some(pixel_index) = pixel_index_override {
-                    Self::fb_set_pixel_index(
+                let py = y.saturating_add(dy);
+                if py < top || py >= bottom {
+                    continue;
+                }
+                for px in x.max(left)..cx.min(right) {
+                    Self::fb_set_styled_text_pixel(
                         bus,
                         screen_base,
                         row_bytes,
                         pixel_size,
                         screen_width,
                         screen_height,
-                        x,
-                        y + dy,
-                        pixel_index,
-                    );
-                    for underline_x in (x + 1)..cx {
-                        Self::fb_set_pixel_index(
-                            bus,
-                            screen_base,
-                            row_bytes,
-                            pixel_size,
-                            screen_width,
-                            screen_height,
-                            underline_x,
-                            y + dy,
-                            pixel_index,
-                        );
-                    }
-                } else {
-                    Self::fb_hline(
-                        bus,
-                        screen_base,
-                        row_bytes,
-                        pixel_size,
-                        screen_width,
-                        screen_height,
-                        y + dy,
-                        x,
-                        cx,
+                        px,
+                        py,
+                        pixel_index_override,
                         black,
                     );
                 }
@@ -8677,6 +8684,53 @@ mod redraw_chrome_tests {
                 .count()
         };
         assert!(painted < unclipped, "the clip removed something");
+    }
+
+    #[test]
+    fn clipped_styled_text_matches_unclipped_pixels_inside_its_bounds() {
+        let (_, mut bus, base) = text_fixture();
+        let black = TrapDispatcher::logical_black_pixel_index(&bus);
+        for style in [0, 1, 2, 4, 8, 16, 32, 64] {
+            bus.fill_bytes(base, 800 * 600, 0x11);
+            TrapDispatcher::fb_draw_string_styled_index(
+                &mut bus, base, 800, 8, 800, 600, 40, 40, "Menu", 0, 12, style, black,
+            );
+            let full = screen_bytes(&bus, base);
+            for clip in [(34, 43, 39, 63), (37, 40, 44, 68)] {
+                bus.fill_bytes(base, 800 * 600, 0x11);
+                TrapDispatcher::fb_draw_string_styled_with_index(
+                    &mut bus,
+                    base,
+                    800,
+                    8,
+                    800,
+                    600,
+                    40,
+                    40,
+                    "Menu",
+                    0,
+                    12,
+                    style,
+                    Some(black),
+                    true,
+                    Some(clip),
+                );
+                let clipped = screen_bytes(&bus, base);
+                let mut ink = 0;
+                for (index, pixel) in clipped.iter().enumerate() {
+                    let x = (index % 800) as i16;
+                    let y = (index / 800) as i16;
+                    let inside = x >= clip.1 && x < clip.3 && y >= clip.0 && y < clip.2;
+                    assert_eq!(
+                        *pixel,
+                        if inside { full[index] } else { 0x11 },
+                        "style {style} at ({x},{y}), clip {clip:?}"
+                    );
+                    ink += usize::from(*pixel == black);
+                }
+                assert!(ink > 0, "style {style} must expose some ink");
+            }
+        }
     }
 
     #[test]

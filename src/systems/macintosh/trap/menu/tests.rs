@@ -11549,3 +11549,51 @@ fn native_selection_rejects_disabled_and_hierarchical_parent_items() {
     assert_eq!(disp.queue_native_menu_selection(&bus, 100, 2), None);
     assert_eq!(disp.queue_native_menu_selection(&bus, 999, 1), None);
 }
+
+#[test]
+fn draw_menu_dropdown_exposes_partial_row_without_painting_scroll_slot() {
+    let (mut disp, mut cpu, mut bus) = setup_with_port();
+    let row_bytes = 64;
+    let base = bus.alloc(row_bytes * 342);
+    disp.set_screen_mode_for_test(base, row_bytes, 512, 342, 1);
+    clear_1bpp_screen(&mut bus, base, row_bytes, 342);
+    let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 612, 0x302500, "File");
+    append_menu_data(
+        &mut disp,
+        &mut cpu,
+        &mut bus,
+        menu,
+        0x302540,
+        "    ;    ;    ;    ",
+    );
+    let rect = (20, 20, 84, 140);
+    let saved = disp.save_dropdown_pixels(&bus, rect);
+    disp.menu_tracking
+        .set(Some(super::tracked_menu_state_with_content_top(
+            super::MenuTrackingKind::MenuBar,
+            menu,
+            rect,
+            12,
+            saved,
+        )));
+    disp.draw_menu_dropdown(&mut bus, 0, rect);
+    let before = bus.read_bytes(base, row_bytes as usize * 342);
+    disp.menus[0].items[1].text = "MMMM".into();
+    disp.draw_menu_dropdown(&mut bus, 0, rect);
+    let after = bus.read_bytes(base, row_bytes as usize * 342);
+    let mut changed = 0;
+    for y in 0..342usize {
+        for x in 0..512usize {
+            let index = y * row_bytes as usize + x / 8;
+            let mask = 1 << (7 - x % 8);
+            if before[index] & mask != after[index] & mask {
+                changed += 1;
+                assert!(
+                    (21..139).contains(&x) && (36..44).contains(&y),
+                    "partial row escaped its visible strip at ({x},{y})"
+                );
+            }
+        }
+    }
+    assert!(changed > 0, "partially exposed row must draw text");
+}

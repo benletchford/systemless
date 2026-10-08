@@ -1032,3 +1032,25 @@ library tests pass. The initial extra top inset failed the icon test and was
 removed before this validation. No new composed capture is claimed here.
 The 68k framebuffer painter still omits partial rows and requires equivalent
 clipping; cross-CPU partial-row visual qualification remains open.
+
+
+### 68k partial-row guest painting
+
+The 68k standard-menu painter now follows the PPC partial-row behavior: it
+keeps original baselines and icon origins while clipping text, marks, command
+equivalents, resource icons, separators, hierarchy indicators, selection and
+dimming to the visible item area. Styled framebuffer text accepts an optional
+clip, including outline/shadow pixels and underlines. Existing unrestricted
+callers retain their behavior, and plain glyphs entirely inside the clip keep
+the 8-bit row-painting fast path.
+
+The monochrome menu regression changes a partly exposed row from blank text
+to ink and verifies every changed pixel lies inside the exposed strip. The
+styled-text regression compares clipped output against unrestricted pixels
+inside two clip rectangles for all eight standard styles, and verifies the
+surrounding framebuffer is untouched. Both CPU partial-row tests pass, all
+437 menu library tests pass, and all 103 framebuffer tests pass. This closes
+the known whole-row omission in both guest painters. Fresh composed captures,
+scrolling interactions with partial icon rows and broad presentation-scale
+qualification remain outstanding; no complete popup-readiness claim follows
+from these focused tests.
