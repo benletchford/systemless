@@ -20,7 +20,7 @@ mod desktop {
     //! Opt-in GPUI Kit presentation experiment for live guest menus.
 
     use std::{
-        collections::HashMap,
+        collections::{HashMap, HashSet},
         path::PathBuf,
         sync::{mpsc, Arc, Mutex},
         time::{Duration, Instant},
@@ -371,6 +371,7 @@ mod desktop {
         menus: GuestMenuSnapshot,
         menu_presented: bool,
         menu_hovered: bool,
+        open_menus: HashSet<String>,
         guest_menu_tracking: bool,
         windows: Vec<WindowFrameSnapshot>,
         dialogs: Vec<DialogSnapshot>,
@@ -456,6 +457,7 @@ mod desktop {
                 menus: Default::default(),
                 menu_presented: true,
                 menu_hovered: false,
+                open_menus: HashSet::new(),
                 guest_menu_tracking: false,
                 windows: Vec::new(),
                 dialogs: Vec::new(),
@@ -717,6 +719,7 @@ mod desktop {
                 let commands = self.commands.clone();
                 let id = menu.id;
                 let identity = format!("guest-menu-{}-{}", menu.guest_id, menu.generation);
+                let demo = cx.entity().downgrade();
                 let state = window.use_keyed_state(format!("live-{identity}"), cx, |_, _| {
                     LiveMenuState::default()
                 });
@@ -726,7 +729,19 @@ mod desktop {
                         .overlay_closable(true)
                         .on_open_change({
                             let state = state.downgrade();
-                            move |open, _, cx| {
+                            let identity = identity.clone();
+                            move |open, window, cx| {
+                                if let Some(demo) = demo.upgrade() {
+                                    demo.update(cx, |demo, cx| {
+                                        if *open {
+                                            demo.open_menus.insert(identity.clone());
+                                        } else {
+                                            demo.open_menus.remove(&identity);
+                                            demo.menu_hovered = f32::from(window.mouse_position().y) < 36.;
+                                        }
+                                        cx.notify();
+                                    });
+                                }
                                 if !*open {
                                     _ = state.update(cx, |state, _| {
                                         state.menu = None;
@@ -1979,7 +1994,8 @@ mod desktop {
                     }
                 }
             }
-            let menu_hovered = self.menu_hovered && !self.menu_presented;
+            let menu_hovered = (self.menu_hovered || !self.open_menus.is_empty())
+                && !self.menu_presented;
             div()
                 .flex()
                 .flex_col()
@@ -4655,9 +4671,9 @@ mod desktop {
         #[gpui_kit::test]
         fn fullscreen_guest_menu_reveals_only_at_top_edge(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::{test::TestWindowExt, AppContext, Bounds, WindowBounds, WindowOptions};
-            use systemless::menu_model::{GuestMenu, GuestMenuSnapshot};
+            use systemless::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
 
-            let (sender, _receiver) = std::sync::mpsc::channel();
+            let (sender, receiver) = std::sync::mpsc::channel();
             let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
             cx.update(gpui_kit::init);
             let (window, view) = cx.update(|cx| {
@@ -4694,7 +4710,15 @@ mod desktop {
                             standard_definition: true,
                             hierarchical: false,
                             visible_in_menu_bar: true,
-                            items: vec![],
+                            items: vec![GuestMenuItem {
+                                number: 1,
+                                text: "Open".into(),
+                                enabled: true,
+                                checked: false,
+                                key_equivalent: None,
+                                submenu_id: None,
+                                separator: false,
+                            }],
                         }],
                         ..Default::default()
                     };
@@ -4718,6 +4742,8 @@ mod desktop {
                 ), cx);
                 window.render_frame(cx);
                 assert!(window.try_find("guest-menu-1-1").is_some());
+                window.click("guest-menu-1-1", cx);
+                assert!(window.try_find("guest-popup-item-128-1").is_some());
                 window.dispatch_event(gpui_kit::PlatformInput::MouseMove(
                     gpui_kit::MouseMoveEvent {
                         position: gpui_kit::point(gpui_kit::px(100.), gpui_kit::px(100.)),
@@ -4725,6 +4751,19 @@ mod desktop {
                     },
                 ), cx);
                 window.render_frame(cx);
+                assert!(window.try_find("guest-menu-1-1").is_some());
+                assert!(window.try_find("guest-popup-item-128-1").is_some());
+                window.hover("guest-popup-item-128-1", cx);
+                assert_eq!(window.find("guest-popup-item-128-1").selected(), Some(true));
+                window.click("guest-popup-item-128-1", cx);
+            }).unwrap();
+            assert!(std::iter::from_fn(|| receiver.try_recv().ok()).any(|command| {
+                matches!(command, super::Command::Menu(128, 1, 1, 1))
+            }));
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert!(window.try_find("guest-popup-item-128-1").is_none());
                 assert!(window.try_find("guest-menu-1-1").is_none());
             }).unwrap();
             cx.update(|cx| {
