@@ -33,7 +33,7 @@ Open **Pages → Controls** and reopen Pages to see the guest update its checkma
 Use **Options → Difficulty** to try nested menus. Open the Apple menu's About
 item to see a standard alert's text and button restyled through GPUI Kit;
 Return or a click on the button still dismisses it through the guest.
-Mouse input is forwarded to the guest below the menu bar.
+Pointer input uses the unchanged guest framebuffer coordinates.
 
 Choose **Pages → Windows** to try overlapping windows. Drag a title bar,
 click an exposed rear window to activate it, and use the front window's **×**
@@ -52,7 +52,7 @@ zoom hit region; resizing still uses the guest's original lower-right hit region
 - Command-key equivalents while the game surface has focus.
 - ASCII typing and arrow-key events translated to Macintosh key codes and
   delivered to the guest TextEdit/event path.
-- Original guest framebuffer content and unsupported dialogs below the new menu bar.
+- Complete guest framebuffer content and unsupported dialogs, with the menu overlaid in guest-reserved space.
 - Standard `dBoxProc` dialogs use GPUI Kit buttons, checkboxes, and radio
   buttons when their live guest values are known. Static text is themed; edit
   fields retain guest pixels and guest input remains unchanged.
@@ -73,7 +73,7 @@ zoom hit region; resizing still uses the guest's original lower-right hit region
   resize corners over the classic `DrawGrowIcon` marks.
 - Clipped frame overlays that preserve content and respect overlapping windows.
 - Guest-owned dragging, activation and closing through normal mouse events.
-- Presentation-only removal of the old menu rows, preserving guest coordinates.
+- Uncropped live and captured framebuffers; visible menus use the guest MBarHeight, while fullscreen hover menus overlay the scene.
 - A guest worker thread and a single latest-frame slot, keeping emulation off
   the GPUI event loop.
 
@@ -89,6 +89,10 @@ Use `--capture-standard-menu` to capture the open Pages menu with Systemless's
 headless GPUI renderer. Reviewed composed captures use the same showcase on
 [68K](tests/toolbox-showcase/reference/gpui-demo/20-standard-menu-68k.png) and
 [PowerPC](tests/toolbox-showcase/reference/gpui-demo/20-standard-menu-ppc.png).
+
+These menu references use the current uncropped live layout. Other composed
+references below predate that layout change and still require regeneration
+and visual review; they are not current layout acceptance evidence.
 
 Frame overlays preserve the original compact guest geometry; they do not enlarge
 title bars or detach windows. Unknown/custom

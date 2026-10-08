@@ -202,6 +202,7 @@ mod desktop {
     struct Update {
         menus: GuestMenuSnapshot,
         menu_presented: bool,
+        menu_height: u16,
         guest_menu_tracking: bool,
         windows: Vec<WindowFrameSnapshot>,
         dialogs: Vec<DialogSnapshot>,
@@ -211,6 +212,15 @@ mod desktop {
         standard_file: Option<StandardFileSnapshot>,
         frame: Option<(u32, u32, u32, Vec<u8>)>,
         status: String,
+    }
+
+    // Both live rendering and composed captures preserve the complete guest
+    // coordinate space. GPUI RenderImage consumes BGRA pixels.
+    fn gpui_pixels(mut pixels: Vec<u8>) -> Vec<u8> {
+        for pixel in pixels.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+        pixels
     }
 
     fn configure_realtime_execution(session: &mut MacintoshSession) -> u32 {
@@ -317,14 +327,10 @@ mod desktop {
                 session.drain_audio();
                 let menus = session.runner_mut().guest_menu_snapshot();
                 let menu_presented = session.runner().guest_menu_bar_presented();
+                let menu_height = session.runner().bus().read_word(MBAR_HEIGHT);
                 let guest_menu_tracking = session.runner().guest_menu_tracking_active();
                 let frame = session.video_frame().map(|frame| {
-                    let mut pixels = frame.pixels;
-                    for pixel in pixels.chunks_exact_mut(4) {
-                        pixel.swap(0, 2);
-                    }
-                    // Keep the guest framebuffer fixed while the host menu overlays it.
-                    (frame.width, frame.height, 0, pixels)
+                    (frame.width, frame.height, 0, gpui_pixels(frame.pixels))
                 });
                 let running = session.status().running;
                 let windows = session.runner_mut().window_frame_snapshot();
@@ -336,6 +342,7 @@ mod desktop {
                 *updates.lock().unwrap() = Some(Update {
                     menus,
                     menu_presented,
+                    menu_height,
                     guest_menu_tracking,
                     windows,
                     dialogs,
@@ -370,6 +377,7 @@ mod desktop {
         commands: mpsc::Sender<Command>,
         menus: GuestMenuSnapshot,
         menu_presented: bool,
+        menu_height: u16,
         menu_hovered: bool,
         open_menus: HashSet<String>,
         guest_menu_tracking: bool,
@@ -416,6 +424,7 @@ mod desktop {
                         if let Some(update) = update {
                             this.menus = update.menus;
                             this.menu_presented = update.menu_presented;
+                            this.menu_height = update.menu_height;
                             this.guest_menu_tracking = update.guest_menu_tracking;
                             this.windows = update.windows;
                             this.dialogs = update.dialogs;
@@ -456,6 +465,7 @@ mod desktop {
                 commands,
                 menus: Default::default(),
                 menu_presented: true,
+                menu_height: 20,
                 menu_hovered: false,
                 open_menus: HashSet::new(),
                 guest_menu_tracking: false,
@@ -697,10 +707,19 @@ mod desktop {
                     cx.notify();
                 }));
             }
+            // The guest reserves MBarHeight, not a fixed 20-pixel strip.
+            // Inside Macintosh V, Menu Manager: menu-bar height and MBarHeight.
+            let bar_height = if self.menu_presented {
+                f32::from(self.menu_height.max(1))
+            } else {
+                36.
+            };
             let mut bar = div()
+                .id("guest-menu-bar")
+                .test_support()
                 .flex()
                 .items_center()
-                .h(px(36.))
+                .h(px(bar_height))
                 .w_full()
                 .flex_shrink_0()
                 .bg(cx.theme().background)
@@ -710,8 +729,8 @@ mod desktop {
                 div()
                     .ml(px(10.))
                     .mr(px(2.))
-                    .w(px(20.))
-                    .h(px(20.))
+                    .w(px((bar_height - 4.).clamp(1., 20.)))
+                    .h(px((bar_height - 4.).clamp(1., 20.)))
                     .child(img(self.logo.clone()).size_full()),
             );
             for menu in self.menus.menus.iter().filter(|m| m.visible_in_menu_bar) {
@@ -755,6 +774,8 @@ mod desktop {
                                 .label(menu.title.clone())
                                 .ghost()
                                 .small()
+                                .compact()
+                                .h(px(bar_height))
                                 .disabled(!menu.enabled),
                         )
                         .content(move |_, window, cx| {
@@ -3013,16 +3034,10 @@ mod desktop {
             assert!(!menus.requires_guest_menu_rendering());
             assert!(!guest_menu_tracking, "nested dialog capture must compose GPUI overlays");
         }
-        let top = if menus.requires_guest_menu_rendering() {
-            0
-        } else {
-            u32::from(session.runner().bus().read_word(MBAR_HEIGHT))
-        };
-        let mut pixels = frame.pixels[(top * frame.width * 4) as usize..].to_vec();
-        for pixel in pixels.chunks_exact_mut(4) {
-            pixel.swap(0, 2);
-        }
-        let frame_height = frame.height - top;
+        let menu_presented = session.runner().guest_menu_bar_presented();
+        let menu_height = session.runner().bus().read_word(MBAR_HEIGHT);
+        let pixels = gpui_pixels(frame.pixels);
+        let frame_height = frame.height;
         if matches!(capture, CaptureCase::StandardFileSave) {
             image::RgbaImage::from_raw(frame.width, frame_height, pixels)
                 .unwrap()
@@ -3066,7 +3081,9 @@ mod desktop {
                 }
                 demo.width = frame.width;
                 demo.height = frame_height;
-                demo.crop_top = top;
+                demo.crop_top = 0;
+                demo.menu_presented = menu_presented;
+                demo.menu_height = menu_height;
                 demo.status = format!(
                     "{} · Running · GPUI Kit UI demo",
                     if prefer_powerpc { "PowerPC" } else { "68k" }
@@ -3604,14 +3621,11 @@ mod desktop {
         assert!(!menus.requires_guest_menu_rendering());
         let menu = menus.menus.iter().find(|menu| menu.id == 129).unwrap();
         let trigger = format!("guest-menu-{}-{}", menu.guest_id, menu.generation);
-        let top = u32::from(session.runner().bus().read_word(MBAR_HEIGHT));
+        let menu_presented = session.runner().guest_menu_bar_presented();
+        let menu_height = session.runner().bus().read_word(MBAR_HEIGHT);
         let frame = session.video_frame().expect("showcase video frame");
-        let top = top.min(frame.height.saturating_sub(1));
-        let mut pixels = frame.pixels[(top * frame.width * 4) as usize..].to_vec();
-        for pixel in pixels.chunks_exact_mut(4) {
-            pixel.swap(0, 2);
-        }
-        let (frame_width, frame_height) = (frame.width, frame.height - top);
+        let pixels = gpui_pixels(frame.pixels);
+        let (frame_width, frame_height) = (frame.width, frame.height);
         let windows = session.runner_mut().window_frame_snapshot();
         let dialogs = session.runner_mut().dialog_snapshot();
         let controls = session.runner_mut().control_snapshot();
@@ -3646,7 +3660,9 @@ mod desktop {
                 demo.standard_file = standard_file;
                 demo.width = frame_width;
                 demo.height = frame_height;
-                demo.crop_top = top;
+                demo.crop_top = 0;
+                demo.menu_presented = menu_presented;
+                demo.menu_height = menu_height;
                 demo.status = format!(
                     "{} · Running · GPUI Kit UI demo",
                     if prefer_powerpc { "PowerPC" } else { "68k" }
@@ -4769,12 +4785,14 @@ mod desktop {
             cx.update(|cx| {
                 view.update(cx, |demo, cx| {
                     demo.menu_presented = true;
+                    demo.menu_height = 24;
                     cx.notify();
                 });
             });
             cx.update_window(window.into(), |_, window, cx| {
                 window.render_frame(cx);
                 assert!(window.try_find("guest-menu-1-1").is_some());
+                assert_eq!(window.find("guest-menu-bar").bounds().size.height, gpui_kit::px(24.));
                 let screen = window.find("guest-screen");
                 assert_eq!(screen.bounds().origin.x, gpui_kit::px(0.));
                 assert_eq!(screen.bounds().origin.y, gpui_kit::px(0.));
