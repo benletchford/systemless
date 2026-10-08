@@ -5070,6 +5070,9 @@ impl super::TrapDispatcher {
             tracking.menu_handle == menu.handle
                 && tracking.dropdown_rect() == rect
                 && !menu.visible_in_menu_bar
+        }) || self.control_tracking.as_ref().is_some_and(|tracking| {
+            tracking.popup_tracking && tracking.active_menu == menu_idx
+                && tracking.dropdown_rect == rect
         });
         let attached_pulldown =
             !detached_popup && menu.in_menu_bar && top == bus.read_word(addr::MBAR_HEIGHT) as i16;
