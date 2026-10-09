@@ -23,6 +23,7 @@ pub(crate) mod execution_kernel;
 pub(crate) mod execution_m68k;
 pub(crate) mod execution_native;
 pub mod game;
+pub(crate) mod gestalt_manager;
 pub(crate) mod guest_call;
 pub(crate) mod guest_procedure;
 pub(crate) mod list_manager;

@@ -48,10 +48,7 @@ use crate::guest_procedure::{
     ROUTINE_RECORD_SELECTOR_OFFSET as PPC_ROUTINE_RECORD_SELECTOR_OFFSET,
 };
 use crate::list_manager::ProcessListManagerState;
-use crate::machine_profile::{
-    POWERPC_CARBON_VERSION_BCD, POWERPC_SYSTEM_VERSION_BCD, REFERENCE_MACHINE_PROFILE,
-    REFERENCE_POWERPC_CPU_CLOCK_HZ, REFERENCE_POWERPC_EXECUTION_CAPABILITIES,
-};
+use crate::machine_profile::{POWERPC_SYSTEM_VERSION_BCD, REFERENCE_MACHINE_PROFILE};
 use crate::managers::resource::{
     serialize_resource_fork_with_attrs, ResourceFork, ResourceForkEntry,
 };
