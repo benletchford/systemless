@@ -8998,6 +8998,7 @@ mod redraw_chrome_tests {
         let put_bounds = (200, 8, 460, 368);
         disp.standard_file_put_tracking = Some(StandardFilePutTrackingState {
             pointer_anchor: None,
+            caret: crate::standard_file_ui::StandardFileCaret::default(),
             new_folder: None,
             confirming_replace: false,
             generation: 2,

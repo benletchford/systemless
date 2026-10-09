@@ -1,0 +1,153 @@
+{
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "review": "All composed on/off phase pairs inspected. Guest and composed full-frame differences confined to their insertion caret rectangles. No scene, filename, selection, or panel geometry changes between phases.",
+  "differences": [
+    {
+      "mode": "mono",
+      "kind": "composed",
+      "image_size": [
+        1800,
+        1480
+      ],
+      "phase_difference_bbox": [
+        569,
+        878,
+        571,
+        917
+      ],
+      "interpretation": "Only the insertion caret changes between the two complete frames."
+    },
+    {
+      "mode": "mono",
+      "kind": "guest",
+      "image_size": [
+        800,
+        600
+      ],
+      "phase_difference_bbox": [
+        251,
+        360,
+        252,
+        377
+      ],
+      "interpretation": "Only the insertion caret changes between the two complete frames."
+    },
+    {
+      "mode": "colour",
+      "kind": "composed",
+      "image_size": [
+        1800,
+        1480
+      ],
+      "phase_difference_bbox": [
+        569,
+        878,
+        571,
+        917
+      ],
+      "interpretation": "Only the insertion caret changes between the two complete frames."
+    },
+    {
+      "mode": "colour",
+      "kind": "guest",
+      "image_size": [
+        800,
+        600
+      ],
+      "phase_difference_bbox": [
+        251,
+        360,
+        252,
+        377
+      ],
+      "interpretation": "Only the insertion caret changes between the two complete frames."
+    },
+    {
+      "mode": "ppc",
+      "kind": "composed",
+      "image_size": [
+        1800,
+        1480
+      ],
+      "phase_difference_bbox": [
+        571,
+        903,
+        573,
+        942
+      ],
+      "interpretation": "Only the insertion caret changes between the two complete frames."
+    },
+    {
+      "mode": "ppc",
+      "kind": "guest",
+      "image_size": [
+        800,
+        600
+      ],
+      "phase_difference_bbox": [
+        252,
+        371,
+        253,
+        388
+      ],
+      "interpretation": "Only the insertion caret changes between the two complete frames."
+    }
+  ],
+  "captures": [
+    {
+      "file": "save-caret-mono-on.png",
+      "sha256": "bccc70224fe8346c2886b3f6b78fe96b1188419c1e4b9a0e55ecded324d4e6b5"
+    },
+    {
+      "file": "save-caret-mono-off.png",
+      "sha256": "2776bda887d3dc55a37898924bea1c623a9295de1a51e00dfe0cda06056d183d"
+    },
+    {
+      "file": "save-caret-mono-on.guest.png",
+      "sha256": "1654893ad37956c3bbb67dc5ae4016997f79ca11fac37a5fce6a4f7558c28c71"
+    },
+    {
+      "file": "save-caret-mono-off.guest.png",
+      "sha256": "6450f1b634d04bad84dc10810421f731850e574db0e03651a9727e1831d7ec9d"
+    },
+    {
+      "file": "save-caret-colour-on.png",
+      "sha256": "c941ab30be48e8a8417e9e909f40831a0fa8dab7629acd3b172f3dff43840590"
+    },
+    {
+      "file": "save-caret-colour-off.png",
+      "sha256": "ca26cbc40929760c4547b8265978e97f5659295bf4cec889efa258b07592e8ba"
+    },
+    {
+      "file": "save-caret-colour-on.guest.png",
+      "sha256": "6addead8b4146bb336bfdeb29ab230b50cf309af5c16081a78c7a3c075c333d2"
+    },
+    {
+      "file": "save-caret-colour-off.guest.png",
+      "sha256": "fbd4d7289c4364e679ecec3cc76152abcbe567fd7a21d85e9b06f01692ec4a53"
+    },
+    {
+      "file": "save-caret-ppc-on.png",
+      "sha256": "5d8d5d8e58e1ec069eba417bce11ceab239a0756f2a08f20945400e5742a2252"
+    },
+    {
+      "file": "save-caret-ppc-off.png",
+      "sha256": "30659313e0ed4ab76886857630f627f6f844c490edfab5889b73cbe6f2cd9066"
+    },
+    {
+      "file": "save-caret-ppc-on.guest.png",
+      "sha256": "48b73cb66b058d9e7550b472e2d1690d71c653f34ff0a4e9551d5b4d51b4182c"
+    },
+    {
+      "file": "save-caret-ppc-off.guest.png",
+      "sha256": "9762daa08d98f992caba00433ff24e43c537800d08a4dfbae77cc1a35ed4cb2a"
+    }
+  ],
+  "limits": [
+    "Scale/activation matrix remains unqualified",
+    "Changed CaretTime preference integration remains unqualified",
+    "Classic Macintosh font parity remains unqualified",
+    "Horizontal scrolling remains unfinished",
+    "Theme-provider caret/focus fidelity remains unqualified"
+  ]
+}

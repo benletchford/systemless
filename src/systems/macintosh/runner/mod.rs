@@ -3409,6 +3409,7 @@ impl FixtureRunner {
                 name: None,
                 name_selection: None,
                 name_text_layout: None,
+                name_caret_visible: None,
                 name_has_focus: None,
                 directory_label: Some(self.dispatcher.apply_param_text(crate::trap::dispatch::BOOT_VOLUME_NAME).into_owned()),
                 directory_font: (self.dispatcher.tx_font, self.dispatcher.tx_size, self.dispatcher.tx_face as u8),
@@ -3464,6 +3465,7 @@ impl FixtureRunner {
                     selection_to_edge: true, wraps: false,
                 }
             }),
+            name_caret_visible: Some(tracking.caret.on && tracking.pointer_anchor.is_none() && tracking.sel_start == tracking.sel_end && !tracking.confirming_replace && tracking.new_folder.is_none()),
             name_has_focus: Some(!tracking.confirming_replace && tracking.new_folder.is_none()),
             directory_label: Some(self.dispatcher.apply_param_text(&directory_label).into_owned()),
             directory_font: (self.dispatcher.tx_font, self.dispatcher.tx_size, self.dispatcher.tx_face as u8),

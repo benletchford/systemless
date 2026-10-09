@@ -96,6 +96,7 @@ pub struct StandardFileSnapshot {
     pub name: Option<String>,
     pub name_selection: Option<(usize, usize)>,
     pub name_text_layout: Option<StandardFileNameTextLayout>,
+    pub name_caret_visible: Option<bool>,
     /// `None` for Open panels; Save reports where guest keyboard input goes.
     pub name_has_focus: Option<bool>,
     pub directory_label: Option<String>,
@@ -105,6 +106,37 @@ pub struct StandardFileSnapshot {
     pub directory_text_layout: (i16, i16, i16),
     pub get_layout: Option<StandardFileGetLayout>,
     pub put_layout: Option<StandardFilePutLayout>,
+}
+
+/// Insertion blink state driven by guest ticks and CaretTime, shared by Pack3 gateways.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct StandardFileCaret {
+    tick: Option<u32>,
+    pub(crate) on: bool,
+}
+impl StandardFileCaret {
+    pub(crate) fn reset(&mut self, tick: u32) {
+        self.tick = Some(tick);
+        self.on = true;
+    }
+    pub(crate) fn idle(&mut self, tick: u32, interval: u32, active: bool) -> bool {
+        if !active {
+            let changed = self.on;
+            self.on = false;
+            self.tick = None;
+            return changed;
+        }
+        let Some(previous) = self.tick else {
+            self.reset(tick);
+            return true;
+        };
+        if tick.wrapping_sub(previous) < interval {
+            return false;
+        }
+        self.tick = Some(tick);
+        self.on = !self.on;
+        true
+    }
 }
 
 /// Guest filename painter geometry, relative to the Save name rectangle.
@@ -791,5 +823,29 @@ mod new_folder_tests {
         assert_eq!(state.edit.text(), &[0x8e, b'/']);
         state.key(8, 0, &mut scrap);
         assert_eq!(state.edit.text(), b"/");
+    }
+}
+
+#[cfg(test)]
+mod save_caret_tests {
+    use super::StandardFileCaret;
+    #[test]
+    fn insertion_blink_uses_guest_interval_and_resets_after_selection() {
+        let mut caret = StandardFileCaret::default();
+        assert!(caret.idle(u32::MAX - 10, 30, true));
+        assert!(caret.on);
+        assert!(!caret.idle(18, 30, true));
+        assert!(caret.idle(19, 30, true));
+        assert!(!caret.on);
+        assert!(caret.idle(49, 30, true));
+        assert!(caret.on);
+        assert!(caret.idle(50, 30, false));
+        assert!(!caret.on);
+        assert!(!caret.idle(80, 30, false));
+        assert!(caret.idle(81, 30, true));
+        assert!(caret.on);
+        caret.reset(90);
+        assert!(!caret.idle(119, 30, true));
+        assert!(caret.idle(120, 30, true));
     }
 }

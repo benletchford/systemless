@@ -3303,6 +3303,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     fn standard_file_name_edit_at_maximum_length_is_safe() {
         let mut tracking = PpcStandardFilePutTrackingState {
             pointer_anchor: None,
+            caret: crate::standard_file_ui::StandardFileCaret::default(),
             new_folder: None,
             confirming_replace: false,
             generation: 1,

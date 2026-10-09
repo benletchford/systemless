@@ -501,6 +501,7 @@ pub(crate) fn classic_save_name(
     name: &str,
     selection: (usize, usize),
     focused: bool,
+    caret_visible: bool,
     layout: &systemless::runner::StandardFileNameTextLayout,
     scale: f32,
     foreground: gpui_kit::Hsla,
@@ -571,9 +572,7 @@ pub(crate) fn classic_save_name(
                     foreground,
                 ));
             }
-            // Preserve the existing frontend's static insertion feedback until
-            // the guest's Save-field CaretTime state is exposed.
-            if focused && start == end {
+            if focused && caret_visible && start == end && position(start) >= 0. && position(start) < width - 1. {
                 window.paint_quad(fill(
                     Bounds::new(
                         point(
