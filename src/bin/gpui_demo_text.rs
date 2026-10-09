@@ -66,43 +66,25 @@ pub(crate) fn single_line(
 ) -> impl gpui_kit::IntoElement {
     use gpui_kit::{prelude::*, *};
     let name = folder.name.clone();
-    let bytes: Vec<usize> = name
-        .char_indices()
-        .map(|(index, _)| index)
-        .chain(std::iter::once(name.len()))
-        .collect();
-    let start = bytes[folder.selection.0.min(bytes.len() - 1)];
-    let end = bytes[folder.selection.1.min(bytes.len() - 1)].max(start);
-    let visible = bytes[folder.visible_offset.min(bytes.len() - 1)];
+    let bytes: Vec<u8> = name
+        .chars()
+        .map(systemless::systems::macintosh::mac_roman::encode_mac_roman_char)
+        .collect::<Option<Vec<_>>>()
+        .expect("Standard File names originate in Mac Roman guest buffers");
+    let line = ClassicLine::plain(&bytes, 0, 12);
+    let start = folder.selection.0.min(bytes.len());
+    let end = folder.selection.1.min(bytes.len()).max(start);
+    let visible = folder.visible_offset.min(bytes.len());
     let guest_positions = folder.insertion_positions.clone();
     let caret_visible = folder.caret_visible;
     let guest_bounds = folder.layout.name;
     canvas(
-        move |bounds, window, _| {
-            let style = window.text_style();
-            let display: SharedString = if name.is_empty() {
-                " ".into()
-            } else {
-                name.clone().into()
-            };
-            let run = TextRun {
-                len: display.len(),
-                font: style.font(),
-                color: foreground,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            };
-            let line = window.text_system().shape_line(
-                display,
-                style.font_size.to_pixels(window.rem_size()),
-                &[run],
-                None,
-            );
+        move |bounds, _, _| {
+            let advance = |index: usize| px(line.positions[index] as f32 * scale);
             let caret_width = px(scale);
             let available = (bounds.size.width - caret_width).max(px(0.));
-            let target = line.x_for_index(visible);
-            let max_scroll = (line.x_for_index(*bytes.last().unwrap()) - available).max(px(0.));
+            let target = advance(visible);
+            let max_scroll = (advance(bytes.len()) - available).max(px(0.));
             let old = output
                 .borrow()
                 .as_ref()
@@ -119,10 +101,9 @@ pub(crate) fn single_line(
                 bounds.left() - scroll,
                 bounds.top() + (bounds.size.height - height) / 2.,
             );
-            let positions = bytes
-                .iter()
+            let positions = (0..=bytes.len())
                 .zip(&guest_positions)
-                .map(|(index, guest)| (f32::from(origin.x + line.x_for_index(*index)), *guest))
+                .map(|(index, guest)| (f32::from(origin.x + advance(index)), *guest))
                 .collect();
             *output.borrow_mut() = Some(TextPointerMap {
                 identity,
@@ -133,16 +114,27 @@ pub(crate) fn single_line(
             });
             (line, origin, height, caret_width)
         },
-        move |_, (line, origin, height, caret_width), window, cx| {
-            let left = origin.x + line.x_for_index(start);
-            let right = origin.x + line.x_for_index(end);
+        move |_, (line, origin, height, caret_width), window, _| {
+            let left = origin.x + px(line.positions[start] as f32 * scale);
+            let right = origin.x + px(line.positions[end] as f32 * scale);
             if start != end {
                 window.paint_quad(fill(
                     Bounds::new(point(left, origin.y), size(right - left, height)),
                     selection_color,
                 ));
             }
-            let _ = line.paint(origin, height, TextAlign::Left, None, window, cx);
+            for &(x, y, width) in &line.ink {
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(
+                            origin.x + px(x as f32 * scale),
+                            origin.y + px((y + 12) as f32 * scale),
+                        ),
+                        size(px(width as f32 * scale), px(scale)),
+                    ),
+                    foreground,
+                ));
+            }
             if start == end && caret_visible {
                 window.paint_quad(fill(
                     Bounds::new(point(left, origin.y), size(caret_width, height)),

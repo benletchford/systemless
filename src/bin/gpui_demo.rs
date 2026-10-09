@@ -7408,7 +7408,14 @@ mod desktop {
                         step(&mut session);
                         session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character });
                     }
-                    assert_eq!(session.runner().standard_file_snapshot().unwrap().new_folder.unwrap().name, name);
+                    let folder = session.runner().standard_file_snapshot().unwrap().new_folder.unwrap();
+                    assert_eq!(folder.name, name);
+                    let glyphs = super::super::text::ClassicLine::plain(name.as_bytes(), 0, 12);
+                    let origin = folder.insertion_positions[0];
+                    for (guest, advance) in folder.insertion_positions.iter().zip(&glyphs.positions) {
+                        assert_eq!(i32::from(*guest) - i32::from(origin), *advance,
+                            "displayed glyph advance must equal guest insertion advance");
+                    }
                 for scale in [0.75, 1., 1.5] {
                     // Restore the tail before opening each viewport; the previous
                     // drag intentionally left a different selection endpoint visible.

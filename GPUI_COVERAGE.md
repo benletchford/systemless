@@ -2276,3 +2276,24 @@ the default packaged binary pass; its transparent logo is now a packaged
 runtime asset, byte-identical to the website SVG. Post-migration physical
 host/window, composed captures and real-game qualification remain pending. Windows/Linux desktop presentation remains unsupported; headless
 buildability alone is not cross-platform production readiness.
+
+### Classic glyphs in the New Folder editor
+
+The shared GPUI New Folder editor now paints the guest Roman system font
+(family 0, size 12), including its binary glyph ink and Mac Roman byte advances.
+Selection, caret, horizontal scrolling and pointer mapping use those same
+advances; modern host shaping no longer changes this editor's text width. The
+CPU adapters explicitly choose this font independently of the caller port.
+The existing themed field vertical layout is retained; exact per-CPU baseline,
+inset and selection-height qualification still needs a richer snapshot.
+
+The painted pointer regression passes on monochrome 68k, colour 68k and PPC at
+0.75×, 1× and 1.5× with short and horizontally scrolled names, held selection
+and release. It now also checks every glyph advance against guest insertion
+positions (81.17 seconds). The default desktop type-check passes. Three actual
+shared headless-compositor selected-prefix captures and paired guest frames
+were reviewed; commands, hashes and limitations are recorded in
+`tests/toolbox-showcase/reference/gpui-demo/text-classic-new-folder-review.json`.
+This is not authentic Macintosh font, physical input, 2×, inactive-field or
+non-ASCII-name qualification. Surrounding Standard File labels still need guest
+font painting, and Appearance control font overrides need snapshot support.
