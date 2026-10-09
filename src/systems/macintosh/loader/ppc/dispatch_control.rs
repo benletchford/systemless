@@ -3293,6 +3293,24 @@ fn ppc_dim_control_color(
     }
 }
 
+pub(crate) fn ppc_popup_text_ink(
+    gworlds: &[PpcGWorldRecord], active: bool,
+) -> crate::control_manager::ControlTextInk {
+    let palette = ppc_control_palette(gworlds, active);
+    let rgb = palette.frame_dark;
+    crate::control_manager::ControlTextInk::Solid([rgb.r, rgb.g, rgb.b])
+}
+
+fn ppc_control_palette(gworlds: &[PpcGWorldRecord], active: bool) -> crate::ui_theme::UiThemePalette {
+    let palette = ppc_ui_theme(gworlds).provider().palette();
+    if active { palette } else {
+        crate::ui_theme::UiThemePalette {
+            frame_dark: ppc_dim_control_color(palette.frame_dark, palette.window_background),
+            ..palette
+        }
+    }
+}
+
 /// Font, size, face and ink for a control title after applying the control's
 /// Appearance Manager ControlFontStyleRec.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3417,7 +3435,6 @@ pub(super) fn ppc_draw_control_inner(
     else {
         return false;
     };
-    let palette = ppc_ui_theme(gworlds).provider().palette();
     let record = controls.iter().find(|record| record.handle == handle);
     let proc_id = record.map_or(0, |record| record.proc_id) & 0x0fff;
     let popup_font = ppc_popup_control_font(memory, owner, proc_id);
@@ -3426,14 +3443,7 @@ pub(super) fn ppc_draw_control_inner(
     // control manager uses for an inactive title, so a non-hittable control
     // also looks non-hittable.
     let active = record.is_none_or(|record| record.active);
-    let palette = if active {
-        palette
-    } else {
-        crate::ui_theme::UiThemePalette {
-            frame_dark: ppc_dim_control_color(palette.frame_dark, palette.window_background),
-            ..palette
-        }
-    };
+    let palette = ppc_control_palette(gworlds, active);
     let mut frame_cpu = PpcCpu::new();
     frame_cpu.gpr[3] = control + PPC_CONTROL_RECT_OFFSET;
     let is_default = ppc_ui_theme(gworlds) != UiThemeId::ClassicSystem7

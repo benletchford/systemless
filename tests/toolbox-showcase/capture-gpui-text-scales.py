@@ -28,7 +28,7 @@ def main():
     parser.add_argument('output', type=Path)
     parser.add_argument('--surface', choices=['document', 'modal', 'popup'], default='document',
                         help='guest-owned text surface to capture')
-    parser.add_argument('--state', choices=['all', 'active', 'inactive', 'host-suspended'],
+    parser.add_argument('--state', choices=['all', 'active', 'inactive', 'host-suspended', 'disabled'],
                         default='all', help='capture only one supported state')
     arguments = parser.parse_args()
     output = arguments.output.resolve()
@@ -49,7 +49,8 @@ def main():
                ('inactive', '--capture-modal-dialog-selection-inactive')])
     if arguments.surface == 'popup':
         states = [('active', '--capture-popup-controls-selected'),
-                  ('host-suspended', '--capture-popup-controls-host-suspended')]
+                  ('host-suspended', '--capture-popup-controls-host-suspended'),
+                  ('disabled', '--capture-popup-controls-disabled')]
     if arguments.state != 'all':
         states = [(state, flag) for state, flag in states if state == arguments.state]
         if not states:

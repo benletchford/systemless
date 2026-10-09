@@ -69,6 +69,23 @@ pub(crate) fn new_control_generation() -> u64 {
         .expect("control lifetime generation exhausted")
 }
 
+/// Guest-resolved popup text ink. Checker phase uses global guest pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControlTextInk {
+    Solid([u8; 3]),
+    Checker,
+}
+
+impl ControlTextInk {
+    pub fn pixel(self, global_x: i32, global_y: i32) -> [u8; 3] {
+        match self {
+            Self::Solid(rgb) => rgb,
+            Self::Checker if (global_x + global_y) & 1 == 0 => [255; 3],
+            Self::Checker => [0; 3],
+        }
+    }
+}
+
 /// Read-only, frontend-neutral state of a guest Control Manager control.
 /// Bounds are in global screen coordinates; `local_bounds` retains the
 /// canonical `contrlRect` for cases where a port origin needs more context.
@@ -98,6 +115,8 @@ pub struct ControlSnapshot {
     pub popup_title_width: Option<i16>,
     /// Selected label inset from the guest CDEF box (CPU-specific).
     pub popup_text_inset: i16,
+    /// Ink resolved by the same CPU CDEF state as guest drawing.
+    pub popup_ink: Option<ControlTextInk>,
     /// Resolved global selected-box bounds from the CPU CDEF.
     pub popup_box_bounds: Option<(i16, i16, i16, i16)>,
     /// Font resolved from the live owner port and popup CDEF variation.
@@ -189,6 +208,7 @@ pub(crate) fn snapshot_control_record(
             .flatten(),
         popup_title_width: popup.then_some(popup_title_width.unwrap_or(0)),
         popup_text_inset: 15,
+        popup_ink: None,
         popup_box_bounds: None,
         // GrafPort and CGrafPort share txFont/txSize offsets. The popup
         // variation uses the owner font for both title and selected item.

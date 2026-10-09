@@ -65,6 +65,17 @@ impl super::TrapDispatcher {
             .map_or(255, |(index, _)| index as u8)
     }
 
+    pub(crate) fn popup_text_ink(&self, enabled: bool) -> crate::control_manager::ControlTextInk {
+        use crate::control_manager::ControlTextInk;
+        if enabled { return ControlTextInk::Solid([0; 3]); }
+        if self.screen_mode.4 != 8 { return ControlTextInk::Checker; }
+        let index = usize::from(self.inactive_control_title_index());
+        let palette = crate::display::rgba_palette_from_clut_with_gamma(
+            &self.device_clut, &self.display_gamma.table());
+        let [r, g, b, _] = palette[index].to_le_bytes();
+        ControlTextInk::Solid([r, g, b])
+    }
+
     // The drawCntl contract defines invisibility as contrlVis == 0; callers
     // that write the packed ControlRecord directly may use another nonzero
     // Boolean representation instead of ShowControl's canonical 255.

@@ -1550,6 +1550,12 @@ fn inactive_popup_label_and_selected_title_use_live_device_palette() {
         bus.write_byte(screen_base + offset, 0);
     }
 
+    let palette = crate::display::rgba_palette_from_clut_with_gamma(
+        &disp.device_clut, &disp.display_gamma.table());
+    let [r, g, b, _] = palette[1].to_le_bytes();
+    assert_eq!(disp.popup_text_ink(false), crate::control_manager::ControlTextInk::Solid([r, g, b]),
+        "frontend ink must match the palette entry written by the disabled CDEF below");
+
     let window_ptr = *disp.current_port;
     bus.write_word(window_ptr + 8, 0);
     bus.write_word(window_ptr + 10, 0);

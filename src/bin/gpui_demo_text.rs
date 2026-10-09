@@ -525,14 +525,20 @@ pub(crate) fn classic_menu_symbol(
 
 pub(crate) fn classic_popup_control_label(
     label: &str, guest_font: systemless::menu_model::GuestMenuFont, title: bool, text_inset: i16,
-    scale: f32, foreground: gpui_kit::Hsla,
+    scale: f32, ink: systemless::runner::ControlTextInk,
+    guest_bounds: (i32, i32, i32, i32), scene_origin: (f32, f32),
 ) -> impl gpui_kit::IntoElement {
     use gpui_kit::{prelude::*, *};
     let label = label.to_owned();
     let metrics = systemless::quickdraw::text::get_font_metrics(guest_font.family, guest_font.point_size());
-    canvas(move |bounds, _, _| bounds, move |_, bounds, window, _| {
-        let width = (f32::from(bounds.size.width) / scale).round() as i32;
-        let height = (f32::from(bounds.size.height) / scale).round() as i32;
+    canvas(move |bounds, _, _| bounds, move |_, _, window, _| {
+        // Guest CDEF geometry is authoritative. Fractional host layout can
+        // round a canvas's origin/height independently and move bitmap rows.
+        let (top, left, bottom, right) = guest_bounds;
+        let width = right - left;
+        let height = bottom - top;
+        let origin = point(px(scene_origin.0 + left as f32 * scale),
+            px(scene_origin.1 + top as f32 * scale));
         let display = if title { label.clone() } else {
             let chars: Vec<_> = label.chars().collect();
             systemless::menu_model::popup_display_text(&chars, &['.', '.', '.'],
@@ -546,10 +552,24 @@ pub(crate) fn classic_popup_control_label(
         let x = if title { (width - 6 - line.positions.last().copied().unwrap_or(0)).max(0) } else { i32::from(text_inset) };
         let baseline = (height - i32::from(metrics.ascent) - i32::from(metrics.descent)) / 2 + i32::from(metrics.ascent) - i32::from(!title);
         for &(ink_x, ink_y, ink_width) in &line.ink {
-            window.paint_quad(fill(Bounds::new(
-                point(bounds.left() + px((x + ink_x) as f32 * scale),
-                    bounds.top() + px((baseline + ink_y) as f32 * scale)),
-                size(px(ink_width as f32 * scale), px(scale))), foreground));
+            let y = baseline + ink_y;
+            // Solid ink retains one quad per bitmap run; only checker ink
+            // needs individual guest pixels to preserve its global phase.
+            if let systemless::runner::ControlTextInk::Solid([r, g, b]) = ink {
+                let foreground: Hsla = rgb((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)).into();
+                window.paint_quad(fill(Bounds::new(
+                    point(origin.x + px((x + ink_x) as f32 * scale), origin.y + px(y as f32 * scale)),
+                    size(px(ink_width as f32 * scale), px(scale))), foreground));
+                continue;
+            }
+            for dx in 0..ink_width {
+                let x = x + ink_x + dx;
+                let [r, g, b] = ink.pixel(left + x, top + y);
+                let foreground: Hsla = rgb((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)).into();
+                window.paint_quad(fill(Bounds::new(
+                    point(origin.x + px(x as f32 * scale), origin.y + px(y as f32 * scale)),
+                    size(px(scale), px(scale))), foreground));
+            }
         }
     }).size_full()
 }

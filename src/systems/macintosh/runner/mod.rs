@@ -1,7 +1,7 @@
 //! Fixture Runner - Loading and execution infrastructure
 
 use crate::callback_manager::CallbackTaskArchitecture;
-pub use crate::control_manager::{scrollbar_drag_position, ControlFontStyle, ControlSnapshot};
+pub use crate::control_manager::{scrollbar_drag_position, ControlFontStyle, ControlSnapshot, ControlTextInk};
 use crate::cpu::{M68kCpu, Register, StepResult};
 use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
 pub use crate::dialog_manager::{DialogEditTextLayout, DialogStaticTextLayout, DialogItemKind, DialogItemSnapshot, DialogSnapshot};
@@ -2492,6 +2492,7 @@ impl FixtureRunner {
                     ).map(|mut snapshot| {
                         snapshot.popup_text_inset = 5;
                         if snapshot.popup_menu_id.is_some() {
+                            snapshot.popup_ink = Some(crate::loader::ppc::ppc_popup_text_ink(&app.gworlds, record.active));
                             let (top, left, bottom, right) = snapshot.bounds;
                             snapshot.popup_box_bounds = Some((top.saturating_add(1),
                                 left.saturating_add(snapshot.popup_title_width.unwrap_or(0).max(0)),
@@ -2521,6 +2522,7 @@ impl FixtureRunner {
                         |address| Some(self.bus.read_byte(address)),
                     ).map(|mut snapshot| {
                         if let Some(menu_id) = snapshot.popup_menu_id {
+                            snapshot.popup_ink = Some(self.dispatcher.popup_text_ink(snapshot.enabled));
                             let (top, left, bottom, right) = snapshot.bounds;
                             snapshot.popup_box_bounds = Some(self.dispatcher.popup_control_box_rect(
                                 &self.bus, top, left, bottom, right, menu_id,
