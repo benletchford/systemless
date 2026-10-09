@@ -137,8 +137,10 @@ impl StandardFileReplacementLayout {
             if character == 27 || (character == b'.' && modifiers & 0x100 != 0) {
                 return Some(false);
             }
+            // Mac OS 8.1 replacement alerts default to Cancel (BasiliskII and
+            // SheepShaver replay); Return/Enter invoke that default, not Replace.
             if character == 13 || character == 3 {
-                return Some(true);
+                return Some(false);
             }
         }
         None

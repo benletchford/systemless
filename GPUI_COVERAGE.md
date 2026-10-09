@@ -1437,3 +1437,43 @@ pointer activation. Ordinary typing while confirmation is open must leave the
 parent filename unchanged. All nine Save scenarios pass (20.54s). Command-period,
 keypad Enter, visible keyboard button feedback and native-oracle equivalence
 remain unqualified.
+
+The complete 72-test GPUI suite passes after replacement confirmation and its
+modal-background/keyboard follow-ups (215.28s). Native replacement oracle replay
+is being added separately; this suite result does not establish native parity.
+
+The Save regression also passes Command-period cancellation and keypad Enter
+acceptance on all three modes (12 scenarios, 61.99s under concurrent build load).
+This extends keyboard coverage; visible keyboard feedback and native equivalence
+remain separate requirements.
+
+
+### Native replacement default-button correction
+
+The Mac OS 8.1 BasiliskII and SheepShaver replays both show **Cancel** as the
+replacement dialog default. Return cancels the subsidiary dialog and reselects
+the entire filename in Save. This contradicts the initial implementation and its
+self-consistent Return/Enter acceptance tests above; those earlier passing tests
+are not evidence of native parity. Both backends and the GPUI default styling
+now use Cancel, and cancellation restores filename selection. The guest
+regression is updated to require default-button cancellation and an explicit
+Replace click before accepting the replacement.
+
+The native harness exposes the launched executable as `_PlayTarget`; the replay
+uses that existing name. An initial replay using the application title created a
+new filename and did not exercise replacement, so its captures are excluded from
+replacement evidence. Native confirmation and return-to-Save checkpoints are now
+visually verified on both oracles. Explicit Replace was then replayed successfully on both oracles.
+
+
+The final native replay retains nine checkpoints per oracle and 42 hashed capture
+files; all recorded capture hashes and the scenario hash were verified. Return
+returns to Save with the whole filename selected; explicit Replace dismisses it.
+The showcase subsequently reports its own creation error because FSpCreate is
+called on the existing target, consistent on both native CPUs. This is not a
+confirmation failure and does not qualify replacing file contents or persistence.
+
+The corrected 12-scenario guest regression passes (35.02s), as do all eight Save
+library tests (0.71s). Fresh composed captures on monochrome 68K, colour 68K and
+PPC show Cancel as the default, matching the native observation. Broader layout,
+callback timing, accessibility and full file-workflow qualification remain open.

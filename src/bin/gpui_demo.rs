@@ -2375,7 +2375,7 @@ mod desktop {
                         let accessibility_sender = self.commands.clone();
                         overlay = overlay.child(at(rect).child(super::choices::guest_button(
                             format!("guest-standard-replace-{id}-{generation}-{label}"), label.into(),
-                            true, true, false, label == "Replace", scene_scale, cx,
+                            true, true, false, label == "Cancel", scene_scale, cx,
                         ).w_full().h_full().on_click(move |event, _, _| {
                             if matches!(event, ClickEvent::Keyboard(_)) {
                                 let _ = keyboard_sender.send(Command::ActivateFile(id, generation, action));
@@ -5728,7 +5728,7 @@ mod desktop {
             use systemless::systems::macintosh::debug::{handle_debug_request, DebugReply, DebugRequest, M68K_SPACE, PPC_SPACE};
 
             for (powerpc, depth, replacing, keyboard) in [(false, Some(1)), (false, Some(8)), (true, None)].into_iter()
-                .flat_map(|(cpu, depth)| [(false, false), (true, false), (true, true)].map(move |(replacing, keyboard)| (cpu, depth, replacing, keyboard))) {
+                .flat_map(|(cpu, depth)| [(false, 0), (true, 0), (true, 1), (true, 2)].map(move |(replacing, keyboard)| (cpu, depth, replacing, keyboard))) {
                 let mut session = MacintoshSession::new(true, depth);
                 session.runner_mut().set_prefer_powerpc_executables(powerpc);
                 let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -5780,10 +5780,17 @@ mod desktop {
                     session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character: b'X' });
                     step(&mut session);
                     assert_eq!(session.runner().standard_file_snapshot().unwrap().name, confirmation.name);
-                    if keyboard {
-                        // Files (1992), p. 3-7: Escape cancels; Return invokes the default.
-                        session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x35, character: 27 });
-                        session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x35, character: 27 });
+                    if keyboard != 0 {
+                        // Files (1992), p. 3-7: Escape/Command-period cancel; Return/Enter invoke the default.
+                        if keyboard == 2 {
+                            session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x37, character: 0 });
+                        }
+                        let (mac_key, character) = if keyboard == 1 { (0x35, 27) } else { (0x2f, b'.') };
+                        session.deliver_input(MacintoshInput::KeyDown { mac_key, character });
+                        session.deliver_input(MacintoshInput::KeyUp { mac_key, character });
+                        if keyboard == 2 {
+                            session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x37, character: 0 });
+                        }
                         step(&mut session);
                         step(&mut session);
                     } else {
@@ -5797,14 +5804,23 @@ mod desktop {
                     assert!(!parent.confirming_replace);
                     assert_eq!(parent.name_has_focus, Some(true));
                     assert_eq!(parent.name.as_deref(), Some(name.as_str()));
+                    assert_eq!(parent.name_selection, Some((0, name.len())));
                     assert!(ControlActivation::begin_file(&mut session, confirmation.guest_id, confirmation.generation, FileAction::CancelReplacement).is_none());
                     for action in [FileAction::Accept, FileAction::Replace] {
-                        if keyboard && matches!(action, FileAction::Replace) {
-                            session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x24, character: 13 });
-                            session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x24, character: 13 });
+                        if keyboard != 0 && matches!(action, FileAction::Replace) {
+                            let (mac_key, character) = if keyboard == 1 { (0x24, 13) } else { (0x4c, 3) };
+                            session.deliver_input(MacintoshInput::KeyDown { mac_key, character });
+                            session.deliver_input(MacintoshInput::KeyUp { mac_key, character });
                             step(&mut session);
                             step(&mut session);
-                            continue;
+                            let parent = session.runner().standard_file_snapshot().unwrap();
+                            assert!(!parent.confirming_replace, "Return/Enter must invoke Cancel");
+                            assert_eq!(parent.name_selection, Some((0, name.len())));
+                            let click = ControlActivation::begin_file(&mut session, parent.guest_id, parent.generation, FileAction::Accept).unwrap();
+                            step(&mut session);
+                            let click = click.advance(&mut session).unwrap();
+                            step(&mut session);
+                            assert!(click.advance(&mut session).is_none());
                         }
                         let current = session.runner().standard_file_snapshot().unwrap();
                         let click = ControlActivation::begin_file(&mut session, current.guest_id, current.generation, action).unwrap();
