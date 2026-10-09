@@ -10269,3 +10269,44 @@ fn menu_key_event_choice_and_help_commands_dispatch_with_canonical_evaluation() 
     run_test_import(&mut loaded, PpcImportDispatcherTarget::HMIsBalloon);
     assert_eq!(loaded.cpu.gpr[3], 0);
 }
+
+#[test]
+fn menu_tracking_and_popup_selection_commands_dispatch_with_canonical_evaluation() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"MenuSelect")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let _menu = install_test_menu(&mut loaded, scratch, 128, b"File", b"New;Open;Close");
+
+    // 1. MenuSelect with staged native selection
+    loaded
+        .toolbox_startup
+        .pending_native_menu_selection
+        .stage((128, 2));
+    loaded.cpu.gpr[3] = (10 << 16) | 100;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MenuSelect);
+    assert_eq!(
+        loaded.cpu.gpr[3],
+        crate::menu_manager::pack_menu_choice(128, 2)
+    );
+    assert_eq!(
+        loaded.memory.read_u16_be(PPC_THE_MENU_ADDR),
+        Some(128)
+    );
+
+    // 2. PopUpMenuSelect with null handle
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 50;
+    loaded.cpu.gpr[5] = 50;
+    loaded.cpu.gpr[6] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PopUpMenuSelect);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // 3. PopUpMenuSelect with valid handle but no mouse pressed -> 0
+    let popup_menu =
+        install_test_popup_menu(&mut loaded, scratch + 0x200, 129, b"Choice", b"Item1;Item2");
+    loaded.cpu.gpr[3] = popup_menu;
+    loaded.cpu.gpr[4] = 50;
+    loaded.cpu.gpr[5] = 50;
+    loaded.cpu.gpr[6] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PopUpMenuSelect);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
