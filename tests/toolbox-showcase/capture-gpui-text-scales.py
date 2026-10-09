@@ -3,8 +3,8 @@
 
 Build first: cargo build --locked --example gpui-menu-demo --features gpui-demo-test
 Run with an empty output directory; this never replaces reference captures.
-Use --surface modal for the active nickname selection (offsets 3..6).
-Modal inactive/host-suspended states are not yet included.
+Use --surface modal for nickname selection (offsets 3..6) and field focus changes.
+Modal host-suspended states are not yet included.
 Uses only the Python standard library. Visual review remains required.
 """
 import argparse
@@ -27,6 +27,8 @@ def main():
     parser.add_argument('output', type=Path)
     parser.add_argument('--surface', choices=['document', 'modal'], default='document',
                         help='guest-owned text surface to capture')
+    parser.add_argument('--state', choices=['all', 'active', 'inactive', 'host-suspended'],
+                        default='all', help='capture only one supported state')
     arguments = parser.parse_args()
     output = arguments.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -41,7 +43,12 @@ def main():
                ('inactive', '--capture-text-edit-inactive'),
                ('host-suspended', '--capture-text-edit-host-suspended')]
               if arguments.surface == 'document' else
-              [('active', '--capture-modal-dialog-selection')])
+              [('active', '--capture-modal-dialog-selection'),
+               ('inactive', '--capture-modal-dialog-selection-inactive')])
+    if arguments.state != 'all':
+        states = [(state, flag) for state, flag in states if state == arguments.state]
+        if not states:
+            parser.error('the selected surface does not support this state')
     prefix = 'text' if arguments.surface == 'document' else 'dialog-modal-selection'
     for mode, options in [('mono', ['--screen-depth', '1']),
                           ('colour', ['--screen-depth', '8']),
@@ -72,7 +79,7 @@ def main():
     manifest = {'surface': arguments.surface, 'fixture_sha256': hashlib.sha256(fixture.read_bytes()).hexdigest(),
                 'scope': 'Shared GPUI compositor and guest session API; not native host observer or native Macintosh qualification.',
                 'visual_review': 'pending', 'captures': records}
-    (output / f'{prefix}-scale-review.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    (output / f'{prefix}-scale{"" if arguments.state == "all" else "-" + arguments.state}-review.json').write_text(json.dumps(manifest, indent=2) + '\n')
 
 
 if __name__ == '__main__':
