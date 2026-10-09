@@ -4247,6 +4247,15 @@ fn window_visibility_and_activation_commands_dispatch_with_canonical_evaluation(
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(ppc_front_visible_process_window(&mut loaded.memory, &loaded.window_list), Some(w1));
+
+            // SendBehind with window = 0 returns gracefully
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = w1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
         }
 
         // 8. HiliteWindow
@@ -4276,6 +4285,15 @@ fn window_visibility_and_activation_commands_dispatch_with_canonical_evaluation(
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(loaded.memory.read_u8(window + PPC_CWINDOW_HILITED_OFFSET), Some(1));
+
+            // HiliteWindow with window = 0 returns gracefully
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = 1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
         }
     }
 }
@@ -4458,6 +4476,16 @@ fn window_sizing_positioning_and_zooming_commands_dispatch_with_canonical_evalua
                 ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
                 Some((20, 0, ppc_main_screen_height() as i16, ppc_main_screen_width() as i16)),
             );
+
+            // ZoomWindow with window = 0 returns gracefully
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = 8;
+            loaded.cpu.gpr[5] = 1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
         }
 
         // 4. RepositionWindow
@@ -4500,6 +4528,16 @@ fn window_sizing_positioning_and_zooming_commands_dispatch_with_canonical_evalua
             let probe = loaded.run_with_hle_imports(64);
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
+
+            // TrackGoAway with window = 0 returns 0 (false)
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = (60u32 << 16) | 60;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
         }
 
         // 6. TrackBox
@@ -4524,6 +4562,17 @@ fn window_sizing_positioning_and_zooming_commands_dispatch_with_canonical_evalua
             let probe = loaded.run_with_hle_imports(64);
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
+
+            // TrackBox with window = 0 returns 0 (false)
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = (60u32 << 16) | 60;
+            loaded.cpu.gpr[5] = 8;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
         }
 
         // 7. DragWindow
@@ -4548,6 +4597,16 @@ fn window_sizing_positioning_and_zooming_commands_dispatch_with_canonical_evalua
                 mouse_h: 100,
                 ..PpcInputSnapshot::default()
             });
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+
+            // DragWindow with window = 0 returns gracefully
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = (60u32 << 16) | 100;
+            loaded.cpu.gpr[5] = bounds_limit_ptr;
             let probe = loaded.run_with_hle_imports(64);
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
@@ -4578,6 +4637,17 @@ fn window_sizing_positioning_and_zooming_commands_dispatch_with_canonical_evalua
             let probe = loaded.run_with_hle_imports(64);
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
+
+            // GrowWindow with window = 0 returns 0
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = (195u32 << 16) | 295;
+            loaded.cpu.gpr[5] = size_rect_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
         }
     }
 }
@@ -6262,6 +6332,15 @@ fn window_proxy_icon_modified_and_state_rect_commands_dispatch_with_canonical_ev
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(loaded.cpu.gpr[3], 0);
             loaded.memory.write_u8(window + PPC_CWINDOW_VISIBLE_OFFSET, 1).unwrap();
+
+            // window = 0 returns 0
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
         }
 
         // 2. IsWindowModified & SetWindowModified

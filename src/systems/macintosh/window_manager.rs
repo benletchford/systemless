@@ -2665,6 +2665,271 @@ pub fn evaluate_valid_window_rgn_parameters(
     Ok(ValidWindowRgnParameters { window_ptr, in_rgn })
 }
 
+/// Architecture-neutral parameter validation for TrackBox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrackBoxParameters {
+    window_ptr: u32,
+    point: (i16, i16),
+    part_code: i16,
+}
+
+#[allow(dead_code)]
+impl TrackBoxParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn point(&self) -> (i16, i16) {
+        self.point
+    }
+
+    pub const fn part_code(&self) -> i16 {
+        self.part_code
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_track_box_parameters(
+    window_ptr: u32,
+    raw_pt: u32,
+    part_code: i16,
+) -> Option<TrackBoxParameters> {
+    if window_ptr == 0 {
+        return None;
+    }
+    let v = (raw_pt >> 16) as u16 as i16;
+    let h = raw_pt as u16 as i16;
+    Some(TrackBoxParameters {
+        window_ptr,
+        point: (v, h),
+        part_code,
+    })
+}
+
+/// Architecture-neutral parameter validation for TrackGoAway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrackGoAwayParameters {
+    window_ptr: u32,
+    start_point: (i16, i16),
+}
+
+#[allow(dead_code)]
+impl TrackGoAwayParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn start_point(&self) -> (i16, i16) {
+        self.start_point
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_track_go_away_parameters(
+    window_ptr: u32,
+    raw_pt: u32,
+) -> Option<TrackGoAwayParameters> {
+    if window_ptr == 0 {
+        return None;
+    }
+    let v = (raw_pt >> 16) as u16 as i16;
+    let h = raw_pt as u16 as i16;
+    Some(TrackGoAwayParameters {
+        window_ptr,
+        start_point: (v, h),
+    })
+}
+
+/// Architecture-neutral parameter validation for ZoomWindow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZoomWindowParameters {
+    window_ptr: u32,
+    part_code: i16,
+    front: bool,
+}
+
+#[allow(dead_code)]
+impl ZoomWindowParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn part_code(&self) -> i16 {
+        self.part_code
+    }
+
+    pub const fn front(&self) -> bool {
+        self.front
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_zoom_window_parameters(
+    window_ptr: u32,
+    part_code: i16,
+    front: bool,
+) -> Option<ZoomWindowParameters> {
+    if window_ptr == 0 {
+        return None;
+    }
+    Some(ZoomWindowParameters {
+        window_ptr,
+        part_code,
+        front,
+    })
+}
+
+/// Architecture-neutral parameter validation for GrowWindow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GrowWindowParameters {
+    window_ptr: u32,
+    start_point: (i16, i16),
+    bounds_rect_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl GrowWindowParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn start_point(&self) -> (i16, i16) {
+        self.start_point
+    }
+
+    pub const fn bounds_rect_ptr(&self) -> u32 {
+        self.bounds_rect_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_grow_window_parameters(
+    window_ptr: u32,
+    raw_pt: u32,
+    bounds_rect_ptr: u32,
+) -> Option<GrowWindowParameters> {
+    if window_ptr == 0 {
+        return None;
+    }
+    let v = (raw_pt >> 16) as u16 as i16;
+    let h = raw_pt as u16 as i16;
+    Some(GrowWindowParameters {
+        window_ptr,
+        start_point: (v, h),
+        bounds_rect_ptr,
+    })
+}
+
+/// Architecture-neutral parameter validation for DragWindow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DragWindowParameters {
+    window_ptr: u32,
+    start_point: (i16, i16),
+    bounds_rect_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl DragWindowParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn start_point(&self) -> (i16, i16) {
+        self.start_point
+    }
+
+    pub const fn bounds_rect_ptr(&self) -> u32 {
+        self.bounds_rect_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_drag_window_parameters(
+    window_ptr: u32,
+    raw_pt: u32,
+    bounds_rect_ptr: u32,
+) -> Option<DragWindowParameters> {
+    if window_ptr == 0 {
+        return None;
+    }
+    let v = (raw_pt >> 16) as u16 as i16;
+    let h = raw_pt as u16 as i16;
+    Some(DragWindowParameters {
+        window_ptr,
+        start_point: (v, h),
+        bounds_rect_ptr,
+    })
+}
+
+/// Architecture-neutral parameter validation for HighlightWindow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HighlightWindowParameters {
+    window_ptr: u32,
+    hilited: bool,
+}
+
+#[allow(dead_code)]
+impl HighlightWindowParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn hilited(&self) -> bool {
+        self.hilited
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_highlight_window_parameters(
+    window_ptr: u32,
+    hilited: bool,
+) -> Option<HighlightWindowParameters> {
+    if window_ptr == 0 {
+        return None;
+    }
+    Some(HighlightWindowParameters {
+        window_ptr,
+        hilited,
+    })
+}
+
+/// Architecture-neutral parameter validation for SendBehind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SendBehindParameters {
+    window_ptr: u32,
+    behind_window_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl SendBehindParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn behind_window_ptr(&self) -> u32 {
+        self.behind_window_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_send_behind_parameters(
+    window_ptr: u32,
+    behind_window_ptr: u32,
+) -> Option<SendBehindParameters> {
+    if window_ptr == 0 {
+        return None;
+    }
+    Some(SendBehindParameters {
+        window_ptr,
+        behind_window_ptr,
+    })
+}
+
+#[allow(dead_code)]
+pub fn evaluate_is_window_visible(window_ptr: u32, is_visible: bool) -> bool {
+    window_ptr != 0 && is_visible
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -3703,5 +3968,59 @@ mod tests {
             })
         );
         assert_eq!(evaluate_valid_window_rgn_parameters(0, 0x4000), Err(-50));
+    }
+
+    #[test]
+    fn window_tracking_sizing_and_hierarchy_evaluation() {
+        // TrackBox
+        assert_eq!(evaluate_track_box_parameters(0, 0x0010_0020, 7), None);
+        let track_box = evaluate_track_box_parameters(0x1000, 0x0010_0020, 7).unwrap();
+        assert_eq!(track_box.window_ptr(), 0x1000);
+        assert_eq!(track_box.point(), (16, 32));
+        assert_eq!(track_box.part_code(), 7);
+
+        // TrackGoAway
+        assert_eq!(evaluate_track_go_away_parameters(0, 0x0010_0020), None);
+        let track_go_away = evaluate_track_go_away_parameters(0x1000, 0x0010_0020).unwrap();
+        assert_eq!(track_go_away.window_ptr(), 0x1000);
+        assert_eq!(track_go_away.start_point(), (16, 32));
+
+        // ZoomWindow
+        assert_eq!(evaluate_zoom_window_parameters(0, 8, true), None);
+        let zoom = evaluate_zoom_window_parameters(0x1000, 8, true).unwrap();
+        assert_eq!(zoom.window_ptr(), 0x1000);
+        assert_eq!(zoom.part_code(), 8);
+        assert!(zoom.front());
+
+        // GrowWindow
+        assert_eq!(evaluate_grow_window_parameters(0, 0x0010_0020, 0x2000), None);
+        let grow = evaluate_grow_window_parameters(0x1000, 0x0010_0020, 0x2000).unwrap();
+        assert_eq!(grow.window_ptr(), 0x1000);
+        assert_eq!(grow.start_point(), (16, 32));
+        assert_eq!(grow.bounds_rect_ptr(), 0x2000);
+
+        // DragWindow
+        assert_eq!(evaluate_drag_window_parameters(0, 0x0010_0020, 0x3000), None);
+        let drag = evaluate_drag_window_parameters(0x1000, 0x0010_0020, 0x3000).unwrap();
+        assert_eq!(drag.window_ptr(), 0x1000);
+        assert_eq!(drag.start_point(), (16, 32));
+        assert_eq!(drag.bounds_rect_ptr(), 0x3000);
+
+        // HighlightWindow
+        assert_eq!(evaluate_highlight_window_parameters(0, true), None);
+        let hilite = evaluate_highlight_window_parameters(0x1000, true).unwrap();
+        assert_eq!(hilite.window_ptr(), 0x1000);
+        assert!(hilite.hilited());
+
+        // SendBehind
+        assert_eq!(evaluate_send_behind_parameters(0, 0x2000), None);
+        let send_behind = evaluate_send_behind_parameters(0x1000, 0x2000).unwrap();
+        assert_eq!(send_behind.window_ptr(), 0x1000);
+        assert_eq!(send_behind.behind_window_ptr(), 0x2000);
+
+        // IsWindowVisible
+        assert!(!evaluate_is_window_visible(0, true));
+        assert!(!evaluate_is_window_visible(0x1000, false));
+        assert!(evaluate_is_window_visible(0x1000, true));
     }
 }
