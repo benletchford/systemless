@@ -1771,6 +1771,7 @@ pub(crate) fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::MathCeil
         | PpcImportDispatcherTarget::MathSqrt
+        | PpcImportDispatcherTarget::MathHypot
         | PpcImportDispatcherTarget::MathExp
         | PpcImportDispatcherTarget::MathSin
         | PpcImportDispatcherTarget::MathCos

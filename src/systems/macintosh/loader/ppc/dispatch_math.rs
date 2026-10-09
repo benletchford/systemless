@@ -17,6 +17,15 @@ pub(super) fn dispatch_math_import(
             cpu.fpr[1] = value.sqrt().to_bits();
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::MathHypot => {
+            // Inside Macintosh: PowerPC Numerics (1994), pp. 10-58--10-59:
+            // compute the distance without unnecessary intermediate overflow
+            // or underflow; infinity takes precedence over a NaN argument.
+            let x = f64::from_bits(cpu.fpr[1]);
+            let y = f64::from_bits(cpu.fpr[2]);
+            cpu.fpr[1] = x.hypot(y).to_bits();
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::MathExp => {
             // Inside Macintosh: PowerPC Numerics (1994), pp. 10-18--10-19:
             // exp returns e raised to the power of x.
