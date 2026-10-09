@@ -305,6 +305,39 @@ pub(super) fn dispatch_memory_import(
             *last_mem_error = result;
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
+        PpcImportDispatcherTarget::PtrAndHand => {
+            // Inside Macintosh: Memory (1992), pp. 2-65--2-66; Memory
+            // Errata (August 1998): the source may be any memory address.
+            // Snapshot before resizing so a source inside the destination
+            // remains valid when its backing block moves.
+            let source = cpu.gpr[3];
+            let destination = cpu.gpr[4];
+            let size = cpu.gpr[5];
+            let result = if (size as i32) < 0 {
+                PPC_MEM_FULL_ERR
+            } else if memory.read_u32_be(destination).is_none_or(|ptr| ptr == 0) {
+                PPC_NIL_HANDLE_ERR
+            } else if let Some(bytes) = ppc_memory_read_bytes(memory, source, size) {
+                let result = process_memory_manager.append_process_handle_from_native_import(
+                    memory,
+                    destination,
+                    &bytes,
+                );
+                ppc_apply_process_native_allocator(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                );
+                ppc_apply_process_native_handle(process_memory_manager, handles, destination);
+                result
+            } else {
+                PPC_PARAM_ERR
+            };
+            process_memory_manager.set_native_mem_error(result);
+            *last_mem_error = result;
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         PpcImportDispatcherTarget::HandAndHand => {
             let result = {
                 let source_handle = cpu.gpr[3];

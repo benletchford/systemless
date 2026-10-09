@@ -1861,6 +1861,24 @@ fn ppc_handle_imports_mutate_the_process_memory_manager_immediately() {
             native.cpu.gpr[3] = handle;
             native.cpu.gpr[4] = 64;
             native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(memory_manager.native_allocation(handle), Some(original));
+            assert_eq!(
+                memory_manager.native_heap_state().unwrap().last_mem_error,
+                PPC_MEM_FULL_ERR
+            );
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.imports[0].dispatcher_target = PpcImportDispatcherTarget::HUnlock;
+            native.cpu.gpr[3] = handle;
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(memory_manager.handle_state(handle), 0x20);
+
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.imports[0].dispatcher_target = PpcImportDispatcherTarget::SetHandleSize;
+            native.cpu.gpr[3] = handle;
+            native.cpu.gpr[4] = 64;
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
             let grown = memory_manager.native_allocation(handle).unwrap();
             assert_ne!(grown.ptr, original.ptr);
             assert_eq!((grown.size, grown.capacity), (64, 64));
@@ -1898,6 +1916,12 @@ fn ppc_handle_imports_mutate_the_process_memory_manager_immediately() {
             native.run_with_process_memory_manager(64, false, false, memory_manager);
             assert_eq!(native.cpu.gpr[3], 64);
 
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.imports[0].dispatcher_target = PpcImportDispatcherTarget::HLock;
+            native.cpu.gpr[3] = handle;
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(memory_manager.handle_state(handle), 0xa0);
             native.cpu.pc = native.entry_pc;
             native.cpu.lr = PPC_HALT_PC;
             native.imports[0].dispatcher_target = PpcImportDispatcherTarget::EmptyHandle;
@@ -5055,4 +5079,121 @@ fn temp_max_mem_rejects_unwritable_grow_without_allocating_or_partial_writes() {
             assert_eq!(loaded.memory.read_u32_be(grow), Some(0xaaaa_aaaa));
         }
     }
+}
+
+#[test]
+fn ppc_ptr_and_hand_appends_arbitrary_memory_and_snapshots_aliases() {
+    let mut native = load_pef_application(&synthetic_pef_with_import(b"PtrAndHand")).unwrap();
+    let source = PPC_DATA_BASE + 0x2100;
+    native.memory.add_readonly_region(source, b"stack".to_vec());
+    let mut context = ProcessContext::default();
+    native.attach_unconverted_process_services(&mut context);
+    native.with_process_memory_manager(|native, manager| {
+        let handle = manager.copy_bytes_to_new_native_handle(&mut native.memory, b"old");
+        for (ptr, size, expected) in [
+            (source, 5, b"oldstack".as_slice()),
+            (0, 0, b"oldstack".as_slice()),
+        ] {
+            let cursor = manager.native_heap_state().unwrap().heap_cursor;
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.cpu.gpr[3] = ptr;
+            native.cpu.gpr[4] = handle;
+            native.cpu.gpr[5] = size;
+            native.run_with_process_memory_manager(64, false, false, manager);
+            assert_eq!(native.cpu.gpr[3], 0);
+            if size == 0 {
+                assert_eq!(manager.native_heap_state().unwrap().heap_cursor, cursor);
+            }
+            let record = manager.native_allocation(handle).unwrap();
+            assert_eq!(record.size as usize, expected.len());
+            assert_eq!(
+                ppc_memory_read_bytes(&mut native.memory, record.ptr, record.size).unwrap(),
+                expected
+            );
+        }
+        let record = manager.native_allocation(handle).unwrap();
+        let guard = manager.copy_bytes_to_new_native_handle(&mut native.memory, b"guard");
+        assert_ne!(guard, 0);
+        manager.set_state_for_handle(handle, 0x80);
+        native.cpu.pc = native.entry_pc;
+        native.cpu.lr = PPC_HALT_PC;
+        native.cpu.gpr[3] = record.ptr;
+        native.cpu.gpr[4] = handle;
+        native.cpu.gpr[5] = record.size;
+        native.run_with_process_memory_manager(64, false, false, manager);
+        assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_MEM_FULL_ERR));
+        assert_eq!(manager.native_allocation(handle), Some(record));
+        manager.set_state_for_handle(handle, 0);
+        native.cpu.pc = native.entry_pc;
+        native.cpu.lr = PPC_HALT_PC;
+        native.cpu.gpr[3] = record.ptr;
+        native.cpu.gpr[4] = handle;
+        native.cpu.gpr[5] = record.size;
+        native.run_with_process_memory_manager(64, false, false, manager);
+        assert_eq!(native.cpu.gpr[3], 0);
+        let relocated = manager.native_allocation(handle).unwrap();
+        assert_ne!(relocated.ptr, record.ptr);
+        let record = relocated;
+        assert_eq!(
+            ppc_memory_read_bytes(&mut native.memory, record.ptr, record.size).unwrap(),
+            b"oldstackoldstack"
+        );
+        for (ptr, destination, size, error) in [
+            (u32::MAX, handle, 2, PPC_PARAM_ERR),
+            (source, handle, u32::MAX, PPC_MEM_FULL_ERR),
+            (source, 0, 5, PPC_NIL_HANDLE_ERR),
+        ] {
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.cpu.gpr[3] = ptr;
+            native.cpu.gpr[4] = destination;
+            native.cpu.gpr[5] = size;
+            native.run_with_process_memory_manager(64, false, false, manager);
+            assert_eq!(native.cpu.gpr[3], ppc_i16_result(error));
+            assert_eq!(manager.native_allocation(handle), Some(record));
+            assert_eq!(manager.native_heap_state().unwrap().last_mem_error, error);
+        }
+        assert_eq!(
+            ppc_memory_read_bytes(&mut native.memory, source, 5).unwrap(),
+            b"stack"
+        );
+    });
+}
+
+#[test]
+fn ppc_ptr_and_hand_appends_to_classic_handle_and_rejects_empty_master() {
+    let mut native = load_pef_application(&synthetic_pef_with_import(b"PtrAndHand")).unwrap();
+    let mut context = ProcessContext::default();
+    native.attach_unconverted_process_services(&mut context);
+    let mut bus = attach_test_classic_heap(&mut native, &mut context, 8 * 1024 * 1024, 0x4000);
+    let (handle, ptr) = context
+        .memory_manager_mut()
+        .new_classic_handle(&mut bus, 3)
+        .unwrap();
+    bus.write_bytes(ptr, b"old");
+    bus.attach_guest_address_space(native.memory.shared_view());
+    let source = PPC_DATA_BASE + 0x2100;
+    native.memory.add_region(source, b"append".to_vec());
+    native.with_process_memory_manager(|native, manager| {
+        native.cpu.gpr[3] = source;
+        native.cpu.gpr[4] = handle;
+        native.cpu.gpr[5] = 6;
+        native.run_with_process_memory_manager(64, false, false, manager);
+        assert_eq!(native.cpu.gpr[3], 0);
+        let destination = native.memory.read_u32_be(handle).unwrap();
+        assert_eq!(bus.read_bytes(destination, 9), b"oldappend");
+        assert_eq!(manager.classic_allocation_size(destination), Some(9));
+
+        native.memory.write_u32_be(handle, 0).unwrap();
+        native.cpu.pc = native.entry_pc;
+        native.cpu.lr = PPC_HALT_PC;
+        native.cpu.gpr[3] = source;
+        native.cpu.gpr[4] = handle;
+        native.cpu.gpr[5] = 6;
+        native.run_with_process_memory_manager(64, false, false, manager);
+        assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_NIL_HANDLE_ERR));
+        assert_eq!(native.memory.read_u32_be(handle), Some(0));
+        assert_eq!(manager.classic_allocation_size(destination), Some(9));
+    });
 }
