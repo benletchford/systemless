@@ -3630,40 +3630,48 @@ pub(super) fn ppc_dispatch_legacy_window(
             Some(PpcImportAction::Return(window))
         }
         PpcLegacyWindowOperation::GetWindowTitle => {
-            let title = memory
-                .read_u32_be(cpu.gpr[3].wrapping_add(PPC_CWINDOW_TITLE_HANDLE_OFFSET))
-                .filter(|handle| *handle != 0)
-                .and_then(|handle| memory.read_u32_be(handle))
-                .filter(|ptr| *ptr != 0)
-                .and_then(|ptr| ppc_read_pstring_bytes(memory, ptr))
-                .unwrap_or_default();
-            if cpu.gpr[4] != 0 {
-                let _ = ppc_write_pstring_bytes(memory, cpu.gpr[4], &title);
+            let window = cpu.gpr[3];
+            let out_title = cpu.gpr[4];
+            if let Ok(params) = crate::window_manager::evaluate_get_window_title_parameters(window, out_title) {
+                let title = memory
+                    .read_u32_be(params.window_ptr().wrapping_add(PPC_CWINDOW_TITLE_HANDLE_OFFSET))
+                    .filter(|handle| *handle != 0)
+                    .and_then(|handle| memory.read_u32_be(handle))
+                    .filter(|ptr| *ptr != 0)
+                    .and_then(|ptr| ppc_read_pstring_bytes(memory, ptr))
+                    .unwrap_or_default();
+                if params.out_title_ptr() != 0 {
+                    let _ = ppc_write_pstring_bytes(memory, params.out_title_ptr(), &title);
+                }
             }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcLegacyWindowOperation::SetWindowTitle => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let changed = ppc_set_window_title(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                cpu.gpr[3],
-                cpu.gpr[4],
-            );
-            if changed {
-                ppc_redraw_visible_window_frame(
+            let window = cpu.gpr[3];
+            let title = cpu.gpr[4];
+            if let Ok(params) = crate::window_manager::evaluate_set_window_title_parameters(window, title) {
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                let changed = ppc_set_window_title(
+                    Some(&mut allocator),
                     memory,
-                    gworlds,
-                    window_list,
-                    cpu.gpr[3],
-                    toolbox_startup.host_menu_bar_hidden,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    params.window_ptr(),
+                    params.title_ptr(),
                 );
+                if changed {
+                    ppc_redraw_visible_window_frame(
+                        memory,
+                        gworlds,
+                        window_list,
+                        params.window_ptr(),
+                        toolbox_startup.host_menu_bar_hidden,
+                    );
+                }
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -4128,88 +4136,112 @@ pub(super) fn ppc_dispatch_legacy_window(
         PpcLegacyWindowOperation::GetWindowIdealUserState => {
             let window = cpu.gpr[3];
             let out_rect = cpu.gpr[4];
-            let result = if window != 0 && out_rect != 0 {
-                let state = memory
-                    .read_u32_be(window.wrapping_add(PPC_CWINDOW_STATE_HANDLE_OFFSET))
-                    .filter(|handle| *handle != 0)
-                    .and_then(|handle| memory.read_u32_be(handle))
-                    .filter(|state| *state != 0);
-                let (top, left, bottom, right) = if let Some(s) = state {
-                    ppc_read_rect(memory, s).unwrap_or((40, 40, 240, 340))
-                } else if let Some((t, l, b, r)) = ppc_read_rect(memory, window.wrapping_add(16)) {
-                    (t, l, b, r)
-                } else {
-                    (40, 40, 240, 340)
-                };
-                let _ = ppc_write_rect(memory, out_rect, top, left, bottom, right);
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
+            let can_write = ppc_memory_can_write_bytes(memory, out_rect, 8);
+            let result = match crate::window_manager::evaluate_get_window_ideal_user_state_parameters(
+                window,
+                out_rect,
+                can_write,
+            ) {
+                Ok(params) => {
+                    let state = memory
+                        .read_u32_be(params.window_ptr().wrapping_add(PPC_CWINDOW_STATE_HANDLE_OFFSET))
+                        .filter(|handle| *handle != 0)
+                        .and_then(|handle| memory.read_u32_be(handle))
+                        .filter(|state| *state != 0);
+                    let (top, left, bottom, right) = if let Some(s) = state {
+                        ppc_read_rect(memory, s).unwrap_or(crate::window_manager::DEFAULT_WINDOW_USER_STATE)
+                    } else if let Some((t, l, b, r)) = ppc_read_rect(memory, params.window_ptr().wrapping_add(crate::window_manager::WINDOW_PORT_RECT_OFFSET)) {
+                        (t, l, b, r)
+                    } else {
+                        crate::window_manager::DEFAULT_WINDOW_USER_STATE
+                    };
+                    let _ = ppc_write_rect(memory, params.out_rect_ptr(), top, left, bottom, right);
+                    PPC_NO_ERR
+                }
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcLegacyWindowOperation::SetWindowIdealUserState => {
             let window = cpu.gpr[3];
             let in_rect = cpu.gpr[4];
-            let result = if window != 0 && in_rect != 0 {
-                if let Some((top, left, bottom, right)) = ppc_read_rect(memory, in_rect) {
-                    let state = memory
-                        .read_u32_be(window.wrapping_add(PPC_CWINDOW_STATE_HANDLE_OFFSET))
-                        .filter(|handle| *handle != 0)
-                        .and_then(|handle| memory.read_u32_be(handle))
-                        .filter(|state| *state != 0);
-                    if let Some(s) = state {
-                        let _ = ppc_write_rect(memory, s, top, left, bottom, right);
+            let can_read = ppc_memory_can_read_bytes(memory, in_rect, 8);
+            let result = match crate::window_manager::evaluate_set_window_ideal_user_state_parameters(
+                window,
+                in_rect,
+                can_read,
+            ) {
+                Ok(params) => {
+                    if let Some((top, left, bottom, right)) = ppc_read_rect(memory, params.in_rect_ptr()) {
+                        let state = memory
+                            .read_u32_be(params.window_ptr().wrapping_add(PPC_CWINDOW_STATE_HANDLE_OFFSET))
+                            .filter(|handle| *handle != 0)
+                            .and_then(|handle| memory.read_u32_be(handle))
+                            .filter(|state| *state != 0);
+                        if let Some(s) = state {
+                            let _ = ppc_write_rect(memory, s, top, left, bottom, right);
+                        }
+                        PPC_NO_ERR
+                    } else {
+                        PPC_PARAM_ERR
                     }
-                    PPC_NO_ERR
-                } else {
-                    PPC_PARAM_ERR
                 }
-            } else {
-                PPC_PARAM_ERR
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcLegacyWindowOperation::GetWindowStandardState => {
             let window = cpu.gpr[3];
             let out_rect = cpu.gpr[4];
-            let result = if window != 0 && out_rect != 0 {
-                let state = memory
-                    .read_u32_be(window.wrapping_add(PPC_CWINDOW_STATE_HANDLE_OFFSET))
-                    .filter(|handle| *handle != 0)
-                    .and_then(|handle| memory.read_u32_be(handle))
-                    .filter(|state| *state != 0);
-                let (top, left, bottom, right) = if let Some(s) = state {
-                    ppc_read_rect(memory, s.wrapping_add(8)).unwrap_or((40, 40, 440, 600))
-                } else {
-                    (40, 40, 440, 600)
-                };
-                let _ = ppc_write_rect(memory, out_rect, top, left, bottom, right);
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
+            let can_write = ppc_memory_can_write_bytes(memory, out_rect, 8);
+            let result = match crate::window_manager::evaluate_get_window_standard_state_parameters(
+                window,
+                out_rect,
+                can_write,
+            ) {
+                Ok(params) => {
+                    let state = memory
+                        .read_u32_be(params.window_ptr().wrapping_add(PPC_CWINDOW_STATE_HANDLE_OFFSET))
+                        .filter(|handle| *handle != 0)
+                        .and_then(|handle| memory.read_u32_be(handle))
+                        .filter(|state| *state != 0);
+                    let (top, left, bottom, right) = if let Some(s) = state {
+                        ppc_read_rect(memory, s.wrapping_add(8)).unwrap_or(crate::window_manager::DEFAULT_WINDOW_STANDARD_STATE)
+                    } else {
+                        crate::window_manager::DEFAULT_WINDOW_STANDARD_STATE
+                    };
+                    let _ = ppc_write_rect(memory, params.out_rect_ptr(), top, left, bottom, right);
+                    PPC_NO_ERR
+                }
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcLegacyWindowOperation::SetWindowStandardState => {
             let window = cpu.gpr[3];
             let in_rect = cpu.gpr[4];
-            let result = if window != 0 && in_rect != 0 {
-                if let Some((top, left, bottom, right)) = ppc_read_rect(memory, in_rect) {
-                    let state = memory
-                        .read_u32_be(window.wrapping_add(PPC_CWINDOW_STATE_HANDLE_OFFSET))
-                        .filter(|handle| *handle != 0)
-                        .and_then(|handle| memory.read_u32_be(handle))
-                        .filter(|state| *state != 0);
-                    if let Some(s) = state {
-                        let _ = ppc_write_rect(memory, s.wrapping_add(8), top, left, bottom, right);
+            let can_read = ppc_memory_can_read_bytes(memory, in_rect, 8);
+            let result = match crate::window_manager::evaluate_set_window_standard_state_parameters(
+                window,
+                in_rect,
+                can_read,
+            ) {
+                Ok(params) => {
+                    if let Some((top, left, bottom, right)) = ppc_read_rect(memory, params.in_rect_ptr()) {
+                        let state = memory
+                            .read_u32_be(params.window_ptr().wrapping_add(PPC_CWINDOW_STATE_HANDLE_OFFSET))
+                            .filter(|handle| *handle != 0)
+                            .and_then(|handle| memory.read_u32_be(handle))
+                            .filter(|state| *state != 0);
+                        if let Some(s) = state {
+                            let _ = ppc_write_rect(memory, s.wrapping_add(8), top, left, bottom, right);
+                        }
+                        PPC_NO_ERR
+                    } else {
+                        PPC_PARAM_ERR
                     }
-                    PPC_NO_ERR
-                } else {
-                    PPC_PARAM_ERR
                 }
-            } else {
-                PPC_PARAM_ERR
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
@@ -4398,14 +4430,22 @@ pub(super) fn ppc_dispatch_legacy_window(
         PpcLegacyWindowOperation::GetWindowPortBounds => {
             let window = cpu.gpr[3];
             let out_bounds = cpu.gpr[4];
-            let result = if window != 0 && out_bounds != 0 {
-                let (top, left, bottom, right) =
-                    ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET))
-                .unwrap_or((0, 0, 0, 0));
-                let _ = ppc_write_rect(memory, out_bounds, top, left, bottom, right);
-                out_bounds
-            } else {
-                0
+            let can_write = ppc_memory_can_write_bytes(memory, out_bounds, 8);
+            let result = match crate::window_manager::evaluate_get_window_port_bounds_parameters(
+                window,
+                out_bounds,
+                can_write,
+            ) {
+                Ok(params) => {
+                    let (top, left, bottom, right) = ppc_read_rect(
+                        memory,
+                        params.window_ptr().wrapping_add(crate::window_manager::WINDOW_PORT_RECT_OFFSET),
+                    )
+                    .unwrap_or((0, 0, 0, 0));
+                    let _ = ppc_write_rect(memory, params.out_rect_ptr(), top, left, bottom, right);
+                    params.out_rect_ptr()
+                }
+                Err(_) => 0,
             };
             Some(PpcImportAction::Return(result))
         }
@@ -4474,12 +4514,22 @@ pub(super) fn ppc_dispatch_legacy_window(
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcLegacyWindowOperation::GetWindowGreatestArea => {
+            let window = cpu.gpr[3];
+            let in_rect = cpu.gpr[4];
             let out_greatest = cpu.gpr[5];
-            let result = if out_greatest != 0 {
-                let _ = ppc_write_rect(memory, out_greatest, 0, 0, 480, 640);
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
+            let can_write = ppc_memory_can_write_bytes(memory, out_greatest, 8);
+            let result = match crate::window_manager::evaluate_get_window_greatest_area_parameters(
+                window,
+                in_rect,
+                out_greatest,
+                can_write,
+            ) {
+                Ok(params) => {
+                    let (top, left, bottom, right) = crate::window_manager::evaluate_get_window_greatest_area();
+                    let _ = ppc_write_rect(memory, params.out_rect_ptr(), top, left, bottom, right);
+                    PPC_NO_ERR
+                }
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }

@@ -2110,6 +2110,290 @@ pub fn evaluate_get_window_from_port(port: u32) -> u32 {
     port
 }
 
+/// Canonical default window geometry rectangles and offsets.
+#[allow(dead_code)]
+pub const WINDOW_PORT_RECT_OFFSET: u32 = 16;
+#[allow(dead_code)]
+pub const DEFAULT_WINDOW_USER_STATE: (i16, i16, i16, i16) = (40, 40, 240, 340);
+#[allow(dead_code)]
+pub const DEFAULT_WINDOW_STANDARD_STATE: (i16, i16, i16, i16) = (40, 40, 440, 600);
+#[allow(dead_code)]
+pub const DEFAULT_WINDOW_GREATEST_AREA: (i16, i16, i16, i16) = (0, 0, 480, 640);
+
+/// Architecture-neutral parameter validation for GetWindowIdealUserState.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetWindowIdealUserStateParameters {
+    window_ptr: u32,
+    out_rect_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl GetWindowIdealUserStateParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn out_rect_ptr(&self) -> u32 {
+        self.out_rect_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_window_ideal_user_state_parameters(
+    window_ptr: u32,
+    out_rect_ptr: u32,
+    can_write: bool,
+) -> Result<GetWindowIdealUserStateParameters, i16> {
+    if window_ptr == 0 || out_rect_ptr == 0 || !can_write {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(GetWindowIdealUserStateParameters {
+        window_ptr,
+        out_rect_ptr,
+    })
+}
+
+/// Architecture-neutral parameter validation for SetWindowIdealUserState.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetWindowIdealUserStateParameters {
+    window_ptr: u32,
+    in_rect_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl SetWindowIdealUserStateParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn in_rect_ptr(&self) -> u32 {
+        self.in_rect_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_set_window_ideal_user_state_parameters(
+    window_ptr: u32,
+    in_rect_ptr: u32,
+    can_read: bool,
+) -> Result<SetWindowIdealUserStateParameters, i16> {
+    if window_ptr == 0 || in_rect_ptr == 0 || !can_read {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(SetWindowIdealUserStateParameters {
+        window_ptr,
+        in_rect_ptr,
+    })
+}
+
+/// Architecture-neutral parameter validation for GetWindowStandardState.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetWindowStandardStateParameters {
+    window_ptr: u32,
+    out_rect_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl GetWindowStandardStateParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn out_rect_ptr(&self) -> u32 {
+        self.out_rect_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_window_standard_state_parameters(
+    window_ptr: u32,
+    out_rect_ptr: u32,
+    can_write: bool,
+) -> Result<GetWindowStandardStateParameters, i16> {
+    if window_ptr == 0 || out_rect_ptr == 0 || !can_write {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(GetWindowStandardStateParameters {
+        window_ptr,
+        out_rect_ptr,
+    })
+}
+
+/// Architecture-neutral parameter validation for SetWindowStandardState.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetWindowStandardStateParameters {
+    window_ptr: u32,
+    in_rect_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl SetWindowStandardStateParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn in_rect_ptr(&self) -> u32 {
+        self.in_rect_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_set_window_standard_state_parameters(
+    window_ptr: u32,
+    in_rect_ptr: u32,
+    can_read: bool,
+) -> Result<SetWindowStandardStateParameters, i16> {
+    if window_ptr == 0 || in_rect_ptr == 0 || !can_read {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(SetWindowStandardStateParameters {
+        window_ptr,
+        in_rect_ptr,
+    })
+}
+
+/// Architecture-neutral parameter validation for GetWindowTitle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetWindowTitleParameters {
+    window_ptr: u32,
+    out_title_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl GetWindowTitleParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn out_title_ptr(&self) -> u32 {
+        self.out_title_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_window_title_parameters(
+    window_ptr: u32,
+    out_title_ptr: u32,
+) -> Result<GetWindowTitleParameters, i16> {
+    if window_ptr == 0 {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(GetWindowTitleParameters {
+        window_ptr,
+        out_title_ptr,
+    })
+}
+
+/// Architecture-neutral parameter validation for SetWindowTitle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetWindowTitleParameters {
+    window_ptr: u32,
+    title_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl SetWindowTitleParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn title_ptr(&self) -> u32 {
+        self.title_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_set_window_title_parameters(
+    window_ptr: u32,
+    title_ptr: u32,
+) -> Result<SetWindowTitleParameters, i16> {
+    if window_ptr == 0 {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(SetWindowTitleParameters {
+        window_ptr,
+        title_ptr,
+    })
+}
+
+/// Architecture-neutral parameter validation for GetWindowGreatestArea.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetWindowGreatestAreaParameters {
+    window_ptr: u32,
+    in_rect_ptr: u32,
+    out_rect_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl GetWindowGreatestAreaParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn in_rect_ptr(&self) -> u32 {
+        self.in_rect_ptr
+    }
+
+    pub const fn out_rect_ptr(&self) -> u32 {
+        self.out_rect_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_window_greatest_area_parameters(
+    window_ptr: u32,
+    in_rect_ptr: u32,
+    out_rect_ptr: u32,
+    can_write: bool,
+) -> Result<GetWindowGreatestAreaParameters, i16> {
+    if out_rect_ptr == 0 || !can_write {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(GetWindowGreatestAreaParameters {
+        window_ptr,
+        in_rect_ptr,
+        out_rect_ptr,
+    })
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_window_greatest_area() -> (i16, i16, i16, i16) {
+    DEFAULT_WINDOW_GREATEST_AREA
+}
+
+/// Architecture-neutral parameter validation for GetWindowPortBounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetWindowPortBoundsParameters {
+    window_ptr: u32,
+    out_rect_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl GetWindowPortBoundsParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn out_rect_ptr(&self) -> u32 {
+        self.out_rect_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_window_port_bounds_parameters(
+    window_ptr: u32,
+    out_rect_ptr: u32,
+    can_write: bool,
+) -> Result<GetWindowPortBoundsParameters, i16> {
+    if window_ptr == 0 || out_rect_ptr == 0 || !can_write {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(GetWindowPortBoundsParameters {
+        window_ptr,
+        out_rect_ptr,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -2976,6 +3260,67 @@ mod tests {
         // Window from port
         assert_eq!(evaluate_get_window_from_port(0), 0);
         assert_eq!(evaluate_get_window_from_port(0x9000), 0x9000);
+    }
+
+    #[test]
+    fn window_state_title_greatest_area_and_port_bounds_evaluation() {
+        // Ideal user state
+        assert_eq!(evaluate_get_window_ideal_user_state_parameters(0, 0x2000, true), Err(-50));
+        assert_eq!(evaluate_get_window_ideal_user_state_parameters(0x1000, 0, true), Err(-50));
+        assert_eq!(evaluate_get_window_ideal_user_state_parameters(0x1000, 0x2000, false), Err(-50));
+        let ideal_get = evaluate_get_window_ideal_user_state_parameters(0x1000, 0x2000, true).unwrap();
+        assert_eq!(ideal_get.window_ptr(), 0x1000);
+        assert_eq!(ideal_get.out_rect_ptr(), 0x2000);
+
+        assert_eq!(evaluate_set_window_ideal_user_state_parameters(0, 0x3000, true), Err(-50));
+        assert_eq!(evaluate_set_window_ideal_user_state_parameters(0x1000, 0, true), Err(-50));
+        assert_eq!(evaluate_set_window_ideal_user_state_parameters(0x1000, 0x3000, false), Err(-50));
+        let ideal_set = evaluate_set_window_ideal_user_state_parameters(0x1000, 0x3000, true).unwrap();
+        assert_eq!(ideal_set.window_ptr(), 0x1000);
+        assert_eq!(ideal_set.in_rect_ptr(), 0x3000);
+
+        // Standard state
+        assert_eq!(evaluate_get_window_standard_state_parameters(0, 0x2000, true), Err(-50));
+        assert_eq!(evaluate_get_window_standard_state_parameters(0x1000, 0, true), Err(-50));
+        assert_eq!(evaluate_get_window_standard_state_parameters(0x1000, 0x2000, false), Err(-50));
+        let std_get = evaluate_get_window_standard_state_parameters(0x1000, 0x2000, true).unwrap();
+        assert_eq!(std_get.window_ptr(), 0x1000);
+        assert_eq!(std_get.out_rect_ptr(), 0x2000);
+
+        assert_eq!(evaluate_set_window_standard_state_parameters(0, 0x3000, true), Err(-50));
+        assert_eq!(evaluate_set_window_standard_state_parameters(0x1000, 0, true), Err(-50));
+        assert_eq!(evaluate_set_window_standard_state_parameters(0x1000, 0x3000, false), Err(-50));
+        let std_set = evaluate_set_window_standard_state_parameters(0x1000, 0x3000, true).unwrap();
+        assert_eq!(std_set.window_ptr(), 0x1000);
+        assert_eq!(std_set.in_rect_ptr(), 0x3000);
+
+        // Window title
+        assert_eq!(evaluate_get_window_title_parameters(0, 0x4000), Err(-50));
+        let title_get = evaluate_get_window_title_parameters(0x1000, 0x4000).unwrap();
+        assert_eq!(title_get.window_ptr(), 0x1000);
+        assert_eq!(title_get.out_title_ptr(), 0x4000);
+
+        assert_eq!(evaluate_set_window_title_parameters(0, 0x5000), Err(-50));
+        let title_set = evaluate_set_window_title_parameters(0x1000, 0x5000).unwrap();
+        assert_eq!(title_set.window_ptr(), 0x1000);
+        assert_eq!(title_set.title_ptr(), 0x5000);
+
+        // Greatest area
+        assert_eq!(evaluate_get_window_greatest_area_parameters(0x1000, 0, 0, true), Err(-50));
+        assert_eq!(evaluate_get_window_greatest_area_parameters(0x1000, 0, 0x6000, false), Err(-50));
+        let greatest = evaluate_get_window_greatest_area_parameters(0x1000, 0x7000, 0x6000, true).unwrap();
+        assert_eq!(greatest.window_ptr(), 0x1000);
+        assert_eq!(greatest.in_rect_ptr(), 0x7000);
+        assert_eq!(greatest.out_rect_ptr(), 0x6000);
+        assert_eq!(evaluate_get_window_greatest_area(), DEFAULT_WINDOW_GREATEST_AREA);
+
+        // Port bounds
+        assert_eq!(evaluate_get_window_port_bounds_parameters(0, 0x8000, true), Err(-50));
+        assert_eq!(evaluate_get_window_port_bounds_parameters(0x1000, 0, true), Err(-50));
+        assert_eq!(evaluate_get_window_port_bounds_parameters(0x1000, 0x8000, false), Err(-50));
+        let port_bounds = evaluate_get_window_port_bounds_parameters(0x1000, 0x8000, true).unwrap();
+        assert_eq!(port_bounds.window_ptr(), 0x1000);
+        assert_eq!(port_bounds.out_rect_ptr(), 0x8000);
     }
 }
 
