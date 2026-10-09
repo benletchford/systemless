@@ -2330,3 +2330,15 @@ Open TEXT and Standard File/New Folder actions show centered, clipped guest
 labels with primary and secondary styling. This one viewport does not qualify
 all scales, active/inactive, pressed/disabled states or authentic Apple fonts.
 The remaining text surfaces and production gates are still incomplete.
+
+### Guest glyphs in choice labels
+
+Checkbox and radio wrappers now share left-aligned guest system-font glyph
+painting, using the control height for the integer guest baseline before
+scaling. Host shaping and wrapping no longer determine these labels. The
+existing indicator, tracking, accessibility and guest activation routes remain.
+Checkbox and dialog pointer regressions pass (0.07 and 0.15 seconds). Three
+actual shared-compositor Controls captures show guest checkbox label ink;
+`text-classic-choices-review.json` records the images and limits. The page
+contains no radio, so radio visuals remain unqualified. Small-height indicator
+geometry, font overrides and the scale/activation/state matrix remain open.

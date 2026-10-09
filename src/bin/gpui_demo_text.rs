@@ -264,6 +264,23 @@ pub(crate) fn classic_button_label(
     scale: f32,
     foreground: gpui_kit::Hsla,
 ) -> impl gpui_kit::IntoElement {
+    classic_control_label(label, true, scale, foreground)
+}
+
+pub(crate) fn classic_choice_label(
+    label: &str,
+    scale: f32,
+    foreground: gpui_kit::Hsla,
+) -> impl gpui_kit::IntoElement {
+    classic_control_label(label, false, scale, foreground)
+}
+
+fn classic_control_label(
+    label: &str,
+    centered: bool,
+    scale: f32,
+    foreground: gpui_kit::Hsla,
+) -> impl gpui_kit::IntoElement {
     use gpui_kit::{prelude::*, *};
     let bytes = label
         .chars()
@@ -277,7 +294,11 @@ pub(crate) fn classic_button_label(
         move |_, bounds, window, _| {
             let width = (f32::from(bounds.size.width) / scale).round() as i32;
             let height = (f32::from(bounds.size.height) / scale).round() as i32;
-            let x = (width - line.positions.last().copied().unwrap_or(0)) / 2;
+            let x = if centered {
+                (width - line.positions.last().copied().unwrap_or(0)) / 2
+            } else {
+                0
+            };
             let baseline = (height - i32::from(metrics.ascent) - i32::from(metrics.descent)) / 2
                 + i32::from(metrics.ascent);
             for &(ink_x, ink_y, ink_width) in &line.ink {
