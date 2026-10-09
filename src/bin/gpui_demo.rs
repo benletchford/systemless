@@ -7269,6 +7269,32 @@ mod desktop {
                 } else {
                     assert!(qualified.is_some(), "native standard list row: PPC={powerpc}, depth={depth}");
                 }
+                let vertical = global.0 + list.cell_size.0 / 2;
+                let horizontal = global.1 + 40;
+                for input in [MacintoshInput::MouseDown { vertical, horizontal },
+                    MacintoshInput::MouseUp { vertical, horizontal }] {
+                    session.deliver_input(input);
+                    for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
+                }
+                settle(&mut session);
+                let selected = session.runner_mut().list_manager_snapshot().into_iter()
+                    .find(|next| next.guest_id == list.guest_id).unwrap();
+                assert!(selected.active && selected.selected.contains(&cell));
+                assert_eq!(selected.cells, list.cells);
+                assert_eq!(selected.generation, list.generation);
+                let frame = session.video_frame().unwrap();
+                // The known empty left inset samples the actual physical native
+                // highlight; it does not infer a host theme or grant ownership.
+                let at = (((global.0 + 1) as u32 * frame.width + (global.1 + 1) as u32) * 4) as usize;
+                let background: [u8; 3] = frame.pixels[at..at + 3].try_into().unwrap();
+                let foreground = if 299 * u32::from(background[0]) + 587 * u32::from(background[1])
+                    + 114 * u32::from(background[2]) < 127_500 { [255; 3] } else { [0; 3] };
+                let qualified = super::super::text::ClassicListCellPaintPlan::qualify(
+                    layout, &selected.cells[&cell], true, foreground, background,
+                    (global.0 + 1, global.1 + 1, global.0 + bottom - local.0, global.1 + right - local.1 - 1),
+                    &frame.pixels, frame.width, frame.height,
+                );
+                assert!(qualified.is_some(), "native selected row: PPC={powerpc}, depth={depth}, background={background:?}");
             }
         }
 

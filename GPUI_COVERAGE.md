@@ -4056,3 +4056,13 @@ without moving glyph anchors. Monochrome 68k instead asserts native black
 interior pixels and refused replacement, preserving the established one-bit
 custom-panel behavior. This is one unselected public-fixture row, not general
 list ownership, selected-state/lifecycle qualification or GPUI rendered output.
+
+The real first-row regression also passes after guest mouse-down/up selection
+in all four modes, preserving cell bytes and list generation. It samples the
+known empty inset for the physical native highlight and uses native contrast
+policy, then compares every interior pixel. Monochrome is state-dependent:
+the initial black panel declines, but selection repaints a native row whose
+text recipe matches. This does not establish ownership from equality alone;
+production still needs retained drawing provenance and current paint metadata.
+The result qualifies selected native geometry/ink for this fixture, not live
+GPUI pointer transforms, arbitrary highlights or full list lifecycle.
