@@ -2986,7 +2986,9 @@ impl super::TrapDispatcher {
             // hierarchical portion. IM:I I-356; IM:V V-245.
             (true, 0x13E) => {
                 let sp = cpu.read_reg(Register::A7);
-                let ch = (bus.read_word(sp) & 0xFF) as u8;
+                let params =
+                    crate::menu_manager::evaluate_menu_key_parameters(bus.read_word(sp) as u32);
+                let ch = params.key_char();
 
                 let selection = self.current_menu_list(bus).and_then(|menu_list| {
                     menu_list.menu_key_selection(ch, |menu_handle| {
@@ -2998,7 +3000,8 @@ impl super::TrapDispatcher {
                 // shared hierarchy resolver redraws its owning regular title.
                 // A miss clears any prior command-key highlight, matching the
                 // native PowerPC gateway.
-                bus.write_word(addr::THE_MENU, (result >> 16) as u16);
+                let (selected_menu_id, _) = crate::menu_manager::unpack_menu_choice(result);
+                bus.write_word(addr::THE_MENU, selected_menu_id as u16);
                 if !self.menus.is_empty() {
                     self.draw_menu_bar_to_fb(bus);
                 }

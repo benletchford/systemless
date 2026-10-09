@@ -80,7 +80,9 @@ pub(crate) const PPC_ERR_AE_EVENT_NOT_HANDLED: i16 = -1708;
 pub(crate) const PPC_ERR_AE_NOT_AN_OBJECT_SPEC: i16 = -1727;
 pub(crate) const PPC_ERR_AE_ACCESSOR_NOT_FOUND: i16 = -1723;
 pub(crate) const PPC_AE_BUFFER_IS_SMALL: i16 = -607;
-pub(crate) const PPC_HM_HELP_MANAGER_NOT_INITED: i16 = -855;
+#[cfg(test)]
+pub(crate) const PPC_HM_HELP_MANAGER_NOT_INITED: i16 =
+    crate::menu_manager::HM_HELP_MANAGER_NOT_INITED_ERR;
 pub(crate) const PPC_HIGH_LEVEL_EVENT_MASK: u16 = 0x0400;
 pub(crate) const PPC_HIGH_LEVEL_EVENT: u16 = 23;
 pub(crate) const PPC_CORE_EVENT_CLASS: u32 = u32::from_be_bytes(*b"aevt");

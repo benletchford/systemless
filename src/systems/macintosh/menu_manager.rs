@@ -2818,7 +2818,7 @@ struct DecodedMenuPartitions {
 
 impl MenuKeySelection {
     pub(crate) fn packed_result(self) -> u32 {
-        (u32::from(self.menu_id as u16) << 16) | u32::from(self.item_number as u16)
+        pack_menu_choice(self.menu_id, self.item_number as u16)
     }
 }
 
@@ -4848,6 +4848,132 @@ pub fn evaluate_insert_res_menu_parameters(
             after_item,
         })
     }
+}
+
+/// Architecture-neutral parameter extraction for MenuKey.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuKeyParameters {
+    key_char: u8,
+}
+
+#[allow(dead_code)]
+impl MenuKeyParameters {
+    pub const fn new(key_char: u8) -> Self {
+        Self { key_char }
+    }
+
+    pub const fn key_char(&self) -> u8 {
+        self.key_char
+    }
+}
+
+#[allow(dead_code)]
+pub const fn evaluate_menu_key_parameters(raw_key: u32) -> MenuKeyParameters {
+    MenuKeyParameters::new((raw_key & 0xff) as u8)
+}
+
+/// Evaluates whether an EventRecord represents a command-key menu candidate.
+/// Standard keyDown (3) or autoKey (5) event with cmdKey (bit 8 = 0x0100) set.
+/// Returns Some(ascii_code) if valid, or None otherwise.
+pub const fn evaluate_menu_event_candidate(what: u16, message: u32, modifiers: u16) -> Option<u8> {
+    if (what == 3 || what == 5) && (modifiers & 0x0100 != 0) {
+        Some((message & 0xff) as u8)
+    } else {
+        None
+    }
+}
+
+/// Architecture-neutral parameter extraction and validation for MenuEvent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuEventParameters {
+    event_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl MenuEventParameters {
+    pub const fn event_ptr(&self) -> u32 {
+        self.event_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub const fn evaluate_menu_event_parameters(event_ptr: u32) -> Option<MenuEventParameters> {
+    if event_ptr == 0 {
+        None
+    } else {
+        Some(MenuEventParameters { event_ptr })
+    }
+}
+
+/// Packs a menu ID and item index into a standard 32-bit MenuChoice selection.
+#[allow(dead_code)]
+pub const fn pack_menu_choice(menu_id: i16, item_index: u16) -> u32 {
+    ((menu_id as u16 as u32) << 16) | (item_index as u32)
+}
+
+/// Unpacks a 32-bit MenuChoice selection into (menu_id, item_index).
+#[allow(dead_code)]
+pub const fn unpack_menu_choice(packed: u32) -> (i16, u16) {
+    let menu_id = (packed >> 16) as u16 as i16;
+    let item_index = (packed & 0xffff) as u16;
+    (menu_id, item_index)
+}
+
+/// Evaluates the MenuChoice return value from low-memory MENU_DISABLE.
+pub const fn evaluate_menu_choice_result(menu_disable_value: u32) -> u32 {
+    menu_disable_value
+}
+
+/// Standard Help Manager uninitialized error code (-855).
+pub const HM_HELP_MANAGER_NOT_INITED_ERR: i16 = -855;
+
+/// Architecture-neutral parameter extraction and validation for HMGetHelpMenuHandle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HMGetHelpMenuHandleParameters {
+    out_handle_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl HMGetHelpMenuHandleParameters {
+    pub const fn out_handle_ptr(&self) -> u32 {
+        self.out_handle_ptr
+    }
+
+    pub const fn has_output_ptr(&self) -> bool {
+        self.out_handle_ptr != 0
+    }
+}
+
+#[allow(dead_code)]
+pub const fn evaluate_hm_get_help_menu_handle_parameters(
+    out_handle_ptr: u32,
+) -> HMGetHelpMenuHandleParameters {
+    HMGetHelpMenuHandleParameters { out_handle_ptr }
+}
+
+/// Architecture-neutral parameter extraction for HMSetBalloons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HMSetBalloonsParameters {
+    enabled: bool,
+}
+
+#[allow(dead_code)]
+impl HMSetBalloonsParameters {
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
+#[allow(dead_code)]
+pub const fn evaluate_hm_set_balloons_parameters(raw_flag: u32) -> HMSetBalloonsParameters {
+    HMSetBalloonsParameters {
+        enabled: (raw_flag & 0xff) != 0,
+    }
+}
+
+/// Evaluates HMIsBalloon return value (always false, as balloons are not displayed).
+pub const fn evaluate_hm_is_balloon() -> bool {
+    false
 }
 
 #[cfg(test)]
@@ -7170,5 +7296,47 @@ mod tests {
         assert_eq!(ins_res.after_item(), i16::MAX);
         assert_eq!(ins_res.insertion_index(10), 10);
         assert!(evaluate_insert_res_menu_parameters(0, 0x464f4e44, 1).is_none());
+    }
+
+    #[test]
+    fn menu_key_event_choice_and_help_evaluation() {
+        // MenuKey
+        let key_params = evaluate_menu_key_parameters(0x41); // 'A'
+        assert_eq!(key_params.key_char(), b'A');
+        let key_params2 = evaluate_menu_key_parameters(0x1234_0062); // 'b' with high bits
+        assert_eq!(key_params2.key_char(), b'b');
+
+        // MenuEvent candidate
+        assert_eq!(evaluate_menu_event_candidate(3, 0x43, 0x0100), Some(b'C')); // keyDown + cmdKey
+        assert_eq!(evaluate_menu_event_candidate(5, 0x58, 0x0100), Some(b'X')); // autoKey + cmdKey
+        assert_eq!(evaluate_menu_event_candidate(3, 0x43, 0x0000), None); // keyDown without cmdKey
+        assert_eq!(evaluate_menu_event_candidate(1, 0x43, 0x0100), None); // mouseDown with cmdKey
+        assert_eq!(evaluate_menu_event_candidate(4, 0x43, 0x0100), None); // keyUp with cmdKey
+
+        // MenuEvent parameters
+        let event_params = evaluate_menu_event_parameters(0x2000).unwrap();
+        assert_eq!(event_params.event_ptr(), 0x2000);
+        assert!(evaluate_menu_event_parameters(0).is_none());
+
+        // MenuChoice packing / unpacking / result
+        let packed = pack_menu_choice(128, 3);
+        assert_eq!(packed, (128 << 16) | 3);
+        assert_eq!(unpack_menu_choice(packed), (128, 3));
+        assert_eq!(evaluate_menu_choice_result(0x0080_0003), 0x0080_0003);
+
+        // Help Manager queries
+        let hm_params = evaluate_hm_get_help_menu_handle_parameters(0x3000);
+        assert_eq!(hm_params.out_handle_ptr(), 0x3000);
+        assert!(hm_params.has_output_ptr());
+        let hm_null = evaluate_hm_get_help_menu_handle_parameters(0);
+        assert!(!hm_null.has_output_ptr());
+        assert_eq!(HM_HELP_MANAGER_NOT_INITED_ERR, -855);
+
+        let balloons_on = evaluate_hm_set_balloons_parameters(1);
+        assert!(balloons_on.enabled());
+        let balloons_off = evaluate_hm_set_balloons_parameters(0);
+        assert!(!balloons_off.enabled());
+
+        assert!(!evaluate_hm_is_balloon());
     }
 }

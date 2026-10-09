@@ -896,11 +896,13 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             // Systemless does not expose Balloon Help. Match the established
             // 68k Pack14 fallback: clear the output MenuHandle and report that
             // the Help Manager has not been initialized.
-            if cpu.gpr[3] != 0 {
-                let _ = memory.write_u32_be(cpu.gpr[3], 0);
+            let params =
+                crate::menu_manager::evaluate_hm_get_help_menu_handle_parameters(cpu.gpr[3]);
+            if params.has_output_ptr() {
+                let _ = memory.write_u32_be(params.out_handle_ptr(), 0);
             }
             Some(PpcImportAction::Return(ppc_i16_result(
-                PPC_HM_HELP_MANAGER_NOT_INITED,
+                crate::menu_manager::HM_HELP_MANAGER_NOT_INITED_ERR,
             )))
         }
         PpcImportDispatcherTarget::HMGetBalloons => {
@@ -915,7 +917,8 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             // Updates the modeled Balloon Help setting.
             // FUNCTION HMSetBalloons(flag: Boolean): OSErr;
             // Inside Macintosh Volume VI (1991), chapter 11, p. 11-65.
-            toolbox_startup.help_balloons_enabled = cpu.gpr[3] & 0xff != 0;
+            let params = crate::menu_manager::evaluate_hm_set_balloons_parameters(cpu.gpr[3]);
+            toolbox_startup.help_balloons_enabled = params.enabled();
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
         PpcImportDispatcherTarget::HMIsBalloon => {
@@ -924,7 +927,9 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             // FUNCTION HMIsBalloon: Boolean;
             // Inside Macintosh Volume VI (1991), chapter 11, p. 11-66.
             // The 68k Pack14 path has the same no-balloon state.
-            Some(PpcImportAction::Return(0))
+            Some(PpcImportAction::Return(u32::from(
+                crate::menu_manager::evaluate_hm_is_balloon(),
+            )))
         }
         PpcImportDispatcherTarget::HiliteMenu => {
             // HiliteMenu first restores the currently highlighted title, then
@@ -947,9 +952,10 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
         }
         PpcImportDispatcherTarget::MenuNoop => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::MenuKey => {
+            let params = crate::menu_manager::evaluate_menu_key_parameters(cpu.gpr[3]);
             let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
             let menu_colors = MenuColorTable::new(&menu_color_bytes);
-            let selection = ppc_menu_key(memory, *current_menu_list, cpu.gpr[3] as u8);
+            let selection = ppc_menu_key(memory, *current_menu_list, params.key_char());
             let result = selection.map_or(0, MenuKeySelection::packed_result);
             let root_menu_id = selection
                 .and_then(|selection| selection.owner_handle)
@@ -970,7 +976,8 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             if crate::trap::dispatch::trace_input_enabled() {
                 eprintln!(
                     "[INPUT] PPC MenuKey menu_list=${:08X} key=${:02X} -> ${result:08X}",
-                    *current_menu_list, cpu.gpr[3] as u8
+                    *current_menu_list,
+                    params.key_char()
                 );
             }
             Some(PpcImportAction::Return(result))
@@ -979,13 +986,21 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             // Menus.h: MenuEvent examines a classic EventRecord and returns
             // the MenuKey-style packed result for command-key keyboard
             // events, or zero when the event has no menu equivalent.
-            let event = cpu.gpr[3];
-            let what = memory.read_u16_be(event).unwrap_or(0);
-            let message = memory.read_u32_be(event + 2).unwrap_or(0);
-            let modifiers = memory.read_u16_be(event + 14).unwrap_or(0);
-            let result = if matches!(what, 3 | 5) && modifiers & 0x0100 != 0 {
-                ppc_menu_key(memory, *current_menu_list, message as u8)
-                    .map_or(0, MenuKeySelection::packed_result)
+            let result = if let Some(params) =
+                crate::menu_manager::evaluate_menu_event_parameters(cpu.gpr[3])
+            {
+                let event = params.event_ptr();
+                let what = memory.read_u16_be(event).unwrap_or(0);
+                let message = memory.read_u32_be(event + 2).unwrap_or(0);
+                let modifiers = memory.read_u16_be(event + 14).unwrap_or(0);
+                if let Some(key_char) =
+                    crate::menu_manager::evaluate_menu_event_candidate(what, message, modifiers)
+                {
+                    ppc_menu_key(memory, *current_menu_list, key_char)
+                        .map_or(0, MenuKeySelection::packed_result)
+                } else {
+                    0
+                }
             } else {
                 0
             };
@@ -995,10 +1010,11 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             // MenuChoice is a parameterless C function that returns the
             // standard MDEF's packed MenuDisable low-memory value unchanged.
             // Macintosh Toolbox Essentials (1992), pp. 3-118--3-119.
+            let raw_disable = memory
+                .read_u32_be(crate::memory::globals::addr::MENU_DISABLE)
+                .unwrap_or(0);
             Some(PpcImportAction::Return(
-                memory
-                    .read_u32_be(crate::memory::globals::addr::MENU_DISABLE)
-                    .unwrap_or(0),
+                crate::menu_manager::evaluate_menu_choice_result(raw_disable),
             ))
         }
         PpcImportDispatcherTarget::GetMBarHeight => {

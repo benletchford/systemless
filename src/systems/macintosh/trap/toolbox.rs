@@ -16362,7 +16362,8 @@ impl super::TrapDispatcher {
             //
             (true, 0x030) => {
                 const HM_HELP_DISABLED: i16 = -850;
-                const HM_HELP_MGR_NOT_INITED: i16 = -855;
+                const HM_HELP_MGR_NOT_INITED: i16 =
+                    crate::menu_manager::HM_HELP_MANAGER_NOT_INITED_ERR;
                 const RES_NOT_FOUND: i16 = -192;
 
                 let sp = cpu.read_reg(Register::A7);
@@ -16395,12 +16396,22 @@ impl super::TrapDispatcher {
                     // FUNCTION HMIsBalloon: Boolean;
                     // IM:MMTb 3-99. No parameters.
                     // No balloon up in HLE → FALSE (0).
-                    0x0007 => finish(bus, cpu, 0, 0),
+                    0x0007 => finish(
+                        bus,
+                        cpu,
+                        0,
+                        u16::from(crate::menu_manager::evaluate_hm_is_balloon()) as i16,
+                    ),
 
                     // FUNCTION HMSetBalloons(flag: Boolean): OSErr;
                     // IM:MMTb 3-107. Pop = 2 (flag).
                     // Accept and ignore — no help to enable/disable.
-                    0x0104 => finish(bus, cpu, 2, 0),
+                    0x0104 => {
+                        let _params = crate::menu_manager::evaluate_hm_set_balloons_parameters(
+                            bus.read_word(sp) as u32,
+                        );
+                        finish(bus, cpu, 2, 0);
+                    }
 
                     // FUNCTION HMSetFont(font: Integer): OSErr;
                     // IM:MMTb 3-112. Pop = 2. Accept and ignore.
@@ -16419,9 +16430,12 @@ impl super::TrapDispatcher {
                     // mh ptr at SP+0. Write NIL to *mh per
                     // hmHelpManagerNotInited contract.
                     0x0200 => {
-                        let mh_ptr = bus.read_long(sp);
-                        if mh_ptr != 0 {
-                            bus.write_long(mh_ptr, 0);
+                        let params =
+                            crate::menu_manager::evaluate_hm_get_help_menu_handle_parameters(
+                                bus.read_long(sp),
+                            );
+                        if params.has_output_ptr() {
+                            bus.write_long(params.out_handle_ptr(), 0);
                         }
                         finish(bus, cpu, 4, HM_HELP_MGR_NOT_INITED);
                     }

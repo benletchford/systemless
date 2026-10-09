@@ -10152,3 +10152,120 @@ fn menu_insertion_deletion_and_enable_commands_dispatch_with_canonical_evaluatio
     run_test_import(&mut loaded, PpcImportDispatcherTarget::InsertResMenu);
     assert_eq!(loaded.last_mem_error(), PPC_NIL_HANDLE_ERR);
 }
+
+#[test]
+fn menu_key_event_choice_and_help_commands_dispatch_with_canonical_evaluation() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"MenuKey")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let _menu = install_test_menu(&mut loaded, scratch, 128, b"File", b"Open/O;Save/S");
+
+    // 1. MenuKey canonical evaluation
+    loaded.cpu.gpr[3] = u32::from(b'O');
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MenuKey);
+    assert_eq!(
+        loaded.cpu.gpr[3],
+        crate::menu_manager::pack_menu_choice(128, 1)
+    );
+
+    // Unmatched key
+    loaded.cpu.gpr[3] = u32::from(b'Z');
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MenuKey);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // 2. MenuEvent canonical evaluation
+    let event = scratch + 0x100;
+    // Valid command-key event (what = 3: keyDown, message = 'S', modifiers = 0x0100: cmdKey)
+    loaded.memory.write_u16_be(event, 3).unwrap();
+    loaded.memory.write_u32_be(event + 2, u32::from(b's')).unwrap();
+    loaded.memory.write_u16_be(event + 14, 0x0100).unwrap();
+    loaded.cpu.gpr[3] = event;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MenuEvent);
+    assert_eq!(
+        loaded.cpu.gpr[3],
+        crate::menu_manager::pack_menu_choice(128, 2)
+    );
+
+    // AutoKey event (what = 5) with cmdKey
+    loaded.memory.write_u16_be(event, 5).unwrap();
+    loaded.cpu.gpr[3] = event;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MenuEvent);
+    assert_eq!(
+        loaded.cpu.gpr[3],
+        crate::menu_manager::pack_menu_choice(128, 2)
+    );
+
+    // Missing cmdKey modifier
+    loaded.memory.write_u16_be(event + 14, 0).unwrap();
+    loaded.cpu.gpr[3] = event;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MenuEvent);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // Invalid event type (what = 1: mouseDown)
+    loaded.memory.write_u16_be(event, 1).unwrap();
+    loaded.memory.write_u16_be(event + 14, 0x0100).unwrap();
+    loaded.cpu.gpr[3] = event;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MenuEvent);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // Null event pointer
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MenuEvent);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // 3. MenuChoice canonical evaluation
+    loaded
+        .memory
+        .write_u32_be(
+            crate::memory::globals::addr::MENU_DISABLE,
+            crate::menu_manager::pack_menu_choice(128, 1),
+        )
+        .unwrap();
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MenuChoice);
+    assert_eq!(
+        loaded.cpu.gpr[3],
+        crate::menu_manager::pack_menu_choice(128, 1)
+    );
+
+    // 4. HMGetHelpMenuHandle
+    let out_handle_addr = scratch + 0x180;
+    loaded
+        .memory
+        .write_u32_be(out_handle_addr, 0x1234_5678)
+        .unwrap();
+    loaded.cpu.gpr[3] = out_handle_addr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HMGetHelpMenuHandle);
+    assert_eq!(
+        loaded.cpu.gpr[3],
+        ppc_i16_result(PPC_HM_HELP_MANAGER_NOT_INITED)
+    );
+    assert_eq!(loaded.memory.read_u32_be(out_handle_addr), Some(0));
+
+    // Null output pointer safety
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HMGetHelpMenuHandle);
+    assert_eq!(
+        loaded.cpu.gpr[3],
+        ppc_i16_result(PPC_HM_HELP_MANAGER_NOT_INITED)
+    );
+
+    // 5. HMGetBalloons, HMSetBalloons, HMIsBalloon
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HMGetBalloons);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    loaded.cpu.gpr[3] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HMSetBalloons);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HMGetBalloons);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HMSetBalloons);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HMGetBalloons);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HMIsBalloon);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
