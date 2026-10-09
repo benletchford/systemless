@@ -7223,6 +7223,56 @@ mod desktop {
         }
 
         #[test]
+        fn standard_list_first_row_qualification_preserves_native_cpu_pixels() {
+            for (powerpc, depth) in [(false, 1), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, if powerpc { None } else { Some(depth) });
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 9));
+                wait_for_menu(&mut session, 129, 9, true);
+                settle(&mut session);
+                let list = session.runner_mut().list_manager_snapshot().into_iter()
+                    .find(|list| list.definition_id == 0 && list.draw_enabled && !list.cells.is_empty()).unwrap();
+                let local = list.view_rect;
+                let global = list.global_view_rect.unwrap();
+                let cell = (list.visible.0, list.visible.1);
+                assert!(!list.selected.contains(&cell));
+                let bottom = local.0.saturating_add(list.cell_size.0).min(local.2);
+                let right = local.1.saturating_add(list.cell_size.1).min(local.3);
+                let metrics = systemless::quickdraw::text::get_font_metrics(1, 9);
+                let baseline = if powerpc { local.0 + metrics.ascent } else {
+                    local.0 + (bottom - local.0 - metrics.ascent - metrics.descent).max(0) / 2 + metrics.ascent
+                };
+                let layout = super::super::text::ClassicListCellLayout {
+                    font: 1, size: 9, left: local.1 + if powerpc { 1 } else { 3 }, baseline,
+                    clip: (local.0 + 1, local.1 + 1, bottom, right - 1),
+                    stop_before: if powerpc { None } else { Some(right - 3) }, char_extra: 0,
+                };
+                let frame = session.video_frame().unwrap();
+                let qualified = super::super::text::ClassicListCellPaintPlan::qualify(
+                    layout, &list.cells[&cell], true, [0; 3], [255; 3],
+                    (global.0 + 1, global.1 + 1, global.0 + bottom - local.0, global.1 + right - local.1 - 1),
+                    &frame.pixels, frame.width, frame.height,
+                );
+                if !powerpc && depth == 1 {
+                    assert!(qualified.is_none(), "native one-bit black custom drawing stays guest-owned");
+                    for y in global.0 + 1..global.0 + bottom - local.0 {
+                        for x in global.1 + 1..global.1 + right - local.1 - 1 {
+                            let at = ((y as u32 * frame.width + x as u32) * 4) as usize;
+                            assert_eq!(&frame.pixels[at..at + 3], &[0; 3]);
+                        }
+                    }
+                } else {
+                    assert!(qualified.is_some(), "native standard list row: PPC={powerpc}, depth={depth}");
+                }
+            }
+        }
+
+        #[test]
         fn multiline_styled_selection_plan_matches_native_paint_order() {
             for (powerpc, depth) in [(false, 1), (false, 8), (true, 8), (true, 16)] {
                 let mut session = MacintoshSession::new(true, if powerpc { None } else { Some(depth) });
