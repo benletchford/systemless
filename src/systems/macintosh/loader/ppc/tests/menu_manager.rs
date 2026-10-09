@@ -8449,6 +8449,14 @@ fn menu_creation_disposal_loading_and_sizing_commands_dispatch_with_canonical_ev
             let menu_height = loaded.memory.read_u16_be(menu_ptr + 4).unwrap() as i16;
             assert!(menu_width > 0);
             assert!(menu_height > 0);
+
+            // Null menu handle preserves state without panicking
+            let pef = synthetic_pef_with_library_import(lib, b"CalcMenuSize");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
         }
 
         // 3. GetMenu
@@ -8479,6 +8487,15 @@ fn menu_creation_disposal_loading_and_sizing_commands_dispatch_with_canonical_ev
             let menu_ptr = loaded.memory.read_u32_be(menu).unwrap();
             assert_eq!(loaded.memory.read_u16_be(menu_ptr), Some(300));
 
+            // Null menu ID returns 0
+            let pef = synthetic_pef_with_library_import(lib, b"GetMenu");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+
             // Absent ID returns 0
             let pef = synthetic_pef_with_library_import(lib, b"GetMenu");
             let mut loaded = load_pef_application(&pef).unwrap();
@@ -8499,6 +8516,14 @@ fn menu_creation_disposal_loading_and_sizing_commands_dispatch_with_canonical_ev
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(loaded.memory.read_u32_be(menu), Some(0));
+
+            // Null menu handle in DisposeMenu handles gracefully
+            let pef = synthetic_pef_with_library_import(lib, b"DisposeMenu");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
 
             let pef = synthetic_pef_with_library_import(lib, b"DisposMenu");
             let mut loaded = load_pef_application(&pef).unwrap();
