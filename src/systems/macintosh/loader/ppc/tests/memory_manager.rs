@@ -4921,3 +4921,29 @@ fn hle_import_runner_temporary_handle_locking_reports_errors_and_preserves_state
         assert_eq!(retained.borrow().state_for_handle(empty), None);
     }
 }
+
+#[test]
+fn hle_import_runner_uncached_block_moves_preserve_overlap_and_bounds() {
+    for name in [b"BlockMoveDataUncached".as_slice(), b"BlockMoveUncached".as_slice()] {
+        for (source_offset, destination_offset, count, expected) in [
+            (0, 2, 6, b"ababcdef".as_slice()),
+            (2, 0, 6, b"cdefghgh".as_slice()),
+            (0, 2, 0, b"abcdefgh".as_slice()),
+        ] {
+            let mut loaded = load_pef_application(&synthetic_pef_with_import(name)).unwrap();
+            let buffer = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(buffer, b"abcdefgh!".to_vec());
+            loaded.cpu.gpr[3] = buffer + source_offset;
+            loaded.cpu.gpr[4] = buffer + destination_offset;
+            loaded.cpu.gpr[5] = count;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], buffer + source_offset);
+            for (offset, byte) in expected.iter().copied().enumerate() {
+                assert_eq!(loaded.memory.read_u8(buffer + offset as u32), Some(byte));
+            }
+            assert_eq!(loaded.memory.read_u8(buffer + 8), Some(b'!'));
+        }
+    }
+}

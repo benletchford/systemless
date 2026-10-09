@@ -2557,7 +2557,12 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "UnholdMemory") => PpcImportDispatcherTarget::UnholdMemory,
         ("InterfaceLib", "DisposeHandle") => PpcImportDispatcherTarget::DisposeHandle,
         ("InterfaceLib", "EmptyHandle") => PpcImportDispatcherTarget::EmptyHandle,
-        ("InterfaceLib", "BlockMove") | ("InterfaceLib", "BlockMoveData") => {
+        // The uncached variants change hardware cache policy, not the byte
+        // copy contract. Guest memory has no separate hardware cache here.
+        ("InterfaceLib", "BlockMove")
+        | ("InterfaceLib", "BlockMoveData")
+        | ("InterfaceLib", "BlockMoveUncached")
+        | ("InterfaceLib", "BlockMoveDataUncached") => {
             PpcImportDispatcherTarget::BlockMove
         }
         ("InterfaceLib", "BlockZero") => PpcImportDispatcherTarget::BlockZero,
