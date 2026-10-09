@@ -31,7 +31,7 @@ pub use crate::standard_file_ui::{
     StandardFileEntrySnapshot, StandardFileGetLayout, StandardFileKind, StandardFilePutLayout,
     StandardFileNameTextLayout, StandardFileSnapshot, StandardFileReplacementLayout, StandardFileNewFolderSnapshot, StandardFileNewFolderLayout,
 };
-pub use crate::text_edit::{TextEditManagerSnapshot, TextEditSnapshot, TextEditStyleRunSnapshot};
+pub use crate::text_edit::{TextEditLineGeometry, TextEditLineLayoutPolicy, TextEditManagerSnapshot, TextEditSnapshot, TextEditStyleRunSnapshot};
 use crate::trap::dispatch::TrapTableProfile;
 use crate::trap::TrapDispatcher;
 use crate::ui_theme::{ThemeMetricsMode, UiTheme, UiThemeId};
@@ -3367,6 +3367,11 @@ impl FixtureRunner {
         let clips_line_offsets_to_visible_text = self.native.application().is_some();
         for record in &mut snapshot.records {
             record.clips_line_offsets_to_visible_text = clips_line_offsets_to_visible_text;
+            record.line_layout_policy = if clips_line_offsets_to_visible_text {
+                crate::text_edit::TextEditLineLayoutPolicy::PpcRunMetrics
+            } else {
+                crate::text_edit::TextEditLineLayoutPolicy::CumulativeGuestMetrics
+            };
             if !window_ports.contains(&record.owner_port) {
                 continue;
             }

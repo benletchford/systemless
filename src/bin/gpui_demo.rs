@@ -1681,8 +1681,11 @@ mod desktop {
                         .bg(cx.theme().background);
                     let caret_line = record.caret_line();
                     for (index, _line) in lines.into_iter().enumerate() {
-                        let top = dest.top + index as i32 * i32::from(record.line_height) - source.top;
-                        if top >= source.height() || top + i32::from(record.line_height) <= 0 {
+                        // Reuse the owning CPU's line anchors. Styled records
+                        // remain guest-owned until run ink/selection is qualified.
+                        let Some(geometry) = record.line_geometry(index, 0) else { continue; };
+                        let top = dest.top - i32::from(record.dest_rect.0) + i32::from(geometry.top) - source.top;
+                        if top >= source.height() || top + i32::from(geometry.height) <= 0 {
                             continue;
                         }
                         let starts = record.line_starts.as_ref().unwrap();
@@ -1706,13 +1709,13 @@ mod desktop {
                             div()
                                 .id(format!("guest-text-edit-line-{}-{}-{index}", record.guest_id, record.generation))
                                 .absolute()
-                                .left(guest_px((dest.left - source.left) as f32))
+                                .left(guest_px((dest.left - i32::from(record.dest_rect.1) + i32::from(geometry.left) - 1 - source.left) as f32))
                                 .top(guest_px(top as f32))
                                 .w(guest_px(dest.width().max(1) as f32))
-                                .h(guest_px(f32::from(record.line_height)))
+                                .h(guest_px(f32::from(geometry.height)))
                                 .overflow_hidden()
                                 .child(super::text::classic_line(
-                                    glyphs, record.font_ascent, record.line_height,
+                                    glyphs, geometry.ascent, geometry.height,
                                     if record.active { selection } else { (0, 0) }, caret,
                                     super::text::ClassicLineGeometry::TextEdit, self.display_scale, cx.theme().foreground, cx.theme().selection,
                                 )),
@@ -6826,6 +6829,15 @@ mod desktop {
                 assert_eq!(metrics.len(), record.line_count);
                 assert!(metrics.iter().all(|&(height, ascent)| height > 0 && ascent > 0 && ascent <= height));
                 assert!(record.display_lines().is_some());
+                assert_eq!(record.line_layout_policy, if powerpc {
+                    systemless::runner::TextEditLineLayoutPolicy::PpcRunMetrics
+                } else {
+                    systemless::runner::TextEditLineLayoutPolicy::CumulativeGuestMetrics
+                });
+                for index in 0..record.line_count {
+                    let geometry = record.line_geometry(index, 0).expect("styled guest line anchors");
+                    assert!(geometry.height > 0 && geometry.ascent >= 0);
+                }
                 // Mixed run presentation remains guest-owned until the GPUI
                 // renderer preserves its line metrics and editing boundaries.
                 let windows = session.runner_mut().window_frame_snapshot();
@@ -6892,8 +6904,14 @@ mod desktop {
                 let end = starts[1].min(first.text.len());
                 let line = super::super::text::ClassicLine::plain(&first.text[..end], first.font, first.size);
                 let dest = first.global_dest_rect.unwrap();
-                let horizontal = dest.1 + 1 + line.positions[3] as i16;
-                let vertical = dest.0 + first.font_ascent;
+                let geometry = first.line_geometry(0, 0).expect("guest first-line geometry");
+                assert_eq!(first.line_layout_policy, if powerpc {
+                    systemless::runner::TextEditLineLayoutPolicy::PpcRunMetrics
+                } else {
+                    systemless::runner::TextEditLineLayoutPolicy::CumulativeGuestMetrics
+                });
+                let horizontal = dest.1 - first.dest_rect.1 + geometry.left + line.positions[3] as i16;
+                let vertical = dest.0 - first.dest_rect.0 + geometry.top + geometry.ascent;
                 session.deliver_input(MacintoshInput::MouseDown { vertical, horizontal });
                 for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
                 session.deliver_input(MacintoshInput::MouseUp { vertical, horizontal });

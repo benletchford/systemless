@@ -314,6 +314,43 @@ mod tests {
         let runs = record.style_runs.as_ref().unwrap();
         assert_eq!((runs[0].start, runs[0].font, runs[0].size), (0, 3, 9));
         assert_eq!((runs[1].start, runs[1].face, runs[1].color), (2, 3, (0xffff, 0, 0)));
+        let mut layout = record.clone();
+        layout.dest_rect = (10, 20, 100, 200);
+        layout.view_rect = layout.dest_rect;
+        assert_eq!(layout.line_geometry(1, 80), Some(super::TextEditLineGeometry {
+            top: 24, left: 21, height: 18, ascent: 13,
+        }));
+        layout.justification = 1;
+        assert_eq!(layout.line_geometry(1, 80).unwrap().left, 70);
+        layout.justification = -1;
+        assert_eq!(layout.line_geometry(1, 80).unwrap().left, 120);
+        layout.line_layout_policy = super::TextEditLineLayoutPolicy::PpcRunMetrics;
+        // Native drawing resolves its run metrics instead of reading LHTable.
+        layout.line_metrics = Some(vec![(42, 40), (60, 59)]);
+        assert_eq!(layout.line_geometry(1, 80), Some(super::TextEditLineGeometry {
+            top: 28, left: 120, height: 18, ascent: 13,
+        }));
+        layout.active = true;
+        layout.selection = (2, 2);
+        layout.clips_line_offsets_to_visible_text = true;
+        assert_eq!(layout.caret_line(), Some((0, 1)), "styled native wrap caret trims CR");
+        layout.line_layout_policy = super::TextEditLineLayoutPolicy::CumulativeGuestMetrics;
+        layout.line_metrics = Some(vec![(14, 11), (18, 13)]);
+        layout.clips_line_offsets_to_visible_text = false;
+        layout.view_rect.0 = 25;
+        assert_eq!(layout.caret_line(), Some((1, 0)), "styled classic caret follows visible cumulative lines");
+        assert_eq!(layout.line_geometry(2, 80), None);
+        let mut scrolled = layout.clone();
+        scrolled.styled = false;
+        scrolled.line_count = 2001;
+        scrolled.line_height = 20;
+        scrolled.font_ascent = 11;
+        scrolled.dest_rect.0 = -20_000;
+        assert_eq!(scrolled.line_geometry(2000, 0).unwrap().top, 20_000,
+            "classic cumulative line placement includes the negative scroll origin before clamping");
+        scrolled.line_layout_policy = super::TextEditLineLayoutPolicy::PpcRunMetrics;
+        assert_eq!(scrolled.line_geometry(2000, 0).unwrap().top, 12_767,
+            "preserve native drawing's saturating indexed-height calculation");
         word(&mut memory, 0x41a, 2);
         let invalid = super::snapshot_guest_records(&[(0x100, 7)], &mut |address| memory.get(address as usize).copied());
         assert_eq!(invalid.records[0].text, record.text);
@@ -342,6 +379,26 @@ pub struct TextEditStyleRunSnapshot {
     pub size: i16,
     pub color: (u16, u16, u16),
     pub line_height: i16,
+    pub ascent: i16,
+}
+
+/// Line placement used by the owning CPU's TextEdit drawing path.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TextEditLineLayoutPolicy {
+    /// 68k advances by each canonical LHElement height.
+    CumulativeGuestMetrics,
+    /// PPC recomputes mixed-run metrics and places line i at i * its height.
+    PpcRunMetrics,
+}
+
+/// Canonical port-local line anchors, before the shared scene transform.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TextEditLineGeometry {
+    pub top: i16,
+    pub left: i16,
+    pub height: i16,
     pub ascent: i16,
 }
 
@@ -382,24 +439,86 @@ pub struct TextEditSnapshot {
     pub style_runs: Option<Vec<TextEditStyleRunSnapshot>>,
     /// Guest LHElement (height, ascent) for each displayed line.
     pub line_metrics: Option<Vec<(i16, i16)>>,
+    pub line_layout_policy: TextEditLineLayoutPolicy,
 }
 
 impl TextEditSnapshot {
+    fn metrics_for_line(&self, index: usize) -> Option<(i16, i16)> {
+        if index >= self.line_count { return None; }
+        let (height, ascent) = if !self.styled {
+            (self.line_height, self.font_ascent)
+        } else if self.line_layout_policy == TextEditLineLayoutPolicy::CumulativeGuestMetrics {
+            *self.line_metrics.as_ref()?.get(index)?
+        } else {
+            let starts = self.line_starts.as_ref()?;
+            let (start, end) = (*starts.get(index)?, *starts.get(index + 1)?);
+            self.text.get(start..end)?;
+            let runs = self.style_runs.as_ref()?;
+            if runs.first()?.start != 0 { return None; }
+            let style = |offset| runs.iter().rev().find(|run| run.start <= offset);
+            if start == end {
+                let run = style(start)?;
+                (run.line_height, run.ascent)
+            } else {
+                let mut height = 1;
+                let mut ascent = 0;
+                for (index, run) in runs.iter().enumerate() {
+                    let run_end = runs.get(index + 1).map_or(self.text.len(), |next| next.start);
+                    if run.start < end && run_end > start {
+                        height = height.max(run.line_height);
+                        ascent = ascent.max(run.ascent);
+                    }
+                }
+                (height, ascent)
+            }
+        };
+        (height > 0 && ascent >= 0).then_some((height, ascent))
+    }
+
+    /// Preserve CPU-specific line stacking and guest justification. Width is
+    /// the caller's guest-font advance of the trimmed visible line, never a
+    /// host-shaped width. Styled runs retain their own font and colour intent.
+    pub fn line_geometry(&self, index: usize, visible_width: i16) -> Option<TextEditLineGeometry> {
+        let (height, ascent) = self.metrics_for_line(index)?;
+        let mut top = self.dest_rect.0;
+        match self.line_layout_policy {
+            TextEditLineLayoutPolicy::CumulativeGuestMetrics if self.styled => {
+                for previous in 0..index {
+                    top = top.saturating_add(self.metrics_for_line(previous)?.0);
+                }
+            }
+            TextEditLineLayoutPolicy::CumulativeGuestMetrics => {
+                // Equivalent to repeated positive-height additions, including
+                // a deeply scrolled negative origin; clamp after adding it.
+                top = (i32::from(top) + i32::try_from(index).ok()?.saturating_mul(i32::from(height)))
+                    .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+            }
+            TextEditLineLayoutPolicy::PpcRunMetrics => {
+                top = top.saturating_add(i16::try_from(index).ok()?.saturating_mul(height));
+            }
+        }
+        Some(TextEditLineGeometry {
+            top, left: aligned_line_left(self.dest_rect.1, self.dest_rect.3,
+                visible_width, self.justification, 1), height, ascent,
+        })
+    }
+
     /// Select exactly one guest caret owner, retaining inclusive byte ends.
     /// Both draw paths choose the first matching line at a wrap boundary;
     /// the 68k path considers only lines intersecting viewRect and falls back
     /// to the last visible line. PPC trims spaces and line-break bytes before
     /// measuring, while 68k measures through the canonical line end.
     pub fn caret_line(&self) -> Option<(usize, usize)> {
-        if self.styled || !self.active || !self.caret_visible || self.selection.0 != self.selection.1 {
+        if !self.active || !self.caret_visible || self.selection.0 != self.selection.1 {
             return None;
         }
         let starts = self.line_starts.as_ref()?;
         let mut fallback = None;
         for (index, span) in starts.windows(2).enumerate() {
-            let top = i32::from(self.dest_rect.0) + index as i32 * i32::from(self.line_height);
+            let geometry = self.line_geometry(index, 0)?;
+            let top = i32::from(geometry.top);
             if !self.clips_line_offsets_to_visible_text
-                && (top + i32::from(self.line_height) <= i32::from(self.view_rect.0)
+                && (top + i32::from(geometry.height) <= i32::from(self.view_rect.0)
                     || top >= i32::from(self.view_rect.2)) {
                 continue;
             }
@@ -575,6 +694,7 @@ pub(crate) fn snapshot_guest_records(
                 styled,
                 style_runs,
                 line_metrics,
+                line_layout_policy: TextEditLineLayoutPolicy::CumulativeGuestMetrics,
             })
         })
         .collect();
