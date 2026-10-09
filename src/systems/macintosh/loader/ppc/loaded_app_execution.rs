@@ -276,17 +276,6 @@ impl PpcLoadedApp {
         let mut agl = std::mem::take(&mut self.agl);
         let gworld_pixel_states = self.gworld_pixel_states.shared_handle();
         let window_list = self.window_list.shared_handle();
-        if window_list.is_empty() {
-            window_list.with_mut(|windows| {
-                windows.extend(
-                    gworlds
-                        .iter()
-                        .rev()
-                        .map(|record| record.port)
-                        .filter(|port| !matches!(*port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)),
-                );
-            });
-        }
         let mut q3_objects = std::mem::take(&mut self.q3_objects);
         let mut q3_object_refs = std::mem::take(&mut self.q3_object_refs);
         let mut next_q3_object = self.next_q3_object;

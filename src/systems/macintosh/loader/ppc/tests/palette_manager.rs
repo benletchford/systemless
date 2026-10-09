@@ -575,6 +575,7 @@ use super::*;
                 pixels_locked: false,
                 pixels_no_purge: false,
             });
+            loaded.window_list.insert(0, window);
         }
         fn add_palette(loaded: &mut PpcLoadedApp, handle: u32, palette: u32, color: [u16; 3]) {
             loaded.memory.add_region(handle, vec![0; 4]);
@@ -721,6 +722,7 @@ use super::*;
                 pixels_locked: false,
                 pixels_no_purge: false,
             });
+            loaded.window_list.insert(0, window);
         }
         fn associate_palette(
             loaded: &mut PpcLoadedApp,
@@ -1405,6 +1407,7 @@ use super::*;
             pixels_locked: false,
             pixels_no_purge: false,
         });
+        loaded.window_list.push(window_ptr);
         loaded.cpu.gpr[3] = window_ptr;
 
         let probe = loaded.run_with_hle_imports(64);
