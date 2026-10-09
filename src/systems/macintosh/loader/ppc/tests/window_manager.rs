@@ -4296,6 +4296,14 @@ fn window_visibility_and_activation_commands_dispatch_with_canonical_evaluation(
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(loaded.cpu.gpr[3], w2);
+
+            // Blanking window takes precedence
+            loaded.draw_sprocket.blanking_window = Some(0x1234);
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], 0x1234);
         }
 
         // 5. SelectWindow
@@ -6006,6 +6014,16 @@ fn window_hit_testing_clipping_and_region_commands_dispatch_with_canonical_evalu
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(loaded.cpu.gpr[3], window);
+
+            // Null window handled gracefully
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = 1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
         }
 
         // 6. DragGrayRgn
@@ -6046,6 +6064,21 @@ fn window_hit_testing_clipping_and_region_commands_dispatch_with_canonical_evalu
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(loaded.cpu.gpr[3], 0x8000_8000);
+
+            // Null slop_rect_ptr: defaults to in-slop delta
+            loaded.process_input.set_mouse_state((70, 95), false);
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = (50 << 16) | 60;
+            loaded.cpu.gpr[5] = 0;
+            loaded.cpu.gpr[6] = 0;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], (20 << 16) | 35);
         }
     }
 }

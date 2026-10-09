@@ -3837,6 +3837,135 @@ pub fn evaluate_calc_vis_behind_parameters(
     }
 }
 
+/// Architecture-neutral parameter validation for DrawNew.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DrawNewParameters {
+    window_ptr: u32,
+    f_update: bool,
+}
+
+#[allow(dead_code)]
+impl DrawNewParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn f_update(&self) -> bool {
+        self.f_update
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_draw_new_parameters(window_ptr: u32, f_update: bool) -> Option<DrawNewParameters> {
+    if window_ptr == 0 {
+        None
+    } else {
+        Some(DrawNewParameters {
+            window_ptr,
+            f_update,
+        })
+    }
+}
+
+/// Architecture-neutral parameter validation for DragGrayRgn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DragGrayRgnParameters {
+    rgn_ptr: u32,
+    start_point: (i16, i16),
+    limit_rect_ptr: u32,
+    slop_rect_ptr: u32,
+    axis: i16,
+    action_proc: u32,
+}
+
+#[allow(dead_code)]
+impl DragGrayRgnParameters {
+    pub const fn rgn_ptr(&self) -> u32 {
+        self.rgn_ptr
+    }
+
+    pub const fn start_point(&self) -> (i16, i16) {
+        self.start_point
+    }
+
+    pub const fn start_v(&self) -> i16 {
+        self.start_point.0
+    }
+
+    pub const fn start_h(&self) -> i16 {
+        self.start_point.1
+    }
+
+    pub const fn limit_rect_ptr(&self) -> u32 {
+        self.limit_rect_ptr
+    }
+
+    pub const fn slop_rect_ptr(&self) -> u32 {
+        self.slop_rect_ptr
+    }
+
+    pub const fn axis(&self) -> i16 {
+        self.axis
+    }
+
+    pub const fn action_proc(&self) -> u32 {
+        self.action_proc
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_drag_gray_rgn_parameters(
+    rgn_ptr: u32,
+    start_pt: u32,
+    limit_rect_ptr: u32,
+    slop_rect_ptr: u32,
+    axis: i16,
+    action_proc: u32,
+) -> DragGrayRgnParameters {
+    let start_v = (start_pt >> 16) as u16 as i16;
+    let start_h = start_pt as u16 as i16;
+    DragGrayRgnParameters {
+        rgn_ptr,
+        start_point: (start_v, start_h),
+        limit_rect_ptr,
+        slop_rect_ptr,
+        axis,
+        action_proc,
+    }
+}
+
+#[allow(dead_code)]
+pub const fn evaluate_drag_gray_rgn_delta(
+    in_slop: bool,
+    start_v: i16,
+    start_h: i16,
+    mouse_v: i16,
+    mouse_h: i16,
+) -> u32 {
+    if in_slop {
+        let delta_v = mouse_v.wrapping_sub(start_v);
+        let delta_h = mouse_h.wrapping_sub(start_h);
+        ((delta_v as u16 as u32) << 16) | (delta_h as u16 as u32)
+    } else {
+        0x8000_8000
+    }
+}
+
+/// Architecture-neutral resolution for FrontWindow.
+#[allow(dead_code)]
+pub const fn evaluate_front_window(
+    blanking_window: Option<u32>,
+    front_visible_window: Option<u32>,
+) -> u32 {
+    if let Some(blanking) = blanking_window {
+        blanking
+    } else if let Some(front) = front_visible_window {
+        front
+    } else {
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -5179,5 +5308,41 @@ mod tests {
         let calc_vis = evaluate_calc_vis_behind_parameters(0x11000, 0x12000);
         assert_eq!(calc_vis.window_ptr(), 0x11000);
         assert_eq!(calc_vis.clobbered_rgn_ptr(), 0x12000);
+    }
+
+    #[test]
+    fn window_frame_redraw_drag_gray_rgn_and_front_window_evaluation() {
+        // DrawNew
+        let draw_new = evaluate_draw_new_parameters(0x1000, true).unwrap();
+        assert_eq!(draw_new.window_ptr(), 0x1000);
+        assert!(draw_new.f_update());
+        assert!(evaluate_draw_new_parameters(0, true).is_none());
+
+        let draw_new_no_up = evaluate_draw_new_parameters(0x1000, false).unwrap();
+        assert!(!draw_new_no_up.f_update());
+
+        // DragGrayRgn
+        let start_pt = (50u32 << 16) | 70u32;
+        let drag_params = evaluate_drag_gray_rgn_parameters(0x2000, start_pt, 0x3000, 0x4000, 0, 0x5000);
+        assert_eq!(drag_params.rgn_ptr(), 0x2000);
+        assert_eq!(drag_params.start_v(), 50);
+        assert_eq!(drag_params.start_h(), 70);
+        assert_eq!(drag_params.start_point(), (50, 70));
+        assert_eq!(drag_params.limit_rect_ptr(), 0x3000);
+        assert_eq!(drag_params.slop_rect_ptr(), 0x4000);
+        assert_eq!(drag_params.axis(), 0);
+        assert_eq!(drag_params.action_proc(), 0x5000);
+
+        // evaluate_drag_gray_rgn_delta
+        let delta_in_slop = evaluate_drag_gray_rgn_delta(true, 50, 70, 60, 85);
+        assert_eq!(delta_in_slop, (10u32 << 16) | 15u32);
+
+        let delta_out_slop = evaluate_drag_gray_rgn_delta(false, 50, 70, 200, 300);
+        assert_eq!(delta_out_slop, 0x8000_8000);
+
+        // FrontWindow
+        assert_eq!(evaluate_front_window(Some(0x5000), Some(0x6000)), 0x5000);
+        assert_eq!(evaluate_front_window(None, Some(0x6000)), 0x6000);
+        assert_eq!(evaluate_front_window(None, None), 0);
     }
 }

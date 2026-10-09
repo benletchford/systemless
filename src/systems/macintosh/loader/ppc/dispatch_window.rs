@@ -741,10 +741,11 @@ pub(super) fn dispatch_window_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::FrontWindow => {
-            let window = draw_sprocket
-                .blanking_window
-                .or_else(|| ppc_front_visible_process_window(memory, window_list))
-                .unwrap_or(0);
+            let front_visible = ppc_front_visible_process_window(memory, window_list);
+            let window = crate::window_manager::evaluate_front_window(
+                draw_sprocket.blanking_window,
+                front_visible,
+            );
             Some(PpcImportAction::Return(window))
         }
         PpcImportDispatcherTarget::SetWinColor => {
@@ -1114,51 +1115,53 @@ pub(super) fn dispatch_window_import(
         }
         PpcImportDispatcherTarget::SaveOld => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::DrawNew => {
-            let window = cpu.gpr[3];
-            let f_update = cpu.gpr[4] != 0;
-            if window != 0 && f_update {
-                ppc_redraw_visible_window_frame(
-                    memory,
-                    gworlds,
-                    window_list,
-                    window,
-                    toolbox_startup.host_menu_bar_hidden,
-                );
-                if let Some(content) = ppc_window_global_content_bounds(memory, gworlds, window) {
-                    ppc_union_window_update_rect(memory, window, content);
-                    ppc_enqueue_window_update_event(event_queue, window, tick_count, input);
+            if let Some(params) =
+                crate::window_manager::evaluate_draw_new_parameters(cpu.gpr[3], cpu.gpr[4] != 0)
+            {
+                if params.f_update() {
+                    let window = params.window_ptr();
+                    ppc_redraw_visible_window_frame(
+                        memory,
+                        gworlds,
+                        window_list,
+                        window,
+                        toolbox_startup.host_menu_bar_hidden,
+                    );
+                    if let Some(content) = ppc_window_global_content_bounds(memory, gworlds, window) {
+                        ppc_union_window_update_rect(memory, window, content);
+                        ppc_enqueue_window_update_event(event_queue, window, tick_count, input);
+                    }
                 }
             }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::DragGrayRgn => {
-            let _rgn = cpu.gpr[3];
-            let start_pt = cpu.gpr[4];
-            let _limit_rect_ptr = cpu.gpr[5];
-            let slop_rect_ptr = cpu.gpr[6];
-            let _axis = cpu.gpr[7] as i16;
-            let _action_proc = cpu.gpr[8];
-
-            let start_v = (start_pt >> 16) as u16 as i16;
-            let start_h = start_pt as u16 as i16;
+            let params = crate::window_manager::evaluate_drag_gray_rgn_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4],
+                cpu.gpr[5],
+                cpu.gpr[6],
+                cpu.gpr[7] as u16 as i16,
+                cpu.gpr[8],
+            );
             let mouse_v = input.mouse_v;
             let mouse_h = input.mouse_h;
 
-            let in_slop = if slop_rect_ptr != 0 {
-                ppc_read_rect(memory, slop_rect_ptr)
+            let in_slop = if params.slop_rect_ptr() != 0 {
+                ppc_read_rect(memory, params.slop_rect_ptr())
                     .map(|rect| ppc_point_in_rect((mouse_v, mouse_h), rect))
                     .unwrap_or(true)
             } else {
                 true
             };
 
-            let result = if in_slop {
-                let delta_v = mouse_v.wrapping_sub(start_v);
-                let delta_h = mouse_h.wrapping_sub(start_h);
-                ((delta_v as u16 as u32) << 16) | (delta_h as u16 as u32)
-            } else {
-                0x8000_8000
-            };
+            let result = crate::window_manager::evaluate_drag_gray_rgn_delta(
+                in_slop,
+                params.start_v(),
+                params.start_h(),
+                mouse_v,
+                mouse_h,
+            );
             Some(PpcImportAction::Return(result))
         }
         PpcImportDispatcherTarget::LegacyWindow(operation) => ppc_dispatch_legacy_window(
