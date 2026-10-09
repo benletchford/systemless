@@ -1684,3 +1684,21 @@ full application-wide modal isolation remains a separate readiness requirement. 
 File dialogs; the duplicate-error transition is established by the native replay.
 Capture identities were verified against the completed manifest; the native runs
 used a live guest clock (68k) and 60.15 Hz wall-clock pacing (PPC), with audio off.
+
+Standard File modal boundaries now suppress semantic activation of background
+Control Manager controls and Dialog Manager items even when their guest owning
+window remains active. The worker explicitly rejects queued document/dialog
+activations while a Standard File snapshot exists. GPUI removes background
+button/choice focus eligibility and accessibility click actions, and suppresses
+background dialog edit focus presentation. The presentation regression supplies
+an otherwise-active document button, verifies loss of focus eligibility during
+Standard File, and verifies restoration after dismissal. That test and the
+six-scenario New Folder workflow across all three guest modes pass. This does
+not yet qualify menu accessibility, standalone TextEdit/list semantics, native
+VoiceOver navigation or every nested custom-dialog combination.
+All nine existing dialog regressions also pass after the modal-boundary change,
+including modeless lifecycle, nested modality, semantic checkbox activation,
+and physical dialog-item input. Menu handling must retain guest-permitted
+commands: Macintosh Toolbox Essentials (1992), “Menus in Dialog Boxes” explains
+that System 7 modal dialogs may permit selected Edit and Help commands rather
+than disabling the entire menu bar.
