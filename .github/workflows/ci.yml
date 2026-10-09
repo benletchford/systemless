@@ -73,7 +73,7 @@ jobs:
           save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') }}
 
       # Compile everything (lib + the GUI binary, all features) on each OS so
-      # platform-specific breakage in winit/softbuffer/cpal is caught early.
+      # GPUI/macOS and headless/audio platform breakage is caught early.
       - name: Build all targets
         run: cargo build --all-targets --all-features
 

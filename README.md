@@ -106,40 +106,19 @@ Fat applications launch their native PowerPC slice by default. Pass
 `--prefer-68k` to run the classic slice for compatibility testing;
 `--prefer-powerpc` remains accepted for explicit PowerPC selection.
 
-Windows uses D3D11 presentation by default, with automatic software fallback if
-GPU initialization or presentation fails. Set `SYSTEMLESS_D3D11=0` before launching
-to force software presentation.
+The `systemless` desktop command now uses GPUI Kit by default on this branch.
+The former winit, software-buffer, Metal and D3D presentation frontends have
+been removed. This branch remains a draft production migration: switching the
+default does not establish release readiness. GPUI desktop presentation currently
+supports macOS; other hosts can run headlessly. Windows, Linux and browser GPUI
+presentation remain unqualified.
 
-The experimental desktop execution owner can be selected with
-`SYSTEMLESS_DESKTOP_RUNTIME=thread`. It constructs and runs the guest on a
-separate thread while the window consumes complete owned snapshots. Closing the
-window requests an asynchronous save flush and runtime shutdown. On macOS,
-native Quit also defers termination until that owner has flushed saves and
-destroyed the guest; its completion runs in AppKit’s termination modal loop.
-Native application identity inspection also runs on the owner while a loading
-window remains available; the host relaunches only after that owner finishes.
-The desktop suite passes 128 tests, including owner-thread lifetime, stalled
-initialization, ordered input, shutdown and save persistence, with debugger
-support enabled. An offscreen Metal text/dialog capture also passes. Available
-macOS interactive checks cover launch, gameplay, application-menu tracking,
-window zoom/resizing and a successful AppKit Quit. A controlled owner stall also
-preserved native menu and resize response, with
-AppKit Quit completing after owner release. Native pilot save/restart checks
-passed; broader input, fullscreen-exit and cross-display/platform coverage
-remain limited. The default remains the same-thread
-compatibility path; leave the variable unset to use it.
-
-For intermittent desktop stalls, set `SYSTEMLESS_PROFILE_FRAMES=1` when launching.
-The terminal reports CPU, compositing, outline rendering and Metal drawable-wait
-phases that take at least 50 ms. During normal gameplay, drawable waits on the
-presentation worker do not block the guest CPU or input handling.
-
-For distributions below the stall threshold, set `SYSTEMLESS_MEASURE_FRAMES=1`.
-This opt-in measurement reports p50/p95/p99 and maximum milliseconds for each
-host phase in non-overlapping batches of 600 samples, with bounded storage.
-Short runs may not fill a batch. Measurement adds clock and reporting overhead;
-use the same setting for both sides of a comparison and record guest progress
-separately. These host phase timings do not measure visible input latency.
+Guest Toolbox state remains authoritative. Recognized system UI is presented by
+GPUI; custom/application-owned drawing retains guest pixels. The full scene stays
+in place when hidden guest menus reveal. Audio, saves and input use the existing
+Macintosh session services. Guest application identity and Dock artwork remain
+macOS host services. See [GPUI_COVERAGE.md](GPUI_COVERAGE.md) for the supported
+slices, tests, typography policy and remaining production qualification gaps.
 
 ### Headless replays
 
@@ -327,25 +306,12 @@ systemless --ui-theme classic-system7 path/to/game.sit
 systemless --fullscreen path/to/game.sit
 ```
 
-On macOS, desktop windows open at the guest’s logical resolution: an 800×600
-guest gets an 800×600-point content area (1600×1200 backing pixels on a 2× Retina
-display). Oversized windows shrink to fit the monitor. Other platforms use an
-automatic display-sized window. Games keep their aspect ratio, and windows
-remain manually resizable. Use `--display-scale` with an
-integer from 1 through 8 to override automatic sizing with an exact physical
-guest-to-host pixel ratio (`1` selects 1:1). `--fullscreen` starts the guest in a borderless fullscreen space.
-On systems where macOS selects direct scan-out for the fullscreen surface this
-measurably reduced pointer-to-screen latency in testing (see issue #1050); the
-benefit depends on the machine and compositor state and is not guaranteed.
-
-The default `classic-system7` guest chrome uses classic Macintosh presentation,
-control geometry, and metrics. The optional Systemless theme remains available
-with `--ui-theme systemless-default`.
-
-The desktop runner uses the canonical machine profile automatically. On macOS,
-guest menus are mirrored into the native menu bar and the guest's application
-name and icon are integrated with the Dock. Other platforms render the classic
-menu bar according to the guest application's own visibility state.
+The GPUI host preserves the full guest scene with aspect-fit presentation and
+manual window resizing. `--display-scale` sets the initial window scale;
+`--fullscreen` explicitly starts fullscreen. Guest chrome themes still govern
+fallback guest drawing, while GPUI presents recognized standard system UI.
+Classic Macintosh font fidelity and modern host typography require explicit
+metric/layout qualification; current themed text is not yet fully qualified.
 
 Desktop saves are stored next to the launched archive under
 `.systemless/saves/<archive-name>/`. For example, launching
@@ -473,8 +439,9 @@ The off-by-default `test-support` feature exposes `scripted_traces`, the
 deterministic trap-replay test scaffolding. It is kept out of the published
 public API; enable it only when running tests.
 
-The default `gui` feature enables the desktop runner dependencies: `winit`,
-`softbuffer`, and `cpal`. Disable default features for headless library builds.
+The default `gui` feature enables GPUI Kit and native audio. Disable default
+features for headless library builds. `gpui-demo` is a compatibility alias for
+the same frontend; it does not select an alternative presentation system.
 
 On Linux, the default GUI/audio build also needs ALSA development files for
 `cpal`'s ALSA backend. Install `pkg-config` plus your distribution's ALSA dev

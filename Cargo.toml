@@ -46,9 +46,6 @@ ttf-parser = "0.25.1"
 skrifa = "0.43.2"
 zeno = "0.3.3"
 
-# Windowing (optional, for graphical runner)
-winit = { version = "0.30", optional = true }
-softbuffer = { version = "0.4", optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "gif", "tga", "jpeg"] }
 cpal = { version = "0.15", optional = true }
 stuffit = "0.3.0"
@@ -61,17 +58,7 @@ libm = "0.2"
 
 [features]
 default = ["gui", "jit"]
-gui = [
-    "winit",
-    "softbuffer",
-    "native-audio",
-    "dep:objc2",
-    "dep:objc2-foundation",
-    "dep:objc2-app-kit",
-    "dep:objc2-metal",
-    "dep:objc2-quartz-core",
-    "dep:windows",
-]
+gui = ["dep:gpui-kit", "native-audio", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit"]
 # Shared host audio output for native frontends.
 native-audio = ["cpal"]
 # Compile hot 68K traces to native code. Embeddings constrained by executable-
@@ -85,47 +72,17 @@ test-support = []
 debug = []
 # Debugger socket transport (Unix-domain sockets). Implies `debug`.
 debug-server = ["debug"]
-# Experimental standalone guest menu presentation demo.
-gpui-demo = ["dep:gpui-kit", "native-audio"]
+# Compatibility alias for the standalone GPUI capture harness.
+gpui-demo = ["gui"]
 # Host-control interaction tests without adding GPUI's test harness to the
 # ordinary demo build.
 gpui-demo-test = ["gpui-demo", "gpui-kit/test-support", "debug"]
 
-[target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.54", optional = true, features = [
-    "Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc",
-    "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common",
-    "Win32_System_Threading", "Win32_Security",
-    "Win32_UI_WindowsAndMessaging",
-] }
-
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui-kit = { version = "=0.7.1", optional = true }
 objc2 = { version = "0.5.2", optional = true }
-objc2-app-kit = { version = "0.2.2", optional = true, features = ["NSApplication", "NSBitmapImageRep", "NSCursor", "NSCell", "NSGraphics", "NSImage", "NSImageRep", "NSMenu", "NSMenuItem"] }
-objc2-foundation = { version = "0.2.2", optional = true, features = ["NSDate", "NSGeometry", "NSObject", "NSProcessInfo", "NSRunLoop", "NSString", "NSTimer"] }
-objc2-metal = { version = "0.2.2", optional = true, features = [
-    "MTLBuffer",
-    "MTLCommandBuffer",
-    "MTLCommandEncoder",
-    "MTLCommandQueue",
-    "MTLDevice",
-    "MTLDrawable",
-    "MTLLibrary",
-    "MTLPixelFormat",
-    "MTLRenderCommandEncoder",
-    "MTLRenderPass",
-    "MTLRenderPipeline",
-    "MTLResource",
-    "MTLTexture",
-    "MTLTypes",
-] }
-objc2-quartz-core = { version = "0.2.2", optional = true, features = [
-    "CATransaction",
-    "CALayer",
-    "CAMetalLayer",
-    "objc2-metal",
-] }
+objc2-app-kit = { version = "0.2.2", optional = true, features = ["NSApplication", "NSBitmapImageRep", "NSGraphics", "NSImage", "NSImageRep"] }
+objc2-foundation = { version = "0.2.2", optional = true, features = ["NSGeometry", "NSObject", "NSString"] }
 
 [[bin]]
 name = "systemless"

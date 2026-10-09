@@ -1,4 +1,22 @@
-//! Opt-in macOS GPUI Kit experiment for live guest menus.
+//! Shared macOS GPUI frontend and headless presentation harness.
+
+pub(crate) struct LaunchOptions {
+    pub game: std::path::PathBuf,
+    pub prefer_powerpc: bool,
+    pub screen_depth: Option<u16>,
+    pub addressing_24_bit: bool,
+    pub arrows_as_numpad: bool,
+    pub display_scale: Option<u32>,
+    pub ui_theme: systemless::ui_theme::UiThemeId,
+    pub fullscreen: bool,
+    pub debug_socket: Option<std::path::PathBuf>,
+    pub native_integrations: bool,
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn launch(options: LaunchOptions) {
+    desktop::launch(options);
+}
 
 #[cfg(target_os = "macos")]
 fn main() {
@@ -10,6 +28,10 @@ fn main() {
     eprintln!("The GPUI menu demo currently supports macOS only.");
     std::process::exit(1);
 }
+
+#[cfg(target_os = "macos")]
+#[path = "desktop/cpu_frame.rs"]
+mod cpu_frame;
 
 #[cfg(target_os = "macos")]
 #[path = "gpui_demo_text.rs"]
@@ -48,8 +70,20 @@ mod choices;
 mod activation;
 
 #[cfg(target_os = "macos")]
+#[path = "gpui_demo_clipboard.rs"]
+mod clipboard;
+
+#[cfg(target_os = "macos")]
 #[path = "desktop/desktop_save_store.rs"]
 mod desktop_save_store;
+
+#[cfg(target_os = "macos")]
+#[path = "desktop/native_application.rs"]
+mod native_application;
+
+#[cfg(all(feature = "debug-server", unix))]
+#[path = "desktop/debug_server.rs"]
+mod debug_server;
 
 #[cfg(target_os = "macos")]
 mod desktop {
@@ -84,13 +118,15 @@ mod desktop {
     include!("gpui_demo_menu.rs");
 
     #[derive(Parser)]
-    #[command(about = "Experimental GPUI Kit guest menu runner")]
+    #[command(about = "GPUI Kit Macintosh runner")]
     struct Args {
         game: PathBuf,
         #[arg(long)]
         prefer_powerpc: bool,
         #[arg(long, value_parser = parse_depth)]
         screen_depth: Option<u16>,
+        #[arg(skip)]
+        options: Option<super::LaunchOptions>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_about_alert: Option<PathBuf>,
@@ -296,6 +332,7 @@ mod desktop {
     }
 
     enum Command {
+        ImportClipboard(Vec<u8>),
         Foreground(bool),
         Menu(i16, i16, u32, u64),
         Input(MacintoshInput),
@@ -322,6 +359,7 @@ mod desktop {
 
     #[derive(Default)]
     struct Update {
+        identity: Option<Arc<game::ApplicationIdentity>>,
         menus: GuestMenuSnapshot,
         menu_presented: bool,
         menu_height: u16,
@@ -362,13 +400,19 @@ mod desktop {
         host_services: bool,
     ) {
         let result = std::panic::catch_unwind(|| {
-            let mut session = MacintoshSession::new(true, args.screen_depth);
+            let mut session = MacintoshSession::new(
+                !args.options.as_ref().is_some_and(|options| options.addressing_24_bit),
+                args.screen_depth,
+            );
+            if let Some(options) = args.options.as_ref() {
+                session.runner_mut().set_ui_theme(options.ui_theme);
+            }
             session
                 .runner_mut()
                 .set_prefer_powerpc_executables(args.prefer_powerpc);
             let app = session.load_path(&args.game)?;
             let mut save_store = host_services.then(|| {
-                let mut store = crate::desktop_save_store::DesktopSaveStore::for_loaded_archive(
+                let mut store = super::desktop_save_store::DesktopSaveStore::for_loaded_archive(
                     &args.game, session.runner_mut(),
                 );
                 for file in store.load_saved_files() {
@@ -377,6 +421,11 @@ mod desktop {
                 store
             });
             session.initialize(&app);
+            let identity = host_services.then(|| game::loaded_application_identity(session.runner()))
+                .flatten().filter(|_| args.options.as_ref().is_none_or(|options| options.native_integrations)).map(Arc::new);
+            #[cfg(feature = "debug-server")]
+            let mut debug_server = args.options.as_ref().and_then(|options| options.debug_socket.as_ref())
+                .map(|path| super::debug_server::DebugServer::bind(path).expect("bind debugger socket"));
             // Keep the device and its stream on the guest worker, matching
             // the ordinary desktop runner's stereo delivery and lifetime.
             if host_services {
@@ -401,6 +450,10 @@ mod desktop {
             let mut pointer_down = false;
             loop {
                 let start = Instant::now();
+                #[cfg(feature = "debug-server")]
+                if let Some(server) = debug_server.as_mut() {
+                    server.pump(session.runner_mut());
+                }
                 loop {
                     match commands.try_recv() {
                         Ok(Command::CancelWheel) => {
@@ -464,6 +517,9 @@ mod desktop {
                                 activation = super::activation::ControlActivation::begin_file(&mut session, id, generation, action);
                             }
                         }
+                        Ok(Command::ImportClipboard(text)) => {
+                            session.import_clipboard_text(text);
+                        }
                         Ok(Command::Foreground(active)) => {
                             session.request_foreground(active);
                         }
@@ -513,20 +569,7 @@ mod desktop {
                     10_000
                 };
                 let cpu_deadline = start + Duration::from_millis(12);
-                let mut steps = 0;
-                while session.runner().guest_tick() < deadline
-                    && steps < game::MAX_INSTRUCTIONS_PER_FRAME
-                    && Instant::now() < cpu_deadline
-                {
-                    let remaining = game::MAX_INSTRUCTIONS_PER_FRAME - steps;
-                    let (executed, running) = session
-                        .runner_mut()
-                        .run_gui_cpu_slice(batch.min(remaining), deadline);
-                    steps += executed;
-                    if executed == 0 || !running || session.runner().is_ui_tracking_active() {
-                        break;
-                    }
-                }
+                super::cpu_frame::advance(session.runner_mut(), batch, deadline, cpu_deadline);
                 session.runner_mut().mix_gui_audio_slice(367);
                 if session.runner().has_pending_sound_work()
                     && Instant::now() < cpu_deadline
@@ -554,6 +597,7 @@ mod desktop {
                 let text_edits = session.runner_mut().text_edit_snapshot().records;
                 let standard_file = session.runner_mut().standard_file_snapshot();
                 *updates.lock().unwrap() = Some(Update {
+                    identity: identity.clone(),
                     menus,
                     menu_presented,
                     menu_height,
@@ -567,7 +611,7 @@ mod desktop {
                     standard_file,
                     frame,
                     status: format!(
-                        "{architecture} · {} · GPUI Kit UI demo",
+                        "{architecture} · {}",
                         if running { "Running" } else { "Guest stopped" }
                     ),
                 });
@@ -626,12 +670,46 @@ mod desktop {
         wheel: super::scroll::WheelAccumulator,
         _window_activation: Option<Subscription>,
         host_active: Option<bool>,
+        host_clipboard: super::clipboard::HostClipboard,
+        arrows_as_numpad: bool,
+        application_identity: Option<Arc<game::ApplicationIdentity>>,
         _focus_out: Option<Subscription>,
         _focus_lost: Option<Subscription>,
         _poll: Task<()>,
     }
 
     impl Demo {
+        fn map_arrow(&self, key: u8, character: u8) -> (u8, u8) {
+            if self.arrows_as_numpad {
+                match key {
+                    0x7b => (0x56, b'4'),
+                    0x7c => (0x58, b'6'),
+                    0x7d => (0x54, b'2'),
+                    0x7e => (0x5b, b'8'),
+                    _ => (key, character),
+                }
+            } else {
+                (key, character)
+            }
+        }
+
+        fn import_host_clipboard(&mut self, cx: &App) {
+            // ClipboardItem::text also synthesizes filenames for ExternalPaths.
+            // Only actual string entries are part of this text-only bridge.
+            let text = cx.read_from_clipboard().and_then(|item| {
+                let mut text = None::<String>;
+                for entry in item.entries() {
+                    if let ClipboardEntry::String(value) = entry {
+                        text.get_or_insert_with(String::new).push_str(value.text());
+                    }
+                }
+                text
+            });
+            if let Some(text) = self.host_clipboard.changed_text(text) {
+                let _ = self.commands.send(Command::ImportClipboard(text));
+            }
+        }
+
         fn new(
             commands: mpsc::Sender<Command>,
             updates: Arc<Mutex<Option<Update>>>,
@@ -645,6 +723,15 @@ mod desktop {
                 if this
                     .update(cx, |this, cx| {
                         if let Some(update) = update {
+                            let same_identity = match (&this.application_identity, &update.identity) {
+                                (Some(old), Some(new)) => Arc::ptr_eq(old, new),
+                                (None, None) => true,
+                                _ => false,
+                            };
+                            if !same_identity {
+                                super::native_application::set_application_icon(update.identity.as_ref().and_then(|identity| identity.icon.as_ref()));
+                                this.application_identity = update.identity;
+                            }
                             this.menus = update.menus;
                             this.menu_presented = update.menu_presented;
                             this.menu_height = update.menu_height;
@@ -703,7 +790,7 @@ mod desktop {
                 prepared_buttons: None,
                 logo: Arc::new(Image::from_bytes(
                     ImageFormat::Svg,
-                    include_bytes!("../../www/assets/icons/favicon.svg").to_vec(),
+                    include_bytes!("assets/systemless-logo.svg").to_vec(),
                 )),
                 width: 640,
                 height: 460,
@@ -722,6 +809,9 @@ mod desktop {
                 wheel: super::scroll::WheelAccumulator::default(),
                 _window_activation: None,
                 host_active: None,
+                host_clipboard: Default::default(),
+                arrows_as_numpad: false,
+                application_identity: None,
                 _focus_out: None,
                 _focus_lost: None,
                 _poll: poll,
@@ -915,6 +1005,9 @@ mod desktop {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             if self._window_activation.is_none() {
                 self.host_active = Some(window.is_window_active());
+                if window.is_window_active() {
+                    self.import_host_clipboard(cx);
+                }
                 if !window.is_window_active() {
                     let _ = self.commands.send(Command::Foreground(false));
                 }
@@ -923,6 +1016,8 @@ mod desktop {
                     if this.host_active.replace(active) != Some(active) {
                         if !active {
                             this.release_host_input();
+                        } else {
+                            this.import_host_clipboard(cx);
                         }
                         let _ = this.commands.send(Command::Foreground(active));
                         cx.notify();
@@ -2576,6 +2671,7 @@ mod desktop {
                     this.sync_host_modifiers(event.keystroke.modifiers);
                     if event.keystroke.modifiers.platform {
                         if let Some((mac_key, character)) = guest_key(&event.keystroke) {
+                            let (mac_key, character) = this.map_arrow(mac_key, character);
                             this.press_host_key(mac_key, character);
                             cx.stop_propagation();
                         }
@@ -2585,12 +2681,14 @@ mod desktop {
                     // callback queues guest input separately after validation.
                     if this.focus.is_focused(window) {
                         if let Some((mac_key, character)) = guest_key(&event.keystroke) {
+                            let (mac_key, character) = this.map_arrow(mac_key, character);
                             this.press_host_key(mac_key, character);
                         }
                     }
                 }))
                 .on_key_up(cx.listener(|this, event: &KeyUpEvent, _, _| {
                     if let Some(mac_key) = guest_virtual_key(&event.keystroke.key.to_ascii_lowercase()) {
+                        let (mac_key, _) = this.map_arrow(mac_key, 0);
                         this.release_host_key(mac_key);
                     }
                     this.sync_host_modifiers(event.keystroke.modifiers);
@@ -3886,7 +3984,7 @@ mod desktop {
                 demo.menu_presented = menu_presented;
                 demo.menu_height = menu_height;
                 demo.status = format!(
-                    "{} · Running · GPUI Kit UI demo",
+                    "{} · Running",
                     if prefer_powerpc { "PowerPC" } else { "68k" }
                 );
                 demo.image = Some(Arc::new(RenderImage::new(vec![image::Frame::new(
@@ -3905,7 +4003,18 @@ mod desktop {
     }
 
     pub(super) fn main() {
-        let args = Args::parse();
+        run(Args::parse());
+    }
+
+    pub(super) fn launch(options: super::LaunchOptions) {
+        let mut args = Args::parse_from([std::ffi::OsString::from("systemless"), options.game.clone().into_os_string()]);
+        args.prefer_powerpc = options.prefer_powerpc;
+        args.screen_depth = options.screen_depth;
+        args.options = Some(options);
+        run(args);
+    }
+
+    fn run(args: Args) {
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_custom_menu_fallback.as_ref() {
             capture_custom_menu_fallback(output);
@@ -4386,6 +4495,12 @@ mod desktop {
             capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileNewFolderSelectedComposed);
             return;
         }
+        let fullscreen = args.options.as_ref().is_some_and(|options| options.fullscreen);
+        let arrows_as_numpad = args.options.as_ref().is_some_and(|options| options.arrows_as_numpad);
+        let display_scale = args.options.as_ref().and_then(|options| options.display_scale);
+        let profile = systemless::machine_profile::reference_machine_profile();
+        let window_size = (f32::from(profile.screen_width) * display_scale.unwrap_or(1) as f32,
+            f32::from(profile.screen_height) * display_scale.unwrap_or(1) as f32);
         let (commands, receiver) = mpsc::channel();
         let updates = Arc::new(Mutex::new(None));
         let worker_updates = updates.clone();
@@ -4412,11 +4527,11 @@ mod desktop {
                 .detach();
                 gpui_kit::open_window(
                     WindowOptions {
-                        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                            None,
-                            size(px(800.), px(616.)),
-                            cx,
-                        ))),
+                        window_bounds: Some(if fullscreen {
+                            WindowBounds::Fullscreen(Bounds::centered(None, size(px(window_size.0), px(window_size.1)), cx))
+                        } else {
+                            WindowBounds::Windowed(Bounds::centered(None, size(px(window_size.0), px(window_size.1)), cx))
+                        }),
                         titlebar: Some(TitlebarOptions {
                             title: Some("Systemless".into()),
                             ..Default::default()
@@ -4425,13 +4540,21 @@ mod desktop {
                     },
                     cx,
                     |window, cx| {
-                        let view = cx.new(|cx| Demo::new(commands, updates, cx));
+                        if display_scale.is_some() && !fullscreen {
+                            let dpi = window.scale_factor().max(1.);
+                            window.resize(size(px(window_size.0 / dpi), px(window_size.1 / dpi)));
+                        }
+                        let view = cx.new(|cx| {
+                            let mut view = Demo::new(commands, updates, cx);
+                            view.arrows_as_numpad = arrows_as_numpad;
+                            view
+                        });
                         let focus = view.read(cx).focus.clone();
                         focus.focus(window, cx);
                         view
                     },
                 )
-                .expect("open GPUI demo window");
+                .expect("open GPUI window");
                 cx.activate(true);
             });
     }
@@ -4613,7 +4736,7 @@ mod desktop {
                 demo.menu_presented = menu_presented;
                 demo.menu_height = menu_height;
                 demo.status = format!(
-                    "{} · Running · GPUI Kit UI demo",
+                    "{} · Running",
                     if prefer_powerpc { "PowerPC" } else { "68k" }
                 );
                 demo.image = Some(Arc::new(RenderImage::new(vec![image::Frame::new(
@@ -4833,6 +4956,7 @@ mod desktop {
                             .join("tests/toolbox-showcase/toolbox-showcase.sit"),
                         prefer_powerpc: powerpc,
                         screen_depth: Some(8),
+                        options: None,
                         capture_about_alert: None,
                         capture_modal_dialog: None,
                         capture_modal_dialog_checked: None,
@@ -8170,10 +8294,10 @@ mod desktop {
                 assert_eq!(windows[0].guest_id, dialog.guest_id);
                 assert_eq!(windows[0].definition_id, Some(4));
                 assert!(dialog.active);
-                assert!(!crate::frames::dialog_item_pieces(
+                assert!(!super::super::frames::dialog_item_pieces(
                     &[dialog.clone()],
                     &windows,
-                    crate::frames::Rect::from((0, 0, 600, 800)),
+                    super::super::frames::Rect::from((0, 0, 600, 800)),
                 )
                 .is_empty());
 
@@ -8371,6 +8495,63 @@ mod desktop {
                     }),
                     "typing must resume at the retained selection: PPC={powerpc}, depth={depth:?}, expected={expected:?}, actual={:?}, event={:?}", session.runner_mut().text_edit_snapshot(), session.runner().event_manager_snapshot()
                 );
+            }
+        }
+
+        #[test]
+        fn showcase_host_clipboard_resume_converts_private_scrap() {
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 7));
+                wait_for_menu(&mut session, 129, 7, true);
+                settle(&mut session);
+                let before = session.runner_mut().text_edit_snapshot();
+                let mut clipboard = super::super::clipboard::HostClipboard::default();
+                let host = Some("café\r\nsecond line".to_owned());
+                let expected = b"caf\x8e\rsecond line".to_vec();
+                for changed in [true, false] {
+                    session.request_foreground(false);
+                    let mut saw_suspend = false;
+                    assert!((0..10_000).any(|_| {
+                        session.runner_mut().run_steps(100, None);
+                        saw_suspend |= session.runner().event_manager_snapshot().last_record
+                            .is_some_and(|event| event.what == 15 && event.message == 0x0100_0000);
+                        saw_suspend && session.runner_mut().text_edit_snapshot().records.iter()
+                            .all(|record| !record.active)
+                    }), "suspend: PPC={powerpc}, depth={depth:?}");
+                    // Advance to the next guest yield, where suspend handling
+                    // (including any private-to-global conversion) is done.
+                    for _ in 0..100 {
+                        session.runner_mut().run_steps(100, None);
+                    }
+                    let imported = clipboard.changed_text(host.clone());
+                    assert_eq!(imported.is_some(), changed);
+                    if let Some(text) = imported {
+                        session.import_clipboard_text(text);
+                    }
+                    session.request_foreground(true);
+                    let message = if changed { 0x0100_0003 } else { 0x0100_0001 };
+                    let mut saw_resume = false;
+                    assert!((0..10_000).any(|_| {
+                        session.runner_mut().run_steps(100, None);
+                        saw_resume |= session.runner().event_manager_snapshot().last_record
+                            .is_some_and(|event| event.what == 15 && event.message == message);
+                        let snapshot = session.runner_mut().text_edit_snapshot();
+                        saw_resume && snapshot.private_scrap == expected
+                            && snapshot.records.iter().any(|record| record.active)
+                    }), "resume conversion: PPC={powerpc}, depth={depth:?}, changed={changed}");
+                    let after = session.runner_mut().text_edit_snapshot();
+                    assert_eq!(after.records.len(), before.records.len());
+                    for (old, new) in before.records.iter().zip(&after.records) {
+                        assert_eq!(old.text, new.text);
+                        assert_eq!(old.selection, new.selection);
+                    }
+                }
             }
         }
 
@@ -9141,13 +9322,21 @@ mod desktop {
                 MacintoshInput::KeyUp { mac_key: 0x00, character: b'a' },
             ]));
             assert!(!view.read_with(cx, |demo, _| demo.mouse_down));
+            cx.update(|cx| cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("café\nnext".into())));
             cx.update_window(window.into(), |_, window, _| window.activate_window()).unwrap();
             visual.run_until_parked();
-            let foreground: Vec<_> = receiver.try_iter().filter_map(|command| match command {
-                super::Command::Foreground(active) => Some(active),
-                _ => None,
-            }).collect();
-            assert_eq!(foreground, vec![true]);
+            let commands: Vec<_> = receiver.try_iter().collect();
+            assert!(matches!(commands.as_slice(), [
+                super::Command::ImportClipboard(text),
+                super::Command::Foreground(true),
+            ] if text == b"caf\x8e\rnext"));
+            visual.deactivate_window();
+            receiver.try_iter().for_each(drop);
+            cx.update_window(window.into(), |_, window, _| window.activate_window()).unwrap();
+            visual.run_until_parked();
+            assert!(matches!(receiver.try_iter().collect::<Vec<_>>().as_slice(), [
+                super::Command::Foreground(true),
+            ]), "unchanged clipboard must not overwrite newer guest scrap");
         }
 
         #[cfg(feature = "gpui-demo-test")]
