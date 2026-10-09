@@ -4012,3 +4012,18 @@ glyphs to the shared compositor without changing guest cell hit-testing.
 The original corrected styled matrix has independently verified 142 completed
 cases; this remains incomplete qualification and does not prove list rendering
 or the newer whole-field canvas.
+
+`ClassicListCellLayout` now accepts explicit native font/size, baseline, inset,
+clip and optional pre-glyph stopping boundary. Its bitmap recipe rejects
+nonzero character spacing and malformed clips. It does not infer host metrics
+or establish ownership. A crop/partial-cell regression checks translated guest
+ink and the classic stopping boundary. Native frame and compositor evidence
+remain required before wiring this into list presentation.
+
+The native byte policy is another release gap: classic fallback
+`list_cell_text` stops at NUL, replaces non-ASCII/non-graphic bytes with spaces
+and trims trailing spaces; PPC passes the original bytes to its glyph resolver.
+The recipe therefore takes the owning painter's actual bytes, rather than the
+snapshot's independently decoded label. Preserving accented Mac Roman text
+on the classic fallback requires a separately tested native correction, with
+font mapping, pen advance and callback-owned cells accounted for.

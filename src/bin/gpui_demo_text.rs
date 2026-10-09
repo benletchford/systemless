@@ -22,6 +22,23 @@ impl TextPointerMap {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn list_bitmap_recipe_preserves_guest_crop_and_stopping_boundary() {
+        use super::ClassicListCellLayout;
+        let full = ClassicListCellLayout { font: 3, size: 12, left: 3, baseline: 18,
+            clip: (0, 0, 40, 100), stop_before: None, char_extra: 0 };
+        let bytes = b"A i\x8e";
+        let ink = full.pixels(bytes).unwrap();
+        assert!(!ink.is_empty());
+        let clipped = ClassicListCellLayout { clip: (10, 5, 19, 15), ..full };
+        assert_eq!(clipped.pixels(bytes).unwrap(), ink.iter().copied()
+            .filter(|&(x, y)| x >= 5 && x < 15 && y >= 10 && y < 19).collect());
+        let stopped = ClassicListCellLayout { stop_before: Some(4), ..full };
+        assert_eq!(stopped.pixels(bytes), full.pixels(b"A"));
+        assert!(ClassicListCellLayout { char_extra: 1, ..full }.pixels(bytes).is_none());
+        assert!(ClassicListCellLayout { clip: (0, 0, 0, 100), ..full }.pixels(bytes).is_none());
+    }
+
     use super::*;
 
     #[test]
@@ -634,6 +651,48 @@ pub(crate) struct StyledTextEditRun {
     pub measured_positions: Vec<i16>,
     pub glyphs: ClassicLine,
     pub ink: systemless::runner::TextEditInkSnapshot,
+}
+
+/// Native standard-LDEF layout inputs. CPU painters supply their own inset,
+/// baseline and stopping boundary; host typography never supplies metrics.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ClassicListCellLayout {
+    pub font: i16,
+    pub size: i16,
+    pub left: i16,
+    pub baseline: i16,
+    pub clip: (i16, i16, i16, i16),
+    pub stop_before: Option<i16>,
+    pub char_extra: i16,
+}
+
+impl ClassicListCellLayout {
+    /// Bytes are the owning CPU painter's actual input, after its decoding
+    /// policy. Do not substitute the snapshot's decoded display label.
+    /// Bitmap ink only. Physical paint and intact cell ownership must be
+    /// independently qualified before this recipe replaces guest drawing.
+    pub fn pixels(self, bytes: &[u8]) -> Option<std::collections::BTreeSet<(i16, i16)>> {
+        let (top, left, bottom, right) = self.clip;
+        if top >= bottom || left >= right || self.char_extra != 0 { return None; }
+        let mut pixels = std::collections::BTreeSet::new();
+        let mut pen = i32::from(self.left);
+        for byte in bytes {
+            if self.stop_before.is_some_and(|stop| pen >= i32::from(stop)) { break; }
+            let line = ClassicLine::plain(&[*byte], self.font, self.size);
+            for (x, y, width) in line.ink {
+                let y = i32::from(self.baseline).checked_add(y)?;
+                if y < i32::from(top) || y >= i32::from(bottom) { continue; }
+                for dx in 0..width {
+                    let x = pen.checked_add(x)?.checked_add(dx)?;
+                    if x >= i32::from(left) && x < i32::from(right) {
+                        pixels.insert((i16::try_from(x).ok()?, i16::try_from(y).ok()?));
+                    }
+                }
+            }
+            pen = pen.checked_add(*line.positions.last()?)?;
+        }
+        Some(pixels)
+    }
 }
 
 /// A whole-field recipe, qualified against native pixels before ownership.
