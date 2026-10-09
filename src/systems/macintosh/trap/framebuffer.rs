@@ -2805,52 +2805,6 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn fb_styled_glyph_base_pixels(
-        x: i16,
-        y: i16,
-        glyph: &Glyph,
-        data: &[u8],
-        synthetic_italic: Option<(i16, i16)>,
-        style: QuickDrawTextStyle,
-    ) -> HashSet<(i16, i16)> {
-        let gx = x + glyph.origin_x as i16;
-        let gy = y + glyph.origin_y as i16;
-        let gw = glyph.width as usize;
-        let gh = glyph.height as usize;
-        let metrics = synthetic_italic
-            .map(|(font_id, font_size)| (font_id, font_size, get_font_metrics(font_id, font_size)));
-        let mut pixels = HashSet::new();
-
-        for row in 0..gh {
-            for col in 0..gw {
-                let byte_idx = glyph.data_offset + row * gw + col;
-                if byte_idx >= data.len() || data[byte_idx] < 128 {
-                    continue;
-                }
-
-                let py = gy + row as i16;
-                let slant = metrics
-                    .as_ref()
-                    .map(|(font_id, font_size, metrics)| {
-                        get_italic_slant(*font_id, *font_size, metrics, y, py)
-                    })
-                    .unwrap_or(0);
-                let start = col as i16;
-                let (dst_start, dst_end) = (start, start + 1);
-
-                for dst_col in dst_start..dst_end {
-                    let px = gx + dst_col + slant;
-                    pixels.insert((px, py));
-                    if style.bold() {
-                        pixels.insert((px + 1, py));
-                    }
-                }
-            }
-        }
-
-        pixels
-    }
-
     fn fb_draw_char_styled(
         bus: &mut MacMemoryBus,
         screen_base: u32,
@@ -2967,7 +2921,7 @@ impl super::TrapDispatcher {
 
         let glyph_y = y.saturating_add(style.glyph_y_offset() as i16);
         let base_pixels =
-            Self::fb_styled_glyph_base_pixels(x, glyph_y, glyph, data, synthetic_italic, style);
+            crate::quickdraw::text::styled_glyph_base_pixels(x, glyph_y, glyph, data, synthetic_italic, style);
 
         let Some(smear_max) = style.smear_max() else {
             for (px, py) in base_pixels.iter().copied() {

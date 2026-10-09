@@ -522,3 +522,99 @@ mod tests {
         );
     }
 }
+
+
+/// Shared binary glyph mask before outline/shadow expansion.
+pub(crate) fn styled_glyph_base_pixels(
+    x: i16,
+    y: i16,
+    glyph: &Glyph,
+    data: &[u8],
+    synthetic_italic: Option<(i16, i16)>,
+    style: QuickDrawTextStyle,
+) -> std::collections::HashSet<(i16, i16)> {
+    let gx = x + glyph.origin_x as i16;
+    let gy = y + glyph.origin_y as i16;
+    let gw = glyph.width as usize;
+    let gh = glyph.height as usize;
+    let metrics = synthetic_italic
+        .map(|(font_id, font_size)| (font_id, font_size, get_font_metrics(font_id, font_size)));
+    let mut pixels = std::collections::HashSet::new();
+
+    for row in 0..gh {
+        for col in 0..gw {
+            let byte_idx = glyph.data_offset + row * gw + col;
+            if byte_idx >= data.len() || data[byte_idx] < 128 {
+                continue;
+            }
+
+            let py = gy + row as i16;
+            let slant = metrics
+                .as_ref()
+                .map(|(font_id, font_size, metrics)| {
+                    crate::quickdraw::fonts::style::get_italic_slant(*font_id, *font_size, metrics, y, py)
+                })
+                .unwrap_or(0);
+            let start = col as i16;
+            let (dst_start, dst_end) = (start, start + 1);
+
+            for dst_col in dst_start..dst_end {
+                let px = gx + dst_col + slant;
+                pixels.insert((px, py));
+                if style.bold() {
+                    pixels.insert((px + 1, py));
+                }
+            }
+        }
+    }
+
+    pixels
+}
+
+
+/// Guest binary ink and advance for a Macintosh Roman byte and QuickDraw face.
+/// Underlining belongs to the complete line and is intentionally separate.
+/// Coordinates are relative to the glyph's pen baseline; callers must preserve
+/// the guest's strike selection rather than applying host font shaping.
+#[doc(hidden)]
+pub fn classic_styled_glyph(
+    font: i16,
+    size: i16,
+    byte: u8,
+    face: u8,
+) -> (i32, Vec<(i16, i16)>) {
+    let style = QuickDrawTextStyle::from_bits(face);
+    let hit = if style.italic() {
+        get_glyph_italic(font, size, byte as char)
+            .map(|(glyph, data)| (glyph, data, None))
+            .or_else(|| get_glyph(font, size, byte as char)
+                .map(|(glyph, data)| (glyph, data, Some((font, size)))))
+    } else {
+        get_glyph(font, size, byte as char).map(|(glyph, data)| (glyph, data, None))
+    };
+    let Some((glyph, data, italic)) = hit else {
+        return (6, Vec::new());
+    };
+    let base = styled_glyph_base_pixels(
+        0, style.glyph_y_offset() as i16, glyph, data, italic, style,
+    );
+    let mut ink = if let Some(smear) = style.smear_max() {
+        let smear = smear as i16;
+        let mut expanded = std::collections::HashSet::new();
+        for &(x, y) in &base {
+            for dy in -1..=smear {
+                for dx in -1..=smear {
+                    let pixel = (x + dx, y + dy);
+                    if !base.contains(&pixel) {
+                        expanded.insert(pixel);
+                    }
+                }
+            }
+        }
+        expanded.into_iter().collect::<Vec<_>>()
+    } else {
+        base.into_iter().collect()
+    };
+    ink.sort_unstable_by_key(|&(x, y)| (y, x));
+    (style.glyph_advance(i32::from(glyph.advance)), ink)
+}

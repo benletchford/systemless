@@ -2570,3 +2570,14 @@ text lines. These establish this fixture presentation, not broad wrapping,
 bottom clipping, styled text, ParamText integration, font mutation,
 scale/activation coverage or native Macintosh font fidelity. Those requirements
 remain open, along with general dialog editing and menu typography.
+
+Styled-glyph groundwork now shares QuickDraw's binary base mask with the guest
+framebuffer painter and exposes a Macintosh Roman styled-ink/advance helper for
+GPUI. It resolves intrinsic italics before synthetic shear and preserves guest
+bold, outline, shadow, condensed and extended advances. Underlines remain a
+line-level operation. A focused GPUI test compares plain helper ink and advances
+against the existing binary span painter for Chicago and Geneva strikes and Mac
+Roman bytes (passes, 0.07 seconds); default and JIT/headless checks also pass.
+Styled field replacement, complete style-mask parity, scale behavior and CPU
+capture evidence are still unfinished. This groundwork does not enable styled
+text replacement or establish native Macintosh font fidelity.
