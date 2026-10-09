@@ -1941,6 +1941,65 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn hle_import_runner_dir_create_preserves_literal_slash_and_failed_reply() {
+        for import in [b"DirCreate".as_slice(), b"FSpDirCreate".as_slice()] {
+            let pef = synthetic_pef_with_import(import);
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let scratch = PPC_HEAP_BASE;
+            loaded.memory.add_region(scratch, vec![0; 128]);
+            write_ppc_pstring(&mut loaded.memory, scratch, b"Audio/Video");
+            write_ppc_fsspec(
+                &mut loaded.memory,
+                scratch + 32,
+                PPC_BOOT_VOLUME_REF_NUM,
+                PPC_PREFERENCES_DIR_ID,
+                b"Audio/Video",
+            );
+            let original_count = loaded.vfs_directories.len();
+            for (reply, expected) in [(0xffff_fff0, PPC_PARAM_ERR), (scratch + 112, PPC_NO_ERR)] {
+                loaded.cpu.pc = loaded.entry_pc;
+                loaded.cpu.lr = PPC_HALT_PC;
+                if import == b"DirCreate" {
+                    loaded.cpu.gpr[3] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
+                    loaded.cpu.gpr[4] = PPC_PREFERENCES_DIR_ID;
+                    loaded.cpu.gpr[5] = scratch;
+                    loaded.cpu.gpr[6] = reply;
+                } else {
+                    loaded.cpu.gpr[3] = scratch + 32;
+                    loaded.cpu.gpr[4] = 0;
+                    loaded.cpu.gpr[5] = reply;
+                }
+                let probe = loaded.run_with_hle_imports(64);
+                assert_eq!(probe.handled_import_count, 1);
+                assert_eq!(probe.unsupported_import_index, None);
+                assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(expected));
+                let created = usize::from(expected == PPC_NO_ERR);
+                assert_eq!(loaded.vfs_directories.len(), original_count + created);
+                assert_eq!(
+                    loaded.next_vfs_dir_id,
+                    PPC_FIRST_DYNAMIC_DIR_ID + created as u32
+                );
+            }
+            assert_eq!(
+                loaded.memory.read_u32_be(scratch + 112),
+                Some(PPC_FIRST_DYNAMIC_DIR_ID)
+            );
+            let directory = loaded
+                .vfs_directories
+                .iter()
+                .find(|directory| directory.dir_id == PPC_FIRST_DYNAMIC_DIR_ID)
+                .unwrap();
+            assert_eq!(directory.parent_dir_id, PPC_PREFERENCES_DIR_ID);
+            let encoded =
+                crate::trap::dispatch::TrapDispatcher::encode_hfs_component_for_vfs("Audio/Video");
+            assert_eq!(
+                directory.path,
+                format!("System Folder/Preferences/{encoded}")
+            );
+        }
+    }
+
+    #[test]
     fn hle_import_runner_reports_missing_parent_for_dir_create() {
         let pef = synthetic_pef_with_import(b"DirCreate");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -2948,6 +3007,97 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn hle_standard_put_file_new_folder_modal_create_and_cancel() {
+        let pef = synthetic_pef_with_import(b"StandardPutFile");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let reply = PPC_DATA_BASE + 0x1400;
+        let default_name = PPC_DATA_BASE + 0x1500;
+        loaded.memory.add_region(reply, vec![0xaa; 88]);
+        loaded.memory.add_region(default_name, vec![0; 64]);
+        write_ppc_pstring(&mut loaded.memory, default_name, b"Untitled");
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = default_name;
+        loaded.cpu.gpr[5] = reply;
+        loaded.run_with_hle_imports(64);
+        let original = loaded
+            .toolbox_startup
+            .standard_file_put_tracking
+            .as_ref()
+            .unwrap()
+            .clone();
+        for (message, modifiers) in [(u32::from(b'n'), 0x100), (27, 0)] {
+            loaded.set_event_queue([PpcQueuedEvent {
+                what: 3,
+                message,
+                when: 0,
+                where_v: 0,
+                where_h: 0,
+                modifiers,
+            }]);
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        }
+        let tracking = loaded
+            .toolbox_startup
+            .standard_file_put_tracking
+            .as_ref()
+            .unwrap();
+        assert!(tracking.new_folder.is_none());
+        assert!(tracking.generation > original.generation);
+        assert_eq!(tracking.dir_id, original.dir_id);
+        assert_eq!(tracking.name, b"Untitled");
+        assert_eq!((tracking.sel_start, tracking.sel_end), (0, 8));
+        let mut keys = vec![(u32::from(b'n'), 0x100)];
+        keys.extend(b"gpui folder".iter().map(|byte| (u32::from(*byte), 0)));
+        keys.push((13, 0));
+        for (message, modifiers) in keys {
+            loaded.set_event_queue([PpcQueuedEvent {
+                what: 3,
+                message,
+                when: 0,
+                where_v: 0,
+                where_h: 0,
+                modifiers,
+            }]);
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        }
+        let tracking = loaded
+            .toolbox_startup
+            .standard_file_put_tracking
+            .as_ref()
+            .unwrap();
+        assert!(tracking.new_folder.is_none());
+        let created = tracking.dir_id;
+        assert_ne!(created, original.dir_id);
+        assert_eq!(tracking.directory_name, b"gpui folder");
+        assert_eq!(tracking.name, b"Untitled");
+        assert_eq!((tracking.sel_start, tracking.sel_end), (0, 8));
+        assert!(tracking.entries.is_empty());
+        // Standard File has not returned; preserve the caller-owned reply.
+        assert_eq!(loaded.memory.read_u8(reply), Some(0xaa));
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 3,
+            message: 27,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        }]);
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+        assert!(loaded.toolbox_startup.standard_file_put_tracking.is_none());
+        assert_eq!(loaded.memory.read_u8(reply), Some(0));
+        assert!(
+            loaded
+                .vfs_directories
+                .iter()
+                .any(|directory| directory.dir_id == created
+                    && directory.parent_dir_id == original.dir_id)
+        );
+    }
+
+    #[test]
     fn hle_standard_put_file_navigates_directory_before_writing_reply() {
         let pef = synthetic_pef_with_import(b"StandardPutFile");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -3152,6 +3302,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     #[test]
     fn standard_file_name_edit_at_maximum_length_is_safe() {
         let mut tracking = PpcStandardFilePutTrackingState {
+            new_folder: None,
             confirming_replace: false,
             generation: 1,
             standard_entry_point: true,

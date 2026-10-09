@@ -1,0 +1,412 @@
+{
+  "architecture": "ppc",
+  "boot_delay_ticks": 0,
+  "show_menu_bar": true,
+  "sheepshaver_color_depth": 32,
+  "actions": [
+    {
+      "type": "run",
+      "ticks": 180
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 203,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 203,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "00-file-page.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 266,
+      "h": 400
+    },
+    {
+      "type": "mouse_down",
+      "v": 266,
+      "h": 400
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 266,
+      "h": 400
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "01-save.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 199,
+      "h": 520
+    },
+    {
+      "type": "mouse_down",
+      "v": 199,
+      "h": 520
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 199,
+      "h": 520
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "02-new-folder.png"
+    },
+    {
+      "type": "key_down",
+      "key": "escape"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "escape"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "03-cancel-back-to-save.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 199,
+      "h": 520
+    },
+    {
+      "type": "mouse_down",
+      "v": 199,
+      "h": 520
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 199,
+      "h": 520
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "key_down",
+      "key": "g"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "g"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_down",
+      "key": "p"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "p"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_down",
+      "key": "u"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "u"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_down",
+      "key": "i"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "i"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_down",
+      "key": "space"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "space"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_down",
+      "key": "f"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "f"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_down",
+      "key": "o"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "o"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_down",
+      "key": "l"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "l"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_down",
+      "key": "d"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "d"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_down",
+      "key": "e"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "e"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_down",
+      "key": "r"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "r"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "04-folder-name.png"
+    },
+    {
+      "type": "key_down",
+      "key": "return"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "return"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "05-created-folder.png"
+    },
+    {
+      "type": "key_down",
+      "key": "escape"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "escape"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "06-save-cancelled.png"
+    }
+  ]
+}

@@ -29,7 +29,7 @@ use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{ProcessContext, ProcessMemoryManager, SharedProcessFileSystem};
 pub use crate::standard_file_ui::{
     StandardFileEntrySnapshot, StandardFileGetLayout, StandardFileKind, StandardFilePutLayout,
-    StandardFileSnapshot, StandardFileReplacementLayout,
+    StandardFileSnapshot, StandardFileReplacementLayout, StandardFileNewFolderSnapshot, StandardFileNewFolderLayout,
 };
 pub use crate::text_edit::{TextEditManagerSnapshot, TextEditSnapshot};
 use crate::trap::dispatch::TrapTableProfile;
@@ -3341,6 +3341,7 @@ impl FixtureRunner {
                 generation: tracking.generation,
                 kind: StandardFileKind::Get,
                 confirming_replace: false,
+                        new_folder: None,
                 standard_entry_point: tracking.standard_entry_point,
                 bounds: tracking.bounds,
                 directory_id: tracking.current_dir_id,
@@ -3374,6 +3375,7 @@ impl FixtureRunner {
             generation: tracking.generation,
             kind: StandardFileKind::Put,
             confirming_replace: tracking.confirming_replace,
+            new_folder: tracking.new_folder.as_ref().map(|folder| folder.snapshot(tracking.bounds)),
             standard_entry_point: tracking.standard_entry_point,
             bounds: tracking.bounds,
             directory_id: tracking.current_dir_id,
@@ -3398,7 +3400,7 @@ impl FixtureRunner {
                 tracking.sel_start.max(0) as usize,
                 tracking.sel_end.max(0) as usize,
             )),
-            name_has_focus: Some(!tracking.confirming_replace),
+            name_has_focus: Some(!tracking.confirming_replace && tracking.new_folder.is_none()),
             directory_label: Some(directory_label),
             get_layout: None,
             put_layout: Some(put_layout),

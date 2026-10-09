@@ -756,6 +756,7 @@ pub struct DialogTrackingState {
 /// Inside Macintosh: Files (1992), pp. 3-13, 3-45 to 3-47.
 #[derive(Clone, Debug)]
 pub(crate) struct StandardFilePutTrackingState {
+    pub(crate) new_folder: Option<crate::standard_file_ui::StandardFileNewFolderState>,
     pub(crate) confirming_replace: bool,
     pub generation: u64,
     pub standard_entry_point: bool,
@@ -4853,6 +4854,54 @@ impl TrapDispatcher {
                     .ends_with(&suffix)
             })
             .cloned()
+    }
+
+    /// Create a directory using File Manager validation, shared with Standard File.
+    /// Inside Macintosh: Files (1992), p. 2-158, FSpDirCreate.
+    pub(crate) fn create_vfs_child_directory(
+        &mut self,
+        parent_dir_id: u32,
+        name: &str,
+    ) -> std::result::Result<u32, i16> {
+        if name.is_empty() {
+            return Err(-37); // bdNamErr
+        }
+        let parent_path = self
+            .directory_path_for_id(parent_dir_id)
+            .map(str::to_string)
+            .ok_or(-120i16)?; // dirNFErr
+        if self.vfs_path_is_read_only(&parent_path) {
+            return Err(-44); // wPrErr
+        }
+        let child_name = Self::normalize_hfs_path(name);
+        if child_name.is_empty() {
+            return Err(-37);
+        }
+        let child_path = if parent_path.is_empty() {
+            child_name
+        } else {
+            format!("{parent_path}/{child_name}")
+        };
+        if self
+            .vfs_directories
+            .iter()
+            .any(|directory| directory.path.eq_ignore_ascii_case(&child_path))
+            || self
+                .vfs
+                .keys()
+                .any(|path| path.eq_ignore_ascii_case(&child_path))
+            || self
+                .vfs_rsrc
+                .keys()
+                .any(|path| path.eq_ignore_ascii_case(&child_path))
+        {
+            return Err(-48); // dupFNErr
+        }
+        let dir_id = self.ensure_vfs_directory(&child_path);
+        if let Some(ref directory) = self.output_dir {
+            let _ = std::fs::create_dir_all(directory.join(&child_path));
+        }
+        Ok(dir_id)
     }
 
     pub(crate) fn ensure_vfs_directory(&mut self, path: &str) -> u32 {

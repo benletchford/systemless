@@ -626,6 +626,7 @@ struct StandardFileSelection {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StandardFilePutAction {
+    NewFolder,
     Save,
     Cancel,
     Desktop,
@@ -652,6 +653,7 @@ const STANDARD_FILE_PUT_SCROLL_RECT: (i16, i16, i16, i16) = (38, 315, 156, 331);
 const STANDARD_FILE_PROMPT_RECT: (i16, i16, i16, i16) = (166, 24, 184, 330);
 const STANDARD_FILE_NAME_RECT: (i16, i16, i16, i16) = (188, 24, 208, 330);
 const STANDARD_FILE_PUT_DESKTOP_RECT: (i16, i16, i16, i16) = (220, 24, 242, 104);
+const STANDARD_FILE_NEW_FOLDER_RECT: (i16, i16, i16, i16) = (220, 110, 242, 160);
 const STANDARD_FILE_CANCEL_RECT: (i16, i16, i16, i16) = (220, 166, 242, 246);
 const STANDARD_FILE_SAVE_RECT: (i16, i16, i16, i16) = (220, 258, 242, 338);
 const STANDARD_FILE_GET_DIALOG_WIDTH: i16 = 356;
@@ -2793,6 +2795,12 @@ impl super::TrapDispatcher {
                 sel_end: tracking.sel_end,
                 ..DialogItem::default()
             },
+            DialogItem {
+                item_type: if writable { 4 } else { 0x84 },
+                rect: STANDARD_FILE_NEW_FOLDER_RECT,
+                text: "New".to_string(),
+                ..DialogItem::default()
+            },
         ]
     }
 
@@ -2812,7 +2820,7 @@ impl super::TrapDispatcher {
             &items,
             STANDARD_FILE_SAVE_ITEM,
             &tracking.name,
-            STANDARD_FILE_NAME_ITEM,
+            if tracking.new_folder.is_some() || tracking.confirming_replace { 0 } else { STANDARD_FILE_NAME_ITEM },
             false,
             0,
         );
@@ -2847,6 +2855,25 @@ impl super::TrapDispatcher {
                 DialogItem { item_type: 8, rect: local(layout.message), text: format!("Replace existing \"{}\"?", tracking.name), ..DialogItem::default() },
             ];
             self.draw_dialog(bus, layout.bounds, 2, "", &items, 2, "", 0, false, 0);
+        }
+        if let Some(folder) = &tracking.new_folder {
+            let layout = crate::standard_file_ui::StandardFileNewFolderLayout::new(tracking.bounds);
+            let local = |r: (i16, i16, i16, i16)| (r.0 - layout.bounds.0, r.1 - layout.bounds.1, r.2 - layout.bounds.0, r.3 - layout.bounds.1);
+            let name = decode_mac_roman(folder.edit.text());
+            let prompt = match folder.error {
+                Some(-48) => "Name already exists",
+                Some(-44) => "Disk is locked",
+                Some(-37) => "Invalid folder name",
+                Some(_) => "Could not create folder",
+                None => "Name of new folder:",
+            }.to_string();
+            let items = vec![
+                DialogItem { item_type: if name.is_empty() { 0x84 } else { 4 }, rect: local(layout.create), text: "Create".into(), ..DialogItem::default() },
+                DialogItem { item_type: 4, rect: local(layout.cancel), text: "Cancel".into(), ..DialogItem::default() },
+                DialogItem { item_type: 8, rect: local(layout.prompt), text: prompt, ..DialogItem::default() },
+                DialogItem { item_type: 16, rect: local(layout.name), text: name.clone(), sel_start: folder.edit.selection().start as i16, sel_end: folder.edit.selection().end as i16, ..DialogItem::default() },
+            ];
+            self.draw_dialog(bus, layout.bounds, 2, "", &items, 1, &name, 4, false, 0);
         }
         self.standard_file_drawn = bus.screen_mark();
     }
@@ -2898,6 +2925,7 @@ impl super::TrapDispatcher {
                 prompt: global(STANDARD_FILE_PROMPT_RECT),
                 name: global(STANDARD_FILE_NAME_RECT),
                 desktop: global(STANDARD_FILE_PUT_DESKTOP_RECT),
+                new_folder: global(STANDARD_FILE_NEW_FOLDER_RECT),
                 cancel: global(STANDARD_FILE_CANCEL_RECT),
                 save: global(STANDARD_FILE_SAVE_RECT),
                 row_height: STANDARD_FILE_GET_ROW_HEIGHT,
@@ -3138,6 +3166,7 @@ impl super::TrapDispatcher {
         let entries = self.standard_file_get_candidates_in_directory(current_dir_id, None);
         self.next_standard_file_generation = self.next_standard_file_generation.saturating_add(1);
         let tracking = StandardFilePutTrackingState {
+            new_folder: None,
             confirming_replace: false,
             generation: self.next_standard_file_generation,
             standard_entry_point,
@@ -3169,6 +3198,39 @@ impl super::TrapDispatcher {
         let mut consumed_event = false;
         while let Some(event) = self.event_queue.pop_front() {
             consumed_event = true;
+            if let Some(mut folder) = tracking.new_folder.take() {
+                use crate::standard_file_ui::{StandardFileNewFolderAction, StandardFileNewFolderLayout};
+                let layout = StandardFileNewFolderLayout::new(tracking.bounds);
+                let handle = bus.read_long(addr::TE_SCRP_HANDLE);
+                let ptr = if handle == 0 { 0 } else { bus.read_long(handle) };
+                let mut scrap = if ptr == 0 { Vec::new() } else { bus.read_bytes(ptr, usize::from(bus.read_word(addr::TE_SCRP_LENGTH))) };
+                let original_scrap = scrap.clone();
+                let action = folder.event(&layout, event.what, event.message, event.modifiers, (event.where_v, event.where_h), &mut scrap);
+                if scrap != original_scrap { Self::te_set_scrap_bytes(bus, &scrap); }
+                let mut dismiss = action == Some(StandardFileNewFolderAction::Cancel);
+                if action == Some(StandardFileNewFolderAction::Create) {
+                    match self.create_vfs_child_directory(tracking.current_dir_id, &decode_mac_roman(folder.edit.text())) {
+                        Ok(dir_id) => {
+                            tracking.current_dir_id = dir_id;
+                            tracking.entries = self.standard_file_get_candidates_in_directory(dir_id, None);
+                            tracking.selected = None;
+                            dismiss = true;
+                        }
+                        Err(error) => folder.error = Some(error),
+                    }
+                }
+                if dismiss {
+                    tracking.sel_start = 0;
+                    tracking.sel_end = encode_mac_roman_lossy(&tracking.name).len().min(i16::MAX as usize) as i16;
+                    self.next_standard_file_generation = self.next_standard_file_generation.saturating_add(1);
+                    tracking.generation = self.next_standard_file_generation;
+                } else {
+                    tracking.new_folder = Some(folder);
+                }
+                self.draw_standard_file_put_dialog(bus, &tracking);
+                self.standard_file_put_tracking = Some(tracking);
+                return;
+            }
             if tracking.confirming_replace {
                 let layout = crate::standard_file_ui::StandardFileReplacementLayout::new(tracking.bounds);
                 match layout.action(event.what, event.message, event.modifiers, event.where_v, event.where_h) {
@@ -3208,6 +3270,15 @@ impl super::TrapDispatcher {
         }
 
         match action {
+            Some(StandardFilePutAction::NewFolder) => {
+                if self.standard_file_put_directory_location(tracking.current_dir_id).3 {
+                    tracking.new_folder = Some(Default::default());
+                    self.next_standard_file_generation = self.next_standard_file_generation.saturating_add(1);
+                    tracking.generation = self.next_standard_file_generation;
+                }
+                self.draw_standard_file_put_dialog(bus, &tracking);
+                self.standard_file_put_tracking = Some(tracking);
+            }
             Some(StandardFilePutAction::Save) => {
                 let (_, _, _, writable) =
                     self.standard_file_put_directory_location(tracking.current_dir_id);
@@ -3330,7 +3401,9 @@ impl super::TrapDispatcher {
         let (top, left, _, _) = tracking.bounds;
         let local_v = v - top;
         let local_h = h - left;
-        if Self::standard_file_point_in_rect(local_v, local_h, STANDARD_FILE_SAVE_RECT) {
+        if Self::standard_file_point_in_rect(local_v, local_h, STANDARD_FILE_NEW_FOLDER_RECT) {
+            Some(StandardFilePutAction::NewFolder)
+        } else if Self::standard_file_point_in_rect(local_v, local_h, STANDARD_FILE_SAVE_RECT) {
             Some(StandardFilePutAction::Save)
         } else if Self::standard_file_point_in_rect(local_v, local_h, STANDARD_FILE_CANCEL_RECT) {
             Some(StandardFilePutAction::Cancel)
@@ -3399,6 +3472,9 @@ impl super::TrapDispatcher {
                 .and_then(|selected| tracking.entries.get(selected))
                 .filter(|entry| entry.is_directory)
                 .map(|_| StandardFilePutAction::Navigate);
+        }
+        if command_down && char_code.eq_ignore_ascii_case(&b'n') {
+            return Some(StandardFilePutAction::NewFolder);
         }
         if command_down && char_code.eq_ignore_ascii_case(&b'd') {
             return Some(StandardFilePutAction::Desktop);

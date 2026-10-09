@@ -13402,6 +13402,92 @@
     }
 
     #[test]
+    fn standard_put_file_new_folder_modal_create_and_cancel() {
+        for depth in [1, 8] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let row_bytes = if depth == 1 { 100 } else { 800 };
+            let screen_base = bus.alloc(row_bytes * 600);
+            disp.set_screen_mode_for_test(screen_base, row_bytes, 800, 600, depth);
+            let reply = 0x321800;
+            let name = 0x321900;
+            let parent = disp.ensure_vfs_directory("Folder Test");
+            disp.default_dir_id.with_mut(|id| *id = parent);
+            disp.yield_for_ui = true;
+            bus.write_pstring(name, b"Untitled");
+            bus.write_word(TEST_SP, 5);
+            bus.write_long(TEST_SP + 2, reply);
+            bus.write_long(TEST_SP + 6, name);
+            disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            let original_generation = disp.standard_file_put_tracking.as_ref().unwrap().generation;
+            for (message, modifiers) in [(u32::from(b'n'), 0x100), (27, 0)] {
+                disp.event_queue.push_back(QueuedEvent {
+                    what: 3,
+                    message,
+                    when: 0,
+                    where_v: 0,
+                    where_h: 0,
+                    modifiers,
+                });
+                disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+                    .unwrap()
+                    .unwrap();
+            }
+            let tracking = disp.standard_file_put_tracking.as_ref().unwrap();
+            assert!(tracking.new_folder.is_none());
+            assert!(tracking.generation > original_generation);
+            assert_eq!(tracking.current_dir_id, parent);
+            assert_eq!(tracking.name, "Untitled");
+            assert_eq!((tracking.sel_start, tracking.sel_end), (0, 8));
+            let mut keys = vec![(u32::from(b'n'), 0x100)];
+            keys.extend(b"gpui folder".iter().map(|byte| (u32::from(*byte), 0)));
+            keys.push((13, 0));
+            for (message, modifiers) in keys {
+                disp.event_queue.push_back(QueuedEvent {
+                    what: 3,
+                    message,
+                    when: 0,
+                    where_v: 0,
+                    where_h: 0,
+                    modifiers,
+                });
+                disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+                    .unwrap()
+                    .unwrap();
+            }
+            let tracking = disp.standard_file_put_tracking.as_ref().unwrap();
+            assert!(tracking.new_folder.is_none());
+            let created = tracking.current_dir_id;
+            assert_eq!(
+                disp.directory_path_for_id(created),
+                Some("Folder Test/gpui folder")
+            );
+            assert!(tracking.entries.is_empty());
+            assert_eq!(tracking.name, "Untitled");
+            assert_eq!((tracking.sel_start, tracking.sel_end), (0, 8));
+            assert_eq!(bus.read_byte(reply), 0);
+            disp.event_queue.push_back(QueuedEvent {
+                what: 3,
+                message: 27,
+                when: 0,
+                where_v: 0,
+                where_h: 0,
+                modifiers: 0,
+            });
+            disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert!(disp.standard_file_put_tracking.is_none());
+            assert_eq!(bus.read_byte(reply), 0);
+            assert_eq!(
+                disp.directory_path_for_id(created),
+                Some("Folder Test/gpui folder")
+            );
+        }
+    }
+
+    #[test]
     fn standard_put_file_gui_navigation_returns_modern_parent_and_seeds_next_dialog() {
         let (mut disp, mut cpu, mut bus) = setup();
         let screen_base = bus.alloc(800 * 600);
