@@ -1060,6 +1060,7 @@ fn load_pef_application_with_optional_disk_fragment(
         file_completion_context: None,
         parked_interrupt_callback: None,
         interrupt_callback_parks: 0,
+        application_size: Default::default(),
         apple_events: PpcAppleEventState::default(),
         cfm: Some(PpcCfmState {
             connections: cfm_connections,

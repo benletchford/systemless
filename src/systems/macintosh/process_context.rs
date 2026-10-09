@@ -9990,6 +9990,12 @@ impl ProcessNativeMemoryManager {
     }
 }
 
+/// SIZE policy captured at launch and shared across CPU gateways. Guest
+/// resource edits do not change the running process's scheduling capabilities.
+/// Inside Macintosh: Processes (1994), ProcessInfoRec and Process Scheduling.
+pub(crate) type SharedProcessApplicationSize =
+    SharedProcessValue<Option<crate::loader::ApplicationSizeResource>>;
+
 /// Canonical owner for state that belongs to one emulated process rather than
 /// to either of its CPU ABI adapters.
 ///
@@ -10008,6 +10014,7 @@ pub(crate) struct ProcessContext {
     pending_native_menu_selection: SharedNativeMenuSelection,
     guest_calls: SharedGuestCallStack,
     apple_event_handlers: SharedProcessAppleEventHandlers,
+    application_size: SharedProcessApplicationSize,
     apple_event_launch_state: SharedProcessAppleEventLaunchState,
     apple_event_descriptors: SharedProcessAppleEventDescriptors,
     file_system: SharedProcessFileSystem,
@@ -10180,6 +10187,7 @@ impl Default for ProcessContext {
             pending_native_menu_selection: SharedNativeMenuSelection::default(),
             guest_calls,
             apple_event_handlers: SharedProcessAppleEventHandlers::default(),
+            application_size: SharedProcessApplicationSize::default(),
             apple_event_launch_state: SharedProcessAppleEventLaunchState::default(),
             apple_event_descriptors: SharedProcessAppleEventDescriptors::default(),
             file_system: SharedProcessFileSystem::default(),
@@ -10766,6 +10774,14 @@ impl ProcessContext {
         adapter: &mut SharedProcessAppleEventHandlers,
     ) {
         adapter.attach_to(&self.apple_event_handlers);
+    }
+
+    pub(crate) fn attach_application_size(&self, adapter: &mut SharedProcessApplicationSize) {
+        adapter.attach_copy_to(&self.application_size, Option::is_none);
+    }
+
+    pub(crate) fn reset_application_size(&self, size: Option<crate::loader::ApplicationSizeResource>) {
+        self.application_size.with_mut(|current| *current = size);
     }
 
     pub(crate) fn attach_apple_event_launch_state(
@@ -13114,6 +13130,27 @@ mod tests {
         assert!(!classic.descriptors.contains_key(&record));
         assert!(detached.backing.is_empty());
         assert!(detached.descriptors.is_empty());
+    }
+
+    #[test]
+    fn application_size_policy_is_shared_and_reset_between_launches() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessApplicationSize::default();
+        let mut native =
+            SharedProcessApplicationSize::from_value(Some(crate::loader::ApplicationSizeResource {
+                flags: 0x5a40,
+                preferred_size: 2 * 1024 * 1024,
+                minimum_size: 1024 * 1024,
+            }));
+        context.attach_application_size(&mut native);
+        context.attach_application_size(&mut classic);
+        assert!(classic.ptr_eq(&native));
+        assert_eq!(classic.with_ref(|size| size.unwrap().flags), 0x5a40);
+        let snapshot = native.clone();
+        context.reset_application_size(None);
+        assert!(classic.with_ref(Option::is_none));
+        assert!(native.with_ref(Option::is_none));
+        assert_eq!(snapshot.with_ref(|size| size.unwrap().flags), 0x5a40);
     }
 
     #[test]

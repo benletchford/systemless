@@ -41,6 +41,7 @@ pub struct PpcLoadedApp {
     pub(crate) parked_interrupt_callback: Option<PpcParkedInterruptCallback>,
     /// Number of such callbacks parked since launch.
     pub(crate) interrupt_callback_parks: u64,
+    pub(crate) application_size: crate::process_context::SharedProcessApplicationSize,
     pub(crate) apple_events: PpcAppleEventState,
     /// Standalone CFM seed; None after a runner moves it into its process.
     /// Installed execution must receive the process service explicitly.

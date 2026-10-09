@@ -1377,6 +1377,8 @@ pub struct TrapDispatcher {
     pub(crate) segment_map: HashMap<i16, u32>,
     /// Process-owned application and system AppleEvent dispatch tables.
     pub(crate) ae_handlers: SharedProcessAppleEventHandlers,
+    /// SIZE selected at launch, shared with the native CPU gateway.
+    pub(crate) application_size: crate::process_context::SharedProcessApplicationSize,
     /// Process-owned launch awareness and one-shot synthetic OAPP state.
     pub(crate) apple_event_launch_state: SharedProcessAppleEventLaunchState,
     /// Process-owned AppleEvent event, descriptor, and shared-handle backing.
@@ -2773,6 +2775,7 @@ impl TrapDispatcher {
         self.attach_memory_manager_handle(memory_manager);
         context.attach_native_menu_selection(&mut self.pending_native_menu_selection);
         context.attach_apple_event_handlers(&mut self.ae_handlers);
+        context.attach_application_size(&mut self.application_size);
         context.attach_apple_event_launch_state(&mut self.apple_event_launch_state);
         context.attach_apple_event_descriptors(&mut self.ae_descriptor_state);
     }
@@ -3792,6 +3795,7 @@ impl TrapDispatcher {
             dialogs_drawn_by_app: std::collections::HashSet::default(),
             segment_map: HashMap::default(),
             ae_handlers: SharedProcessAppleEventHandlers::default(),
+            application_size: Default::default(),
             apple_event_launch_state: SharedProcessAppleEventLaunchState::default(),
             ae_descriptor_state: SharedProcessAppleEventDescriptors::default(),
             ae_object_accessors: HashMap::default(),

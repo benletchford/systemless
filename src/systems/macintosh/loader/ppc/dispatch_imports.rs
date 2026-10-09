@@ -110,6 +110,7 @@ pub(crate) struct PpcDispatchContext<'a> {
     pub(crate) next_working_directory_ref_num: &'a mut i16,
     pub(crate) application_working_directory_ref_num: &'a mut i16,
     pub(crate) launched_app_path: Option<&'a str>,
+    pub(crate) process_mode: u32,
     pub(crate) param_text: &'a SharedProcessDialogText,
     pub(crate) scrap: &'a mut PpcScrapState,
     pub(crate) list_manager: &'a mut ProcessListManagerState,
@@ -226,6 +227,7 @@ pub(crate) fn dispatch_supported_import(
         next_working_directory_ref_num,
         application_working_directory_ref_num,
         launched_app_path,
+        process_mode,
         param_text,
         scrap,
         list_manager,
@@ -1271,6 +1273,7 @@ pub(crate) fn dispatch_supported_import(
             vfs_files,
             vfs_resource_files,
             launched_app_path,
+            process_mode,
         })
     {
         return Some(action);

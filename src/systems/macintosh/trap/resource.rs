@@ -6656,7 +6656,12 @@ impl super::TrapDispatcher {
                         bus.write_long(info_ptr + 12, ProcessSerialNumber::CURRENT.low); // processNumber.lowLongOfPSN
                         bus.write_long(info_ptr + 16, app.file_type);
                         bus.write_long(info_ptr + 20, app.creator);
-                        bus.write_long(info_ptr + 24, 0); // processMode
+                        // Processes (1994), pp. 2-23--2-25: processMode
+                        // reports the running application's launch SIZE flags.
+                        let process_mode = self.application_size.with_ref(|size| {
+                            size.map_or(0, |size| u32::from(size.flags))
+                        });
+                        bus.write_long(info_ptr + 24, process_mode);
                         let app_zone = bus.read_long(crate::memory::globals::addr::APP_L_ZONE);
                         let appl_limit = bus.read_long(crate::memory::globals::addr::APPL_LIMIT);
                         let process_location = if app_zone != 0 { app_zone } else { 0x0010_0000 };

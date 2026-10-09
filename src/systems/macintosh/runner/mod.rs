@@ -4485,6 +4485,7 @@ impl FixtureRunner {
         use crate::memory::globals::addr;
         let ram_size = self.bus.ram_size();
 
+        self.process_context.reset_application_size(app.size_resource);
         let high_level_event_aware = app
             .size_resource
             .is_some_and(ApplicationSizeResource::is_high_level_event_aware);
@@ -5273,6 +5274,9 @@ impl FixtureRunner {
         // that capability and a fresh process-wide OAPP claim so a prior
         // application cannot suppress or duplicate delivery. Inside
         // Macintosh: Toolbox Essentials (1992), pp. 2-30--2-32 and 5-90.
+        self.process_context.reset_application_size(
+            ppc_app.application_size.with_ref(|size| *size),
+        );
         let high_level_event_aware = ppc_app
             .apple_events
             .apple_event_launch_state
