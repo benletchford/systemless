@@ -2214,35 +2214,11 @@ impl super::TrapDispatcher {
         inserted_style: TeResolvedStyle,
         new_len: usize,
     ) -> Vec<(usize, TeResolvedStyle)> {
-        let following = Self::te_style_at_offset(runs, start + deleted);
-        let mut edited: Vec<(usize, TeResolvedStyle)> = Vec::with_capacity(runs.len() + 2);
-        for run in runs {
-            if run.start < start {
-                edited.push((run.start, run.style));
-            } else if run.start > start + deleted {
-                edited.push((run.start - deleted + inserted, run.style));
-            }
-        }
-        if inserted > 0 {
-            edited.push((start, inserted_style));
-        }
-        edited.push((start + inserted, following));
-        edited.sort_by_key(|(run_start, _)| *run_start);
-        let mut folded: Vec<(usize, TeResolvedStyle)> = Vec::with_capacity(edited.len());
-        for (run_start, style) in edited {
-            if run_start >= new_len && run_start != 0 {
-                continue;
-            }
-            match folded.last_mut() {
-                Some((last_start, last_style)) if *last_start == run_start => *last_style = style,
-                Some((_, last_style)) if *last_style == style => {}
-                _ => folded.push((run_start, style)),
-            }
-        }
-        if let Some(first) = folded.first_mut() {
-            first.0 = 0;
-        }
-        folded
+        crate::text_edit::style_runs_after_edit(
+            &runs.iter().map(|run| (run.start, run.style)).collect::<Vec<_>>(),
+            (start, deleted, inserted), inserted_style,
+            Self::te_style_at_offset(runs, start + deleted), new_len,
+        )
     }
 
     /// Keep a styled record's runs on their characters across an edit of
@@ -2264,17 +2240,9 @@ impl super::TrapDispatcher {
         if old == new || !Self::te_is_styled_record(bus, te_ptr) {
             return;
         }
-        let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
-        let start = prefix.min(selection_start);
-        let room = old.len().min(new.len()) - start;
-        let suffix = old[start..]
-            .iter()
-            .rev()
-            .zip(new[start..].iter().rev())
-            .take(room)
-            .take_while(|(a, b)| a == b)
-            .count();
-        let (deleted, inserted) = (old.len() - start - suffix, new.len() - start - suffix);
+        let Some((start, deleted, inserted)) = crate::text_edit::edited_byte_span(old, new, selection_start) else {
+            return;
+        };
         let runs = self.te_style_runs(bus, te_handle, old.len());
         let inserted_style =
             Self::te_null_style_resolved_style(bus, te_handle).unwrap_or_else(|| {

@@ -57,7 +57,10 @@ test protocol. Its Pages menu selects sixteen interactive views:
     `TESetStyle` runs, inspects mixed and continuous attributes with
     `TEContinuousStyle`, resolves Geneva and Monaco through `GetFNum`/`RealFont`,
     and compares `CharWidth`, `TextWidth`, and `MeasureText` results from the
-    same Font Manager state that renders the record.
+    same Font Manager state that renders the record. Clicking the styled field
+    focuses it through `TEActivate`/`TEClick`; typing and deletion use `TEKey`,
+    idle caret updates use `TEIdle`, and suspend/resume follows the guest
+    activation events. Leaving the page clears that focus.
 12. Standard File exercises modern and legacy Open and Save entry points,
     filters the Open list to `TEXT`, navigates into the fixture folder,
     accepts a returned `FSSpec`, edits a Save name, and cancels both legacy
