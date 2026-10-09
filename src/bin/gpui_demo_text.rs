@@ -509,7 +509,7 @@ pub(crate) fn classic_popup_control_label(
         };
         let line = ClassicLine::unicode(&display, guest_font.family, guest_font.point_size());
         let x = if title { (width - 6 - line.positions.last().copied().unwrap_or(0)).max(0) } else { i32::from(text_inset) };
-        let baseline = (height - i32::from(metrics.ascent) - i32::from(metrics.descent)) / 2 + i32::from(metrics.ascent);
+        let baseline = (height - i32::from(metrics.ascent) - i32::from(metrics.descent)) / 2 + i32::from(metrics.ascent) - i32::from(!title);
         for &(ink_x, ink_y, ink_width) in &line.ink {
             window.paint_quad(fill(Bounds::new(
                 point(bounds.left() + px((x + ink_x) as f32 * scale),

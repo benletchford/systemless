@@ -1,0 +1,30 @@
+{
+  "scope": "All three CPU/display modes, closed selected popup at default scale; no native oracle or scale/state qualification",
+  "command": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit --prefer-powerpc --capture-popup-controls-selected /tmp/popup-coordinates-ppc.png",
+  "image": "popup-coordinate-ppc.png",
+  "sha256": "f3f0ca194faed2f2f14cddfa12b1cc338806b286ee1ae4d47bddc9db82c0d296",
+  "sources": {
+    "src/bin/gpui_demo.rs": "a5e995bd7fed9caa5ba105591a222d0decf33c01d4a6733d3d6e50f079a75dd3",
+    "src/bin/gpui_demo_text.rs": "13d426a337d510b6ed8ce09d24455bc80f9e8eac2a65c9e16ae3da0df7d52566"
+  },
+  "captures": [
+    {
+      "mode": "mono",
+      "image": "popup-coordinate-mono.png",
+      "sha256": "f770c4d59caabc96b09648c37e11f28ab0f06e1d60474387a475d191be468a8e",
+      "review": "Full composed image visually inspected; labels fit and long selected name truncated before arrow; monochrome custom black panels retained"
+    },
+    {
+      "mode": "colour",
+      "image": "popup-coordinate-colour.png",
+      "sha256": "103658a5480ad49181a511b58d665225ff68ffabb9087d5f42db3d7bae5afc27",
+      "review": "Full composed image visually inspected; labels fit and long selected name truncated before arrow; monochrome custom black panels retained"
+    },
+    {
+      "mode": "ppc",
+      "image": "popup-coordinate-ppc.png",
+      "sha256": "f3f0ca194faed2f2f14cddfa12b1cc338806b286ee1ae4d47bddc9db82c0d296",
+      "review": "Full composed image visually inspected; labels fit and long selected name truncated before arrow; monochrome custom black panels retained"
+    }
+  ]
+}
