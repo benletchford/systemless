@@ -3816,6 +3816,14 @@ fn window_creation_and_disposal_commands_dispatch_with_canonical_evaluation() {
             let window = loaded.cpu.gpr[3];
             assert_ne!(window, 0);
             assert!(loaded.window_list.contains(&window));
+
+            // NewWindow with bounds = 0 returns 0
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[4] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], 0);
         }
 
         // 3. NewCWindow
@@ -3839,6 +3847,14 @@ fn window_creation_and_disposal_commands_dispatch_with_canonical_evaluation() {
             let window = loaded.cpu.gpr[3];
             assert_ne!(window, 0);
             assert!(loaded.window_list.contains(&window));
+
+            // NewCWindow with bounds = 0 returns 0
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[4] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], 0);
         }
 
         // 4. GetNewWindow
@@ -3913,6 +3929,14 @@ fn window_creation_and_disposal_commands_dispatch_with_canonical_evaluation() {
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
             assert!(!loaded.window_list.contains(&window));
+
+            // CloseWindow with window = 0 returns gracefully
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
         }
 
         // 7. DisposeWindow
@@ -3931,6 +3955,14 @@ fn window_creation_and_disposal_commands_dispatch_with_canonical_evaluation() {
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
             assert!(!loaded.window_list.contains(&window));
+
+            // DisposeWindow with window = 0 returns gracefully
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
         }
 
         // 8. CreateNewWindow
@@ -3953,6 +3985,39 @@ fn window_creation_and_disposal_commands_dispatch_with_canonical_evaluation() {
             let created_window = loaded.memory.read_u32_be(out_window_ptr).unwrap();
             assert_ne!(created_window, 0);
             assert!(loaded.window_list.contains(&created_window));
+
+            // CreateNewWindow rejects invalid window_class
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 1;
+            loaded.cpu.gpr[4] = 0;
+            loaded.cpu.gpr[5] = bounds_ptr;
+            loaded.cpu.gpr[6] = out_window_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3] as i32, -50);
+
+            // CreateNewWindow rejects bounds = 0
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 6;
+            loaded.cpu.gpr[4] = 0;
+            loaded.cpu.gpr[5] = 0;
+            loaded.cpu.gpr[6] = out_window_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3] as i32, -50);
+
+            // CreateNewWindow rejects out_window = 0
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 6;
+            loaded.cpu.gpr[4] = 0;
+            loaded.cpu.gpr[5] = bounds_ptr;
+            loaded.cpu.gpr[6] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3] as i32, -50);
         }
     }
 }

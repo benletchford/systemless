@@ -699,29 +699,31 @@ pub(super) fn dispatch_window_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::CloseWindow => {
-            let window = cpu.gpr[3];
-            ppc_close_window(
-                window,
-                memory,
-                process_memory_manager,
-                window_list,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                gworlds,
-                current_gworld,
-                current_gdevice,
-                screen_clut,
-                color_manager_clut,
-                toolbox_startup,
-                event_queue,
-                tick_count,
-                input,
-                quickdraw_fore_color,
-                quickdraw_back_color,
-                quickdraw_fore_indices,
-            );
+            if let Some(params) = crate::window_manager::evaluate_close_window_parameters(cpu.gpr[3]) {
+                let window = params.window_ptr();
+                ppc_close_window(
+                    window,
+                    memory,
+                    process_memory_manager,
+                    window_list,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    gworlds,
+                    current_gworld,
+                    current_gdevice,
+                    screen_clut,
+                    color_manager_clut,
+                    toolbox_startup,
+                    event_queue,
+                    tick_count,
+                    input,
+                    quickdraw_fore_color,
+                    quickdraw_back_color,
+                    quickdraw_fore_indices,
+                );
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::FrontWindow => {
@@ -1222,25 +1224,33 @@ pub(super) fn ppc_new_cwindow(
     window_list: &SharedProcessWindowList,
     current_gdevice: u32,
 ) -> u32 {
-    let bounds_ptr = cpu.gpr[4];
-    if bounds_ptr == 0 {
+    let Some(params) = crate::window_manager::evaluate_new_window_parameters(
+        cpu.gpr[3],
+        cpu.gpr[4],
+        cpu.gpr[5],
+        cpu.gpr[6] != 0,
+        cpu.gpr[7] as u16 as i16,
+        cpu.gpr[8],
+        cpu.gpr[9] != 0,
+        cpu.gpr[10],
+    ) else {
         *last_mem_error = PPC_PARAM_ERR;
         return 0;
-    }
+    };
 
-    let Some((top, left, bottom, right)) = ppc_read_rect(memory, bounds_ptr) else {
+    let Some((top, left, bottom, right)) = ppc_read_rect(memory, params.bounds_ptr()) else {
         *last_mem_error = PPC_PARAM_ERR;
         return 0;
     };
     ppc_new_cwindow_with_parameters(
         PpcNewCWindowParameters {
-            storage_ptr: cpu.gpr[3],
+            storage_ptr: params.storage_ptr(),
             bounds: (top, left, bottom, right),
-            visible: cpu.gpr[6] != 0,
-            proc_id: cpu.gpr[7] as u16 as i16,
-            behind: cpu.gpr[8],
-            go_away: cpu.gpr[9] != 0,
-            ref_con: cpu.gpr[10],
+            visible: params.visible(),
+            proc_id: params.proc_id(),
+            behind: params.behind(),
+            go_away: params.go_away(),
+            ref_con: params.ref_con(),
         },
         allocator,
         memory,
@@ -2348,9 +2358,14 @@ pub(super) fn ppc_get_new_cwindow(
     last_resource_error: &mut i16,
     host_menu_bar_hidden: bool,
 ) -> u32 {
-    let window_id = cpu.gpr[3] as u16 as i16;
-    let storage_ptr = cpu.gpr[4];
-    let behind = cpu.gpr[5];
+    let params = crate::window_manager::evaluate_get_new_window_parameters(
+        cpu.gpr[3] as u16 as i16,
+        cpu.gpr[4],
+        cpu.gpr[5],
+    );
+    let window_id = params.window_id();
+    let storage_ptr = params.storage_ptr();
+    let behind = params.behind();
     let Some(resource) = ppc_vfs_resource_index(
         vfs_resources,
         current_resource_refnum,
@@ -3424,14 +3439,20 @@ pub(super) fn ppc_dispatch_legacy_window(
             // Carbon Window Manager, CreateNewWindow: the bounds describe the
             // content region, and the returned WindowRef starts hidden.
             // Apple, Handling Carbon Windows and Controls, "Window and Control Tasks".
-            let window_class = cpu.gpr[3];
-            let attributes = cpu.gpr[4];
-            let bounds = cpu.gpr[5];
-            let out_window = cpu.gpr[6];
-            if !matches!(window_class, 6 | 13)
-                || bounds == 0
-                || out_window == 0
-                || ppc_read_rect(memory, bounds).is_none()
+            let params = match crate::window_manager::evaluate_create_new_window_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4],
+                cpu.gpr[5],
+                cpu.gpr[6],
+            ) {
+                Ok(params) => params,
+                Err(err) => return Some(PpcImportAction::Return(ppc_i16_result(err))),
+            };
+            let window_class = params.window_class();
+            let attributes = params.attributes();
+            let bounds = params.bounds_ptr();
+            let out_window = params.out_window_ptr();
+            if ppc_read_rect(memory, bounds).is_none()
                 || !ppc_memory_can_write_bytes(memory, out_window, 4)
             {
                 return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
@@ -3560,8 +3581,13 @@ pub(super) fn ppc_dispatch_legacy_window(
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
         PpcLegacyWindowOperation::GetNewWindow => {
+            let params = crate::window_manager::evaluate_get_new_window_parameters(
+                cpu.gpr[3] as u16 as i16,
+                cpu.gpr[4],
+                cpu.gpr[5],
+            );
             let previous_front = ppc_front_visible_process_window(memory, window_list);
-            let resource_id = cpu.gpr[3] as u16 as i16;
+            let resource_id = params.window_id();
             let Some(index) = ppc_vfs_resource_index(
                 vfs_resources,
                 current_resource_refnum,
@@ -3587,12 +3613,12 @@ pub(super) fn ppc_dispatch_legacy_window(
                 return Some(PpcImportAction::Return(0));
             };
             let mut window_cpu = cpu.clone();
-            window_cpu.gpr[3] = cpu.gpr[4];
+            window_cpu.gpr[3] = params.storage_ptr();
             window_cpu.gpr[4] = bounds;
             window_cpu.gpr[5] = title;
             window_cpu.gpr[6] = u32::from(u16::from_be_bytes([bytes[10], bytes[11]]) != 0);
             window_cpu.gpr[7] = u32::from(u16::from_be_bytes([bytes[8], bytes[9]]));
-            window_cpu.gpr[8] = cpu.gpr[5];
+            window_cpu.gpr[8] = params.behind();
             window_cpu.gpr[9] = u32::from(u16::from_be_bytes([bytes[12], bytes[13]]) != 0);
             window_cpu.gpr[10] = u32::from_be_bytes([bytes[14], bytes[15], bytes[16], bytes[17]]);
             let window = ppc_new_window_from_cpu(
@@ -3692,7 +3718,10 @@ pub(super) fn ppc_dispatch_legacy_window(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcLegacyWindowOperation::DisposeWindow => {
-            let window = cpu.gpr[3];
+            let Some(params) = crate::window_manager::evaluate_dispose_window_parameters(cpu.gpr[3]) else {
+                return Some(PpcImportAction::ReturnPreserve);
+            };
+            let window = params.window_ptr();
             toolbox_startup.windows_without_updates.remove(&window);
             let previous_front = ppc_front_visible_process_window(memory, window_list);
             let was_visible = ppc_window_is_visible(memory, window);
@@ -5533,6 +5562,10 @@ pub(super) fn ppc_close_window(
     quickdraw_back_color: &mut PpcRgbColor,
     quickdraw_fore_indices: &mut HashMap<u32, u8>,
 ) {
+    let Some(params) = crate::window_manager::evaluate_close_window_parameters(window) else {
+        return;
+    };
+    let window = params.window_ptr();
     let previous_front = ppc_front_visible_process_window(memory, window_list);
     let was_visible = ppc_window_is_visible(memory, window);
     let exposed = was_visible
