@@ -3175,7 +3175,7 @@ impl super::TrapDispatcher {
         Self::standard_file_clamp_name(&mut name);
         let bounds = self.standard_file_put_dialog_bounds();
         let saved_pixels = self.save_dialog_pixels(bus, bounds);
-        let name_len = name.len().min(i16::MAX as usize) as i16;
+        let name_len = encode_mac_roman_lossy(&name).len().min(i16::MAX as usize) as i16;
         let current_dir_id = *self.default_dir_id;
         let entries = self.standard_file_get_candidates_in_directory(current_dir_id, None);
         self.next_standard_file_generation = self.next_standard_file_generation.saturating_add(1);
@@ -3536,40 +3536,29 @@ impl super::TrapDispatcher {
         }
         if command_down && char_code.eq_ignore_ascii_case(&b'a') {
             tracking.sel_start = 0;
-            tracking.sel_end = tracking.name.len().min(i16::MAX as usize) as i16;
+            tracking.sel_end = encode_mac_roman_lossy(&tracking.name).len().min(i16::MAX as usize) as i16;
             return None;
         }
         if char_code == 0x08 || key_code == 0x33 {
             Self::standard_file_backspace(tracking);
             return None;
         }
-        if command_down || !(0x20..=0x7E).contains(&char_code) || matches!(char_code, b'/' | b':') {
+        if command_down || !(char_code >= 0x20 && char_code != 0x7F) || matches!(char_code, b'/' | b':') {
             return None;
         }
 
-        let ch = char_code as char;
+        let ch = decode_mac_roman(&[char_code]).chars().next().unwrap();
         Self::standard_file_replace_selection(tracking, ch);
         None
     }
 
     fn standard_file_backspace(tracking: &mut StandardFilePutTrackingState) {
         let (start, end) = Self::standard_file_selection_range(tracking);
-        if start < end {
-            tracking.name.replace_range(start..end, "");
-            tracking.sel_start = start.min(i16::MAX as usize) as i16;
-            tracking.sel_end = tracking.sel_start;
-            return;
-        }
-        if start == 0 {
-            return;
-        }
-        let prev = tracking.name[..start]
-            .char_indices()
-            .last()
-            .map(|(idx, _)| idx)
-            .unwrap_or(0);
-        tracking.name.replace_range(prev..start, "");
-        tracking.sel_start = prev.min(i16::MAX as usize) as i16;
+        let mut bytes = encode_mac_roman_lossy(&tracking.name);
+        let start = if start == end { start.saturating_sub(1) } else { start };
+        bytes.drain(start..end);
+        tracking.name = decode_mac_roman(&bytes);
+        tracking.sel_start = start as i16;
         tracking.sel_end = tracking.sel_start;
     }
 
@@ -3578,23 +3567,20 @@ impl super::TrapDispatcher {
         replacement: char,
     ) {
         let (start, end) = Self::standard_file_selection_range(tracking);
-        tracking
-            .name
-            .replace_range(start..end, &replacement.to_string());
-        Self::standard_file_clamp_name(&mut tracking.name);
-        let cursor = (start + replacement.len_utf8()).min(tracking.name.len());
-        let cursor = Self::standard_file_clamp_boundary(&tracking.name, cursor);
-        tracking.sel_start = cursor.min(i16::MAX as usize) as i16;
+        let mut bytes = encode_mac_roman_lossy(&tracking.name);
+        let byte = crate::mac_roman::encode_mac_roman_char(replacement).unwrap_or(b'?');
+        bytes.splice(start..end, [byte]);
+        bytes.truncate(63);
+        tracking.name = decode_mac_roman(&bytes);
+        tracking.sel_start = (start + 1).min(bytes.len()) as i16;
         tracking.sel_end = tracking.sel_start;
     }
 
     fn standard_file_selection_range(tracking: &StandardFilePutTrackingState) -> (usize, usize) {
-        let len = tracking.name.len();
+        let len = encode_mac_roman_lossy(&tracking.name).len();
         let a = (tracking.sel_start.max(0) as usize).min(len);
         let b = (tracking.sel_end.max(0) as usize).min(len);
-        let start = Self::standard_file_clamp_boundary(&tracking.name, a.min(b));
-        let end = Self::standard_file_clamp_boundary(&tracking.name, a.max(b));
-        (start, end)
+        (a.min(b), a.max(b))
     }
 
     fn standard_file_clamp_name(name: &mut String) {
@@ -3603,14 +3589,6 @@ impl super::TrapDispatcher {
                 break;
             }
         }
-    }
-
-    fn standard_file_clamp_boundary(text: &str, mut idx: usize) -> usize {
-        idx = idx.min(text.len());
-        while idx > 0 && !text.is_char_boundary(idx) {
-            idx -= 1;
-        }
-        idx
     }
 
     fn standard_file_point_in_rect(v: i16, h: i16, rect: (i16, i16, i16, i16)) -> bool {

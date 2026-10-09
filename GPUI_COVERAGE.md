@@ -2430,3 +2430,20 @@ These checks cover one viewport/scale and modal state. Long-directory wrapping,
 font mutation versus paint-time state, activation, exact geometry and authentic
 Macintosh font fidelity remain unqualified; the Save filename editor still uses
 host typography.
+
+
+### Save filename Mac Roman editing prerequisite
+
+The 68k retained Save buffer now treats selection endpoints as Mac Roman byte
+offsets, matching TextEdit and the snapshot. Initial selection and Command-A
+measure encoded bytes; insertion and backspace edit the encoded buffer before
+decoding its display string. Both CPU handlers now accept high Mac Roman
+characters while retaining filename separator and control-character guards.
+The 63-byte 68k filename limit is unchanged.
+
+The guest Save/replacement regression passes across monochrome 68k, colour 68k
+and PPC (34.02 seconds). New-file cases type `é£S`, delete twice to `é`, check
+selection (1,1), reinsert the suffix and inspect the returned FSSpec's encoded
+name bytes. Existing replacement cancellation/confirmation paths remain covered.
+This is guest editing evidence; the Save editor still uses host typography and
+needs glyph-aligned pointer selection, caret, scrolling and interaction work.
