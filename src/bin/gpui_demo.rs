@@ -197,6 +197,9 @@ mod desktop {
         capture_standard_file_new_folder_composed: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_standard_file_new_folder_error_composed: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_custom_menu_fallback: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -2367,41 +2370,41 @@ mod desktop {
                             .left(guest_px((rect.left - bounds.left) as f32))
                             .w(guest_px(rect.width() as f32)).h(guest_px(rect.height() as f32))
                     };
-                    let prompt = match folder.error {
-                        Some(-48) => "Name already exists",
-                        Some(-44 | -46) => "Disk is locked",
-                        Some(-37) => "Invalid folder name",
-                        Some(_) => "Could not create folder",
-                        None => "Name of new folder:",
-                    };
+                    let prompt = folder.prompt();
+                    let is_error = folder.error.is_some();
                     let mut overlay = div().id("guest-standard-new-folder").test_support()
-                        .role(gpui_kit::Role::Dialog).aria_label("New Folder")
+                        .role(if is_error { gpui_kit::Role::AlertDialog } else { gpui_kit::Role::Dialog }).aria_label(if is_error { "Folder creation error" } else { "New Folder" })
                         .absolute().top(guest_px(bounds.top as f32)).left(guest_px(bounds.left as f32))
                         .w(guest_px(bounds.width() as f32)).h(guest_px(bounds.height() as f32))
                         .bg(cx.theme().background).border_2().border_color(cx.theme().border)
                         .text_color(cx.theme().foreground).text_size(guest_px(13.))
-                        .child(at(layout.prompt).overflow_hidden().child(prompt));
-                    let (prefix, selected, suffix) = save_name_segments(&folder.name, folder.selection, true);
-                    let mut name = at(layout.name).id("guest-standard-new-folder-name").test_support()
-                        .aria_label("Name of new folder").overflow_hidden().flex().items_center().px_1()
-                        .border_1().border_color(cx.theme().accent).bg(cx.theme().background).child(prefix);
-                    if selected.is_empty() {
-                        name = name.child(div().w(guest_px(1.)).h(guest_px(14.)).bg(cx.theme().foreground));
-                    } else {
-                        name = name.child(div().bg(cx.theme().selection).text_color(cx.theme().foreground).child(selected));
+                        .child(at(if is_error { layout.error_message() } else { layout.prompt }).overflow_hidden().child(prompt));
+                    if !is_error {
+                        let (prefix, selected, suffix) = save_name_segments(&folder.name, folder.selection, true);
+                        let mut name = at(layout.name).id("guest-standard-new-folder-name").test_support()
+                            .aria_label("Name of new folder").overflow_hidden().flex().items_center().px_1()
+                            .border_1().border_color(cx.theme().accent).bg(cx.theme().background).child(prefix);
+                        if selected.is_empty() {
+                            name = name.child(div().w(guest_px(1.)).h(guest_px(14.)).bg(cx.theme().foreground));
+                        } else {
+                            name = name.child(div().bg(cx.theme().selection).text_color(cx.theme().foreground).child(selected));
+                        }
+                        overlay = overlay.child(name.child(suffix));
                     }
-                    overlay = overlay.child(name.child(suffix));
-                    for (rect, label, action) in [
+                    let actions = if is_error {
+                        vec![(layout.create, "OK", super::activation::FileAction::DismissFolderError)]
+                    } else { vec![
                         (layout.cancel, "Cancel", super::activation::FileAction::CancelNewFolder),
                         (layout.create, "Create", super::activation::FileAction::CreateFolder),
-                    ] {
-                        let enabled = label == "Cancel" || !folder.name.is_empty();
+                    ] };
+                    for (rect, label, action) in actions {
+                        let enabled = is_error || label == "Cancel" || !folder.name.is_empty();
                         let (id, generation) = (panel.guest_id, panel.generation);
                         let keyboard_sender = self.commands.clone();
                         let accessibility_sender = self.commands.clone();
                         overlay = overlay.child(at(rect).child(super::a11y::AccessibleComponent::new(super::choices::guest_button(
                             format!("guest-standard-new-folder-{id}-{generation}-{label}"), label.into(),
-                            true, enabled, false, label == "Create", scene_scale, cx,
+                            true, enabled, false, label == "Create" || label == "OK", scene_scale, cx,
                         ).w_full().h_full().when(enabled, |button| button.on_click(move |event, _, _| {
                             if matches!(event, ClickEvent::Keyboard(_)) {
                                 let _ = keyboard_sender.send(Command::ActivateFile(id, generation, action));
@@ -2597,6 +2600,7 @@ mod desktop {
         StandardFileSaveEditedComposed,
         StandardFileReplaceComposed,
         StandardFileNewFolderComposed,
+        StandardFileNewFolderErrorComposed,
     }
 
     #[cfg(feature = "gpui-demo-test")]
@@ -2734,6 +2738,7 @@ mod desktop {
                 | CaptureCase::StandardFileSaveEditedComposed
                 | CaptureCase::StandardFileReplaceComposed
                 | CaptureCase::StandardFileNewFolderComposed
+                | CaptureCase::StandardFileNewFolderErrorComposed
         );
         let standard_file_open = matches!(capture, CaptureCase::StandardFileOpenComposed);
         let standard_file_page = standard_file_save || standard_file_open;
@@ -3222,7 +3227,7 @@ mod desktop {
                         && panel.entries.as_ref().is_some_and(|entries| !entries.is_empty())
                 })
             }));
-            if matches!(capture, CaptureCase::StandardFileNewFolderComposed) {
+            if matches!(capture, CaptureCase::StandardFileNewFolderComposed | CaptureCase::StandardFileNewFolderErrorComposed) {
                 let panel = session.runner().standard_file_snapshot().unwrap();
                 let click = super::activation::ControlActivation::begin_file(&mut session, panel.guest_id, panel.generation, super::activation::FileAction::NewFolder).unwrap();
                 let tick = session.runner().guest_tick().saturating_add(1);
@@ -3235,6 +3240,23 @@ mod desktop {
                 let folder = panel.new_folder.as_ref().unwrap();
                 assert_eq!(folder.name, "untitled folder");
                 assert_eq!(folder.selection, (0, 15));
+                if matches!(capture, CaptureCase::StandardFileNewFolderErrorComposed) {
+                    let name = panel.entries.as_ref().unwrap().iter().find(|entry| entry.is_directory).unwrap().name.clone();
+                    for character in name.bytes() {
+                        session.deliver_input(MacintoshInput::KeyDown { mac_key: 0, character });
+                        session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character });
+                        let tick = session.runner().guest_tick().saturating_add(1);
+                        session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                    }
+                    let click = super::activation::ControlActivation::begin_file(&mut session, panel.guest_id, panel.generation, super::activation::FileAction::CreateFolder).unwrap();
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                    let click = click.advance(&mut session).unwrap();
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                    assert!(click.advance(&mut session).is_none());
+                    assert_eq!(session.runner().standard_file_snapshot().unwrap().new_folder.unwrap().error, Some(-48));
+                }
             }
             if matches!(capture, CaptureCase::StandardFileReplaceComposed) {
                 let panel = session.runner().standard_file_snapshot().unwrap();
@@ -4154,6 +4176,11 @@ mod desktop {
             capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileNewFolderComposed);
             return;
         }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_standard_file_new_folder_error_composed.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileNewFolderErrorComposed);
+            return;
+        }
         let (commands, receiver) = mpsc::channel();
         let updates = Arc::new(Mutex::new(None));
         let worker_updates = updates.clone();
@@ -4637,6 +4664,7 @@ mod desktop {
                         capture_standard_file_save_edited_composed: None,
                         capture_standard_file_replace_composed: None,
                         capture_standard_file_new_folder_composed: None,
+                        capture_standard_file_new_folder_error_composed: None,
                         capture_custom_menu_fallback: None,
                         capture_standard_menu: None,
                         capture_windows: None,
@@ -5853,6 +5881,7 @@ mod desktop {
                     session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character });
                     step(&mut session);
                 }
+                let before_error = session.runner().standard_file_snapshot().unwrap();
                 activate(&mut session, FileAction::CreateFolder);
                 let failed = session.runner().standard_file_snapshot().unwrap();
                 assert_eq!(failed.directory_id, original.directory_id);
@@ -5860,11 +5889,17 @@ mod desktop {
                 assert_eq!(failed.new_folder.as_ref().unwrap().error, Some(-48));
                 assert_eq!(failed.new_folder.as_ref().unwrap().name, duplicate);
                 assert_eq!(failed.name, original.name);
-                for _ in duplicate.bytes() {
-                    session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x33, character: 8 });
-                    session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x33, character: 8 });
-                    step(&mut session);
-                }
+                assert_ne!(failed.generation, before_error.generation);
+                assert!(ControlActivation::begin_file(&mut session, before_error.guest_id, before_error.generation, FileAction::CreateFolder).is_none());
+                assert!(ControlActivation::begin_file(&mut session, failed.guest_id, failed.generation, FileAction::CreateFolder).is_none());
+                activate(&mut session, FileAction::DismissFolderError);
+                let restored = session.runner().standard_file_snapshot().unwrap();
+                assert!(restored.new_folder.is_none());
+                assert_eq!(restored.name, original.name);
+                activate(&mut session, FileAction::NewFolder);
+                session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x33, character: 8 });
+                session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x33, character: 8 });
+                step(&mut session);
                 let empty = session.runner().standard_file_snapshot().unwrap();
                 assert!(empty.new_folder.as_ref().unwrap().name.is_empty());
                 assert!(ControlActivation::begin_file(&mut session, empty.guest_id, empty.generation, FileAction::CreateFolder).is_none());
@@ -9034,6 +9069,21 @@ mod desktop {
                 assert!(vertical >= folder_layout.create.0 && vertical < folder_layout.create.2);
                 assert!(horizontal >= folder_layout.create.1 && horizontal < folder_layout.create.3);
             }
+            cx.update_window(window.into(), |_, window, cx| {
+                view.update(cx, |demo, cx| {
+                    demo.standard_file.as_mut().unwrap().new_folder.as_mut().unwrap().error = Some(-48);
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                assert_eq!(window.find("guest-standard-new-folder").role(), Some(gpui_kit::Role::AlertDialog));
+                for label in ["Desktop", "New", "Cancel", "Save"] {
+                    assert_eq!(window.find(format!("guest-standard-save-8-2-{label}")).focused(), None);
+                }
+                window.click("guest-standard-new-folder-8-2-OK", cx);
+            }).unwrap();
+            let presses = receiver.try_iter().filter(|command| matches!(command,
+                super::Command::Input(MacintoshInput::MouseDown { .. } | MacintoshInput::MouseUp { .. }))).count();
+            assert_eq!(presses, 2);
         }
 
         #[cfg(feature = "gpui-demo-test")]

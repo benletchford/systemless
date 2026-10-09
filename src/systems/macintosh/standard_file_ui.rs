@@ -158,6 +158,22 @@ pub struct StandardFileNewFolderSnapshot {
     pub layout: StandardFileNewFolderLayout,
 }
 
+impl StandardFileNewFolderSnapshot {
+    pub fn prompt(&self) -> &'static str {
+        new_folder_prompt(self.error)
+    }
+}
+
+fn new_folder_prompt(error: Option<i16>) -> &'static str {
+    match error {
+        Some(-48) => "That name is already taken; please use another name.",
+        Some(-44 | -46) => "The disk is locked.",
+        Some(-37) => "The folder name is invalid.",
+        Some(_) => "The folder could not be created.",
+        None => "Name of new folder:",
+    }
+}
+
 /// Shared guest-coordinate geometry for the Standard File New Folder dialog.
 /// Files (1992), pp. 3-6–3-7. Keep the subsidiary panel within the retained
 /// parent's saved region so dismissing it restores the scene on either CPU.
@@ -182,6 +198,10 @@ impl StandardFileNewFolderLayout {
             cancel: (top + 66, left + 16, top + 88, left + 76),
             create: (top + 66, left + 136, top + 88, left + 198),
         }
+    }
+
+    pub fn error_message(&self) -> (i16, i16, i16, i16) {
+        (self.prompt.0, self.prompt.1, self.name.2, self.prompt.3)
     }
 
     pub(crate) fn mouse_action(&self, v: i16, h: i16) -> Option<StandardFileNewFolderAction> {
@@ -244,6 +264,19 @@ impl StandardFileNewFolderState {
         point: (i16, i16),
         scrap: &mut Vec<u8>,
     ) -> Option<StandardFileNewFolderAction> {
+        // Native Mac OS 8.1 Standard File closes the editor on failure and
+        // shows a one-button alert. Its OK returns to Save, not the editor.
+        if self.error.is_some() {
+            return match what {
+                1 if layout.mouse_action(point.0, point.1)
+                    == Some(StandardFileNewFolderAction::Create) =>
+                {
+                    Some(StandardFileNewFolderAction::Cancel)
+                }
+                3 | 5 => self.key(message, modifiers, scrap),
+                _ => None,
+            };
+        }
         match what {
             1 => layout.mouse_action(point.0, point.1).filter(|action| {
                 *action != StandardFileNewFolderAction::Create || !self.edit.text().is_empty()
@@ -263,6 +296,10 @@ impl StandardFileNewFolderState {
     ) -> Option<StandardFileNewFolderAction> {
         let character = message as u8;
         let key_code = (message >> 8) as u8;
+        if self.error.is_some() {
+            return crate::dialog_manager::is_dialog_default_key(character, key_code)
+                .then_some(StandardFileNewFolderAction::Cancel);
+        }
         let command = modifiers & 0x0100 != 0;
         if character == 27 || key_code == 0x35 || (command && character == b'.') {
             return Some(StandardFileNewFolderAction::Cancel);
@@ -319,6 +356,47 @@ impl StandardFileNewFolderState {
 #[cfg(test)]
 mod new_folder_tests {
     use super::{StandardFileNewFolderAction as Action, StandardFileNewFolderState};
+
+    #[test]
+    fn new_folder_error_is_a_single_action_modal_alert() {
+        let mut state = StandardFileNewFolderState::default();
+        state.error = Some(-48);
+        let original = state.edit.clone();
+        let mut scrap = b"clipboard".to_vec();
+        let layout = super::StandardFileNewFolderLayout::new((90, 140, 350, 500));
+        for (message, modifiers) in [(b'x' as u32, 0), (8, 0), (b'v' as u32, 0x100), (27, 0)] {
+            assert_eq!(state.key(message, modifiers, &mut scrap), None);
+            assert_eq!(state.edit, original);
+            assert_eq!(scrap, b"clipboard");
+        }
+        assert_eq!(
+            state.event(
+                &layout,
+                1,
+                0,
+                0,
+                (layout.cancel.0 + 1, layout.cancel.1 + 1),
+                &mut scrap
+            ),
+            None
+        );
+        assert_eq!(
+            state.event(
+                &layout,
+                1,
+                0,
+                0,
+                (layout.create.0 + 1, layout.create.1 + 1),
+                &mut scrap
+            ),
+            Some(Action::Cancel)
+        );
+        assert_eq!(state.key(13, 0, &mut scrap), Some(Action::Cancel));
+        assert_eq!(
+            state.key((0x4c << 8) | 3, 0, &mut scrap),
+            Some(Action::Cancel)
+        );
+    }
 
     #[test]
     fn new_folder_modal_geometry_and_pointer_defaults() {

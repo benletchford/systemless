@@ -19,6 +19,7 @@ pub enum FileAction {
     NewFolder,
     CreateFolder,
     CancelNewFolder,
+    DismissFolderError,
 }
 
 impl ControlActivation {
@@ -40,8 +41,9 @@ impl ControlActivation {
         // Inside Macintosh: Files (1992), pp. 3-3--3-13.
         let rect = if let Some(folder) = &panel.new_folder {
             match action {
-                FileAction::CreateFolder if !folder.name.is_empty() => folder.layout.create,
-                FileAction::CancelNewFolder => folder.layout.cancel,
+                FileAction::DismissFolderError if folder.error.is_some() => folder.layout.create,
+                FileAction::CreateFolder if folder.error.is_none() && !folder.name.is_empty() => folder.layout.create,
+                FileAction::CancelNewFolder if folder.error.is_none() => folder.layout.cancel,
                 _ => return None,
             }
         } else if panel.confirming_replace {
