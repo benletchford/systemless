@@ -313,6 +313,8 @@ pub enum PpcImportDispatcherTarget {
     SetMenuItemText,
     SetMenuItemCommandID,
     GetMenuItemCommandID,
+    SetMenuItemRefCon,
+    GetMenuItemRefCon,
     DeleteMenuItem,
     CalcMenuSize,
     PopUpMenuSelect,
@@ -2774,6 +2776,10 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::SetMenuItemCommandID,
         ("InterfaceLib" | "AppearanceLib", "GetMenuItemCommandID") =>
             PpcImportDispatcherTarget::GetMenuItemCommandID,
+        ("InterfaceLib" | "AppearanceLib", "SetMenuItemRefCon") =>
+            PpcImportDispatcherTarget::SetMenuItemRefCon,
+        ("InterfaceLib" | "AppearanceLib", "GetMenuItemRefCon") =>
+            PpcImportDispatcherTarget::GetMenuItemRefCon,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetMenuItemText" | "setmenuitemtext" | "SetItem" | "setitem",

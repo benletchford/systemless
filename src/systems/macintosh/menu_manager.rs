@@ -7,15 +7,16 @@ use crate::quickdraw::text::{get_glyph, QuickDrawTextStyle};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// Command IDs belong to items, so inserting/deleting earlier rows must move
-/// their associations. The IDs are distinct from the classic command-key byte.
-/// Apple Menu Manager Reference (2006), pp. 59 and 98.
+/// Independent 32-bit metadata belongs to items, so insertion/deletion of
+/// earlier rows must move its associations. Separate instances retain command
+/// IDs and reference constants without changing the classic command-key byte.
+/// Apple Menu Manager Reference (2006), pp. 59, 67, 98 and 106–107.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct MenuItemCommandIds {
+pub(crate) struct MenuItemU32Values {
     menus: std::collections::HashMap<u32, std::collections::BTreeMap<u16, u32>>,
 }
 
-impl MenuItemCommandIds {
+impl MenuItemU32Values {
     pub(crate) fn get(&self, menu: u32, item: u16) -> u32 {
         self.menus
             .get(&menu)
@@ -24,13 +25,13 @@ impl MenuItemCommandIds {
             .unwrap_or(0)
     }
 
-    pub(crate) fn set(&mut self, menu: u32, item: u16, command: u32) {
-        if command == 0 {
+    pub(crate) fn set(&mut self, menu: u32, item: u16, value: u32) {
+        if value == 0 {
             if let Some(items) = self.menus.get_mut(&menu) {
                 items.remove(&item);
             }
         } else {
-            self.menus.entry(menu).or_default().insert(item, command);
+            self.menus.entry(menu).or_default().insert(item, value);
         }
     }
 
@@ -41,13 +42,13 @@ impl MenuItemCommandIds {
         if let Some(items) = self.menus.remove(&menu) {
             let shifted = items
                 .into_iter()
-                .filter_map(|(item, command)| {
+                .filter_map(|(item, value)| {
                     let item = if item > after {
                         item.checked_add(count)?
                     } else {
                         item
                     };
-                    Some((item, command))
+                    Some((item, value))
                 })
                 .collect();
             self.menus.insert(menu, shifted);
@@ -58,11 +59,11 @@ impl MenuItemCommandIds {
         if let Some(items) = self.menus.remove(&menu) {
             let shifted = items
                 .into_iter()
-                .filter_map(|(item, command)| {
+                .filter_map(|(item, value)| {
                     if item == deleted {
                         return None;
                     }
-                    Some((if item > deleted { item - 1 } else { item }, command))
+                    Some((if item > deleted { item - 1 } else { item }, value))
                 })
                 .collect();
             self.menus.insert(menu, shifted);

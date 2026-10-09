@@ -168,6 +168,7 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                 PPC_NO_ERR
             };
             toolbox_startup.menu_item_commands.forget(menu);
+            toolbox_startup.menu_item_refcons.forget(menu);
             Some(PpcImportAction::Return(menu))
         }
         PpcImportDispatcherTarget::DisposeMenu => {
@@ -190,6 +191,7 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                 menu_handle,
             );
             toolbox_startup.menu_item_commands.forget(menu_handle);
+            toolbox_startup.menu_item_refcons.forget(menu_handle);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetMenu => {
@@ -258,7 +260,9 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SetMenuItemCommandID
-        | PpcImportDispatcherTarget::GetMenuItemCommandID => {
+        | PpcImportDispatcherTarget::GetMenuItemCommandID
+        | PpcImportDispatcherTarget::SetMenuItemRefCon
+        | PpcImportDispatcherTarget::GetMenuItemRefCon => {
             let menu = cpu.gpr[3];
             let item = cpu.gpr[4] as u16;
             let Some(items) = ppc_menu_items_from_memory(memory, menu).filter(|_| menu != 0) else {
@@ -267,20 +271,29 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             if item == 0 || usize::from(item) > items.items.len() {
                 return Some(PpcImportAction::Return(ppc_i16_result(-5622))); // menuItemNotFoundErr
             }
+            // The reference profile reports CarbonLib 1.3. Item zero for a
+            // menu-wide reference constant is only supported from 1.6 onward.
+            let values = if matches!(
+                binding.dispatcher_target,
+                PpcImportDispatcherTarget::SetMenuItemRefCon
+                    | PpcImportDispatcherTarget::GetMenuItemRefCon
+            ) {
+                &mut toolbox_startup.menu_item_refcons
+            } else {
+                &mut toolbox_startup.menu_item_commands
+            };
             if matches!(
                 binding.dispatcher_target,
                 PpcImportDispatcherTarget::SetMenuItemCommandID
+                    | PpcImportDispatcherTarget::SetMenuItemRefCon
             ) {
-                toolbox_startup
-                    .menu_item_commands
-                    .set(menu, item, cpu.gpr[5]);
+                values.set(menu, item, cpu.gpr[5]);
             } else {
                 let output = cpu.gpr[5];
                 if output == 0 || !ppc_memory_can_write_bytes(memory, output, 4) {
                     return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
                 }
-                let _ =
-                    memory.write_u32_be(output, toolbox_startup.menu_item_commands.get(menu, item));
+                let _ = memory.write_u32_be(output, values.get(menu, item));
             }
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
@@ -317,6 +330,7 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             );
             if result == PPC_NO_ERR && ppc_count_menu_items(memory, cpu.gpr[3]) < old_count {
                 toolbox_startup.menu_item_commands.delete(cpu.gpr[3], cpu.gpr[4] as u16);
+                toolbox_startup.menu_item_refcons.delete(cpu.gpr[3], cpu.gpr[4] as u16);
             }
             *last_mem_error = result;
             Some(PpcImportAction::ReturnPreserve)
@@ -420,6 +434,7 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                 let after = cpu.gpr[5] as u16 as i16;
                 let after = if after == i16::MAX { old_count } else { after.max(0) as u16 };
                 toolbox_startup.menu_item_commands.insert(cpu.gpr[3], after.min(old_count), added);
+                toolbox_startup.menu_item_refcons.insert(cpu.gpr[3], after.min(old_count), added);
             }
             *last_mem_error = result;
             Some(PpcImportAction::ReturnPreserve)
@@ -474,6 +489,7 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                 let after = cpu.gpr[5] as u16 as i16;
                 let after = if after == i16::MAX { old_count } else { after.max(0) as u16 };
                 toolbox_startup.menu_item_commands.insert(cpu.gpr[3], after.min(old_count), added);
+                toolbox_startup.menu_item_refcons.insert(cpu.gpr[3], after.min(old_count), added);
             }
             *last_mem_error = result;
             Some(PpcImportAction::ReturnPreserve)

@@ -9812,3 +9812,137 @@ fn menu_item_command_ids_follow_insert_delete_and_disposal() {
     run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeMenu);
     assert_eq!(loaded.toolbox_startup.menu_item_commands.get(menu, 1), 0);
 }
+
+#[test]
+fn menu_item_reference_constants_bind_and_round_trip_without_changing_shortcuts() {
+    for library in [
+        b"InterfaceLib".as_slice(),
+        b"AppearanceLib".as_slice(),
+        b"CarbonLib".as_slice(),
+    ] {
+        let pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+            library,
+            b"SetMenuItemRefCon",
+            0,
+            &[sm_index_reloc(0x30, 0)],
+        ));
+        let mut loaded = load_pef_application(&pef).unwrap();
+        assert_eq!(
+            loaded.imports[0].dispatcher_target,
+            PpcImportDispatcherTarget::SetMenuItemRefCon
+        );
+        assert_eq!(
+            dispatcher_target_for_import(
+                std::str::from_utf8(library).unwrap(),
+                "GetMenuItemRefCon"
+            ),
+            PpcImportDispatcherTarget::GetMenuItemRefCon
+        );
+        let scratch = PPC_DATA_BASE + 0x1000;
+        let menu = install_test_menu(&mut loaded, scratch, 128, b"Commands", b"One/A;Two/B");
+        let command = 0xc1d2_e3f4;
+        loaded
+            .toolbox_startup
+            .menu_item_commands
+            .set(menu, 1, 0x1020_3040);
+        loaded.cpu.gpr[3] = menu;
+        loaded.cpu.gpr[4] = 1;
+        loaded.cpu.gpr[5] = command;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let output = scratch + 0x180;
+        loaded.memory.write_u32_be(output + 4, 0x1122_3344).unwrap();
+        for (item, expected) in [(1, command), (2, 0)] {
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = item;
+            loaded.cpu.gpr[5] = output;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::GetMenuItemRefCon);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            assert_eq!(loaded.memory.read_u32_be(output), Some(expected));
+            assert_eq!(loaded.memory.read_u32_be(output + 4), Some(0x1122_3344));
+        }
+        assert_eq!(
+            loaded.toolbox_startup.menu_item_commands.get(menu, 1),
+            0x1020_3040
+        );
+        let items = ppc_menu_items_from_memory(&mut loaded.memory, menu).unwrap();
+        assert_eq!(items.items[0].command, b'A');
+        assert_eq!(items.items[1].command, b'B');
+        for (invalid_menu, invalid_item, error) in [
+            (0, 1, -5623),
+            (0xffff_fffc, 1, -5623),
+            (menu, 0, -5622),
+            (menu, 3, -5622),
+        ] {
+            loaded.cpu.gpr[3] = invalid_menu;
+            loaded.cpu.gpr[4] = invalid_item;
+            loaded.cpu.gpr[5] = 42;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::SetMenuItemRefCon);
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(error));
+            assert_eq!(
+                loaded.toolbox_startup.menu_item_refcons.get(menu, 1),
+                command
+            );
+        }
+        for invalid_output in [0, 0xffff_fffe] {
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = invalid_output;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::GetMenuItemRefCon);
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+        }
+        loaded.cpu.gpr[3] = menu;
+        loaded.cpu.gpr[4] = 1;
+        loaded.cpu.gpr[5] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetMenuItemRefCon);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.toolbox_startup.menu_item_refcons.get(menu, 1), 0);
+    }
+}
+
+#[test]
+fn menu_item_reference_constants_follow_insert_delete_and_disposal() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"SetMenuItemRefCon")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let menu = install_test_menu(&mut loaded, scratch, 128, b"Commands", b"One;Two");
+    loaded.cpu.gpr[3] = menu;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = 0x4142_4344;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetMenuItemRefCon);
+    assert!(ppc_write_pstring_bytes(
+        &mut loaded.memory,
+        scratch + 0x80,
+        b"Inserted"
+    ));
+    loaded.cpu.gpr[3] = menu;
+    loaded.cpu.gpr[4] = scratch + 0x80;
+    loaded.cpu.gpr[5] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InsertMenuItem);
+    assert_eq!(ppc_count_menu_items(&mut loaded.memory, menu), 3);
+    assert_eq!(loaded.toolbox_startup.menu_item_refcons.get(menu, 1), 0);
+    assert_eq!(
+        loaded.toolbox_startup.menu_item_refcons.get(menu, 2),
+        0x4142_4344
+    );
+    loaded.cpu.gpr[3] = menu;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DeleteMenuItem);
+    assert_eq!(
+        loaded.toolbox_startup.menu_item_refcons.get(menu, 1),
+        0x4142_4344
+    );
+    loaded.cpu.gpr[3] = menu;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DeleteMenuItem);
+    assert_eq!(loaded.toolbox_startup.menu_item_refcons.get(menu, 1), 0);
+    loaded.cpu.gpr[3] = menu;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = 0x5152_5354;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetMenuItemRefCon);
+    loaded.cpu.gpr[3] = menu;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeMenu);
+    assert_eq!(loaded.toolbox_startup.menu_item_refcons.get(menu, 1), 0);
+}
