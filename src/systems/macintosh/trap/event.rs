@@ -509,6 +509,34 @@ impl super::TrapDispatcher {
         bus: &MacMemoryBus,
         event_mask: u16,
     ) -> Option<super::dispatch::QueuedEvent> {
+        let queued = self.peek_toolbox_event_without_activation(bus, event_mask);
+        let activation = self.peek_process_activation_event(event_mask);
+        match (activation, queued) {
+            (Some(activation), Some(queued))
+                if Self::toolbox_event_priority(activation.what)
+                    < Self::toolbox_event_priority(queued.what) =>
+            {
+                Some(activation)
+            }
+            (activation, queued) => queued.or(activation),
+        }
+    }
+
+    fn peek_process_activation_event(&self, event_mask: u16) -> Option<super::dispatch::QueuedEvent> {
+        let tick = self.current_tick();
+        let position = self.input_state.mouse_position();
+        let modifiers = self.current_event_modifiers();
+        self.event_queue.with_mut(|queue| {
+            queue.activation.prepare_os_event(tick, position, modifiers);
+            queue.activation.peek_os_event(event_mask)
+        })
+    }
+
+    fn peek_toolbox_event_without_activation(
+        &mut self,
+        bus: &MacMemoryBus,
+        event_mask: u16,
+    ) -> Option<super::dispatch::QueuedEvent> {
         self.enqueue_open_application_event_if_needed(event_mask);
         self.enqueue_auto_key_if_due(
             bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK),
@@ -586,6 +614,16 @@ impl super::TrapDispatcher {
         );
         if Self::event_matches_mask(event_mask, 6) {
             self.service_window_picture_updates(cpu, bus);
+        }
+        if let Some(event) = self.peek_process_activation_event(event_mask) {
+            let queued = self.peek_toolbox_event_without_activation(bus, event_mask);
+            if queued.is_none_or(|queued| Self::toolbox_event_priority(event.what)
+                < Self::toolbox_event_priority(queued.what))
+            {
+                self.event_queue.with_mut(|queue| queue.activation.consume());
+                return (event.what, event.message, event.when, event.where_v,
+                    event.where_h, event.modifiers, true);
+            }
         }
         let pending_menu = self.peek_pending_native_menu_event(event_mask);
         let first_idx = self.matching_toolbox_event_index(event_mask);

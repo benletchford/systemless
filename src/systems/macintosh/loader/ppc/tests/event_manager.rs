@@ -1557,3 +1557,80 @@ fn hle_run_mirrors_shared_process_input_into_powerpc_low_memory() {
     assert_eq!(loaded.memory.read_u16_be(addr::MOUSE_LOC2), Some(115));
     assert_eq!(loaded.memory.read_u16_be(addr::MOUSE_LOC2 + 2), Some(210));
 }
+
+#[test]
+fn process_suspend_event_respects_masks_priority_and_stable_peeking() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"EventAvail")).unwrap();
+    let event_ptr = PPC_DATA_BASE + 0x1800;
+    loaded.memory.add_region(event_ptr, vec![0; 16]);
+    loaded.set_tick_count(41);
+    loaded.event_queue.with_mut(|queue| {
+        queue.activation.request(false);
+        queue.activation.begin_event_call(
+            Some(ApplicationSizeResource {
+                flags: 0x4000,
+                preferred_size: 0,
+                minimum_size: 0,
+            }),
+            true,
+            true,
+        );
+    });
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = event_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::EventAvail);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    // Native execution advances the clock before reaching the import. Capture
+    // that posting tick, then prove later scans do not substitute their ticks.
+    let posted_when = loaded.event_queue.with_ref(|queue| {
+        queue.activation.peek_os_event(0x8000).unwrap().when
+    });
+    assert!((41..99).contains(&posted_when));
+    loaded.set_tick_count(99);
+    for _ in 0..2 {
+        loaded.cpu.gpr[3] = 0x8000;
+        loaded.cpu.gpr[4] = event_ptr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::EventAvail);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+        assert_eq!(loaded.memory.read_u16_be(event_ptr), Some(15));
+        assert_eq!(loaded.memory.read_u32_be(event_ptr + 2), Some(0x0100_0000));
+        assert_eq!(loaded.memory.read_u32_be(event_ptr + 6), Some(posted_when));
+    }
+    loaded.cpu.gpr[3] = 0xffff;
+    loaded.cpu.gpr[4] = event_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetOSEvent);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3] = 0xffff;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FlushEvents);
+    for what in [3, 23] {
+        loaded.event_queue.push_back(PpcQueuedEvent {
+            what,
+            message: 0x0061,
+            when: 42,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+    }
+    for expected in [3, 15, 23] {
+        loaded.cpu.gpr[3] = 0xffff;
+        loaded.cpu.gpr[4] = event_ptr;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 1);
+        assert_eq!(loaded.memory.read_u16_be(event_ptr), Some(expected));
+        if expected == 15 {
+            assert_eq!(loaded.memory.read_u32_be(event_ptr + 6), Some(posted_when));
+        }
+    }
+    assert!(loaded
+        .event_queue
+        .with_ref(|queue| queue.activation.is_foreground()));
+    loaded.cpu.gpr[3] = 0x8000;
+    loaded.cpu.gpr[4] = event_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::EventAvail);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
