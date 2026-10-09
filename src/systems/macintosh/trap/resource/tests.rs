@@ -444,6 +444,27 @@ fn find_vfs_file_does_not_discard_explicit_path_components() {
 }
 
 #[test]
+fn vfs_finders_resolve_absolute_boot_volume_paths() {
+    let disp = super::super::TrapDispatcher::new();
+    let key = "Demo/Data/Control Files/Game Control 2";
+    disp.vfs.insert(key.to_string(), vec![1]);
+    disp.vfs_rsrc.insert(key.to_string(), vec![2]);
+
+    let absolute = "macintoshhd:Demo:Data:Control Files:game control 2";
+    assert_eq!(disp.find_vfs_file(absolute), Some(key.to_string()));
+    assert_eq!(disp.find_vfs_rsrc_file(absolute), Some(key.to_string()));
+
+    for unresolved in [
+        "Other Volume:Demo:Data:Control Files:Game Control 2",
+        ":MacintoshHD:Demo:Data:Control Files:Game Control 2",
+        "MacintoshHD:Demo:Missing:Game Control 2",
+    ] {
+        assert_eq!(disp.find_vfs_file(unresolved), None);
+        assert_eq!(disp.find_vfs_rsrc_file(unresolved), None);
+    }
+}
+
+#[test]
 fn find_vfs_rsrc_file_prefers_relative_path_components_before_basename() {
     let disp = super::super::TrapDispatcher::new();
     disp.vfs_rsrc

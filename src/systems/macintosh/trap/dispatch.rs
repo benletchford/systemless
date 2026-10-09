@@ -8012,7 +8012,10 @@ impl TrapDispatcher {
     /// through to an unrelated file with the same leaf name.
     pub(crate) fn find_vfs_rsrc_file(&self, name: &str) -> Option<String> {
         let normalized = Self::normalize_vfs_path(name);
-        let hfs_normalized = Self::normalize_hfs_path(name);
+        // Absolute HFS paths start with a volume name; boot-volume VFS keys
+        // start at its root. Preserve partial paths and other volume names.
+        // Inside Macintosh: Files (1992), pp. 2-27 to 2-30.
+        let hfs_normalized = Self::normalize_hfs_lookup_path(name);
         // Sort iteration so the first-match is stable across runs.
         let mut sorted_keys: Vec<&String> = self.vfs_rsrc.keys().collect();
         sorted_keys.sort_unstable();

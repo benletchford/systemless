@@ -9241,7 +9241,10 @@ impl super::TrapDispatcher {
     /// through to an unrelated file with the same leaf name.
     pub(crate) fn find_vfs_file(&self, name: &str) -> Option<String> {
         let normalized = super::TrapDispatcher::normalize_vfs_path(name);
-        let hfs_normalized = super::TrapDispatcher::normalize_hfs_path(name);
+        // Absolute HFS paths start with a volume name; boot-volume VFS keys
+        // start at its root. Preserve partial paths and other volume names.
+        // Inside Macintosh: Files (1992), pp. 2-27 to 2-30.
+        let hfs_normalized = super::TrapDispatcher::normalize_hfs_lookup_path(name);
         // Sort key iteration so the first match is stable across runs.
         let mut sorted_keys: Vec<&String> = self.vfs.keys().collect();
         sorted_keys.sort_unstable();
