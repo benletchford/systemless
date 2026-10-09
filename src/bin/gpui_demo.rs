@@ -6481,6 +6481,33 @@ mod desktop {
                             Some((offset, offset)), "Save glyph insertion boundary, powerpc={powerpc}");
                     }
                 }
+                if !replacing {
+                    let current = session.runner().standard_file_snapshot().unwrap();
+                    let rect = current.put_layout.as_ref().unwrap().name;
+                    let (font, size, _) = current.directory_font;
+                    let glyphs = super::super::text::ClassicLine::plain(&name_bytes, font, size);
+                    let h = |offset: usize| rect.1 + if powerpc { 0 } else { 1 } + glyphs.positions[offset] as i16;
+                    session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x38, character: 0 });
+                    session.deliver_input(MacintoshInput::MouseDown { vertical: rect.0 + 10, horizontal: h(1) });
+                    session.deliver_input(MacintoshInput::MouseUp { vertical: rect.0 + 10, horizontal: h(1) });
+                    for _ in 0..4 { step(&mut session); }
+                    assert_eq!(session.runner().standard_file_snapshot().unwrap().name_selection, Some((1, 3)), "Shift extends guest Save selection");
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x38, character: 0 });
+                    step(&mut session);
+                    session.deliver_input(MacintoshInput::MouseDown { vertical: rect.0 + 10, horizontal: h(1) });
+                    step(&mut session);
+                    session.deliver_input(MacintoshInput::MouseMove { vertical: rect.0 + 10, horizontal: h(3) });
+                    step(&mut session);
+                    assert_eq!(session.runner().standard_file_snapshot().unwrap().name_selection, Some((1, 3)), "held selection follows moving glyph boundary");
+                    session.deliver_input(MacintoshInput::MouseMove { vertical: rect.0 - 20, horizontal: rect.1 - 20 });
+                    step(&mut session);
+                    assert_eq!(session.runner().standard_file_snapshot().unwrap().name_selection, Some((0, 1)), "capture survives leaving the Save field");
+                    session.deliver_input(MacintoshInput::MouseUp { vertical: rect.0 - 20, horizontal: rect.1 - 20 });
+                    step(&mut session);
+                    session.deliver_input(MacintoshInput::MouseMove { vertical: rect.0 + 10, horizontal: h(3) });
+                    step(&mut session);
+                    assert_eq!(session.runner().standard_file_snapshot().unwrap().name_selection, Some((0, 1)), "release ends selection capture");
+                }
                 let origin = session.runner().dispatcher().mouse_position();
                 let click = ControlActivation::begin_file(&mut session, panel.guest_id, panel.generation, FileAction::Accept).unwrap();
                 step(&mut session);

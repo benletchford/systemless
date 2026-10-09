@@ -3180,6 +3180,7 @@ impl super::TrapDispatcher {
         let entries = self.standard_file_get_candidates_in_directory(current_dir_id, None);
         self.next_standard_file_generation = self.next_standard_file_generation.saturating_add(1);
         let tracking = StandardFilePutTrackingState {
+            pointer_anchor: None,
             new_folder: None,
             confirming_replace: false,
             generation: self.next_standard_file_generation,
@@ -3208,6 +3209,26 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         mut tracking: StandardFilePutTrackingState,
     ) {
+        if let Some(anchor) = tracking.pointer_anchor {
+            let release = self.event_queue.iter().position(|event| event.what == 2)
+                .and_then(|index| self.event_queue.remove(index));
+            let h = release.as_ref().map_or_else(|| self.window_tracking_mouse_pos(bus).1, |event| event.where_h);
+            let bytes = encode_mac_roman_lossy(&tracking.name);
+            let offset = crate::standard_file_ui::classic_text_offset_at_x(
+                &bytes, i32::from(h - tracking.bounds.1 - STANDARD_FILE_NAME_RECT.1 - 1),
+                |prefix| i32::from(Self::fb_measure_string(&decode_mac_roman(prefix), self.tx_font, self.tx_size)),
+            );
+            let previous = (tracking.sel_start, tracking.sel_end);
+            tracking.sel_start = anchor.min(offset) as i16;
+            tracking.sel_end = anchor.max(offset) as i16;
+            if release.is_some() || !self.window_tracking_button_down(bus) { tracking.pointer_anchor = None; }
+            if previous != (tracking.sel_start, tracking.sel_end) || release.is_some()
+                || !self.standard_file_dialog_intact(bus, tracking.bounds) {
+                self.draw_standard_file_put_dialog(bus, &tracking);
+            }
+            self.standard_file_put_tracking = Some(tracking);
+            return;
+        }
         if tracking.new_folder.as_mut().is_some_and(|folder| folder.idle(self.current_tick(), bus.read_long(addr::CARET_TIME))) {
             self.draw_standard_file_put_dialog(bus, &tracking);
         }
@@ -3309,6 +3330,7 @@ impl super::TrapDispatcher {
                         &mut tracking,
                         event.where_v,
                         event.where_h,
+                        event.modifiers & 0x0200 != 0,
                     );
                     break;
                 }
@@ -3452,6 +3474,7 @@ impl super::TrapDispatcher {
         tracking: &mut StandardFilePutTrackingState,
         v: i16,
         h: i16,
+        extend: bool,
     ) -> Option<StandardFilePutAction> {
         let (top, left, _, _) = tracking.bounds;
         let local_v = v - top;
@@ -3474,8 +3497,13 @@ impl super::TrapDispatcher {
                 &bytes, i32::from(local_h - STANDARD_FILE_NAME_RECT.1 - 1),
                 |prefix| i32::from(Self::fb_measure_string(&decode_mac_roman(prefix), self.tx_font, self.tx_size)),
             );
-            tracking.sel_start = offset as i16;
-            tracking.sel_end = offset as i16;
+            let anchor = if extend {
+                if offset < tracking.sel_start.max(0) as usize { tracking.sel_end.max(0) as usize }
+                else { tracking.sel_start.max(0) as usize }
+            } else { offset };
+            tracking.pointer_anchor = Some(anchor);
+            tracking.sel_start = anchor.min(offset) as i16;
+            tracking.sel_end = anchor.max(offset) as i16;
             None
         } else if Self::standard_file_point_in_rect(local_v, local_h, STANDARD_FILE_PUT_SCROLL_RECT)
             && !tracking.entries.is_empty()

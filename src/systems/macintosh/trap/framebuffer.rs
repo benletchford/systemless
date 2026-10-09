@@ -8997,6 +8997,7 @@ mod redraw_chrome_tests {
         disp.external_host_overlay_rects.clear();
         let put_bounds = (200, 8, 460, 368);
         disp.standard_file_put_tracking = Some(StandardFilePutTrackingState {
+            pointer_anchor: None,
             new_folder: None,
             confirming_replace: false,
             generation: 2,

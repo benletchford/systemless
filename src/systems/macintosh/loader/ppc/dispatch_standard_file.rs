@@ -63,6 +63,7 @@ pub(super) struct PpcStandardFileFilteringState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PpcStandardFilePutTrackingState {
+    pub(super) pointer_anchor: Option<usize>,
     pub(super) new_folder: Option<crate::standard_file_ui::StandardFileNewFolderState>,
     pub(super) confirming_replace: bool,
     pub(super) generation: u64,
@@ -1827,6 +1828,7 @@ fn ppc_standard_file_put_start(
     );
     startup.next_standard_file_generation = startup.next_standard_file_generation.saturating_add(1);
     let tracking = PpcStandardFilePutTrackingState {
+            pointer_anchor: None,
         new_folder: None,
         confirming_replace: false,
         generation: startup.next_standard_file_generation,
@@ -1922,6 +1924,24 @@ fn ppc_dispatch_standard_file(
                         next_working_directory_ref_num,
                         false,
                     );
+                }
+                if let Some(anchor) = tracking.pointer_anchor {
+                    let release = event_queue.iter().position(|event| event.what == 2)
+                        .and_then(|index| event_queue.remove(index));
+                    let h = release.as_ref().map_or(input.mouse_h, |event| event.where_h);
+                    let offset = crate::standard_file_ui::classic_text_offset_at_x(
+                        &tracking.name, i32::from(h - tracking.bounds.1 - PPC_STANDARD_FILE_PUT_NAME_RECT.1),
+                        |prefix| i32::from(ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, prefix)),
+                    );
+                    let previous = (tracking.sel_start, tracking.sel_end);
+                    tracking.sel_start = anchor.min(offset);
+                    tracking.sel_end = anchor.max(offset);
+                    if release.is_some() || !input.mouse_button { tracking.pointer_anchor = None; }
+                    if previous != (tracking.sel_start, tracking.sel_end) || release.is_some() {
+                        ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+                    }
+                    startup.standard_file_put_tracking = Some(tracking);
+                    return PpcImportAction::Yield(u64::MAX);
                 }
                 if tracking.new_folder.as_mut().is_some_and(|folder| folder.idle(tick_count, memory.read_u32_be(crate::memory::globals::addr::CARET_TIME).unwrap_or(crate::memory::globals::DEFAULT_CARET_TIME_TICKS))) {
                     ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
@@ -2132,8 +2152,12 @@ fn ppc_dispatch_standard_file(
                                 &tracking.name, i32::from(local.1 - PPC_STANDARD_FILE_PUT_NAME_RECT.1),
                                 |prefix| i32::from(ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, prefix)),
                             );
-                            tracking.sel_start = offset;
-                            tracking.sel_end = offset;
+                            let anchor = if event.modifiers & 0x0200 != 0 {
+                                if offset < tracking.sel_start { tracking.sel_end } else { tracking.sel_start }
+                            } else { offset };
+                            tracking.pointer_anchor = Some(anchor);
+                            tracking.sel_start = anchor.min(offset);
+                            tracking.sel_end = anchor.max(offset);
                         } else if ppc_standard_file_point_in_rect(
                             local,
                             PPC_STANDARD_FILE_PUT_SCROLL_RECT,
