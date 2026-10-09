@@ -1184,7 +1184,7 @@ pub(crate) fn dispatch_supported_import(
     }
 
     if let Some(action) =
-        dispatch_desk::dispatch_desk_import(dispatch_desk::PpcDeskDispatchContext { binding })
+        dispatch_desk::dispatch_desk_import(dispatch_desk::PpcDeskDispatchContext { binding, cpu })
     {
         return Some(action);
     }
@@ -2137,7 +2137,8 @@ pub(crate) fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::SystemTask
         | PpcImportDispatcherTarget::SystemClick
-        | PpcImportDispatcherTarget::OpenDeskAcc => {
+        | PpcImportDispatcherTarget::OpenDeskAcc
+        | PpcImportDispatcherTarget::CloseDeskAcc => {
             unreachable!("Desk Manager imports return through dispatch_desk_import")
         }
         PpcImportDispatcherTarget::AEInstallEventHandler

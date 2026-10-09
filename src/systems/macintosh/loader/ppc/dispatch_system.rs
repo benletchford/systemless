@@ -372,8 +372,13 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             let _ = ppc_write_pstring_bytes(memory, cpu.gpr[5], b"");
             PpcImportAction::ReturnPreserve
         }
-        PpcSystemCompatibilityOperation::SystemEdit
-        | PpcSystemCompatibilityOperation::DiBadMount => PpcImportAction::Return(0),
+        PpcSystemCompatibilityOperation::SystemEdit => {
+            let edit_cmd = cpu.gpr[3] as i16;
+            let params = crate::desk_manager::evaluate_system_edit_parameters(edit_cmd);
+            let result = if params.handled() { 1 } else { 0 };
+            PpcImportAction::Return(result)
+        }
+        PpcSystemCompatibilityOperation::DiBadMount => PpcImportAction::Return(0),
         PpcSystemCompatibilityOperation::FindNextComponent
         | PpcSystemCompatibilityOperation::OpenDefaultComponent => PpcImportAction::Return(0),
         PpcSystemCompatibilityOperation::CtbGetCtbVersion => PpcImportAction::Return(0x0200),
