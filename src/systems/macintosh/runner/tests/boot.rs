@@ -263,6 +263,50 @@ fn init_app_materializes_the_device_manager_unit_table() {
 }
 
 #[test]
+fn init_app_preserves_tagged_pointer_addresses_with_lo3bytes() {
+    for addressing_32_bit in [false, true] {
+        let mut runner = FixtureRunner::new(
+            8 * 1024 * 1024,
+            FixtureRunnerConfig {
+                addressing_32_bit,
+                ..FixtureRunnerConfig::default()
+            },
+        );
+        let app = LoadedApp {
+            ppc: None,
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            loaded_image_end: 0,
+            initial_sp: 0x007F_FFC0,
+            size_resource: None,
+        };
+
+        for _launch in 0..2 {
+            runner.bus.write_long(addr::LO3_BYTES, 0);
+            runner.init_app(&app);
+            let call_site = 0x0002_0000;
+            runner.bus.write_word(call_site, 0xC0B8); // AND.L ($031A).W,D0
+            runner.bus.write_word(call_site + 2, 0x031A);
+            runner.m68k.cpu.write_reg(Register::PC, call_site);
+            runner.m68k.cpu.write_reg(Register::D0, 0xA521_3456);
+
+            let (steps, running) = runner.run_steps(1, None);
+
+            assert!(running);
+            assert_eq!(steps, 1);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 0x0021_3456);
+        }
+    }
+}
+
+#[test]
 fn init_app_seeds_mmu32bit_low_memory_flag() {
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
     let app = LoadedApp {
