@@ -7973,7 +7973,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn popup_control_display_title(
+    pub(crate) fn popup_control_display_title(
         title: &str,
         available_width: i16,
         font_id: i16,

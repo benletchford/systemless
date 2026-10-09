@@ -3373,6 +3373,19 @@ impl FixtureRunner {
                 list_text_origin: (4, 11),
                 directory_marker: "▸",
                 list_name_limit: Some(36),
+                volume_text: Some((
+                    TrapDispatcher::popup_control_display_title(
+                        crate::trap::dispatch::BOOT_VOLUME_NAME,
+                        (get_layout.volume.3 - get_layout.volume.1 - 34).max(0), 0, 12,
+                    ),
+                    (15, {
+                        let metrics = crate::quickdraw::text::get_font_metrics(0, 12);
+                        crate::control_manager::centered_control_label_origin(
+                            (0, 0, get_layout.volume.2 - get_layout.volume.0, get_layout.volume.3 - get_layout.volume.1),
+                            0, metrics.ascent, metrics.descent,
+                        ).1 - 1
+                    }),
+                )),
                 confirming_replace: false,
                         new_folder: None,
                 standard_entry_point: tracking.standard_entry_point,
@@ -3410,6 +3423,7 @@ impl FixtureRunner {
                 list_text_origin: (4, 11),
                 directory_marker: "▸",
                 list_name_limit: Some(36),
+                volume_text: None,
             confirming_replace: tracking.confirming_replace,
             new_folder: tracking.new_folder.as_ref().map(|folder| folder.snapshot(tracking.bounds, 1, |bytes| {
                 TrapDispatcher::fb_measure_string(&crate::trap::types::decode_mac_roman(bytes), 0, 12)

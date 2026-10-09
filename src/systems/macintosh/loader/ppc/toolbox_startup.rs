@@ -248,6 +248,7 @@ impl PpcToolboxStartupState {
                 list_text_origin: (3, 13),
                 directory_marker: ">",
                 list_name_limit: None,
+                volume_text: Some(("Maci...".into(), (0, 12))),
                 confirming_replace: false,
                         new_folder: None,
                 standard_entry_point: tracking.standard_entry_point,
@@ -306,6 +307,7 @@ impl PpcToolboxStartupState {
                 list_text_origin: (3, 13),
                 directory_marker: ">",
                 list_name_limit: None,
+                volume_text: None,
             confirming_replace: tracking.confirming_replace,
             new_folder: tracking.new_folder.as_ref().map(|folder| folder.snapshot(tracking.bounds, 2, |bytes| {
                 ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes)
