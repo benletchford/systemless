@@ -182,17 +182,29 @@ UnresolvedWeak and the guest stub loads a zero transition vector. The
 one API with Apple's documented nondebugging-build behavior; all 64 PPC
 DrawSprocket tests and public CI checks pass.
 
+The [AIFF-header fix](https://github.com/benletchford/systemless/pull/4294) resolves
+SoundLib:ParseAIFFHeader against the open file and parses bounded AIFF/AIFC
+metadata. All 42 PPC sound-manager tests pass. The unchanged original music
+files use stereo 16-bit ima4 data at 22,050 Hz; compressed COMM frame counts
+and first-sample offsets are retained without decoding their samples.
+
 Current unchanged-original replay completes the tick-180 logo checkpoint,
 which has repeated trails/clipping, then reaches a clearly rendered Heroes III
 Complete DEMO main menu at frontend/guest tick 780. Explicit mouse movement
 and a two-tick New Game click (v 75, h 640) lead to the loading screen at tick
-962. Continuing the bounded run stops at
-[missing SoundLib:ParseAIFFHeader](https://github.com/benletchford/systemless/issues/4289)
-at frontend tick 1526 / guest tick 1525 (PC `01F00488`, SP `07F6E3A0`,
-LR `01272630`), with a black failure capture. Zero-assertion menu/loading
-scenario completions establish bounded startup/input response, not a playable
-map, sustained gameplay, saving/restart or browser qualification. The archive
-remains 110,469,948 bytes with SHA-256
+962. The former unsupported-import stop at frontend tick 1526 / guest tick
+1525 is passed: tick 1562 displays the adventure map and welcome dialog.
+
+A two-tick click on the welcome checkmark (v 382, h 400), followed by 180 ticks,
+reveals the map at tick 1744. Two clicks on the nearby chest (v 314, h 368),
+separated by 30 ticks, plot a route and move the hero. After a further 300 ticks,
+the reward dialog appears at tick 2078. Selecting gold (v 382, h 337) and
+confirming (v 480, h 400) closes the dialog, removes the chest and raises gold
+from 30,000 to 31,500 at tick 2144. Named captures were inspected; the bounded
+scenarios completed with zero automatic assertions and no exhausted frame
+budgets. This short map interaction does not establish sustained gameplay,
+save/load, audio fidelity or browser qualification. The archive remains
+110,469,948 bytes with SHA-256
 `3e5f77588f00ca681717aeaed8060d1e400a1774fb6c9787232209d64c007680`;
 exact-archive redistribution permission remains unestablished.
 
