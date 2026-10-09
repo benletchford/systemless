@@ -1111,6 +1111,99 @@ fn hle_import_runner_gets_world_to_frustum_matrix_during_rendering() {
 }
 
 #[test]
+fn q3_camera_frustum_matrices_preserve_native_homogeneous_scale() {
+    // Captured from Apple's PowerPC QuickDraw 3D camera constructors/getters.
+    // Perspective matrices have w = -view_z / yon, not merely -view_z.
+    let cases = [
+        (1.0, 100.0, PpcQ3CameraProjection::ViewAngleAspect {
+            fov: 1.0, aspect_ratio_x_to_y: 1.0,
+        }, [
+            [0.018304877, 0.0, 0.0, 0.0],
+            [0.0, 0.018304877, 0.0, 0.0],
+            [0.0, 0.0, 0.010101009, -0.01],
+            [0.0, 0.0, 0.01010101, 0.0],
+        ]),
+        (10.0, 2800.0, PpcQ3CameraProjection::ViewAngleAspect {
+            fov: 1.0, aspect_ratio_x_to_y: 510.0 / 361.0,
+        }, [
+            [0.00046274936, 0.0, 0.0, 0.0],
+            [0.0, 0.0006537456, 0.0, 0.0],
+            [0.0, 0.0, 0.00035842296, -0.00035714285],
+            [0.0, 0.0, 0.0035842294, 0.0],
+        ]),
+        (5.0, 500.0, PpcQ3CameraProjection::ViewAngleAspect {
+            fov: 0.7, aspect_ratio_x_to_y: 0.5,
+        }, [
+            [0.0054790243, 0.0, 0.0, 0.0],
+            [0.0, 0.0027395121, 0.0, 0.0],
+            [0.0, 0.0, 0.002020202, -0.002],
+            [0.0, 0.0, 0.01010101, 0.0],
+        ]),
+        (10.0, 2800.0, PpcQ3CameraProjection::ViewPlane {
+            view_plane: 10.0, half_width_at_view_plane: 2.0,
+            half_height_at_view_plane: 3.0,
+            center_x_on_view_plane: 0.25, center_y_on_view_plane: -0.5,
+        }, [
+            [0.0017857143, 0.0, 0.0, 0.0],
+            [0.0, 0.0011904762, 0.0, 0.0],
+            [0.000044642857, -0.00005952381, 0.00035842296, -0.00035714285],
+            [0.0, 0.0, 0.0035842294, 0.0],
+        ]),
+        (10.0, 2800.0, PpcQ3CameraProjection::Orthographic {
+            left: -2.0, top: 3.0, right: 2.0, bottom: -3.0,
+        }, [
+            [0.5, 0.0, 0.0, 0.0],
+            [0.0, 0.33333334, 0.0, 0.0],
+            [0.0, 0.0, 0.00035842293, 0.0],
+            [0.0, 0.0, 0.0035842294, 1.0],
+        ]),
+    ];
+    for (near, far, projection, expected) in cases {
+        let pef = synthetic_pef_with_library_import(
+            b"QuickDraw\xaa 3D", b"Q3Camera_GetViewToFrustum",
+        );
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let camera_type = match projection {
+            PpcQ3CameraProjection::ViewAngleAspect { .. } => PPC_Q3_CAMERA_TYPE_VIEW_ANGLE_ASPECT,
+            PpcQ3CameraProjection::ViewPlane { .. } => PPC_Q3_CAMERA_TYPE_VIEW_PLANE,
+            PpcQ3CameraProjection::Orthographic { .. } => PPC_Q3_CAMERA_TYPE_ORTHOGRAPHIC,
+        };
+        let camera = ppc_q3_alloc_object(
+            &mut loaded.q3_objects, &mut loaded.next_q3_object,
+            PpcQ3ObjectKind::Generic, camera_type, 0, 0,
+        );
+        loaded.q3_cameras.push(PpcQ3CameraRecord {
+            camera, camera_type,
+            placement: PpcQ3CameraPlacement {
+                camera_location: (3.0, 4.0, 5.0),
+                point_of_interest: (3.0, 4.0, 4.0), up_vector: (0.0, 1.0, 0.0),
+            },
+            range_hither: near, range_yon: far,
+            viewport_origin: (-1.0, 1.0), viewport_width: 2.0, viewport_height: 2.0,
+            projection,
+        });
+        let output = PPC_DATA_BASE + 0x1400;
+        loaded.memory.add_region(output, vec![0; 64]);
+        loaded.cpu.gpr[3] = camera;
+        loaded.cpu.gpr[4] = output;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+        let actual = ppc_read_q3_matrix4x4(&mut loaded.memory, output).unwrap();
+        for row in 0..4 {
+            for col in 0..4 {
+                let reference: f32 = expected[row][col];
+                let tolerance = reference.abs() * 8.0 * f32::EPSILON;
+                assert!((actual[row][col] - reference).abs() <= tolerance,
+                    "{projection:?} near={near} far={far} [{row}][{col}]: {} != {reference}",
+                    actual[row][col]);
+            }
+        }
+    }
+}
+
+#[test]
 fn quickdraw_3d_frustum_to_window_matrix_maps_pane_corners() {
     let pane = PpcQ3ViewportRect {
         left: 10,
@@ -11037,11 +11130,11 @@ fn hle_import_runner_handles_q3_view_angle_aspect_camera_state() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], 1);
     let frustum = ppc_read_q3_matrix4x4(&mut loaded.memory, output_ptr).unwrap();
-    assert!((frustum[0][0] - 0.75).abs() < 0.0001);
-    assert!((frustum[1][1] - 1.0).abs() < 0.0001);
-    assert!((frustum[2][2] - 250.0 / 249.75).abs() < 0.0001);
-    assert!((frustum[3][2] - 62.5 / 249.75).abs() < 0.0001);
-    assert_eq!(frustum[2][3], -1.0);
+    assert!((frustum[0][0] - 0.75 / 250.0).abs() < 0.000001);
+    assert!((frustum[1][1] - 1.0 / 250.0).abs() < 0.000001);
+    assert!((frustum[2][2] - 1.0 / 249.75).abs() < 0.000001);
+    assert!((frustum[3][2] - 0.25 / 249.75).abs() < 0.000001);
+    assert_eq!(frustum[2][3], -1.0 / 250.0);
     assert_eq!(frustum[3][3], 0.0);
 
     for offset in 0..PPC_Q3_CAMERA_PLACEMENT_SIZE {
@@ -11344,13 +11437,13 @@ fn hle_import_runner_handles_q3_orthographic_and_view_plane_camera_state() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], 1);
     let frustum = ppc_read_q3_matrix4x4(&mut loaded.memory, output_ptr).unwrap();
-    assert_f32_close(frustum[0][0], 1.0);
-    assert_f32_close(frustum[1][1], 2.0);
-    assert_f32_close(frustum[2][0], 0.25);
-    assert_f32_close(frustum[2][1], -0.25);
-    assert_f32_close(frustum[2][2], 10.0 / 9.5);
-    assert_f32_close(frustum[3][2], 5.0 / 9.5);
-    assert_eq!(frustum[2][3], -1.0);
+    assert_f32_close(frustum[0][0], 0.1);
+    assert_f32_close(frustum[1][1], 0.2);
+    assert_f32_close(frustum[2][0], 0.025);
+    assert_f32_close(frustum[2][1], -0.025);
+    assert_f32_close(frustum[2][2], 1.0 / 9.5);
+    assert_f32_close(frustum[3][2], 0.5 / 9.5);
+    assert_eq!(frustum[2][3], -0.1);
     assert_eq!(frustum[3][3], 0.0);
 }
 
