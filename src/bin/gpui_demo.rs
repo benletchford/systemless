@@ -4986,6 +4986,7 @@ mod desktop {
             use systemless::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
 
             let item = |submenu_id| GuestMenuItem {
+                style: 0,
                 number: 1,
                 text: "Item".into(),
                 enabled: true,
@@ -7013,6 +7014,7 @@ mod desktop {
                             hierarchical: false,
                             visible_in_menu_bar: true,
                             items: vec![GuestMenuItem {
+                                style: 0,
                                 number: 1,
                                 text: "Open".into(),
                                 enabled: true,
@@ -7164,6 +7166,7 @@ mod desktop {
                             hierarchical: false,
                             visible_in_menu_bar: true,
                             items: vec![GuestMenuItem {
+                                style: 0,
                                 number: 1,
                                 text: "Open".into(),
                                 enabled: true,
@@ -7231,6 +7234,7 @@ mod desktop {
                 view.update(cx, |demo, cx| {
                     demo.menus.menus[0].items = (1..=40)
                         .map(|number| GuestMenuItem {
+                            style: 0,
                             number,
                             text: format!("Item {number}"),
                             enabled: true,
@@ -7311,6 +7315,7 @@ mod desktop {
                                 .into_iter()
                                 .enumerate()
                                 .map(|(index, text)| GuestMenuItem {
+                                    style: 0,
                                     number: index as i16 + 1,
                                     text: text.into(),
                                     enabled: true,
@@ -7433,6 +7438,7 @@ mod desktop {
                 .unwrap()
             });
             let item = |number, text: &str, submenu_id| GuestMenuItem {
+                style: 0,
                 number,
                 text: text.into(),
                 enabled: true,
@@ -8114,6 +8120,7 @@ mod desktop {
                             hierarchical: false,
                             visible_in_menu_bar: true,
                             items: vec![GuestMenuItem {
+                                style: 0,
                                 number: 1,
                                 text: "Preferences".into(),
                                 enabled: false,

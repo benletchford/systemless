@@ -951,6 +951,7 @@ mod tests {
             hierarchical: true,
             visible_in_menu_bar: false,
             items: vec![GuestMenuItem {
+                style: 0,
                 number: 2,
                 text: "Scout Kit".into(),
                 enabled: true,

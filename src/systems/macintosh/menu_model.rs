@@ -156,6 +156,8 @@ pub struct GuestMenu {
 /// One 1-based Menu Manager item.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GuestMenuItem {
+    /// Live Menu Manager QuickDraw style bits for the item text.
+    pub style: u8,
     pub number: i16,
     pub text: String,
     pub enabled: bool,
@@ -203,6 +205,7 @@ mod tests {
 
     fn item() -> GuestMenuItem {
         GuestMenuItem {
+            style: 0,
             number: 2,
             text: "Open".to_owned(),
             enabled: true,

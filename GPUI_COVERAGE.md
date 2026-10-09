@@ -2853,3 +2853,23 @@ are losslessly archived with scoped source/file/pixel hashes in
 `--state inactive` for a focused reproduction. This verifies a field focus
 change, not host suspension of the modal application; native font/input, wider
 scene and paired guest pixel comparison at every scale remain open.
+
+
+Menu typography work in progress: shared `GuestMenuItem` snapshots now carry
+the live QuickDraw style byte. The common menu-list projection regression
+verifies style preservation for regular and hierarchical entries (0.01 s).
+GPUI item-name labels now paint through shared styled QuickDraw glyph spans
+with ink-overhang bounds rather than host text shaping. The example check and
+build pass. A fresh monochrome open-menu composition was captured for review.
+Shortcut/mark/submenu symbols, menu-bar titles, scaled layout, guest-equivalent
+row geometry and style/interaction/native font qualification remain open; this
+work does not qualify complete menus.
+
+
+Menu item-name verification: the live-update keyboard-selection test passes
+(0.18 s), and the three-mode guest bridge page/nested-check regression passes
+(6.05 s). All three composed open Pages menus were visually reviewed and
+losslessly archived in `menu-guest-label-review.json` with source/fixture and
+file/pixel hashes. Item names fit this menu; styled rows, disabled/selected
+presentation, scaled menus and native font fidelity are not qualified by these
+plain-item captures. The remaining title/symbol/geometry gaps remain open.

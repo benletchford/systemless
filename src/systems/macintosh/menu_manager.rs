@@ -3518,6 +3518,7 @@ impl MenuList {
                         let number = i16::try_from(index + 1).unwrap_or(i16::MAX);
                         let submenu_id = hierarchical_menu_id(item.command, item.mark);
                         GuestMenuItem {
+                            style: item.style,
                             number,
                             text: decode_mac_roman(&item.text),
                             enabled: item.enabled,
@@ -5819,7 +5820,7 @@ mod tests {
                             icon: 0,
                             command: if handle == 0x1000 { 0x1b } else { b'D' },
                             mark: if handle == 0x1000 { 200 } else { 0x12 },
-                            style: 0,
+                            style: 0x03,
                             enabled: handle == 0x1000,
                         },
                         MenuItem {
@@ -5836,6 +5837,8 @@ mod tests {
         });
 
         assert_eq!(snapshot.menus.len(), 2);
+        assert_eq!(snapshot.menus[0].items[0].style, 0x03);
+        assert_eq!(snapshot.menus[1].items[0].style, 0x03);
         assert_eq!(snapshot.menus[0].guest_id, 0x1000);
         assert_eq!(snapshot.menus[1].guest_id, 0x2000);
         assert_eq!(snapshot.menus[0].title, "Systemless");

@@ -1,0 +1,56 @@
+{
+  "base_commit": "61503376345c129667004597c697bf35163e9b97",
+  "source_sha256": {
+    "src/bin/gpui_demo_menu.rs": "764b5ffde0423cc4c517e4bfba0a5d2349257c6681633e7c5586c15a6a966c45",
+    "src/bin/gpui_demo_text.rs": "62eeefba315bcf0a0325198fecf003d8b620b0d2c7b1119ad9f3c1f140ac2329",
+    "src/systems/macintosh/menu_manager.rs": "4d82602b2d0743ccf225d12a1be570fa44eaf319bab381cc4242c543e95917ca",
+    "src/systems/macintosh/menu_model.rs": "1e13e3101cbbb1ba3b61a0a5edc03010bfee7b7a723fc669d9fc8f4df532d971"
+  },
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "scope": "All three historical-viewport open Pages menu compositions visually reviewed. Item names fit; titles/symbols still host typography. Plain showcase names do not qualify styled rows or native font fidelity. Archive encoding preserves exact decoded pixels.",
+  "gaps": [
+    "styled rows visual evidence",
+    "titles and symbols",
+    "scale/state and native input",
+    "guest row geometry",
+    "native font oracle"
+  ],
+  "captures": [
+    {
+      "mode": "mono",
+      "file": "menu-guest-label-mono.png",
+      "size": [
+        1800,
+        1480
+      ],
+      "original_capture_sha256": "8db69c23c6026a143196ebc453aeb972b1a46abb2c3423a5bfb73d8f48d28b6f",
+      "sha256": "19726bf7f50de0879a1a960cee0313b81df783cc8edfdb9608a76451ea556125",
+      "decoded_pixel_sha256": "56d4201d88f3e90c8b92b13b4e9c25154695f8665cccfda1a9a752a17dabf352",
+      "command": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit --screen-depth 1 --capture-standard-menu /tmp/output.png"
+    },
+    {
+      "mode": "colour",
+      "file": "menu-guest-label-colour.png",
+      "size": [
+        1800,
+        1480
+      ],
+      "original_capture_sha256": "c41c8e5857e1b877f69c2c1b10cc1d51912f58152c859985844ca1be107f9e8f",
+      "sha256": "9b51452918d714bf9a950e12a8b36440c31f7c18e3664c98b0345341ce9be849",
+      "decoded_pixel_sha256": "b11116f2ed0c25669a265196806d575567b2ba049ce4adbebed603926301367b",
+      "command": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit --screen-depth 8 --capture-standard-menu /tmp/output.png"
+    },
+    {
+      "mode": "ppc",
+      "file": "menu-guest-label-ppc.png",
+      "size": [
+        1800,
+        1480
+      ],
+      "original_capture_sha256": "c41c8e5857e1b877f69c2c1b10cc1d51912f58152c859985844ca1be107f9e8f",
+      "sha256": "9b51452918d714bf9a950e12a8b36440c31f7c18e3664c98b0345341ce9be849",
+      "decoded_pixel_sha256": "b11116f2ed0c25669a265196806d575567b2ba049ce4adbebed603926301367b",
+      "command": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit --prefer-powerpc --capture-standard-menu /tmp/output.png"
+    }
+  ]
+}
