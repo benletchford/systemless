@@ -210,6 +210,9 @@ mod desktop {
         capture_standard_file_new_folder_long_composed: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_standard_file_new_folder_caret_hidden_composed: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_custom_menu_fallback: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -2633,6 +2636,7 @@ mod desktop {
         StandardFileNewFolderErrorComposed,
         StandardFileNewFolderSelectedComposed,
         StandardFileNewFolderLongComposed,
+        StandardFileNewFolderCaretHiddenComposed,
     }
 
     #[cfg(feature = "gpui-demo-test")]
@@ -2772,7 +2776,7 @@ mod desktop {
                 | CaptureCase::StandardFileNewFolderComposed
                 | CaptureCase::StandardFileNewFolderErrorComposed
                 | CaptureCase::StandardFileNewFolderSelectedComposed
-                | CaptureCase::StandardFileNewFolderLongComposed
+                | CaptureCase::StandardFileNewFolderLongComposed | CaptureCase::StandardFileNewFolderCaretHiddenComposed
         );
         let standard_file_open = matches!(capture, CaptureCase::StandardFileOpenComposed);
         let standard_file_page = standard_file_save || standard_file_open;
@@ -3261,7 +3265,7 @@ mod desktop {
                         && panel.entries.as_ref().is_some_and(|entries| !entries.is_empty())
                 })
             }));
-            if matches!(capture, CaptureCase::StandardFileNewFolderComposed | CaptureCase::StandardFileNewFolderErrorComposed | CaptureCase::StandardFileNewFolderSelectedComposed | CaptureCase::StandardFileNewFolderLongComposed) {
+            if matches!(capture, CaptureCase::StandardFileNewFolderComposed | CaptureCase::StandardFileNewFolderErrorComposed | CaptureCase::StandardFileNewFolderSelectedComposed | CaptureCase::StandardFileNewFolderLongComposed | CaptureCase::StandardFileNewFolderCaretHiddenComposed) {
                 let panel = session.runner().standard_file_snapshot().unwrap();
                 let click = super::activation::ControlActivation::begin_file(&mut session, panel.guest_id, panel.generation, super::activation::FileAction::NewFolder).unwrap();
                 let tick = session.runner().guest_tick().saturating_add(1);
@@ -3274,7 +3278,7 @@ mod desktop {
                 let folder = panel.new_folder.as_ref().unwrap();
                 assert_eq!(folder.name, "untitled folder");
                 assert_eq!(folder.selection, (0, 15));
-                if matches!(capture, CaptureCase::StandardFileNewFolderLongComposed) {
+                if matches!(capture, CaptureCase::StandardFileNewFolderLongComposed | CaptureCase::StandardFileNewFolderCaretHiddenComposed) {
                     for character in b"wwwwwwwwwwwwwwwwwwwwwwwwwwwabcd" {
                         session.deliver_input(MacintoshInput::KeyDown { mac_key: 0, character: *character });
                         session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character: *character });
@@ -3284,6 +3288,22 @@ mod desktop {
                     let folder = session.runner().standard_file_snapshot().unwrap().new_folder.unwrap();
                     assert_eq!(folder.selection, (31, 31));
                     assert_eq!(folder.visible_offset, 31);
+                    assert!(folder.caret_visible);
+                    if matches!(capture, CaptureCase::StandardFileNewFolderCaretHiddenComposed) {
+                        let initial_tick = session.runner().guest_tick();
+                        for _ in 0..40 {
+                            let tick = session.runner().guest_tick().saturating_add(1);
+                            session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                            if !session.runner().standard_file_snapshot().unwrap().new_folder.unwrap().caret_visible {
+                                break;
+                            }
+                        }
+                        let folder = session.runner().standard_file_snapshot().unwrap().new_folder.unwrap();
+                        assert!(!folder.caret_visible, "caret did not enter its hidden phase");
+                        assert_eq!(session.runner().guest_tick().wrapping_sub(initial_tick), 32);
+                        assert_eq!(folder.selection, (31, 31));
+                        assert_eq!(folder.visible_offset, 31);
+                    }
                 }
                 if matches!(capture, CaptureCase::StandardFileNewFolderSelectedComposed) {
                     let field = folder.layout.name;
@@ -4243,10 +4263,16 @@ mod desktop {
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_standard_file_new_folder_caret_hidden_composed.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileNewFolderCaretHiddenComposed);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_standard_file_new_folder_long_composed.as_ref() {
             capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileNewFolderLongComposed);
             return;
         }
+        #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_standard_file_new_folder_selected_composed.as_ref() {
             capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileNewFolderSelectedComposed);
             return;
@@ -4737,6 +4763,7 @@ mod desktop {
                         capture_standard_file_new_folder_error_composed: None,
                         capture_standard_file_new_folder_selected_composed: None,
                         capture_standard_file_new_folder_long_composed: None,
+                        capture_standard_file_new_folder_caret_hidden_composed: None,
                         capture_custom_menu_fallback: None,
                         capture_standard_menu: None,
                         capture_windows: None,
@@ -5966,6 +5993,21 @@ mod desktop {
                 session.deliver_input(MacintoshInput::MouseUp { vertical: v, horizontal: end });
                 step(&mut session);
                 assert_eq!(session.runner().standard_file_snapshot().unwrap().new_folder.unwrap().selection, (15, 15), "end release: PPC={powerpc}, depth={depth:?}");
+                let caret_tick = session.runner().guest_tick();
+                for (elapsed, visible) in [(31, true), (32, false), (64, true)] {
+                    // A GUI deadline caps time; PPC returns at each VBL boundary.
+                    // Exercise every guest tick rather than treating one slice as
+                    // an instruction to jump directly to the checkpoint.
+                    for _ in 0..100 {
+                        if session.runner().guest_tick() >= caret_tick.saturating_add(elapsed) { break; }
+                        step(&mut session);
+                    }
+                    assert_eq!(session.runner().guest_tick(), caret_tick.saturating_add(elapsed),
+                        "caret checkpoint clock: PPC={powerpc}, depth={depth:?}, elapsed={elapsed}");
+                    let folder = session.runner().standard_file_snapshot().unwrap().new_folder.unwrap();
+                    assert_eq!(folder.caret_visible, visible,
+                        "New Folder idle caret: PPC={powerpc}, depth={depth:?}, elapsed={elapsed}");
+                }
                 session.deliver_input(MacintoshInput::KeyDown { mac_key: 0, character: b'x' });
                 session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character: b'x' });
                 step(&mut session);
@@ -9382,6 +9424,7 @@ mod desktop {
                     panel.new_folder = Some(systemless::runner::StandardFileNewFolderSnapshot {
                         name: "untitled folder".into(), selection: (0, 15), error: None,
                         visible_offset: 0,
+                        caret_visible: false,
                         insertion_positions: (0..=15).map(|i| folder_layout.name.1 + 2 + i * 7).collect(),
                         layout: folder_layout.clone(),
                     });
@@ -9437,6 +9480,7 @@ mod desktop {
                         let count = name.chars().count();
                         folder.selection = (count, count);
                         folder.visible_offset = count;
+                        folder.caret_visible = true;
                         folder.insertion_positions = (0..=count).map(|i| folder.layout.name.1 + 2 + i as i16 * 7).collect();
                         cx.notify();
                     });

@@ -999,6 +999,7 @@ pub(crate) fn dispatch_supported_import(
     if let Some(action) = dispatch_standard_file::dispatch_standard_file_import(
         dispatch_standard_file::PpcStandardFileDispatchContext {
             input,
+            tick_count: *tick_count,
             next_vfs_dir_id,
             heap_limit,
             handles,
