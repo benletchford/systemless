@@ -4836,3 +4836,88 @@ fn system_arena_leaves_a_separate_resource_tail_after_max_block() {
     assert!(loaded.memory.read_u8(arena).is_some());
     assert_eq!(total - largest, 2 * 1024 * 1024);
 }
+
+#[test]
+fn hle_import_runner_temporary_handle_locking_reports_errors_and_preserves_state() {
+    for (name, locked) in [
+        (b"TempHLock".as_slice(), true),
+        (b"TempHUnlock".as_slice(), false),
+    ] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(name)).unwrap();
+        let handle = ppc_alloc_handle_with_bytes(
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            test_handles!(loaded),
+            b"data",
+        );
+        let retained = loaded.process_memory_manager.0.clone();
+        retained
+            .borrow_mut()
+            .set_state_for_handle(handle, if locked { 0x60 } else { 0xe0 });
+        let result_code_ptr = PPC_DATA_BASE;
+        loaded.memory.add_region(result_code_ptr, vec![0xff; 4]);
+        for (input, result_ptr, expected_error, expected_state) in [
+            (
+                handle,
+                0xffff_fffe,
+                PPC_PARAM_ERR,
+                if locked { 0x60 } else { 0xe0 },
+            ),
+            (
+                0,
+                result_code_ptr,
+                PPC_NIL_HANDLE_ERR,
+                if locked { 0x60 } else { 0xe0 },
+            ),
+            (
+                0xffff_fff0,
+                result_code_ptr,
+                PPC_MEM_WZ_ERR,
+                if locked { 0x60 } else { 0xe0 },
+            ),
+            (
+                handle,
+                result_code_ptr,
+                PPC_NO_ERR,
+                if locked { 0xe0 } else { 0x60 },
+            ),
+            (handle, 0, PPC_NO_ERR, if locked { 0xe0 } else { 0x60 }),
+        ] {
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = input;
+            loaded.cpu.gpr[4] = result_ptr;
+            loaded.set_last_mem_error(PPC_MEM_FULL_ERR);
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], input, "void import must preserve r3");
+            assert_eq!(loaded.last_mem_error(), expected_error);
+            assert_eq!(
+                retained.borrow().state_for_handle(handle),
+                Some(expected_state)
+            );
+            if result_ptr == result_code_ptr {
+                assert_eq!(
+                    loaded.memory.read_u16_be(result_code_ptr),
+                    Some(expected_error as u16)
+                );
+                assert_eq!(loaded.memory.read_u16_be(result_code_ptr + 2), Some(0xffff));
+            }
+        }
+        // An empty master pointer reports nilHandleErr without locking it.
+        let empty = PPC_DATA_BASE + 8;
+        loaded.memory.add_region(empty, vec![0; 4]);
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = empty;
+        loaded.cpu.gpr[4] = result_code_ptr;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(
+            loaded.memory.read_u16_be(result_code_ptr),
+            Some(PPC_NIL_HANDLE_ERR as u16)
+        );
+        assert_eq!(retained.borrow().state_for_handle(empty), None);
+    }
+}

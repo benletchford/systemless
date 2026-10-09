@@ -1331,6 +1331,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::NewHandleSys { .. }
         | PpcImportDispatcherTarget::TempNewHandle
         | PpcImportDispatcherTarget::TempDisposeHandle
+        | PpcImportDispatcherTarget::TempHLock
+        | PpcImportDispatcherTarget::TempHUnlock
         | PpcImportDispatcherTarget::HoldMemory
         | PpcImportDispatcherTarget::UnholdMemory
         | PpcImportDispatcherTarget::DisposeHandle

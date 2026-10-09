@@ -422,6 +422,35 @@ pub(super) fn dispatch_memory_import(
             }
             Some(PpcImportAction::Return(handle))
         }
+        PpcImportDispatcherTarget::TempHLock | PpcImportDispatcherTarget::TempHUnlock => {
+            // Unlike HLock/HUnlock, these void routines report OSErr through
+            // a second, caller-owned argument (Apple Memory Manager Reference).
+            let handle = cpu.gpr[3];
+            let result_code_ptr = cpu.gpr[4];
+            let result = if result_code_ptr != 0 && memory.read_u16_be(result_code_ptr).is_none() {
+                PPC_PARAM_ERR
+            } else if handle == 0 || memory.read_u32_be(handle) == Some(0) {
+                PPC_NIL_HANDLE_ERR
+            } else if !ppc_is_valid_handle(memory, handles, handle) {
+                PPC_MEM_WZ_ERR
+            } else {
+                if matches!(
+                    binding.dispatcher_target,
+                    PpcImportDispatcherTarget::TempHLock
+                ) {
+                    process_memory_manager.lock_process_handle(handle, false);
+                } else {
+                    process_memory_manager.unlock_process_handle(handle);
+                }
+                PPC_NO_ERR
+            };
+            process_memory_manager.set_native_mem_error(result);
+            *last_mem_error = result;
+            if result_code_ptr != 0 {
+                let _ = memory.write_u16_be(result_code_ptr, result as u16);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::TempDisposeHandle => {
             // TempDisposeHandle(Handle, OSErr *): dispose like DisposeHandle,
             // then report MemError through the caller-owned result pointer.
