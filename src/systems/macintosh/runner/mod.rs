@@ -2485,7 +2485,10 @@ impl FixtureRunner {
                         record.font_style,
                         |owner| owners.get(&owner).copied(),
                         |address| app.memory.read_u8(address),
-                    )
+                    ).map(|mut snapshot| {
+                        snapshot.popup_text_inset = 5;
+                        snapshot
+                    })
                 })
                 .collect()
         } else {

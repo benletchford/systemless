@@ -3046,3 +3046,20 @@ fixed-width truncation passes (0.02 seconds), as does the classic CDEF
 text/arrow clipping regression (0.08 seconds). Capture/source hashes
 revalidate. This closes the running-build checkpoint; exact control geometry,
 other scales/states and native parity remain unqualified.
+
+### CPU-specific popup selected text inset
+
+Guest CDEF inspection establishes distinct selected-label origins: classic
+68k uses box-left plus 15 pixels; PPC uses plus five. Control snapshots now
+retain this inset and GPUI uses it for both glyph placement and truncation
+budget. The updated example type-check passes. The existing three-mode popup
+metadata regression now asserts each inset; it is running. Corrected PPC
+compositions, exact box/baseline geometry and scale/state qualification remain
+open. The preceding ellipsis captures predate this PPC correction.
+
+The three-mode popup metadata/selection regression passes (59.50 seconds),
+including each CPU-specific inset. The corrected capture binary builds; its
+full PPC selected-control composition is reviewed and losslessly archived
+with hashes in `popup-ppc-text-inset-review.json`. The label uses the smaller
+PPC inset and retains guest ellipsis. Exact geometry, scales/states and native
+parity remain unqualified.

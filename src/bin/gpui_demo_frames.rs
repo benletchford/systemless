@@ -788,6 +788,7 @@ mod tests {
             title: String::new(),
             popup_menu_id: None,
             popup_title_width: None,
+            popup_text_inset: 15,
             popup_font: None,
             font_style: None,
         }
