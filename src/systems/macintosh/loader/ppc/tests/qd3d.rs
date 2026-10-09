@@ -15090,7 +15090,7 @@ fn q3_software_renderer_replays_trimesh_scene_commands_to_front_buffer() {
     assert_eq!(gpu_frame.draws[0].vertices[0].color, [0.0, 1.0, 0.0, 1.0]);
     assert!(loaded.q3_completed_frames.is_empty());
     assert_eq!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0)
     );
 
@@ -15119,7 +15119,7 @@ fn q3_software_renderer_replays_trimesh_scene_commands_to_front_buffer() {
     assert_eq!(loaded.q3_completed_frames.len(), 1);
     let fallback_stats = loaded.render_completed_q3_frames_to_front_buffer_fast();
     assert_eq!(fallback_stats.frames, 1);
-    assert!(fallback_stats.pixels >= 8);
+    assert!(fallback_stats.pixels > 0);
     assert!(loaded.q3_completed_frames.is_empty());
 
     let mut replay_loaded = load_pef_application(&pef).unwrap();
@@ -15153,23 +15153,23 @@ fn q3_software_renderer_replays_trimesh_scene_commands_to_front_buffer() {
     assert_eq!(stats.commands, 1);
     assert_eq!(stats.vertices, 3);
     assert_eq!(stats.triangles, 1);
-    assert!(stats.pixels >= 8);
+    assert!(stats.pixels > 0);
     assert_eq!(
         replay_loaded
             .memory
-            .read_u16_be(front_base + 4 * 16 + 4 * 2),
+            .read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x03e0)
     );
     assert_eq!(
         replay_loaded
             .memory
-            .read_u16_be(front_base + 4 * 2),
+            .read_u16_be(front_base + 16 + 4 * 2),
         Some(0x03e0)
     );
     assert_eq!(
         replay_loaded
             .memory
-            .read_u16_be(front_base + 4 * 16 + 7 * 2),
+            .read_u16_be(front_base + 3 * 16 + 6 * 2),
         Some(0x03e0)
     );
     assert_eq!(
@@ -15428,8 +15428,10 @@ fn q3_software_renderer_uses_pixmap_draw_context_destination() {
 
     assert_eq!(stats.commands, 1);
     assert_eq!(stats.triangles, 1);
-    assert!(stats.pixels >= 8);
-    for offset in [4 * 16 + 4 * 2, 4 * 2, 4 * 16 + 7 * 2] {
+    assert!(stats.pixels > 0);
+    // Probe inside the projected triangle, whose fractional corners are
+    // (3.5,3.5), (3.5,0.35), and (6.65,3.5).
+    for offset in [3 * 16 + 4 * 2, 16 + 4 * 2, 3 * 16 + 6 * 2] {
         assert_eq!(
             loaded.memory.read_u16_be(pixmap_base + offset),
             Some(0x03e0)
@@ -15589,8 +15591,10 @@ fn q3_software_renderer_uses_mac_draw_context_registered_port_destination() {
 
     assert_eq!(stats.commands, 1);
     assert_eq!(stats.triangles, 1);
-    assert!(stats.pixels >= 8);
-    for offset in [4 * 16 + 4 * 2, 4 * 2, 4 * 16 + 7 * 2] {
+    assert!(stats.pixels > 0);
+    // Probe inside the projected triangle, whose fractional corners are
+    // (3.5,3.5), (3.5,0.35), and (6.65,3.5).
+    for offset in [3 * 16 + 4 * 2, 16 + 4 * 2, 3 * 16 + 6 * 2] {
         assert_eq!(
             loaded.memory.read_u16_be(window_base + offset),
             Some(0x03e0)
@@ -15752,7 +15756,7 @@ fn q3_completed_frame_renders_to_dsp_back_buffer_mac_draw_context_until_swap() {
     assert_eq!(stats.frames, 1);
     assert_eq!(stats.commands, 1);
     assert_eq!(stats.triangles, 1);
-    assert!(stats.pixels >= 8);
+    assert!(stats.pixels > 0);
     assert!(loaded.q3_completed_frames.is_empty());
     assert_eq!(
         loaded
@@ -15760,7 +15764,9 @@ fn q3_completed_frame_renders_to_dsp_back_buffer_mac_draw_context_until_swap() {
             .map(|front_buffer| front_buffer.base_addr),
         Some(main_base)
     );
-    for offset in [4 * 16 + 4 * 2, 4 * 2, 4 * 16 + 7 * 2] {
+    // Probe inside the projected triangle, whose fractional corners are
+    // (3.5,3.5), (3.5,0.35), and (6.65,3.5).
+    for offset in [3 * 16 + 4 * 2, 16 + 4 * 2, 3 * 16 + 6 * 2] {
         assert_eq!(loaded.memory.read_u16_be(back_base + offset), Some(0x03e0));
         assert_eq!(loaded.memory.read_u16_be(main_base + offset), Some(0));
     }
@@ -15783,7 +15789,9 @@ fn q3_completed_frame_renders_to_dsp_back_buffer_mac_draw_context_until_swap() {
             .map(|front_buffer| front_buffer.base_addr),
         Some(main_base)
     );
-    for offset in [4 * 16 + 4 * 2, 4 * 2, 4 * 16 + 7 * 2] {
+    // Probe inside the projected triangle, whose fractional corners are
+    // (3.5,3.5), (3.5,0.35), and (6.65,3.5).
+    for offset in [3 * 16 + 4 * 2, 16 + 4 * 2, 3 * 16 + 6 * 2] {
         assert_eq!(loaded.memory.read_u16_be(main_base + offset), Some(0x03e0));
     }
 }
@@ -18461,15 +18469,15 @@ fn q3_software_renderer_blends_transparency_color_with_front_buffer() {
     assert_eq!(stats.triangles, 1);
     assert!(stats.pixels > 0);
     assert_eq!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x2017)
     );
     assert_ne!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x7c00)
     );
     assert_ne!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x001f)
     );
 }
@@ -18674,15 +18682,15 @@ fn q3_software_renderer_blends_vertex_transparency_color_with_front_buffer() {
     assert_eq!(stats.triangles, 1);
     assert!(stats.pixels > 0);
     assert_eq!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x2017)
     );
     assert_ne!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x7c00)
     );
     assert_ne!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x001f)
     );
 }
@@ -18875,15 +18883,15 @@ fn q3_software_renderer_uses_triangle_diffuse_and_transparency_colors() {
     assert_eq!(stats.triangles, 1);
     assert!(stats.pixels > 0);
     assert_eq!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x0117)
     );
     assert_ne!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x2017)
     );
     assert_ne!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x03e0)
     );
 }
@@ -19047,11 +19055,11 @@ fn q3_software_renderer_uses_vertex_diffuse_colors() {
     assert_eq!(stats.triangles, 1);
     assert!(stats.pixels > 0);
     assert_eq!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x001f)
     );
     assert_ne!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x7c00)
     );
 }
@@ -19208,7 +19216,7 @@ fn q3_software_renderer_applies_captured_light_colors_to_materials() {
     assert_eq!(stats.triangles, 1);
     assert!(stats.pixels > 0);
     assert_eq!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x4100)
     );
     // Omitting diffuse attributes uses the view's half-grey material,
@@ -19216,7 +19224,7 @@ fn q3_software_renderer_applies_captured_light_colors_to_materials() {
     loaded.q3_submission_materials[0].attributes.clear();
     loaded.render_q3_scene_commands_to_front_buffer();
     assert_eq!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x2080)
     );
 }
@@ -19475,7 +19483,7 @@ fn q3_software_renderer_uses_vertex_ambient_coefficients_for_ambient_lights() {
     assert_eq!(stats.triangles, 1);
     assert!(stats.pixels > 0);
     assert_eq!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x2000)
     );
 }
@@ -19644,7 +19652,7 @@ fn q3_software_renderer_uses_triangle_ambient_coefficients_for_ambient_lights() 
     assert_eq!(stats.triangles, 1);
     assert!(stats.pixels > 0);
     assert_eq!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x2000)
     );
 }
@@ -20107,7 +20115,7 @@ fn q3_software_renderer_honors_vertex_highlight_states_for_phong_specular() {
     assert_eq!(stats.triangles, 1);
     assert!(stats.pixels > 0);
     assert_eq!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0)
     );
 }
@@ -20230,7 +20238,7 @@ fn q3_software_renderer_honors_triangle_highlight_states_for_phong_specular() {
     assert_eq!(stats.triangles, 1);
     assert!(stats.pixels > 0);
     assert_eq!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0)
     );
 }
@@ -20992,7 +21000,7 @@ fn q3_software_renderer_applies_specular_attributes_to_directional_lights() {
     assert_eq!(stats.triangles, 1);
     assert!(stats.pixels > 0);
     assert_eq!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x7c00)
     );
 }
@@ -21201,7 +21209,7 @@ fn q3_software_renderer_uses_vertex_specular_attributes_for_phong() {
     assert_eq!(stats.triangles, 1);
     assert!(stats.pixels > 0);
     assert_eq!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x001f)
     );
 }
@@ -21425,7 +21433,7 @@ fn q3_software_renderer_uses_triangle_specular_attributes_for_phong() {
     assert_eq!(stats.triangles, 1);
     assert!(stats.pixels > 0);
     assert_eq!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x001f)
     );
 }
@@ -22521,7 +22529,7 @@ fn q3_software_renderer_applies_linear_fog_style_to_materials() {
     assert_eq!(stats.triangles, 1);
     assert!(stats.pixels > 0);
     assert_eq!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x001f)
     );
 }
@@ -22758,15 +22766,15 @@ fn q3_software_renderer_applies_alpha_fog_from_vertex_transparency() {
     assert_eq!(stats.triangles, 1);
     assert!(stats.pixels > 0);
     assert_eq!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x2017)
     );
     assert_ne!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x7c00)
     );
     assert_ne!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x001f)
     );
 }
@@ -22914,7 +22922,7 @@ fn q3_software_renderer_applies_captured_mipmap_texture_color() {
     assert_eq!(stats.triangles, 1);
     assert!(stats.pixels > 0);
     assert_eq!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x001f)
     );
 }
@@ -23067,15 +23075,15 @@ fn q3_software_renderer_blends_argb_texture_alpha() {
     assert_eq!(stats.triangles, 1);
     assert!(stats.pixels > 0);
     assert_eq!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x2017)
     );
     assert_ne!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x7c00)
     );
     assert_ne!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x001f)
     );
 }
@@ -23287,15 +23295,15 @@ fn q3_software_renderer_composes_texture_material_and_vertex_opacity() {
     assert_eq!(stats.triangles, 1);
     assert!(stats.pixels > 0);
     assert_eq!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(expected)
     );
     assert_ne!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x2017)
     );
     assert_ne!(
-        loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0x001f)
     );
 }
@@ -24156,7 +24164,7 @@ fn q3_software_renderer_clips_camera_near_and_far_depth() {
         near_trimesh_data,
         near_points_ptr,
         near_triangles_ptr,
-        [(-0.2, -0.2, -0.5), (-0.2, 0.2, -0.5), (0.8, 0.0, -2.0)],
+        [(-0.2, -0.8, -0.5), (-0.2, 0.8, -0.5), (0.8, 0.0, -2.0)],
     );
 
     let mut view_state = PpcQ3ViewStateRecord::new(view);
@@ -24253,6 +24261,7 @@ fn q3_software_renderer_clips_camera_near_and_far_depth() {
 fn q3_software_triangle_edge_walker_matches_direct_edge_equations() {
     fn point(x: i32, y: i32) -> PpcQ3SoftwareProjectedPoint {
         PpcQ3SoftwareProjectedPoint {
+            raster_position: None,
             x,
             y,
             z: 0.0,
@@ -26785,7 +26794,6 @@ fn import_bindings_classify_quickdraw_3d_accelerator_imports() {
         PpcImportDispatcherTarget::QAEngineGestalt
     );
 }
-
 #[test]
 fn q3_loaded_file_groups_keep_geometry_after_the_loading_list_is_disposed() {
     for nested in [false, true] {
@@ -26893,4 +26901,147 @@ fn check_loaded_file_group_lifetimes(nested: bool, retain_early: bool) {
         assert_eq!(call(&mut loaded, PpcImportDispatcherTarget::Q3ObjectDispose, &[group]), 1);
     }
     assert!(loaded.q3_trimeshes.is_empty(), "model disposal must release its geometry");
+}
+
+// Render independently submitted tiles into an 8x8 target without a camera.
+fn render_subpixel_tile_scene(front_base: u32, meshes: &[[(f32, f32, f32); 3]]) -> Vec<u8> {
+    let view = PPC_Q3_OBJECT_BASE;
+    let pef = synthetic_pef_with_library_import(b"QuickDraw\xaa 3D", b"Q3TriMesh_Submit");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.add_region(PPC_DATA_BASE + 0x1000, vec![0; 0x100 * meshes.len()]);
+    loaded.memory.add_region(front_base, vec![0x11; 8 * 8 * 2]);
+    loaded.gworlds = vec![PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+        port: PPC_MAIN_GWORLD, pixmap_handle: 0, pixmap: 0, base_addr: front_base,
+        gdevice: PPC_MAIN_GDEVICE, width: 8, height: 8, depth: 16, row_bytes: 16,
+        pixels_locked: false, pixels_no_purge: false,
+    }];
+    loaded.current_gworld.with_mut(|current| *current = PPC_MAIN_GWORLD);
+    loaded.q3_views.push(PpcQ3ViewStateRecord::new(view));
+    for (index, points) in meshes.iter().enumerate() {
+        let trimesh_data = PPC_DATA_BASE + 0x1000 + 0x100 * index as u32;
+        let points_ptr = trimesh_data + 0x80;
+        let triangles_ptr = trimesh_data + 0xc0;
+        for (offset, value) in [
+            (PPC_Q3_TRIMESH_NUM_TRIANGLES_OFFSET, 1),
+            (PPC_Q3_TRIMESH_TRIANGLES_OFFSET, triangles_ptr),
+            (PPC_Q3_TRIMESH_NUM_POINTS_OFFSET, 3),
+            (PPC_Q3_TRIMESH_POINTS_OFFSET, points_ptr),
+        ] {
+            loaded.memory.write_u32_be(trimesh_data + offset, value).unwrap();
+        }
+        for (point_index, point) in points.iter().enumerate() {
+            ppc_write_q3_vector3d(&mut loaded.memory, points_ptr + 12 * point_index as u32, *point)
+                .unwrap();
+            loaded.memory.write_u32_be(triangles_ptr + 4 * point_index as u32, point_index as u32)
+                .unwrap();
+        }
+        let kind = PpcQ3SubmissionKind::TriMesh;
+        loaded.q3_submissions.push(PpcQ3SubmissionRecord {
+            view, kind, primary: trimesh_data, secondary: 0,
+        });
+        loaded.q3_submission_transforms.push(PpcQ3SubmissionTransformRecord {
+            view, kind, primary: trimesh_data, secondary: 0,
+            local_to_world: ppc_q3_matrix4x4_identity(),
+        });
+        loaded.q3_submission_materials.push(PpcQ3SubmissionMaterialRecord {
+            view, kind, primary: trimesh_data, secondary: 0, shader: 0,
+            illumination_type: PPC_Q3_ILLUMINATION_TYPE_NULL, styles: Vec::new(),
+            fog_style: None, attributes: Vec::new(), shader_uv_transform: None,
+            shader_boundary: None, texture_shader: None, mipmap_texture: None,
+        });
+        loaded.q3_submission_lights.push(PpcQ3SubmissionLightRecord {
+            view, kind, primary: trimesh_data, secondary: 0, light_group: 0, lights: Vec::new(),
+        });
+    }
+    let stats = loaded.render_q3_scene_commands_to_front_buffer();
+    assert_eq!(stats.commands, meshes.len(), "{stats:?}");
+    assert!(stats.pixels > 0, "{stats:?}");
+    let mut bytes = vec![0; 8 * 8 * 2];
+    loaded.memory.read_bytes_into(front_base, &mut bytes).unwrap();
+    bytes
+}
+
+#[test]
+fn q3_software_renderer_keeps_subpixel_tile_boundaries_closed() {
+    // A rectangular surface split between a long edge and the same edge
+    // with an intermediate vertex. Rounding the vertices independently
+    // opens a crack at (3, 2), despite the meshes meeting in continuous space.
+    let a = (0.0, 0.6);
+    let b = (7.0, 3.6);
+    let middle = (1.6, 0.6 + 3.0 * 1.6 / 7.0);
+    let screen_triangles = [
+        [(0.0, 0.0), (7.0, 0.0), b],
+        [(0.0, 0.0), b, middle],
+        [(0.0, 0.0), middle, a],
+        [a, b, (7.0, 7.0)],
+        [a, (7.0, 7.0), (0.0, 7.0)],
+    ];
+    for reverse in [false, true] {
+        let meshes: Vec<_> = screen_triangles.iter().map(|triangle| {
+            let mut points = triangle.map(|(x, y)| (x * 2.0 / 7.0 - 1.0, 1.0 - y * 2.0 / 7.0, 0.0));
+            if reverse { points.swap(1, 2); }
+            points
+        }).collect();
+        for base in [PPC_DATA_BASE + 0x4000, PPC_HEAP_BASE + 0x1000] {
+            let pixels = render_subpixel_tile_scene(base, &meshes);
+            for (index, pixel) in pixels.chunks_exact(2).enumerate() {
+                assert_ne!(pixel, [0x11, 0x11],
+                    "uncovered pixel ({}, {}), reverse={reverse}, base={base:#x}", index % 8, index / 8);
+            }
+        }
+    }
+}
+
+#[test]
+fn q3_clip_intersections_land_exactly_on_each_frustum_plane() {
+    let camera = PpcQ3CameraRecord {
+        camera: PPC_Q3_OBJECT_BASE, camera_type: PPC_Q3_CAMERA_TYPE_VIEW_ANGLE_ASPECT,
+        placement: PpcQ3CameraPlacement {
+            camera_location: (0.0, 0.0, 0.0), point_of_interest: (0.0, 0.0, -1.0),
+            up_vector: (0.0, 1.0, 0.0),
+        },
+        range_hither: 1.0, range_yon: 100.0,
+        viewport_origin: (-1.0, 1.0), viewport_width: 2.0, viewport_height: 2.0,
+        projection: PpcQ3CameraProjection::ViewAngleAspect { fov: 1.0, aspect_ratio_x_to_y: 1.0 },
+    };
+    let front = PpcFrontBuffer { base_addr: 0, row_bytes: 1280, width: 640, height: 480, depth: 16 };
+    let pane = PpcQ3ViewportRect { left: 118, top: 9, right: 628, bottom: 370 };
+    for plane in [PpcQ3SoftwareClipPlane::Left, PpcQ3SoftwareClipPlane::Right,
+        PpcQ3SoftwareClipPlane::Bottom, PpcQ3SoftwareClipPlane::Top,
+        PpcQ3SoftwareClipPlane::Near, PpcQ3SoftwareClipPlane::Far] {
+        let vertex = |distance: f32, w: f32| {
+            let clip = match plane {
+                PpcQ3SoftwareClipPlane::Left => (distance, 0.0, 0.0, w),
+                PpcQ3SoftwareClipPlane::Right => (-distance, 0.0, 0.0, w),
+                PpcQ3SoftwareClipPlane::Bottom => (0.0, distance, 0.0, w),
+                PpcQ3SoftwareClipPlane::Top => (0.0, -distance, 0.0, w),
+                PpcQ3SoftwareClipPlane::Near => (0.0, 0.0, distance, w),
+                PpcQ3SoftwareClipPlane::Far => (0.0, 0.0, -distance, w),
+            };
+            PpcQ3SoftwareProjectedVertex {
+                x: 0.0, y: 0.0, z: 0.0, clip: Some(clip), world: (0.0, 0.0, 0.0),
+                view_direction: None, fog_depth: 0.0, uv: None, diffuse: None,
+                ambient_coefficient: None, normal: None, specular_color: None,
+                specular_control: None, highlight_state: None, vertex_alpha: None,
+            }
+        };
+        let outside = vertex(-100.1, 20.2);
+        let inside = vertex(30.3, 80.7);
+        for input in [[outside, inside], [inside, outside]] {
+            let clipped = ppc_q3_software_clip_projected_polygon_clip(&input, plane, camera, front, pane);
+            assert_eq!(clipped.len(), 3);
+            for point in clipped.iter().filter(|v| v.clip != inside.clip) {
+                assert_eq!(ppc_q3_software_clip_plane_value(point.clip.unwrap(), plane), Some(0.0),
+                    "intersection drift at {plane:?}: {point:?}");
+                match plane {
+                    PpcQ3SoftwareClipPlane::Left => assert_eq!(point.x, 118.0),
+                    PpcQ3SoftwareClipPlane::Right => assert_eq!(point.x, 627.0),
+                    PpcQ3SoftwareClipPlane::Bottom => assert_eq!(point.y, 369.0),
+                    PpcQ3SoftwareClipPlane::Top => assert_eq!(point.y, 9.0),
+                    _ => {},
+                }
+            }
+        }
+    }
 }
