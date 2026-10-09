@@ -81,7 +81,7 @@ gpui-demo-test = ["gpui-demo", "gpui-kit/test-support", "debug"]
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui-kit = { version = "=0.7.1", optional = true }
 objc2 = { version = "0.5.2", optional = true }
-objc2-app-kit = { version = "0.2.2", optional = true, features = ["NSApplication", "NSBitmapImageRep", "NSGraphics", "NSImage", "NSImageRep"] }
+objc2-app-kit = { version = "0.2.2", optional = true, features = ["NSApplication", "NSBitmapImageRep", "NSGraphics", "NSImage", "NSImageRep", "NSPasteboard"] }
 objc2-foundation = { version = "0.2.2", optional = true, features = ["NSGeometry", "NSObject", "NSString"] }
 
 [[bin]]

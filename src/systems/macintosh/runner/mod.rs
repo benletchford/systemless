@@ -3208,6 +3208,14 @@ impl FixtureRunner {
         self.process_context.import_clipboard_text(text);
     }
 
+    /// Snapshot global TEXT only after suspend handling and the following
+    /// eligible guest yield. `None` means switching is still pending or the
+    /// process is foreground; `Some(None)` means settled non-text/empty scrap.
+    /// Private TextEdit scrap is never read or modified at this boundary.
+    pub fn clipboard_text_after_suspend(&self) -> Option<Option<Vec<u8>>> {
+        self.process_context.clipboard_text_after_suspend()
+    }
+
     /// Request a process switch at the next eligible Event Manager opportunity.
     /// A parked WaitNextEvent is already such an opportunity; it can return
     /// the notification without waiting for the requested sleep to expire.

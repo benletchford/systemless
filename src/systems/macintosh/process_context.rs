@@ -10458,6 +10458,17 @@ impl ProcessContext {
         self.event_queue().with_mut(|queue| queue.activation.clipboard_changed());
     }
 
+    /// Export only after the application has handled suspend and yielded.
+    /// Its handler may first convert private scrap with TEToScrap (Macintosh
+    /// Toolbox Essentials (1992), pp. 2-58--2-61). A delivered notification
+    /// alone does not establish that conversion has completed.
+    pub(crate) fn clipboard_text_after_suspend(&self) -> Option<Option<Vec<u8>>> {
+        let ready = self.event_queue().with_ref(|queue| {
+            !queue.activation.is_foreground() && !queue.activation.needs_event_service()
+        });
+        ready.then(|| self.scrap_state.flavor(*b"TEXT").map(|flavor| flavor.data))
+    }
+
     pub(crate) fn attach_scrap_state(&self, adapter: &mut SharedProcessScrapState) {
         adapter.attach_to(&self.scrap_state);
     }
@@ -14050,6 +14061,30 @@ mod tests {
             queue.activation.begin_event_call(policy, true, true);
             assert_eq!(queue.activation.consume().unwrap().os_message(), Some(0x0100_0001));
         });
+    }
+
+    #[test]
+    fn clipboard_export_requires_handled_suspend_and_following_yield() {
+        let context = ProcessContext::default();
+        let policy = Some(crate::loader::ApplicationSizeResource {
+            flags: 0x4800, preferred_size: 0, minimum_size: 0,
+        });
+        context.scrap_state.initialize_and_append_entry(*b"TEXT", b"old".to_vec());
+        assert_eq!(context.clipboard_text_after_suspend(), None);
+        context.event_queue().with_mut(|queue| {
+            queue.activation.request(false);
+            queue.activation.begin_event_call(policy, true, true);
+            queue.activation.consume();
+        });
+        assert_eq!(context.clipboard_text_after_suspend(), None);
+        // The guest handler converts private text after consuming osEvt.
+        context.scrap_state.zero();
+        context.scrap_state.initialize_and_append_entry(*b"TEXT", b"guest copy".to_vec());
+        assert_eq!(context.clipboard_text_after_suspend(), None);
+        context.event_queue().with_mut(|queue| queue.activation.begin_event_call(policy, true, true));
+        assert_eq!(context.clipboard_text_after_suspend(), Some(Some(b"guest copy".to_vec())));
+        context.event_queue().with_mut(|queue| queue.activation.request(true));
+        assert_eq!(context.clipboard_text_after_suspend(), None);
     }
 
     #[test]

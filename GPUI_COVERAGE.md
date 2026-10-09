@@ -2197,8 +2197,23 @@ resume/private-scrap conversion regression pass (three tests, 30.08s). The
 showcase test runs monochrome 68k, colour 68k and PPC, observes changed and
 unchanged resume message bits, and preserves document text/selection. The
 platform-observer ordering regression also passes within the full installed
-binary suite (113 tests, zero failures, 368.42s). Guest-to-host export after guest suspend handling remains
-unfinished. Native clipboard integration, non-text format transport and native
+binary suite (113 tests, zero failures, 368.42s).
+
+Guest-to-host TEXT export now waits for the guest suspend handler and its next
+eligible event yield. The worker retains export candidates across coalesced
+updates; activation generations reject stale candidates. The macOS pasteboard
+change count protects newer host copies even when their text is identical.
+Unknown/mixed formats block export, and successful writes are remembered to
+avoid importing the bridge's own output. Macintosh Roman is decoded exactly
+and CR line endings become LF for host text.
+
+The focused clipboard suite passes seven tests (29.89s), including GPUI test
+platform read/write behavior and real guest Copy/private-scrap conversion in
+monochrome 68k, colour 68k and PPC. The separate guest scheduling boundary test
+also passes. These are mocked host-platform and actual guest evidence; physical
+macOS clipboard behavior has not been qualified. Initial active import and
+rapid suspend/resume coalescing still need guest conversion qualification.
+Native clipboard integration, non-text format transport and native
 oracle clipboard lifecycle qualification remain open; this does not qualify
 the complete clipboard bridge or overall GPUI readiness.
 
