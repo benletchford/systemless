@@ -236,8 +236,7 @@ pub(crate) const PPC_DEFAULT_DOUBLE_TIME_TICKS: u32 = 20;
 pub(crate) const PPC_RES_CHANGED_ATTR: u16 = 0x0002;
 pub(crate) const PPC_RES_PROTECTED_ATTR: u16 = 0x0008;
 pub const PPC_RES_PROBLEM: i16 = -204;
-pub(crate) const PPC_NO_SCRAP_ERR: i16 = -100;
-pub(crate) const PPC_NO_TYPE_ERR: i16 = -102;
+pub(crate) const PPC_NO_TYPE_ERR: i16 = crate::scrap_manager::NO_TYPE_ERR;
 // The 'q3v ' Gestalt selector uses the 'vers' encoding for QuickDraw 3D 1.6.
 // Apple, develop Issue 24 (Dec. 1995), p. 106; Macintosh Toolbox Essentials, p. 1-42.
 pub(crate) const PPC_QD3D_VERSION: u32 = 0x0160_8000;
