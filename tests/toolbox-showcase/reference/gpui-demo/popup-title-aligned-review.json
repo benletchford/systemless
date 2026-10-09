@@ -1,0 +1,45 @@
+{
+  "base_commit": "7c57c425534d6a4a769044c50996dac3c57f1e1f",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "77138e4e1243358d7d10ddf9aa9504ac15261983b858d69e8da58b7b24cf49da",
+    "src/bin/gpui_demo_text.rs": "63b2af0aae66673aea5ccfddb9180ae68889ccba72fa7d77586863601876e5f1"
+  },
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "records": [
+    {
+      "mode": "mono",
+      "file": "popup-title-aligned-mono.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "capture_sha256": "028e9b6a10ff1982aadaa3eecd70f3dfd0906edc53bf7bc0acf878ed51fff91c",
+      "file_sha256": "54d412ebaa5fedf44fbd6c8e78521c973f30249eb15654c2c4acbe8562c26b72",
+      "pixel_sha256": "9b476f52bedb21af7a9f679868e8262ecca4b32319236b8b90954cf62a16f5f8"
+    },
+    {
+      "mode": "colour",
+      "file": "popup-title-aligned-colour.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "capture_sha256": "1e6a3627ade255f6195900b8fdb203ee3fb310052f4a5cb754c78cf2043b0d04",
+      "file_sha256": "60778765ab2336b272637bb1ec3c98f02ba170e329f35b0c1a722c0135212147",
+      "pixel_sha256": "8b3805b9e9f76a7df653e3b64b234d5cd9cfd904258a4be56a0c776d5a77e866"
+    },
+    {
+      "mode": "ppc",
+      "file": "popup-title-aligned-ppc.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "capture_sha256": "90fed25b9347e4c9b8a532941a466c5c8f19f31d458e57d0b8284fc17ee74379",
+      "file_sha256": "b11fadc26125f436a19a02f6d1398430d5644b92285c3899e077796c0029b4a7",
+      "pixel_sha256": "f36b3ef79d85ae189862b5046b6cd294730c1fa35f23326c6918e2fafd304714"
+    }
+  ],
+  "review": "All full compositions reviewed: titles right aligned before selection boxes; selected long label remains clipped. Exact CDEF geometry, long-title policy, scales/states and native parity unqualified.",
+  "command": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit [--screen-depth 1|--screen-depth 8|--prefer-powerpc] --capture-popup-controls-selected OUTPUT"
+}

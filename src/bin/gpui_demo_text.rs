@@ -489,22 +489,22 @@ pub(crate) fn classic_menu_symbol(
 }
 
 pub(crate) fn classic_popup_control_label(
-    label: &str, font: systemless::menu_model::GuestMenuFont,
+    label: &str, font: systemless::menu_model::GuestMenuFont, title: bool,
     scale: f32, foreground: gpui_kit::Hsla,
 ) -> impl gpui_kit::IntoElement {
     classic_label_canvas_with_font(ClassicLine::unicode(label, font.family, font.point_size()),
-        false, scale, foreground, (font.family, font.point_size()))
+        false, scale, foreground, (font.family, font.point_size()), title.then_some(6))
 }
 
 fn classic_label_canvas(
     line: ClassicLine, centered: bool, scale: f32, foreground: gpui_kit::Hsla,
 ) -> impl gpui_kit::IntoElement {
-    classic_label_canvas_with_font(line, centered, scale, foreground, (0, 12))
+    classic_label_canvas_with_font(line, centered, scale, foreground, (0, 12), None)
 }
 
 fn classic_label_canvas_with_font(
     line: ClassicLine, centered: bool, scale: f32, foreground: gpui_kit::Hsla,
-    guest_font: (i16, i16),
+    guest_font: (i16, i16), right_inset: Option<i32>,
 ) -> impl gpui_kit::IntoElement {
     use gpui_kit::{prelude::*, *};
     let metrics = systemless::quickdraw::text::get_font_metrics(guest_font.0, guest_font.1);
@@ -513,7 +513,9 @@ fn classic_label_canvas_with_font(
         move |_, bounds, window, _| {
             let width = (f32::from(bounds.size.width) / scale).round() as i32;
             let height = (f32::from(bounds.size.height) / scale).round() as i32;
-            let x = if centered {
+            let x = if let Some(inset) = right_inset {
+                (width - inset - line.positions.last().copied().unwrap_or(0)).max(0)
+            } else if centered {
                 (width - line.positions.last().copied().unwrap_or(0)) / 2
             } else {
                 0
