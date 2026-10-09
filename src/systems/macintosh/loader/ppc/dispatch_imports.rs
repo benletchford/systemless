@@ -739,6 +739,13 @@ pub(crate) fn dispatch_supported_import(
             quickdraw_pen_h,
             quickdraw_pen_v,
             vfs_resources,
+            process_memory_manager,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            current_resource_refnum: *current_resource_refnum,
+            last_resource_error,
         })
     {
         return Some(action);
@@ -2185,6 +2192,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::CharWidth
         | PpcImportDispatcherTarget::GetFontInfo
         | PpcImportDispatcherTarget::FontMetrics
+        | PpcImportDispatcherTarget::FMSwapFont
         | PpcImportDispatcherTarget::GetFNum
         | PpcImportDispatcherTarget::FontToScript
         | PpcImportDispatcherTarget::SetPreserveGlyph

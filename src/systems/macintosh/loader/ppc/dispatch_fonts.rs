@@ -15,7 +15,14 @@ pub(super) struct PpcFontDispatchContext<'a> {
     pub(super) quickdraw_fore_indices: &'a HashMap<u32, u8>,
     pub(super) quickdraw_pen_h: &'a mut i16,
     pub(super) quickdraw_pen_v: &'a mut i16,
-    pub(super) vfs_resources: &'a [PpcVfsResourceRecord],
+    pub(super) vfs_resources: &'a mut Vec<PpcVfsResourceRecord>,
+    pub(super) process_memory_manager: &'a mut ProcessNativeMemoryManager,
+    pub(super) heap_cursor: &'a mut u32,
+    pub(super) heap_limit: u32,
+    pub(super) last_mem_error: &'a mut i16,
+    pub(super) handles: &'a mut Vec<PpcHandleRecord>,
+    pub(super) current_resource_refnum: i16,
+    pub(super) last_resource_error: &'a mut i16,
 }
 
 pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Option<PpcImportAction> {
@@ -33,9 +40,31 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
         quickdraw_pen_h,
         quickdraw_pen_v,
         vfs_resources,
+        process_memory_manager,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        current_resource_refnum,
+        last_resource_error,
     } = context;
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::FMSwapFont => {
+            let result = font_swap::swap_font(
+                cpu.gpr[3],
+                memory,
+                process_memory_manager,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                vfs_resources,
+                current_resource_refnum,
+                last_resource_error,
+            );
+            Some(PpcImportAction::Return(result))
+        }
         PpcImportDispatcherTarget::SetPreserveGlyph => {
             // Inside Macintosh: Text (1993), 4-62 through 4-63.
             toolbox_startup.preserve_glyph = cpu.gpr[3] != 0;

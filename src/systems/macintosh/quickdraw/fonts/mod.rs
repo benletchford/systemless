@@ -485,3 +485,8 @@ mod tests {
         assert!(std::ptr::eq(resolved, face));
     }
 }
+
+/// Original bundled outline bytes for Resource-Manager-visible font handles.
+pub(crate) fn bundled_font_bytes(font_id: i16) -> Option<&'static [u8]> {
+    bundled::bytes(font_id)
+}

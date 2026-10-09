@@ -208,3 +208,206 @@ fn ppc_vfs_seed_registers_fond_associated_application_font() {
     assert_eq!(face.size, point_size);
     assert_eq!(face.metrics.ascent, 1);
 }
+#[test]
+fn font_swap_returns_reusable_output_and_real_outline_resource_metadata() {
+    let pef = synthetic_pef_with_import(b"FMSwapFont");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let input = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(
+        input,
+        vec![0, 20, 0, 16, 1, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1],
+    );
+    loaded.cpu.gpr[3] = input;
+    loaded.cpu.gpr[4] = 0x12345678;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0x998);
+    assert_eq!(loaded.cpu.gpr[4], 0x12345678);
+    let handle = loaded.memory.read_u32_be(0x99a).unwrap();
+    let data = loaded.memory.read_u32_be(handle).unwrap();
+    assert_ne!(data, 0x998);
+    let resource = loaded
+        .vfs_resources
+        .iter()
+        .find(|r| r.handle == handle)
+        .unwrap();
+    assert_eq!(resource.res_type, u32::from_be_bytes(*b"sfnt"));
+    assert_eq!(resource.res_id, 20);
+    assert_eq!(
+        resource.data,
+        crate::quickdraw::fonts::bundled_font_bytes(20).unwrap()
+    );
+    assert!(skrifa::FontRef::new(&resource.data).is_ok());
+    assert_eq!(loaded.memory.read_u32_be(data), Some(0x00010000));
+    assert_eq!(loaded.memory.read_u16_be(0x9aa), Some(256));
+    assert_eq!(loaded.memory.read_u16_be(0x9ac), Some(256));
+    assert_eq!(loaded.memory.read_u16_be(0x9ae), Some(256));
+    assert_eq!(loaded.memory.read_u16_be(0x9b0), Some(256));
+    let info = input + 0x100;
+    loaded.memory.add_region(info, vec![0; 64]);
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = info;
+    loaded.cpu.gpr[5] = info + 2;
+    loaded.cpu.gpr[6] = info + 6;
+    let resource_records = loaded.vfs_resources.clone();
+    let mut resource_error = PPC_NO_ERR;
+    ppc_get_res_info(
+        &mut loaded.cpu,
+        &mut loaded.memory,
+        &resource_records,
+        &mut resource_error,
+    );
+    assert_eq!(resource_error, PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u16_be(info), Some(20));
+    assert_eq!(
+        loaded.memory.read_u32_be(info + 2),
+        Some(u32::from_be_bytes(*b"sfnt"))
+    );
+    let old_ascent = loaded.memory.read_u8(0x9a5).unwrap();
+    let heap_cursor = loaded.heap_cursor();
+    let handle_count = loaded.handles().len();
+    loaded.memory.write_u16_be(input + 8, 2).unwrap();
+    // The low device byte is reserved; only the high driver-reference byte matters.
+    loaded.memory.write_u16_be(input + 6, 0x007f).unwrap();
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = input;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 0x998);
+    assert_eq!(loaded.memory.read_u32_be(0x99a), Some(handle));
+    assert_eq!(loaded.handles().len(), handle_count);
+    assert_eq!(loaded.heap_cursor(), heap_cursor);
+    assert!(loaded.memory.read_u8(0x9a5).unwrap() > old_ascent);
+    assert_eq!(loaded.memory.read_u16_be(0x9aa), Some(256));
+    assert_eq!(loaded.memory.read_u16_be(0x9ac), Some(128));
+}
+
+#[test]
+fn font_swap_rejects_invalid_input_and_readonly_output_before_allocating_resources() {
+    let pef = synthetic_pef_with_import(b"FMSwapFont");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let input = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(
+        input,
+        vec![0, 20, 0, 16, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1],
+    );
+    let heap_cursor = loaded.heap_cursor();
+    let handle_count = loaded.handles().len();
+    let resource_count = loaded.vfs_resources.len();
+    for pointer in [0, input, u32::MAX - 8] {
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.gpr[3] = pointer;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.heap_cursor(), heap_cursor);
+        assert_eq!(loaded.handles().len(), handle_count);
+        assert_eq!(loaded.vfs_resources.len(), resource_count);
+    }
+    loaded.memory.write_u16_be(input + 12, 1).unwrap();
+    loaded.memory.add_readonly_region(0x998, vec![0x5a; 26]);
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = input;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(0x998), Some(0x5a5a5a5a));
+    assert_eq!(loaded.heap_cursor(), heap_cursor);
+    assert_eq!(loaded.handles().len(), handle_count);
+    assert_eq!(loaded.vfs_resources.len(), resource_count);
+}
+#[test]
+fn font_swap_selects_real_fond_bitmap_strikes_in_documented_size_order() {
+    let pef = synthetic_pef_with_import(b"FMSwapFont");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let family = 31002i16;
+    let record = |kind: [u8; 4], id: i16, data: Vec<u8>| PpcVfsResourceRecord {
+        ref_num: 0,
+        path: "Font Suitcase".to_string(),
+        res_type: u32::from_be_bytes(kind),
+        res_id: id,
+        name: Vec::new(),
+        data,
+        raw_data: None,
+        raw_attrs: None,
+        attrs: 0,
+        handle: 0,
+    };
+    let mut fond = vec![0; 72];
+    fond[52..54].copy_from_slice(&2u16.to_be_bytes());
+    let mut resources = Vec::new();
+    for (index, size) in [12i16, 24, 9].into_iter().enumerate() {
+        let id = 1000 + index as i16;
+        let offset = 54 + index * 6;
+        fond[offset..offset + 2].copy_from_slice(&size.to_be_bytes());
+        fond[offset + 4..offset + 6].copy_from_slice(&id.to_be_bytes());
+        let mut nfnt = vec![0; 38];
+        for (offset, value) in [
+            (2, 32u16),
+            (4, 32),
+            (6, 1),
+            (14, 1),
+            (16, 9),
+            (18, 1),
+            (24, 1),
+            (30, 1),
+            (32, 2),
+            (34, 1),
+            (36, 1),
+        ] {
+            nfnt[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+        }
+        nfnt[26] = 0xc0;
+        resources.push(record(*b"NFNT", id, nfnt));
+    }
+    resources.push(record(*b"FOND", family, fond));
+    loaded.seed_vfs_files_and_resources(Vec::new(), Vec::new(), resources);
+    let input = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(input, vec![0; 16]);
+    loaded.memory.write_u16_be(input, family as u16).unwrap();
+    for offset in [8, 10, 12, 14] {
+        loaded.memory.write_u16_be(input + offset, 1).unwrap();
+    }
+    // Exact size; then half-size before next-larger; then twice-size fallback.
+    for (requested, id, numerator) in [(12u16, 1000i16, 256u16), (18, 1002, 512), (6, 1000, 128)] {
+        loaded.memory.write_u16_be(input + 2, requested).unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.gpr[3] = input;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0x998);
+        let handle = loaded.memory.read_u32_be(0x99a).unwrap();
+        let resource = loaded
+            .vfs_resources
+            .iter()
+            .find(|r| r.handle == handle)
+            .unwrap();
+        assert_eq!(resource.res_type, u32::from_be_bytes(*b"NFNT"));
+        assert_eq!(resource.res_id, id);
+        assert_eq!(loaded.memory.read_u8(0x9a5), Some(1)); // unscaled strike ascent
+        assert_eq!(loaded.memory.read_u16_be(0x9aa), Some(numerator));
+        assert_eq!(loaded.memory.read_u16_be(0x9ae), Some(256));
+    }
+    let mut style_resources = loaded.vfs_resources.clone();
+    let fond = style_resources
+        .iter_mut()
+        .find(|r| r.res_type == u32::from_be_bytes(*b"FOND"))
+        .unwrap();
+    fond.data[56..58].copy_from_slice(&1u16.to_be_bytes());
+    fond.data[60..62].copy_from_slice(&12u16.to_be_bytes());
+    fond.data[62..64].copy_from_slice(&2u16.to_be_bytes());
+    loaded.seed_vfs_files_and_resources(Vec::new(), Vec::new(), style_resources);
+    loaded.memory.write_u16_be(input + 2, 12).unwrap();
+    loaded.memory.write_u8(input + 4, 3).unwrap(); // bold + italic
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = input;
+    loaded.run_with_hle_imports(64);
+    let handle = loaded.memory.read_u32_be(0x99a).unwrap();
+    let resource = loaded
+        .vfs_resources
+        .iter()
+        .find(|r| r.handle == handle)
+        .unwrap();
+    // Italic's documented weight 8 is closer to bold+italic (12) than bold (4).
+    assert_eq!(resource.res_id, 1001);
+    assert_eq!(loaded.memory.read_u8(0x9a9), Some(2));
+    assert_eq!(loaded.memory.read_u8(0x99e), Some(1)); // synthesize missing bold
+    assert_eq!(loaded.memory.read_u8(0x99f), Some(0)); // italic is already intrinsic
+}
