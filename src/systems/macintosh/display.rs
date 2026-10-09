@@ -1715,7 +1715,7 @@ fn rgba_word(r: u8, g: u8, b: u8) -> u32 {
     u32::from_le_bytes([r, g, b, 0xFF])
 }
 
-fn rgb555_to_rgb888(pixel: u16) -> [u8; 3] {
+pub(crate) fn rgb555_to_rgb888(pixel: u16) -> [u8; 3] {
     let expand = |value: u16| -> u8 {
         let five_bit = value & 0x1f;
         ((five_bit << 3) | (five_bit >> 2)) as u8

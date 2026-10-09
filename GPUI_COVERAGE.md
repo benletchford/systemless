@@ -3658,3 +3658,32 @@ continuous-underline breaks. The classic styled TEDelete/TEInsert regression
 also passes (0.02s). Production and no-default-features checks pass (14.83s and
 6.90s). The new GPUI run constructors remain unwired pending the field's resolved
 paint data and interaction/scene qualification; no release readiness is claimed.
+
+Styled TextEdit snapshots now carry read-only resolved paint inputs separately
+from canonical RGB16 style intent: destination depth, transfer mode, CPU-specific
+CharExtra, SpaceExtra, and each run's pixel/display RGB/inverted display RGB.
+Classic 68k resolves screen run ink through the native screen CLUT policy;
+PPC uses its destination colour table at 8bpp and native RGB555 at its default
+16bpp. The RGB555 decoder is shared with the existing display compositor.
+Indexed colours retain physical display gamma. Offscreen/unsupported surfaces
+remain unresolved rather than assuming host colours or host font metrics.
+
+The real Toolbox Showcase styled-field snapshot regression passes monochrome
+68k, colour 68k, default 16bpp PPC, and explicit 8bpp PPC (8.74s), requiring a
+settled null event and intact drawing and finding every resolved run colour in
+the guest field raster. This checks colour resolution, not full glyph masks,
+inversion/selection painting, altered palettes, fades, or rendered GPUI scenes.
+The CPU spacing eligibility regression passes (0.01s), including negative
+fractional classic Fixed values and PPC's ignored SpaceExtra.
+
+Both GPUI styled-run components now expose native paint advance separately
+from their supplied guest insertion positions. This retains PPC's distinction
+between whole-run drawing advances and per-character rounded TEClick widths;
+subsequent runs must use the former while caret/selection use the latter.
+The classic/PPC 640-case component regressions pass (1.85s/8.04s), checking
+native ink, paint advance, and unchanged supplied positions. No host shaping
+or modern font substitution is introduced. Styled-field ownership remains
+guarded pending background/transfer/selection integration, glyph-aligned
+interaction mapping and shared live/headless CPU/scale/activation evidence.
+Production binary and no-default-features checks pass after these changes
+(1m30s/11.22s), with dead-code warnings for the guarded run constructors.

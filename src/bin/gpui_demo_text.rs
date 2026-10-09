@@ -90,7 +90,7 @@ mod tests {
         let positions = vec![0, 3, 8, 13];
         for size in [9, 10, 12, 14, 24] {
             for face in 0..128 {
-                let line = ClassicLine::classic_textedit_run(bytes, 3, size, face, positions.clone()).unwrap();
+                let (line, paint_advance) = ClassicLine::classic_textedit_run_with_paint_advance(bytes, 3, size, face, positions.clone()).unwrap();
                 assert_eq!(line.positions, positions);
                 let painted: BTreeSet<_> = line.ink.iter().flat_map(|&(x, y, width)| {
                     (x..x + width).map(move |px| (px, y))
@@ -103,6 +103,7 @@ mod tests {
                     pen += advance;
                 }
                 assert_eq!(painted, expected);
+                assert_eq!(paint_advance, pen);
             }
         }
         assert!(ClassicLine::classic_textedit_run(bytes, 3, 12, 0, vec![0, 1]).is_none());
@@ -117,12 +118,13 @@ mod tests {
         let positions = vec![0, 3, 5, 9, 17];
         for size in [9, 10, 12, 14, 24] {
             for face in 0..128 {
-                let line = ClassicLine::ppc_styled_run(bytes, 3, size, face, positions.clone()).unwrap();
+                let (line, paint_advance) = ClassicLine::ppc_styled_run_with_paint_advance(bytes, 3, size, face, positions.clone()).unwrap();
                 assert_eq!(line.positions, positions);
                 let painted: BTreeSet<_> = line.ink.iter().flat_map(|&(x, y, width)| {
                     (x..x + width).map(move |px| (px, y))
                 }).collect();
-                let (_, expected) = systemless::quickdraw::text::ppc_styled_run_ink(3, size, face, bytes);
+                let (expected_advance, expected) = systemless::quickdraw::text::ppc_styled_run_ink(3, size, face, bytes);
+                assert_eq!(paint_advance, i32::from(expected_advance));
                 assert_eq!(painted, expected.into_iter().collect());
             }
         }
@@ -346,15 +348,24 @@ impl ClassicLine {
     pub fn classic_textedit_run(
         bytes: &[u8], font: i16, point_size: i16, face: u8, positions: Vec<i32>,
     ) -> Option<Self> {
+        Self::classic_textedit_run_with_paint_advance(bytes, font, point_size, face, positions)
+            .map(|(line, _)| line)
+    }
+
+    /// Return the native paint advance separately from measured insertion
+    /// positions so the next style run starts where guest drawing leaves it.
+    pub fn classic_textedit_run_with_paint_advance(
+        bytes: &[u8], font: i16, point_size: i16, face: u8, positions: Vec<i32>,
+    ) -> Option<(Self, i32)> {
         if positions.len() != bytes.len() + 1 || positions.first() != Some(&0) {
             return None;
         }
         let mut pixels = Vec::new();
-        let mut pen = 0;
+        let mut pen: i32 = 0;
         for &byte in bytes {
             let (advance, ink) = systemless::quickdraw::text::classic_textedit_glyph_ink(font, point_size, byte, face)?;
             pixels.extend(ink.into_iter().map(|(x, y)| (pen + i32::from(x), i32::from(y))));
-            pen += advance;
+            pen = pen.saturating_add(advance);
         }
         pixels.sort_unstable_by_key(|&(x, y)| (y, x));
         pixels.dedup();
@@ -368,7 +379,7 @@ impl ClassicLine {
             }
             result.ink.push((x, y, 1));
         }
-        Some(result)
+        Some((result, pen))
     }
 
     /// PPC styled run ink with insertion positions supplied by guest TextEdit
@@ -378,10 +389,19 @@ impl ClassicLine {
     pub fn ppc_styled_run(
         bytes: &[u8], font: i16, point_size: i16, face: u8, positions: Vec<i32>,
     ) -> Option<Self> {
+        Self::ppc_styled_run_with_paint_advance(bytes, font, point_size, face, positions)
+            .map(|(line, _)| line)
+    }
+
+    /// Return the native paint advance separately from measured insertion
+    /// positions so the next style run starts where guest drawing leaves it.
+    pub fn ppc_styled_run_with_paint_advance(
+        bytes: &[u8], font: i16, point_size: i16, face: u8, positions: Vec<i32>,
+    ) -> Option<(Self, i32)> {
         if positions.len() != bytes.len() + 1 || positions.first() != Some(&0) {
             return None;
         }
-        let (_, mut pixels) = systemless::quickdraw::text::ppc_styled_run_ink(font, point_size, face, bytes);
+        let (paint_advance, mut pixels) = systemless::quickdraw::text::ppc_styled_run_ink(font, point_size, face, bytes);
         pixels.sort_unstable_by_key(|&(x, y)| (y, x));
         let mut result = Self { positions, ink: Vec::new() };
         for (x, y) in pixels {
@@ -393,7 +413,7 @@ impl ClassicLine {
             }
             result.ink.push((x, y, 1));
         }
-        Some(result)
+        Some((result, i32::from(paint_advance)))
     }
 
     /// HLE labels may include guest-drawn symbols outside Mac Roman, such as

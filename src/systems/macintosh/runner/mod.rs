@@ -31,7 +31,7 @@ pub use crate::standard_file_ui::{
     StandardFileEntrySnapshot, StandardFileGetLayout, StandardFileKind, StandardFilePutLayout,
     StandardFileNameTextLayout, StandardFileSnapshot, StandardFileReplacementLayout, StandardFileNewFolderSnapshot, StandardFileNewFolderLayout,
 };
-pub use crate::text_edit::{TextEditLineGeometry, TextEditLineLayoutPolicy, TextEditManagerSnapshot, TextEditSnapshot, TextEditStyleRunSnapshot};
+pub use crate::text_edit::{TextEditCharExtraSnapshot, TextEditInkSnapshot, TextEditPaintSnapshot, TextEditLineGeometry, TextEditLineLayoutPolicy, TextEditManagerSnapshot, TextEditSnapshot, TextEditStyleRunSnapshot};
 use crate::trap::dispatch::TrapTableProfile;
 use crate::trap::TrapDispatcher;
 use crate::ui_theme::{ThemeMetricsMode, UiTheme, UiThemeId};
@@ -3397,6 +3397,11 @@ impl FixtureRunner {
                 self.bus.text_edit_drawing_regions(record.guest_id, record.owner_port, record.view_rect, self.dispatcher.screen_mode.0)
             };
             record.drawing_intact = !record.painted_regions.is_empty();
+            record.paint = if let Some(app) = self.native.application_mut() {
+                app.text_edit_paint_snapshot(record)
+            } else {
+                self.dispatcher.text_edit_paint_snapshot(&self.bus, record)
+            };
         }
         snapshot
     }

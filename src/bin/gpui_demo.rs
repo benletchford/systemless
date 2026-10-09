@@ -6800,9 +6800,10 @@ mod desktop {
 
         #[test]
         fn styled_text_edit_snapshots_preserve_guest_runs_across_cpu_modes() {
-            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+            for (powerpc, depth, ppc_depth) in [(false, Some(1), None), (false, Some(8), None), (true, None, None), (true, None, Some(8))] {
                 let mut session = MacintoshSession::new(true, depth);
                 session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if let Some(depth) = ppc_depth { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
                 let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
                 session.initialize(&app);
@@ -6811,8 +6812,10 @@ mod desktop {
                 wait_for_menu(&mut session, 129, 11, true);
                 let record = (0..100).find_map(|_| {
                     session.runner_mut().run_steps(100_000, None);
+                    let settled = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
                     session.runner_mut().text_edit_snapshot().records.into_iter()
-                        .find(|record| record.styled && record.style_runs.as_ref().is_some_and(|runs| runs.iter().any(|run| run.start == 26)))
+                        .find(|record| settled && record.drawing_intact && record.styled
+                            && record.style_runs.as_ref().is_some_and(|runs| runs.iter().any(|run| run.start == 26)))
                 }).expect("styled page must expose canonical mixed style runs");
                 let runs = record.style_runs.as_ref().unwrap();
                 assert_eq!(runs[0].start, 0);
@@ -6825,6 +6828,23 @@ mod desktop {
                 let italic = runs.iter().find(|run| run.start == 20).unwrap();
                 assert_eq!((italic.font, italic.face, italic.size, italic.color), (4, 2, 14, (0x1111, 0x9999, 0x2222)));
                 assert_eq!(runs.iter().find(|run| run.start == 26).unwrap().face, 4);
+                let paint = record.paint.as_ref().unwrap_or_else(|| panic!("styled screen paint inputs: {record:?}"));
+                assert_eq!(paint.depth, if powerpc { ppc_depth.unwrap_or(16) } else { depth.unwrap() });
+                assert!(matches!(paint.mode, 0 | 1));
+                assert_eq!(paint.style_ink.len(), runs.len());
+                assert_eq!(paint.char_extra, if powerpc {
+                    systemless::runner::TextEditCharExtraSnapshot::PpcPacked(0)
+                } else { systemless::runner::TextEditCharExtraSnapshot::ClassicFixed(0) });
+                let frame = session.video_frame().unwrap();
+                let view = record.global_view_rect.unwrap();
+                for ink in &paint.style_ink {
+                    if paint.depth == 1 { assert_eq!(ink.rgb, [0; 3]); assert_eq!(ink.inverted_rgb, [255; 3]); }
+                    let present = (view.0..view.2).any(|y| (view.1..view.3).any(|x| {
+                        let at = ((y as u32 * frame.width + x as u32) * 4) as usize;
+                        frame.pixels.get(at..at + 3) == Some(ink.rgb.as_slice())
+                    }));
+                    assert!(present, "resolved run ink {:?} appears in guest field, PPC={powerpc}, depth={depth:?}", ink);
+                }
                 let metrics = record.line_metrics.as_ref().unwrap();
                 assert_eq!(metrics.len(), record.line_count);
                 assert!(metrics.iter().all(|&(height, ascent)| height > 0 && ascent > 0 && ascent <= height));
