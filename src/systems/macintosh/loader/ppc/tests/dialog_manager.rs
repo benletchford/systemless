@@ -93,14 +93,24 @@ fn standard_alert_waits_for_input_then_disposes_the_dialog() {
         "an idle pass must leave the caller's registers intact"
     );
 
-    loaded.set_event_queue([PpcQueuedEvent {
-        what: 3,
-        message: (u32::from(PPC_KEY_RETURN) << 8) | 13,
-        when: 0,
-        where_v: 0,
-        where_h: 0,
-        modifiers: 0,
-    }]);
+    loaded.set_event_queue([
+        PpcQueuedEvent {
+            what: 3,
+            message: (u32::from(PPC_KEY_RETURN) << 8) | 13,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        },
+        PpcQueuedEvent {
+            what: 6,
+            message: dialog,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        },
+    ]);
     let probe = loaded.run_with_hle_imports(128);
     assert!(matches!(
         probe.result,
@@ -112,6 +122,10 @@ fn standard_alert_waits_for_input_then_disposes_the_dialog() {
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
     assert_eq!(loaded.memory.read_u16_be(base), Some(1));
     assert!(!loaded.window_list.contains(&dialog));
+    assert!(!loaded
+        .event_queue()
+        .iter()
+        .any(|event| event.what == 6 && event.message == dialog));
     assert!(!loaded
         .handles()
         .iter()

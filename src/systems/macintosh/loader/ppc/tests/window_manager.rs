@@ -9938,3 +9938,77 @@ fn window_state_title_greatest_area_and_port_bounds_commands_dispatch_with_canon
         assert_eq!(loaded.cpu.gpr[3] as i16, -50);
     }
 }
+#[test]
+fn window_removal_discards_pending_updates_without_consuming_unrelated_events() {
+    for operation in [
+        PpcImportDispatcherTarget::CloseWindow,
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::DisposeWindow),
+    ] {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_import(b"DisposeWindow")).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1400;
+        loaded.memory.add_region(scratch, vec![0; 0x100]);
+        let other = create_test_cwindow(
+            &mut loaded,
+            scratch,
+            (100, 100, 260, 300),
+            0,
+            true,
+            u32::MAX,
+        );
+        let removed = create_test_cwindow(
+            &mut loaded,
+            scratch,
+            (120, 120, 220, 220),
+            0,
+            true,
+            u32::MAX,
+        );
+        let event = |what, message| PpcQueuedEvent {
+            what,
+            message,
+            when: 17,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        };
+        loaded.set_event_queue([
+            event(6, removed),
+            event(3, removed),
+            event(6, other),
+            event(6, removed),
+        ]);
+        loaded.cpu.gpr[3] = removed;
+        run_test_import(&mut loaded, operation);
+        assert!(!loaded.window_list.contains(&removed));
+        assert!(!loaded
+            .event_queue()
+            .iter()
+            .any(|e| e.what == 6 && e.message == removed));
+        assert!(loaded
+            .event_queue()
+            .iter()
+            .any(|e| e.what == 3 && e.message == removed));
+        assert!(loaded
+            .event_queue()
+            .iter()
+            .any(|e| e.what == 6 && e.message == other));
+
+        // Exercise the public event poll after removal: it must deliver a
+        // surviving window's update, never the disposed window's reference.
+        loaded.cpu.gpr[3] = 1 << 6;
+        loaded.cpu.gpr[4] = scratch + 32;
+        loaded.cpu.gpr[5] = 0;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 1);
+        assert_eq!(loaded.memory.read_u16_be(scratch + 32), Some(6));
+        assert_eq!(loaded.memory.read_u32_be(scratch + 34), Some(other));
+        assert!(loaded
+            .event_queue()
+            .iter()
+            .any(|e| e.what == 3 && e.message == removed));
+    }
+}
