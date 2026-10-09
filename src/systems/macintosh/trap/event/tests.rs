@@ -204,7 +204,10 @@ fn autokey_is_posted_when_ticks_advance_before_the_next_poll() {
         .current_tick()
         .wrapping_add(TrapDispatcher::AUTO_KEY_THRESHOLD_TICKS);
     disp.set_tick_count_for_test(&mut bus, next_tick);
-    disp.post_auto_key_if_due(bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK));
+    disp.post_auto_key_if_due(
+        bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK),
+        bus.read_word(crate::memory::globals::addr::KEY_REP_THRESH),
+    );
 
     disp.push_key_up(0x00, b'a');
     let (what, message, _, _, _, _, has_event) =

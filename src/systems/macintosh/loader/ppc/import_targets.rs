@@ -335,6 +335,10 @@ pub enum PpcImportDispatcherTarget {
     LMGetMenuList,
     LMSetMenuHook,
     LMGetMenuFlash,
+    LMGetKeyThresh,
+    LMSetKeyThresh,
+    LMGetKeyRepThresh,
+    LMSetKeyRepThresh,
     LMGetPaintWhite,
     LMGetHWCfgFlags,
     LMSetROMMapInsert,
@@ -2871,6 +2875,14 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "LMGetMenuFlash" | "lmgetmenuflash",
         ) => PpcImportDispatcherTarget::LMGetMenuFlash,
+        ("InterfaceLib" | "CarbonLib", "LMGetKeyThresh") => PpcImportDispatcherTarget::LMGetKeyThresh,
+        ("InterfaceLib" | "CarbonLib", "LMSetKeyThresh") => PpcImportDispatcherTarget::LMSetKeyThresh,
+        ("InterfaceLib" | "CarbonLib", "LMGetKeyRepThresh") => {
+            PpcImportDispatcherTarget::LMGetKeyRepThresh
+        }
+        ("InterfaceLib" | "CarbonLib", "LMSetKeyRepThresh") => {
+            PpcImportDispatcherTarget::LMSetKeyRepThresh
+        }
         ("InterfaceLib", "LMGetPaintWhite") => PpcImportDispatcherTarget::LMGetPaintWhite,
         ("InterfaceLib", "LMGetHWCfgFlags") => PpcImportDispatcherTarget::LMGetHWCfgFlags,
         ("InterfaceLib", "LMSetROMMapInsert") => PpcImportDispatcherTarget::LMSetROMMapInsert,

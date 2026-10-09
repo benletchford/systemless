@@ -2883,6 +2883,10 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::LMGetCurDeactive
         | PpcImportDispatcherTarget::LMSetCurDeactive
         | PpcImportDispatcherTarget::LMGetMenuFlash
+        | PpcImportDispatcherTarget::LMGetKeyThresh
+        | PpcImportDispatcherTarget::LMSetKeyThresh
+        | PpcImportDispatcherTarget::LMGetKeyRepThresh
+        | PpcImportDispatcherTarget::LMSetKeyRepThresh
         | PpcImportDispatcherTarget::LMGetPaintWhite
         | PpcImportDispatcherTarget::LMGetHWCfgFlags
         | PpcImportDispatcherTarget::LMSetROMMapInsert

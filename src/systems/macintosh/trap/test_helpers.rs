@@ -105,6 +105,14 @@ pub fn setup() -> (TrapDispatcher, MockCpu, MacMemoryBus) {
         crate::memory::globals::DEFAULT_SYS_EVT_MASK,
     );
     bus.write_word(
+        crate::memory::globals::addr::KEY_THRESH,
+        crate::memory::globals::DEFAULT_AUTO_KEY_THRESHOLD_TICKS,
+    );
+    bus.write_word(
+        crate::memory::globals::addr::KEY_REP_THRESH,
+        crate::memory::globals::DEFAULT_AUTO_KEY_RATE_TICKS,
+    );
+    bus.write_word(
         crate::memory::globals::addr::MENU_FLASH,
         crate::memory::globals::DEFAULT_MENU_FLASH_COUNT,
     );

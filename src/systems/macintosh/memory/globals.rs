@@ -13,6 +13,11 @@ use std::collections::HashMap;
 /// Macintosh Toolbox Essentials (1992), pp. 2-28--2-29 and 2-99.
 pub(crate) const DEFAULT_SYS_EVT_MASK: u16 = 0xFFEF;
 
+/// Existing Systemless auto-key timing defaults, measured in ticks.
+/// Inside Macintosh Volume I, I-246 documents the initial delay and repeat rate.
+pub(crate) const DEFAULT_AUTO_KEY_THRESHOLD_TICKS: u16 = 16;
+pub(crate) const DEFAULT_AUTO_KEY_RATE_TICKS: u16 = 4;
+
 /// Unit-table size for Systemless's Mac OS 8.1 machine profile. Inside
 /// Macintosh Volume V (1986), p. V-215 documents a 64-entry table that grows
 /// in 16-entry increments up to 128 entries; 96 preserves that documented
@@ -45,6 +50,13 @@ pub mod addr {
     /// the current key state indexed by key code; MPW's SysEqu.h names the
     /// low-memory mirror `KeyMapLM` at $0174.
     pub const KEY_MAP_LM: u32 = 0x0174;
+    /// KeyThresh: initial auto-key delay (word).
+    /// Apple's MacsBug Reference and Debugging Guide (1990), pp. 444 and 523.
+    pub const KEY_THRESH: u32 = 0x018E;
+    /// KeyRepThresh: subsequent auto-key interval (word).
+    /// Apple's MacsBug Reference and Debugging Guide (1990), p. 523.
+    pub const KEY_REP_THRESH: u32 = 0x0190;
+
     /// UnitNtryCnt: number of handles in the Device Manager unit table.
     /// Inside Macintosh: Devices (1994), pp. 1-8--1-9; Universal Interfaces
     /// 3.4 LowMem.h lines 4304--4324.
