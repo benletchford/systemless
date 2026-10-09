@@ -548,6 +548,9 @@ fn ppc_q3_capture_trimesh_attribute_memory(
             data_ptr,
             element_count.saturating_mul(attr_size),
         );
+        if let Some(use_ptr) = memory.read_u32_be(entry_ptr.saturating_add(8)) {
+            ppc_q3_capture_memory_region(memory, memory_regions, use_ptr, element_count);
+        }
     }
 }
 
@@ -4080,6 +4083,34 @@ pub fn ppc_q3_software_is_backfacing(
     }
 }
 
+/// QuickDraw 3D's Interactive renderer gives an explicit triangle normal
+/// precedence over winding. Vertex normals only affect lighting.
+/// See Quesa's historical IRGeometry_Generate_Triangle_Flags and the QD3D
+/// compatibility discussion in IRGeometry_Validate_Triangles:
+/// <https://github.com/jwwalker/Quesa/blob/d0b54800893e3ebbe568b49731ec177090ac6558/Development/Source/Renderers/Interactive/IRGeometry.cpp>
+pub fn ppc_q3_software_triangle_is_backfacing(
+    orientation_style: u32,
+    camera: Option<PpcQ3CameraRecord>,
+    local_to_world: [[f32; 4]; 4],
+    face_normal: Option<(f32, f32, f32)>,
+    vertices: &[PpcQ3SoftwareProjectedPoint],
+) -> bool {
+    if let (Some(camera), Some(normal), Some(vertex)) = (camera, face_normal, vertices.first()) {
+        if let Some(normal) = ppc_q3_software_transform_normal(normal, local_to_world) {
+            let toward_eye = if matches!(camera.projection, PpcQ3CameraProjection::Orthographic { .. }) {
+                ppc_q3_vector3d_sub(camera.placement.camera_location, camera.placement.point_of_interest)
+            } else {
+                ppc_q3_vector3d_sub(camera.placement.camera_location, vertex.world)
+            };
+            let dot = ppc_q3_vector3d_dot(normal, toward_eye);
+            if dot.is_finite() {
+                return dot < 0.0;
+            }
+        }
+    }
+    ppc_q3_software_is_backfacing(orientation_style, vertices)
+}
+
 pub fn ppc_q3_software_culls_backfacing(
     backfacing_style: u32,
     orientation_style: u32,
@@ -4099,9 +4130,16 @@ pub fn ppc_q3_software_flip_backfacing_normals(
     orientation_style: u32,
     vertices: &mut [PpcQ3SoftwareProjectedPoint],
 ) {
-    if backfacing_style != PPC_Q3_BACKFACING_STYLE_FLIP
-        || !ppc_q3_software_is_backfacing(orientation_style, vertices)
-    {
+    let backfacing = ppc_q3_software_is_backfacing(orientation_style, vertices);
+    ppc_q3_software_flip_normals_for_backface(backfacing_style, backfacing, vertices);
+}
+
+pub fn ppc_q3_software_flip_normals_for_backface(
+    backfacing_style: u32,
+    backfacing: bool,
+    vertices: &mut [PpcQ3SoftwareProjectedPoint],
+) {
+    if backfacing_style != PPC_Q3_BACKFACING_STYLE_FLIP || !backfacing {
         return;
     }
     for vertex in vertices {
