@@ -2450,9 +2450,13 @@ impl FixtureRunner {
         // loop runs. Present only the frontmost eligible window as active:
         // keyboard activity and the active title/selection belong to one
         // window. Macintosh Toolbox Essentials (1992), pp. 1-4--1-5.
+        // FrontWindow ordering alone does not imply activation: HiliteWindow
+        // clears the guest flag on suspend without removing its front window.
         let front_active = frames
             .iter()
-            .position(|frame| frame.window.visible && frame.window.active);
+            .position(|frame| frame.window.visible && frame.window.active
+                && self.bus.read_byte(frame.guest_id.wrapping_add(
+                    crate::window_manager::WINDOW_HILITED_FLAG_OFFSET)) != 0);
         for (index, frame) in frames.iter_mut().enumerate() {
             frame.window.active = Some(index) == front_active;
         }
