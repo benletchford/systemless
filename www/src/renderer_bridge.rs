@@ -79,7 +79,13 @@ extern "C" {
         owner: &web_sys::Worker,
     ) -> Result<JsValue, JsValue>;
     #[wasm_bindgen(js_name = paintSystemlessRenderer)]
-    pub fn paint_renderer(handle: &JsValue, width: u32, height: u32, pixels: &Uint8Array, cursor_css: &str);
+    pub fn paint_renderer(
+        handle: &JsValue,
+        width: u32,
+        height: u32,
+        pixels: &Uint8Array,
+        cursor_css: &str,
+    );
     #[wasm_bindgen(js_name = paintSystemlessPacket)]
     pub fn paint_packet(handle: &JsValue, frame: &JsValue);
     #[wasm_bindgen(js_name = systemlessRendererStatus)]
