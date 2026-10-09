@@ -1630,6 +1630,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::FSpCreate
         | PpcImportDispatcherTarget::HCreate
         | PpcImportDispatcherTarget::HRename
+        | PpcImportDispatcherTarget::PBHRenameSync
         | PpcImportDispatcherTarget::Create
         | PpcImportDispatcherTarget::FSpDelete
         | PpcImportDispatcherTarget::DeleteByName(_)
