@@ -1922,7 +1922,8 @@ and the showcase archive. Run each with `--screen-depth 1`, `--screen-depth 8`
 and `--prefer-powerpc`. The hidden capture asserts the 32-tick transition and
 unchanged selection/scroll endpoint. The non-test `gpui-demo` feature build
 also passes without exposing test-only capture arguments.
-The full GPUI interaction suite passes all 75 tests with this change.
+The default-rate change passed the full 75-test GPUI interaction suite. The
+subsequent adjustable-rate change has the focused validation described below.
 
 Caret timing now follows the live guest `CaretTime` long at `$02F4`, seeded
 to 32 ticks at launch. Toolbox Essentials (1992), p. 2-113 documents
@@ -1936,3 +1937,60 @@ timestamp, and shared-state tick wraparound. The expanded real New Folder
 workflow passes all interval checkpoints in monochrome 68k, colour 68k and
 PPC, with both duplicate-file and duplicate-directory retry paths.
 Host-focus behaviour remains open.
+
+### Host activation audit
+
+Host focus is not yet a qualified Macintosh application lifecycle. The GPUI
+`on_focus_out` and `on_focus_lost` callbacks call `release_host_input`, which
+releases keys and a held mouse button and clears pointer/wheel tracking. The
+session input API carries mouse and keyboard events only; it has no host
+activation transition. Releasing input therefore does not prove guest window
+deactivation, inactive text selection, stopped caret blinking, or resume
+behaviour. Widget focus moving into a GPUI menu must also be distinguished
+from the host application actually moving into the background.
+
+The existing Window Manager adapters already own activation delivery through
+`CurActivate`/`CurDeactive` and coalesced activation records. A new host bridge
+must use those lifecycle paths, rather than directly modifying TERec.active
+or only suppressing a painted GPUI caret. Toolbox Essentials (1992),
+pp. 2-51 and 2-59--2-61, and its SIZE resource description on pp. 2-115--2-119,
+require application-specific scheduling *capabilities*, not application-name
+special cases:
+
+- Applications accepting suspend/resume events receive `osEvt` with high
+  message byte `$01`; bit 0 distinguishes suspend from resume. Clipboard
+  conversion on resume is a separate bit, justified by actual scrap changes.
+- Applications also declaring `doesActivateOnFGSwitch` perform their own
+  activation in response. Applications needing activation events must receive
+  them through the Window Manager's existing delivery path.
+- `canBackground` governs background null-event processing. Processes (1994),
+  “About Processes” and “Process Scheduling,” place the actual suspension
+  after the application receives
+  suspend and next calls WaitNextEvent or EventAvail; freezing immediately on
+  the host callback would prevent the guest from handling its own transition.
+- Ordinary modal dialogs generally prevent a major switch, whereas movable
+  modal dialogs permit one (Processes, “Process Scheduling”). Host blur must
+  not indiscriminately inject a guest major switch into either modal loop;
+  the embedding's deferral and input policy needs explicit qualification.
+- `getFrontClicks` controls whether the click that resumes an application is
+  subsequently delivered. Regaining host focus must not unconditionally
+  place a caret, toggle a control, or select a menu item.
+
+There is a fixture prerequisite as well: `showcase.r` declares
+`acceptSuspendResumeEvents`, `canBackground`, and `multiFinderAware`, but
+`showcase.c::DoEvent` has no `osEvt` arm. Its activateEvt arm only updates
+List Manager activation; the TextEdit page activates/deactivates on page
+changes rather than window activation. The fixture must implement those
+declared responsibilities before its inactive-caret output can be used as an
+oracle for a host activation bridge. Rebuild both slices and refresh affected
+native provenance when making that change; do not silently reinterpret old
+captures as activation evidence.
+
+Required qualification is a matching native/Systemless sequence on 68k and
+PPC: activate an insertion point, switch away, observe suspend and any required
+activation event, verify inactive selection/caret and permitted background
+progress, resume without editing, and confirm restored input. Repeat with a
+modeless dialog, retained modal dialog, open menu, held key, and held pointer;
+include both SIZE activation policies, repeated focus notifications, and
+front-click suppression. Existing key/button-release tests cover only input
+cleanup and must not be counted as this lifecycle qualification.
