@@ -3619,7 +3619,10 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume I (1985), pp. I-90--I-91 and I-442.
             (true, 0x1B2) => {
                 let sp = cpu.read_reg(Register::A7);
-                bus.write_word(sp + 4, 0); // FALSE
+                let event_ptr = bus.read_long(sp);
+                let params = crate::desk_manager::evaluate_system_event_parameters(event_ptr);
+                let result = if params.handled() { 1u16 } else { 0u16 };
+                bus.write_word(sp + 4, result); // FALSE
                 cpu.write_reg(Register::D0, 0);
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())

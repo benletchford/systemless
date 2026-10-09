@@ -6505,7 +6505,10 @@ impl super::TrapDispatcher {
             // Contract tests:
             //   - systemtask_procedure_call_preserves_stack_pointer (single call)
             //   - systemtask_five_call_composition_preserves_stack_pointer
-            (true, 0x1B4) => Ok(()),
+            (true, 0x1B4) => {
+                let _action = crate::desk_manager::evaluate_system_task();
+                Ok(())
+            }
 
             // GetAppParms ($A9F5)
             // Returns the current application's name, resource file refnum,
@@ -9383,7 +9386,9 @@ impl super::TrapDispatcher {
             //   - opendeskacc_five_call_composition_preserves_stack_pointer
             (true, 0x1B6) => {
                 let sp = cpu.read_reg(Register::A7);
-                bus.write_word(sp + 4, 0); // return 0 (no DA opened)
+                let name_ptr = bus.read_long(sp);
+                let params = crate::desk_manager::evaluate_open_desk_acc_parameters(name_ptr);
+                bus.write_word(sp + 4, params.ref_num() as u16);
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
@@ -9431,6 +9436,8 @@ impl super::TrapDispatcher {
             //   - closedeskacc_five_call_composition_advances_stack_by_ten
             (true, 0x1B7) => {
                 let sp = cpu.read_reg(Register::A7);
+                let ref_num = bus.read_word(sp) as i16;
+                let _params = crate::desk_manager::evaluate_close_desk_acc_parameters(ref_num);
                 cpu.write_reg(Register::A7, sp + 2);
                 Ok(())
             }
@@ -9441,6 +9448,10 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume I (1985), pp. I-90--I-91 and I-440--I-441.
             (true, 0x1B3) => {
                 let sp = cpu.read_reg(Register::A7);
+                let the_window = bus.read_long(sp);
+                let the_event = bus.read_long(sp + 4);
+                let _params =
+                    crate::desk_manager::evaluate_system_click_parameters(the_event, the_window);
                 cpu.write_reg(Register::A7, sp + 8);
                 Ok(())
             }
@@ -9566,7 +9577,10 @@ impl super::TrapDispatcher {
             //   - systemedit_returns_false_for_every_standard_editcmd
             (true, 0x1C2) => {
                 let sp = cpu.read_reg(Register::A7);
-                bus.write_word(sp + 2, 0); // return FALSE
+                let edit_cmd = bus.read_word(sp) as i16;
+                let params = crate::desk_manager::evaluate_system_edit_parameters(edit_cmd);
+                let result = if params.handled() { 1u16 } else { 0u16 };
+                bus.write_word(sp + 2, result);
                 cpu.write_reg(Register::A7, sp + 2);
                 Ok(())
             }

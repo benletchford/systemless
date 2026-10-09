@@ -13,6 +13,7 @@ pub mod cpu;
 #[cfg(feature = "debug")]
 pub mod debug;
 pub mod debug_overlay;
+pub(crate) mod desk_manager;
 pub(crate) mod dialog_manager;
 pub mod disk_image;
 pub mod display;
