@@ -558,6 +558,7 @@ pub enum PpcImportDispatcherTarget {
     DSpFindBestContextOnDisplayID,
     DSpUserSelectContext,
     DSpStartup,
+    DSpSetDebugMode,
     DSpGetVersion,
     DSpShutdown,
     DSpProcessEvent,
@@ -2405,6 +2406,7 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::AEInstallEventHandler
         }
         ("DrawSprocketLib", "DSpStartup") => PpcImportDispatcherTarget::DSpStartup,
+        ("DrawSprocketLib", "DSpSetDebugMode") => PpcImportDispatcherTarget::DSpSetDebugMode,
         ("DrawSprocketLib", "DSpGetVersion") => PpcImportDispatcherTarget::DSpGetVersion,
         ("DrawSprocketLib", "DSpShutdown") => PpcImportDispatcherTarget::DSpShutdown,
         ("DrawSprocketLib", "DSpGetFirstContext") => PpcImportDispatcherTarget::DSpGetFirstContext,

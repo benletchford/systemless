@@ -2598,3 +2598,72 @@ fn import_bindings_classify_draw_sprocket_imports() {
         PpcImportDispatcherTarget::DSpContextGetAttributes
     );
 }
+
+#[test]
+fn nondebugging_draw_sprocket_debug_mode_resolves_weak_import_without_display_changes() {
+    for class in [2, 0x82] {
+        let pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+            b"DrawSprocketLib",
+            b"DSpSetDebugMode",
+            class,
+            &[sm_index_reloc(0x30, 0)],
+        ));
+        let mut loaded = load_pef_application(&pef).unwrap();
+        assert_eq!(
+            loaded.imports[0].dispatcher_target,
+            PpcImportDispatcherTarget::DSpSetDebugMode
+        );
+        assert_ne!(loaded.imports[0].address, 0);
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_DATA_BASE),
+            Some(loaded.imports[0].address)
+        );
+        // This fixture places the relocated import vector in its main slot.
+        // Execute a guest stub through that vector, rather than interpreting
+        // the transition-vector data itself as instructions.
+        loaded.entry_pc = PPC_CODE_BASE;
+        let mut code = Vec::new();
+        for word in [
+            d_form_u(15, 12, 0, (PPC_DATA_BASE >> 16) as u16),
+            d_form_u(24, 12, 12, (PPC_DATA_BASE & 0xffff) as u16),
+            d_form_u(32, 12, 12, 0), // import transition vector
+            d_form_u(32, 0, 12, 0), // entry point
+            d_form_u(32, 2, 12, 4), // library RTOC
+            xfx_form(31, 0, 9, 467),
+            xl_form(19, 20, 0, 528, true),
+            d_form_u(14, 0, 0, 0),
+            xfx_form(31, 0, 8, 467),
+            BLR,
+        ] {
+            code.extend_from_slice(&word.to_be_bytes());
+        }
+        loaded.memory.add_region(PPC_CODE_BASE, code);
+        loaded.draw_sprocket.started = true;
+        loaded.draw_sprocket.reserved_context = Some(PPC_DSP_CONTEXT);
+        loaded.draw_sprocket.active_context = Some(PPC_DSP_CONTEXT);
+        loaded.draw_sprocket.blanking_window = Some(0x1234_5678);
+        loaded.draw_sprocket.last_fade_percent = Some(25);
+        let state = loaded.draw_sprocket.clone();
+        for enabled in [0, 1, 0xff] {
+            loaded.cpu.gpr[3] = enabled;
+            loaded.cpu.gpr[4] = 0x1122_3344;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpSetDebugMode);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            assert_eq!(loaded.cpu.gpr[4], 0x1122_3344);
+            assert_eq!(loaded.draw_sprocket, state);
+        }
+    }
+    let pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+        b"DrawSprocketLib",
+        b"MissingOptionalDrawAPI",
+        0x82,
+        &[sm_index_reloc(0x30, 0)],
+    ));
+    let mut loaded = load_pef_application(&pef).unwrap();
+    assert_eq!(
+        loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::UnresolvedWeak
+    );
+    assert_eq!(loaded.imports[0].address, 0);
+    assert_eq!(loaded.memory.read_u32_be(PPC_DATA_BASE), Some(0));
+}

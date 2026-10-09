@@ -57,6 +57,13 @@ pub(super) fn dispatch_drawsprocket_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::DSpSetDebugMode => {
+            // The advertised DrawSprocket 1.7.5 final profile is a nondebugging
+            // build. Apple Game Sprockets Guide, DSpSetDebugMode (p. 2-73),
+            // explicitly ignores this Boolean option in nondebugging builds.
+            // Do not enable debugging-only blanking or gamma behavior here.
+            Some(PpcImportAction::Return(u32::from(PPC_NO_ERR as u16)))
+        }
         PpcImportDispatcherTarget::DSpStartup => {
             draw_sprocket.started = true;
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
