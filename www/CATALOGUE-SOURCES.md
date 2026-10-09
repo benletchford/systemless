@@ -141,7 +141,7 @@ After [font resource swapping](https://github.com/benletchford/systemless/pull/4
 [removed-window update cleanup](https://github.com/benletchford/systemless/pull/4323)
 and [PtrAndHand](https://github.com/benletchford/systemless/pull/4329),
 Civilization II PPC Demo 1.0 was replayed on tested head
-`d205704846625ecd99f7174685fe8378c086df3d` using its unchanged original
+`8d072eae4489214cc6540c31b9c7715ba2f0a966` (merged in #4335) using its unchanged original
 8,160,693-byte archive (SHA-256
 `6ed949cc2a1b14589c28c35c7babd32bc135caff3b64e06f445a493cc0b16611`).
 The bounded continuation asserts the inspected notice OK-button fill at tick
@@ -158,17 +158,25 @@ tick 4644, with two assertions and no exhausted frames. The inspected image
 shows red/black triangles across the terrain and red/green speckles in dialog
 backgrounds; frames, icons and text are also malformed. This is
 [startup progress with a rendering defect](https://github.com/benletchford/systemless/issues/4331),
-not proof of playable gameplay. Clicking guidance OK at v=398, h=609 with a
-two-tick hold stops at [unsupported PBRenameSync](https://github.com/benletchford/systemless/issues/4332),
-PC `01F00014`, LR `011009A4`, frontend tick 4647 / guest tick 4646. Both prior
-assertions pass; the failure capture retains the corrupted map interface.
+not proof of playable gameplay. The [PBRenameSync fix](https://github.com/benletchford/systemless/pull/4335)
+removes the former tick-4647 stop. Dismissing the initial and subsequent unit
+guidance reaches a map without a modal at tick 5372. Holding Orders at v=10,
+h=241 exposes an enabled Build New City item; the inspected menu has a white
+background, asserted at x=376, y=26. Dragging to v=27, h=265 and releasing
+reaches the default Rome name dialog at frontend tick 5556 / guest tick 5535.
+Accepting Rome at v=312, h=544 reaches a city illustration/guidance dialog at
+frontend tick 6158. Dismissing that dialog at v=391, h=641 reaches another
+corrupted guidance dialog at frontend tick 6340 / guest tick 6319. This fresh
+bounded replay passes three assertions with no exhausted frames. It establishes
+menu-command and dialog responses, not completed city foundation or playable
+graphics. The runtime fix implements synchronous file rename within the existing
+VFS model; broader volume rename and asynchronous behavior are not established.
 The sourced PPC demo does not supply the requested 68K package; exact-archive
 redistribution rights, sustained gameplay, save/load, audio, Systemless hosting
 and browser qualification remain unresolved. No catalogue entry is added or
 enabled.
 
-Current failures are recorded separately for [Civilization II parameter-block rename](https://github.com/benletchford/systemless/issues/4332),
-[Civilization II bitmap rendering](https://github.com/benletchford/systemless/issues/4331),
+Current failures are recorded separately for [Civilization II bitmap rendering](https://github.com/benletchford/systemless/issues/4331),
 [Combat Mission accelerator startup](https://github.com/benletchford/systemless/issues/4253),
 [Worms Blast early exit](https://github.com/benletchford/systemless/issues/4254),
 [Oni bundled CarbonLib memory planning](https://github.com/benletchford/systemless/issues/4256),
