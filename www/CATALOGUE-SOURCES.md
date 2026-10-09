@@ -173,14 +173,28 @@ Alley 19’s bundled 68K catalogue reader does not establish a 68K game slice.
 and [uncached memory copying](https://github.com/benletchford/systemless/pull/4267)
 have merged. The [menu command-ID fix](https://github.com/benletchford/systemless/pull/4277)
 also passes all 93 PowerPC Menu Manager tests and the public CI checks. The
-unchanged Heroes III original demo passes its former TempHLock and
-SetMenuItemCommandID stops and reaches the
-[SetMenuItemRefCon import gap](https://github.com/benletchford/systemless/issues/4279)
-at frontend tick 116 / guest tick 115 (PC `01F00038`, SP `07F6F880`,
-LR `0125FB28`). The replay reverified the original archive at 110,469,948 bytes
-and SHA-256 `3e5f77588f00ca681717aeaed8060d1e400a1774fb6c9787232209d64c007680`.
-No gameplay checkpoint is reached and exact-archive redistribution permission
-remains unestablished.
+unchanged Heroes III original demo also passes its former SetMenuItemRefCon
+stop after the [reference-constant fix](https://github.com/benletchford/systemless/pull/4283)
+(all 95 PPC Menu Manager tests pass). The subsequent null call was a weak
+DSpSetDebugMode import: the public PEF dump identifies symbol #347 as
+UnresolvedWeak and the guest stub loads a zero transition vector. The
+[DrawSprocket fix](https://github.com/benletchford/systemless/pull/4288) binds that
+one API with Apple's documented nondebugging-build behavior; all 64 PPC
+DrawSprocket tests and public CI checks pass.
+
+Current unchanged-original replay completes the tick-180 logo checkpoint,
+which has repeated trails/clipping, then reaches a clearly rendered Heroes III
+Complete DEMO main menu at frontend/guest tick 780. Explicit mouse movement
+and a two-tick New Game click (v 75, h 640) lead to the loading screen at tick
+962. Continuing the bounded run stops at
+[missing SoundLib:ParseAIFFHeader](https://github.com/benletchford/systemless/issues/4289)
+at frontend tick 1526 / guest tick 1525 (PC `01F00488`, SP `07F6E3A0`,
+LR `01272630`), with a black failure capture. Zero-assertion menu/loading
+scenario completions establish bounded startup/input response, not a playable
+map, sustained gameplay, saving/restart or browser qualification. The archive
+remains 110,469,948 bytes with SHA-256
+`3e5f77588f00ca681717aeaed8060d1e400a1774fb6c9787232209d64c007680`;
+exact-archive redistribution permission remains unestablished.
 
 The [volume-reference fix](https://github.com/benletchford/systemless/pull/4271)
 uses the documented reference fallback for bare filenames and reference-only
