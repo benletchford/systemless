@@ -4066,3 +4066,22 @@ text recipe matches. This does not establish ownership from equality alone;
 production still needs retained drawing provenance and current paint metadata.
 The result qualifies selected native geometry/ink for this fixture, not live
 GPUI pointer transforms, arbitrary highlights or full list lifecycle.
+
+### Corrected styled matrix archived
+
+The unchanged `d7c3e82f` capture job completed all 192 cases. Full verification
+passed for the original captures and again for the lossless archive at
+`tests/toolbox-showcase/reference/gpui-demo/styled-text-qualified/review.json`:
+actual mono/colour/PPC8/PPC16 depths, four scales, inactive/selected activation
+states and two caret insertion offsets with visible/off/suspended/resumed
+phases. Original and archived byte hashes, source hashes and state sidecars are
+retained; recompression preserves every RGBA pixel. Four representative visuals
+have a separate scoped review record. The invalidated older archives remain
+marked invalid; this corrected archive replaces their full-matrix claim.
+
+This qualifies that revision's one-line public fixture raster and guest states
+through the shared macOS Metal headless compositor. It does not establish
+production ownership, live GPUI pointer mapping, arbitrary fonts/backgrounds
+or themes, other platforms, or the newer whole-field canvas. A separate
+whole-field multiline run against `716378c4` is now in progress; its first true
+PPC16 capture matches every composed field pixel and has been visually reviewed.
