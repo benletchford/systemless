@@ -2136,7 +2136,7 @@ fn skip_pixpat_bytes(bytes: &[u8], mut pos: usize) -> Option<usize> {
 }
 
 fn skip_pixdata_bytes(bytes: &[u8], mut pos: usize, pm: &PixMapInfo) -> Option<usize> {
-    let height = usize::try_from((pm.bounds_bottom - pm.bounds_top).max(0)).ok()?;
+    let height = usize::try_from((i32::from(pm.bounds_bottom) - i32::from(pm.bounds_top)).max(0)).ok()?;
     let row_bytes = usize::from(pm.row_bytes);
 
     if pm.pack_type == 1 || pm.row_bytes < 8 {
@@ -2180,7 +2180,7 @@ fn skip_bits_rect_bytes(bytes: &[u8], mut pos: usize, has_rgn: bool) -> Option<u
         let rgn_size = usize::from(read_pict_u16(bytes, pos)?);
         pos = pict_add(pos, rgn_size, bytes.len())?;
     }
-    let height = usize::try_from((bounds_bottom - bounds_top).max(0)).ok()?;
+    let height = usize::try_from((i32::from(bounds_bottom) - i32::from(bounds_top)).max(0)).ok()?;
     pict_add(pos, row_bytes.checked_mul(height)?, bytes.len())
 }
 
@@ -2227,7 +2227,7 @@ fn skip_indexed_bits_rect_bytes(
     if packed {
         skip_pixdata_bytes(bytes, pos, &pm)
     } else {
-        let height = usize::try_from((pm.bounds_bottom - pm.bounds_top).max(0)).ok()?;
+        let height = usize::try_from((i32::from(pm.bounds_bottom) - i32::from(pm.bounds_top)).max(0)).ok()?;
         pict_add(
             pos,
             usize::from(pm.row_bytes).checked_mul(height)?,
@@ -2239,8 +2239,8 @@ fn skip_indexed_bits_rect_bytes(
 fn skip_direct_bits_rect_bytes(bytes: &[u8], mut pos: usize, has_rgn: bool) -> Option<usize> {
     pos = pict_add(pos, 4, bytes.len())?; // baseAddr
     let (new_pos, pm) = read_pixmap_bytes(bytes, pos)?;
-    pos = skip_color_table_bytes(bytes, new_pos)?;
-    pos = pict_add(pos, 18, bytes.len())?;
+    // Direct pixels have no ColorTable.
+    pos = pict_add(new_pos, 18, bytes.len())?;
     if has_rgn {
         let rgn_size = usize::from(read_pict_u16(bytes, pos)?);
         pos = pict_add(pos, rgn_size, bytes.len())?;
@@ -2268,6 +2268,50 @@ fn skip_v1_reserved_bytes(bytes: &[u8], opcode: u16, pos: usize) -> Option<usize
 /// until the end-of-picture opcode, which is required for large spooled PICT
 /// files. Inside Macintosh Volume V, V-92.
 pub(crate) fn picture_stream_len(bytes: &[u8]) -> Option<usize> {
+    walk_picture_bytes(bytes, |_, _| Some(()))
+}
+
+/// Basic Picture Utilities metadata, independent of the destination display.
+/// Imaging With QuickDraw (1994), PictInfo, pp. 7-31--7-34.
+pub(crate) struct PictureBasicInfo {
+    pub depth: u16,
+    pub h_res: u32,
+    pub v_res: u32,
+    pub source_rect: [i16; 4],
+}
+
+pub(crate) fn picture_basic_info(bytes: &[u8]) -> Option<PictureBasicInfo> {
+    let rect_at = |pos| -> Option<[i16; 4]> {
+        Some([read_pict_u16(bytes, pos)? as i16, read_pict_u16(bytes, pos + 2)? as i16,
+            read_pict_u16(bytes, pos + 4)? as i16, read_pict_u16(bytes, pos + 6)? as i16])
+    };
+    let mut info = PictureBasicInfo {
+        depth: 1, h_res: 72 << 16, v_res: 72 << 16, source_rect: rect_at(2)?,
+    };
+    walk_picture_bytes(bytes, |opcode, pos| {
+        let pixmap = match opcode {
+            0x90 | 0x91 | 0x98 | 0x99 if read_pict_u16(bytes, pos)? & 0x8000 != 0 => Some(pos),
+            0x9A | 0x9B => Some(pos + 4),
+            0x12..=0x14 if read_pict_u16(bytes, pos)? == 1 => Some(pos + 10),
+            _ => None,
+        };
+        if let Some(pos) = pixmap {
+            let (_, pm) = read_pixmap_bytes(bytes, pos)?;
+            info.depth = info.depth.max(pm.pixel_size);
+        }
+        if opcode == 0x0C00 && read_pict_u16(bytes, pos)? == 0xFFFE {
+            info.h_res = read_pict_u32(bytes, pos + 4)?;
+            info.v_res = read_pict_u32(bytes, pos + 8)?;
+            info.source_rect = rect_at(pos + 12)?;
+        }
+        Some(())
+    })?;
+    let [top, left, bottom, right] = info.source_rect;
+    info.source_rect = [0, 0, bottom.checked_sub(top)?, right.checked_sub(left)?];
+    Some(info)
+}
+
+fn walk_picture_bytes(bytes: &[u8], mut visit: impl FnMut(u16, usize) -> Option<()>) -> Option<usize> {
     if bytes.len() < 10 {
         return None;
     }
@@ -2296,6 +2340,7 @@ pub(crate) fn picture_stream_len(bytes: &[u8]) -> Option<usize> {
             op
         };
 
+        visit(opcode, pos)?;
         pos = match opcode {
             0x00
             | 0x1C
@@ -7016,7 +7061,7 @@ fn parse_direct_bits_rect(
         screen_mode.4,
     );
     let dst_clut = indexed_destination_clut(device_clut, scrn_ps);
-    let direct_matcher = (scrn_ps != 16 && !clut_match_itable_enabled())
+    let direct_matcher = (scrn_ps <= 8 && !clut_match_itable_enabled())
         .then(|| DirectColorMatcher::new(&dst_clut));
 
     for row in 0..height {
@@ -7081,6 +7126,12 @@ fn parse_direct_bits_rect(
                                 screen_w,
                                 screen_h,
                                 dst_clip,
+                            );
+                        } else if scrn_ps == 32 {
+                            write_rgb32_pixel_clipped(
+                                bus, screen_base, screen_rb, x, y,
+                                [10, 5, 0].map(|shift| (u32::from((pixel >> shift) & 31) * 65535 / 31) as u16),
+                                screen_w, screen_h, dst_clip,
                             );
                         } else {
                             let r = (((pixel >> 10) & 0x1F) * 255 / 31) as u8;
@@ -7156,6 +7207,13 @@ fn parse_direct_bits_rect(
                                 screen_w,
                                 screen_h,
                                 dst_clip,
+                            );
+                        } else if scrn_ps == 32 {
+                            write_rgb32_pixel_clipped(
+                                bus, screen_base, screen_rb, x, y,
+                                [u16::from(row_data[ri]) * 257, u16::from(row_data[gi]) * 257,
+                                    u16::from(row_data[bi]) * 257],
+                                screen_w, screen_h, dst_clip,
                             );
                         } else {
                             let (r, g, b) = (row_data[ri], row_data[gi], row_data[bi]);

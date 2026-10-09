@@ -3306,28 +3306,93 @@ fn hle_import_runner_kill_picture_invalidates_tracked_handle() {
     assert_eq!(loaded.memory.read_u32_be(handle), Some(0));
 }
 
+// Four RGB pixels encoded as component PackBits, with no direct-pixel ColorTable.
+fn picture_info_direct_fixture() -> Vec<u8> {
+    let mut bytes = vec![0; 10];
+    bytes[6..8].copy_from_slice(&1u16.to_be_bytes());
+    bytes[8..10].copy_from_slice(&4u16.to_be_bytes());
+    bytes.extend_from_slice(&[0, 0x11, 2, 0xff, 0, 0x9a]);
+    bytes.extend_from_slice(&0xffu32.to_be_bytes());
+    for value in [0x8010u16, 0, 0, 1, 4, 0, 4] { bytes.extend_from_slice(&value.to_be_bytes()); }
+    for value in [0u32, 72 << 16, 72 << 16] { bytes.extend_from_slice(&value.to_be_bytes()); }
+    for value in [16u16, 32, 3, 8] { bytes.extend_from_slice(&value.to_be_bytes()); }
+    bytes.extend_from_slice(&[0; 12]);
+    for value in [0u16, 0, 1, 4, 0, 0, 1, 4, 0] { bytes.extend_from_slice(&value.to_be_bytes()); }
+    bytes.extend_from_slice(&[13, 11, 0, 0x12, 0x67, 0xff, 0, 0x34, 0x89, 0xff, 0, 0x56, 0xab, 0xff]);
+    bytes.extend_from_slice(&[0, 0xff]);
+    let len = bytes.len() as u16;
+    bytes[..2].copy_from_slice(&len.to_be_bytes());
+    bytes
+}
+
 #[test]
-fn hle_import_runner_handles_get_pict_info_zero_fill() {
-    let pef = synthetic_pef_with_import(b"GetPictInfo");
-    let mut loaded = load_pef_application(&pef).unwrap();
-    let pict_info_ptr = PPC_HEAP_BASE;
-    loaded
-        .memory
-        .add_region(pict_info_ptr, vec![0xaa; PPC_PICT_INFO_SIZE as usize]);
-    loaded.cpu.gpr[3] = PPC_HEAP_BASE + PPC_PICT_INFO_SIZE;
-    loaded.cpu.gpr[4] = pict_info_ptr;
-    loaded.cpu.gpr[5] = 0;
-    loaded.cpu.gpr[6] = 0;
-    loaded.cpu.gpr[7] = 0;
-    loaded.cpu.gpr[8] = 0;
+fn hle_import_runner_get_pict_info_reports_source_depth() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetPictInfo")).unwrap();
+    let bytes = picture_info_direct_fixture();
+    loaded.cpu.gpr[3] = bytes.len() as u32;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewHandle { clear: false });
+    let handle = loaded.cpu.gpr[3];
+    let data = loaded.memory.read_u32_be(handle).unwrap();
+    loaded.memory.write_bytes(data, &bytes).unwrap();
+    let out = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(out, vec![0xaa; PPC_PICT_INFO_SIZE as usize]);
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = out;
+    loaded.cpu.gpr[5..9].fill(0);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPictInfo);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u16_be(out + 22), Some(32));
+    assert_eq!(loaded.memory.read_u32_be(out + 14), Some(72 << 16));
+    assert_eq!(loaded.memory.read_u32_be(out + 18), Some(72 << 16));
+    assert_eq!(ppc_read_rect(&mut loaded.memory, out + 24), Some((0, 0, 1, 4)));
+    for offset in [6, 10, 80, 88, 92] {
+        assert_eq!(loaded.memory.read_u32_be(out + offset), Some(0), "optional handle must be nil");
+    }
+    loaded.memory.write_u16_be(data + bytes.len() as u32 - 2, 0).unwrap(); // Missing EndOfPicture.
+    loaded.memory.write_u16_be(out + 22, 0xbeef).unwrap();
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = out;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPictInfo);
+    assert_eq!(loaded.cpu.gpr[3] as i32, -11005);
+    assert_eq!(loaded.memory.read_u16_be(out + 22), Some(0xbeef));
+}
 
-    let probe = loaded.run_with_hle_imports(64);
-
-    assert_eq!(probe.handled_import_count, 1);
-    assert_eq!(probe.unsupported_import_index, None);
-    assert_eq!(loaded.cpu.gpr[3] as u16 as i16, PPC_NO_ERR);
+#[test]
+fn hle_import_runner_get_pict_info_rejects_truncated_large_bounds() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetPictInfo")).unwrap();
+    let mut bytes = picture_info_direct_fixture();
+    // The PixMap height is 65535, which must not overflow an i16 subtraction.
+    // Its short pixel payload cannot contain that many rows.
+    bytes[22..24].copy_from_slice(&i16::MIN.to_be_bytes());
+    bytes[26..28].copy_from_slice(&i16::MAX.to_be_bytes());
+    loaded.cpu.gpr[3] = bytes.len() as u32;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewHandle { clear: false });
+    let handle = loaded.cpu.gpr[3];
+    let data = loaded.memory.read_u32_be(handle).unwrap();
+    loaded.memory.write_bytes(data, &bytes).unwrap();
+    let out = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(out, vec![0xaa; PPC_PICT_INFO_SIZE as usize]);
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = out;
+    loaded.cpu.gpr[5..9].fill(0);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPictInfo);
+    assert_eq!(loaded.cpu.gpr[3] as i32, -11005);
     for offset in 0..PPC_PICT_INFO_SIZE {
-        assert_eq!(loaded.memory.read_u8(pict_info_ptr + offset), Some(0));
+        assert_eq!(loaded.memory.read_u8(out + offset), Some(0xaa));
+    }
+}
+
+#[test]
+fn ppc_picture_draw_preserves_rgb_in_32bit_destination() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawPicture")).unwrap();
+    let base = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(base, vec![0xaa; 24]);
+    let front = PpcFrontBuffer { base_addr: base, row_bytes: 24, width: 6, height: 1, depth: 32 };
+    assert!(ppc_draw_pict_bytes_to_16bpp(&mut loaded.memory, front,
+        &picture_info_direct_fixture(), (0, 1, 1, 5), &[[0; 3]; 256], 0, false));
+    let expected = [0xaaaaaaaa, 0, 0x00123456, 0x006789ab, 0x00ffffff, 0xaaaaaaaa];
+    for (x, pixel) in expected.into_iter().enumerate() {
+        assert_eq!(loaded.memory.read_u32_be(base + x as u32 * 4), Some(pixel), "pixel {x}");
     }
 }
 
