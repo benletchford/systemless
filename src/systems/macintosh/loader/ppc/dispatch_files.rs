@@ -166,6 +166,20 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 default_dir_id,
             ))))
         }
+        PpcImportDispatcherTarget::PBHRenameSync => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_h_rename_sync(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                deleted_vfs_file_paths,
+                files,
+                vfs_resource_files,
+                resource_files,
+                vfs_resources,
+                default_dir_id,
+            ))))
+        }
         PpcImportDispatcherTarget::Create => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_create(cpu, memory, vfs_directories, vfs_files, default_dir_id),
         ))),

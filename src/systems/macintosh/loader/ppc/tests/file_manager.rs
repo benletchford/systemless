@@ -226,6 +226,74 @@ fn pb_read_async_returns_from_sound_doubleback_before_its_completion() {
     );
 }
 
+#[test]
+fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
+    let pef = synthetic_pef_with_import(b"PBHRenameSync");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let old_ptr = PPC_DATA_BASE + 0x1000;
+    let new_ptr = old_ptr + 0x40;
+    loaded.memory.add_region(old_ptr, vec![0; 0x100]);
+    write_ppc_pstring(&mut loaded.memory, old_ptr, b"Old Log");
+    write_ppc_pstring(&mut loaded.memory, new_ptr, b"New Log");
+    let old_path = "System Folder/Preferences/Old Log";
+    let new_path = "System Folder/Preferences/New Log";
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: old_path.to_string(),
+        data: b"data fork".to_vec().into(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        dirty: false,
+    });
+    loaded.push_vfs_resource_file(PpcVfsResourceFileRecord {
+        path: old_path.to_string(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        resource_len: 13,
+        raw_data: Some(b"resource fork".to_vec().into()),
+        map_attrs: 0,
+        dirty: false,
+    });
+    loaded.push_test_open_file(PpcFileRecord {
+        ref_num: PPC_FIRST_FILE_REF_NUM,
+        path: old_path.to_string(),
+        position: 3,
+    });
+    let pb = old_ptr + 0x200;
+    loaded.memory.add_region(pb, vec![0xa5; 52]);
+    loaded.memory.write_u32_be(pb + 18, old_ptr).unwrap();
+    loaded
+        .memory
+        .write_u16_be(pb + 22, PPC_BOOT_VOLUME_REF_NUM as u16)
+        .unwrap();
+    loaded.memory.write_u32_be(pb + 28, new_ptr).unwrap();
+    loaded
+        .memory
+        .write_u32_be(pb + 48, PPC_PREFERENCES_DIR_ID)
+        .unwrap();
+    loaded.cpu.gpr[3] = pb;
+    loaded.cpu.gpr[4] = 0x12345678;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(PPC_NO_ERR as u16));
+    assert_eq!(loaded.memory.read_u32_be(pb + 12), Some(0xa5a5a5a5));
+    assert_eq!(loaded.cpu.gpr[4], 0x12345678);
+    assert_eq!(loaded.vfs_files[0].path, new_path);
+    assert_eq!(loaded.vfs_resource_files[0].path, new_path);
+    assert_eq!(loaded.files[0].path, new_path);
+    assert_eq!(loaded.files[0].position, 3);
+    assert_eq!(loaded.take_deleted_vfs_file_paths(), vec![old_path]);
+    assert_eq!(loaded.take_dirty_vfs_files()[0].data, b"data fork");
+    assert_eq!(
+        loaded.take_dirty_vfs_resource_forks()[0].data,
+        b"resource fork"
+    );
+}
+
     #[test]
     fn hrename_moves_both_forks_and_open_paths_without_changing_directory() {
         let pef = synthetic_pef_with_import(b"HRename");
@@ -10204,5 +10272,69 @@ fn pbh_get_v_info_uses_reference_for_bare_names_and_zero_index() {
         } else {
             assert_eq!(ppc_read_pstring_bytes(&mut loaded.memory, name_ptr).as_deref(), Some(name));
         }
+    }
+}
+#[test]
+fn pb_h_rename_sync_reports_errors_without_mutating_files() {
+    let pef = synthetic_pef_with_import(b"PBHRenameSync");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let pb = PPC_DATA_BASE + 0x1000;
+    let old_ptr = pb + 0x100;
+    let new_ptr = pb + 0x200;
+    loaded.memory.add_region(pb, vec![0; 0x300]);
+    loaded.memory.write_u32_be(pb + 18, old_ptr).unwrap();
+    loaded
+        .memory
+        .write_u16_be(pb + 22, PPC_BOOT_VOLUME_REF_NUM as u16)
+        .unwrap();
+    loaded.memory.write_u32_be(pb + 28, new_ptr).unwrap();
+    loaded
+        .memory
+        .write_u32_be(pb + 48, PPC_ROOT_DIR_ID)
+        .unwrap();
+    for name in ["Source", "Other"] {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: name.to_string(),
+            data: b"unchanged".to_vec().into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+    }
+    for (old, new, expected) in [
+        ("Absent", "New", PPC_FNF_ERR),
+        ("Source", "Other", PPC_DUP_FN_ERR),
+        ("Source", "Folder:Moved", PPC_BD_NAM_ERR),
+    ] {
+        write_ppc_pstring(&mut loaded.memory, old_ptr, old.as_bytes());
+        write_ppc_pstring(&mut loaded.memory, new_ptr, new.as_bytes());
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.gpr[3] = pb;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(expected));
+        assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(expected as u16));
+        assert!(loaded.vfs_files.iter().all(|file| !file.dirty));
+        assert_eq!(loaded.vfs_files[0].path, "Source");
+        assert!(loaded.take_deleted_vfs_file_paths().is_empty());
+    }
+    write_ppc_pstring(&mut loaded.memory, old_ptr, b"Source");
+    write_ppc_pstring(&mut loaded.memory, new_ptr, b"Fresh");
+    loaded.memory.add_readonly_region(pb + 16, vec![0x12, 0x34]);
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = pb;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(0x1234));
+    assert_eq!(loaded.vfs_files[0].path, "Source");
+    assert!(loaded.vfs_files.iter().all(|file| !file.dirty));
+    assert!(loaded.take_deleted_vfs_file_paths().is_empty());
+    for invalid_pb in [0, u32::MAX - 16] {
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.gpr[3] = invalid_pb;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+        assert_eq!(loaded.vfs_files[0].path, "Source");
     }
 }

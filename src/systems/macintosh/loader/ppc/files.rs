@@ -4396,17 +4396,96 @@ pub(super) fn ppc_h_rename(
     vfs_resources: &mut Vec<PpcVfsResourceRecord>,
     default_dir_id: u32,
 ) -> i16 {
-    // Inside Macintosh: Files (1992), pp. 2-178--2-179:
-    // FUNCTION HRename (vRefNum: Integer; dirID: LongInt;
-    //                   oldName: Str255; newName: Str255): OSErr;
-    // Rename within the source directory; open access paths remain valid.
-    let vref = cpu.gpr[3] as u16 as i16;
+    ppc_rename_by_name(
+        memory,
+        vfs_directories,
+        vfs_files,
+        deleted_vfs_file_paths,
+        files,
+        vfs_resource_files,
+        resource_files,
+        vfs_resources,
+        default_dir_id,
+        cpu.gpr[3] as u16 as i16,
+        cpu.gpr[4],
+        cpu.gpr[5],
+        cpu.gpr[6],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_pb_h_rename_sync(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_directories: &mut Vec<PpcVfsDirectory>,
+    vfs_files: &mut ProcessVfsFileRecords,
+    deleted_vfs_file_paths: &mut Vec<String>,
+    files: &mut Vec<PpcFileRecord>,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+    resource_files: &mut Vec<PpcResourceFileRecord>,
+    vfs_resources: &mut Vec<PpcVfsResourceRecord>,
+    default_dir_id: u32,
+) -> i16 {
+    // Inside Macintosh: Files (1992), pp. 2-198--2-199. The synchronous
+    // parameter block supplies ioNamePtr, ioVRefNum, ioMisc and ioDirID;
+    // ioResult receives the same error returned in r3.
+    let pb = cpu.gpr[3];
+    let Some(end) = pb.checked_add(52) else {
+        return PPC_PARAM_ERR;
+    };
+    if pb == 0 || !ppc_memory_can_write_bytes(memory, pb + 16, 2) {
+        return PPC_PARAM_ERR;
+    }
+    let fields = (
+        memory.read_u32_be(pb + 18),
+        memory.read_u16_be(pb + 22),
+        memory.read_u32_be(pb + 28),
+        memory.read_u32_be(end - 4),
+    );
+    let (Some(old_ptr), Some(vref), Some(new_ptr), Some(dir_id)) = fields else {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    };
+    let result = ppc_rename_by_name(
+        memory,
+        vfs_directories,
+        vfs_files,
+        deleted_vfs_file_paths,
+        files,
+        vfs_resource_files,
+        resource_files,
+        vfs_resources,
+        default_dir_id,
+        vref as i16,
+        dir_id,
+        old_ptr,
+        new_ptr,
+    );
+    ppc_complete_pb(memory, pb, result)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_rename_by_name(
+    memory: &mut PpcSectionMem,
+    vfs_directories: &mut Vec<PpcVfsDirectory>,
+    vfs_files: &mut ProcessVfsFileRecords,
+    deleted_vfs_file_paths: &mut Vec<String>,
+    files: &mut Vec<PpcFileRecord>,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+    resource_files: &mut Vec<PpcResourceFileRecord>,
+    vfs_resources: &mut Vec<PpcVfsResourceRecord>,
+    default_dir_id: u32,
+    vref: i16,
+    requested_dir_id: u32,
+    old_ptr: u32,
+    new_ptr: u32,
+) -> i16 {
+    // HRename and PBHRenameSync share the same fork and open-path updates.
     if !matches!(vref, 0 | PPC_BOOT_VOLUME_REF_NUM) {
         return PPC_NSV_ERR;
     }
     let (Some(old_bytes), Some(new_bytes)) = (
-        ppc_read_pstring_bytes(memory, cpu.gpr[5]),
-        ppc_read_pstring_bytes(memory, cpu.gpr[6]),
+        ppc_read_pstring_bytes(memory, old_ptr),
+        ppc_read_pstring_bytes(memory, new_ptr),
     ) else {
         return PPC_PARAM_ERR;
     };
@@ -4418,7 +4497,7 @@ pub(super) fn ppc_h_rename(
     if new_name.contains([':', '/']) || matches!(new_name.as_str(), "." | "..") {
         return PPC_BD_NAM_ERR;
     }
-    let dir_id = ppc_resolve_directory_id(vref, cpu.gpr[4], default_dir_id);
+    let dir_id = ppc_resolve_directory_id(vref, requested_dir_id, default_dir_id);
     let Some(parent_path) = ppc_directory_path_for_id(vfs_directories, dir_id) else {
         return PPC_DIR_NF_ERR;
     };
@@ -4449,15 +4528,13 @@ pub(super) fn ppc_h_rename(
     let data_moves = vfs_files
         .iter()
         .filter_map(|file| {
-            ppc_renamed_path(&file.path, &old_path, &new_path)
-                .map(|new| (file.path.clone(), new))
+            ppc_renamed_path(&file.path, &old_path, &new_path).map(|new| (file.path.clone(), new))
         })
         .collect::<Vec<_>>();
     let resource_moves = vfs_resource_files
         .iter()
         .filter_map(|file| {
-            ppc_renamed_path(&file.path, &old_path, &new_path)
-                .map(|new| (file.path.clone(), new))
+            ppc_renamed_path(&file.path, &old_path, &new_path).map(|new| (file.path.clone(), new))
         })
         .collect::<Vec<_>>();
     for (old, new) in &data_moves {

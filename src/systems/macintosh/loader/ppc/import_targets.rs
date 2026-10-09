@@ -553,6 +553,7 @@ pub enum PpcImportDispatcherTarget {
     DeleteByName(PpcDeleteByNameOperation),
     HCreate,
     HRename,
+    PBHRenameSync,
     Create,
     DSpGetFirstContext,
     DSpGetNextContext,
@@ -3519,6 +3520,7 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "HCreate") => PpcImportDispatcherTarget::HCreate,
         ("InterfaceLib", "HRename") => PpcImportDispatcherTarget::HRename,
+        ("InterfaceLib", "PBHRenameSync") => PpcImportDispatcherTarget::PBHRenameSync,
         ("InterfaceLib", "Create") => PpcImportDispatcherTarget::Create,
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
