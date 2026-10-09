@@ -29,7 +29,7 @@ use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{ProcessContext, ProcessMemoryManager, SharedProcessFileSystem};
 pub use crate::standard_file_ui::{
     StandardFileEntrySnapshot, StandardFileGetLayout, StandardFileKind, StandardFilePutLayout,
-    StandardFileSnapshot, StandardFileReplacementLayout, StandardFileNewFolderSnapshot, StandardFileNewFolderLayout,
+    StandardFileNameTextLayout, StandardFileSnapshot, StandardFileReplacementLayout, StandardFileNewFolderSnapshot, StandardFileNewFolderLayout,
 };
 pub use crate::text_edit::{TextEditManagerSnapshot, TextEditSnapshot};
 use crate::trap::dispatch::TrapTableProfile;
@@ -3408,6 +3408,7 @@ impl FixtureRunner {
                 prompt: None,
                 name: None,
                 name_selection: None,
+                name_text_layout: None,
                 name_has_focus: None,
                 directory_label: Some(self.dispatcher.apply_param_text(crate::trap::dispatch::BOOT_VOLUME_NAME).into_owned()),
                 directory_font: (self.dispatcher.tx_font, self.dispatcher.tx_size, self.dispatcher.tx_face as u8),
@@ -3454,6 +3455,15 @@ impl FixtureRunner {
                 tracking.sel_start.max(0) as usize,
                 tracking.sel_end.max(0) as usize,
             )),
+            name_text_layout: Some({
+                let metrics = crate::quickdraw::text::get_font_metrics(self.dispatcher.tx_font, self.dispatcher.tx_size);
+                StandardFileNameTextLayout {
+                    font: (self.dispatcher.tx_font, self.dispatcher.tx_size, self.dispatcher.tx_face as u8),
+                    origin: (1, metrics.ascent), selection_top: 0,
+                    selection_height: metrics.ascent + metrics.descent + metrics.leading,
+                    selection_to_edge: true, wraps: false,
+                }
+            }),
             name_has_focus: Some(!tracking.confirming_replace && tracking.new_folder.is_none()),
             directory_label: Some(self.dispatcher.apply_param_text(&directory_label).into_owned()),
             directory_font: (self.dispatcher.tx_font, self.dispatcher.tx_size, self.dispatcher.tx_face as u8),

@@ -2493,3 +2493,25 @@ including an accented partial range and suppression for list, replacement and
 New Folder focus. The headless type-check passes. This is geometry and build
 evidence; new pixel captures, native parity, GPUI field glyph painting, caret
 blink and horizontal scrolling remain pending.
+
+
+### Save filename GPUI guest glyph painting
+
+Save snapshots now expose the filename font, baseline/inset, selection height,
+edge-extension rule and wrapping rule. GPUI paints the same resolved Font
+Manager binary glyph ink and Mac Roman advances used by the guest. 68k retains
+its inherited font and selection to the field edge; PPC retains system-font
+geometry and the selected glyph range. Decorative borders do not inset text.
+Styled or non-exact resolved strikes retain the guest panel rather than silently
+changing metrics. Pointer/edit handling continues through existing guest paths.
+
+The shared compositor Standard File action test passes; its extension checks
+filename style/scaled-strike fallback. Six initial/edited composed captures and
+paired guest images are recorded in `save-name-glyph-review.json`. These are
+Systemless guest/compositor evidence, not native Macintosh font qualification.
+The static frontend insertion feedback remains interim: caret blinking and
+exact caret height, horizontal scrolling, paint-time font mutation, native
+pointer capture, clipboard/keyboard navigation and the scale/activation matrix
+remain unfinished. Other earlier sections describe evidence at their respective
+implementation stages; this entry supersedes their host-typography limitation
+for supported plain Save filename strikes only.

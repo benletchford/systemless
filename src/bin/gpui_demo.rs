@@ -2359,6 +2359,11 @@ mod desktop {
                         && panel.directory_font.2 == 0
                         && systemless::quickdraw::fonts::get_font_face_or_default(panel.directory_font.0, panel.directory_font.1).size
                             == if panel.directory_font.1 == 0 { 12 } else { panel.directory_font.1 }
+                        && panel.name_text_layout.as_ref().is_some_and(|layout| {
+                            layout.font.2 == 0
+                                && systemless::quickdraw::fonts::get_font_face_or_default(layout.font.0, layout.font.1).size
+                                    == if layout.font.1 == 0 { 12 } else { layout.font.1 }
+                        })
                         && panel.name.is_some()
                 }) {
                     let layout = panel.put_layout.as_ref().unwrap();
@@ -2507,42 +2512,20 @@ mod desktop {
                         );
                         let name = panel.name.as_deref().unwrap_or_default();
                         let focused = panel.name_has_focus == Some(true);
-                        let (prefix, selected, suffix) = save_name_segments(
-                            name,
-                            panel.name_selection.unwrap_or((0, 0)),
-                            focused,
-                        );
-                        let mut name_field = at(layout.name)
-                            .id(format!(
-                                "guest-standard-save-name-{}-{}",
-                                panel.guest_id, panel.generation
-                            ))
+                        let name_field = at(layout.name)
+                            .id(format!("guest-standard-save-name-{}-{}", panel.guest_id, panel.generation))
                             .test_support()
                             .overflow_hidden()
-                            .flex()
-                            .items_center()
-                            .px_1()
-                            .border_1()
-                            .border_color(if focused {
-                                cx.theme().accent
-                            } else {
-                                cx.theme().border
-                            })
                             .bg(cx.theme().background)
-                            .child(prefix);
-                        if focused && !selected.is_empty() {
-                            name_field = name_field.child(
-                                div()
-                                    .bg(cx.theme().selection)
-                                    .text_color(cx.theme().foreground)
-                                    .child(selected),
-                            );
-                        } else if focused {
-                            name_field = name_field.child(
-                                div().w(guest_px(1.)).h(guest_px(14.)).bg(cx.theme().foreground),
-                            );
-                        }
-                        overlay = overlay.child(name_field.child(suffix));
+                            .child(div().absolute().size_full().border_1().border_color(if focused {
+                                cx.theme().accent
+                            } else { cx.theme().border }))
+                            .child(super::text::classic_save_name(
+                                name, panel.name_selection.unwrap_or((0, 0)), focused,
+                                panel.name_text_layout.as_ref().unwrap(), scene_scale,
+                                cx.theme().foreground, cx.theme().selection,
+                            ));
+                        overlay = overlay.child(name_field);
                         for (label, rect) in [
                             ("Desktop", layout.desktop),
                             ("New", layout.new_folder),
@@ -10106,6 +10089,7 @@ mod desktop {
                         prompt: None,
                         name: None,
                         name_selection: None,
+                        name_text_layout: None,
                         name_has_focus: None,
                         directory_font: (0, 0, 0),
                         directory_text_layout: (1, 12, 16),
@@ -10192,6 +10176,7 @@ mod desktop {
                         prompt: Some("Save as:".into()),
                         name: Some("Untitled".into()),
                         name_selection: Some((0, 8)),
+                        name_text_layout: Some(systemless::runner::StandardFileNameTextLayout { font: (0, 0, 0), origin: (1, 12), selection_top: 0, selection_height: 16, selection_to_edge: true, wraps: false }),
                         name_has_focus: Some(true),
                         directory_font: (0, 0, 0),
                         directory_text_layout: (1, 12, 16),
@@ -10238,6 +10223,19 @@ mod desktop {
                 MacintoshInput::MouseUp { vertical: 320..=341, horizontal: 358..=437 },
             ]), "{save_inputs:?}");
             cx.update_window(window.into(), |_, window, cx| {
+                for font in [(0, 0, 1), (0, 0, 2), (0, 97, 0)] {
+                    view.update(cx, |demo, cx| {
+                        demo.standard_file.as_mut().unwrap().name_text_layout.as_mut().unwrap().font = font;
+                        cx.notify();
+                    });
+                    window.render_frame(cx);
+                    assert!(window.try_find("guest-standard-save-name-8-2").is_none(),
+                        "unsupported filename typography must retain the guest panel: {font:?}");
+                }
+                view.update(cx, |demo, cx| {
+                    demo.standard_file.as_mut().unwrap().name_text_layout.as_mut().unwrap().font = (0, 0, 0);
+                    cx.notify();
+                });
                 for font in [(0, 0, 1), (0, 0, 2), (0, 97, 0)] {
                     view.update(cx, |demo, cx| {
                         demo.standard_file.as_mut().unwrap().directory_font = font;

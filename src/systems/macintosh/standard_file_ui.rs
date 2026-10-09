@@ -95,6 +95,7 @@ pub struct StandardFileSnapshot {
     pub prompt: Option<String>,
     pub name: Option<String>,
     pub name_selection: Option<(usize, usize)>,
+    pub name_text_layout: Option<StandardFileNameTextLayout>,
     /// `None` for Open panels; Save reports where guest keyboard input goes.
     pub name_has_focus: Option<bool>,
     pub directory_label: Option<String>,
@@ -104,6 +105,25 @@ pub struct StandardFileSnapshot {
     pub directory_text_layout: (i16, i16, i16),
     pub get_layout: Option<StandardFileGetLayout>,
     pub put_layout: Option<StandardFilePutLayout>,
+}
+
+/// Guest filename painter geometry, relative to the Save name rectangle.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StandardFileNameTextLayout {
+    pub font: (i16, i16, u8),
+    pub origin: (i16, i16),
+    pub selection_top: i16,
+    pub selection_height: i16,
+    pub selection_to_edge: bool,
+    pub wraps: bool,
+}
+
+impl StandardFileNameTextLayout {
+    pub(crate) fn powerpc() -> Self {
+        Self { font: (0, 0, 0), origin: (0, 14), selection_top: 2,
+            selection_height: 16, selection_to_edge: false, wraps: true }
+    }
 }
 
 /// Geometry and event interpretation shared by both Standard File backends.
