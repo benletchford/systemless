@@ -9274,7 +9274,7 @@ fn pbh_get_v_info_enumerates_and_selects_mounted_volumes() {
     loaded.cpu.lr = PPC_HALT_PC;
     loaded.cpu.gpr[3] = pb;
     loaded.memory.write_u16_be(pb + 22, 0).unwrap();
-    loaded.memory.write_u16_be(pb + 28, 0).unwrap();
+    loaded.memory.write_u16_be(pb + 28, (-1i16) as u16).unwrap();
     assert!(ppc_write_pstring_bytes(
         &mut loaded.memory,
         name_ptr,
@@ -10172,4 +10172,37 @@ fn hle_import_runner_reports_missing_desktop_comment() {
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-5012));
     assert_eq!(loaded.memory.read_u16_be(pb + 16), Some((-5012i16) as u16));
     assert_eq!(loaded.memory.read_u32_be(pb + 40), Some(0));
+}
+
+#[test]
+fn pbh_get_v_info_uses_reference_for_bare_names_and_zero_index() {
+    for (index, reference, name, expected) in [
+        (-1i16, 0i16, b"UnrealTournament.ini".as_slice(), PPC_NO_ERR),
+        (-1, i16::MIN, b"UnrealTournament.ini".as_slice(), PPC_NSV_ERR),
+        (0, 0, b"Unknown Volume:File".as_slice(), PPC_NO_ERR),
+        (0, i16::MIN, b"Macintosh HD:File".as_slice(), PPC_NSV_ERR),
+        (-1, 0, b"Unknown Volume:File".as_slice(), PPC_NSV_ERR),
+    ] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PBHGetVInfoSync")).unwrap();
+        let pb = PPC_DATA_BASE + 0x1000;
+        let name_ptr = pb + 0x100;
+        loaded.memory.add_region(pb, vec![0; 0x200]);
+        loaded.memory.write_u32_be(pb + 18, name_ptr).unwrap();
+        loaded.memory.write_u16_be(pb + 22, reference as u16).unwrap();
+        loaded.memory.write_u16_be(pb + 28, index as u16).unwrap();
+        assert!(ppc_write_pstring_bytes(&mut loaded.memory, name_ptr, name));
+        loaded.cpu.gpr[3] = pb;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(expected));
+        assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(expected as u16));
+        if expected == PPC_NO_ERR {
+            assert_eq!(loaded.memory.read_u16_be(pb + 22), Some(PPC_BOOT_VOLUME_REF_NUM as u16));
+            assert_eq!(ppc_read_pstring_bytes(&mut loaded.memory, name_ptr).as_deref(),
+                Some(crate::trap::TrapDispatcher::boot_volume_name().as_bytes()));
+        } else {
+            assert_eq!(ppc_read_pstring_bytes(&mut loaded.memory, name_ptr).as_deref(), Some(name));
+        }
+    }
 }

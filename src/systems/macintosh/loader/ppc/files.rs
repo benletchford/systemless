@@ -742,7 +742,7 @@ pub(super) fn ppc_pbh_get_v_info(
     let absolute_pathname = !relative_pathname && requested_name.contains(':');
 
     // Inside Macintosh: Files (1992), pp. 2-144--2-146: a positive
-    // ioVolIndex enumerates the VCB queue, zero selects by name or reference,
+    // ioVolIndex enumerates the VCB queue, zero selects by reference only,
     // and a negative index uses the standard name/reference search order.
     let boot_volume = || PpcVfsVolumeRecord {
         ref_num: PPC_BOOT_VOLUME_REF_NUM,
@@ -789,10 +789,6 @@ pub(super) fn ppc_pbh_get_v_info(
     let selected = if volume_index == 0 {
         if vref_num != 0 {
             volume_by_ref(vref_num)
-        } else if relative_pathname {
-            Some(boot_volume())
-        } else if !requested_name.is_empty() {
-            volume_by_name(&requested_name)
         } else {
             Some(boot_volume())
         }
@@ -806,11 +802,9 @@ pub(super) fn ppc_pbh_get_v_info(
         volume_by_name(&requested_name)
     } else if vref_num != 0 {
         volume_by_ref(vref_num)
-    } else if relative_pathname {
-        Some(boot_volume())
-    } else if !requested_name.is_empty() {
-        volume_by_name(&requested_name)
     } else {
+        // FL22: a name without an absolute volume prefix falls back to
+        // ioVRefNum. A bare filename is not itself a volume name.
         Some(boot_volume())
     };
     let Some(volume) = selected else {
