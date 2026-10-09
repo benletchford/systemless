@@ -733,6 +733,22 @@ pub(super) fn dispatch_memory_import(
             }
             Some(PpcImportAction::Return(free))
         }
+        PpcImportDispatcherTarget::TempMaxMem => {
+            // Temporary storage uses the process-native handle allocator.
+            // Its query includes master-pointer overhead and leaves state intact.
+            // Inside Macintosh: Memory (1992), pp. 2-79--2-80: grow is always zero.
+            let grow = cpu.gpr[3];
+            if grow != 0 && !ppc_memory_can_write_bytes(memory, grow, 4) {
+                process_memory_manager.set_native_mem_error(PPC_PARAM_ERR);
+                *last_mem_error = PPC_PARAM_ERR;
+                return Some(PpcImportAction::Return(0));
+            }
+            let maximum = process_memory_manager.native_temporary_max_size(memory);
+            if grow != 0 {
+                memory.write_u32_be(grow, 0)?;
+            }
+            Some(PpcImportAction::Return(maximum))
+        }
         PpcImportDispatcherTarget::MaxMem => {
             let free_ptr_blocks = process_memory_manager.native_free_ptr_blocks();
             let free =
