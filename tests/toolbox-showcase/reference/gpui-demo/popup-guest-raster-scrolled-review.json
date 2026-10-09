@@ -1,0 +1,46 @@
+{
+  "base_commit": "a5d1cf88782687b1c8156e6db27af0ed0f626b5b",
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "source_sha256": {
+    "src/bin/gpui_demo_popup.rs": "ce33e9b2cf797ed172bc0bc2af40228f0c02d9ba2c1cdd07bc65c5d206a2e665",
+    "src/bin/gpui_demo_text.rs": "f90bfcdcd53642e180846a2109b8bb2a7429cb1f67e024803b326366e996558d",
+    "src/systems/macintosh/menu_model.rs": "47f8593ff84f458b0ca461b061b574cb793bb4e37c44ead53edde287924fd088"
+  },
+  "records": [
+    {
+      "mode": "mono",
+      "file": "popup-guest-raster-scrolled-mono.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "capture_sha256": "3073be9c30bc8855a8db43c2395741046836002e5a7c948d5e8902e1bc1b61eb",
+      "file_sha256": "6c6d3fcec925f2ad819e2ca316ad37025bff76558d69c5b148a22ceb3cd83029",
+      "pixel_sha256": "dbd774c252913f3ccf7dadbd4854d7190163c8b74efa88cf63026ea5539c18bb"
+    },
+    {
+      "mode": "colour",
+      "file": "popup-guest-raster-scrolled-colour.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "capture_sha256": "3a9cb195abbc650773b24bc5eea5e3287fbadfc4b74fb79da8678515db9c8bb3",
+      "file_sha256": "55781e1da139560ffffbd58b071f9f0047a960e5ebe587cd0cf9d9e4d32b0708",
+      "pixel_sha256": "3fac539059a53b1d917e4a6947822ce669299b9722dc696cba441f71ab8d6cfa"
+    },
+    {
+      "mode": "ppc",
+      "file": "popup-guest-raster-scrolled-ppc.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "capture_sha256": "9a4de76f545a9702133090595ddf03a78cf6c3bd601257efa9df588da29b2d90",
+      "file_sha256": "29c37dec0383fc721209b90828456716b641447aeb4951ee96276fbffb5e3fbd",
+      "pixel_sha256": "df68c07f3d192670658abca2a4566cf534cf613e8b57aa057bfe1a1df65142f6"
+    }
+  ],
+  "review": "All full compositions reviewed: shared up arrow, selected final row, Geneva 9 owner font. Partially clipped top label requires closer comparison. No native parity or scale/state matrix qualification. Follow-up: both CPU guest painters reserve 16-pixel scroll slots and retain row baselines; PPC guest-frame crop confirms partial first-row glyphs. This is internal guest/compositor comparison, not native oracle evidence.",
+  "command": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit [--screen-depth 1|--screen-depth 8|--prefer-powerpc] --capture-popup-controls-scrolled OUTPUT"
+}
