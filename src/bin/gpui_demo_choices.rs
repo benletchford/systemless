@@ -120,12 +120,11 @@ fn choice_content(
                     // Radio selection uses a dot; the guest owns group exclusivity.
                     // Macintosh Toolbox Essentials (1992), "Radio Buttons", p. 5-6.
                     if circular {
-                        indicator.flex().items_center().justify_center().child(
-                            div()
-                                .size(px(6. * scale))
-                                .rounded_full()
-                                .bg(foreground),
-                        )
+                        indicator
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(div().size(px(6. * scale)).rounded_full().bg(foreground))
                     } else {
                         indicator.child(
                             svg()
@@ -150,15 +149,32 @@ fn choice_content(
 
 /// Guest buttons keep pointer delivery even when semantic activation is unavailable.
 pub fn guest_button(
-    id: String, label: String, enabled: bool, active: bool,
-    pressed: bool, primary: bool, scale: f32, cx: &App,
+    id: String,
+    label: String,
+    enabled: bool,
+    active: bool,
+    pressed: bool,
+    primary: bool,
+    scale: f32,
+    cx: &App,
 ) -> gpui_kit::base::Button {
     let theme = cx.theme();
-    let foreground = if !enabled { theme.muted_foreground }
-        else if primary { theme.primary_foreground } else { theme.foreground };
-    let background = if primary && pressed { theme.primary_active }
-        else if primary { theme.primary }
-        else if pressed { theme.secondary } else { theme.background };
+    let foreground = if !enabled {
+        theme.muted_foreground
+    } else if primary {
+        theme.primary_foreground
+    } else {
+        theme.foreground
+    };
+    let background = if primary && pressed {
+        theme.primary_active
+    } else if primary {
+        theme.primary
+    } else if pressed {
+        theme.secondary
+    } else {
+        theme.background
+    };
     // The guest owns tracking and activation, including inactive-window clicks.
     // Macintosh Toolbox Essentials (1992), pp. 5-55--5-59.
     gpui_kit::base::Button::new(id)
@@ -166,7 +182,19 @@ pub fn guest_button(
         .focusable(enabled && active)
         .tab_stop(false)
         .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-        .border_1().border_color(theme.border).rounded(theme.radius)
-        .bg(background).text_color(foreground).text_size(px(12. * scale))
-        .overflow_hidden().child(label)
+        .relative()
+        .rounded(theme.radius)
+        .bg(background)
+        .text_color(foreground)
+        .overflow_hidden()
+        // Decorative border must not inset the text's guest coordinate space.
+        .child(
+            div()
+                .absolute()
+                .size_full()
+                .border_1()
+                .border_color(theme.border)
+                .rounded(theme.radius),
+        )
+        .child(super::text::classic_button_label(&label, scale, foreground))
 }

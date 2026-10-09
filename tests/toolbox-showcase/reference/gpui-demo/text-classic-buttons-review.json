@@ -1,0 +1,47 @@
+{
+  "scope": "Shared system-font button-label canvas: standard CDEF, dialog and Standard File button wrappers. Guest font family 0, size 12, integer centering before presentation scaling.",
+  "capture_flag": "--capture-standard-file-new-folder-selected-composed",
+  "modes": [
+    "--screen-depth 1",
+    "--screen-depth 8",
+    "--prefer-powerpc"
+  ],
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "review": "All three actual composed captures reviewed. Open TEXT, Desktop, New, Cancel, Save and New Folder actions have centered guest glyphs, including primary/secondary styling.",
+  "tests": {
+    "themed_document_button_forwards_one_guest_press_and_release": "pass 0.08s",
+    "themed_dialog_button_forwards_one_guest_press_and_release": "pass 0.14s"
+  },
+  "limitations": [
+    "One capture viewport, not complete scale/inactive/pressed/disabled qualification.",
+    "Authentic Apple fonts/native physical input remain unqualified.",
+    "Appearance font/style overrides retain regular CDEF guest pixels; dialog override metadata remains unfinished.",
+    "Menus, choice labels, list labels, static text and general dialog editing still need guest glyph painting."
+  ],
+  "outputs": [
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-buttons-mono.png",
+      "sha256": "dc5313459ed64615c002e48726cb0ff1d5cdf6a4fb8ad0e26a5a0ca48526d153"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-buttons-mono.guest.png",
+      "sha256": "469eea9a6f249062646578a6c0a2851221e3e52ca1cdcf6c4e6eaa87884be741"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-buttons-colour.png",
+      "sha256": "094f95f714257353fcebd2479034fb14520346360b6b82cfa12dda5ae66ec24a"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-buttons-colour.guest.png",
+      "sha256": "c482e256bdbed5fa919ff944bdd45581bfc46d11feecd851bf75b43dd3a8a4d4"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-buttons-ppc.png",
+      "sha256": "5372d5236642a12b1e50b18957a707d852179ed7013512db73636f6848c6fc5e"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-buttons-ppc.guest.png",
+      "sha256": "8e34d85114faae295196712b1c4dab776814e87a24ba4609cad51982470cfcd3"
+    }
+  ]
+}
