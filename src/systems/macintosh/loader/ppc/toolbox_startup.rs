@@ -273,6 +273,8 @@ impl PpcToolboxStartupState {
                 name_selection: None,
                 name_has_focus: None,
                 directory_label: Some(crate::trap::dispatch::BOOT_VOLUME_NAME.to_string()),
+                directory_font: (0, 0, 0),
+                directory_text_layout: (0, 12, 16),
                 get_layout: Some({
                     use super::dispatch_standard_file::{
                         PPC_STANDARD_FILE_GET_CANCEL_RECT, PPC_STANDARD_FILE_GET_DESKTOP_RECT,
@@ -333,6 +335,8 @@ impl PpcToolboxStartupState {
             name_selection: Some((tracking.sel_start, tracking.sel_end)),
             name_has_focus: Some(!tracking.list_has_focus && !tracking.confirming_replace && tracking.new_folder.is_none()),
             directory_label: Some(crate::mac_roman::decode_mac_roman(&tracking.directory_name)),
+            directory_font: (0, 0, 0),
+            directory_text_layout: (0, 12, 16),
             get_layout: None,
             put_layout: Some({
                 use super::dispatch_standard_file::{

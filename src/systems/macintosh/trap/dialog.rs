@@ -8820,6 +8820,20 @@ impl super::TrapDispatcher {
         encode_mac_roman_lossy(&self.apply_param_text(text))
     }
 
+    pub(crate) fn standard_file_directory_text_layout(
+        &self,
+        rect: (i16, i16, i16, i16),
+    ) -> (i16, i16, i16) {
+        let metrics = get_font_metrics(self.tx_font, Self::font_lookup_size(self.tx_size));
+        let height = rect.2 - rect.0;
+        let baseline = if metrics.ascent >= height && height > 0 {
+            height - 1
+        } else {
+            metrics.ascent
+        };
+        (Self::TE_LINE_LEFT_INSET, baseline, metrics.ascent + metrics.descent + metrics.leading)
+    }
+
     fn draw_static_text(
         &self,
         bus: &mut MacMemoryBus,

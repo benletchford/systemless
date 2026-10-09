@@ -1,0 +1,75 @@
+{
+  "scope": "Open/Save directory statText uses guest font, wrapping, inset, baseline and line spacing. 68k ParamText expansion and Mac Roman conversion retained.",
+  "capture_flags": [
+    "--capture-standard-file-open-composed",
+    "--capture-standard-file-save-composed"
+  ],
+  "modes": [
+    "--screen-depth 1",
+    "--screen-depth 8",
+    "--prefer-powerpc"
+  ],
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "review": "Six composed captures reviewed. 68k fixture smaller guest font and PPC system font retained; no host ellipsis; directory labels fit their rectangles. Paired guest frames are retained.",
+  "limitations": [
+    "One viewport, scale and modal state; long-directory wrapping, active/inactive and exact geometry matrices remain open.",
+    "Styled faces and scaled substitute strikes retain guest panels pending faithful implementation.",
+    "Save filename editor still uses host typography. Menus, general lists, dialog styles and authentic Macintosh font fidelity remain unqualified.",
+    "Snapshots currently inspect active QuickDraw state; font mutation versus paint-time state needs lifecycle verification."
+  ],
+  "outputs": [
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-directory-open-mono.png",
+      "sha256": "3f16efa9518e61c54cdab9378c5607748a931c5023471c2798ee700085dae619"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-directory-open-mono.guest.png",
+      "sha256": "98ff2fb915196cfb703c616708c0987080a624ecd38e9b613924e9f231c9ce1e"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-directory-open-colour.png",
+      "sha256": "d81768d06dbed15e0c29777c1f8ed7518a878d915699e40879ffb366f3d46bbb"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-directory-open-colour.guest.png",
+      "sha256": "a10639a8286b648e0061f4140106d2fb070525546b5cae8b24998ca24eea37d0"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-directory-open-ppc.png",
+      "sha256": "cd522c99a2f11a0c764b301ff8d25cc67a1c77c2784cbb344c4f29067aea1dad"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-directory-open-ppc.guest.png",
+      "sha256": "13ff1676f6811c974304851e766a7503ac709dfe57b96cf73601f6a77ee98ef1"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-directory-save-mono.png",
+      "sha256": "676955c0eb7d1026ed7c4af8d82b33fc55fd3c3cafcfd94ec6e685a533672402"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-directory-save-mono.guest.png",
+      "sha256": "0c693656f84957b0e76c3a690cc10bb806a31d2f70b2cad0a383349b7117040d"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-directory-save-colour.png",
+      "sha256": "ac8311a7368377445725f9fc956f6cacef11f55acffc07ee093c845204bb5609"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-directory-save-colour.guest.png",
+      "sha256": "3648409aaf9c8eade573850fa12297873381ec41be1816cc955162e91c625f73"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-directory-save-ppc.png",
+      "sha256": "98012efb3950ae5afc21a351a2b45bdcf19da2e3379639210ecf98ca3ed5dd21"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-directory-save-ppc.guest.png",
+      "sha256": "0bf2ff04e52ea91fed8253a5f09117329a4742725ca4443e87ad22411b1b96fc"
+    }
+  ],
+  "tests": {
+    "standard_file_snapshots_follow_modal_guest_state_on_both_cpus": "pass 9.90s with CPU font/layout checks",
+    "themed_standard_file_actions_forward_guest_clicks": "pass 0.62s including bold, italic and 97-point scaled-strike panel fallback",
+    "capture_build": "pass"
+  }
+}

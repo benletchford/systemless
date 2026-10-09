@@ -2161,6 +2161,9 @@ mod desktop {
                         && panel.standard_entry_point
                         && panel.get_layout.is_some()
                         && panel.entries.is_some()
+                        && panel.directory_font.2 == 0
+                        && systemless::quickdraw::fonts::get_font_face_or_default(panel.directory_font.0, panel.directory_font.1).size
+                            == if panel.directory_font.1 == 0 { 12 } else { panel.directory_font.1 }
                 }) {
                     let layout = panel.get_layout.as_ref().unwrap();
                     let bounds = super::frames::Rect::from(panel.bounds);
@@ -2198,12 +2201,12 @@ mod desktop {
                         }
                         overlay = overlay.child(
                             at(layout.directory_label)
-                                .flex()
-                                .items_center()
                                 .overflow_hidden()
-                                .text_ellipsis()
-                                .child(div().w_full().min_w_0().overflow_hidden().text_ellipsis()
-                                    .child(panel.directory_label.clone().unwrap_or_default())),
+                                .child(super::text::classic_directory_label(
+                                    panel.directory_label.as_deref().unwrap_or_default(),
+                                    panel.directory_font, panel.directory_text_layout,
+                                    scene_scale, cx.theme().foreground,
+                                )),
                         );
                         let entries = panel.entries.as_ref().unwrap();
                         let list_width = i32::from(layout.list.3 - layout.list.1);
@@ -2353,6 +2356,9 @@ mod desktop {
                         && panel.standard_entry_point
                         && panel.put_layout.is_some()
                         && panel.entries.is_some()
+                        && panel.directory_font.2 == 0
+                        && systemless::quickdraw::fonts::get_font_face_or_default(panel.directory_font.0, panel.directory_font.1).size
+                            == if panel.directory_font.1 == 0 { 12 } else { panel.directory_font.1 }
                         && panel.name.is_some()
                 }) {
                     let layout = panel.put_layout.as_ref().unwrap();
@@ -2383,12 +2389,12 @@ mod desktop {
                             .text_size(guest_px(13.));
                         overlay = overlay.child(
                             at(layout.directory_label)
-                                .flex()
-                                .items_center()
                                 .overflow_hidden()
-                                .text_ellipsis()
-                                .child(div().w_full().min_w_0().overflow_hidden().text_ellipsis()
-                                    .child(panel.directory_label.clone().unwrap_or_default())),
+                                .child(super::text::classic_directory_label(
+                                    panel.directory_label.as_deref().unwrap_or_default(),
+                                    panel.directory_font, panel.directory_text_layout,
+                                    scene_scale, cx.theme().foreground,
+                                )),
                         );
                         let entries = panel.entries.as_ref().unwrap();
                         let list_width = i32::from(layout.list.3 - layout.list.1);
@@ -6088,6 +6094,15 @@ mod desktop {
                 assert!(opened.entries.as_ref().is_some_and(|entries| !entries.is_empty()));
                 assert!(opened.directory_label.as_ref().is_some_and(|label| !label.is_empty()));
                 let layout = opened.get_layout.as_ref().expect("standard Open geometry");
+                if powerpc {
+                    assert_eq!(opened.directory_font, (0, 0, 0));
+                    assert_eq!(opened.directory_text_layout, (0, 12, 16));
+                } else {
+                    let metrics = systemless::quickdraw::text::get_font_metrics(opened.directory_font.0, opened.directory_font.1);
+                    assert_eq!(opened.directory_text_layout.0, 1);
+                    assert_eq!(opened.directory_text_layout.1, metrics.ascent.min(layout.directory_label.2 - layout.directory_label.0 - 1));
+                    assert_eq!(opened.directory_text_layout.2, metrics.ascent + metrics.descent + metrics.leading);
+                }
                 let (volume_text, origin) = opened.volume_text.as_ref().expect("guest volume typography");
                 if powerpc {
                     assert_eq!(volume_text, "Maci...");
@@ -10033,6 +10048,8 @@ mod desktop {
                         name: None,
                         name_selection: None,
                         name_has_focus: None,
+                        directory_font: (0, 0, 0),
+                        directory_text_layout: (1, 12, 16),
                         directory_label: Some("MacintoshHD".into()),
                         get_layout: Some(StandardFileGetLayout {
                             volume: (112, 190, 131, 264),
@@ -10117,6 +10134,8 @@ mod desktop {
                         name: Some("Untitled".into()),
                         name_selection: Some((0, 8)),
                         name_has_focus: Some(true),
+                        directory_font: (0, 0, 0),
+                        directory_text_layout: (1, 12, 16),
                         directory_label: Some("MacintoshHD".into()),
                         get_layout: None,
                         put_layout: Some(StandardFilePutLayout {
@@ -10160,7 +10179,17 @@ mod desktop {
                 MacintoshInput::MouseUp { vertical: 320..=341, horizontal: 358..=437 },
             ]), "{save_inputs:?}");
             cx.update_window(window.into(), |_, window, cx| {
+                for font in [(0, 0, 1), (0, 0, 2), (0, 97, 0)] {
+                    view.update(cx, |demo, cx| {
+                        demo.standard_file.as_mut().unwrap().directory_font = font;
+                        cx.notify();
+                    });
+                    window.render_frame(cx);
+                    assert!(window.try_find("guest-standard-save-list-8-2").is_none(),
+                        "unsupported directory typography must retain the guest panel: {font:?}");
+                }
                 view.update(cx, |demo, cx| {
+                    demo.standard_file.as_mut().unwrap().directory_font = (0, 0, 0);
                     demo.standard_file.as_mut().unwrap().confirming_replace = true;
                     cx.notify();
                 });

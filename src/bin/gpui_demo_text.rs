@@ -373,16 +373,45 @@ pub(crate) fn classic_file_prompt(
     scale: f32,
     foreground: gpui_kit::Hsla,
 ) -> impl gpui_kit::IntoElement {
+    classic_wrapped_text(text, (0, 12), (0, 12, 16), false, scale, foreground)
+}
+
+pub(crate) fn classic_directory_label(
+    text: &str,
+    font: (i16, i16, u8),
+    layout: (i16, i16, i16),
+    scale: f32,
+    foreground: gpui_kit::Hsla,
+) -> impl gpui_kit::IntoElement {
+    classic_wrapped_text(
+        text,
+        (font.0, font.1),
+        layout,
+        layout.0 != 0,
+        scale,
+        foreground,
+    )
+}
+
+fn classic_wrapped_text(
+    text: &str,
+    guest_font: (i16, i16),
+    layout: (i16, i16, i16),
+    inclusive_bottom: bool,
+    scale: f32,
+    foreground: gpui_kit::Hsla,
+) -> impl gpui_kit::IntoElement {
     use gpui_kit::{prelude::*, *};
     let bytes = text
         .chars()
-        .map(systemless::systems::macintosh::mac_roman::encode_mac_roman_char)
-        .collect::<Option<Vec<_>>>()
-        .expect("Standard File prompts are Mac Roman text");
-    let advances = ClassicLine::plain(&bytes, 0, 12).positions;
+        .map(|ch| {
+            systemless::systems::macintosh::mac_roman::encode_mac_roman_char(ch).unwrap_or(b'?')
+        })
+        .collect::<Vec<_>>();
+    let advances = ClassicLine::plain(&bytes, guest_font.0, guest_font.1).positions;
     canvas(
         move |bounds, _, _| {
-            let width = (f32::from(bounds.size.width) / scale)
+            let width = (f32::from(bounds.size.width) / scale - f32::from(layout.0))
                 .round()
                 .clamp(1., i16::MAX as f32) as i16;
             let lines =
@@ -390,21 +419,26 @@ pub(crate) fn classic_file_prompt(
                     (advances[index + 1] - advances[index]) as i16
                 })
                 .into_iter()
-                .map(|line| ClassicLine::plain(&bytes[line.start..line.visible_end], 0, 12))
+                .map(|line| {
+                    ClassicLine::plain(&bytes[line.start..line.visible_end], guest_font.0, guest_font.1)
+                })
                 .collect::<Vec<_>>();
             (bounds, lines)
         },
         move |_, (bounds, lines), window, _| {
             for (index, line) in lines.iter().enumerate() {
-                let baseline = 12 + index as i32 * 16;
-                if baseline as f32 * scale >= f32::from(bounds.size.height) {
+                let baseline = i32::from(layout.1) + index as i32 * i32::from(layout.2);
+                if baseline as f32 * scale > f32::from(bounds.size.height)
+                    || (!inclusive_bottom
+                        && baseline as f32 * scale == f32::from(bounds.size.height))
+                {
                     break;
                 }
                 for &(x, y, width) in &line.ink {
                     window.paint_quad(fill(
                         Bounds::new(
                             point(
-                                bounds.left() + px(x as f32 * scale),
+                                bounds.left() + px((x + i32::from(layout.0)) as f32 * scale),
                                 bounds.top() + px((baseline + y) as f32 * scale),
                             ),
                             size(px(width as f32 * scale), px(scale)),

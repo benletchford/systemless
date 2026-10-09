@@ -2409,3 +2409,24 @@ compositor captures are reviewed and retained with paired guest frames and
 hashes in `text-classic-open-volume-review.json`. This is one viewport/scale
 and modal state; exact geometry, other scales and activation states, Save
 volume UI and authentic Macintosh font qualification remain open.
+
+
+### Standard File directory typography
+
+Open/Save directory labels now use guest glyphs and wrapping rather than host
+typography, centering and ellipsis. The 68k snapshot exposes QuickDraw font, raw
+size and face, font ascent/line spacing and the one-pixel statText inset; PPC
+retains system text at baseline 12 with spacing 16. 68k ParamText expansion and
+lossy Mac Roman conversion follow the guest painter. Styled faces and scaled
+substitute strikes retain the guest panel pending faithful implementation.
+
+Six actual shared-compositor Open/Save captures are reviewed and retained with
+paired guest frames in `text-classic-directory-review.json`. The 68k fixture's
+smaller guest font and PPC system font remain distinct. The three-mode modal
+snapshot regression checks font/layout metadata (9.90 seconds). GPUI pointer
+routing and render-level fallback checks for bold, italic and a 97-point scaled
+strike pass (0.62 seconds). Exact generated 13-point strikes remain eligible.
+These checks cover one viewport/scale and modal state. Long-directory wrapping,
+font mutation versus paint-time state, activation, exact geometry and authentic
+Macintosh font fidelity remain unqualified; the Save filename editor still uses
+host typography.

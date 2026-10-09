@@ -3409,7 +3409,9 @@ impl FixtureRunner {
                 name: None,
                 name_selection: None,
                 name_has_focus: None,
-                directory_label: Some(crate::trap::dispatch::BOOT_VOLUME_NAME.to_string()),
+                directory_label: Some(self.dispatcher.apply_param_text(crate::trap::dispatch::BOOT_VOLUME_NAME).into_owned()),
+                directory_font: (self.dispatcher.tx_font, self.dispatcher.tx_size, self.dispatcher.tx_face as u8),
+                directory_text_layout: self.dispatcher.standard_file_directory_text_layout(get_layout.directory_label),
                 get_layout: Some(get_layout),
                 put_layout: None,
             });
@@ -3453,7 +3455,9 @@ impl FixtureRunner {
                 tracking.sel_end.max(0) as usize,
             )),
             name_has_focus: Some(!tracking.confirming_replace && tracking.new_folder.is_none()),
-            directory_label: Some(directory_label),
+            directory_label: Some(self.dispatcher.apply_param_text(&directory_label).into_owned()),
+            directory_font: (self.dispatcher.tx_font, self.dispatcher.tx_size, self.dispatcher.tx_face as u8),
+            directory_text_layout: self.dispatcher.standard_file_directory_text_layout(put_layout.directory_label),
             get_layout: None,
             put_layout: Some(put_layout),
         })
