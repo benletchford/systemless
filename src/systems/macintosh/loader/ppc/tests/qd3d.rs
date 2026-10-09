@@ -8880,6 +8880,7 @@ fn q3_completed_frame_fast_render_counts_state_only_frames_without_replay() {
     let mut loaded = load_pef_application(&pef).unwrap();
     loaded.q3_completed_frames = (0..3)
         .map(|_| PpcQ3CompletedFrameRecord {
+            view_snapshot: None,
             view,
             submissions: vec![PpcQ3SubmissionRecord {
                 view,
@@ -8989,6 +8990,7 @@ fn q3_completed_frame_fast_render_records_state_only_target_metadata() {
         cancelled: false,
     });
     loaded.q3_completed_frames.push(PpcQ3CompletedFrameRecord {
+        view_snapshot: None,
         view,
         submissions: vec![PpcQ3SubmissionRecord {
             view,
@@ -9087,6 +9089,7 @@ fn q3_end_rendering_aggregates_state_only_completed_frames() {
     let result = ppc_q3_view_end_rendering(
         &loaded.cpu,
         &mut loaded.q3_views,
+        &loaded.q3_cameras,
         &loaded.q3_objects,
         &mut loaded.q3_submissions,
         &mut loaded.q3_submission_transforms,
@@ -9200,6 +9203,7 @@ fn q3_end_rendering_reuses_retained_bounding_geometry_for_state_only_frames() {
     let result = ppc_q3_view_end_rendering(
         &loaded.cpu,
         &mut loaded.q3_views,
+        &loaded.q3_cameras,
         &loaded.q3_objects,
         &mut loaded.q3_submissions,
         &mut loaded.q3_submission_transforms,
@@ -9284,6 +9288,7 @@ fn hle_import_runner_fast_paths_idle_q3_state_only_render_boundaries() {
     loaded.q3_retained_frames.push(PpcQ3RetainedFrameRecord {
         view,
         frame: PpcQ3CompletedFrameRecord {
+            view_snapshot: None,
             view,
             submissions: vec![PpcQ3SubmissionRecord {
                 view,
@@ -15066,6 +15071,7 @@ fn q3_software_renderer_replays_trimesh_scene_commands_to_front_buffer() {
     let replay = PpcQ3SceneReplay::from_json_str(&replay_json).unwrap();
 
     loaded.q3_completed_frames.push(PpcQ3CompletedFrameRecord {
+        view_snapshot: None,
         view,
         submissions: loaded.q3_submissions.clone(),
         submission_transforms: loaded.q3_submission_transforms.clone(),
@@ -15101,6 +15107,7 @@ fn q3_software_renderer_replays_trimesh_scene_commands_to_front_buffer() {
             kind: PpcQ3LightKind::Ambient,
         });
     loaded.q3_completed_frames.push(PpcQ3CompletedFrameRecord {
+        view_snapshot: None,
         view,
         submissions: loaded.q3_submissions.clone(),
         submission_transforms: loaded.q3_submission_transforms.clone(),
@@ -15731,6 +15738,7 @@ fn q3_completed_frame_renders_to_dsp_back_buffer_mac_draw_context_until_swap() {
         lights: Vec::new(),
     };
     loaded.q3_completed_frames.push(PpcQ3CompletedFrameRecord {
+        view_snapshot: None,
         view,
         submissions: vec![submission],
         submission_transforms: vec![transform],
@@ -17221,6 +17229,49 @@ impl ImmediateTriMeshFixture {
         }
         (green, red, stats)
     }
+}
+
+#[test]
+fn q3_completed_frame_preserves_camera_before_the_next_guest_update() {
+    fn render(change_camera: bool) -> Vec<u16> {
+        let mut fixture = ImmediateTriMeshFixture::new();
+        fixture.write_triangle(ImmediateTriMeshFixture::LEFT, (0.0, 1.0, 0.0));
+        fixture.submit();
+        let loaded = &mut fixture.loaded;
+        loaded.cpu.gpr[3] = fixture.view;
+        assert_eq!(ppc_q3_view_end_rendering(
+            &loaded.cpu,
+            &mut loaded.q3_views,
+            &loaded.q3_cameras,
+            &loaded.q3_objects,
+            &mut loaded.q3_submissions,
+            &mut loaded.q3_submission_transforms,
+            &mut loaded.q3_submission_materials,
+            &mut loaded.q3_submission_lights,
+            &mut loaded.q3_completed_frames,
+            &mut loaded.q3_retained_frames,
+            &mut loaded.q3_state_only_completed_frame_batches,
+            &loaded.q3_draw_contexts,
+            &loaded.gworlds,
+            *loaded.current_gworld,
+            &mut loaded.q3_error_state,
+        ), PPC_Q3_VIEW_STATUS_DONE);
+        if change_camera {
+            // The next game update moves the camera before the host drains
+            // the completed frame. Its geometry still belongs to the old view.
+            loaded.q3_cameras[0].placement.camera_location.0 += 100.0;
+            loaded.q3_cameras[0].placement.point_of_interest.0 += 100.0;
+            loaded.q3_cameras[0].range_yon = 200.0;
+            loaded.q3_cameras[0].viewport_width = 1.0;
+        }
+        loaded.render_completed_q3_frames_to_front_buffer();
+        (0..16 * 16 * 2).step_by(2)
+            .map(|offset| loaded.memory.read_u16_be(fixture.front_base + offset).unwrap())
+            .collect()
+    }
+    let reference = render(false);
+    assert!(reference.contains(&ImmediateTriMeshFixture::GREEN));
+    assert_eq!(render(true), reference);
 }
 
 #[test]
@@ -25280,6 +25331,7 @@ fn hle_import_runner_removes_q3_side_state_on_object_dispose() {
             }),
         });
     loaded.q3_completed_frames.push(PpcQ3CompletedFrameRecord {
+        view_snapshot: None,
         view: object,
         submissions: vec![PpcQ3SubmissionRecord {
             view: object,
@@ -25293,6 +25345,7 @@ fn hle_import_runner_removes_q3_side_state_on_object_dispose() {
         retained_trimeshes: Vec::new(),
     });
     loaded.q3_completed_frames.push(PpcQ3CompletedFrameRecord {
+        view_snapshot: None,
         view: PPC_Q3_OBJECT_BASE + PPC_Q3_OBJECT_STRIDE * 4,
         submissions: Vec::new(),
         submission_transforms: Vec::new(),
@@ -25318,6 +25371,7 @@ fn hle_import_runner_removes_q3_side_state_on_object_dispose() {
         retained_trimeshes: Vec::new(),
     });
     loaded.q3_completed_frames.push(PpcQ3CompletedFrameRecord {
+        view_snapshot: None,
         view: PPC_Q3_OBJECT_BASE + PPC_Q3_OBJECT_STRIDE * 10,
         submissions: Vec::new(),
         submission_transforms: Vec::new(),
@@ -25753,6 +25807,7 @@ fn qd3d_trace_snapshot_tracks_latest_object_submission_and_frame() {
         secondary: 0,
     };
     let frame = PpcQ3CompletedFrameRecord {
+        view_snapshot: None,
         view: 0x0500_0010,
         submissions: vec![submission],
         submission_transforms: Vec::new(),

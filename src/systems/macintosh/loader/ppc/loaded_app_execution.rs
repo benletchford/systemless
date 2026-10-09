@@ -690,6 +690,7 @@ impl PpcLoadedApp {
                         let action = dispatch_q3_view_end_rendering_import(
                             cpu,
                             &mut q3_views,
+                            &q3_cameras,
                             &q3_objects,
                             &mut q3_submissions,
                             &mut q3_submission_transforms,
@@ -1013,6 +1014,7 @@ impl PpcLoadedApp {
                         let action = dispatch_q3_view_end_rendering_import(
                             cpu,
                             &mut q3_views,
+                            &q3_cameras,
                             &q3_objects,
                             &mut q3_submissions,
                             &mut q3_submission_transforms,

@@ -1717,6 +1717,7 @@ pub(super) fn dispatch_q3_group_view_import(
             Some(dispatch_q3_view_end_rendering_import(
                 cpu,
                 stores.q3_views,
+                stores.q3_cameras,
                 stores.q3_objects,
                 stores.q3_submissions,
                 stores.q3_submission_transforms,

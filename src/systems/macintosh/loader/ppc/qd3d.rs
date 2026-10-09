@@ -263,12 +263,20 @@ pub struct PpcQ3ViewStateSnapshotRecord {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PpcQ3CompletedFrameRecord {
+    /// Rendering state at EndRendering, before the next guest update.
+    pub view_snapshot: Option<PpcQ3FrameViewSnapshot>,
     pub view: u32,
     pub submissions: Vec<PpcQ3SubmissionRecord>,
     pub submission_transforms: Vec<PpcQ3SubmissionTransformRecord>,
     pub submission_materials: Vec<PpcQ3SubmissionMaterialRecord>,
     pub submission_lights: Vec<PpcQ3SubmissionLightRecord>,
     pub retained_trimeshes: Vec<PpcQ3TriMeshRecord>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PpcQ3FrameViewSnapshot {
+    pub view_state: PpcQ3ViewStateRecord,
+    pub camera: Option<PpcQ3CameraRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -13538,6 +13546,7 @@ pub fn ppc_q3_view_start_rendering(
 pub fn ppc_q3_view_end_rendering(
     cpu: &PpcCpu,
     q3_views: &mut Vec<PpcQ3ViewStateRecord>,
+    q3_cameras: &[PpcQ3CameraRecord],
     q3_objects: &[PpcQ3ObjectRecord],
     q3_submissions: &mut Vec<PpcQ3SubmissionRecord>,
     q3_submission_transforms: &mut Vec<PpcQ3SubmissionTransformRecord>,
@@ -13562,6 +13571,10 @@ pub fn ppc_q3_view_end_rendering(
     let view = record.view;
     let draw_context = record.draw_context;
     if completed {
+        let view_snapshot = PpcQ3FrameViewSnapshot {
+            view_state: *record,
+            camera: q3_cameras.iter().find(|camera| camera.camera == record.camera).copied(),
+        };
         if !qd3d_dump_frame_enabled() {
             let mut has_submission = false;
             let mut has_trimesh = false;
@@ -13586,7 +13599,7 @@ pub fn ppc_q3_view_end_rendering(
                 return PPC_Q3_VIEW_STATUS_DONE;
             }
             if !has_trimesh {
-                if let Some(frame) = ppc_q3_take_retained_frame_for_view(q3_retained_frames, view) {
+                if let Some(mut frame) = ppc_q3_take_retained_frame_for_view(q3_retained_frames, view) {
                     ppc_q3_drain_queued_frame_for_view(
                         view,
                         q3_submissions,
@@ -13594,6 +13607,7 @@ pub fn ppc_q3_view_end_rendering(
                         q3_submission_materials,
                         q3_submission_lights,
                     );
+                    frame.view_snapshot = Some(view_snapshot);
                     q3_completed_frames.push(frame);
                     return PPC_Q3_VIEW_STATUS_DONE;
                 }
@@ -13618,13 +13632,14 @@ pub fn ppc_q3_view_end_rendering(
                 return PPC_Q3_VIEW_STATUS_DONE;
             }
         }
-        let frame = ppc_q3_take_completed_frame(
+        let mut frame = ppc_q3_take_completed_frame(
             view,
             q3_submissions,
             q3_submission_transforms,
             q3_submission_materials,
             q3_submission_lights,
         );
+        frame.view_snapshot = Some(view_snapshot);
         if !cancelled && !frame.submissions.is_empty() {
             q3_completed_frames.push(frame);
         }
@@ -13635,6 +13650,7 @@ pub fn ppc_q3_view_end_rendering(
 pub fn dispatch_q3_view_end_rendering_import(
     cpu: &PpcCpu,
     q3_views: &mut Vec<PpcQ3ViewStateRecord>,
+    q3_cameras: &[PpcQ3CameraRecord],
     q3_objects: &[PpcQ3ObjectRecord],
     q3_submissions: &mut Vec<PpcQ3SubmissionRecord>,
     q3_submission_transforms: &mut Vec<PpcQ3SubmissionTransformRecord>,
@@ -13669,6 +13685,7 @@ pub fn dispatch_q3_view_end_rendering_import(
     let result = ppc_q3_view_end_rendering(
         cpu,
         q3_views,
+        q3_cameras,
         q3_objects,
         q3_submissions,
         q3_submission_transforms,
@@ -13730,6 +13747,7 @@ pub fn ppc_q3_take_completed_frame(
     q3_submission_lights: &mut Vec<PpcQ3SubmissionLightRecord>,
 ) -> PpcQ3CompletedFrameRecord {
     PpcQ3CompletedFrameRecord {
+        view_snapshot: None,
         view,
         submissions: ppc_q3_take_records_for_view(q3_submissions, view, |record| record.view),
         submission_transforms: ppc_q3_take_records_for_view(
