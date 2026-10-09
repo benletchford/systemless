@@ -910,3 +910,67 @@ fn mathlib_hypot_preserves_magnitudes_for_signed_zero_and_infinity_over_nan() {
         ppc_import_extra_cycles_for_target(&PpcImportDispatcherTarget::MathSqrt)
     );
 }
+#[test]
+fn mathlib_acos_returns_radians_through_fpr1_and_preserves_other_arguments() {
+    for (input, expected) in [
+        (-1.0_f64, std::f64::consts::PI),
+        (-0.0, std::f64::consts::FRAC_PI_2),
+        (0.0, std::f64::consts::FRAC_PI_2),
+        (0.5, std::f64::consts::PI / 3.0),
+        (1.0, 0.0),
+    ] {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_library_import(b"MathLib", b"acos")).unwrap();
+        assert_eq!(
+            loaded.imports[0].dispatcher_target,
+            PpcImportDispatcherTarget::MathAcos
+        );
+        loaded.cpu.gpr[3] = 0xfeed_face;
+        loaded.cpu.fpr[1] = input.to_bits();
+        loaded.cpu.fpr[2] = 7.0_f64.to_bits();
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let result = f64::from_bits(loaded.cpu.fpr[1]);
+        assert!(result.is_finite());
+        assert!((result - expected).abs() <= 4.0 * f64::EPSILON);
+        if input == 1.0 {
+            assert_eq!(result.to_bits(), 0.0_f64.to_bits());
+        }
+        assert_eq!(loaded.cpu.gpr[3], 0xfeed_face);
+        assert_eq!(loaded.cpu.fpr[2], 7.0_f64.to_bits());
+    }
+}
+
+#[test]
+fn mathlib_acos_returns_nan_outside_the_domain_in_main_and_hot_paths() {
+    let target = dispatcher_target_for_import("MathLib", "acos");
+    let mut cpu = PpcCpu::new();
+    let mut memory = PpcSectionMem::new();
+    for hot in [false, true] {
+        for input in [
+            1.0_f64 + f64::EPSILON,
+            -1.0_f64 - f64::EPSILON,
+            2.0,
+            -2.0,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ] {
+            cpu.gpr[3] = 0xfeed_face;
+            cpu.fpr[1] = input.to_bits();
+            let action = if hot {
+                dispatch_simple_hot_import_fast(&target, &mut cpu, &mut memory, 0)
+            } else {
+                super::super::dispatch_math::dispatch_math_import(&target, &mut cpu, &mut memory)
+            };
+            assert_eq!(action, Some(PpcImportAction::ReturnPreserve));
+            assert!(f64::from_bits(cpu.fpr[1]).is_nan());
+            assert_eq!(cpu.gpr[3], 0xfeed_face);
+        }
+    }
+    assert_eq!(
+        ppc_import_extra_cycles_for_target(&target),
+        ppc_import_extra_cycles_for_target(&PpcImportDispatcherTarget::MathAsin)
+    );
+}

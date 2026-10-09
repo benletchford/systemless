@@ -1778,6 +1778,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::MathRound
         | PpcImportDispatcherTarget::MathRint
         | PpcImportDispatcherTarget::MathAsin
+        | PpcImportDispatcherTarget::MathAcos
         | PpcImportDispatcherTarget::MathTan
         | PpcImportDispatcherTarget::MathAtan
         | PpcImportDispatcherTarget::MathAtan2
