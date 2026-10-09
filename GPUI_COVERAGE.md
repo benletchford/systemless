@@ -4085,3 +4085,11 @@ production ownership, live GPUI pointer mapping, arbitrary fonts/backgrounds
 or themes, other platforms, or the newer whole-field canvas. A separate
 whole-field multiline run against `716378c4` is now in progress; its first true
 PPC16 capture matches every composed field pixel and has been visually reviewed.
+
+Styled TextEdit visibility candidates now reuse the plain-field window-owner,
+standard-definition, control-overlap, guest-visible region, painted-region
+and front-window occlusion rules. Plain eligibility retains its existing font
+and layout guards. A candidate is not an ownership grant: the whole-field
+native paint plan must qualify separately before drawing it. Regression checks
+cover partial painted regions, missing drawing evidence, custom windows and
+front-window clipping. Production styled rendering remains unwired.
