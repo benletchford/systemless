@@ -207,6 +207,9 @@ mod desktop {
         capture_standard_file_new_folder_selected_composed: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_standard_file_new_folder_long_composed: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_custom_menu_fallback: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -2411,39 +2414,11 @@ mod desktop {
                         .text_color(cx.theme().foreground).text_size(guest_px(13.))
                         .child(at(if is_error { layout.error_message() } else { layout.prompt }).overflow_hidden().child(prompt));
                     if !is_error {
-                        let bytes: Vec<usize> = folder.name.char_indices().map(|(index, _)| index)
-                            .chain(std::iter::once(folder.name.len())).collect();
-                        let start = bytes[folder.selection.0.min(bytes.len() - 1)];
-                        let end = bytes[folder.selection.1.min(bytes.len() - 1)].max(start);
-                        let text = StyledText::new(if folder.name.is_empty() { " ".to_string() } else { folder.name.clone() })
-                            .with_highlights([(start..end, HighlightStyle {
-                                background_color: Some(cx.theme().selection), ..Default::default()
-                            })]);
-                        let layout = text.layout().clone();
-                        let output = self.text_pointer_map.clone();
-                        let identity = (panel.guest_id, panel.generation);
-                        let name_text = folder.name.clone();
-                        let guest_bounds = folder.layout.name;
-                        let guest_positions = folder.insertion_positions.clone();
-                        let caret_color = cx.theme().foreground;
-                        let caret_width = guest_px(1.);
-                        let caret_height = guest_px(14.);
-                        let caret = (start == end).then_some(start);
                         let name = at(folder.layout.name).id("guest-standard-new-folder-name").test_support()
                             .aria_label("Name of new folder").overflow_hidden().flex().items_center().px_1()
                             .border_1().border_color(cx.theme().accent).bg(cx.theme().background)
-                            .child(div().flex_shrink_0().whitespace_nowrap().child(text))
-                            .child(canvas(|_, _, _| (), move |_, _, window, _| {
-                                let positions = bytes.iter().zip(&guest_positions).filter_map(|(index, guest)| {
-                                    layout.position_for_index(*index).map(|point| (f32::from(point.x), *guest))
-                                }).collect();
-                                *output.borrow_mut() = Some(super::text::TextPointerMap {
-                                    identity, text: name_text, guest_bounds, positions,
-                                });
-                                if let Some(point) = caret.and_then(|index| layout.position_for_index(index)) {
-                                    window.paint_quad(fill(Bounds::new(point, size(caret_width, caret_height)), caret_color));
-                                }
-                            }).absolute().size_full());
+                            .child(super::text::single_line(folder, (panel.guest_id, panel.generation),
+                                self.text_pointer_map.clone(), scene_scale, cx.theme().foreground, cx.theme().selection));
                         overlay = overlay.child(name);
                     }
                     let actions = if is_error {
@@ -2657,6 +2632,7 @@ mod desktop {
         StandardFileNewFolderComposed,
         StandardFileNewFolderErrorComposed,
         StandardFileNewFolderSelectedComposed,
+        StandardFileNewFolderLongComposed,
     }
 
     #[cfg(feature = "gpui-demo-test")]
@@ -2796,6 +2772,7 @@ mod desktop {
                 | CaptureCase::StandardFileNewFolderComposed
                 | CaptureCase::StandardFileNewFolderErrorComposed
                 | CaptureCase::StandardFileNewFolderSelectedComposed
+                | CaptureCase::StandardFileNewFolderLongComposed
         );
         let standard_file_open = matches!(capture, CaptureCase::StandardFileOpenComposed);
         let standard_file_page = standard_file_save || standard_file_open;
@@ -3284,7 +3261,7 @@ mod desktop {
                         && panel.entries.as_ref().is_some_and(|entries| !entries.is_empty())
                 })
             }));
-            if matches!(capture, CaptureCase::StandardFileNewFolderComposed | CaptureCase::StandardFileNewFolderErrorComposed | CaptureCase::StandardFileNewFolderSelectedComposed) {
+            if matches!(capture, CaptureCase::StandardFileNewFolderComposed | CaptureCase::StandardFileNewFolderErrorComposed | CaptureCase::StandardFileNewFolderSelectedComposed | CaptureCase::StandardFileNewFolderLongComposed) {
                 let panel = session.runner().standard_file_snapshot().unwrap();
                 let click = super::activation::ControlActivation::begin_file(&mut session, panel.guest_id, panel.generation, super::activation::FileAction::NewFolder).unwrap();
                 let tick = session.runner().guest_tick().saturating_add(1);
@@ -3297,6 +3274,17 @@ mod desktop {
                 let folder = panel.new_folder.as_ref().unwrap();
                 assert_eq!(folder.name, "untitled folder");
                 assert_eq!(folder.selection, (0, 15));
+                if matches!(capture, CaptureCase::StandardFileNewFolderLongComposed) {
+                    for character in b"wwwwwwwwwwwwwwwwwwwwwwwwwwwabcd" {
+                        session.deliver_input(MacintoshInput::KeyDown { mac_key: 0, character: *character });
+                        session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character: *character });
+                        let tick = session.runner().guest_tick().saturating_add(1);
+                        session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                    }
+                    let folder = session.runner().standard_file_snapshot().unwrap().new_folder.unwrap();
+                    assert_eq!(folder.selection, (31, 31));
+                    assert_eq!(folder.visible_offset, 31);
+                }
                 if matches!(capture, CaptureCase::StandardFileNewFolderSelectedComposed) {
                     let field = folder.layout.name;
                     let vertical = (field.0 + field.2) / 2;
@@ -4255,6 +4243,10 @@ mod desktop {
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_standard_file_new_folder_long_composed.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileNewFolderLongComposed);
+            return;
+        }
         if let Some(output) = args.capture_standard_file_new_folder_selected_composed.as_ref() {
             capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileNewFolderSelectedComposed);
             return;
@@ -4744,6 +4736,7 @@ mod desktop {
                         capture_standard_file_new_folder_composed: None,
                         capture_standard_file_new_folder_error_composed: None,
                         capture_standard_file_new_folder_selected_composed: None,
+                        capture_standard_file_new_folder_long_composed: None,
                         capture_custom_menu_fallback: None,
                         capture_standard_menu: None,
                         capture_windows: None,
@@ -6936,7 +6929,24 @@ mod desktop {
                 let click = click.advance(&mut session).unwrap();
                 step(&mut session);
                 assert!(click.advance(&mut session).is_none());
+                for name in ["untitled folder", "wwwwwwwwwwwwwwwwwwwwwwwwwwwabcd"] {
+                    session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x37, character: 0 });
+                    session.deliver_input(MacintoshInput::KeyDown { mac_key: 0, character: b'a' });
+                    step(&mut session);
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character: b'a' });
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x37, character: 0 });
+                    for character in name.bytes() {
+                        session.deliver_input(MacintoshInput::KeyDown { mac_key: 0, character });
+                        step(&mut session);
+                        session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character });
+                    }
+                    assert_eq!(session.runner().standard_file_snapshot().unwrap().new_folder.unwrap().name, name);
                 for scale in [0.75, 1., 1.5] {
+                    // Restore the tail before opening each viewport; the previous
+                    // drag intentionally left a different selection endpoint visible.
+                    session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x7d, character: 0x1f });
+                    step(&mut session);
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x7d, character: 0x1f });
                     let (sender, receiver) = std::sync::mpsc::channel();
                     let (window, view) = cx.update(|cx| {
                         gpui_kit::open_window(gpui_kit::WindowOptions {
@@ -6947,13 +6957,19 @@ mod desktop {
                     });
                     // Point clicks followed by a held drag; every coordinate comes
                     // from painted host glyphs, never a guessed guest text width.
-                    for (phase, offset, expected) in [
+                    let short = [
                         (0, 0, (0, 0)), (2, 0, (0, 0)),
                         (0, 1, (1, 1)), (2, 1, (1, 1)),
                         (0, 7, (7, 7)), (2, 7, (7, 7)),
                         (0, 15, (15, 15)), (2, 15, (15, 15)),
                         (0, 6, (6, 6)), (1, 1, (1, 6)), (2, 1, (1, 6)),
-                    ] {
+                    ];
+                    let long = [(0, 31, (31, 31)), (2, 31, (31, 31)),
+                        (0, 30, (30, 30)), (2, 30, (30, 30)),
+                        (0, 29, (29, 29)), (1, 27, (27, 29)), (2, 27, (27, 29)),
+                        (3, 0, (0, 0)), (0, 0, (0, 0)), (2, 0, (0, 0)),
+                        (4, 31, (31, 31)), (0, 31, (31, 31)), (2, 31, (31, 31))];
+                    for &(phase, offset, expected) in if name.len() == 31 { long.as_slice() } else { short.as_slice() } {
                         cx.update_window(window.into(), |_, window, cx| {
                             view.update(cx, |demo, cx| {
                                 demo.width = 800;
@@ -6971,15 +6987,30 @@ mod desktop {
                                 assert!((demo.display_scale - scale).abs() < 0.01);
                                 let map = demo.text_pointer_map.borrow();
                                 let map = map.as_ref().expect("painted name");
+                                if phase < 3 {
+                                    let left = demo.display_origin.0 + f32::from(map.guest_bounds.1) * scale;
+                                    let right = demo.display_origin.0 + f32::from(map.guest_bounds.3) * scale;
+                                    assert!(map.positions[offset].0 >= left && map.positions[offset].0 < right,
+                                        "target offset {offset} must be painted inside field at scale {scale}");
+                                }
                                 let y = demo.display_origin.1 + f32::from((map.guest_bounds.0 + map.guest_bounds.2) / 2) * demo.display_scale;
                                 gpui_kit::point(gpui_kit::px(map.positions[offset].0), gpui_kit::px(y))
                             });
                             let event = match phase {
                                 0 => MouseDownEvent { position, button: MouseButton::Left, click_count: 1, ..Default::default() }.to_platform_input(),
                                 1 => MouseMoveEvent { position, pressed_button: Some(MouseButton::Left), ..Default::default() }.to_platform_input(),
+                                3 | 4 => gpui_kit::KeyDownEvent {
+                                    keystroke: gpui_kit::Keystroke { key: if phase == 3 { "up" } else { "down" }.into(), ..Default::default() },
+                                    is_held: false, prefer_character_input: false,
+                                }.to_platform_input(),
                                 _ => MouseUpEvent { position, button: MouseButton::Left, click_count: 1, ..Default::default() }.to_platform_input(),
                             };
                             window.dispatch_event(event, cx);
+                            if phase >= 3 {
+                                window.dispatch_event(gpui_kit::KeyUpEvent {
+                                    keystroke: gpui_kit::Keystroke { key: if phase == 3 { "up" } else { "down" }.into(), ..Default::default() },
+                                }.to_platform_input(), cx);
+                            }
                         }).unwrap();
                         let mut delivered = 0;
                         for command in receiver.try_iter() {
@@ -6988,11 +7019,12 @@ mod desktop {
                                 delivered += 1;
                             }
                         }
-                        assert_eq!(delivered, 1);
+                        assert_eq!(delivered, if phase >= 3 { 2 } else { 1 });
                         step(&mut session);
                         assert_eq!(session.runner().standard_file_snapshot().unwrap().new_folder.unwrap().selection,
                             expected, "PPC={powerpc}, depth={depth:?}, scale={scale}, phase={phase}, offset={offset}");
                     }
+                }
                 }
             }
         }
@@ -9301,6 +9333,7 @@ mod desktop {
                     let panel = demo.standard_file.as_mut().unwrap();
                     panel.new_folder = Some(systemless::runner::StandardFileNewFolderSnapshot {
                         name: "untitled folder".into(), selection: (0, 15), error: None,
+                        visible_offset: 0,
                         insertion_positions: (0..=15).map(|i| folder_layout.name.1 + 2 + i * 7).collect(),
                         layout: folder_layout.clone(),
                     });
@@ -9349,12 +9382,13 @@ mod desktop {
                     MacintoshInput::MouseMove { horizontal: moved, .. },
                     MacintoshInput::MouseUp { horizontal: up, .. },
                 ] if *down == selected && *moved == first && *up == first), "{inputs:?}");
-                for name in ["iéW", "", "untitled folder"] {
+                for name in ["iéW", "", "wwwwwwwwwwwwwwwwwwwwwwwwwwwabcd", "untitled folder"] {
                     view.update(cx, |demo, cx| {
                         let folder = demo.standard_file.as_mut().unwrap().new_folder.as_mut().unwrap();
                         folder.name = name.into();
                         let count = name.chars().count();
                         folder.selection = (count, count);
+                        folder.visible_offset = count;
                         folder.insertion_positions = (0..=count).map(|i| folder.layout.name.1 + 2 + i as i16 * 7).collect();
                         cx.notify();
                     });
@@ -9362,8 +9396,13 @@ mod desktop {
                     view.update(cx, |demo, _| {
                         let map = demo.text_pointer_map.borrow().clone().unwrap();
                         assert_eq!(map.positions.len(), name.chars().count() + 1);
+                        let left = demo.display_origin.0 + f32::from(folder_layout.name.1) * demo.display_scale;
+                        let right = demo.display_origin.0 + f32::from(folder_layout.name.3) * demo.display_scale;
+                        let caret_x = map.positions.last().unwrap().0;
+                        assert!(caret_x >= left && caret_x < right,
+                            "name caret must remain visible: name={name}, caret={caret_x}, field={left}..{right}");
                         let y = demo.display_origin.1 + f32::from((folder_layout.name.0 + folder_layout.name.2) / 2) * demo.display_scale;
-                        for (x, guest) in &map.positions {
+                        for (x, guest) in map.positions.iter().filter(|(x, _)| *x >= left && *x < right) {
                             demo.text_pointer_capture = None;
                             assert_eq!(demo.text_pointer(gpui_kit::point(gpui_kit::px(*x), gpui_kit::px(y)), true).1, *guest, "{name}");
                         }

@@ -1123,17 +1123,33 @@ fn ppc_standard_file_draw_put_dialog(
             let _ = ppc_fill_front_rect(memory, front, layout.name, PPC_RGB_WHITE);
             let _ = ppc_frame_front_rect(memory, front, layout.name, PPC_RGB_BLACK, 1);
             let text_rect = (layout.name.0 + 2, layout.name.1 + 2, layout.name.2 - 1, layout.name.3 - 2);
-            ppc_draw_dialog_text(memory, gworlds, text_rect, folder.edit.text(), PPC_RGB_BLACK);
+            let draw_name = |memory: &mut PpcSectionMem, clip, color| {
+                ppc_with_unclipped_screen_port(memory, |memory| ppc_draw_text_bytes_clipped(
+                    memory, gworlds, PPC_MAIN_GWORLD, (text_rect.1 - folder.scroll_x, text_rect.0 + 12),
+                    PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, PPC_QD_TEXT_MODE_SRC_OR,
+                    color, None, Some(clip), folder.edit.text(),
+                ));
+            };
+            draw_name(memory, text_rect, PPC_RGB_BLACK);
             // Text (1993), pp. 2-36–2-37: selection offsets count text bytes.
             let selection = folder.edit.selection();
             if !selection.is_empty() {
                 let measure = |bytes: &[u8]| ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes);
-                let left = (text_rect.1 + measure(&folder.edit.text()[..selection.start])).min(text_rect.3);
-                let right = (text_rect.1 + measure(&folder.edit.text()[..selection.end])).min(text_rect.3);
+                let left = (text_rect.1 - folder.scroll_x + measure(&folder.edit.text()[..selection.start])).clamp(text_rect.1, text_rect.3);
+                let right = (text_rect.1 - folder.scroll_x + measure(&folder.edit.text()[..selection.end])).clamp(text_rect.1, text_rect.3);
                 let highlight = (text_rect.0, left, text_rect.2, right);
                 if !ppc_draw_themed_selection(memory, gworlds, PPC_MAIN_GWORLD, highlight) && left < right {
                     let _ = ppc_fill_front_rect(memory, front, highlight, PPC_RGB_BLACK);
-                    ppc_draw_dialog_text(memory, gworlds, highlight, folder.edit.selected_text(), PPC_RGB_WHITE);
+                    draw_name(memory, highlight, PPC_RGB_WHITE);
+                }
+            } else {
+                // Text (1993), pp. 2-36–2-37: an empty active selection is
+                // represented by a caret at its insertion position.
+                let advance = ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM,
+                    0, &folder.edit.text()[..selection.start]);
+                let x = text_rect.1 - folder.scroll_x + advance;
+                if x >= text_rect.1 && x < text_rect.3 {
+                    let _ = ppc_fill_front_rect(memory, front, (text_rect.0, x, text_rect.2, x + 1), PPC_RGB_BLACK);
                 }
             }
             ppc_standard_file_draw_button(memory, front, gworlds, (0,0,0,0), layout.cancel, b"Cancel", true, false);
@@ -1910,7 +1926,8 @@ fn ppc_dispatch_standard_file(
                     let offset = folder.offset_at_x(i32::from(h - layout.name.1 - 2), |bytes| {
                         i32::from(ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes))
                     });
-                    let changed = folder.track_selection(offset, release.is_none() && input.mouse_button);
+                    let mut changed = folder.track_selection(offset, release.is_none() && input.mouse_button);
+                    changed |= folder.reveal_offset(offset, layout.name.3 - layout.name.1 - 5, |bytes| ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes));
                     if changed || release.is_some() {
                         ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
                     }
@@ -1944,6 +1961,7 @@ fn ppc_dispatch_standard_file(
                                 i32::from(ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes))
                             });
                             folder.begin_selection(offset, event.modifiers & 0x0200 != 0);
+                    folder.reveal_offset(offset, layout.name.3 - layout.name.1 - 5, |bytes| ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes));
                             tracking.new_folder = Some(folder);
                             ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
                             startup.standard_file_put_tracking = Some(tracking);
@@ -1952,6 +1970,7 @@ fn ppc_dispatch_standard_file(
                         let mut scrap = ppc_te_scrap_bytes(memory);
                         let original = scrap.clone();
                         let action = folder.event(&layout, event.what, event.message, event.modifiers, (event.where_v, event.where_h), &mut scrap);
+                    folder.reveal_offset(folder.edit.selection().start, layout.name.3 - layout.name.1 - 5, |bytes| ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes));
                         if scrap != original {
                             let mut allocator = PpcProcessAllocatorView { memory_manager: process_memory_manager };
                             ppc_te_set_scrap_bytes(Some(&mut allocator), memory, heap_cursor, heap_limit, last_mem_error, handles, &scrap);

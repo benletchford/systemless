@@ -155,6 +155,8 @@ pub struct StandardFileNewFolderSnapshot {
     pub name: String,
     /// Global guest x positions for each Mac Roman insertion offset, including EOF.
     pub insertion_positions: Vec<i16>,
+    /// Byte offset whose caret or moving selection endpoint should remain visible.
+    pub visible_offset: usize,
     pub selection: (usize, usize),
     pub error: Option<i16>,
     pub layout: StandardFileNewFolderLayout,
@@ -226,6 +228,8 @@ pub(crate) struct StandardFileNewFolderState {
     pub(crate) edit: crate::text_edit::TextEditBuffer,
     pub(crate) error: Option<i16>,
     pointer_anchor: Option<usize>,
+    pub(crate) scroll_x: i16,
+    visible_offset: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -242,6 +246,8 @@ impl Default for StandardFileNewFolderState {
             edit: crate::text_edit::TextEditBuffer::new(name, 0, end),
             error: None,
             pointer_anchor: None,
+            scroll_x: 0,
+            visible_offset: 0,
         }
     }
 }
@@ -249,6 +255,7 @@ impl Default for StandardFileNewFolderState {
 impl StandardFileNewFolderState {
     pub(crate) fn offset_at_x(&self, x: i32, measure: impl Fn(&[u8]) -> i32) -> usize {
         let text = self.edit.text();
+        let x = x.saturating_add(i32::from(self.scroll_x));
         let mut left = 0;
         for end in 1..=text.len() {
             let right = measure(&text[..end]);
@@ -258,6 +265,18 @@ impl StandardFileNewFolderState {
             left = right;
         }
         text.len()
+    }
+
+    /// TESelView keeps the selection start visible; held selection tracking
+    /// reveals its moving endpoint (Text 1993, TEAutoView/TESelView, pp. 2-99–2-100).
+    pub(crate) fn reveal_offset(&mut self, offset: usize, width: i16, measure: impl Fn(&[u8]) -> i16) -> bool {
+        self.visible_offset = offset.min(self.edit.text().len());
+        let width = width.max(1);
+        let x = measure(&self.edit.text()[..offset.min(self.edit.text().len())]);
+        let max_scroll = measure(self.edit.text()).saturating_sub(width - 1).max(0);
+        let previous = self.scroll_x;
+        self.scroll_x = self.scroll_x.min(x).max(x.saturating_sub(width - 1)).clamp(0, max_scroll);
+        self.scroll_x != previous
     }
 
     /// The CPU adapter resolves guest font metrics to a Mac Roman byte offset.
@@ -312,10 +331,12 @@ impl StandardFileNewFolderState {
         // buffer offsets. Preserve guest metrics for themed pointer translation.
         let insertion_positions = (0..=self.edit.text().len())
             .map(|offset| layout.name.1.saturating_add(inset)
-                .saturating_add(measure(&self.edit.text()[..offset])))
+                .saturating_add(measure(&self.edit.text()[..offset]))
+                .saturating_sub(self.scroll_x))
             .collect();
         StandardFileNewFolderSnapshot {
             insertion_positions,
+            visible_offset: self.visible_offset,
             name: crate::trap::types::decode_mac_roman(self.edit.text()),
             selection: (selection.start, selection.end),
             error: self.error,
@@ -446,6 +467,23 @@ mod new_folder_tests {
         }
         state.edit = crate::text_edit::TextEditBuffer::new(Vec::new(), 0, 0);
         assert_eq!(state.offset_at_x(100, measure), 0);
+    }
+
+    #[test]
+    fn new_folder_scroll_retains_visible_caret_and_translates_hit_testing() {
+        let mut state = StandardFileNewFolderState::default();
+        state.edit = crate::text_edit::TextEditBuffer::new(vec![b'w'; 31], 31, 31);
+        let measure = |bytes: &[u8]| bytes.len() as i16 * 9;
+        assert!(state.reveal_offset(31, 180, measure));
+        assert_eq!(state.scroll_x, 100);
+        assert_eq!(state.offset_at_x(179, |bytes| i32::from(measure(bytes))), 31);
+        assert!(!state.reveal_offset(30, 180, measure), "visible caret must not move the text");
+        assert!(state.reveal_offset(0, 180, measure));
+        assert_eq!(state.scroll_x, 0);
+        assert!(state.reveal_offset(31, 180, measure));
+        state.edit = crate::text_edit::TextEditBuffer::new(b"short".to_vec(), 5, 5);
+        assert!(state.reveal_offset(5, 180, measure));
+        assert_eq!(state.scroll_x, 0, "deletion must remove obsolete scroll");
     }
 
     #[test]
