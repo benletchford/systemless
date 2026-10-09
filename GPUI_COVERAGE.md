@@ -2115,3 +2115,16 @@ unmodified arguments and EventRecord while waiting, and slice-budget bounds.
 All 18 WaitNextEvent regressions also pass. These checks do not establish
 background CPU eligibility, activation-click policy or complete native
 lifecycle equivalence.
+
+
+The `showcase_text_selection_survives_host_suspend_resume` session regression
+now passes on monochrome 68k, colour 68k and PPC. It selects guest TextEdit
+content, requests two suspend/resume cycles through the frontend session API
+(including duplicate requests), observes the guest osEvt messages and resulting
+TextEdit activation, preserves the text and selection throughout, then verifies
+that a fresh key press replaces exactly that selection after resume. The
+showcase handles its own suspend/resume activation; the test does not mutate
+TextEdit records. This is end-to-end Systemless session evidence, separate from
+the GPUI platform focus observer test. Native oracle comparison and rendered
+host-switch captures remain required, as do background scheduling and modal,
+menu, clipboard and front-click lifecycle scenarios.

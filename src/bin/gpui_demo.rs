@@ -8239,6 +8239,102 @@ mod desktop {
         }
 
         #[test]
+        fn showcase_text_selection_survives_host_suspend_resume() {
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session
+                    .load_path(
+                        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("tests/toolbox-showcase/toolbox-showcase.sit"),
+                    )
+                    .unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 7));
+                wait_for_menu(&mut session, 129, 7, true);
+                settle(&mut session);
+                for input in [
+                    MacintoshInput::MouseDown {
+                        vertical: 132,
+                        horizontal: 75,
+                    },
+                    MacintoshInput::MouseMove {
+                        vertical: 132,
+                        horizontal: 150,
+                    },
+                    MacintoshInput::MouseUp {
+                        vertical: 132,
+                        horizontal: 150,
+                    },
+                ] {
+                    session.deliver_input(input);
+                    settle(&mut session);
+                }
+                let text = session
+                    .runner_mut()
+                    .text_edit_snapshot()
+                    .records
+                    .into_iter()
+                    .find(|record| record.view_rect == (76, 34, 211, 326))
+                    .unwrap();
+                assert!(text.active);
+                assert_ne!(text.selection.0, text.selection.1);
+                if !powerpc {
+                    assert_eq!(
+                        app.size_resource.unwrap().flags & 0x4800,
+                        0x4800,
+                        "the fixture must handle its own activation from osEvt"
+                    );
+                }
+                for foreground in [false, true, false, true] {
+                    session.request_foreground(foreground);
+                    session.request_foreground(foreground);
+                    let message = 0x0100_0000 | u32::from(foreground);
+                    let mut saw_os_event = false;
+                    assert!((0..10_000).any(|_| {
+                                session.runner_mut().run_steps(100, None);
+                                saw_os_event |= session.runner().event_manager_snapshot().last_record
+                                    .is_some_and(|event| event.what == 15 && event.message == message);
+                                saw_os_event && session.runner_mut().text_edit_snapshot().records.iter()
+                                    .any(|record| record.guest_id == text.guest_id && record.active == foreground)
+                            }), "host transition was not handled: PPC={powerpc}, depth={depth:?}, foreground={foreground}, osEvt={saw_os_event}");
+                    let current = session
+                        .runner_mut()
+                        .text_edit_snapshot()
+                        .records
+                        .into_iter()
+                        .find(|record| record.guest_id == text.guest_id)
+                        .unwrap();
+                    assert_eq!(current.selection, text.selection);
+                    assert_eq!(current.text, text.text);
+                }
+                let mut expected = text.text.clone();
+                expected.splice(text.selection.0 as usize..text.selection.1 as usize, [b'z']);
+                session.deliver_input(MacintoshInput::KeyDown {
+                    mac_key: 0x06,
+                    character: b'z',
+                });
+                session.deliver_input(MacintoshInput::KeyUp {
+                    mac_key: 0x06,
+                    character: b'z',
+                });
+                assert!(
+                    (0..100).any(|_| {
+                        session.runner_mut().run_steps(10_000, None);
+                        session
+                            .runner_mut()
+                            .text_edit_snapshot()
+                            .records
+                            .iter()
+                            .any(|record| record.guest_id == text.guest_id && record.text == expected)
+                    }),
+                    "typing must resume at the retained selection: PPC={powerpc}, depth={depth:?}, expected={expected:?}, actual={:?}, event={:?}", session.runner_mut().text_edit_snapshot(), session.runner().event_manager_snapshot()
+                );
+            }
+        }
+
+        #[test]
         fn showcase_text_selection_survives_modeless_window_activation() {
             for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
                 let mut session = MacintoshSession::new(true, depth);
