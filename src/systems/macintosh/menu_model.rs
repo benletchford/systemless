@@ -286,3 +286,14 @@ pub fn standard_hierarchy_indicator_pixels() -> Vec<(i16, i16)> {
         |x, y| pixels.push((x, y)));
     pixels
 }
+
+/// Guest Menu Manager scrolling raster relative to a 16-pixel arrow slot.
+pub fn standard_scroll_indicator_pixels(up: bool) -> Vec<(i16, i16)> {
+    let mut pixels = Vec::new();
+    if up {
+        crate::menu_manager::for_each_standard_scroll_up_indicator_pixel(0, 0, |x, y| pixels.push((x, y)));
+    } else {
+        crate::menu_manager::for_each_standard_scroll_down_indicator_pixel(0, 16, |x, y| pixels.push((x, y)));
+    }
+    pixels
+}
