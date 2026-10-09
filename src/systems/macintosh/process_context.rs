@@ -8604,25 +8604,20 @@ impl ProcessNativeMemoryManager {
         None
     }
 
-    /// Allocate a native relocatable block and its stable master pointer.
-    ///
-    /// A handle addresses a nonrelocatable master pointer whose contents may
-    /// change when the relocatable block moves. Inside Macintosh: Memory
-    /// (1992), pp. 1-18--1-19 and 2-40--2-41.
-    fn allocate_native_handle(
-        &mut self,
-        memory: &mut GuestAddressSpace,
+    /// Plan a native handle allocation without changing memory or free lists.
+    /// Temporary-memory queries must use the same layout as TempNewHandle.
+    fn native_handle_allocation_plan(
+        &self,
+        memory: &GuestAddressSpace,
         size: u32,
-        clear: bool,
-    ) -> u32 {
-        let Some(required) = Self::native_allocation_size(size) else {
-            self.set_native_mem_error(Self::MEM_FULL_ERR);
-            return 0;
-        };
-        let Some(allocator) = self.native_allocator.as_ref() else {
-            self.set_native_mem_error(Self::MEM_FULL_ERR);
-            return 0;
-        };
+    ) -> Option<(
+        ProcessHandleRecord,
+        Option<u32>,
+        Option<usize>,
+        Option<usize>,
+    )> {
+        let required = Self::native_allocation_size(size)?;
+        let allocator = self.native_allocator.as_ref()?;
         let allocation_limit = self.native_allocation_limit(allocator.heap.heap_limit);
         let reusable_handle_index = allocator
             .free_handle_blocks
@@ -8686,15 +8681,12 @@ impl ProcessNativeMemoryManager {
                 if let Some(index) = reusable_ptr_index {
                     record.ptr = allocator.free_ptr_blocks[index].ptr;
                 } else {
-                    let Some((ptr, next)) = Self::native_allocation_bounds(
+                    let (ptr, next) = Self::native_allocation_bounds(
                         allocator.heap.heap_cursor,
                         allocation_limit,
                         required,
                         |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
-                    ) else {
-                        self.set_native_mem_error(Self::MEM_FULL_ERR);
-                        return 0;
-                    };
+                    )?;
                     record.ptr = ptr;
                     next_cursor = Some(next);
                 }
@@ -8703,28 +8695,19 @@ impl ProcessNativeMemoryManager {
             record.size = size;
             (record, next_cursor)
         } else {
-            let Some(handle_required) = Self::native_allocation_size(4) else {
-                self.set_native_mem_error(Self::MEM_FULL_ERR);
-                return 0;
-            };
-            let Some((handle, after_handle)) = Self::native_allocation_bounds(
+            let handle_required = Self::native_allocation_size(4)?;
+            let (handle, after_handle) = Self::native_allocation_bounds(
                 allocator.heap.heap_cursor,
                 allocation_limit,
                 handle_required,
                 |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
-            ) else {
-                self.set_native_mem_error(Self::MEM_FULL_ERR);
-                return 0;
-            };
-            let Some((ptr, after_ptr)) = Self::native_allocation_bounds(
+            )?;
+            let (ptr, after_ptr) = Self::native_allocation_bounds(
                 after_handle,
                 allocation_limit,
                 required,
                 |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
-            ) else {
-                self.set_native_mem_error(Self::MEM_FULL_ERR);
-                return 0;
-            };
+            )?;
             (
                 ProcessHandleRecord {
                     handle,
@@ -8735,6 +8718,53 @@ impl ProcessNativeMemoryManager {
                 Some(after_ptr),
             )
         };
+
+        Some((
+            record,
+            next_cursor,
+            reusable_handle_index,
+            reusable_ptr_index,
+        ))
+    }
+
+    /// Largest aligned logical size the current native handle allocator can
+    /// place, including its master pointer and reserved address ranges.
+    /// Inside Macintosh: Memory (1992), pp. 2-79--2-80.
+    pub(crate) fn native_temporary_max_size(&self, memory: &GuestAddressSpace) -> u32 {
+        let mut low = 0u32;
+        let mut high = i32::MAX as u32 / Self::NATIVE_HEAP_ALIGNMENT;
+        while low < high {
+            let middle = low + (high - low + 1) / 2;
+            if self
+                .native_handle_allocation_plan(memory, middle * Self::NATIVE_HEAP_ALIGNMENT)
+                .is_some()
+            {
+                low = middle;
+            } else {
+                high = middle - 1;
+            }
+        }
+        low * Self::NATIVE_HEAP_ALIGNMENT
+    }
+
+    /// Allocate a native relocatable block and its stable master pointer.
+    ///
+    /// A handle addresses a nonrelocatable master pointer whose contents may
+    /// change when the relocatable block moves. Inside Macintosh: Memory
+    /// (1992), pp. 1-18--1-19 and 2-40--2-41.
+    fn allocate_native_handle(
+        &mut self,
+        memory: &mut GuestAddressSpace,
+        size: u32,
+        clear: bool,
+    ) -> u32 {
+        let Some((record, next_cursor, reusable_handle_index, reusable_ptr_index)) =
+            self.native_handle_allocation_plan(memory, size)
+        else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return 0;
+        };
+        let required = Self::native_allocation_size(size).expect("planned handle size fits");
 
         if !Self::prepare_native_allocation(
             memory,

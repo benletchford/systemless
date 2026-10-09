@@ -51,6 +51,7 @@ pub enum PpcImportDispatcherTarget {
     SetApplLimit,
     HeapFreeBytes,
     MaxMem,
+    TempMaxMem,
     PurgeMem,
     PurgeMemSys,
     MemError,
@@ -2609,6 +2610,7 @@ pub(crate) fn dispatcher_target_for_import(
         | ("InterfaceLib", "FreeMem")
         | ("InterfaceLib", "FreeMemSys") => PpcImportDispatcherTarget::HeapFreeBytes,
         ("InterfaceLib", "MaxMem") => PpcImportDispatcherTarget::MaxMem,
+        ("InterfaceLib", "TempMaxMem") => PpcImportDispatcherTarget::TempMaxMem,
         ("InterfaceLib", "MemError") => PpcImportDispatcherTarget::MemError,
         ("InterfaceLib", "CurResFile") => PpcImportDispatcherTarget::CurResFile,
         ("InterfaceLib", "UseResFile") => PpcImportDispatcherTarget::UseResFile,

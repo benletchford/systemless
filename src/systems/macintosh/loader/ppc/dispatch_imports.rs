@@ -1359,6 +1359,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::SetApplLimit
         | PpcImportDispatcherTarget::HeapFreeBytes
         | PpcImportDispatcherTarget::MaxMem
+        | PpcImportDispatcherTarget::TempMaxMem
         | PpcImportDispatcherTarget::PurgeMem
         | PpcImportDispatcherTarget::PurgeMemSys
         | PpcImportDispatcherTarget::MemError => {

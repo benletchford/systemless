@@ -4947,3 +4947,112 @@ fn hle_import_runner_uncached_block_moves_preserve_overlap_and_bounds() {
         }
     }
 }
+
+#[test]
+fn temp_max_mem_reports_an_allocatable_handle_size_with_master_and_reserved_space() {
+    for reserved in [false, true] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TempMaxMem")).unwrap();
+        assert_eq!(
+            loaded.imports[0].dispatcher_target,
+            PpcImportDispatcherTarget::TempMaxMem
+        );
+        let cursor = loaded.heap_cursor();
+        loaded.set_heap_limit(cursor + 0x110);
+        if reserved {
+            loaded
+                .memory
+                .add_readonly_allocation_exclusion(cursor + 0x80, 0x40);
+        }
+        let grow = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(grow, vec![0xaa; 8]);
+        loaded.set_last_mem_error(PPC_PARAM_ERR);
+        loaded.cpu.gpr[3] = grow;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        let maximum = loaded.cpu.gpr[3];
+        assert_eq!(maximum, if reserved { 0x70 } else { 0xf0 });
+        assert_eq!(loaded.memory.read_u32_be(grow), Some(0));
+        assert_eq!(loaded.memory.read_u32_be(grow + 4), Some(0xaaaa_aaaa));
+        assert_eq!(loaded.heap_cursor(), cursor);
+        assert!(test_handle_records!(loaded).is_empty());
+        assert_eq!(loaded.last_mem_error(), PPC_PARAM_ERR);
+
+        loaded.cpu.gpr[3] = maximum + 1;
+        loaded.cpu.gpr[4] = grow;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TempNewHandle);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(
+            loaded.memory.read_u16_be(grow),
+            Some(PPC_MEM_FULL_ERR as u16)
+        );
+        assert_eq!(loaded.heap_cursor(), cursor);
+        loaded.cpu.gpr[3] = maximum;
+        loaded.cpu.gpr[4] = grow;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TempNewHandle);
+        let handle = loaded.cpu.gpr[3];
+        assert_ne!(handle, 0);
+        assert_eq!(loaded.memory.read_u16_be(grow), Some(0));
+        assert_eq!(test_handle_records!(loaded)[0].size, maximum);
+    }
+}
+
+#[test]
+fn temp_max_mem_uses_reusable_handles_and_respects_application_limit() {
+    for empty in [false, true] {
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        let cursor = loaded.heap_cursor();
+        let handle = cursor - 0x100;
+        let ptr = cursor - 0x80;
+        loaded.memory.add_region(handle, vec![0; 16]);
+        loaded.memory.add_region(ptr, vec![0; 64]);
+        loaded.with_process_memory_manager(|_, manager| {
+            manager.set_application_heap_limit(cursor + 16);
+            manager.mutate_native_allocator(|allocator| {
+                allocator.free_handle_blocks.push(ProcessHandleRecord {
+                    handle,
+                    ptr: if empty { 0 } else { ptr },
+                    size: 64,
+                    capacity: 64,
+                });
+                if empty {
+                    allocator
+                        .free_ptr_blocks
+                        .push(ProcessPtrRecord { ptr, size: 64 });
+                }
+            });
+        });
+        loaded.cpu.gpr[3] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TempMaxMem);
+        assert_eq!(loaded.cpu.gpr[3], 64);
+        assert_eq!(loaded.heap_cursor(), cursor);
+        loaded.cpu.gpr[3] = 64;
+        loaded.cpu.gpr[4] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TempNewHandle);
+        assert_eq!(loaded.cpu.gpr[3], handle);
+        assert_eq!(loaded.memory.read_u32_be(handle), Some(ptr));
+        assert_eq!(loaded.heap_cursor(), cursor);
+        loaded.cpu.gpr[3] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TempMaxMem);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+}
+
+#[test]
+fn temp_max_mem_rejects_unwritable_grow_without_allocating_or_partial_writes() {
+    for grow in [0xffff_fffe, PPC_DATA_BASE + 0x1000] {
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        let cursor = loaded.heap_cursor();
+        if grow != 0xffff_fffe {
+            loaded.memory.add_readonly_region(grow, vec![0xaa; 8]);
+        }
+        loaded.cpu.gpr[3] = grow;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TempMaxMem);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.last_mem_error(), PPC_PARAM_ERR);
+        assert_eq!(loaded.heap_cursor(), cursor);
+        assert!(test_handle_records!(loaded).is_empty());
+        if grow != 0xffff_fffe {
+            assert_eq!(loaded.memory.read_u32_be(grow), Some(0xaaaa_aaaa));
+        }
+    }
+}
