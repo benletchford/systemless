@@ -267,6 +267,7 @@ mod desktop {
         Wheel(super::scroll::WheelRequest),
         ActivateControl(u32, u64),
         ActivateDialog(u32, u64, i16, Option<(u32, u64)>),
+        ActivateFile(u32, u64, super::activation::FileAction),
         CancelWheel,
         Shutdown,
     }
@@ -421,6 +422,11 @@ mod desktop {
                         Ok(Command::ActivateDialog(id, generation, number, identity)) => {
                             if !pointer_down {
                                 activation = super::activation::ControlActivation::begin_dialog(&mut session, id, generation, number, identity);
+                            }
+                        }
+                        Ok(Command::ActivateFile(id, generation, action)) => {
+                            if !pointer_down {
+                                activation = super::activation::ControlActivation::begin_file(&mut session, id, generation, action);
                             }
                         }
                         Ok(Command::Input(input)) => {
@@ -2091,7 +2097,24 @@ mod desktop {
                                     super::a11y::AccessibleComponent::new(super::choices::guest_button(
                                         format!("guest-standard-open-{}-{}-{}", panel.guest_id, panel.generation, label),
                                         label.into(), enabled, true, false, false, scene_scale, cx,
-                                    ).w_full().h_full(), !enabled),
+                                    ).w_full().h_full()
+                                    .when(label != "Eject", |button| {
+                                        let action = match label {
+                                            "Cancel" => super::activation::FileAction::Cancel,
+                                            "Desktop" => super::activation::FileAction::Desktop,
+                                            _ => super::activation::FileAction::Accept,
+                                        };
+                                        let (id, generation) = (panel.guest_id, panel.generation);
+                                        let keyboard_sender = self.commands.clone();
+                                        let accessibility_sender = self.commands.clone();
+                                        button.on_click(move |event, _, _| {
+                                            if matches!(event, ClickEvent::Keyboard(_)) {
+                                                let _ = keyboard_sender.send(Command::ActivateFile(id, generation, action));
+                                            }
+                                        }).on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
+                                            let _ = accessibility_sender.send(Command::ActivateFile(id, generation, action));
+                                        })
+                                    }), !enabled),
                                 ),
                             );
                         }
@@ -2299,7 +2322,24 @@ mod desktop {
                                     super::a11y::AccessibleComponent::new(super::choices::guest_button(
                                         format!("guest-standard-save-{}-{}-{}", panel.guest_id, panel.generation, label),
                                         label.into(), true, true, false, false, scene_scale, cx,
-                                    ).w_full().h_full(), false),
+                                    ).w_full().h_full()
+                                    .when(label != "Eject", |button| {
+                                        let action = match label {
+                                            "Cancel" => super::activation::FileAction::Cancel,
+                                            "Desktop" => super::activation::FileAction::Desktop,
+                                            _ => super::activation::FileAction::Accept,
+                                        };
+                                        let (id, generation) = (panel.guest_id, panel.generation);
+                                        let keyboard_sender = self.commands.clone();
+                                        let accessibility_sender = self.commands.clone();
+                                        button.on_click(move |event, _, _| {
+                                            if matches!(event, ClickEvent::Keyboard(_)) {
+                                                let _ = keyboard_sender.send(Command::ActivateFile(id, generation, action));
+                                            }
+                                        }).on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
+                                            let _ = accessibility_sender.send(Command::ActivateFile(id, generation, action));
+                                        })
+                                    }), false),
                                 ),
                             );
                         }
@@ -5431,7 +5471,8 @@ mod desktop {
         fn standard_file_snapshots_follow_modal_guest_state_on_both_cpus() {
             use systemless::runner::StandardFileKind;
 
-            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+            for (powerpc, depth, semantic) in [(false, Some(1)), (false, Some(8)), (true, None)].into_iter()
+                .flat_map(|(cpu, depth)| [false, true].map(move |semantic| (cpu, depth, semantic))) {
                 let mut session = MacintoshSession::new(true, depth);
                 session.runner_mut().set_prefer_powerpc_executables(powerpc);
                 let app = session
@@ -5487,14 +5528,29 @@ mod desktop {
                 assert!(layout.row_height > 0 && layout.visible_rows > 0);
                 let stable = session.runner_mut().standard_file_snapshot().unwrap();
                 assert_eq!((stable.guest_id, stable.generation), (opened.guest_id, opened.generation));
-                session.deliver_input(MacintoshInput::KeyDown {
-                    mac_key: 0x35,
-                    character: 27,
-                });
-                session.deliver_input(MacintoshInput::KeyUp {
-                    mac_key: 0x35,
-                    character: 27,
-                });
+                if semantic {
+                    use super::super::activation::{ControlActivation, FileAction};
+                    let origin = session.runner().dispatcher().mouse_position();
+                    assert!(ControlActivation::begin_file(&mut session, opened.guest_id, opened.generation + 1, FileAction::Cancel).is_none());
+                    assert_eq!(session.runner().dispatcher().mouse_position(), origin);
+                    let click = ControlActivation::begin_file(&mut session, opened.guest_id, opened.generation, FileAction::Cancel).unwrap();
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                    let click = click.advance(&mut session).unwrap();
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                    assert!(click.advance(&mut session).is_none());
+                    assert_eq!(session.runner().dispatcher().mouse_position(), origin);
+                } else {
+                    session.deliver_input(MacintoshInput::KeyDown {
+                        mac_key: 0x35,
+                        character: 27,
+                    });
+                    session.deliver_input(MacintoshInput::KeyUp {
+                        mac_key: 0x35,
+                        character: 27,
+                    });
+                }
                 assert!((0..100).any(|_| {
                     let tick = session.runner().guest_tick().saturating_add(1);
                     session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
@@ -5518,6 +5574,13 @@ mod desktop {
                 assert_eq!(saving.kind, StandardFileKind::Put);
                 assert!(saving.standard_entry_point);
                 assert!(saving.generation > opened.generation);
+                // A queued action from the dismissed Open panel must not affect Save.
+                let origin = session.runner().dispatcher().mouse_position();
+                assert!(super::super::activation::ControlActivation::begin_file(
+                    &mut session, opened.guest_id, opened.generation,
+                    super::super::activation::FileAction::Cancel,
+                ).is_none());
+                assert_eq!(session.runner().dispatcher().mouse_position(), origin);
                 assert!(saving.entries.as_ref().is_some_and(|entries| !entries.is_empty()));
                 assert!(saving.name.as_ref().is_some_and(|name| !name.is_empty()));
                 assert_eq!(saving.name_selection, Some((0, saving.name.as_ref().unwrap().len())));
@@ -5556,19 +5619,40 @@ mod desktop {
                     })
                     .expect("guest StandardPutFile should own save-name editing");
                 assert_eq!(edited.generation, saving.generation);
-                session.deliver_input(MacintoshInput::KeyDown {
-                    mac_key: 0x35,
-                    character: 27,
-                });
-                session.deliver_input(MacintoshInput::KeyUp {
-                    mac_key: 0x35,
-                    character: 27,
-                });
+                if semantic {
+                    use super::super::activation::{ControlActivation, FileAction};
+                    let origin = session.runner().dispatcher().mouse_position();
+                    assert!(ControlActivation::begin_file(&mut session, saving.guest_id, saving.generation + 1, FileAction::Cancel).is_none());
+                    assert_eq!(session.runner().dispatcher().mouse_position(), origin);
+                    let click = ControlActivation::begin_file(&mut session, saving.guest_id, saving.generation, FileAction::Cancel).unwrap();
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                    let click = click.advance(&mut session).unwrap();
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                    assert!(click.advance(&mut session).is_none());
+                    assert_eq!(session.runner().dispatcher().mouse_position(), origin);
+                } else {
+                    session.deliver_input(MacintoshInput::KeyDown {
+                        mac_key: 0x35,
+                        character: 27,
+                    });
+                    session.deliver_input(MacintoshInput::KeyUp {
+                        mac_key: 0x35,
+                        character: 27,
+                    });
+                }
                 assert!((0..100).any(|_| {
                     let tick = session.runner().guest_tick().saturating_add(1);
                     session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
                     session.runner_mut().standard_file_snapshot().is_none()
                 }));
+                let origin = session.runner().dispatcher().mouse_position();
+                assert!(super::super::activation::ControlActivation::begin_file(
+                    &mut session, saving.guest_id, saving.generation,
+                    super::super::activation::FileAction::Cancel,
+                ).is_none());
+                assert_eq!(session.runner().dispatcher().mouse_position(), origin);
             }
         }
 
@@ -8423,6 +8507,7 @@ mod desktop {
                 .try_iter()
                 .filter_map(|command| match command {
                     super::Command::Input(input) => Some(input),
+                    super::Command::ActivateFile(..) => panic!("pointer click duplicated as semantic file activation"),
                     _ => None,
                 })
                 .collect();
@@ -8445,7 +8530,9 @@ mod desktop {
                 window.click("guest-standard-open-7-1-Open", cx);
             }).unwrap();
             let disabled_inputs: Vec<_> = receiver.try_iter().filter_map(|command| match command {
-                super::Command::Input(input) => Some(input), _ => None,
+                super::Command::Input(input) => Some(input),
+                super::Command::ActivateFile(..) => panic!("pointer click duplicated as semantic file activation"),
+                _ => None,
             }).collect();
             assert_eq!(disabled_inputs.iter().filter(|input| matches!(input, MacintoshInput::MouseDown { .. })).count(), 1);
             assert_eq!(disabled_inputs.iter().filter(|input| matches!(input, MacintoshInput::MouseUp { .. })).count(), 1);
@@ -8494,6 +8581,7 @@ mod desktop {
                 .try_iter()
                 .filter_map(|command| match command {
                     super::Command::Input(input) => Some(input),
+                    super::Command::ActivateFile(..) => panic!("pointer click duplicated as semantic file activation"),
                     _ => None,
                 })
                 .collect();
@@ -8522,7 +8610,7 @@ mod desktop {
                     assert_eq!(row.selected(), Some(selected == Some(0)));
                 }).unwrap();
             }
-            assert!(!receiver.try_iter().any(|command| matches!(command, super::Command::Input(_))),
+            assert!(!receiver.try_iter().any(|command| matches!(command, super::Command::Input(_) | super::Command::ActivateFile(..))),
                 "presenting guest selection changes must not emit guest input");
         }
 

@@ -9,7 +9,78 @@ pub struct ControlActivation {
     released: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum FileAction {
+    Accept,
+    Cancel,
+    Desktop,
+}
+
 impl ControlActivation {
+    pub fn begin_file(
+        session: &mut MacintoshSession,
+        id: u32,
+        generation: u64,
+        action: FileAction,
+    ) -> Option<Self> {
+        use systemless::runner::StandardFileKind;
+        if session.runner().guest_menu_tracking_active() {
+            return None;
+        }
+        let panel = session.runner().standard_file_snapshot()?;
+        if panel.guest_id != id || panel.generation != generation || !panel.standard_entry_point {
+            return None;
+        }
+        // Standard File owns the modal loop and reply; semantic actions are clicks.
+        // Inside Macintosh: Files (1992), pp. 3-3--3-13.
+        let rect = match panel.kind {
+            StandardFileKind::Get => {
+                let layout = panel.get_layout.as_ref()?;
+                match action {
+                    FileAction::Accept => {
+                        let entry = panel.entries.as_ref()?.get(panel.selected?)?;
+                        if !entry.is_directory && entry.file_type == 0 {
+                            return None;
+                        }
+                        layout.open
+                    }
+                    FileAction::Cancel => layout.cancel,
+                    FileAction::Desktop => layout.desktop,
+                }
+            }
+            StandardFileKind::Put => {
+                let layout = panel.put_layout.as_ref()?;
+                match action {
+                    FileAction::Accept => layout.save,
+                    FileAction::Cancel => layout.cancel,
+                    FileAction::Desktop => layout.desktop,
+                }
+            }
+        };
+        let mode = session.runner().dispatcher().screen_mode;
+        let rect = Rect::from(rect)
+            .intersection(Rect::from(panel.bounds))?
+            .intersection(Rect {
+                top: 0,
+                left: 0,
+                bottom: i32::from(mode.3),
+                right: i32::from(mode.2),
+            })?;
+        let point = (
+            (rect.top + rect.height() / 2) as i16,
+            (rect.left + rect.width() / 2) as i16,
+        );
+        let origin = session.runner().dispatcher().mouse_position();
+        session.deliver_input(MacintoshInput::MouseDown {
+            vertical: point.0,
+            horizontal: point.1,
+        });
+        Some(Self {
+            point,
+            origin,
+            released: false,
+        })
+    }
     pub fn begin(session: &mut MacintoshSession, id: u32, generation: u64) -> Option<Self> {
         if session.runner().is_ui_tracking_active()
             || session.runner().guest_menu_tracking_active()
