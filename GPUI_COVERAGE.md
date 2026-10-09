@@ -2991,3 +2991,20 @@ rows. The PPC guest-frame crop also contains the partial first label. Retain
 this clipping rather than shifting its baseline. This internal renderer
 comparison supports the observed clipping policy; it is not native-oracle
 evidence or complete pixel parity. All archived composition hashes revalidate.
+
+### Closed popup label guest font migration
+
+Closed popup control titles and selected-item labels now use binary guest
+glyph canvases with the snapshot owner font/size. Host shaping and ellipsis
+are removed. The canvas baseline uses that font’s ascent/descent rather than
+fixed Chicago metrics. The example test build and Unicode/raw guest strike
+resolver regression pass (0.09 seconds). Control padding, exact CDEF baseline
+and border/arrow geometry, composed captures, alternate font/style cases and
+CPU/scale/state interaction qualification remain unfinished.
+
+The capture binary build and all three selected closed-popup captures pass.
+Full compositions were reviewed and archived losslessly with hashes in
+`popup-closed-guest-strike-review.json`: 12-point Loadout and 9-point Theme
+labels use guest glyphs, and the long selected item clips in its allocated
+control. The live-selected-item ownership regression passes. Exact CDEF
+geometry and native/scale/state fidelity remain open.

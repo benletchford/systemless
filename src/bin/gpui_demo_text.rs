@@ -488,11 +488,26 @@ pub(crate) fn classic_menu_symbol(
         .overflow_hidden().child(classic_label_canvas(line, false, 1., foreground))
 }
 
+pub(crate) fn classic_popup_control_label(
+    label: &str, font: systemless::menu_model::GuestMenuFont,
+    scale: f32, foreground: gpui_kit::Hsla,
+) -> impl gpui_kit::IntoElement {
+    classic_label_canvas_with_font(ClassicLine::unicode(label, font.family, font.point_size()),
+        false, scale, foreground, (font.family, font.point_size()))
+}
+
 fn classic_label_canvas(
     line: ClassicLine, centered: bool, scale: f32, foreground: gpui_kit::Hsla,
 ) -> impl gpui_kit::IntoElement {
+    classic_label_canvas_with_font(line, centered, scale, foreground, (0, 12))
+}
+
+fn classic_label_canvas_with_font(
+    line: ClassicLine, centered: bool, scale: f32, foreground: gpui_kit::Hsla,
+    guest_font: (i16, i16),
+) -> impl gpui_kit::IntoElement {
     use gpui_kit::{prelude::*, *};
-    let metrics = systemless::quickdraw::text::get_font_metrics(0, 12);
+    let metrics = systemless::quickdraw::text::get_font_metrics(guest_font.0, guest_font.1);
     canvas(
         move |bounds, _, _| bounds,
         move |_, bounds, window, _| {
