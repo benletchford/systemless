@@ -7,6 +7,73 @@ use crate::quickdraw::text::{get_glyph, QuickDrawTextStyle};
 use std::cell::RefCell;
 use std::rc::Rc;
 
+/// Command IDs belong to items, so inserting/deleting earlier rows must move
+/// their associations. The IDs are distinct from the classic command-key byte.
+/// Apple Menu Manager Reference (2006), pp. 59 and 98.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct MenuItemCommandIds {
+    menus: std::collections::HashMap<u32, std::collections::BTreeMap<u16, u32>>,
+}
+
+impl MenuItemCommandIds {
+    pub(crate) fn get(&self, menu: u32, item: u16) -> u32 {
+        self.menus
+            .get(&menu)
+            .and_then(|items| items.get(&item))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn set(&mut self, menu: u32, item: u16, command: u32) {
+        if command == 0 {
+            if let Some(items) = self.menus.get_mut(&menu) {
+                items.remove(&item);
+            }
+        } else {
+            self.menus.entry(menu).or_default().insert(item, command);
+        }
+    }
+
+    pub(crate) fn insert(&mut self, menu: u32, after: u16, count: u16) {
+        if count == 0 {
+            return;
+        }
+        if let Some(items) = self.menus.remove(&menu) {
+            let shifted = items
+                .into_iter()
+                .filter_map(|(item, command)| {
+                    let item = if item > after {
+                        item.checked_add(count)?
+                    } else {
+                        item
+                    };
+                    Some((item, command))
+                })
+                .collect();
+            self.menus.insert(menu, shifted);
+        }
+    }
+
+    pub(crate) fn delete(&mut self, menu: u32, deleted: u16) {
+        if let Some(items) = self.menus.remove(&menu) {
+            let shifted = items
+                .into_iter()
+                .filter_map(|(item, command)| {
+                    if item == deleted {
+                        return None;
+                    }
+                    Some((if item > deleted { item - 1 } else { item }, command))
+                })
+                .collect();
+            self.menus.insert(menu, shifted);
+        }
+    }
+
+    pub(crate) fn forget(&mut self, menu: u32) {
+        self.menus.remove(&menu);
+    }
+}
+
 /// Largest entry count representable by a menu-list partition byte length.
 pub(crate) const MAX_MENU_LIST_ENTRIES: usize = u16::MAX as usize / 6;
 

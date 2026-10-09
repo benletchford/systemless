@@ -166,6 +166,7 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             } else {
                 PPC_NO_ERR
             };
+            toolbox_startup.menu_item_commands.forget(menu);
             Some(PpcImportAction::Return(menu))
         }
         PpcImportDispatcherTarget::DisposeMenu => {
@@ -187,6 +188,7 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                 handles,
                 menu_handle,
             );
+            toolbox_startup.menu_item_commands.forget(menu_handle);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetMenu => {
@@ -254,6 +256,33 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             ppc_get_menu_item_text(cpu, memory);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::SetMenuItemCommandID
+        | PpcImportDispatcherTarget::GetMenuItemCommandID => {
+            let menu = cpu.gpr[3];
+            let item = cpu.gpr[4] as u16;
+            let Some(items) = ppc_menu_items_from_memory(memory, menu).filter(|_| menu != 0) else {
+                return Some(PpcImportAction::Return(ppc_i16_result(-5623))); // menuInvalidErr
+            };
+            if item == 0 || usize::from(item) > items.items.len() {
+                return Some(PpcImportAction::Return(ppc_i16_result(-5622))); // menuItemNotFoundErr
+            }
+            if matches!(
+                binding.dispatcher_target,
+                PpcImportDispatcherTarget::SetMenuItemCommandID
+            ) {
+                toolbox_startup
+                    .menu_item_commands
+                    .set(menu, item, cpu.gpr[5]);
+            } else {
+                let output = cpu.gpr[5];
+                if output == 0 || !ppc_memory_can_write_bytes(memory, output, 4) {
+                    return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+                }
+                let _ =
+                    memory.write_u32_be(output, toolbox_startup.menu_item_commands.get(menu, item));
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
         PpcImportDispatcherTarget::SetMenuItemText => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
@@ -271,6 +300,7 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::DeleteMenuItem => {
+            let old_count = ppc_count_menu_items(memory, cpu.gpr[3]);
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
             };
@@ -284,6 +314,9 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                 cpu.gpr[3],
                 cpu.gpr[4] as u16 as i16,
             );
+            if result == PPC_NO_ERR && ppc_count_menu_items(memory, cpu.gpr[3]) < old_count {
+                toolbox_startup.menu_item_commands.delete(cpu.gpr[3], cpu.gpr[4] as u16);
+            }
             *last_mem_error = result;
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -366,6 +399,7 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::InsertMenuItem => {
+            let old_count = ppc_count_menu_items(memory, cpu.gpr[3]);
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
             };
@@ -380,6 +414,12 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                 cpu.gpr[4],
                 cpu.gpr[5] as u16 as i16,
             );
+            if result == PPC_NO_ERR {
+                let added = ppc_count_menu_items(memory, cpu.gpr[3]).saturating_sub(old_count);
+                let after = cpu.gpr[5] as u16 as i16;
+                let after = if after == i16::MAX { old_count } else { after.max(0) as u16 };
+                toolbox_startup.menu_item_commands.insert(cpu.gpr[3], after.min(old_count), added);
+            }
             *last_mem_error = result;
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -412,6 +452,7 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             // PROCEDURE InsertResMenu(theMenu: MenuHandle; theType: ResType;
             //                         afterItem: Integer);
             // Macintosh Toolbox Essentials (1992), pp. 3-103--3-104.
+            let old_count = ppc_count_menu_items(memory, cpu.gpr[3]);
             let result = ppc_insert_resource_menu(
                 process_memory_manager,
                 memory,
@@ -427,6 +468,12 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                 cpu.gpr[4],
                 cpu.gpr[5] as u16 as i16,
             );
+            if result == PPC_NO_ERR {
+                let added = ppc_count_menu_items(memory, cpu.gpr[3]).saturating_sub(old_count);
+                let after = cpu.gpr[5] as u16 as i16;
+                let after = if after == i16::MAX { old_count } else { after.max(0) as u16 };
+                toolbox_startup.menu_item_commands.insert(cpu.gpr[3], after.min(old_count), added);
+            }
             *last_mem_error = result;
             Some(PpcImportAction::ReturnPreserve)
         }

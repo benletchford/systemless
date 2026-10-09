@@ -459,6 +459,7 @@ pub(super) fn dispatch_memory_import(
             if ppc_hle_trace_enabled() {
                 eprintln!("[PPC-TRACE] TempDisposeHandle ${handle:08X} lr=${:08X}", cpu.lr);
             }
+            toolbox_startup.menu_item_commands.forget(handle);
             ppc_dispose_handle(
                 handle,
                 memory,
@@ -480,6 +481,7 @@ pub(super) fn dispatch_memory_import(
             if ppc_hle_trace_enabled() {
                 eprintln!("[PPC-TRACE] DisposeHandle ${handle:08X} lr=${:08X}", cpu.lr);
             }
+            toolbox_startup.menu_item_commands.forget(handle);
             ppc_dispose_handle(
                 handle,
                 memory,
