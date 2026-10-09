@@ -380,9 +380,10 @@ impl PpcLoadedApp {
                             point.uv.unwrap_or((0.0, 0.0)),
                             material.uv_transform,
                         )?;
+                        let (screen_x, screen_y) = ppc_q3_software_raster_position(point);
                         vertices.push(PpcQ3GpuVertex {
-                            screen_x: point.x as f32,
-                            screen_y: point.y as f32,
+                            screen_x,
+                            screen_y,
                             depth: point.z,
                             reciprocal_w: point.reciprocal_w,
                             uv: [uv.0, uv.1],

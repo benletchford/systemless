@@ -519,7 +519,7 @@ fn ppc_completed_q3_frame_renders_before_host_front_buffer_sync() {
     let (host_base, row_bytes, width, height, depth) = runner.dispatcher.screen_mode;
     assert_eq!((row_bytes, width, height, depth), (16, 8, 8, 16));
     assert_eq!(
-        runner.bus.read_word(host_base + 4 * row_bytes + 4 * 2),
+        runner.bus.read_word(host_base + 3 * row_bytes + 4 * 2),
         0x4210 // Default diffuse grey, quantized to the 16-bit front buffer.
     );
     let ppc_app = runner

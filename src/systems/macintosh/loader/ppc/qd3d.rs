@@ -2646,6 +2646,9 @@ pub struct PpcQ3SoftwareProjectedVertex {
 pub struct PpcQ3SoftwareProjectedPoint {
     pub x: i32,
     pub y: i32,
+    /// Unrounded geometry position. x/y remain pixel addresses for point/line
+    /// drawing and interpolated samples; triangle coverage uses this position.
+    pub raster_position: Option<(f32, f32)>,
     pub z: f32,
     pub reciprocal_w: f32,
     pub world: (f32, f32, f32),
@@ -2881,6 +2884,7 @@ pub fn ppc_q3_software_projected_vertex_to_point(
     PpcQ3SoftwareProjectedPoint {
         x: vertex.x.round() as i32,
         y: vertex.y.round() as i32,
+        raster_position: Some((vertex.x, vertex.y)),
         z: vertex.z,
         reciprocal_w: vertex
             .clip
@@ -3017,6 +3021,7 @@ pub fn ppc_q3_software_clip_projected_polygon_clip(
                 current,
                 previous_value,
                 current_value,
+                plane,
                 camera,
                 front_buffer,
                 viewport,
@@ -3039,6 +3044,7 @@ pub fn ppc_q3_software_projected_vertex_intersect_clip(
     end: PpcQ3SoftwareProjectedVertex,
     start_value: f32,
     end_value: f32,
+    plane: PpcQ3SoftwareClipPlane,
     camera: PpcQ3CameraRecord,
     front_buffer: PpcFrontBuffer,
     viewport: PpcQ3ViewportRect,
@@ -3050,12 +3056,23 @@ pub fn ppc_q3_software_projected_vertex_intersect_clip(
     let t = (start_value / denominator).clamp(0.0, 1.0);
     let start_clip = start.clip?;
     let end_clip = end.clip?;
-    let clip = (
+    let mut clip = (
         start_clip.0.mul_add(1.0 - t, end_clip.0 * t),
         start_clip.1.mul_add(1.0 - t, end_clip.1 * t),
         start_clip.2.mul_add(1.0 - t, end_clip.2 * t),
         start_clip.3.mul_add(1.0 - t, end_clip.3 * t),
     );
+    // Interpolation can leave the intersection just inside the plane. Keep
+    // its defining coordinate exact so subpixel rasterization covers the
+    // pane boundary and adjacent clipped polygons share the same edge.
+    match plane {
+        PpcQ3SoftwareClipPlane::Left => clip.0 = -clip.3,
+        PpcQ3SoftwareClipPlane::Right => clip.0 = clip.3,
+        PpcQ3SoftwareClipPlane::Bottom => clip.1 = -clip.3,
+        PpcQ3SoftwareClipPlane::Top => clip.1 = clip.3,
+        PpcQ3SoftwareClipPlane::Near => clip.2 = -clip.3,
+        PpcQ3SoftwareClipPlane::Far => clip.2 = clip.3,
+    }
     let projected = ppc_q3_software_clip_to_projected(clip)?;
     let (x, y) =
         ppc_q3_software_projected_to_screen(projected, Some(camera), front_buffer, viewport);
@@ -3596,7 +3613,7 @@ pub fn ppc_q3_draw_software_triangle(
     };
     let [a, b, c] = vertices;
     let area = ppc_q3_software_edge_value(a, b, c);
-    if area == 0 {
+    if area == 0.0 {
         let point =
             ppc_q3_software_interpolate_projected_point(&vertices, [1.0 / 3.0; 3], a.x, a.y);
         let output = ppc_q3_software_material_shaded_output(
@@ -3869,6 +3886,7 @@ pub fn ppc_q3_software_interpolate_projected_point_with_weights(
     PpcQ3SoftwareProjectedPoint {
         x,
         y,
+        raster_position: None,
         z: affine_weight0.mul_add(a.z, affine_weight1.mul_add(b.z, affine_weight2 * c.z)),
         reciprocal_w: affine_weight0.mul_add(
             a.reciprocal_w,
@@ -4014,52 +4032,46 @@ pub fn ppc_q3_software_interpolate_material_output(
     }
 }
 
+pub fn ppc_q3_software_raster_position(point: PpcQ3SoftwareProjectedPoint) -> (f32, f32) {
+    point.raster_position.unwrap_or((point.x as f32, point.y as f32))
+}
+
 pub fn ppc_q3_software_edge_value(
     a: PpcQ3SoftwareProjectedPoint,
     b: PpcQ3SoftwareProjectedPoint,
     c: PpcQ3SoftwareProjectedPoint,
-) -> i64 {
-    i64::from(c.x - a.x) * i64::from(b.y - a.y) - i64::from(c.y - a.y) * i64::from(b.x - a.x)
+) -> f64 {
+    let (ax, ay) = ppc_q3_software_raster_position(a);
+    let (bx, by) = ppc_q3_software_raster_position(b);
+    let (cx, cy) = ppc_q3_software_raster_position(c);
+    // Widen before subtracting and multiplying: the f32 projected positions
+    // remain exact while the edge walker advances across pixel centers.
+    (f64::from(cx) - f64::from(ax)) * (f64::from(by) - f64::from(ay))
+        - (f64::from(cy) - f64::from(ay)) * (f64::from(bx) - f64::from(ax))
 }
 
 pub fn ppc_q3_software_triangle_edge_walker(
     [a, b, c]: [PpcQ3SoftwareProjectedPoint; 3],
     x: i32,
     y: i32,
-) -> ([i64; 3], [i64; 3], [i64; 3]) {
+) -> ([f64; 3], [f64; 3], [f64; 3]) {
     let point = PpcQ3SoftwareProjectedPoint {
         x,
         y,
-        z: 0.0,
-        reciprocal_w: 1.0,
-        world: (0.0, 0.0, 0.0),
-        view_direction: None,
-        fog_depth: 0.0,
-        uv: None,
-        diffuse: None,
-        ambient_coefficient: None,
-        normal: None,
-        specular_color: None,
-        specular_control: None,
-        highlight_state: None,
-        vertex_alpha: None,
+        raster_position: None,
+        ..a
     };
+    let (ax, ay) = ppc_q3_software_raster_position(a);
+    let (bx, by) = ppc_q3_software_raster_position(b);
+    let (cx, cy) = ppc_q3_software_raster_position(c);
     (
         [
             ppc_q3_software_edge_value(b, c, point),
             ppc_q3_software_edge_value(c, a, point),
             ppc_q3_software_edge_value(a, b, point),
         ],
-        [
-            i64::from(c.y - b.y),
-            i64::from(a.y - c.y),
-            i64::from(b.y - a.y),
-        ],
-        [
-            -i64::from(c.x - b.x),
-            -i64::from(a.x - c.x),
-            -i64::from(b.x - a.x),
-        ],
+        [f64::from(cy) - f64::from(by), f64::from(ay) - f64::from(cy), f64::from(by) - f64::from(ay)],
+        [f64::from(bx) - f64::from(cx), f64::from(cx) - f64::from(ax), f64::from(ax) - f64::from(bx)],
     )
 }
 
@@ -4077,9 +4089,9 @@ pub fn ppc_q3_software_is_backfacing(
     // by the camera.
     let edge = ppc_q3_software_edge_value(vertices[0], vertices[1], vertices[2]);
     if orientation_style == PPC_Q3_ORIENTATION_STYLE_CLOCKWISE {
-        edge > 0
+        edge > 0.0
     } else {
-        edge < 0
+        edge < 0.0
     }
 }
 
@@ -4149,11 +4161,11 @@ pub fn ppc_q3_software_flip_normals_for_backface(
     }
 }
 
-pub fn ppc_q3_software_weights_inside(area: i64, w0: i64, w1: i64, w2: i64) -> bool {
-    if area > 0 {
-        w0 >= 0 && w1 >= 0 && w2 >= 0
+pub fn ppc_q3_software_weights_inside(area: f64, w0: f64, w1: f64, w2: f64) -> bool {
+    if area > 0.0 {
+        w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0
     } else {
-        w0 <= 0 && w1 <= 0 && w2 <= 0
+        w0 <= 0.0 && w1 <= 0.0 && w2 <= 0.0
     }
 }
 
@@ -4511,6 +4523,7 @@ pub fn ppc_q3_software_projected_line_midpoint(
     PpcQ3SoftwareProjectedPoint {
         x: ((start.x as f32 + end.x as f32) * 0.5).round() as i32,
         y: ((start.y as f32 + end.y as f32) * 0.5).round() as i32,
+        raster_position: None,
         z: start.z.mul_add(0.5, end.z * 0.5),
         reciprocal_w: start.reciprocal_w.mul_add(0.5, end.reciprocal_w * 0.5),
         world: (
