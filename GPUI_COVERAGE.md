@@ -1417,3 +1417,15 @@ filename focus clearing and restoration across replacement confirmation.
 
 Fresh final composed captures in all three modes confirm the parent filename
 caret is absent while replacement confirmation is open.
+
+
+### Replacement modal background semantics
+
+While confirmation is open, the Save panel remains painted but its accessibility
+subtree is hidden using AccessKit's subtree exclusion flag. Its buttons lose host
+focus handles and semantic handlers, and regain them when confirmation closes.
+The GPUI regression checks background focus suppression and restoration alongside
+normal pointer delivery. A node-level regression checks hidden/unhidden state
+without losing the parent role, label or identity. This qualifies the Save panel
+boundary only; native screen-reader operation and modal isolation of unrelated
+application/window controls remain open.

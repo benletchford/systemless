@@ -27,11 +27,19 @@ impl<C: gpui_kit::RenderOnce + 'static> gpui_kit::RenderOnce for AccessibleCompo
 pub struct AccessibleState<E> {
     inner: E,
     disabled: bool,
+    hidden: bool,
 }
 
 impl<E: Element> AccessibleState<E> {
     pub fn new(inner: E, disabled: bool) -> Self {
-        Self { inner, disabled }
+        Self { inner, disabled, hidden: false }
+    }
+
+    /// Keep the element painted while excluding its modal-background subtree
+    /// from assistive navigation. Keyboard focus must be disabled separately.
+    pub fn hidden(mut self, hidden: bool) -> Self {
+        self.hidden = hidden;
+        self
     }
 }
 
@@ -58,6 +66,7 @@ impl<E: Element> Element for AccessibleState<E> {
     fn write_a11y_info(&self, node: &mut accesskit::Node) {
         self.inner.write_a11y_info(node);
         if self.disabled { node.set_disabled(); }
+        if self.hidden { node.set_hidden(); }
     }
     fn a11y_synthetic_children(
         &mut self, prepaint: &mut Self::PrepaintState, builder: &mut A11ySubtreeBuilder,
@@ -106,4 +115,19 @@ mod tests {
             assert_eq!(node.is_disabled(), disabled);
         }
     }
+    #[test]
+    fn hidden_modal_background_preserves_node_identity_and_label() {
+        for hidden in [false, true, false] {
+            let row = div().id("save-panel").role(Role::Group).aria_label("Save file");
+            let wrapped = AccessibleState::new(row, false).hidden(hidden);
+            let mut node = accesskit::Node::new(wrapped.a11y_role().unwrap());
+            wrapped.write_a11y_info(&mut node);
+            assert_eq!(Element::id(&wrapped), Some("save-panel".into()));
+            assert_eq!(node.role(), Role::Group);
+            assert_eq!(node.label(), Some("Save file"));
+            assert_eq!(node.is_hidden(), hidden);
+            assert!(!node.is_disabled());
+        }
+    }
+
 }
