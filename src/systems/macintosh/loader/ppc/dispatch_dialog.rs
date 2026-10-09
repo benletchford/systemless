@@ -1475,7 +1475,7 @@ pub(super) fn dispatch_dialog_import(
                 last_resource_error,
                 param_text,
                 tick_count,
-                input, scrap, event_queue, *quickdraw_fore_color, *quickdraw_back_color, quickdraw_fore_indices,
+                input, scrap, *quickdraw_fore_color, *quickdraw_back_color, quickdraw_fore_indices,
             ))
         }
         _ => None,
@@ -1716,7 +1716,6 @@ fn ppc_dispatch_dialog_compatibility(
     tick_count: u32,
     input: PpcInputSnapshot,
     scrap: &mut PpcScrapState,
-    event_queue: &mut EventQueue,
     fore_color: PpcRgbColor,
     back_color: PpcRgbColor,
     fore_indices: &HashMap<u32, u8>,
