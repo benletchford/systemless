@@ -153,3 +153,10 @@ alert; a default-selection halt must not be attributed to that game without
 resolving the selection. King of Dragon Pass requires navigating to its root
 demo document from the player’s chooser to reach the title. Neither checkpoint
 provides gameplay or distribution clearance.
+
+[Additional classic demo checkpoints](https://github.com/benletchford/systemless/issues/4240#issuecomment-6080877856)
+record Myst Preview’s error alert and the exact Populous II demo’s prompt/title.
+The latter is a different archive from the closed #1633 report; neither its
+older gameplay claim nor distribution permission transfers between packages.
+The current Pararena checkpoint remains Demo 2.01, and Allied General’s
+initial missing-movie alert is already part of #4171’s reproduction.
