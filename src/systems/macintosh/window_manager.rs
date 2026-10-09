@@ -2394,6 +2394,277 @@ pub fn evaluate_get_window_port_bounds_parameters(
     })
 }
 
+/// Canonical Mac OS WindowRegionCode constants (MacWindows.h).
+#[allow(dead_code)]
+pub const WINDOW_STATE_TITLE_BAR_RGN: u32 = 0;
+#[allow(dead_code)]
+pub const WINDOW_TITLE_BAR_RGN: u32 = 1;
+#[allow(dead_code)]
+pub const WINDOW_CLOSE_BOX_RGN: u32 = 2;
+#[allow(dead_code)]
+pub const WINDOW_ZOOM_BOX_RGN: u32 = 3;
+#[allow(dead_code)]
+pub const WINDOW_DRAG_RGN: u32 = 5;
+#[allow(dead_code)]
+pub const WINDOW_GROW_RGN: u32 = 6;
+#[allow(dead_code)]
+pub const WINDOW_COLLAPSE_BOX_RGN: u32 = 7;
+#[allow(dead_code)]
+pub const WINDOW_TITLE_TEXT_RGN: u32 = 8;
+#[allow(dead_code)]
+pub const WINDOW_STRUCTURE_RGN: u32 = 32;
+#[allow(dead_code)]
+pub const WINDOW_CONTENT_RGN: u32 = 33;
+#[allow(dead_code)]
+pub const WINDOW_UPDATE_RGN: u32 = 34;
+#[allow(dead_code)]
+pub const WINDOW_OPAQUE_RGN: u32 = 35;
+#[allow(dead_code)]
+pub const WINDOW_GLOBAL_PORT_RGN: u32 = 40;
+
+/// Architecture-neutral parameter validation for GetWindowBounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetWindowBoundsParameters {
+    window_ptr: u32,
+    region_code: u32,
+    out_rect_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl GetWindowBoundsParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn region_code(&self) -> u32 {
+        self.region_code
+    }
+
+    pub const fn out_rect_ptr(&self) -> u32 {
+        self.out_rect_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_window_bounds_parameters(
+    window_ptr: u32,
+    region_code: u32,
+    out_rect_ptr: u32,
+    can_write: bool,
+) -> Result<GetWindowBoundsParameters, i16> {
+    if window_ptr == 0 || out_rect_ptr == 0 || !can_write {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(GetWindowBoundsParameters {
+        window_ptr,
+        region_code,
+        out_rect_ptr,
+    })
+}
+
+/// Architecture-neutral parameter validation for SetWindowBounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetWindowBoundsParameters {
+    window_ptr: u32,
+    region_code: u32,
+    in_rect_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl SetWindowBoundsParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn region_code(&self) -> u32 {
+        self.region_code
+    }
+
+    pub const fn in_rect_ptr(&self) -> u32 {
+        self.in_rect_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_set_window_bounds_parameters(
+    window_ptr: u32,
+    region_code: u32,
+    in_rect_ptr: u32,
+    can_read: bool,
+) -> Result<SetWindowBoundsParameters, i16> {
+    if window_ptr == 0 || in_rect_ptr == 0 || !can_read {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(SetWindowBoundsParameters {
+        window_ptr,
+        region_code,
+        in_rect_ptr,
+    })
+}
+
+/// Architecture-neutral parameter validation for GetWindowRegion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetWindowRegionParameters {
+    window_ptr: u32,
+    region_code: u32,
+    io_rgn: u32,
+}
+
+#[allow(dead_code)]
+impl GetWindowRegionParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn region_code(&self) -> u32 {
+        self.region_code
+    }
+
+    pub const fn io_rgn(&self) -> u32 {
+        self.io_rgn
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_window_region_parameters(
+    window_ptr: u32,
+    region_code: u32,
+    io_rgn: u32,
+) -> Result<GetWindowRegionParameters, i16> {
+    if window_ptr == 0 || io_rgn == 0 {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(GetWindowRegionParameters {
+        window_ptr,
+        region_code,
+        io_rgn,
+    })
+}
+
+/// Architecture-neutral parameter validation for InvalWindowRect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalWindowRectParameters {
+    window_ptr: u32,
+    in_rect_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl InvalWindowRectParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn in_rect_ptr(&self) -> u32 {
+        self.in_rect_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_inval_window_rect_parameters(
+    window_ptr: u32,
+    in_rect_ptr: u32,
+    can_read: bool,
+) -> Result<InvalWindowRectParameters, i16> {
+    if window_ptr == 0 || (in_rect_ptr != 0 && !can_read) {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(InvalWindowRectParameters {
+        window_ptr,
+        in_rect_ptr,
+    })
+}
+
+/// Architecture-neutral parameter validation for InvalWindowRgn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalWindowRgnParameters {
+    window_ptr: u32,
+    in_rgn: u32,
+}
+
+#[allow(dead_code)]
+impl InvalWindowRgnParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn in_rgn(&self) -> u32 {
+        self.in_rgn
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_inval_window_rgn_parameters(
+    window_ptr: u32,
+    in_rgn: u32,
+) -> Result<InvalWindowRgnParameters, i16> {
+    if window_ptr == 0 {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(InvalWindowRgnParameters { window_ptr, in_rgn })
+}
+
+/// Architecture-neutral parameter validation for ValidWindowRect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValidWindowRectParameters {
+    window_ptr: u32,
+    in_rect_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl ValidWindowRectParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn in_rect_ptr(&self) -> u32 {
+        self.in_rect_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_valid_window_rect_parameters(
+    window_ptr: u32,
+    in_rect_ptr: u32,
+    can_read: bool,
+) -> Result<ValidWindowRectParameters, i16> {
+    if window_ptr == 0 || (in_rect_ptr != 0 && !can_read) {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(ValidWindowRectParameters {
+        window_ptr,
+        in_rect_ptr,
+    })
+}
+
+/// Architecture-neutral parameter validation for ValidWindowRgn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValidWindowRgnParameters {
+    window_ptr: u32,
+    in_rgn: u32,
+}
+
+#[allow(dead_code)]
+impl ValidWindowRgnParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn in_rgn(&self) -> u32 {
+        self.in_rgn
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_valid_window_rgn_parameters(
+    window_ptr: u32,
+    in_rgn: u32,
+) -> Result<ValidWindowRgnParameters, i16> {
+    if window_ptr == 0 {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(ValidWindowRgnParameters { window_ptr, in_rgn })
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -3322,6 +3593,115 @@ mod tests {
         assert_eq!(port_bounds.window_ptr(), 0x1000);
         assert_eq!(port_bounds.out_rect_ptr(), 0x8000);
     }
+
+    #[test]
+    fn window_bounds_region_and_invalidation_evaluation() {
+        // GetWindowBounds
+        assert_eq!(
+            evaluate_get_window_bounds_parameters(0x2000, WINDOW_CONTENT_RGN, 0x3000, true),
+            Ok(GetWindowBoundsParameters {
+                window_ptr: 0x2000,
+                region_code: WINDOW_CONTENT_RGN,
+                out_rect_ptr: 0x3000,
+            })
+        );
+        assert_eq!(evaluate_get_window_bounds_parameters(0, WINDOW_CONTENT_RGN, 0x3000, true), Err(-50));
+        assert_eq!(evaluate_get_window_bounds_parameters(0x2000, WINDOW_CONTENT_RGN, 0, true), Err(-50));
+        assert_eq!(evaluate_get_window_bounds_parameters(0x2000, WINDOW_CONTENT_RGN, 0x3000, false), Err(-50));
+
+        // SetWindowBounds
+        assert_eq!(
+            evaluate_set_window_bounds_parameters(0x2000, WINDOW_STRUCTURE_RGN, 0x3000, true),
+            Ok(SetWindowBoundsParameters {
+                window_ptr: 0x2000,
+                region_code: WINDOW_STRUCTURE_RGN,
+                in_rect_ptr: 0x3000,
+            })
+        );
+        assert_eq!(evaluate_set_window_bounds_parameters(0, WINDOW_STRUCTURE_RGN, 0x3000, true), Err(-50));
+        assert_eq!(evaluate_set_window_bounds_parameters(0x2000, WINDOW_STRUCTURE_RGN, 0, true), Err(-50));
+        assert_eq!(evaluate_set_window_bounds_parameters(0x2000, WINDOW_STRUCTURE_RGN, 0x3000, false), Err(-50));
+
+        // GetWindowRegion
+        assert_eq!(
+            evaluate_get_window_region_parameters(0x2000, WINDOW_STRUCTURE_RGN, 0x4000),
+            Ok(GetWindowRegionParameters {
+                window_ptr: 0x2000,
+                region_code: WINDOW_STRUCTURE_RGN,
+                io_rgn: 0x4000,
+            })
+        );
+        assert_eq!(evaluate_get_window_region_parameters(0, WINDOW_STRUCTURE_RGN, 0x4000), Err(-50));
+        assert_eq!(evaluate_get_window_region_parameters(0x2000, WINDOW_STRUCTURE_RGN, 0), Err(-50));
+
+        // InvalWindowRect
+        assert_eq!(
+            evaluate_inval_window_rect_parameters(0x2000, 0x3000, true),
+            Ok(InvalWindowRectParameters {
+                window_ptr: 0x2000,
+                in_rect_ptr: 0x3000,
+            })
+        );
+        assert_eq!(
+            evaluate_inval_window_rect_parameters(0x2000, 0, false),
+            Ok(InvalWindowRectParameters {
+                window_ptr: 0x2000,
+                in_rect_ptr: 0,
+            })
+        );
+        assert_eq!(evaluate_inval_window_rect_parameters(0, 0x3000, true), Err(-50));
+        assert_eq!(evaluate_inval_window_rect_parameters(0x2000, 0x3000, false), Err(-50));
+
+        // InvalWindowRgn
+        assert_eq!(
+            evaluate_inval_window_rgn_parameters(0x2000, 0x4000),
+            Ok(InvalWindowRgnParameters {
+                window_ptr: 0x2000,
+                in_rgn: 0x4000,
+            })
+        );
+        assert_eq!(
+            evaluate_inval_window_rgn_parameters(0x2000, 0),
+            Ok(InvalWindowRgnParameters {
+                window_ptr: 0x2000,
+                in_rgn: 0,
+            })
+        );
+        assert_eq!(evaluate_inval_window_rgn_parameters(0, 0x4000), Err(-50));
+
+        // ValidWindowRect
+        assert_eq!(
+            evaluate_valid_window_rect_parameters(0x2000, 0x3000, true),
+            Ok(ValidWindowRectParameters {
+                window_ptr: 0x2000,
+                in_rect_ptr: 0x3000,
+            })
+        );
+        assert_eq!(
+            evaluate_valid_window_rect_parameters(0x2000, 0, false),
+            Ok(ValidWindowRectParameters {
+                window_ptr: 0x2000,
+                in_rect_ptr: 0,
+            })
+        );
+        assert_eq!(evaluate_valid_window_rect_parameters(0, 0x3000, true), Err(-50));
+        assert_eq!(evaluate_valid_window_rect_parameters(0x2000, 0x3000, false), Err(-50));
+
+        // ValidWindowRgn
+        assert_eq!(
+            evaluate_valid_window_rgn_parameters(0x2000, 0x4000),
+            Ok(ValidWindowRgnParameters {
+                window_ptr: 0x2000,
+                in_rgn: 0x4000,
+            })
+        );
+        assert_eq!(
+            evaluate_valid_window_rgn_parameters(0x2000, 0),
+            Ok(ValidWindowRgnParameters {
+                window_ptr: 0x2000,
+                in_rgn: 0,
+            })
+        );
+        assert_eq!(evaluate_valid_window_rgn_parameters(0, 0x4000), Err(-50));
+    }
 }
-
-
