@@ -3756,3 +3756,14 @@ no-default-features checks pass (13.24s/7.14s). General backgrounds, modern
 theme selection, caret rendering, live hit-testing and styled production scene
 ownership remain unfinished; capture session activation does not independently
 prove the native host-window observer.
+
+Styled TextEdit caret geometry can now project the visible caret fragment in
+port coordinates while preserving the existing guest caret owner and blink
+phase. The helper uses canonical CPU-specific range measurement, the native
+one-pixel offset adjustment, the supplied classic theme width versus PPC's
+fixed one-pixel width, and view clipping. Snapshot tests pass wrap ownership,
+PPC trimmed CR measurement, classic partially scrolled lines, width, inactive
+and hidden-blink states, and suppression during a nonempty selection (0.08s).
+Caret ink, pen patterns, theme painting and guest pixels outside the owned view
+remain separate; this is not rendered caret or production ownership evidence.
+Production and no-default-features checks pass (40.41s/12.23s).
