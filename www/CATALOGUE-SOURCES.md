@@ -137,7 +137,22 @@ shows `open mailbox` revealing a leaflet and incrementing Moves to 1. This
 establishes an interactive excerpt, not the full Zork I game or save/restart
 qualification. Its game-data redistribution permission remains unestablished.
 
-Current failures are recorded separately for [Civilization II font dispatch](https://github.com/benletchford/systemless/issues/4249),
+After [font resource swapping](https://github.com/benletchford/systemless/pull/4318),
+Civilization II PPC Demo 1.0 was replayed on tested head
+`47c95f900caa1ecb4ea748aa948f8c28851375f4` using its unchanged original
+8,160,693-byte archive (SHA-256
+`6ed949cc2a1b14589c28c35c7babd32bc135caff3b64e06f445a493cc0b16611`).
+The bounded native replay fails at frontend tick 13 / guest tick 12, before its
+180-tick action completes, with zero assertions and no exhausted frames.
+The inspected failure capture shows menus and a CD-ROM notice with a corrupted
+background. A [window-object trace](https://github.com/benletchford/systemless/issues/4316)
+shows a virtual call through a zero pointer after guest object release and
+memory reuse; the root cause remains unproven. This is startup failure evidence,
+not gameplay. The sourced PPC demo does not supply the requested 68K package;
+exact-archive redistribution rights, Systemless hosting and browser qualification
+remain unresolved. No catalogue entry is added or enabled.
+
+Current failures are recorded separately for [Civilization II window-object startup](https://github.com/benletchford/systemless/issues/4316),
 [Combat Mission accelerator startup](https://github.com/benletchford/systemless/issues/4253),
 [Worms Blast early exit](https://github.com/benletchford/systemless/issues/4254),
 [Heroes III menu command dispatch](https://github.com/benletchford/systemless/issues/4265),
