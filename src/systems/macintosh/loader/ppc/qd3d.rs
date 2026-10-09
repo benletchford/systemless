@@ -2746,7 +2746,7 @@ pub fn ppc_q3_software_project_point(
     let view_direction = ppc_q3_software_view_direction(command.camera, world);
     let (projected, fog_depth, clip) = if let Some(camera) = command.camera {
         let world_to_view = ppc_q3_camera_world_to_view_matrix(camera.placement)?;
-        let view_to_frustum = ppc_q3_camera_view_to_frustum_matrix(&camera)?;
+        let view_to_frustum = ppc_q3_camera_raster_projection_matrix(&camera)?;
         let view = ppc_q3_point3d_transform_values(world, world_to_view);
         let mut clip = ppc_q3_point3d_transform_4d_values(view, view_to_frustum);
         // QuickDraw 3D exposes frustum depth in [-1, 0], with the hither
@@ -7138,7 +7138,27 @@ pub fn ppc_q3_camera_world_to_view_matrix(placement: PpcQ3CameraPlacement) -> Op
     ])
 }
 
+/// Guest-visible matrix, including Apple's homogeneous normalization. Scaling
+/// a perspective matrix by 1/yon preserves x/w and y/w, but changes the raw
+/// coordinates returned by Q3Point3D_To4DTransformArray. Applications can use
+/// those coordinates for their own visibility tests.
 pub fn ppc_q3_camera_view_to_frustum_matrix(record: &PpcQ3CameraRecord) -> Option<[[f32; 4]; 4]> {
+    let mut matrix = ppc_q3_camera_raster_projection_matrix(record)?;
+    if !matches!(record.projection, PpcQ3CameraProjection::Orthographic { .. }) {
+        let scale = 1.0 / record.range_yon;
+        for row in &mut matrix {
+            for value in row {
+                *value *= scale;
+            }
+        }
+    }
+    Some(matrix)
+}
+
+// Keep the rasterizer's clip coordinates at w = -view_z. Its clipping
+// tolerances and interpolation already use this scale; guest API getters
+// separately preserve Apple's 1/yon normalization above.
+fn ppc_q3_camera_raster_projection_matrix(record: &PpcQ3CameraRecord) -> Option<[[f32; 4]; 4]> {
     if !ppc_q3_camera_record_valid(record) {
         return None;
     }
