@@ -4036,3 +4036,13 @@ termination and trailing-space trimming retain their prior behavior. The
 focused regression compares accented guest glyphs and advances against the
 Unicode-to-guest resolver and checks the unchanged ASCII policy. Full native
 list frame/callback qualification and GPUI paint ownership remain unfinished.
+
+`ClassicListCellPaintPlan::qualify` checks a complete translated cell against
+its original native RGBA buffer, using explicit foreground/background colours
+and guest layout. It requires intact drawing evidence and exact view geometry;
+any cell pixel mismatch declines. A qualified cell uses the same device-snapped
+background/ink canvas as styled TextEdit. Bounds, truncated-buffer, absent
+evidence and changed-cell guard tests use a synthetic empty cell; they are not
+proof of native list rendering. Actual per-cell paint metadata, lifecycle
+evidence, real native captures and compositor checks remain required before
+production ownership.
