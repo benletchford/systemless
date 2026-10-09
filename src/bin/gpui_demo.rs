@@ -2041,10 +2041,9 @@ mod desktop {
                                 })
                             }), !item.enabled || !semantic_active),
                         ),
-                        DialogItemKind::StaticText => overlay
-                            .text_size(guest_px(13.))
-                            .text_color(cx.theme().foreground)
-                            .child(item.text.replace('\r', "\n")),
+                        DialogItemKind::StaticText => overlay.child(super::text::classic_dialog_static_text(
+                            &item.text, item.static_text_layout.as_ref().unwrap(), scene_scale, cx.theme().foreground,
+                        )),
                         DialogItemKind::EditText => {
                             let focused = semantic_active
                                 && dialog.edit_field == Some(item.number)
@@ -4692,6 +4691,7 @@ mod desktop {
                     cancel_item: None,
                     edit_field: None,
                     items: vec![DialogItemSnapshot {
+                        static_text_layout: Some(systemless::runner::DialogStaticTextLayout { font: (0, 0), origin: (1, 12), line_height: 16, inclusive_bottom: false }),
                         control_identity: None,
                         pressed: false,
                         number: 1,
@@ -8171,6 +8171,13 @@ mod desktop {
                 assert_eq!(dialog.items[0].number, 1);
                 assert_eq!(dialog.items[0].bounds, (220, 360, 240, 430));
                 assert_eq!(dialog.items[1].kind, DialogItemKind::StaticText);
+                let layout = dialog.items[1].static_text_layout.as_ref().expect("standard alert text has guest layout");
+                assert_eq!(layout.origin.0, 1);
+                assert_eq!(layout.inclusive_bottom, !powerpc);
+                let metrics = systemless::quickdraw::text::get_font_metrics(layout.font.0, layout.font.1);
+                assert_eq!(layout.line_height, if powerpc { 16 } else { metrics.ascent + metrics.descent + metrics.leading });
+                assert_eq!(layout.origin.1, if powerpc { 12 } else { metrics.ascent });
+
                 assert!(!dialog.items[1].enabled);
                 let windows = session.runner_mut().window_frame_snapshot();
                 assert_eq!(
@@ -8190,6 +8197,7 @@ mod desktop {
                 mixed.items[1].kind = DialogItemKind::Checkbox;
                 mixed.items[1].value = Some(1);
                 mixed.items.push(systemless::runner::DialogItemSnapshot {
+                    static_text_layout: Some(systemless::runner::DialogStaticTextLayout { font: (0, 0), origin: (1, 12), line_height: 16, inclusive_bottom: false }),
                     control_identity: None,
                     pressed: false,
                     number: 3,
@@ -9796,6 +9804,7 @@ mod desktop {
                         cancel_item: None,
                         edit_field: None,
                         items: vec![DialogItemSnapshot {
+                            static_text_layout: Some(systemless::runner::DialogStaticTextLayout { font: (0, 0), origin: (1, 12), line_height: 16, inclusive_bottom: false }),
                             control_identity: None,
                             pressed: false,
                             number: 1,
@@ -9926,6 +9935,7 @@ mod desktop {
                         edit_field: Some(2),
                         items: vec![
                             DialogItemSnapshot {
+                                static_text_layout: Some(systemless::runner::DialogStaticTextLayout { font: (0, 0), origin: (1, 12), line_height: 16, inclusive_bottom: false }),
                                 control_identity: None,
                                 pressed: false,
                                 number: 1,
@@ -9939,6 +9949,7 @@ mod desktop {
                                 caret_visible: Some(true),
                             },
                             DialogItemSnapshot {
+                                static_text_layout: Some(systemless::runner::DialogStaticTextLayout { font: (0, 0), origin: (1, 12), line_height: 16, inclusive_bottom: false }),
                                 control_identity: None,
                                 pressed: false,
                                 number: 2,

@@ -1,0 +1,38 @@
+{
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "review": "Three composed About alerts inspected: guest-resolved glyph ink and three explicit text lines. 68k inherited metrics and PPC fixed 16-pixel line spacing retained. Guest frames preserved alongside composed frames.",
+  "captures": [
+    {
+      "file": "dialog-static-glyph-mono.png",
+      "sha256": "fc0217c5a22346ae315e4dbefba815f8440c39446a15299905122f82314435e6"
+    },
+    {
+      "file": "dialog-static-glyph-mono.guest.png",
+      "sha256": "a7aed0f2d1103086fdd64d2163900ef30196804b21177bc49e07f1052b2cdea4"
+    },
+    {
+      "file": "dialog-static-glyph-colour.png",
+      "sha256": "b1d4bc02f694c48fa14201ad46b435a7036c7132d25795ad867b84650a54571f"
+    },
+    {
+      "file": "dialog-static-glyph-colour.guest.png",
+      "sha256": "18556e94af0d12599fa43668b3233ec4c372ca7664fc6662060c27de95a6b8b8"
+    },
+    {
+      "file": "dialog-static-glyph-ppc.png",
+      "sha256": "f703818f033d107680ae2a24c6272cea7f3949ca65a587005d0270f73c2e06e1"
+    },
+    {
+      "file": "dialog-static-glyph-ppc.guest.png",
+      "sha256": "5d9c1deda523d03610f29d0c7f094681cc674e02ab43973572a375da191d07d8"
+    }
+  ],
+  "limits": [
+    "No styled/colour-table statText implementation qualification",
+    "No paint-time font mutation qualification",
+    "No scale or activation matrix qualification",
+    "No native Macintosh font parity qualification",
+    "No broad wrapping/bottom-clipping qualification",
+    "ParamText mapping inspected in code; dedicated frontend integration qualification remains pending"
+  ]
+}

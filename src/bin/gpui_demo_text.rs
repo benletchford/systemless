@@ -393,6 +393,14 @@ pub(crate) fn classic_directory_label(
     )
 }
 
+pub(crate) fn classic_dialog_static_text(
+    text: &str, layout: &systemless::runner::DialogStaticTextLayout,
+    scale: f32, foreground: gpui_kit::Hsla,
+) -> impl gpui_kit::IntoElement {
+    classic_wrapped_text(text, layout.font, (layout.origin.0, layout.origin.1, layout.line_height),
+        layout.inclusive_bottom, scale, foreground)
+}
+
 fn classic_wrapped_text(
     text: &str,
     guest_font: (i16, i16),

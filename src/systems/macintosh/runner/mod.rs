@@ -4,7 +4,7 @@ use crate::callback_manager::CallbackTaskArchitecture;
 pub use crate::control_manager::{scrollbar_drag_position, ControlFontStyle, ControlSnapshot};
 use crate::cpu::{M68kCpu, Register, StepResult};
 use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
-pub use crate::dialog_manager::{DialogItemKind, DialogItemSnapshot, DialogSnapshot};
+pub use crate::dialog_manager::{DialogStaticTextLayout, DialogItemKind, DialogItemSnapshot, DialogSnapshot};
 use crate::event_queue::{EventManagerSnapshot, EventRecordSnapshot};
 use crate::execution_kernel::ExecutionRoute;
 use crate::execution_m68k::M68kExecution;
@@ -2547,6 +2547,7 @@ impl FixtureRunner {
                             .map(|(index, item)| {
                                 let number = (index + 1) as i16;
                                 DialogItemSnapshot {
+                                    static_text_layout: self.dispatcher.dialog_static_text_layout(&self.bus, guest_id, index, item.rect),
                                     // DITL item handles may change without replacing the dialog.
                                     // MTE (1992), pp. 6-122--6-123; ControlRecord, pp. 5-60--5-64.
                                     control_identity: TrapDispatcher::dialog_item_handle_addr(&self.bus, guest_id, number)
@@ -2571,7 +2572,9 @@ impl FixtureRunner {
                                     bounds: crate::dialog_manager::dialog_rect_to_global(
                                         bounds, item.rect,
                                     ),
-                                    text: item.text.clone(),
+                                    text: if crate::dialog_manager::DialogItemKind::from_raw_type(item.item_type) == crate::dialog_manager::DialogItemKind::StaticText {
+                                        self.dispatcher.apply_param_text(&item.text).into_owned()
+                                    } else { item.text.clone() },
                                     enabled: item.is_enabled(),
                                     visible: !item.is_hidden(),
                                     value: self

@@ -2546,3 +2546,27 @@ theme-provider caret/focus fidelity and native-oracle qualification remain
 pending. Horizontal scrolling and broader Save keyboard/clipboard coverage
 remain unfinished. This supersedes the interim static insertion-feedback
 limitation in the preceding Save glyph entry for these supported fields.
+
+
+### Plain dialog statText guest glyph presentation
+
+Dialog item snapshots carry a resolved static-text font, inset, baseline,
+line spacing and bottom-inclusion rule. GPUI uses shared guest Mac Roman glyph
+ink and wrapping for supported plain exact strikes. 68k retains inherited
+metrics, the one-pixel inset and short-field baseline clamp; PPC retains its
+current guest painter's system font, inset, baseline 12 and line spacing 16.
+Size zero is the system-size sentinel and resolves to the 12-point strike.
+68k snapshots expand ParamText as the guest statText painter does.
+
+Styled, colour-table or non-exact 68k strikes currently retain guest item
+pixels. The overlay partition excludes items without supported layout, while
+other standard items continue through their existing ownership/clipping path.
+The three-mode dialog geometry/identity test passes (4.81s), checking statText
+metadata, and the inactive/occlusion partition test passes (0.01s), including
+missing-layout fallback. The capture build and headless/JIT check pass. Three
+About-alert composed captures and paired guest frames are recorded in
+`dialog-static-glyph-review.json` and were inspected for the three explicit
+text lines. These establish this fixture presentation, not broad wrapping,
+bottom clipping, styled text, ParamText integration, font mutation,
+scale/activation coverage or native Macintosh font fidelity. Those requirements
+remain open, along with general dialog editing and menu typography.

@@ -65,6 +65,9 @@ impl PpcLoadedApp {
                     })
                     .flatten();
                     crate::dialog_manager::DialogItemSnapshot {
+                        static_text_layout: Some(crate::dialog_manager::DialogStaticTextLayout {
+                            font: (0, 0), origin: (1, 12), line_height: 16, inclusive_bottom: false,
+                        }),
                         control_identity: self.controls.with_ref(|state| {
                             state.iter().find(|record| record.handle == item.handle
                                 && record.pointer != 0

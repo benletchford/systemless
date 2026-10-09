@@ -213,7 +213,8 @@ pub fn dialog_item_pieces(
                     })
             }) {
                 for (item_index, item) in dialog.items.iter().enumerate() {
-                    if !item.visible
+                    if (item.kind == DialogItemKind::StaticText && item.static_text_layout.is_none())
+                        || !item.visible
                         || (item.kind == DialogItemKind::EditText
                             && (item.text.contains('\r') || item.bounds.2 - item.bounds.0 > 24))
                     {
@@ -826,6 +827,7 @@ mod tests {
             visible: true, active: true, default_item: Some(1),
             cancel_item: None, edit_field: None,
             items: vec![DialogItemSnapshot {
+                static_text_layout: Some(systemless::runner::DialogStaticTextLayout { font: (0, 0), origin: (1, 12), line_height: 16, inclusive_bottom: false }),
                 control_identity: Some((10, 1)),
                 pressed: false, number: 1, kind: DialogItemKind::Button,
                 bounds: (90, 90, 110, 180), text: "OK".into(),
@@ -890,6 +892,7 @@ mod tests {
             cancel_item: None,
             edit_field: None,
             items: vec![DialogItemSnapshot {
+                static_text_layout: Some(systemless::runner::DialogStaticTextLayout { font: (0, 0), origin: (1, 12), line_height: 16, inclusive_bottom: false }),
                 control_identity: None,
                 pressed: false,
                 number: 1,
@@ -909,6 +912,10 @@ mod tests {
         assert_eq!(pieces[0].source, Rect::from((90, 90, 110, 180)));
         assert_eq!(pieces[0].clip, Rect::from((90, 152, 110, 180)));
 
+        let text_layout = dialog.items[0].static_text_layout.take();
+        assert!(dialog_item_pieces(&[dialog.clone()], &windows, viewport).is_empty(),
+            "unknown or unsupported statText layout must preserve the guest pixels");
+        dialog.items[0].static_text_layout = text_layout;
         dialog.items[0].kind = DialogItemKind::UserItem;
         assert!(dialog_item_pieces(&[dialog.clone()], &windows, viewport).is_empty());
         dialog.items[0].kind = DialogItemKind::StaticText;
