@@ -348,6 +348,7 @@ fn dispose_dialog_removes_it_from_the_window_list_and_restores_the_previous_wind
             pixels_no_purge: false,
         });
     }
+    loaded.window_list.extend([dialog, application_window]);
     loaded
         .current_gworld
         .with_mut(|current_gworld| *current_gworld = dialog);
@@ -3233,6 +3234,7 @@ fn hle_import_runner_handles_close_window() {
         pixels_locked: false,
         pixels_no_purge: false,
     });
+    loaded.window_list.extend([window_ptr, underlying_window]);
     loaded
         .current_gworld
         .with_mut(|current_gworld| *current_gworld = window_ptr);
@@ -10011,4 +10013,31 @@ fn window_removal_discards_pending_updates_without_consuming_unrelated_events() 
             .iter()
             .any(|e| e.what == 3 && e.message == removed));
     }
+}
+
+#[test]
+fn native_execution_does_not_infer_windows_from_offscreen_gworlds() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TickCount")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 16]);
+    ppc_write_rect(&mut loaded.memory, scratch, 0, 0, 16, 16).unwrap();
+    loaded.cpu.gpr[3] = scratch + 8;
+    loaded.cpu.gpr[4] = 8;
+    loaded.cpu.gpr[5] = scratch;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewGWorld);
+    let port = loaded.memory.read_u32_be(scratch + 8).unwrap();
+    assert_ne!(port, 0);
+    assert!(loaded.window_list.is_empty());
+    let address = port + PPC_CWINDOW_NEXT_WINDOW_OFFSET;
+    loaded.memory.write_u32_be(address, 0x5a5a_a5a5).unwrap();
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FrontWindow);
+
+    assert!(loaded.window_list.is_empty());
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(0x09D6), Some(0));
+    assert_eq!(loaded.memory.read_u32_be(address), Some(0x5a5a_a5a5));
 }
