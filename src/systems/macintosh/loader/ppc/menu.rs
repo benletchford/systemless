@@ -1708,8 +1708,11 @@ pub(crate) fn ppc_step_menu_tracking_body(
 }
 
 pub(crate) fn ppc_menu_select_call(cpu: &PpcCpu, initial_point: u32) -> MenuTrackingCall {
+    let params = crate::menu_manager::evaluate_menu_select_parameters(initial_point);
     MenuTrackingCall {
-        request: MenuTrackingRequest::MenuSelect { initial_point },
+        request: MenuTrackingRequest::MenuSelect {
+            initial_point: params.raw_point(),
+        },
         origin: MenuTrackingOrigin::PowerPc {
             stack_pointer: cpu.gpr[1],
             return_address: cpu.lr,
@@ -1718,12 +1721,22 @@ pub(crate) fn ppc_menu_select_call(cpu: &PpcCpu, initial_point: u32) -> MenuTrac
 }
 
 pub(crate) fn ppc_popup_menu_call(cpu: &PpcCpu) -> MenuTrackingCall {
-    MenuTrackingCall {
-        request: MenuTrackingRequest::PopUp(PopupMenuRequest {
-            menu_handle: cpu.gpr[3],
+    let params = crate::menu_manager::evaluate_popup_menu_select_parameters(
+        cpu.gpr[3],
+        cpu.gpr[4] as u16 as i16,
+        cpu.gpr[5] as u16 as i16,
+        cpu.gpr[6] as u16 as i16,
+    );
+    let request = match params {
+        Some(params) => params.to_popup_menu_request(),
+        None => PopupMenuRequest {
+            menu_handle: 0,
             anchor: (cpu.gpr[4] as u16 as i16, cpu.gpr[5] as u16 as i16),
             requested_item: cpu.gpr[6] as u16 as i16,
-        }),
+        },
+    };
+    MenuTrackingCall {
+        request: MenuTrackingRequest::PopUp(request),
         origin: MenuTrackingOrigin::PowerPc {
             stack_pointer: cpu.gpr[1],
             return_address: cpu.lr,

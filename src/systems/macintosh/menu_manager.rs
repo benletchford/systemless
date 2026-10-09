@@ -4976,6 +4976,163 @@ pub const fn evaluate_hm_is_balloon() -> bool {
     false
 }
 
+/// Architecture-neutral parameter extraction and validation for MenuSelect.
+/// FUNCTION MenuSelect(startPt: Point): LONGINT;
+/// Inside Macintosh Volume I (1985), p. I-353.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuSelectParameters {
+    raw_point: u32,
+}
+
+#[allow(dead_code)]
+impl MenuSelectParameters {
+    pub const fn new(raw_point: u32) -> Self {
+        Self { raw_point }
+    }
+
+    pub const fn from_coordinates(v: i16, h: i16) -> Self {
+        Self {
+            raw_point: ((v as u16 as u32) << 16) | (h as u16 as u32),
+        }
+    }
+
+    pub const fn raw_point(&self) -> u32 {
+        self.raw_point
+    }
+
+    pub const fn point(&self) -> (i16, i16) {
+        (self.v(), self.h())
+    }
+
+    pub const fn v(&self) -> i16 {
+        (self.raw_point >> 16) as u16 as i16
+    }
+
+    pub const fn h(&self) -> i16 {
+        (self.raw_point & 0xffff) as u16 as i16
+    }
+}
+
+#[allow(dead_code)]
+pub const fn evaluate_menu_select_parameters(raw_point: u32) -> MenuSelectParameters {
+    MenuSelectParameters::new(raw_point)
+}
+
+#[allow(dead_code)]
+pub const fn evaluate_menu_select_coordinates(v: i16, h: i16) -> MenuSelectParameters {
+    MenuSelectParameters::from_coordinates(v, h)
+}
+
+/// Architecture-neutral parameter extraction and validation for PopUpMenuSelect.
+/// FUNCTION PopUpMenuSelect(menu: MenuHandle; top, left, popUpItem: INTEGER): LONGINT;
+/// Macintosh Toolbox Essentials (1992), pp. 3-119--3-120.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PopUpMenuSelectParameters {
+    menu_handle: u32,
+    top: i16,
+    left: i16,
+    pop_up_item: i16,
+}
+
+#[allow(dead_code)]
+impl PopUpMenuSelectParameters {
+    pub const fn new(menu_handle: u32, top: i16, left: i16, pop_up_item: i16) -> Self {
+        Self {
+            menu_handle,
+            top,
+            left,
+            pop_up_item,
+        }
+    }
+
+    pub const fn menu_handle(&self) -> u32 {
+        self.menu_handle
+    }
+
+    pub const fn has_menu_handle(&self) -> bool {
+        self.menu_handle != 0
+    }
+
+    pub const fn top(&self) -> i16 {
+        self.top
+    }
+
+    pub const fn left(&self) -> i16 {
+        self.left
+    }
+
+    pub const fn pop_up_item(&self) -> i16 {
+        self.pop_up_item
+    }
+
+    pub const fn anchor(&self) -> (i16, i16) {
+        (self.top, self.left)
+    }
+
+    pub(crate) const fn to_popup_menu_request(self) -> PopupMenuRequest {
+        PopupMenuRequest {
+            menu_handle: self.menu_handle,
+            anchor: (self.top, self.left),
+            requested_item: self.pop_up_item,
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub const fn evaluate_popup_menu_select_parameters(
+    menu_handle: u32,
+    top: i16,
+    left: i16,
+    pop_up_item: i16,
+) -> Option<PopUpMenuSelectParameters> {
+    if menu_handle == 0 {
+        None
+    } else {
+        Some(PopUpMenuSelectParameters::new(
+            menu_handle,
+            top,
+            left,
+            pop_up_item,
+        ))
+    }
+}
+
+/// Architecture-neutral parameter extraction and validation for SystemMenu.
+/// PROCEDURE SystemMenu(menuResult: LONGINT);
+/// Inside Macintosh Volume I (1985), p. I-441.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SystemMenuParameters {
+    menu_result: u32,
+}
+
+#[allow(dead_code)]
+impl SystemMenuParameters {
+    pub const fn new(menu_result: u32) -> Self {
+        Self { menu_result }
+    }
+
+    pub const fn menu_result(&self) -> u32 {
+        self.menu_result
+    }
+
+    pub const fn menu_id(&self) -> i16 {
+        (self.menu_result >> 16) as u16 as i16
+    }
+
+    pub const fn item_index(&self) -> u16 {
+        (self.menu_result & 0xffff) as u16
+    }
+
+    pub const fn is_desk_accessory_selection(&self) -> bool {
+        self.menu_id() < 0
+    }
+}
+
+#[allow(dead_code)]
+pub const fn evaluate_system_menu_parameters(menu_result: u32) -> SystemMenuParameters {
+    SystemMenuParameters::new(menu_result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7338,5 +7495,48 @@ mod tests {
         assert!(!balloons_off.enabled());
 
         assert!(!evaluate_hm_is_balloon());
+    }
+
+    #[test]
+    fn menu_tracking_and_popup_selection_evaluation() {
+        // MenuSelect parameters from raw point and coordinates
+        let select_raw = evaluate_menu_select_parameters(0x0014_0028);
+        assert_eq!(select_raw.raw_point(), 0x0014_0028);
+        assert_eq!(select_raw.v(), 20);
+        assert_eq!(select_raw.h(), 40);
+        assert_eq!(select_raw.point(), (20, 40));
+
+        let select_coords = evaluate_menu_select_coordinates(-10, 50);
+        assert_eq!(select_coords.v(), -10);
+        assert_eq!(select_coords.h(), 50);
+        assert_eq!(select_coords.point(), (-10, 50));
+        assert_eq!(select_coords.raw_point(), 0xfff6_0032);
+
+        // PopUpMenuSelect parameters and conversion to PopupMenuRequest
+        let popup_valid = evaluate_popup_menu_select_parameters(0x1234_5678, 100, 200, 3).unwrap();
+        assert_eq!(popup_valid.menu_handle(), 0x1234_5678);
+        assert!(popup_valid.has_menu_handle());
+        assert_eq!(popup_valid.top(), 100);
+        assert_eq!(popup_valid.left(), 200);
+        assert_eq!(popup_valid.anchor(), (100, 200));
+        assert_eq!(popup_valid.pop_up_item(), 3);
+        let req = popup_valid.to_popup_menu_request();
+        assert_eq!(req.menu_handle, 0x1234_5678);
+        assert_eq!(req.anchor, (100, 200));
+        assert_eq!(req.requested_item, 3);
+
+        assert!(evaluate_popup_menu_select_parameters(0, 100, 200, 3).is_none());
+
+        // SystemMenu parameters
+        let sys_reg = evaluate_system_menu_parameters(0x0080_0002);
+        assert_eq!(sys_reg.menu_result(), 0x0080_0002);
+        assert_eq!(sys_reg.menu_id(), 128);
+        assert_eq!(sys_reg.item_index(), 2);
+        assert!(!sys_reg.is_desk_accessory_selection());
+
+        let sys_da = evaluate_system_menu_parameters(0xfffe_0001);
+        assert_eq!(sys_da.menu_id(), -2);
+        assert_eq!(sys_da.item_index(), 1);
+        assert!(sys_da.is_desk_accessory_selection());
     }
 }

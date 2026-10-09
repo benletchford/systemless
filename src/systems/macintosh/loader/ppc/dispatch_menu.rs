@@ -423,21 +423,29 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                 Some(PpcImportAction::ReturnPreserve)
             }
         }
-        PpcImportDispatcherTarget::PopUpMenuSelect => ppc_step_menu_tracking(
-            cpu,
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            heap_limit,
-            gworlds,
-            screen_clut,
-            toolbox_startup,
-            current_gworld,
-            current_gdevice,
-            input,
-            vfs_resources,
-            current_resource_refnum,
-        ),
+        PpcImportDispatcherTarget::PopUpMenuSelect => {
+            let _params = crate::menu_manager::evaluate_popup_menu_select_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4] as u16 as i16,
+                cpu.gpr[5] as u16 as i16,
+                cpu.gpr[6] as u16 as i16,
+            );
+            ppc_step_menu_tracking(
+                cpu,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                gworlds,
+                screen_clut,
+                toolbox_startup,
+                current_gworld,
+                current_gdevice,
+                input,
+                vfs_resources,
+                current_resource_refnum,
+            )
+        }
         PpcImportDispatcherTarget::InsertMenu => {
             let result = if let Some(params) = crate::menu_manager::evaluate_insert_menu_parameters(
                 cpu.gpr[3],
@@ -1030,21 +1038,24 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             let _ = memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, params.height() as u16);
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::MenuSelect => ppc_step_menu_tracking(
-            cpu,
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            heap_limit,
-            gworlds,
-            screen_clut,
-            toolbox_startup,
-            current_gworld,
-            current_gdevice,
-            input,
-            vfs_resources,
-            current_resource_refnum,
-        ),
+        PpcImportDispatcherTarget::MenuSelect => {
+            let _params = crate::menu_manager::evaluate_menu_select_parameters(cpu.gpr[3]);
+            ppc_step_menu_tracking(
+                cpu,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                gworlds,
+                screen_clut,
+                toolbox_startup,
+                current_gworld,
+                current_gdevice,
+                input,
+                vfs_resources,
+                current_resource_refnum,
+            )
+        }
         _ => None,
     }
 }

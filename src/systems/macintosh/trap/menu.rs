@@ -2625,8 +2625,11 @@ impl super::TrapDispatcher {
                 } else {
                     // First call: read mouse position and open menu
                     let sp = cpu.read_reg(Register::A7);
-                    let pt_v = bus.read_word(sp) as i16;
-                    let pt_h = bus.read_word(sp + 2) as i16;
+                    let params = crate::menu_manager::evaluate_menu_select_coordinates(
+                        bus.read_word(sp) as i16,
+                        bus.read_word(sp + 2) as i16,
+                    );
+                    let (pt_v, pt_h) = params.point();
                     self.refresh_menus_from_memory(bus);
                     // Don't pop stack yet — we'll do that when tracking completes
 
@@ -2866,11 +2869,17 @@ impl super::TrapDispatcher {
                         self.finish_menu_no_hit(bus, cpu, sp, 10);
                         return Some(Ok(()));
                     }
-                    let request = PopupMenuRequest {
-                        menu_handle: bus.read_long(sp + 6),
-                        anchor: (bus.read_word(sp + 4) as i16, bus.read_word(sp + 2) as i16),
-                        requested_item: bus.read_word(sp) as i16,
+                    let params = crate::menu_manager::evaluate_popup_menu_select_parameters(
+                        bus.read_long(sp + 6),
+                        bus.read_word(sp + 4) as i16,
+                        bus.read_word(sp + 2) as i16,
+                        bus.read_word(sp) as i16,
+                    );
+                    let Some(params) = params else {
+                        self.finish_menu_no_hit(bus, cpu, sp, 10);
+                        return Some(Ok(()));
                     };
+                    let request = params.to_popup_menu_request();
                     let menu_handle = request.menu_handle;
                     // Stack: popUpItem(2) + left(2) + top(2) + menu(4) + result(4)
                     // Don't pop yet — store SP for result write later

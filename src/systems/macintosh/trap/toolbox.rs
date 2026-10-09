@@ -9502,6 +9502,8 @@ impl super::TrapDispatcher {
             //   - systemmenu_five_call_composition_advances_stack_by_twenty
             (true, 0x1B5) => {
                 let sp = cpu.read_reg(Register::A7);
+                let _params =
+                    crate::menu_manager::evaluate_system_menu_parameters(bus.read_long(sp));
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
