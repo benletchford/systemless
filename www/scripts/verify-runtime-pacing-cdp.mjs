@@ -30,9 +30,16 @@ const usePublicArchive = process.env.SYSTEMLESS_RUNTIME_PUBLIC_ARCHIVE === "1";
 const setupActions = process.env.SYSTEMLESS_RUNTIME_SETUP_ACTIONS_PATH
   ? JSON.parse(readFileSync(process.env.SYSTEMLESS_RUNTIME_SETUP_ACTIONS_PATH, "utf8"))
   : [];
+const checkpoint = process.env.SYSTEMLESS_RUNTIME_CHECKPOINT_PATH
+  ? JSON.parse(readFileSync(process.env.SYSTEMLESS_RUNTIME_CHECKPOINT_PATH, "utf8"))
+  : null;
 if (!Array.isArray(setupActions)) {
   throw new Error("SYSTEMLESS_RUNTIME_SETUP_ACTIONS_PATH must contain a JSON array");
 }
+if (checkpoint && !setupActions.length) {
+  throw new Error("SYSTEMLESS_RUNTIME_CHECKPOINT_PATH requires runtime setup actions");
+}
+if (checkpoint) validateCheckpoint(checkpoint);
 const setupTimeoutMs = envNumber("SYSTEMLESS_RUNTIME_SETUP_TIMEOUT_MS", 120_000);
 if (!Number.isFinite(setupTimeoutMs) || setupTimeoutMs <= 0) {
   throw new Error("SYSTEMLESS_RUNTIME_SETUP_TIMEOUT_MS must be positive and finite");
@@ -124,11 +131,34 @@ try {
   }
   await page.send("Page.navigate", { url: `${baseUrl}${route}` });
 
-  const probe = await evaluateJson(
-    page,
-    `(${runtimeProbe.toString()})(${JSON.stringify(sampleMs)}, ${process.env.SYSTEMLESS_RUNTIME_DEBUG !== "0"}, ${JSON.stringify(targetGuestTick ?? null)}, ${JSON.stringify(setupActions)}, ${JSON.stringify(setupTimeoutMs)})`,
-    sampleMs + setupTimeoutMs + 60_000,
-  );
+  let checkpointResult = null;
+  if (checkpoint) {
+    const setup = await evaluateJson(page,
+      `(${runtimeProbe.toString()})(0, false, null, ${JSON.stringify(setupActions)}, ${JSON.stringify(setupTimeoutMs)})`,
+      setupTimeoutMs + 60_000);
+    const screenshot = await page.send("Page.captureScreenshot", { format: "png" });
+    if (process.env.SYSTEMLESS_RUNTIME_CHECKPOINT_SCREENSHOT_PATH) {
+      await writeFile(process.env.SYSTEMLESS_RUNTIME_CHECKPOINT_SCREENSHOT_PATH, Buffer.from(screenshot.data, "base64"));
+    }
+    checkpointResult = await evaluateJson(page,
+      `(${inspectCheckpoint.toString()})(${JSON.stringify(screenshot.data)}, ${JSON.stringify(checkpoint)}, ${JSON.stringify(setup.progress_endpoint)})`,
+      30_000);
+    assertCheckpoint(checkpointResult, "start");
+  }
+  const probe = await evaluateJson(page,
+    `(${runtimeProbe.toString()})(${JSON.stringify(sampleMs)}, ${process.env.SYSTEMLESS_RUNTIME_DEBUG !== "0"}, ${JSON.stringify(targetGuestTick ?? null)}, ${JSON.stringify(checkpoint ? [] : setupActions)}, ${JSON.stringify(setupTimeoutMs)})`,
+    sampleMs + setupTimeoutMs + 60_000);
+  if (checkpoint?.checkEnd) {
+    const screenshot = await page.send("Page.captureScreenshot", { format: "png" });
+    if (process.env.SYSTEMLESS_RUNTIME_CHECKPOINT_END_SCREENSHOT_PATH) {
+      await writeFile(process.env.SYSTEMLESS_RUNTIME_CHECKPOINT_END_SCREENSHOT_PATH, Buffer.from(screenshot.data, "base64"));
+    }
+    const endResult = await evaluateJson(page,
+      `(${inspectCheckpoint.toString()})(${JSON.stringify(screenshot.data)}, ${JSON.stringify(checkpoint)}, ${JSON.stringify(probe.progress_endpoint)})`,
+      30_000);
+    assertCheckpoint(endResult, "end");
+    checkpointResult.end = endResult;
+  }
   if (process.env.SYSTEMLESS_RUNTIME_SCREENSHOT_PATH) {
     const screenshot = await page.send("Page.captureScreenshot", { format: "png" });
     await writeFile(process.env.SYSTEMLESS_RUNTIME_SCREENSHOT_PATH, Buffer.from(screenshot.data, "base64"));
@@ -150,6 +180,7 @@ try {
   report.progress_endpoint = probe.progress_endpoint;
   report.worker_startup = probe.worker_startup;
   report.audio_diagnostics = probe.audio_diagnostics;
+  if (checkpointResult) report.checkpoint = { ...checkpointResult, required_cpu_mhz: checkpoint.cpuMhz ?? null };
   if (process.env.SYSTEMLESS_RUNTIME_PRESENTATION_DIAGNOSTICS === "1") {
     const cutoff = probe.started_at + (report.first_runtime_ms ?? Infinity) + runtimeWarmupMs;
     const images = probe.worker_trace.filter(entry => entry.t >= cutoff && entry.presentationMetrics?.completeImage);
@@ -186,6 +217,10 @@ try {
   console.log(JSON.stringify(report, null, 2));
   if (targetGuestTick != null && !probe.progress_endpoint.reached) {
     throw new Error(`Guest did not reach tick ${targetGuestTick} before timeout`);
+  }
+  if (checkpoint?.cpuMhz != null && (report.guest_progress.min_cpu_mhz !== checkpoint.cpuMhz
+      || report.guest_progress.max_cpu_mhz !== checkpoint.cpuMhz)) {
+    throw new Error(`checkpoint guest clock changed: ${report.guest_progress.min_cpu_mhz}–${report.guest_progress.max_cpu_mhz} MHz, expected ${checkpoint.cpuMhz} MHz`);
   }
   assertRuntimePacing(report);
 } finally {
@@ -419,6 +454,79 @@ async function runtimeProbe(sampleMs, showDebug, targetGuestTick, setupActions =
 
     requestAnimationFrame(tick);
   });
+}
+
+function validateCheckpoint(checkpoint) {
+  const pair = (value) => Array.isArray(value) && value.length === 2
+    && value.every((part) => Number.isSafeInteger(part) && part >= 0) && value[0] <= value[1];
+  const dimensions = (value) => Array.isArray(value) && value.length === 2
+    && value.every((part) => Number.isSafeInteger(part) && part > 0);
+  const triple = (value) => Array.isArray(value) && value.length === 3
+    && value.every((part) => Number.isSafeInteger(part) && part >= 0 && part <= 255);
+  if (!checkpoint || typeof checkpoint !== "object" || !Array.isArray(checkpoint.pixels)
+      || !checkpoint.pixels.length || (checkpoint.instructionRange && !pair(checkpoint.instructionRange))
+      || (checkpoint.size && !dimensions(checkpoint.size))
+      || (checkpoint.cpuMhz !== undefined && (!Number.isSafeInteger(checkpoint.cpuMhz) || checkpoint.cpuMhz < 1))
+      || (checkpoint.checkEnd !== undefined && typeof checkpoint.checkEnd !== "boolean")) {
+    throw new Error("checkpoint must have pixel assertions and an optional instructionRange");
+  }
+  for (const assertion of checkpoint.pixels) {
+    if (!Array.isArray(assertion.rect) || assertion.rect.length !== 4
+        || !assertion.rect.every(Number.isSafeInteger) || assertion.rect.some((part) => part < 0)
+        || assertion.rect[2] === 0 || assertion.rect[3] === 0
+        || !triple(assertion.rgbMin) || !triple(assertion.rgbMax)
+        || !assertion.rgbMin.every((part, index) => part <= assertion.rgbMax[index])
+        || !pair([assertion.minCount, assertion.maxCount])
+        || assertion.maxCount > assertion.rect[2] * assertion.rect[3]) {
+      throw new Error(`invalid checkpoint pixel assertion: ${JSON.stringify(assertion)}`);
+    }
+  }
+}
+
+async function inspectCheckpoint(encoded, checkpoint, progress) {
+  const bytes = Uint8Array.from(atob(encoded), (value) => value.charCodeAt(0));
+  const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+  try {
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const context = canvas.getContext("2d");
+    context.drawImage(bitmap, 0, 0);
+    const pixels = context.getImageData(0, 0, bitmap.width, bitmap.height).data;
+    const checks = checkpoint.pixels.map(({ rect, rgbMin, rgbMax, minCount, maxCount }) => {
+      const [left, top, width, height] = rect;
+      if (left + width > bitmap.width || top + height > bitmap.height) {
+        throw new Error(`checkpoint rectangle ${JSON.stringify(rect)} exceeds ${bitmap.width}x${bitmap.height}`);
+      }
+      let count = 0;
+      for (let y = top; y < top + height; y += 1) {
+        for (let x = left; x < left + width; x += 1) {
+          const offset = (y * bitmap.width + x) * 4;
+          if (rgbMin.every((minimum, channel) => pixels[offset + channel] >= minimum
+              && pixels[offset + channel] <= rgbMax[channel])) count += 1;
+        }
+      }
+      return { rect, count, minCount, maxCount, passed: count >= minCount && count <= maxCount };
+    });
+    return { width: bitmap.width, height: bitmap.height,
+      tick: progress.observed_tick, instructions: progress.observed_instructions, checks };
+  } finally {
+    bitmap.close();
+  }
+}
+
+function assertCheckpoint(result, phase) {
+  if (checkpoint.size && (result.width !== checkpoint.size[0] || result.height !== checkpoint.size[1])) {
+    throw new Error(`checkpoint ${phase} screenshot size differs: ${JSON.stringify(result)}`);
+  }
+  const range = checkpoint.instructionRange;
+  if (phase === "start" && range
+      && (!Number.isSafeInteger(result.instructions)
+        || result.instructions < range[0] || result.instructions > range[1])) {
+    throw new Error(`checkpoint ${phase} instructions outside ${JSON.stringify(range)}: ${JSON.stringify(result)}`);
+  }
+  const failed = result.checks.filter((check) => !check.passed);
+  if (failed.length) {
+    throw new Error(`checkpoint ${phase} pixel assertions failed: ${JSON.stringify(result)}`);
+  }
 }
 
 function runtimeTracePrelude() {
