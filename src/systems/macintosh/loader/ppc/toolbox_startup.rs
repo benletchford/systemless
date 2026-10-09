@@ -68,6 +68,9 @@ pub struct PpcToolboxStartupState {
     pub(super) application_event_loop_quit_requested: bool,
     /// Last tick through which a Carbon or classic event-loop wait is active.
     pub(super) event_loop_poll_until_tick: Option<u32>,
+    /// WaitNextEvent calls retained at their native (PC, SP, LR) frame.
+    /// Separate frames let a task-level callback run a nested event loop.
+    pub(super) event_waits: HashMap<(u32, u32, u32), (u32, u32)>,
     pub(crate) last_button_result: Option<bool>,
     pub(crate) last_still_down_result: Option<bool>,
     pub(crate) last_wait_mouse_up_result: Option<bool>,
@@ -176,6 +179,7 @@ impl Default for PpcToolboxStartupState {
             application_event_loop_context: None,
             application_event_loop_quit_requested: false,
             event_loop_poll_until_tick: None,
+            event_waits: HashMap::new(),
             last_button_result: None,
             last_still_down_result: None,
             last_wait_mouse_up_result: None,
