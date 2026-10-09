@@ -248,28 +248,64 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             Some(PpcImportAction::Return(menu_handle))
         }
         PpcImportDispatcherTarget::GetItemCmd => {
-            ppc_get_item_cmd(cpu, memory);
+            if crate::menu_manager::evaluate_get_item_cmd_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4] as u16 as i16,
+                cpu.gpr[5],
+            )
+            .is_some()
+            {
+                ppc_get_item_cmd(cpu, memory);
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SetItemCmd => {
+            let Some(params) = crate::menu_manager::evaluate_set_item_cmd_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4] as u16 as i16,
+                cpu.gpr[5] as u8,
+            ) else {
+                return Some(PpcImportAction::ReturnPreserve);
+            };
             if crate::trap::dispatch::trace_input_enabled() {
                 eprintln!(
                     "[INPUT] PPC SetItemCmd menu=${:08X} item={} command=${:02X}",
-                    cpu.gpr[3], cpu.gpr[4] as u16 as i16, cpu.gpr[5] as u8
+                    params.menu_handle(),
+                    params.item(),
+                    params.cmd_char()
                 );
             }
             ppc_set_item_cmd(cpu, memory, handles);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetItemMark => {
-            ppc_get_item_mark(cpu, memory);
+            if crate::menu_manager::evaluate_get_item_mark_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4] as u16 as i16,
+                cpu.gpr[5],
+            )
+            .is_some()
+            {
+                ppc_get_item_mark(cpu, memory);
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::CountMItems => Some(PpcImportAction::Return(u32::from(
-            ppc_count_menu_items(memory, cpu.gpr[3]),
-        ))),
+        PpcImportDispatcherTarget::CountMItems => {
+            let params = crate::menu_manager::evaluate_count_m_items_parameters(cpu.gpr[3]);
+            Some(PpcImportAction::Return(u32::from(
+                ppc_count_menu_items(memory, params.menu_handle()),
+            )))
+        }
         PpcImportDispatcherTarget::GetMenuItemText => {
-            ppc_get_menu_item_text(cpu, memory);
+            if crate::menu_manager::evaluate_get_menu_item_text_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4] as u16 as i16,
+                cpu.gpr[5],
+            )
+            .is_some()
+            {
+                ppc_get_menu_item_text(cpu, memory);
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SetMenuItemCommandID
@@ -281,9 +317,15 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             let Some(items) = ppc_menu_items_from_memory(memory, menu).filter(|_| menu != 0) else {
                 return Some(PpcImportAction::Return(ppc_i16_result(-5623))); // menuInvalidErr
             };
-            if item == 0 || usize::from(item) > items.items.len() {
-                return Some(PpcImportAction::Return(ppc_i16_result(-5622))); // menuItemNotFoundErr
-            }
+            let params = match crate::menu_manager::evaluate_menu_item_property_parameters(
+                menu,
+                item,
+                cpu.gpr[5],
+                items.items.len(),
+            ) {
+                Ok(params) => params,
+                Err(err) => return Some(PpcImportAction::Return(ppc_i16_result(err))),
+            };
             // The reference profile reports CarbonLib 1.3. Item zero for a
             // menu-wide reference constant is only supported from 1.6 onward.
             let values = if matches!(
@@ -300,17 +342,24 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                 PpcImportDispatcherTarget::SetMenuItemCommandID
                     | PpcImportDispatcherTarget::SetMenuItemRefCon
             ) {
-                values.set(menu, item, cpu.gpr[5]);
+                values.set(params.menu_handle(), params.item(), params.value_or_ptr());
             } else {
-                let output = cpu.gpr[5];
+                let output = params.value_or_ptr();
                 if output == 0 || !ppc_memory_can_write_bytes(memory, output, 4) {
                     return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
                 }
-                let _ = memory.write_u32_be(output, values.get(menu, item));
+                let _ = memory.write_u32_be(output, values.get(params.menu_handle(), params.item()));
             }
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
         PpcImportDispatcherTarget::SetMenuItemText => {
+            let Some(_params) = crate::menu_manager::evaluate_set_menu_item_text_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4] as u16 as i16,
+                cpu.gpr[5],
+            ) else {
+                return Some(PpcImportAction::ReturnPreserve);
+            };
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
             };
@@ -522,11 +571,27 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SetItemMark => {
-            ppc_set_item_mark(cpu, memory, handles);
+            if crate::menu_manager::evaluate_set_item_mark_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4] as u16 as i16,
+                cpu.gpr[5] as u8,
+            )
+            .is_some()
+            {
+                ppc_set_item_mark(cpu, memory, handles);
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::CheckItem => {
-            ppc_check_menu_item(cpu, memory, handles);
+            if crate::menu_manager::evaluate_check_item_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4] as u16 as i16,
+                cpu.gpr[5] & 0xff != 0,
+            )
+            .is_some()
+            {
+                ppc_check_menu_item(cpu, memory, handles);
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetMenuBar => {

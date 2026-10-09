@@ -9214,6 +9214,26 @@ fn menu_item_attributes_commands_dispatch_with_canonical_evaluation() {
             assert_eq!(probe.unsupported_import_index, None);
             let items = ppc_menu_items_from_memory(&mut loaded.memory, menu).unwrap().items;
             assert_eq!(items[0].text, b"Trim");
+
+            // Null str ptr or invalid item index is safe no-op
+            let pef = synthetic_pef_with_library_import(lib, b"GetMenuItemText");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 205, b"\x04Edit", b"Cut");
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+
+            let pef = synthetic_pef_with_library_import(lib, b"SetMenuItemText");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = 0;
+            loaded.cpu.gpr[5] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
         }
 
         // 3. EnableMenuItem, DisableMenuItem, EnableItem, DisableItem
@@ -9286,6 +9306,16 @@ fn menu_item_attributes_commands_dispatch_with_canonical_evaluation() {
                     .and_then(|addr| loaded.memory.read_u8(addr)),
                 Some(0)
             );
+
+            // Null menu or invalid item index is safe no-op
+            let pef = synthetic_pef_with_library_import(lib, b"CheckItem");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = 0;
+            loaded.cpu.gpr[5] = 1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
         }
 
         // 5. SetItemMark, SetMenuItemMark, GetItemMark, GetMenuItemMark
@@ -9353,6 +9383,25 @@ fn menu_item_attributes_commands_dispatch_with_canonical_evaluation() {
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(loaded.memory.read_u16_be(out_ptr), Some(b'*' as u16));
+
+            // Null mark ptr and null menu handle are safe no-ops
+            let pef = synthetic_pef_with_library_import(lib, b"GetItemMark");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = 0;
+            loaded.cpu.gpr[5] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+
+            let pef = synthetic_pef_with_library_import(lib, b"SetItemMark");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = 0;
+            loaded.cpu.gpr[5] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
         }
 
         // 6. SetItemCmd, SetMenuItemCmd, GetItemCmd, GetMenuItemCmd
@@ -9420,6 +9469,25 @@ fn menu_item_attributes_commands_dispatch_with_canonical_evaluation() {
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(loaded.memory.read_u16_be(out_ptr), Some(b'O' as u16));
+
+            // Null cmd ptr and null menu handle are safe no-ops
+            let pef = synthetic_pef_with_library_import(lib, b"GetItemCmd");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = 0;
+            loaded.cpu.gpr[5] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+
+            let pef = synthetic_pef_with_library_import(lib, b"SetItemCmd");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = 0;
+            loaded.cpu.gpr[5] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
         }
 
         // 7. GetItemIcon, SetItemIcon, GetMenuItemIcon, SetMenuItemIcon
