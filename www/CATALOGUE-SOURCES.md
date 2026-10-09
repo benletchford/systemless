@@ -19,13 +19,13 @@ Inspected on 9 October 2026 using the public demo source linked by earlier Syste
 | [deus-ex](https://classicmacdemos.com/deus-ex) | [README.html](https://static.classicmacdemos.com/demos/deus-ex/README.html) | Readme inspected; no affirmative redistribution grant found. Inspect all bundled terms before hosting. |
 | [heroes-of-might-and-magic-iii](https://classicmacdemos.com/heroes-of-might-and-magic-iii) | [README.txt](https://static.classicmacdemos.com/demos/heroes-of-might-and-magic-iii/README.txt) | Readme inspected; no affirmative redistribution grant found. Inspect all bundled terms before hosting. |
 | [infocom-sampler](https://classicmacdemos.com/infocom-sampler) | No linked original document | Downloaded archive contains MaxZip-wrapped sampler data; interpreter permissions do not establish game-data redistribution rights. |
-| [king-of-dragon-pass](https://classicmacdemos.com/king-of-dragon-pass) | [README.txt](https://static.classicmacdemos.com/demos/king-of-dragon-pass/README.txt), [README.pdf](https://static.classicmacdemos.com/demos/king-of-dragon-pass/README.pdf) | Documentation located; PDF and bundled terms still require inspection. |
+| [king-of-dragon-pass](https://classicmacdemos.com/king-of-dragon-pass) | [README.txt](https://static.classicmacdemos.com/demos/king-of-dragon-pass/README.txt), [README.pdf](https://static.classicmacdemos.com/demos/king-of-dragon-pass/README.pdf) | Five-page tutorial inspected, including its copyright notice; no affirmative archive redistribution grant found. Exact bundled terms remain to be established. |
 | [marios-game-gallery](https://classicmacdemos.com/marios-game-gallery) | [README.txt](https://static.classicmacdemos.com/demos/marios-game-gallery/README.txt) | Readme inspected; no affirmative redistribution grant found. Inspect all bundled terms before hosting. |
 | [myst](https://classicmacdemos.com/myst) | No linked original document | Archive source located; bundled terms still require inspection. |
 | [myth-i-the-fallen-lords](https://classicmacdemos.com/myth-i-the-fallen-lords) | [README.txt](https://static.classicmacdemos.com/demos/myth-i-the-fallen-lords/README.txt) | Readme inspected; no affirmative redistribution grant found. Inspect all bundled terms before hosting. |
 | [myth-ii-soulblighter](https://classicmacdemos.com/myth-ii-soulblighter) | [README.txt](https://static.classicmacdemos.com/demos/myth-ii-soulblighter/README.txt) | Readme inspected; no affirmative redistribution grant found. Inspect all bundled terms before hosting. |
 | [oni](https://classicmacdemos.com/oni) | [README.txt](https://static.classicmacdemos.com/demos/oni/README.txt) | Readme inspected; no affirmative redistribution grant found. Inspect all bundled terms before hosting. |
-| [otto-matic](https://classicmacdemos.com/otto-matic) | [README.pdf](https://static.classicmacdemos.com/demos/otto-matic/README.pdf) | Documentation located; PDF and bundled terms still require inspection. |
+| [otto-matic](https://classicmacdemos.com/otto-matic) | [README.pdf](https://static.classicmacdemos.com/demos/otto-matic/README.pdf) | Twelve-page manual inspected, including the final-page software licence and warranty; no affirmative archive redistribution grant found. Exact bundled terms remain to be established. |
 | [pararena-20](https://classicmacdemos.com/pararena-20) | [README.txt](https://static.classicmacdemos.com/demos/pararena-20/README.txt) | Downloaded executable is Pararena Demo 2.01, not a proven match for the requested 2.0. ReadMe is a contact note, not a redistribution grant. |
 | [populous-ii-trials-of-the-olympian-gods](https://classicmacdemos.com/populous-ii-trials-of-the-olympian-gods) | [README.txt](https://static.classicmacdemos.com/demos/populous-ii-trials-of-the-olympian-gods/README.txt) | Readme inspected; no affirmative redistribution grant found. Inspect all bundled terms before hosting. |
 | [sid-meiers-alpha-centauri](https://classicmacdemos.com/sid-meiers-alpha-centauri) | [README.txt](https://static.classicmacdemos.com/demos/sid-meiers-alpha-centauri/README.txt) | Readme inspected; no affirmative redistribution grant found. Inspect all bundled terms before hosting. |
@@ -49,6 +49,32 @@ These complete downloads were kept intact for inspection. None is cleared for ho
 
 ## Qualified installer evidence
 
-[Gridz 1.2 qualification](https://github.com/benletchford/systemless/issues/4227) pins the intact installer and its byte-identical bundled distribution terms. The former hosted object is unavailable, so asset promotion and hosted browser validation remain required.
+[Gridz 1.2 qualification](https://github.com/benletchford/systemless/issues/4227) pins the intact installer and its byte-identical bundled distribution terms. [The staged catalogue PR](https://github.com/benletchford/systemless/pull/4232) has restored the intact archive through trusted asset promotion; a complete hosted download matches its recorded hash and size. Browser validation remains required and launch is disabled.
 
 [Space Cab research](https://github.com/benletchford/systemless/issues/2642) supplies the original 1.2 installer source and installer-only distribution terms. The unchanged 1,820,028-byte download has SHA-256 `4c8cf772b6a08253011ae9f16312c9fe20c9a13816c96945bfdf50f6dcbe6af5`. Current installation completes 23 files, but launching the installed game returns to the launcher; gameplay and browser validation remain blocked.
+
+## Additional original archive receipts
+
+These intact downloads were inspected for research. Their availability and
+architecture evidence do not clear redistribution or gameplay. For the first
+seven, inspected READMEs and resource text contain no affirmative permission to
+host the complete archive; additional terms or a written grant remain required.
+A PowerPC PEF slice does not establish that a usable 68K slice is absent.
+
+| Archive source | Bytes | SHA-256 | Scoped evidence and blocker |
+| --- | ---: | --- | --- |
+| [unreal-tournament](https://classicmacdemos.com/download/unreal-tournament/) | 67408595 | `59c7f18da209f7729eff703adaf9c0f9b4fb17ca7a803c2918ba28e8a7a16bc9` | Main application has a PowerPC PEF slice. Both bundled HTML READMEs inspected; no whole-archive grant found. |
+| [myth-i-the-fallen-lords](https://classicmacdemos.com/download/myth-i-the-fallen-lords/) | 32598957 | `00883533c8990d936dd5381ce1566ec6f783e9b98353202dbf3e0ae119e03c98` | Original installer expands through the public loader and selects a PowerPC application. Bundled demo and multiplayer READMEs inspected; password distribution is not archive permission. |
+| [myth-ii-soulblighter](https://classicmacdemos.com/download/myth-ii-soulblighter/) | 38894556 | `28d2141e29ce013dcc0a629d998884d61d0a709105eaa44f4352bdd5227cc78c` | PowerPC PEF slice present; bundled README inspected. Continue [tutorial loading](https://github.com/benletchford/systemless/issues/4132) after exact-archive rights are established. |
+| [king-of-dragon-pass](https://classicmacdemos.com/download/king-of-dragon-pass/) | 36028757 | `3aba719d3e10237f6c1af959ff0dff92be08e2d4d3fb79000a62e44ea3d09436` | PowerPC PEF slice present; README inspected. Linked tutorial PDF inspected; no affirmative archive redistribution grant found in the reviewed documentation. Remaining bundled terms need inspection; continue [CFM startup investigation](https://github.com/benletchford/systemless/issues/4026). |
+| [age-of-empires](https://classicmacdemos.com/download/age-of-empires/) | 17462318 | `798ec5efcdb1514781f96a7b206c543107d44205295494e3a06f8bce3cf43289` | PowerPC PEF slice present. Resource strings include copyright/reproduction warnings; no affirmative archive grant found. |
+| [alley-19-bowling](https://classicmacdemos.com/download/alley-19-bowling/) | 5548462 | `4cf27b07123aff8862e56e926f23a343b1ed6f75aaf8ceb98b000a9b4acd1357` | PowerPC PEF slice present in Alley 19 Demo. Bundled Read Me First and resource text inspected; no affirmative archive grant found. |
+| [allied-general](https://classicmacdemos.com/download/allied-general/) | 25469743 | `c743b416fbe084e3fc9a0996c25a08303dadee5ff2b2e4385283fa40b7120fda` | Exact hash matches [the original 68K demo issue](https://github.com/benletchford/systemless/issues/4171); a PowerPC PEF slice is also present. Archive availability is resolved; rights and battle status text remain separate blockers. |
+| [Uninvited Macintosh demo](https://downloads.scummvm.org/frs/demos/macventure/uninvited-mac-demo-en.zip) | 179270 | `07b5ba2081f009ef8f1cfa94dd1bc2513143751595c84430a35f463557ebea2e` | 68K CODE application plus nine accompanying files. Native startup halts before its first screenshot; [qualification evidence](https://github.com/benletchford/systemless/issues/3355) records pre/post-mask-fix failures. Exact-archive rights remain unestablished. |
+| [Nanosaur classic Mac OS 9 image](https://www.pangeasoft.net/nano/Nanosaur.dmg) | 14376561 | `0cda02a8caceae0c2d9165f9fdb019d01be7312cd87afbf7f57cb07d69f80b5f` | Official 1.3.4 image displays an embedded Pangea licence restricting distribution and network transmission. [Specific permission required](https://github.com/benletchford/systemless/issues/4233); modern-port licensing does not clear this image. Architecture and gameplay remain unverified. |
+
+The Myth demo installer contains a 17,884-byte `Myth Demo Read Me` (SHA-256
+`c5906688bb3b84f01fad1ad236d073c7c9d8dd2a9360087bc4df6d45c90af2d3`)
+and a 19,280-byte `Multiplayer Read Me` (SHA-256
+`35b13c24a435a9cba1fa3fda5ae228a861903842712d34ba6c642deb038e8659`).
+Neither inspected document gives archive redistribution permission.

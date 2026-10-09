@@ -38,12 +38,12 @@ from permission to distribute and compatibility.
 | King’s Bounty | Unqualified | Exact archive and bundled redistribution terms needed. |
 | Afterlife | Unqualified | Exact archive and bundled redistribution terms needed. |
 | A-Train | Unqualified | Exact archive and bundled redistribution terms needed. |
-| Allied General | Unqualified | The [68K demo issue](https://github.com/benletchford/systemless/issues/4171) pins an archive hash and records missing battle status text; it does not attach the archive or establish redistribution rights. |
+| Allied General | Unqualified | Exact public download now matches [the 68K demo issue](https://github.com/benletchford/systemless/issues/4171); a PPC PEF slice is also present. Rights remain unestablished and battle status text is missing. See [original archive receipts](CATALOGUE-SOURCES.md#additional-original-archive-receipts). |
 | Mario’s Game Gallery | Unqualified | Original demo sourced and hashed; bundled instructions contain no affirmative distribution grant. See [archive receipts](CATALOGUE-SOURCES.md#downloaded-archive-receipts). |
-| Uninvited | Unqualified | Continue [original demo qualification](https://github.com/benletchford/systemless/issues/3355). |
+| Uninvited | Unqualified | Original ScummVM demo sourced and hashed; its 68K CODE app halts during startup. Continue [qualification](https://github.com/benletchford/systemless/issues/3355) and the [Lo3Bytes mask fix](https://github.com/benletchford/systemless/issues/4235); exact-archive rights remain unestablished. |
 | Dark Castle (original) | Unqualified | Original demo sourced and hashed; no standalone licence or TEXT grant found in inspected contents. See [archive receipts](CATALOGUE-SOURCES.md#downloaded-archive-receipts). [Color Dark Castle](catalogue/color-dark-castle.md) is a different entry. |
 | Stunt Copter | [Catalogued](catalogue/stunt-copter.md), 68K | Check any broader gameplay claim against the recorded 1.2 archive. |
-| Alley 19 Bowling | Unqualified | Exact archive and bundled redistribution terms needed. |
+| Alley 19 Bowling | Unqualified | Exact original demo sourced and hashed, with a PPC PEF slice present. Inspected README/resource text supplies no affirmative distribution grant. See [archive receipts](CATALOGUE-SOURCES.md#additional-original-archive-receipts); verify any claimed 68K slice separately. |
 | Space Cab | Unqualified | Unchanged 1.2 installer sourced and hashed; its terms allow installer distribution only. Installation completes 23 files, but the installed application returns to the launcher. Continue [original installer research](https://github.com/benletchford/systemless/issues/2642); see [source inspection](CATALOGUE-SOURCES.md#qualified-installer-evidence). |
 | Meteor Storm | [Catalogued](catalogue/meteor-storm.md), **PPC** | Existing archive is PowerPC, despite this intake grouping; verify any proposed 68K version separately. |
 | Pararena 2.0 | Unqualified | Public source contains **Pararena Demo 2.01**; the bundled contact note is not a distribution grant. Resolve requested-version identity and rights; see [archive receipts](CATALOGUE-SOURCES.md#downloaded-archive-receipts). |
@@ -53,16 +53,16 @@ from permission to distribute and compatibility.
 
 | Candidate | Repository state | Next evidence or work |
 | --- | --- | --- |
-| Gridz | Unqualified | [Gridz 1.2 installer qualification](https://github.com/benletchford/systemless/issues/4227) establishes intact-installer distribution permission and bounded PPC board interaction. [Absolute resource lookup fix](https://github.com/benletchford/systemless/pull/4229) advances 68K to a corrupted title animation. Hosted promotion, sustained gameplay, and browser validation remain required; #1979 concerns a different 1.0 archive. |
+| Gridz | Unqualified | [Gridz 1.2 installer qualification](https://github.com/benletchford/systemless/issues/4227) establishes intact-installer distribution permission and bounded PPC board interaction. [Absolute resource lookup fix](https://github.com/benletchford/systemless/pull/4229) advances 68K to a corrupted title animation. [Hosted promotion](https://github.com/benletchford/systemless/pull/4232) is complete with launch disabled; sustained gameplay and browser validation remain required; #1979 concerns a different 1.0 archive. |
 | Tomb Raider Gold demo | Retired | The catalogue entry was removed in v0.82.1; do not restore without exact-archive rights and a new qualification review. |
 | Ferazel’s Wand demo | [Catalogued](catalogue/ferazels-wand-demo.md), PPC | Check any broader gameplay claim against the recorded 1.0.3 archive. |
-| King of Dragon Pass demo | Unqualified | Re-test the exact archive after the prior [PowerPC CFM startup investigation](https://github.com/benletchford/systemless/issues/4026); establish bundled redistribution rights. |
-| Myth: The Fallen Lords demo | Unqualified | Exact archive and bundled redistribution terms needed. |
-| Myth II: Soulblighter demo | Unqualified | Investigate [tutorial loading](https://github.com/benletchford/systemless/issues/4132) and [application memory](https://github.com/benletchford/systemless/issues/3215); exact archive terms still needed. |
+| King of Dragon Pass demo | Unqualified | Exact demo sourced and hashed, with a PPC PEF application. Linked tutorial PDF inspected without an archive redistribution grant. Remaining bundled terms need inspection; continue [PowerPC CFM startup investigation](https://github.com/benletchford/systemless/issues/4026). See [archive receipts](CATALOGUE-SOURCES.md#additional-original-archive-receipts). |
+| Myth: The Fallen Lords demo | Unqualified | Original installer sourced and expanded through the public loader; PPC application and bundled READMEs identified. No archive distribution grant found in those documents. See [archive receipts](CATALOGUE-SOURCES.md#additional-original-archive-receipts). |
+| Myth II: Soulblighter demo | Unqualified | Exact original demo sourced and hashed, with a PPC PEF slice present. Rights remain unestablished; investigate [tutorial loading](https://github.com/benletchford/systemless/issues/4132) and [application memory](https://github.com/benletchford/systemless/issues/3215). See [archive receipts](CATALOGUE-SOURCES.md#additional-original-archive-receipts). |
 | Quake II demo | Unqualified | Exact archive and bundled redistribution terms needed. |
-| Unreal Tournament demo | Unqualified | Exact archive and bundled redistribution terms needed. |
+| Unreal Tournament demo | Unqualified | Original 348m4 archive sourced and hashed, with a PPC PEF application. Bundled HTML READMEs supply no affirmative archive distribution grant. See [archive receipts](CATALOGUE-SOURCES.md#additional-original-archive-receipts). |
 | Bugdom demo | Unqualified | Investigate [menu artwork](https://github.com/benletchford/systemless/issues/2682) and [missing labels](https://github.com/benletchford/systemless/issues/2777); exact archive terms still needed. |
-| Age of Empires demo | Unqualified | Exact archive and bundled redistribution terms needed. |
+| Age of Empires demo | Unqualified | Original trial archive sourced and hashed, with a PPC PEF application. Resource copyright/reproduction warnings do not grant redistribution. See [archive receipts](CATALOGUE-SOURCES.md#additional-original-archive-receipts). |
 | Age of Empires II demo | Unqualified | Exact archive and bundled redistribution terms needed. |
 | Total Annihilation demo | Unqualified | Investigate [DrawSprocket resolution](https://github.com/benletchford/systemless/issues/3222); exact archive terms still needed. |
 | Sid Meier’s Alpha Centauri demo | Unqualified | Exact archive and bundled redistribution terms needed. |
@@ -74,7 +74,7 @@ from permission to distribute and compatibility.
 | Deus Ex demo | Unqualified | Exact archive and bundled redistribution terms needed. |
 | The Sims demo | Unqualified | Exact archive and bundled redistribution terms needed. |
 | Cro-Mag Rally demo | Unqualified | Exact archive and bundled redistribution terms needed. |
-| Otto Matic demo | Unqualified | Public documentation located; PDF and exact bundled terms need inspection. Continue [CarbonLib qualification](https://github.com/benletchford/systemless/issues/3401) and [OpenGL startup work](https://github.com/benletchford/systemless/issues/3405). |
+| Otto Matic demo | Unqualified | Public manual and its software licence inspected without an archive redistribution grant; exact bundled terms still need inspection. Continue [CarbonLib qualification](https://github.com/benletchford/systemless/issues/3401) and [OpenGL startup work](https://github.com/benletchford/systemless/issues/3405). |
 | Worms Blast demo | Unqualified | Exact archive and bundled redistribution terms needed. |
 | Aliens versus Predator demo | Unqualified | Exact archive and bundled redistribution terms needed. |
-| Nanosaur | Unqualified | Exact archive and bundled redistribution terms needed. |
+| Nanosaur | Unqualified | Official original 1.3.4 disk image sourced and hashed; its embedded licence restricts distribution and network transmission. Obtain [exact-image permission](https://github.com/benletchford/systemless/issues/4233), then validate architecture, gameplay, hosting, and browser behavior. |
