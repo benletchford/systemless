@@ -2750,3 +2750,18 @@ handle, text, destination and view rectangles (passes, 0.08 seconds). The
 three-mode real-fixture selection/pixel/editing regression passes (21.09 seconds)
 with the geometry and caret changes; it exercises one field, so real-fixture
 multi-field coverage and composed field-switch captures remain unfinished.
+
+The new real-fixture modal two-field regression exposed an additional classic
+ModalDialog gap: returning to a field restored its stored insertion point
+instead of resolving the new click. The fix uses TERec guest metrics
+to place and persist the clicked insertion point. The regression switches
+nickname/name/nickname, asserts insertion at the displayed left edge, checks
+renderable active-field layout and types in each field without changing the
+other field across all three modes. It also Shift-clicks at glyph offset 3
+from insertion offset 1 and asserts selection `(1, 3)` in each mode (passes,
+14.00 seconds). Held modal dragging and composed multi-field captures still
+need verification.
+
+All three classic modal theme-parity regressions pass (0.10 seconds), including
+the corrected clicked insertion `(3, 3)` expectation; default/cancel and update
+event behavior remain covered.

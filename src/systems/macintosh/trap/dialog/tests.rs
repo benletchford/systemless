@@ -7926,10 +7926,10 @@
         assert!(classic.saved_background_retained);
         assert!(classic.queued_mouse_up_consumed);
         assert_eq!(classic.edit_field, 1);
-        assert_eq!(classic.item_selection, (2, 4));
+        assert_eq!(classic.item_selection, (3, 3));
         assert_eq!(classic.te_text, b"Second".to_vec());
         assert_eq!(classic.te_length, 6);
-        assert_eq!(classic.te_selection, (2, 4));
+        assert_eq!(classic.te_selection, (3, 3));
         assert_eq!(classic.handle_bytes, b"Second".to_vec());
         assert_eq!(
             themed, classic,

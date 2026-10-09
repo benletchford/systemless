@@ -8651,6 +8651,67 @@ mod desktop {
         }
 
         #[test]
+        fn modal_dialog_edit_fields_switch_and_keep_independent_text_across_modes() {
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(132, 6));
+                settle(&mut session);
+                let dialog = session.runner_mut().dialog_snapshot().into_iter()
+                    .find(|dialog| dialog.visible && dialog.items.len() == 10).unwrap();
+                let id = dialog.guest_id;
+                let mut expected = ["Cade Connelly".to_string(), "Maverick".to_string()];
+                for (index, slot) in [(8, 1), (6, 0), (8, 1)] {
+                    let current = session.runner_mut().dialog_snapshot().into_iter()
+                        .find(|dialog| dialog.guest_id == id).unwrap();
+                    let bounds = current.items[index].bounds;
+                    for input in [
+                        MacintoshInput::MouseDown { vertical: bounds.0 + 5, horizontal: bounds.1 + 1 },
+                        MacintoshInput::MouseUp { vertical: bounds.0 + 5, horizontal: bounds.1 + 1 },
+                    ] {
+                        session.deliver_input(input);
+                        settle(&mut session);
+                    }
+                    let current = session.runner_mut().dialog_snapshot().into_iter()
+                        .find(|dialog| dialog.guest_id == id).unwrap();
+                    assert_eq!(current.items[index].selection, Some((0, 0)), "mode={powerpc}/{depth:?} field={index}");
+                    assert!(current.items[index].edit_text_layout.is_some(), "active field must retain renderable guest geometry");
+                    session.deliver_input(MacintoshInput::KeyDown { mac_key: 6, character: b'z' });
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key: 6, character: b'z' });
+                    settle(&mut session);
+                    expected[slot].insert(0, 'z');
+                    let current = session.runner_mut().dialog_snapshot().into_iter()
+                        .find(|dialog| dialog.guest_id == id).unwrap();
+                    assert_eq!(current.items[6].text, expected[0]);
+                    assert_eq!(current.items[8].text, expected[1]);
+                }
+                let current = session.runner_mut().dialog_snapshot().into_iter()
+                    .find(|dialog| dialog.guest_id == id).unwrap();
+                let field = &current.items[8];
+                let layout = field.edit_text_layout.as_ref().unwrap();
+                let line = super::super::text::ClassicLine::unicode(&field.text, layout.font.0, layout.font.1);
+                let x = field.bounds.1 + 1 + line.positions[3] as i16;
+                session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x38, character: 0 });
+                for input in [
+                    MacintoshInput::MouseDown { vertical: field.bounds.0 + 5, horizontal: x },
+                    MacintoshInput::MouseUp { vertical: field.bounds.0 + 5, horizontal: x },
+                ] {
+                    session.deliver_input(input);
+                    settle(&mut session);
+                }
+                session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x38, character: 0 });
+                settle(&mut session);
+                let current = session.runner_mut().dialog_snapshot().into_iter()
+                    .find(|dialog| dialog.guest_id == id).unwrap();
+                assert_eq!(current.items[8].selection, Some((1, 3)), "Shift click mode={powerpc}/{depth:?}");
+            }
+        }
+
+        #[test]
         fn dialog_field_highlight_geometry_matches_guest_pixels() {
             for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
                 let mut session = MacintoshSession::new(true, depth);
