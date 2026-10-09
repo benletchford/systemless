@@ -2996,10 +2996,10 @@ pub(super) fn ppc_paint_behind(
 
 pub(super) fn ppc_window_is_visible(memory: &mut PpcSectionMem, window: u32) -> bool {
     // Classic Window Manager calls write 0xFF for TRUE; native calls write 1.
-    window != 0
-        && memory
-            .read_u8(window.wrapping_add(PPC_CWINDOW_VISIBLE_OFFSET))
-            .is_some_and(|visible| visible != 0)
+    let raw = memory
+        .read_u8(window.wrapping_add(PPC_CWINDOW_VISIBLE_OFFSET))
+        .is_some_and(|visible| visible != 0);
+    crate::window_manager::evaluate_is_window_visible(window, raw)
 }
 
 pub(super) fn ppc_front_visible_window(
@@ -3792,14 +3792,19 @@ pub(super) fn ppc_dispatch_legacy_window(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcLegacyWindowOperation::HighlightWindow => {
-            let _ = ppc_set_window_hilited(memory, cpu.gpr[3], cpu.gpr[4] != 0);
-            ppc_redraw_visible_window_frame(
-                memory,
-                gworlds,
-                window_list,
+            if let Some(params) = crate::window_manager::evaluate_highlight_window_parameters(
                 cpu.gpr[3],
-                toolbox_startup.host_menu_bar_hidden,
-            );
+                cpu.gpr[4] != 0,
+            ) {
+                let _ = ppc_set_window_hilited(memory, params.window_ptr(), params.hilited());
+                ppc_redraw_visible_window_frame(
+                    memory,
+                    gworlds,
+                    window_list,
+                    params.window_ptr(),
+                    toolbox_startup.host_menu_bar_hidden,
+                );
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcLegacyWindowOperation::BringToFront => {
@@ -3827,26 +3832,31 @@ pub(super) fn ppc_dispatch_legacy_window(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcLegacyWindowOperation::SendBehind => {
-            let previous_front = ppc_front_visible_process_window(memory, window_list);
-            ppc_reorder_window(gworlds, window_list, cpu.gpr[3], cpu.gpr[4], false);
-            ppc_recalculate_window_vis_regions(
-                process_memory_manager,
-                memory,
-                window_list,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-            );
-            if ppc_front_visible_process_window(memory, window_list) != previous_front {
-                let _ = ppc_activate_front_window_palette(
+            if let Some(params) = crate::window_manager::evaluate_send_behind_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4],
+            ) {
+                let previous_front = ppc_front_visible_process_window(memory, window_list);
+                ppc_reorder_window(gworlds, window_list, params.window_ptr(), params.behind_window_ptr(), false);
+                ppc_recalculate_window_vis_regions(
+                    process_memory_manager,
                     memory,
-                    gworlds,
-                    *current_gdevice,
-                    screen_clut,
-                    color_manager_clut,
-                    toolbox_startup,
+                    window_list,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
                 );
+                if ppc_front_visible_process_window(memory, window_list) != previous_front {
+                    let _ = ppc_activate_front_window_palette(
+                        memory,
+                        gworlds,
+                        *current_gdevice,
+                        screen_clut,
+                        color_manager_clut,
+                        toolbox_startup,
+                    );
+                }
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -3877,15 +3887,22 @@ pub(super) fn ppc_dispatch_legacy_window(
             input,
         )),
         PpcLegacyWindowOperation::TrackBox => {
-            let part = cpu.gpr[5] as u16 as i16;
-            let inside = ppc_window_part_contains_point(
-                memory,
-                gworlds,
+            let inside = if let Some(params) = crate::window_manager::evaluate_track_box_parameters(
                 cpu.gpr[3],
-                part,
-                input.mouse_v,
-                input.mouse_h,
-            );
+                cpu.gpr[4],
+                cpu.gpr[5] as u16 as i16,
+            ) {
+                ppc_window_part_contains_point(
+                    memory,
+                    gworlds,
+                    params.window_ptr(),
+                    params.part_code(),
+                    input.mouse_v,
+                    input.mouse_h,
+                )
+            } else {
+                false
+            };
             Some(PpcImportAction::Return(u32::from(inside)))
         }
         PpcLegacyWindowOperation::TrackGoAway => Some(ppc_dispatch_track_go_away(
@@ -3897,67 +3914,73 @@ pub(super) fn ppc_dispatch_legacy_window(
             input,
         )),
         PpcLegacyWindowOperation::ZoomWindow => {
-            let window = cpu.gpr[3];
-            let was_visible = ppc_window_is_visible(memory, window);
-            let previous_front = ppc_front_visible_process_window(memory, window_list);
-            let previous_structure = ppc_window_global_structure_bounds(memory, gworlds, window);
-            if ppc_zoom_window(cpu, memory, gworlds).is_some() {
-                if cpu.gpr[5] != 0 {
-                    ppc_reorder_window(gworlds, window_list, window, 0, true);
-                }
-                ppc_recalculate_window_vis_regions(
-                    process_memory_manager,
-                    memory,
-                    window_list,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                );
-                let next_structure = ppc_window_global_structure_bounds(memory, gworlds, window);
-                ppc_repaint_window_geometry_transition(
-                    memory,
-                    gworlds,
-                    window_list,
-                    window,
-                    was_visible,
-                    previous_structure,
-                    next_structure,
-                    toolbox_startup.host_menu_bar_hidden,
-                    event_queue,
-                    when,
-                    input,
-                );
-                ppc_transition_front_window_chrome(
-                    memory,
-                    gworlds,
-                    window_list,
-                    previous_front,
-                    toolbox_startup.host_menu_bar_hidden,
-                );
-                let next_front = ppc_front_visible_process_window(memory, window_list);
-                if cpu.gpr[5] != 0 && next_front == Some(window) {
-                    *current_gworld = window;
-                    *current_gdevice =
-                        ppc_gworld_device(gworlds, *current_gworld).unwrap_or(*current_gdevice);
-                    ppc_register_gdevice(toolbox_startup, *current_gdevice);
-                    ppc_restore_port_colors(
+            if let Some(params) = crate::window_manager::evaluate_zoom_window_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4] as u16 as i16,
+                cpu.gpr[5] != 0,
+            ) {
+                let window = params.window_ptr();
+                let was_visible = ppc_window_is_visible(memory, window);
+                let previous_front = ppc_front_visible_process_window(memory, window_list);
+                let previous_structure = ppc_window_global_structure_bounds(memory, gworlds, window);
+                if ppc_zoom_window(cpu, memory, gworlds).is_some() {
+                    if params.front() {
+                        ppc_reorder_window(gworlds, window_list, window, 0, true);
+                    }
+                    ppc_recalculate_window_vis_regions(
+                        process_memory_manager,
                         memory,
-                        *current_gworld,
-                        quickdraw_fore_color,
-                        quickdraw_back_color,
+                        window_list,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
                     );
-                    let _ = ppc_set_window_hilited(memory, window, true);
-                }
-                if next_front != previous_front {
-                    let _ = ppc_activate_front_window_palette(
+                    let next_structure = ppc_window_global_structure_bounds(memory, gworlds, window);
+                    ppc_repaint_window_geometry_transition(
                         memory,
                         gworlds,
-                        *current_gdevice,
-                        screen_clut,
-                        color_manager_clut,
-                        toolbox_startup,
+                        window_list,
+                        window,
+                        was_visible,
+                        previous_structure,
+                        next_structure,
+                        toolbox_startup.host_menu_bar_hidden,
+                        event_queue,
+                        when,
+                        input,
                     );
+                    ppc_transition_front_window_chrome(
+                        memory,
+                        gworlds,
+                        window_list,
+                        previous_front,
+                        toolbox_startup.host_menu_bar_hidden,
+                    );
+                    let next_front = ppc_front_visible_process_window(memory, window_list);
+                    if params.front() && next_front == Some(window) {
+                        *current_gworld = window;
+                        *current_gdevice =
+                            ppc_gworld_device(gworlds, *current_gworld).unwrap_or(*current_gdevice);
+                        ppc_register_gdevice(toolbox_startup, *current_gdevice);
+                        ppc_restore_port_colors(
+                            memory,
+                            *current_gworld,
+                            quickdraw_fore_color,
+                            quickdraw_back_color,
+                        );
+                        let _ = ppc_set_window_hilited(memory, window, true);
+                    }
+                    if next_front != previous_front {
+                        let _ = ppc_activate_front_window_palette(
+                            memory,
+                            gworlds,
+                            *current_gdevice,
+                            screen_clut,
+                            color_manager_clut,
+                            toolbox_startup,
+                        );
+                    }
                 }
             }
             Some(PpcImportAction::ReturnPreserve)
@@ -4262,7 +4285,10 @@ pub(super) fn ppc_dispatch_legacy_window(
         }
         PpcLegacyWindowOperation::IsWindowVisible => {
             let window = cpu.gpr[3];
-            let visible = ppc_window_is_visible(memory, window);
+            let raw_visible = memory
+                .read_u8(window.wrapping_add(PPC_CWINDOW_VISIBLE_OFFSET))
+                .is_some_and(|visible| visible != 0);
+            let visible = crate::window_manager::evaluate_is_window_visible(window, raw_visible);
             Some(PpcImportAction::Return(u32::from(visible)))
         }
         PpcLegacyWindowOperation::IsWindowModified => {
@@ -5908,6 +5934,13 @@ pub(super) fn ppc_dispatch_drag_window(
     // DragWindow owns a synchronous Window Manager loop and moves only a
     // gray structure-region outline until mouse-up. Macintosh Toolbox
     // Essentials (1992), pp. 4-94--4-95.
+    let Some(params) = crate::window_manager::evaluate_drag_window_parameters(
+        cpu.gpr[3],
+        cpu.gpr[4],
+        cpu.gpr[5],
+    ) else {
+        return PpcImportAction::ReturnPreserve;
+    };
     let call = ppc_drag_window_call(cpu);
     if let Some(state) = startup.drag_window_tracking.as_ref() {
         if state.call != call {
@@ -5946,10 +5979,7 @@ pub(super) fn ppc_dispatch_drag_window(
             event_queue.remove(index);
         }
         let release = (input.mouse_v, input.mouse_h);
-        let start = (
-            (call.start_point >> 16) as u16 as i16,
-            call.start_point as u16 as i16,
-        );
+        let start = params.start_point();
         if release != start && ppc_point_in_rect(release, state.bounds) {
             let mut move_cpu = cpu.clone();
             move_cpu.gpr[4] = state
@@ -6006,13 +6036,12 @@ pub(super) fn ppc_dispatch_drag_window(
     if startup.execution.menu().is_some()
         || startup.go_away_tracking.is_some()
         || !input.mouse_button
-        || call.window == 0
     {
         return PpcImportAction::ReturnPreserve;
     }
     let (Some(bounds), Some(original_content), Some(front_buffer)) = (
-        ppc_read_rect(memory, call.bounds_ptr),
-        ppc_dialog_global_bounds(memory, gworlds, call.window),
+        ppc_read_rect(memory, params.bounds_rect_ptr()),
+        ppc_dialog_global_bounds(memory, gworlds, params.window_ptr()),
         ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD),
     ) else {
         return PpcImportAction::ReturnPreserve;
@@ -6146,6 +6175,13 @@ pub(super) fn ppc_dispatch_grow_window(
     // GrowWindow owns the mouse through release and returns a proposed size;
     // the caller applies that size separately with SizeWindow. Inside
     // Macintosh Volume I (1985), pp. I-297--I-299.
+    let Some(params) = crate::window_manager::evaluate_grow_window_parameters(
+        cpu.gpr[3],
+        cpu.gpr[4],
+        cpu.gpr[5],
+    ) else {
+        return PpcImportAction::Return(0);
+    };
     let call = ppc_grow_window_call(cpu);
     if let Some(state) = startup.grow_window_tracking.as_ref() {
         if state.call != call {
@@ -6185,10 +6221,7 @@ pub(super) fn ppc_dispatch_grow_window(
         let (height, width) = crate::window_manager::grow_dimensions_from_drag(
             state.original_content,
             state.size_limits,
-            (
-                (state.call.start_point >> 16) as i16,
-                state.call.start_point as i16,
-            ),
+            params.start_point(),
             (input.mouse_v, input.mouse_h),
         );
         let old_height = state
@@ -6211,18 +6244,17 @@ pub(super) fn ppc_dispatch_grow_window(
         || startup.go_away_tracking.is_some()
         || startup.drag_window_tracking.is_some()
         || !input.mouse_button
-        || call.window == 0
     {
         return PpcImportAction::Return(0);
     }
     let (Some(size_limits), Some(original_content), Some(front_buffer)) = (
-        ppc_read_rect(memory, call.size_rect_ptr),
-        ppc_dialog_global_bounds(memory, gworlds, call.window),
+        ppc_read_rect(memory, params.bounds_rect_ptr()),
+        ppc_dialog_global_bounds(memory, gworlds, params.window_ptr()),
         ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD),
     ) else {
         return PpcImportAction::Return(0);
     };
-    if !ppc_window_is_visible(memory, call.window) {
+    if !ppc_window_is_visible(memory, params.window_ptr()) {
         return PpcImportAction::Return(0);
     }
     let mut state = PpcGrowWindowTrackingState {
@@ -6231,7 +6263,7 @@ pub(super) fn ppc_dispatch_grow_window(
         original_content,
         size_limits,
         outline: ppc_window_structure_bounds(
-            ppc_window_proc_id(memory, call.window),
+            ppc_window_proc_id(memory, params.window_ptr()),
             original_content,
         ),
         saved_pixels: Vec::new().into(),
@@ -6360,6 +6392,12 @@ pub(super) fn ppc_dispatch_track_go_away(
     // import frame until mouse-up and toggle the WDEF close-box feedback as
     // the pointer crosses its hit region. Macintosh Toolbox Essentials
     // (1992), pp. 4-103--4-104.
+    let Some(params) = crate::window_manager::evaluate_track_go_away_parameters(
+        cpu.gpr[3],
+        cpu.gpr[4],
+    ) else {
+        return PpcImportAction::Return(0);
+    };
     let call = ppc_go_away_call(cpu);
     if let Some(state) = startup.go_away_tracking.as_ref() {
         if state.call != call {
@@ -6404,16 +6442,15 @@ pub(super) fn ppc_dispatch_track_go_away(
 
     if startup.execution.menu().is_some()
         || !input.mouse_button
-        || !ppc_go_away_window_is_trackable(memory, gworlds, call.window)
+        || !ppc_go_away_window_is_trackable(memory, gworlds, params.window_ptr())
     {
         return PpcImportAction::Return(0);
     }
-    let start_v = (call.start_point >> 16) as u16 as i16;
-    let start_h = call.start_point as u16 as i16;
-    if !ppc_window_part_contains_point(memory, gworlds, call.window, 6, start_v, start_h) {
+    let (start_v, start_h) = params.start_point();
+    if !ppc_window_part_contains_point(memory, gworlds, params.window_ptr(), 6, start_v, start_h) {
         return PpcImportAction::Return(0);
     }
-    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, call.window) else {
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, params.window_ptr()) else {
         return PpcImportAction::Return(0);
     };
     let Some(saved_pixels) = ppc_go_away_highlight_pixels(memory, surface) else {
@@ -6422,7 +6459,7 @@ pub(super) fn ppc_dispatch_track_go_away(
     let highlighted = ppc_window_part_contains_point(
         memory,
         gworlds,
-        call.window,
+        params.window_ptr(),
         6,
         input.mouse_v,
         input.mouse_h,
