@@ -4566,6 +4566,14 @@ fn window_sizing_positioning_and_zooming_commands_dispatch_with_canonical_evalua
             let bounds = ppc_window_global_content_bounds(&mut loaded.memory, &loaded.gworlds, window).unwrap();
             assert_eq!(bounds.0, 70);
             assert_eq!(bounds.1, 60);
+
+            // Null window handles gracefully
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
         }
 
         // 2. SizeWindow
@@ -4588,6 +4596,14 @@ fn window_sizing_positioning_and_zooming_commands_dispatch_with_canonical_evalua
             let bounds = ppc_window_global_content_bounds(&mut loaded.memory, &loaded.gworlds, window).unwrap();
             assert_eq!(bounds.3 - bounds.1, 300);
             assert_eq!(bounds.2 - bounds.0, 200);
+
+            // Null window handles gracefully
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
         }
 
         // 3. ZoomWindow
@@ -5745,6 +5761,16 @@ fn window_hit_testing_clipping_and_region_commands_dispatch_with_canonical_evalu
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(loaded.cpu.gpr[3], 3);
             assert_eq!(loaded.memory.read_u32_be(window_out), Some(window));
+
+            // Point outside windows (in desktop area)
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = (300 << 16) | 300;
+            loaded.cpu.gpr[4] = window_out;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], 0); // inDesk
+            assert_eq!(loaded.memory.read_u32_be(window_out), Some(0));
         }
 
         // 2. PinRect
@@ -5785,6 +5811,15 @@ fn window_hit_testing_clipping_and_region_commands_dispatch_with_canonical_evalu
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(loaded.cpu.gpr[3], (99 << 16) | 30);
+
+            // Null rect pointer returns point unchanged
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = (50 << 16) | 80;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], (50 << 16) | 80);
         }
 
         // 3. GetWVariant
