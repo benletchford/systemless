@@ -5,7 +5,7 @@ use super::{
     ppc_memory_can_write_bytes, ppc_memory_read_bytes, ppc_process_heap_alloc,
     ppc_sound_trace_enabled, ppc_vfs_resource_index, PpcCpu, PpcFileRecord, PpcHandleRecord,
     PpcImportAction, PpcSectionMem, PpcVfsFileRecord, PpcVfsResourceRecord, PPC_BAD_FORMAT,
-    PPC_MEM_FULL_ERR, PPC_NOT_ENOUGH_HARDWARE_ERR, PPC_NO_ERR, PPC_PARAM_ERR, PPC_RES_PROBLEM,
+    PPC_MEM_FULL_ERR, PPC_NOT_ENOUGH_HARDWARE_ERR, PPC_NO_ERR, PPC_PARAM_ERR, PPC_RES_PROBLEM, PPC_RF_NUM_ERR,
 };
 use crate::callback_manager::CallbackTaskArchitecture;
 use crate::process_context::{ProcessNativeMemoryManager, SharedProcessSoundManager};
@@ -596,6 +596,162 @@ pub(crate) fn ppc_setup_snd_header(
         return PPC_PARAM_ERR;
     }
     PPC_NO_ERR
+}
+
+/// Sound Manager 3.3, pp. 343–344: describe an open AIFF data fork without
+/// decoding it. Compressed frame counts and format tags remain unchanged.
+pub(crate) fn ppc_parse_aiff_header(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    files: &[PpcFileRecord],
+    vfs_files: &[PpcVfsFileRecord],
+) -> i16 {
+    let info = cpu.gpr[4];
+    let frames = cpu.gpr[5];
+    let offset = cpu.gpr[6];
+    if info == 0
+        || frames == 0
+        || offset == 0
+        || !ppc_memory_can_write_bytes(memory, info, 28)
+        || !ppc_memory_can_write_bytes(memory, frames, 4)
+        || !ppc_memory_can_write_bytes(memory, offset, 4)
+    {
+        return PPC_PARAM_ERR;
+    }
+    let Some(data) = ppc_file_data_for_refnum(cpu.gpr[3] as u16 as i16, files, vfs_files) else {
+        return PPC_RF_NUM_ERR;
+    };
+    let Some(parsed) = ppc_parse_aiff_header_fields(data) else {
+        return PPC_BAD_FORMAT;
+    };
+    let mut record = [0u8; 28];
+    record[4..8].copy_from_slice(&parsed.format.to_be_bytes());
+    record[8..10].copy_from_slice(&parsed.num_channels.to_be_bytes());
+    record[10..12].copy_from_slice(&parsed.sample_size.to_be_bytes());
+    record[12..16].copy_from_slice(&parsed.sample_rate.to_be_bytes());
+    record[16..20].copy_from_slice(&parsed.sample_count.to_be_bytes());
+    // flags, buffer and reserved are explicitly zero for ParseAIFFHeader.
+    let _ = memory.write_bytes(info, &record);
+    let _ = memory.write_u32_be(frames, parsed.num_frames);
+    let _ = memory.write_u32_be(offset, parsed.data_offset);
+    PPC_NO_ERR
+}
+
+pub(crate) fn ppc_parse_aiff_header_fields(data: &[u8]) -> Option<PpcParsedSndHeader> {
+    if data.get(0..4)? != b"FORM" {
+        return None;
+    }
+    let aifc = match data.get(8..12)? {
+        b"AIFF" => false,
+        b"AIFC" => true,
+        _ => return None,
+    };
+    let end = 8usize.checked_add(usize::try_from(ppc_read_be_u32_from_slice(data, 4)?).ok()?)?;
+    if end < 12 || end > data.len() {
+        return None;
+    }
+    let mut cursor = 12usize;
+    let mut common = None;
+    let mut sound = None;
+    let mut version = false;
+    while cursor < end {
+        let start = cursor.checked_add(8)?;
+        if start > end {
+            return None;
+        }
+        let size = usize::try_from(ppc_read_be_u32_from_slice(data, cursor + 4)?).ok()?;
+        let chunk_end = start.checked_add(size)?;
+        let next = chunk_end.checked_add(size & 1)?;
+        if next > end {
+            return None;
+        }
+        let chunk = data.get(start..chunk_end)?;
+        match data.get(cursor..cursor + 4)? {
+            b"COMM" => {
+                if common.is_some() || size < if aifc { 22 } else { 18 } {
+                    return None;
+                }
+                let channels = ppc_read_be_u16_from_slice(chunk, 0)?;
+                let frames = ppc_read_be_u32_from_slice(chunk, 2)?;
+                let bits = ppc_read_be_u16_from_slice(chunk, 6)?;
+                if channels == 0 || bits == 0 || bits > 32 || frames > i32::MAX as u32 {
+                    return None;
+                }
+                let rate = ppc_extended_sample_rate_fixed(chunk.get(8..18)?)?;
+                let compression = if aifc {
+                    ppc_read_be_u32_from_slice(chunk, 18)?
+                } else {
+                    u32::from_be_bytes(*b"NONE")
+                };
+                let format = if compression == u32::from_be_bytes(*b"NONE") {
+                    u32::from_be_bytes(*b"twos") // AIFF PCM is signed, including 8-bit samples.
+                } else {
+                    compression
+                };
+                common = Some((channels, frames, bits, rate, format));
+            }
+            b"SSND" => {
+                if sound.is_some() || size < 8 {
+                    return None;
+                }
+                let skip = usize::try_from(ppc_read_be_u32_from_slice(chunk, 0)?).ok()?;
+                let first = start.checked_add(8)?.checked_add(skip)?;
+                if first > chunk_end {
+                    return None;
+                }
+                sound = Some((u32::try_from(first).ok()?, chunk_end - first));
+            }
+            b"FVER" if aifc => {
+                if version || size != 4 || ppc_read_be_u32_from_slice(chunk, 0)? != 0xa280_5140 {
+                    return None;
+                }
+                version = true;
+            }
+            _ => {}
+        }
+        cursor = next;
+    }
+    if aifc && !version {
+        return None;
+    }
+    let (channels, frames, bits, rate, format) = common?;
+    let (first, bytes) = sound.or_else(|| (frames == 0).then_some((0, 0)))?;
+    if frames != 0 && bytes == 0 {
+        return None;
+    }
+    Some(PpcParsedSndHeader {
+        format,
+        num_channels: channels,
+        sample_size: bits,
+        sample_rate: rate,
+        sample_count: frames,
+        buffer: 0,
+        num_frames: frames,
+        data_offset: first,
+    })
+}
+
+/// Convert positive normalized AIFF 80-bit rates directly to unsigned 16.16,
+/// retaining fractional hertz rather than rounding through integer hertz.
+fn ppc_extended_sample_rate_fixed(bytes: &[u8]) -> Option<u32> {
+    let exponent = u16::from_be_bytes(bytes.get(0..2)?.try_into().ok()?);
+    if exponent & 0x8000 != 0 || exponent == 0 || exponent == 0x7fff {
+        return None;
+    }
+    let mantissa = u64::from_be_bytes(bytes.get(2..10)?.try_into().ok()?);
+    if mantissa & (1u64 << 63) == 0 {
+        return None;
+    }
+    let shift = i32::from(exponent) - 16383 - 63 + 16;
+    let fixed = if shift >= 0 {
+        u128::from(mantissa).checked_shl(u32::try_from(shift).ok()?)?
+    } else {
+        u128::from(mantissa)
+            .checked_shr(shift.unsigned_abs())
+            .unwrap_or(0)
+    };
+    let fixed = u32::try_from(fixed).ok()?;
+    (fixed != 0).then_some(fixed)
 }
 
 pub(crate) fn ppc_parse_snd_header(
