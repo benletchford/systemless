@@ -9605,19 +9605,27 @@ impl super::TrapDispatcher {
             (true, 0x1F9) => {
                 let sp = cpu.read_reg(Register::A7);
                 // Allocate ScrapStuff at a fixed location if not yet done
-                let ptr = self.scrap.ensure_stuff_ptr(|| bus.alloc(16));
+                let ptr = self.scrap.ensure_stuff_ptr(|| {
+                    bus.alloc(crate::scrap_manager::SCRAP_STUFF_RECORD_SIZE as u32)
+                });
                 let summary = self.scrap.summary();
                 let scrap_handle = if summary.in_memory {
                     self.sync_scrap_handle(bus)
                 } else {
                     0
                 };
-                bus.write_long(ptr, summary.serialized_size); // scrapSize
-                bus.write_long(ptr + 4, scrap_handle); // scrapHandle (live in-memory desk scrap)
-                bus.write_word(ptr + 8, summary.count as u16); // scrapCount
-                                                               // IM:I I-457: scrapState is positive when the scrap is in memory.
-                bus.write_word(ptr + 10, if summary.in_memory { 1 } else { 0 });
-                bus.write_long(ptr + 12, 0); // scrapName (NIL)
+                let evaluated = crate::scrap_manager::evaluate_scrap_stuff_record(
+                    summary.serialized_size,
+                    scrap_handle,
+                    summary.count as u16,
+                    summary.in_memory,
+                );
+                bus.write_long(ptr, evaluated.scrap_size); // scrapSize
+                bus.write_long(ptr + 4, evaluated.scrap_handle); // scrapHandle (live in-memory desk scrap)
+                bus.write_word(ptr + 8, evaluated.scrap_count); // scrapCount
+                // IM:I I-457: scrapState is positive when the scrap is in memory.
+                bus.write_word(ptr + 10, evaluated.scrap_state as u16);
+                bus.write_long(ptr + 12, evaluated.scrap_name); // scrapName (NIL)
                 bus.write_long(sp, ptr); // return value
                 Ok(())
             }
@@ -9653,14 +9661,15 @@ impl super::TrapDispatcher {
             //   src/trap/toolbox.rs::tests::unloadscrap_and_loadscrap_return_noerr
             (true, 0x1FA) => {
                 let sp = cpu.read_reg(Register::A7);
+                let _action = crate::scrap_manager::evaluate_unload_scrap();
                 match self.scrap.unload() {
                     Err(()) => bus.write_long(sp, (-1i32) as u32), // generic non-zero OSErr
                     Ok(Some(handle)) => {
                         let _ = self.write_bytes_to_handle(bus, handle, &[]);
                         bus.free(handle);
-                        bus.write_long(sp, 0); // noErr (Systemless HLE: no scrap-file IO)
+                        bus.write_long(sp, crate::scrap_manager::NO_ERR as u32); // noErr (Systemless HLE: no scrap-file IO)
                     }
-                    Ok(None) => bus.write_long(sp, 0), // already on disk; noErr
+                    Ok(None) => bus.write_long(sp, crate::scrap_manager::NO_ERR as u32), // already on disk; noErr
                 }
                 Ok(())
             }
@@ -9695,8 +9704,9 @@ impl super::TrapDispatcher {
             //   src/trap/toolbox.rs::tests::loadscrap_writes_noerr_to_pascal_function_result_slot_and_preserves_stack_pointer
             (true, 0x1FB) => {
                 let sp = cpu.read_reg(Register::A7);
+                let _action = crate::scrap_manager::evaluate_load_scrap();
                 self.scrap.load();
-                bus.write_long(sp, 0); // noErr
+                bus.write_long(sp, crate::scrap_manager::NO_ERR as u32); // noErr
                 Ok(())
             }
 
@@ -9711,8 +9721,9 @@ impl super::TrapDispatcher {
             // ZeroScrap ($A9FC): Clears scrap entries and increments scrap_count per IM:I I-458
             (true, 0x1FC) => {
                 let sp = cpu.read_reg(Register::A7);
+                let _action = crate::scrap_manager::evaluate_zero_scrap();
                 self.scrap.zero();
-                bus.write_long(sp, 0); // noErr
+                bus.write_long(sp, crate::scrap_manager::NO_ERR as u32); // noErr
                 Ok(())
             }
 
@@ -9736,20 +9747,26 @@ impl super::TrapDispatcher {
                 let offset_ptr = bus.read_long(sp); // VAR offset: LONGINT
                 let the_type = bus.read_long(sp + 4).to_be_bytes(); // theType: ResType
                 let h_dest = bus.read_long(sp + 8); // hDest: Handle
+                let params = crate::scrap_manager::evaluate_get_scrap_parameters(
+                    h_dest, the_type, offset_ptr,
+                );
 
-                match self.scrap.flavor(the_type) {
+                match self.scrap.flavor(params.flavor_type) {
                     Some(flavor) => {
                         let data_len = flavor.data.len() as u32;
                         // Write offset
-                        if offset_ptr != 0 {
-                            bus.write_long(offset_ptr, flavor.serialized_offset);
+                        if params.offset_ptr != 0 {
+                            bus.write_long(params.offset_ptr, flavor.serialized_offset);
                         }
                         // If hDest is not NIL, copy data into it
-                        if h_dest != 0
-                            && self.write_bytes_to_handle(bus, h_dest, &flavor.data) == 0
+                        if !params.is_query_only()
+                            && self.write_bytes_to_handle(bus, params.destination_handle, &flavor.data) == 0
                             && data_len != 0
                         {
-                            bus.write_long(sp + 12, (-108i32) as u32); // memFullErr
+                            bus.write_long(
+                                sp + 12,
+                                (crate::scrap_manager::MEM_FULL_ERR as i32) as u32,
+                            ); // memFullErr
                             cpu.write_reg(Register::A7, sp + 12);
                             return Some(Ok(()));
                         }
@@ -9758,7 +9775,10 @@ impl super::TrapDispatcher {
                     }
                     None => {
                         // noTypeErr = -102
-                        bus.write_long(sp + 12, (-102i32) as u32);
+                        bus.write_long(
+                            sp + 12,
+                            (crate::scrap_manager::NO_TYPE_ERR as i32) as u32,
+                        );
                     }
                 }
                 cpu.write_reg(Register::A7, sp + 12);
@@ -9781,16 +9801,19 @@ impl super::TrapDispatcher {
                 let source = bus.read_long(sp); // source: Ptr
                 let the_type = bus.read_long(sp + 4).to_be_bytes(); // theType: ResType
                 let length = bus.read_long(sp + 8) as i32; // length: LONGINT
+                let params = crate::scrap_manager::evaluate_put_scrap_parameters(
+                    length, the_type, source,
+                );
 
-                if length > 0 && source != 0 {
-                    let mut data = vec![0u8; length as usize];
+                if params.is_valid() {
+                    let mut data = vec![0u8; params.data_length()];
                     for (i, byte) in data.iter_mut().enumerate() {
-                        *byte = bus.read_byte(source + i as u32);
+                        *byte = bus.read_byte(params.source_ptr + i as u32);
                     }
-                    self.scrap.append_entry(the_type, data);
+                    self.scrap.append_entry(params.flavor_type, data);
                 }
 
-                bus.write_long(sp + 12, 0); // noErr
+                bus.write_long(sp + 12, crate::scrap_manager::NO_ERR as u32); // noErr
                 cpu.write_reg(Register::A7, sp + 12);
                 Ok(())
             }

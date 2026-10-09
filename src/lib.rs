@@ -137,6 +137,7 @@ pub mod quickdraw {
 pub mod runner {
     pub use crate::systems::macintosh::runner::*;
 }
+pub(crate) use systems::macintosh::scrap_manager;
 #[cfg(feature = "test-support")]
 #[deprecated(note = "use `systemless::systems::macintosh::scripted_traces`")]
 pub mod scripted_traces {

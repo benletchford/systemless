@@ -33,7 +33,7 @@ pub(super) fn dispatch_scrap_import(
         PpcImportDispatcherTarget::InfoScrap => {
             // Inside Macintosh I, I-457: ScrapStuff is a 16-byte record.
             let ptr = scrap.desktop.ensure_stuff_ptr(|| {
-                process_memory_manager.new_native_ptr(memory, 16, true)
+                process_memory_manager.new_native_ptr(memory, crate::scrap_manager::SCRAP_STUFF_RECORD_SIZE as u32, true)
             });
             ppc_apply_process_native_allocator(
                 process_memory_manager,
@@ -73,22 +73,33 @@ pub(super) fn dispatch_scrap_import(
             } else {
                 0
             };
-            let _ = memory.write_u32_be(ptr, summary.serialized_size);
-            let _ = memory.write_u32_be(ptr + 4, handle);
-            let _ = memory.write_u16_be(ptr + 8, summary.count as u16);
-            let _ = memory.write_u16_be(ptr + 10, u16::from(summary.in_memory));
-            let _ = memory.write_u32_be(ptr + 12, 0);
+            let record = crate::scrap_manager::evaluate_scrap_stuff_record(
+                summary.serialized_size,
+                handle,
+                summary.count as u16,
+                summary.in_memory,
+            );
+            let _ = memory.write_u32_be(ptr, record.scrap_size);
+            let _ = memory.write_u32_be(ptr + 4, record.scrap_handle);
+            let _ = memory.write_u16_be(ptr + 8, record.scrap_count);
+            let _ = memory.write_u16_be(ptr + 10, record.scrap_state as u16);
+            let _ = memory.write_u32_be(ptr + 12, record.scrap_name);
             Some(PpcImportAction::Return(ptr))
         }
         PpcImportDispatcherTarget::GetScrap => {
             // Inside Macintosh: More Macintosh Toolbox (1993), pp. 2-38--2-40:
             // return the first matching flavor, resize the destination handle,
             // and report its offset in the ordered desktop scrap.
+            let params = crate::scrap_manager::evaluate_get_scrap_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4].to_be_bytes(),
+                cpu.gpr[5],
+            );
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
             };
             Some(PpcImportAction::Return(ppc_get_scrap(
-                cpu,
+                &params,
                 Some(&mut allocator),
                 memory,
                 heap_cursor,
@@ -101,25 +112,34 @@ pub(super) fn dispatch_scrap_import(
         PpcImportDispatcherTarget::PutScrap => {
             // More Macintosh Toolbox (1993), pp. 2-35--2-37: successive calls
             // add ordered flavors; a repeated type remains a later occurrence.
+            let params = crate::scrap_manager::evaluate_put_scrap_parameters(
+                cpu.gpr[3] as i32,
+                cpu.gpr[4].to_be_bytes(),
+                cpu.gpr[5],
+            );
             let result = if !scrap.desktop.summary().initialized {
-                PPC_NO_SCRAP_ERR
-            } else if (cpu.gpr[3] as i32) < 0 {
-                PPC_PARAM_ERR
-            } else if let Some(bytes) = ppc_memory_read_bytes(memory, cpu.gpr[5], cpu.gpr[3]) {
-                scrap.desktop.append_entry(cpu.gpr[4].to_be_bytes(), bytes);
-                PPC_NO_ERR
+                crate::scrap_manager::NO_SCRAP_ERR
+            } else if !params.is_valid() {
+                crate::scrap_manager::PARAM_ERR
+            } else if let Some(bytes) =
+                ppc_memory_read_bytes(memory, params.source_ptr, params.length as u32)
+            {
+                scrap.desktop.append_entry(params.flavor_type, bytes);
+                crate::scrap_manager::NO_ERR
             } else {
-                PPC_PARAM_ERR
+                crate::scrap_manager::PARAM_ERR
             };
             Some(PpcImportAction::Return((i32::from(result)) as u32))
         }
         PpcImportDispatcherTarget::ZeroScrap => {
+            let _action = crate::scrap_manager::evaluate_zero_scrap();
             scrap.desktop.zero();
             Some(PpcImportAction::Return(0))
         }
         PpcImportDispatcherTarget::LoadScrap => {
             // The process-owned desktop scrap remains resident in HLE, so an
             // explicit disk-to-memory synchronization is already satisfied.
+            let _action = crate::scrap_manager::evaluate_load_scrap();
             scrap.desktop.load();
             Some(PpcImportAction::Return(0))
         }
@@ -128,6 +148,7 @@ pub(super) fn dispatch_scrap_import(
             // Writes the desk scrap to disk and releases resident memory.
             // FUNCTION UnloadScrap: LONGINT;
             // Inside Macintosh Volume I (1985), p. I-458.
+            let _action = crate::scrap_manager::evaluate_unload_scrap();
             let result = match scrap.desktop.unload() {
                 Err(()) => u32::MAX,
                 Ok(Some(handle)) => {
@@ -151,7 +172,7 @@ pub(super) fn dispatch_scrap_import(
 }
 
 fn ppc_get_scrap(
-    cpu: &PpcCpu,
+    params: &crate::scrap_manager::GetScrapParameters,
     allocator: Option<&mut PpcProcessAllocatorView<'_>>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -160,16 +181,16 @@ fn ppc_get_scrap(
     handles: &mut Vec<PpcHandleRecord>,
     scrap: &PpcScrapState,
 ) -> u32 {
-    let Some(flavor) = scrap.desktop.flavor(cpu.gpr[4].to_be_bytes()) else {
-        if cpu.gpr[5] != 0 {
-            let _ = memory.write_u32_be(cpu.gpr[5], 0);
+    let Some(flavor) = scrap.desktop.flavor(params.flavor_type) else {
+        if params.offset_ptr != 0 {
+            let _ = memory.write_u32_be(params.offset_ptr, 0);
         }
-        return (i32::from(PPC_NO_TYPE_ERR)) as u32;
+        return (i32::from(crate::scrap_manager::NO_TYPE_ERR)) as u32;
     };
-    if cpu.gpr[5] != 0 {
-        let _ = memory.write_u32_be(cpu.gpr[5], flavor.payload_offset);
+    if params.offset_ptr != 0 {
+        let _ = memory.write_u32_be(params.offset_ptr, flavor.payload_offset);
     }
-    if cpu.gpr[3] != 0 {
+    if !params.is_query_only() {
         let result = ppc_allocator_view_resize_handle(
             allocator,
             memory,
@@ -177,18 +198,18 @@ fn ppc_get_scrap(
             heap_limit,
             last_mem_error,
             handles,
-            cpu.gpr[3],
+            params.destination_handle,
             flavor.data.len() as u32,
         );
         if result != PPC_NO_ERR {
             return (i32::from(result)) as u32;
         }
         if !flavor.data.is_empty() {
-            let Some(ptr) = memory.read_u32_be(cpu.gpr[3]).filter(|ptr| *ptr != 0) else {
-                return (i32::from(PPC_PARAM_ERR)) as u32;
+            let Some(ptr) = memory.read_u32_be(params.destination_handle).filter(|ptr| *ptr != 0) else {
+                return (i32::from(crate::scrap_manager::PARAM_ERR)) as u32;
             };
             if memory.write_bytes(ptr, &flavor.data).is_none() {
-                return (i32::from(PPC_PARAM_ERR)) as u32;
+                return (i32::from(crate::scrap_manager::PARAM_ERR)) as u32;
             }
         }
     }
