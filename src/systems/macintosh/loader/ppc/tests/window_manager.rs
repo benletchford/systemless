@@ -4110,6 +4110,14 @@ fn window_visibility_and_activation_commands_dispatch_with_canonical_evaluation(
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
             assert!(ppc_window_is_visible(&mut loaded.memory, window));
+
+            // ShowWindow with window = 0 returns gracefully
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
         }
 
         // 2. HideWindow
@@ -4128,6 +4136,14 @@ fn window_visibility_and_activation_commands_dispatch_with_canonical_evaluation(
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
             assert!(!ppc_window_is_visible(&mut loaded.memory, window));
+
+            // HideWindow with window = 0 returns gracefully
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
         }
 
         // 3. ShowHide
@@ -4159,6 +4175,15 @@ fn window_visibility_and_activation_commands_dispatch_with_canonical_evaluation(
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
             assert!(ppc_window_is_visible(&mut loaded.memory, window));
+
+            // ShowHide with window = 0 returns gracefully
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = 1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
         }
 
         // 4. FrontWindow
@@ -4201,6 +4226,14 @@ fn window_visibility_and_activation_commands_dispatch_with_canonical_evaluation(
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(ppc_front_visible_process_window(&mut loaded.memory, &loaded.window_list), Some(w1));
             assert_eq!(loaded.memory.read_u8(w1 + PPC_CWINDOW_HILITED_OFFSET), Some(1));
+
+            // SelectWindow with window = 0 returns gracefully
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
         }
 
         // 6. BringToFront
@@ -4223,6 +4256,14 @@ fn window_visibility_and_activation_commands_dispatch_with_canonical_evaluation(
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(ppc_front_visible_process_window(&mut loaded.memory, &loaded.window_list), Some(w1));
+
+            // BringToFront with window = 0 returns gracefully
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
         }
 
         // 7. SendBehind
@@ -4757,6 +4798,17 @@ fn window_repositioning_methods_and_placement_dispatch_with_canonical_evaluation
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(loaded.cpu.gpr[3] as i32, -50); // paramErr
+
+            // RepositionWindow rejects window = 0
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = 0;
+            loaded.cpu.gpr[5] = 1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i32, -50); // paramErr
         }
 
         // 4. CollapseWindow and IsWindowCollapsed dispatch
@@ -5101,6 +5153,14 @@ fn window_invalidation_update_and_drawing_commands_dispatch_with_canonical_evalu
             loaded.cpu.pc = loaded.entry_pc;
             loaded.cpu.lr = PPC_HALT_PC;
             loaded.cpu.gpr[3] = window;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+
+            // CalcVis with window = 0 returns gracefully
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
             let probe = loaded.run_with_hle_imports(64);
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
