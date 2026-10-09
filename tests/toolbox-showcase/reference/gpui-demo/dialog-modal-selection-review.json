@@ -1,0 +1,97 @@
+{
+  "base_commit": "625dbbaede8f428d35493f11723a93a837cd149a",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "fe443156d523ed52dde9a0e2022a96a115fb95300842080040b100dc56354691",
+    "src/systems/macintosh/trap/dialog.rs": "b3f870a4c9fbd55141d9196b696e6aff9b95658b7bea4c83fbc343bcfe14ae5d"
+  },
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "commands": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit [--screen-depth 1|--screen-depth 8|--prefer-powerpc] --capture-modal-dialog-selection /tmp/output.png",
+  "scope": "Three shared compositor modal nickname selections (guest offsets 3..6), with paired guest frames at historical 900x740 logical viewport. All six final images visually reviewed. Archive encoding preserves exact decoded pixels.",
+  "findings": "Selected glyph span matches paired guest frames; previously active name caret is absent after snapshot refresh.",
+  "gaps": [
+    "scale/state matrix",
+    "native Macintosh font oracle",
+    "native host input",
+    "callback and custom-dialog qualification"
+  ],
+  "captures": [
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/dialog-modal-selection-mono.png",
+      "mode": "mono",
+      "guest": false,
+      "size": [
+        1800,
+        1480
+      ],
+      "pixel_mode": "RGBA",
+      "original_capture_sha256": "58c1517ea74bc463f24cf6b8e9dac8374fe536e784d9f779013a689b0c107c09",
+      "sha256": "23f4868f5c57f6f5ea033fe724196440c07f06fb063556201ada935e122d6b57",
+      "decoded_pixel_sha256": "b541f2cb6d99d226fcdea13867e3a4de9033ca65e8039a11e6458f3c171ce01f"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/dialog-modal-selection-mono.guest.png",
+      "mode": "mono",
+      "guest": true,
+      "size": [
+        800,
+        600
+      ],
+      "pixel_mode": "RGBA",
+      "original_capture_sha256": "d8179dd048bf874dba7e64c51b4e754ef41660322b5ae9640bca8adcedde646e",
+      "sha256": "09f9fcefa21b00cdc6a5824804bb13787eca401728e5f196c8011b34d488ba64",
+      "decoded_pixel_sha256": "43be3952fba7a22585a3683b82dabae91d1cf37cad76c995d202032d1c2913f1"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/dialog-modal-selection-colour.png",
+      "mode": "colour",
+      "guest": false,
+      "size": [
+        1800,
+        1480
+      ],
+      "pixel_mode": "RGBA",
+      "original_capture_sha256": "ad1270e05018ec404d74ee37bc713084ddf3aa8a0833d78cd11ee85d1cd6f179",
+      "sha256": "b26a5317f7a099ff2a5ec39d80d6dbca3cde108b4692614e2c537c32992bcfcc",
+      "decoded_pixel_sha256": "d1a9e004bf64098eef34aee167df11311ac4497704e11997a6115ce3d3fae72c"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/dialog-modal-selection-colour.guest.png",
+      "mode": "colour",
+      "guest": true,
+      "size": [
+        800,
+        600
+      ],
+      "pixel_mode": "RGBA",
+      "original_capture_sha256": "9c23afe647c37457aa75a490b5d90f55f3ed86672299b8f81c986e3d0a8ffee8",
+      "sha256": "01bf9e4ad15b7c2a2b5266e8bd3b621a5636c197a46f5d093ef98436e3babe9a",
+      "decoded_pixel_sha256": "5e87c8431a4100fe9078ba580d5525eb25abfbbb6990efc6c57a1eef64371c11"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/dialog-modal-selection-ppc.png",
+      "mode": "ppc",
+      "guest": false,
+      "size": [
+        1800,
+        1480
+      ],
+      "pixel_mode": "RGBA",
+      "original_capture_sha256": "ad1270e05018ec404d74ee37bc713084ddf3aa8a0833d78cd11ee85d1cd6f179",
+      "sha256": "b26a5317f7a099ff2a5ec39d80d6dbca3cde108b4692614e2c537c32992bcfcc",
+      "decoded_pixel_sha256": "d1a9e004bf64098eef34aee167df11311ac4497704e11997a6115ce3d3fae72c"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/dialog-modal-selection-ppc.guest.png",
+      "mode": "ppc",
+      "guest": true,
+      "size": [
+        800,
+        600
+      ],
+      "pixel_mode": "RGBA",
+      "original_capture_sha256": "c77fb96792bf9e1a8d681812574a46388fdb51a1be25e5840070460a665294ec",
+      "sha256": "a4227dd9e6eef304f5744a3252f2d951d148d3c31edefe2cb4b4355ae889db24",
+      "decoded_pixel_sha256": "823c9b6a14942c7b4209b2b719e03885b032930fc63b3034770e6a0199e3830f"
+    }
+  ]
+}

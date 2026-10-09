@@ -2791,3 +2791,30 @@ remain open.
 
 The existing nested-modal focus/editing regression also passes on both CPU
 paths (3.46 seconds), including dismissal and resumed modeless editing.
+
+Work in progress: hidden `--capture-modal-dialog-selection` drives a real
+nickname drag from offsets 3 to 6, asserts the guest range and saves shared
+GPUI composition plus its paired guest frame. The example builds successfully.
+The first monochrome capture was reviewed: the GPUI highlight covers the same
+selected nickname glyph span as the guest. The guest frame also shows a stale
+caret in the previously active name field, which needs investigation before
+claiming complete focus/selection presentation. Colour/PPC, scale/state captures
+and archived review evidence remain pending.
+
+The stale caret came from retained modal chrome restoring an older painted
+snapshot during field activation/tracking. Classic tracking now snapshots the
+newly active field and refreshes pixels when the dragged range changes, leaving
+unchanged polls alone. A fresh monochrome paired capture was reviewed: the old
+name-field caret is absent and nickname offsets 3--6 remain highlighted. The
+example build passes; modal regressions are running for this revision. The
+remaining CPU/scale/state capture matrix and archived evidence remain pending.
+
+All 13 modal regressions pass on the snapshot fix (0.05 seconds). Final
+monochrome, colour 68k and PPC compositions and paired guest frames were
+reviewed and archived with lossless pixel-preserving encoding. The
+[review manifest](tests/toolbox-showcase/reference/gpui-demo/dialog-modal-selection-review.json)
+records source/fixture and file/decoded-pixel hashes, commands and scope.
+The selected nickname glyph span is consistent with each paired guest frame,
+and the previous name-field caret is absent. This qualifies the captured
+active selection at the historical viewport; the explicit scale/inactive
+matrix and native-oracle font/input qualification remain open.
