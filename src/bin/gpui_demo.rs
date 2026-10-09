@@ -7123,6 +7123,12 @@ mod desktop {
                 ).expect("whole-field styled recipe matches native ink and background");
                 assert_eq!(plan.background, [255; 3]);
                 assert!(!plan.pixels.is_empty());
+                assert_eq!(plan.view, record.view_rect);
+                assert!(super::super::text::classic_styled_text_edit_field(plan.clone(), 1., (0., 0.)).is_some());
+                for scale in [0., -1., f32::NAN, f32::INFINITY] {
+                    assert!(super::super::text::classic_styled_text_edit_field(plan.clone(), scale, (0., 0.)).is_none());
+                }
+                assert!(super::super::text::classic_styled_text_edit_field(plan.clone(), 1., (f32::NAN, 0.)).is_none());
                 let mut changed = frame.pixels.clone();
                 let at = ((view.0 as u32 * frame.width + view.1 as u32) * 4) as usize;
                 changed[at] ^= 1;

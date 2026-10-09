@@ -643,6 +643,7 @@ pub(crate) struct StyledTextEditRun {
 pub(crate) struct StyledTextEditPaintPlan {
     pub pixels: std::collections::BTreeMap<(i16, i16), [u8; 3]>,
     pub background: [u8; 3],
+    pub view: (i16, i16, i16, i16),
 }
 
 impl StyledTextEditPaintPlan {
@@ -713,7 +714,7 @@ impl StyledTextEditPaintPlan {
             let at = (gy as usize * width as usize + gx as usize) * 4;
             if native[at..at + 3] != pixels.get(&(x, y)).copied().unwrap_or(background.rgb) { return None; }
         } }
-        Some(Self { pixels, background: background.rgb })
+        Some(Self { pixels, background: background.rgb, view })
     }
 }
 
@@ -841,10 +842,30 @@ pub(crate) fn classic_styled_text_edit_solid_caret(
     classic_styled_text_pixels(line.pixels_with_solid_caret(rect, ink)?, scale, port_origin)
 }
 
+/// Paint an already-qualified whole field in the shared live/headless canvas.
+/// Background and ink use the same device snapping, including fractional scales.
+pub(crate) fn classic_styled_text_edit_field(
+    plan: StyledTextEditPaintPlan, scale: f32, port_origin: (f32, f32),
+) -> Option<impl gpui_kit::IntoElement> {
+    classic_styled_text_pixels_with_background(plan.pixels, scale, port_origin,
+        Some((plan.view, plan.background)))
+}
+
 fn classic_styled_text_pixels(
     pixels: std::collections::BTreeMap<(i16, i16), [u8; 3]>,
     scale: f32, port_origin: (f32, f32),
 ) -> Option<impl gpui_kit::IntoElement> {
+    classic_styled_text_pixels_with_background(pixels, scale, port_origin, None)
+}
+
+fn classic_styled_text_pixels_with_background(
+    pixels: std::collections::BTreeMap<(i16, i16), [u8; 3]>,
+    scale: f32, port_origin: (f32, f32),
+    background: Option<((i16, i16, i16, i16), [u8; 3])>,
+) -> Option<impl gpui_kit::IntoElement> {
+    if !scale.is_finite() || scale <= 0. || !port_origin.0.is_finite() || !port_origin.1.is_finite() {
+        return None;
+    }
     use gpui_kit::{prelude::*, *};
     let mut paths: std::collections::BTreeMap<[u8; 3], Vec<(i16, i16)>> = std::collections::BTreeMap::new();
     for (point, rgb) in pixels { paths.entry(rgb).or_default().push(point); }
@@ -854,6 +875,16 @@ fn classic_styled_text_pixels(
             let device = value * device_scale;
             px((device.abs() - 0.5).ceil().copysign(device) / device_scale)
         };
+        if let Some(((top, left, bottom, right), [r, g, b])) = background {
+            let left = snap(port_origin.0 + f32::from(left) * scale);
+            let top = snap(port_origin.1 + f32::from(top) * scale);
+            let right = snap(port_origin.0 + f32::from(right) * scale);
+            let bottom = snap(port_origin.1 + f32::from(bottom) * scale);
+            if right > left && bottom > top {
+                let ink: Hsla = rgb((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)).into();
+                window.paint_quad(fill(Bounds::new(point(left, top), size(right - left, bottom - top)), ink));
+            }
+        }
         for (color, pixels) in &paths {
             let mut path = PathBuilder::fill();
             for &(x, y) in pixels {

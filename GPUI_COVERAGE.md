@@ -3966,3 +3966,11 @@ lines through guest events; PPC additionally requires overlapping highlight
 boxes. These checks qualify a native field recipe, not production ownership,
 GPUI multiline compositor output, live pointer alignment, arbitrary backgrounds
 or themes. Styled production ownership remains guarded pending those checks.
+
+The whole-field GPUI canvas now paints resolved background and recipe ink with
+the same device snapping at fractional presentation scales. The plan retains
+its port-local view bounds; the caller supplies the port-to-scene transform
+and clipping. Invalid nonpositive/nonfinite scales and nonfinite origins
+decline. The production build check passes, and the four-mode snapshot test
+constructs the canvas and checks transform rejection. This is not yet rendered
+whole-field compositor evidence or enabled production styled ownership.
