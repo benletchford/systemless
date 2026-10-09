@@ -2862,13 +2862,10 @@ impl super::TrapDispatcher {
     // TextEdit measures each run with its own font, size and face, independent
     // of the caller's current port style. Inside Macintosh: Text (1993), 2-20.
     fn te_styled_char_width(style: TeResolvedStyle, byte: u8) -> i16 {
-        let size = Self::font_lookup_size(style.size);
-        let (_, scale) = get_font_face_scaled(style.font, size);
-        let advance = crate::quickdraw::text::get_glyph(style.font, size, byte as char)
-            .map_or(6, |(glyph, _)| i16::from(glyph.advance));
-        advance * scale
-            + crate::quickdraw::text::QuickDrawTextStyle::from_bits(style.face as u8)
-                .advance_extra() as i16
+        crate::text_edit::styled_byte_advance(
+            crate::text_edit::TextEditLineLayoutPolicy::CumulativeGuestMetrics,
+            style.font, style.size, style.face as u8, byte,
+        )
     }
 
     fn te_char_width(&self, font: i16, size: i16, byte: u8) -> i16 {

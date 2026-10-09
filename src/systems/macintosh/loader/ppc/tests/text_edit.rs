@@ -1218,3 +1218,19 @@ fn text_edit_snapshot_follows_guest_idle_blink_phase() {
         assert!(snapshot.records[0].active);
     }
 }
+
+#[test]
+fn styled_snapshot_advances_match_ppc_quickdraw_widths() {
+    use crate::text_edit::{styled_byte_advance, TextEditLineLayoutPolicy};
+    for font in [0, 1, 3, 4, 128] {
+        for size in [0, 9, 10, 12, 14, 17, 24, 36] {
+            for face in 0..128 {
+                for byte in 0..=255 {
+                    assert_eq!(styled_byte_advance(TextEditLineLayoutPolicy::PpcRunMetrics,
+                        font, size, face, byte), ppc_text_width_bytes(font, size, face, &[byte]),
+                        "font {font}, size {size}, face {face}, Mac Roman {byte}");
+                }
+            }
+        }
+    }
+}

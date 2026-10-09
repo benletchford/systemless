@@ -404,6 +404,14 @@ mod tests {
         let (_, placed) = split.styled_line_geometry(0, |_, _| i16::MAX).unwrap();
         assert_eq!(placed[0].1, vec![-19999, 12768, i16::MAX],
             "clamp the guest pen after applying the scroll origin");
+        for policy in [super::TextEditLineLayoutPolicy::CumulativeGuestMetrics,
+            super::TextEditLineLayoutPolicy::PpcRunMetrics] {
+            split.line_layout_policy = policy;
+            let expected = split.styled_line_geometry(0, |byte, run| {
+                super::styled_byte_advance(policy, run.font, run.size, run.face, byte)
+            });
+            assert_eq!(split.guest_styled_line_geometry(0), expected);
+        }
         split.style_runs.as_mut().unwrap()[1].start = 0;
         assert!(split.visible_style_runs(0).is_none(), "reject overlapping style ownership");
         assert!(split.styled_line_geometry(0, |_, _| 1).is_none());
@@ -473,6 +481,33 @@ pub struct TextEditStyleRunSnapshot {
     pub color: (u16, u16, u16),
     pub line_height: i16,
     pub ascent: i16,
+}
+
+/// Canonical TextEdit width policy used by layout, selection and TEClick.
+/// 68k applies style extras after integer strike scaling; PPC scales the
+/// styled advance with its Font Manager ratio. Keep these policies distinct.
+pub(crate) fn styled_byte_advance(
+    policy: TextEditLineLayoutPolicy, font: i16, size: i16, face: u8, byte: u8,
+) -> i16 {
+    use crate::quickdraw::{fonts, text};
+    let style = text::QuickDrawTextStyle::from_bits(face);
+    match policy {
+        TextEditLineLayoutPolicy::CumulativeGuestMetrics => {
+            let size = if size == 0 { 0 } else { size.max(1) };
+            let (_, scale) = fonts::get_font_face_scaled(font, size);
+            let advance = text::get_glyph(font, size, byte as char)
+                .map_or(6, |(glyph, _)| i16::from(glyph.advance));
+            advance * scale + style.advance_extra() as i16
+        }
+        TextEditLineLayoutPolicy::PpcRunMetrics => {
+            let (strike, numerator, denominator) = fonts::get_font_face_scale_ratio(font, size);
+            let advance = text::get_glyph(font, strike.size, byte as char)
+                .map_or(6, |(glyph, _)| i32::from(glyph.advance));
+            let scaled = style.glyph_advance(advance).saturating_mul(numerator)
+                .saturating_add(denominator / 2) / denominator;
+            scaled.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+        }
+    }
 }
 
 /// Line placement used by the owning CPU's TextEdit drawing path.
@@ -562,6 +597,17 @@ impl TextEditSnapshot {
             if left < right { visible.push((left..right, run)); }
         }
         Some(visible)
+    }
+
+    /// Visible styled insertion positions measured exactly as the guest's
+    /// TextEdit layout and TEClick paths. Painting may additionally depend on
+    /// port spacing and style synthesis; these positions do not grant ownership.
+    pub fn guest_styled_line_geometry(
+        &self, index: usize,
+    ) -> Option<(TextEditLineGeometry, Vec<(Range<usize>, Vec<i16>)>)> {
+        self.styled_line_geometry(index, |byte, run| {
+            styled_byte_advance(self.line_layout_policy, run.font, run.size, run.face, byte)
+        })
     }
 
     /// Place visible style runs using advances supplied by the owning guest
