@@ -213,6 +213,9 @@ mod desktop {
         capture_styled_text_edit_ink: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_styled_text_edit_caret: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_styled_text_edit_selected: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -4159,12 +4162,30 @@ mod desktop {
         eprintln!("saved composed GPUI capture to {}", output.display());
     }
 
+    /// Classic PPC PaintRect uses the insertion style, independently of the
+    /// final run painted. This capture uses the default classic theme only.
+    #[cfg(feature = "gpui-demo-test")]
+    fn ppc_styled_caret_paint(
+        record: &systemless::runner::TextEditSnapshot, index: usize,
+    ) -> Option<((i16, i16, i16, i16), systemless::runner::TextEditInkSnapshot)> {
+        if record.line_layout_policy != systemless::runner::TextEditLineLayoutPolicy::PpcRunMetrics {
+            return None;
+        }
+        let rect = record.guest_styled_caret_rect(index, 1)??;
+        let (owner, offset) = record.caret_line()?;
+        if owner != index { return None; }
+        let insertion = record.line_starts.as_ref()?.get(index)?.checked_add(offset)?;
+        let run = record.style_runs.as_ref()?.iter().rposition(|run| run.start <= insertion)?;
+        Some((rect, record.paint.as_ref()?.style_ink.get(run)?.clone()))
+    }
+
     #[cfg(feature = "gpui-demo-test")]
     fn capture_styled_text_edit_ink(
         game: &std::path::Path, output: &std::path::Path,
-        prefer_powerpc: bool, depth: Option<u16>, scale: f32, selected: bool, activation: &[bool],
+        prefer_powerpc: bool, depth: Option<u16>, scale: f32, selected: bool, caret: bool, activation: &[bool],
     ) {
         use gpui_kit::{platform, HeadlessAppContext};
+        assert!(!caret || prefer_powerpc, "classic caret pen/pattern metadata is not qualified yet");
         struct Preview {
             image: Arc<RenderImage>,
             record: systemless::runner::TextEditSnapshot,
@@ -4183,6 +4204,8 @@ mod desktop {
                     if line.selection.is_some() {
                         let background = systemless::runner::TextEditInkSnapshot { pixel: 0, rgb: [255; 3], inverted_rgb: [0; 3] };
                         ink = ink.child(super::text::classic_styled_text_edit_selection(line, &background, self.scale, origin).unwrap());
+                    } else if let Some((rect, caret_ink)) = ppc_styled_caret_paint(record, index) {
+                        ink = ink.child(super::text::classic_styled_text_edit_solid_caret(line, Some(rect), &caret_ink, self.scale, origin).unwrap());
                     } else {
                         ink = ink.child(super::text::classic_styled_text_edit_ink(line, self.scale, origin).unwrap());
                     }
@@ -4213,12 +4236,13 @@ mod desktop {
                     .is_some_and(|runs| runs.iter().any(|run| run.start == 26)))
         }).expect("settled showcase styled field");
         assert!(!record.active, "styled fixture starts inactive");
-        if selected {
+        if selected || caret {
             let dest = record.global_dest_rect.unwrap();
             let geometry = record.guest_styled_line_geometry(0).unwrap().0;
             let vertical = dest.0 - record.dest_rect.0 + geometry.top + geometry.ascent;
             let left = dest.1 - record.dest_rect.1 + geometry.left;
             let right = left + record.guest_styled_range_width(0..26).unwrap();
+            let left = if caret { right } else { left };
             for input in [MacintoshInput::MouseDown { vertical, horizontal: left },
                 MacintoshInput::MouseMove { vertical, horizontal: right },
                 MacintoshInput::MouseUp { vertical, horizontal: right }] {
@@ -4229,8 +4253,10 @@ mod desktop {
                 session.runner_mut().run_steps(10_000, None);
                 let settled = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
                 session.runner_mut().text_edit_snapshot().records.into_iter().find(|next|
-                    settled && next.guest_id == record.guest_id && next.active && next.selection == (0, 26))
-            }).expect("guest styled drag selects across font/face/colour runs");
+                    settled && next.guest_id == record.guest_id && next.active
+                        && next.selection == (if caret { (26, 26) } else { (0, 26) })
+                        && (!caret || next.caret_visible && next.drawing_intact))
+            }).expect("guest styled drag or click reaches the measured insertion boundary");
         }
         let original = record.clone();
         for &active in activation {
@@ -4253,8 +4279,13 @@ mod desktop {
         let origin = (dest.0 - record.dest_rect.0, dest.1 - record.dest_rect.1);
         let mut native_ink = std::collections::BTreeMap::new();
         for index in 0..record.line_count {
-            native_ink.extend(super::text::StyledTextEditLine::from_guest(&record, index).unwrap().pixels_with_selection(
-                &systemless::runner::TextEditInkSnapshot { pixel: 0, rgb: [255; 3], inverted_rgb: [0; 3] }).unwrap());
+            let line = super::text::StyledTextEditLine::from_guest(&record, index).unwrap();
+            native_ink.extend(if let Some((rect, ink)) = ppc_styled_caret_paint(&record, index) {
+                line.pixels_with_solid_caret(Some(rect), &ink).unwrap()
+            } else {
+                line.pixels_with_selection(&systemless::runner::TextEditInkSnapshot {
+                    pixel: 0, rgb: [255; 3], inverted_rgb: [0; 3] }).unwrap()
+            });
         }
         for y in view.0..view.2 { for x in view.1..view.3 {
             let at = ((y as u32 * frame.width + x as u32) * 4) as usize;
@@ -4648,25 +4679,31 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_selected_suspended.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), true, &[false]);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, false, &[false]);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_selected_resumed.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), true, &[false, true]);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, false, &[false, true]);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_selected.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), true, &[]);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, false, &[]);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_styled_text_edit_caret.as_ref() {
+            capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
+                args.screen_depth, args.capture_scale.unwrap_or(1.), false, true, &[]);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_ink.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), false, &[]);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), false, false, &[]);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -5340,6 +5377,7 @@ mod desktop {
                         capture_scale: None,
                         capture_text_edit: None,
                         capture_styled_text_edit_ink: None,
+                        capture_styled_text_edit_caret: None,
                         capture_styled_text_edit_selected: None,
                         capture_styled_text_edit_selected_suspended: None,
                         capture_styled_text_edit_selected_resumed: None,
