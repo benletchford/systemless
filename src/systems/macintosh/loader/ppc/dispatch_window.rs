@@ -1763,7 +1763,7 @@ pub(super) fn ppc_draw_standard_window_frame(
 
     if !title.is_empty() {
         let _ = ppc_with_unclipped_screen_port(memory, |memory| {
-            ppc_draw_text_bytes(
+            super::quickdraw::ppc_draw_text_bytes_styled_clipped(
             memory,
             gworlds,
             PPC_MAIN_GWORLD,
@@ -1773,6 +1773,8 @@ pub(super) fn ppc_draw_standard_window_frame(
             PPC_QD_TEXT_MODE_SRC_OR,
             ppc_theme_rgb(palette.frame_dark),
             None,
+            0,
+            Some(chrome.title_clip),
             &title,
             )
         });
