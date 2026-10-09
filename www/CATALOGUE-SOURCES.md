@@ -140,9 +140,9 @@ qualification. Its game-data redistribution permission remains unestablished.
 Current failures are recorded separately for [Civilization II font dispatch](https://github.com/benletchford/systemless/issues/4249),
 [Combat Mission accelerator startup](https://github.com/benletchford/systemless/issues/4253),
 [Worms Blast early exit](https://github.com/benletchford/systemless/issues/4254),
-[Heroes III temporary handle locking](https://github.com/benletchford/systemless/issues/4255),
+[Heroes III menu command dispatch](https://github.com/benletchford/systemless/issues/4265),
 [Oni bundled CarbonLib memory planning](https://github.com/benletchford/systemless/issues/4256),
-and [Unreal Tournament memory copying](https://github.com/benletchford/systemless/issues/4259).
+and [Unreal Tournament menu input](https://github.com/benletchford/systemless/issues/4272).
 Tony Hawk’s narrower version-query issue was closed as covered by the broader
 [OpenGL capability work](https://github.com/benletchford/systemless/issues/3575);
 that closure does not mean the public runtime implements the query.
@@ -166,3 +166,34 @@ import gap](https://github.com/benletchford/systemless/issues/4262),
 [Myth’s missing installed-data alert](https://github.com/benletchford/systemless/issues/3440),
 and [Alley 19’s explicit game selection](https://github.com/benletchford/systemless/issues/4238#issuecomment-6081069164).
 Alley 19’s bundled 68K catalogue reader does not establish a 68K game slice.
+
+## Generic runtime follow-ups
+
+[Temporary handle locking](https://github.com/benletchford/systemless/pull/4264)
+and [uncached memory copying](https://github.com/benletchford/systemless/pull/4267)
+have merged. Heroes III passes its former TempHLock stop and reaches the
+[SetMenuItemCommandID import gap](https://github.com/benletchford/systemless/issues/4265).
+This is startup progress, not a gameplay checkpoint.
+
+The [volume-reference fix](https://github.com/benletchford/systemless/pull/4271)
+uses the documented reference fallback for bare filenames and reference-only
+selection for a zero volume index. The unchanged Unreal Tournament 348m4
+archive reaches First-Time Configuration at tick 180, its settings confirmation
+at tick 782, and the rendered main menu at frontend/guest tick 1384. The original
+9,177-byte configuration already contains `GameEngine=Engine.GameEngine` under
+`[Engine.Engine]`; no replacement configuration is added. The former missing
+configuration alert disappears after the generic File Manager correction.
+
+[Practice-session input remains unconfirmed](https://github.com/benletchford/systemless/issues/4272).
+Explicit mouse movement and menu clicks leave the main screen at tick 1598.
+The [input trace](https://github.com/benletchford/systemless/issues/4272#issuecomment-6082005098)
+confirms that GetOSEvent receives the requested button events and coordinates;
+it does not yet establish which motion or selection path the engine requires.
+These zero-assertion scenario completions establish bounded menu startup,
+not playable input, sustained gameplay, save/restart, or browser qualification.
+
+[Worms Blast still exits early](https://github.com/benletchford/systemless/issues/4254#issuecomment-6082044659)
+with the same volume fix: its bare-name volume lookups succeed, but startup
+ends at frontend tick 2 / guest tick 1. That result does not establish the fatal
+cause or resolve its separate investigation. All exact-archive redistribution
+blockers remain; these runtime changes do not enable catalogue entries.
