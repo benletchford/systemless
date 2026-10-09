@@ -273,6 +273,7 @@ impl PpcLoadedApp {
             let vertex_alpha = self.q3_software_trimesh_vertex_alphas(&command, points.len());
             let triangle_diffuse = self.q3_software_trimesh_triangle_diffuse_colors(&command);
             let triangle_alpha = self.q3_software_trimesh_triangle_alphas(&command);
+            let triangle_normals = self.q3_software_trimesh_triangle_normals(&command);
             let mut projected = points
                 .iter()
                 .copied()
@@ -350,14 +351,18 @@ impl PpcLoadedApp {
                     .into_iter()
                     .map(ppc_q3_software_projected_vertex_to_point)
                     .collect::<Vec<_>>();
-                if ppc_q3_software_culls_backfacing(backfacing_style, orientation_style, &clipped) {
+                let backfacing = backfacing_style != PPC_Q3_BACKFACING_STYLE_BOTH
+                    && ppc_q3_software_triangle_is_backfacing(
+                    orientation_style,
+                    command.camera,
+                    command.local_to_world,
+                    triangle_normals.as_ref().and_then(|normals| normals.get(triangle.index)).copied().flatten(),
+                    &clipped,
+                );
+                if backfacing_style == PPC_Q3_BACKFACING_STYLE_REMOVE && backfacing {
                     continue;
                 }
-                ppc_q3_software_flip_backfacing_normals(
-                    backfacing_style,
-                    orientation_style,
-                    &mut clipped,
-                );
+                ppc_q3_software_flip_normals_for_backface(backfacing_style, backfacing, &mut clipped);
                 let flat_diffuse = (interpolation_style == PPC_Q3_INTERPOLATION_STYLE_NONE)
                     .then(|| clipped.first().and_then(|vertex| vertex.diffuse))
                     .flatten();
@@ -648,7 +653,9 @@ impl PpcLoadedApp {
                 } else {
                     None
                 };
-                let triangle_normals = if uses_normals {
+                let triangle_normals = if uses_normals
+                    || backfacing_style != PPC_Q3_BACKFACING_STYLE_BOTH
+                {
                     self.q3_software_trimesh_triangle_normals(&command)
                 } else {
                     None
@@ -744,7 +751,7 @@ impl PpcLoadedApp {
                     }
                     if let Some(normal) = triangle_normals
                         .as_ref()
-                        .and_then(|normals| normals.get(triangle.index).copied())
+                        .and_then(|normals| normals.get(triangle.index).copied().flatten())
                         .and_then(|normal| {
                             ppc_q3_software_transform_normal(normal, command.local_to_world)
                         })
@@ -816,16 +823,20 @@ impl PpcLoadedApp {
                         .copied()
                         .map(ppc_q3_software_projected_vertex_to_point)
                         .collect();
-                    if ppc_q3_software_culls_backfacing(
-                        backfacing_style,
+                    let backfacing = backfacing_style != PPC_Q3_BACKFACING_STYLE_BOTH
+                    && ppc_q3_software_triangle_is_backfacing(
                         orientation_style,
+                        command.camera,
+                        command.local_to_world,
+                        triangle_normals.as_ref().and_then(|normals| normals.get(triangle.index)).copied().flatten(),
                         &clipped_points,
-                    ) {
+                    );
+                    if backfacing_style == PPC_Q3_BACKFACING_STYLE_REMOVE && backfacing {
                         continue;
                     }
-                    ppc_q3_software_flip_backfacing_normals(
+                    ppc_q3_software_flip_normals_for_backface(
                         backfacing_style,
-                        orientation_style,
+                        backfacing,
                         &mut clipped_points,
                     );
                     match fill_style {
@@ -1266,6 +1277,17 @@ impl PpcLoadedApp {
 
     /// Read trimesh geometry from the submit-time copy when the command has
     /// one, and from live guest memory otherwise.
+    fn q3_geometry_read_u8(
+        &mut self,
+        regions: &[PpcQ3SceneReplayMemoryRegion],
+        addr: u32,
+    ) -> Option<u8> {
+        regions.iter().find_map(|region| {
+            let offset = usize::try_from(addr.checked_sub(region.base_addr)?).ok()?;
+            region.data.get(offset).copied()
+        }).or_else(|| self.memory.read_u8(addr))
+    }
+
     fn q3_geometry_read_u32(
         &mut self,
         regions: &[PpcQ3SceneReplayMemoryRegion],
@@ -1552,7 +1574,7 @@ impl PpcLoadedApp {
     fn q3_software_trimesh_triangle_normals(
         &mut self,
         command: &PpcQ3SceneTriMeshCommand,
-    ) -> Option<Vec<(f32, f32, f32)>> {
+    ) -> Option<Vec<Option<(f32, f32, f32)>>> {
         let regions = &command.geometry.memory_regions;
         let triangle_count =
             ppc_q3_trimesh_header_u32(&command.geometry.data, PPC_Q3_TRIMESH_NUM_TRIANGLES_OFFSET)?;
@@ -1579,8 +1601,21 @@ impl PpcLoadedApp {
             let attr_type = self.q3_geometry_read_u32(regions, entry_ptr)?;
             let data_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(4)?)?;
             if attr_type == PPC_Q3_ATTRIBUTE_TYPE_NORMAL && data_ptr != 0 {
-                let triangle_count = usize::try_from(triangle_count).ok()?;
-                return self.q3_software_read_vertex_normals(regions, data_ptr, triangle_count);
+                let use_ptr = self.q3_geometry_read_u32(regions, entry_ptr.checked_add(8)?)?;
+                let mut normals = Vec::with_capacity(usize::try_from(triangle_count).ok()?);
+                for triangle in 0..triangle_count {
+                    // An unused entry is absent even if its data contains a normal.
+                    // Read the submit-time use array alongside the captured vectors.
+                    let used = use_ptr == 0
+                        || self.q3_geometry_read_u8(regions, use_ptr.checked_add(triangle)?)? != 0;
+                    normals.push(if used {
+                        let ptr = data_ptr.checked_add(triangle.checked_mul(PPC_Q3_POINT3D_SIZE)?)?;
+                        ppc_q3_vector3d_normalized_value(self.q3_geometry_read_vector3d(regions, ptr)?)
+                    } else {
+                        None
+                    });
+                }
+                return Some(normals);
             }
         }
         None

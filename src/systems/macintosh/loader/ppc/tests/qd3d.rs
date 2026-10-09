@@ -17274,6 +17274,79 @@ fn q3_completed_frame_preserves_camera_before_the_next_guest_update() {
     assert_eq!(render(true), reference);
 }
 
+
+#[test]
+fn q3_software_renderer_culls_using_supplied_face_normals() {
+    // The Interactive renderer uses a supplied triangle normal even when
+    // winding disagrees. Vertex normals describe shading, not face direction.
+    for (reverse_winding, normal, use_normal, visible) in [
+        (true, Some((0.0, 0.0, 1.0)), None, true),
+        (false, Some((0.0, 0.0, -1.0)), None, false),
+        (true, None, None, false),
+        (false, None, None, true),
+        (true, Some((0.0, 0.0, 1.0)), Some(false), false),
+        (false, Some((0.0, 0.0, -1.0)), Some(false), true),
+        (true, Some((0.0, 0.0, 1.0)), Some(true), true),
+        (false, Some((0.0, 0.0, -1.0)), Some(true), false),
+    ] {
+        let mut fixture = ImmediateTriMeshFixture::new();
+        let mut points = ImmediateTriMeshFixture::LEFT;
+        if reverse_winding {
+            points.swap(1, 2);
+        }
+        fixture.write_triangle(points, (0.0, 1.0, 0.0));
+        fixture.loaded.q3_view_materials[0].styles.push(PpcQ3StyleRecord {
+            style: 0,
+            kind: PpcQ3StyleKind::Backfacing,
+            value: PPC_Q3_BACKFACING_STYLE_REMOVE,
+        });
+        if let Some(normal) = normal {
+            let memory = &mut fixture.loaded.memory;
+            let attributes = memory.read_u32_be(fixture.trimesh_data
+                + PPC_Q3_TRIMESH_TRIANGLE_ATTRIBUTE_TYPES_OFFSET).unwrap();
+            let normal_ptr = fixture.trimesh_data + 0x200;
+            memory.write_u32_be(fixture.trimesh_data
+                + PPC_Q3_TRIMESH_NUM_TRIANGLE_ATTRIBUTE_TYPES_OFFSET, 2).unwrap();
+            memory.write_u32_be(attributes + 12, PPC_Q3_ATTRIBUTE_TYPE_NORMAL).unwrap();
+            memory.write_u32_be(attributes + 16, normal_ptr).unwrap();
+            let use_ptr = if let Some(used) = use_normal {
+                let ptr = fixture.trimesh_data + 0x210;
+                memory.write_u8(ptr, u8::from(used)).unwrap();
+                ptr
+            } else { 0 };
+            memory.write_u32_be(attributes + 20, use_ptr).unwrap();
+            ppc_write_q3_vector3d(memory, normal_ptr, normal).unwrap();
+        }
+        fixture.submit();
+        if let Some(used) = use_normal {
+            // The captured use flag must survive the next guest update.
+            fixture.loaded.memory.write_u8(fixture.trimesh_data + 0x210, u8::from(!used)).unwrap();
+        }
+        let (green, _, _) = fixture.render();
+        assert_eq!(green > 0, visible, "reversed={reverse_winding}, normal={normal:?}, use_normal={use_normal:?}");
+
+        // The lightweight GPU/WebGL path must use the same face direction.
+        if let Some(used) = use_normal {
+            fixture.loaded.memory.write_u8(fixture.trimesh_data + 0x210, u8::from(used)).unwrap();
+        }
+        fixture.submit();
+        if let Some(used) = use_normal {
+            // The captured use flag must survive the next guest update.
+            fixture.loaded.memory.write_u8(fixture.trimesh_data + 0x210, u8::from(!used)).unwrap();
+        }
+        let loaded = &mut fixture.loaded;
+        let frame = ppc_q3_take_completed_frame(
+            fixture.view,
+            &mut loaded.q3_submissions,
+            &mut loaded.q3_submission_transforms,
+            &mut loaded.q3_submission_materials,
+            &mut loaded.q3_submission_lights,
+        );
+        loaded.q3_completed_frames.push(frame);
+        assert_eq!(loaded.take_completed_q3_gpu_frame().is_some(), visible);
+    }
+}
+
 #[test]
 fn q3_immediate_trimesh_renders_as_submitted_after_the_app_releases_it() {
     // The frame renders after the guest has run on. An application that
