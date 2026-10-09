@@ -39,7 +39,7 @@ pub(super) fn dispatch_picture_import(
 
     match binding.dispatcher_target {
         PpcImportDispatcherTarget::GetPictInfo => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_get_pict_info(cpu, memory),
+            ppc_get_pict_info(cpu, memory, handles),
         ))),
         PpcImportDispatcherTarget::DrawPicture => {
             let _ = ppc_draw_picture(

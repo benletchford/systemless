@@ -247,7 +247,8 @@ pub(crate) fn ppc_draw_pict_bytes_to_16bpp(
         return ppc_commit_picture_writes(memory, &mut bus, screen_base, front_buffer, buffer_len);
     }
 
-    if front_buffer.depth != 16 || front_buffer.row_bytes < front_buffer.width.saturating_mul(2) {
+    if !matches!(front_buffer.depth, 16 | 32)
+        || front_buffer.row_bytes < front_buffer.width.saturating_mul(front_buffer.depth / 8) {
         return false;
     }
     let row_bytes = front_buffer.row_bytes;
@@ -306,7 +307,7 @@ pub(crate) fn ppc_draw_pict_bytes_to_16bpp(
         dst_left,
         dst_bottom,
         dst_right,
-        (screen_base, row_bytes, width, height, 16),
+        (screen_base, row_bytes, width, height, front_buffer.depth as u16),
         clut,
         device_ct_seed,
         None,
@@ -353,17 +354,33 @@ pub(crate) fn minimal_pict_bytes() -> [u8; 12] {
     ]
 }
 
-pub(crate) fn ppc_get_pict_info(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16 {
-    let _pic_handle = cpu.gpr[3];
+pub(crate) fn ppc_get_pict_info(cpu: &mut PpcCpu, memory: &mut PpcSectionMem, handles: &[PpcHandleRecord]) -> i16 {
     let pict_info_ptr = cpu.gpr[4];
     if pict_info_ptr == 0 || !ppc_memory_can_write_bytes(memory, pict_info_ptr, PPC_PICT_INFO_SIZE)
     {
         return PPC_PARAM_ERR;
     }
+    if cpu.gpr[8] as u16 != 0 {
+        return -11000; // pictInfoVersionErr
+    }
+    let Some(bytes) = ppc_handle_bytes(memory, handles, cpu.gpr[3]) else {
+        return -11005; // pictureDataErr
+    };
+    let Some(info) = pict::picture_basic_info(&bytes) else {
+        return -11005;
+    };
     for offset in 0..PPC_PICT_INFO_SIZE {
         if memory.write_u8(pict_info_ptr + offset, 0).is_none() {
             return PPC_PARAM_ERR;
         }
+    }
+    // PictInfo uses two-byte Macintosh structure alignment. Optional color,
+    // font and comment allocations remain unsupported and their handles nil.
+    memory.write_u32_be(pict_info_ptr + 14, info.h_res);
+    memory.write_u32_be(pict_info_ptr + 18, info.v_res);
+    memory.write_u16_be(pict_info_ptr + 22, info.depth);
+    for (index, value) in info.source_rect.into_iter().enumerate() {
+        memory.write_u16_be(pict_info_ptr + 24 + index as u32 * 2, value as u16);
     }
     PPC_NO_ERR
 }
