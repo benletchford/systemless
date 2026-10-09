@@ -14,7 +14,7 @@ function fixture() {
     + read('renderer-owner.js').replace(/^import .*;\n/m, '').replaceAll('export ', '')
     + '\nthis.Owner = RendererOwner;', context);
   const owner = new context.Owner(port, identity, { sequence: 12, displayGeneration: 3, notify: message => notices.push(message) });
-  const ack = message => port.onmessage({ data: { ...identity, protocolVersion: 4, type: 'submitted', sequence: message.sequence,
+  const ack = message => port.onmessage({ data: { ...identity, protocolVersion: 5, type: 'submitted', sequence: message.sequence,
     buffer: message.pixels?.buffer ?? message.compact?.cells.buffer, detailBuffer: message.compact?.detail.buffer,
     paletteBuffer: message.palette?.buffer, renderMs: 2 } });
   return { owner, port, messages, notices, ack };
@@ -56,7 +56,7 @@ test('direct owner retains only active and newest complete packets across frozen
 test('direct renderer failure reports presenter status and closes port without touching guest output', () => {
   const f = fixture();
   f.owner.submit(rgba(1));
-  f.port.onmessage({ data: {...identity,protocolVersion:4,type:'error',message:'context lost'} });
+  f.port.onmessage({ data: {...identity,protocolVersion:5,type:'error',message:'context lost'} });
   assert.equal(f.owner.closed,true);
   assert.equal(f.port.closed,true);
   assert.equal(f.notices.at(-1).type,'rendererStatus');
@@ -64,4 +64,17 @@ test('direct renderer failure reports presenter status and closes port without t
   const next = rgba(2);
   assert.equal(f.owner.submit(next),false);
   assert.equal(next.frame.byteLength,4);
+});
+
+test('direct packets carry the cursor of their complete image', () => {
+  const f = fixture();
+  f.owner.submit({...rgba(1), cursorCss:'crosshair'});
+  f.owner.submit({...rgba(2), cursorCss:'none'});
+  f.owner.submit({...rgba(3), cursorCss:'help'});
+  assert.equal(f.messages[0].cursorCss, 'crosshair');
+  f.ack(f.messages[0]);
+  assert.equal(f.notices.at(-1).cursorCss, 'crosshair');
+  assert.equal(f.messages[1].cursorCss, 'help');
+  f.ack(f.messages[1]);
+  assert.equal(f.notices.at(-1).cursorCss, 'help');
 });

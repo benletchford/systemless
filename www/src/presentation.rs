@@ -36,6 +36,7 @@ impl CanvasFrame {
                         needs_snapshot: false,
                         painted: false,
                         fatal: None,
+                        cursor_css: "none".into(),
                     }));
                 }
             }
@@ -95,6 +96,17 @@ impl CanvasFrame {
         Canvas2dFrame::new(context, width, height).map(Self::Canvas2d)
     }
 
+    pub(crate) fn set_cursor_css(&mut self, canvas: &HtmlCanvasElement, css: &str) {
+        if let Self::Offscreen(frame) = self {
+            frame.cursor_css.clear();
+            frame.cursor_css.push_str(css);
+            if frame.fallback.is_none() { return; }
+        }
+        if canvas.style().get_property_value("cursor").ok().as_deref() != Some(css) {
+            let _ = canvas.style().set_property("cursor", css);
+        }
+    }
+
     pub(crate) fn paint(&mut self, width: u32, height: u32, rgba: &[u8]) {
         match self {
             Self::WebGl(frame) => frame.paint(width, height, rgba),
@@ -132,6 +144,7 @@ impl CanvasFrame {
             .unwrap_or_default();
         if self.supports_packet(&kind) {
             if let Self::Offscreen(frame) = self {
+                let _ = Reflect::set(packet, &JsValue::from_str("cursorCss"), &JsValue::from_str(&frame.cursor_css));
                 crate::renderer_bridge::paint_packet(&frame.handle, packet);
             }
         } else if let Self::Offscreen(frame) = self {
@@ -180,6 +193,7 @@ pub(crate) struct OffscreenFrame {
     needs_snapshot: bool,
     painted: bool,
     fatal: Option<String>,
+    cursor_css: String,
 }
 
 impl OffscreenFrame {
@@ -242,6 +256,8 @@ impl OffscreenFrame {
                 Reflect::get(&recovery, &JsValue::from_str("pixels")),
             ) {
                 if let Ok(pixels) = pixels.dyn_into::<Uint8Array>() {
+                    self.cursor_css = Reflect::get(&recovery, &JsValue::from_str("cursorCss"))
+                        .ok().and_then(|v| v.as_string()).unwrap_or_else(|| "none".into());
                     self.paint_js(width as u32, height as u32, &pixels);
                 }
             }
@@ -254,11 +270,12 @@ impl OffscreenFrame {
             return;
         }
         if let Some(fallback) = self.fallback.as_mut() {
+            let _ = self.canvas.style().set_property("cursor", &self.cursor_css);
             fallback.paint_js(width, height, pixels);
             self.needs_snapshot = false;
             self.painted = true;
         } else {
-            crate::renderer_bridge::paint_renderer(&self.handle, width, height, pixels);
+            crate::renderer_bridge::paint_renderer(&self.handle, width, height, pixels, &self.cursor_css);
         }
     }
 

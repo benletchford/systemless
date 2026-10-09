@@ -1,6 +1,6 @@
 // Complete-frame presenter protocol. Guest execution, composition and display
 // demand stay on the execution owner/host. This worker has no Wasm or DOM state.
-const RENDER_PROTOCOL = 4;
+const RENDER_PROTOCOL = 5;
 const MAX_PIXELS = 16 * 1024 * 1024;
 let identity = null;
 let ownerPort = null;
@@ -90,7 +90,7 @@ function returnBuffers(type, frame, metrics = {}) {
     // UI submission acknowledgement must not wait for the owner to finish its
     // next guest batch. Only the separate credit reply returns image buffers.
     reply({ type: "directSubmitted", sequence: frame.sequence, kind: frame.kind, bytes,
-      width: frame.width, height: frame.height, outputScale: frame.outputScale, ...metrics });
+      width: frame.width, height: frame.height, outputScale: frame.outputScale, cursorCss: frame.cursorCss, ...metrics });
   }
   reply({ type, sequence: frame.sequence, displayGeneration: frame.displayGeneration,
     ...metrics, buffer, paletteBuffer, cursorBuffer, detailBuffer }, transfer);
@@ -116,7 +116,7 @@ function paint() {
       awaitingBitmap = { frame, renderMs: performance.now() - start };
       try {
         reply({ type: "bitmap", sequence: frame.sequence, displayGeneration: frame.displayGeneration,
-          width: frame.width, height: frame.height, bitmap }, [bitmap]);
+          width: frame.width, height: frame.height, cursorCss: frame.cursorCss, bitmap }, [bitmap]);
       } catch (error) {
         bitmap.close();
         throw error;

@@ -8,6 +8,7 @@ mod compact_vectors;
 mod components;
 mod emulator;
 mod indexed_frame;
+mod host_cursor;
 mod paths;
 mod presentation;
 mod renderer_bridge;

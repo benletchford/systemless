@@ -1,4 +1,4 @@
-const PROTOCOL_VERSION = 7;
+const PROTOCOL_VERSION = 8;
 let machine = null;
 let generation = 0;
 let frameSequence = 0;
@@ -22,12 +22,12 @@ async function connectRenderer(message) {
   disconnectRenderer();
   const link = rendererLink = { id: message.rendererGeneration, port: message.port, cancelled: false, presenter: null };
   try {
-    if (message.rendererProtocol !== 4) throw new Error("Direct renderer protocol mismatch");
+    if (message.rendererProtocol !== 5) throw new Error("Direct renderer protocol mismatch");
     const url = new URL("./renderer-owner.js", self.location.href);
     url.search = new URL(self.location.href).search;
     const bindings = await import(url.href);
     if (link.cancelled || stopping || failed) return;
-    if (bindings.DIRECT_RENDERER_PROTOCOL !== 1) throw new Error("Direct transport assets mismatch");
+    if (bindings.DIRECT_RENDERER_PROTOCOL !== 2) throw new Error("Direct transport assets mismatch");
     link.presenter = new bindings.RendererOwner(link.port,
       { generation, rendererGeneration: link.id },
       { sequence: message.sequence, displayGeneration: message.displayGeneration, notify: reply });
@@ -126,7 +126,7 @@ self.onmessage = async (event) => {
     }
 
     if (message.type === "frame") {
-      const result = machine.runFrame(message.queuedAudioSamples ?? -1, !!message.debug, message.outputScale ?? 1, !!message.forceRender, !!message.indexedRender, !!message.compactRender, !!message.measurePresentation);
+      const result = machine.runFrame(message.queuedAudioSamples ?? -1, !!message.debug, message.outputScale ?? 1, !!message.forceRender, !!message.indexedRender, !!message.compactRender, !!message.measurePresentation, message.cursorScale ?? 0);
       guestTick = result.guestTick >>> 0;
       uiTracking = !!result.uiTracking;
       if (result.lastSteps > 0 || !result.running) {

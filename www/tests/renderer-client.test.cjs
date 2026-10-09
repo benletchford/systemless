@@ -227,3 +227,37 @@ test('old renderer capabilities cannot silently accept bitmap output', () => {
   const f=clientFixture({bitmap:true});f.receive({type:'ready',kinds:['rgba'],backend:'offscreen-webgl'});
   assert.equal(f.client.phase,'failed');assert.match(f.client.error,/capability/);
 });
+
+test('cursor follows the submitted image across coalescing and recovery', () => {
+  const f = clientFixture(); f.ready();
+  f.client.paint(2, 1, pixels(1), 'crosshair');
+  f.client.paint(2, 1, pixels(2), 'none');
+  f.client.paint(2, 1, pixels(3), 'help');
+  assert.equal(f.logical.style.values.cursor, undefined);
+  f.receive({ type: 'submitted', sequence: 1 });
+  assert.equal(f.logical.style.values.cursor, 'crosshair');
+  f.receive({ type: 'submitted', sequence: 2 }); // coalesced away
+  assert.equal(f.logical.style.values.cursor, 'crosshair');
+  f.receive({ type: 'submitted', sequence: 3 });
+  assert.equal(f.logical.style.values.cursor, 'help');
+  f.client.paint(2, 1, pixels(4), 'crosshair');
+  f.client.paint(2, 1, pixels(5), 'none');
+  f.workers[0].onerror({ preventDefault() {}, message: 'crashed' });
+  const recovery = f.client.takeRecoveryFrame();
+  assert.equal(recovery.cursorCss, 'none');
+  assert.equal(recovery.pixels[0], 5);
+});
+
+test('direct and bitmap cursor transitions ignore stale deliveries', () => {
+  const f = clientFixture({direct:true}); f.ready();
+  f.receive({type:'directSubmitted',width:2,height:1,outputScale:1,sequence:2,kind:'rgba',cursorCss:'crosshair'});
+  assert.equal(f.logical.style.values.cursor, 'crosshair');
+  f.receive({type:'directSubmitted',width:2,height:1,outputScale:1,sequence:1,kind:'rgba',cursorCss:'none'});
+  assert.equal(f.logical.style.values.cursor, 'crosshair');
+  const b = clientFixture({bitmap:true}); b.ready();
+  b.client.paint(2,1,pixels(1),'none');
+  b.receive({type:'bitmap',sequence:1,displayGeneration:1,width:2,height:1,cursorCss:'none',bitmap:{close(){}}});
+  assert.equal(b.logical.style.values.cursor, 'none');
+  b.receive({type:'bitmap',sequence:1,displayGeneration:1,width:2,height:1,cursorCss:'help',bitmap:{close(){}}});
+  assert.equal(b.logical.style.values.cursor, 'none');
+});
