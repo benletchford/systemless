@@ -2342,3 +2342,21 @@ actual shared-compositor Controls captures show guest checkbox label ink;
 `text-classic-choices-review.json` records the images and limits. The page
 contains no radio, so radio visuals remain unqualified. Small-height indicator
 geometry, font overrides and the scale/activation/state matrix remain open.
+
+### Guest wrapping in Standard File prompts
+
+Save and New Folder prompts, including subsidiary error messages, now paint
+guest system-font glyphs through the shared GPUI canvas. They use the same
+`wrap_classic_text` primitive as both guest drawing paths, preserving word
+breaks, hard line endings and hidden trailing whitespace with guest advances.
+Standard File's baseline 12 and line step 16 remain explicit; parent bounds
+clip the canvas. Host typography no longer determines prompt wrapping.
+
+The create/cancel/stale-action regression passes across all three guest modes
+(137.64 seconds). The desktop type-check passed and the shared capture harness
+builds. Three final duplicate-name error captures and paired guest frames were
+reviewed: the complete message wraps into two guest-width lines, while the Save
+prompt remains occluded by the child where their guest bounds overlap.
+`text-classic-prompts-review.json` records commands, hashes and limitations.
+One viewport and one error do not qualify all scales, states or errors. General
+dialog fonts/styles, menus, list labels and Save-field editing remain open.

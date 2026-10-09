@@ -1,0 +1,42 @@
+{
+  "scope": "Save/New Folder/error prompts use system font glyphs and shared guest word wrapping through GPUI canvas.",
+  "capture_flag": "--capture-standard-file-new-folder-error-composed",
+  "modes": [
+    "--screen-depth 1",
+    "--screen-depth 8",
+    "--prefer-powerpc"
+  ],
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "review": "All final captures reviewed. Duplicate-name message is complete in two guest-width lines; Save prompt uses guest glyphs and is occluded by the child on 68k as before.",
+  "limitations": [
+    "One viewport and duplicate-name error only; scale/state and other errors need qualification.",
+    "General dialog font overrides, list text, menu text and Save editing remain unfinished.",
+    "No authentic Apple-font/native-oracle qualification."
+  ],
+  "outputs": [
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-prompts-mono.png",
+      "sha256": "22bcb8d30202ca052735d33b51dd5aa0ea943a705c2e18d40d2a76b9529a6160"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-prompts-mono.guest.png",
+      "sha256": "c985acb7a74364caf9cf90bee562777e62c3e31f192e04f28a4b5901704270f4"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-prompts-colour.png",
+      "sha256": "b3dbb4251420fc2fed6b57e8886c772c84ef05a07aa25842cc80e48ec5b94658"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-prompts-colour.guest.png",
+      "sha256": "5af88b734bea4d07abd3c87eeed1ba467bad5ecaf617f6dac9344bc420791c21"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-prompts-ppc.png",
+      "sha256": "6190db45e7e62d9a3bbe0a947f4826e286c108dae2d99b3e2d8ea66ecc1ff9d3"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-prompts-ppc.guest.png",
+      "sha256": "e1c4e95dbeadf028eca3831f5374d333645c2d3a3d92a39f6e3dd8826dce2dde"
+    }
+  ]
+}

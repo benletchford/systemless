@@ -2513,7 +2513,7 @@ mod desktop {
                                 .flex()
                                 .items_center()
                                 .overflow_hidden()
-                                .child(panel.prompt.clone().unwrap_or_default()),
+                                .child(super::text::classic_file_prompt(panel.prompt.as_deref().unwrap_or_default(), scene_scale, cx.theme().foreground)),
                         );
                         let name = panel.name.as_deref().unwrap_or_default();
                         let focused = panel.name_has_focus == Some(true);
@@ -2609,7 +2609,7 @@ mod desktop {
                         .w(guest_px(bounds.width() as f32)).h(guest_px(bounds.height() as f32))
                         .bg(cx.theme().background).border_2().border_color(cx.theme().border)
                         .text_color(cx.theme().foreground).text_size(guest_px(13.))
-                        .child(at(if is_error { layout.error_message() } else { layout.prompt }).overflow_hidden().child(prompt));
+                        .child(at(if is_error { layout.error_message() } else { layout.prompt }).overflow_hidden().child(super::text::classic_file_prompt(prompt, scene_scale, cx.theme().foreground)));
                     if !is_error {
                         let name = at(folder.layout.name).id("guest-standard-new-folder-name").test_support()
                             .aria_label("Name of new folder").overflow_hidden().flex().items_center().px_1()
