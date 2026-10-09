@@ -4134,6 +4134,365 @@ pub fn evaluate_calc_menu_size_parameters(menu_handle: u32) -> Option<CalcMenuSi
     }
 }
 
+/// Standard checkmark glyph code ($12).
+pub const STANDARD_CHECKMARK_GLYPH: u8 = 0x12;
+
+/// Architecture-neutral parameter validation for CountMItems.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CountMItemsParameters {
+    menu_handle: u32,
+}
+
+#[allow(dead_code)]
+impl CountMItemsParameters {
+    pub const fn menu_handle(&self) -> u32 {
+        self.menu_handle
+    }
+}
+
+#[allow(dead_code)]
+pub const fn evaluate_count_m_items_parameters(menu_handle: u32) -> CountMItemsParameters {
+    CountMItemsParameters { menu_handle }
+}
+
+/// Architecture-neutral parameter extraction and validation for GetItemCmd.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetItemCmdParameters {
+    menu_handle: u32,
+    item: i16,
+    cmd_char_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl GetItemCmdParameters {
+    pub const fn menu_handle(&self) -> u32 {
+        self.menu_handle
+    }
+
+    pub const fn item(&self) -> i16 {
+        self.item
+    }
+
+    pub const fn cmd_char_ptr(&self) -> u32 {
+        self.cmd_char_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_item_cmd_parameters(
+    menu_handle: u32,
+    item: i16,
+    cmd_char_ptr: u32,
+) -> Option<GetItemCmdParameters> {
+    if cmd_char_ptr == 0 {
+        None
+    } else {
+        Some(GetItemCmdParameters {
+            menu_handle,
+            item,
+            cmd_char_ptr,
+        })
+    }
+}
+
+/// Architecture-neutral parameter extraction and validation for SetItemCmd.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetItemCmdParameters {
+    menu_handle: u32,
+    item: i16,
+    cmd_char: u8,
+}
+
+#[allow(dead_code)]
+impl SetItemCmdParameters {
+    pub const fn menu_handle(&self) -> u32 {
+        self.menu_handle
+    }
+
+    pub const fn item(&self) -> i16 {
+        self.item
+    }
+
+    pub const fn cmd_char(&self) -> u8 {
+        self.cmd_char
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_set_item_cmd_parameters(
+    menu_handle: u32,
+    item: i16,
+    cmd_char: u8,
+) -> Option<SetItemCmdParameters> {
+    if menu_handle == 0 || item < 1 {
+        None
+    } else {
+        Some(SetItemCmdParameters {
+            menu_handle,
+            item,
+            cmd_char,
+        })
+    }
+}
+
+/// Architecture-neutral parameter extraction and validation for GetItemMark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetItemMarkParameters {
+    menu_handle: u32,
+    item: i16,
+    mark_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl GetItemMarkParameters {
+    pub const fn menu_handle(&self) -> u32 {
+        self.menu_handle
+    }
+
+    pub const fn item(&self) -> i16 {
+        self.item
+    }
+
+    pub const fn mark_ptr(&self) -> u32 {
+        self.mark_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_item_mark_parameters(
+    menu_handle: u32,
+    item: i16,
+    mark_ptr: u32,
+) -> Option<GetItemMarkParameters> {
+    if mark_ptr == 0 {
+        None
+    } else {
+        Some(GetItemMarkParameters {
+            menu_handle,
+            item,
+            mark_ptr,
+        })
+    }
+}
+
+/// Architecture-neutral parameter extraction and validation for SetItemMark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetItemMarkParameters {
+    menu_handle: u32,
+    item: i16,
+    mark_char: u8,
+}
+
+#[allow(dead_code)]
+impl SetItemMarkParameters {
+    pub const fn menu_handle(&self) -> u32 {
+        self.menu_handle
+    }
+
+    pub const fn item(&self) -> i16 {
+        self.item
+    }
+
+    pub const fn mark_char(&self) -> u8 {
+        self.mark_char
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_set_item_mark_parameters(
+    menu_handle: u32,
+    item: i16,
+    mark_char: u8,
+) -> Option<SetItemMarkParameters> {
+    if menu_handle == 0 || item < 1 {
+        None
+    } else {
+        Some(SetItemMarkParameters {
+            menu_handle,
+            item,
+            mark_char,
+        })
+    }
+}
+
+/// Resolves standard mark character for CheckItem.
+pub const fn evaluate_check_item_mark(checked: bool) -> u8 {
+    if checked {
+        STANDARD_CHECKMARK_GLYPH
+    } else {
+        0
+    }
+}
+
+/// Architecture-neutral parameter extraction and validation for CheckItem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheckItemParameters {
+    menu_handle: u32,
+    item: i16,
+    checked: bool,
+    mark_char: u8,
+}
+
+#[allow(dead_code)]
+impl CheckItemParameters {
+    pub const fn menu_handle(&self) -> u32 {
+        self.menu_handle
+    }
+
+    pub const fn item(&self) -> i16 {
+        self.item
+    }
+
+    pub const fn checked(&self) -> bool {
+        self.checked
+    }
+
+    pub const fn mark_char(&self) -> u8 {
+        self.mark_char
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_check_item_parameters(
+    menu_handle: u32,
+    item: i16,
+    checked: bool,
+) -> Option<CheckItemParameters> {
+    if menu_handle == 0 || item < 1 {
+        None
+    } else {
+        Some(CheckItemParameters {
+            menu_handle,
+            item,
+            checked,
+            mark_char: evaluate_check_item_mark(checked),
+        })
+    }
+}
+
+/// Architecture-neutral parameter extraction and validation for GetMenuItemText / GetItem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetMenuItemTextParameters {
+    menu_handle: u32,
+    item: i16,
+    str_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl GetMenuItemTextParameters {
+    pub const fn menu_handle(&self) -> u32 {
+        self.menu_handle
+    }
+
+    pub const fn item(&self) -> i16 {
+        self.item
+    }
+
+    pub const fn str_ptr(&self) -> u32 {
+        self.str_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_menu_item_text_parameters(
+    menu_handle: u32,
+    item: i16,
+    str_ptr: u32,
+) -> Option<GetMenuItemTextParameters> {
+    if str_ptr == 0 {
+        None
+    } else {
+        Some(GetMenuItemTextParameters {
+            menu_handle,
+            item,
+            str_ptr,
+        })
+    }
+}
+
+/// Architecture-neutral parameter extraction and validation for SetMenuItemText / SetItem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetMenuItemTextParameters {
+    menu_handle: u32,
+    item: i16,
+    str_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl SetMenuItemTextParameters {
+    pub const fn menu_handle(&self) -> u32 {
+        self.menu_handle
+    }
+
+    pub const fn item(&self) -> i16 {
+        self.item
+    }
+
+    pub const fn str_ptr(&self) -> u32 {
+        self.str_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_set_menu_item_text_parameters(
+    menu_handle: u32,
+    item: i16,
+    str_ptr: u32,
+) -> Option<SetMenuItemTextParameters> {
+    if menu_handle == 0 || item < 1 {
+        None
+    } else {
+        Some(SetMenuItemTextParameters {
+            menu_handle,
+            item,
+            str_ptr,
+        })
+    }
+}
+
+/// Architecture-neutral parameter extraction and validation for Carbon MenuItem metadata (Command ID and RefCon).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuItemPropertyParameters {
+    menu_handle: u32,
+    item: u16,
+    value_or_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl MenuItemPropertyParameters {
+    pub const fn menu_handle(&self) -> u32 {
+        self.menu_handle
+    }
+
+    pub const fn item(&self) -> u16 {
+        self.item
+    }
+
+    pub const fn value_or_ptr(&self) -> u32 {
+        self.value_or_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_menu_item_property_parameters(
+    menu_handle: u32,
+    item: u16,
+    value_or_ptr: u32,
+    item_count: usize,
+) -> Result<MenuItemPropertyParameters, i16> {
+    if menu_handle == 0 {
+        return Err(-5623); // menuInvalidErr
+    }
+    if item == 0 || usize::from(item) > item_count {
+        return Err(-5622); // menuItemNotFoundErr
+    }
+    Ok(MenuItemPropertyParameters {
+        menu_handle,
+        item,
+        value_or_ptr,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6283,5 +6642,88 @@ mod tests {
         // CalcMenuSize
         assert_eq!(evaluate_calc_menu_size_parameters(0x6000).unwrap().menu_handle(), 0x6000);
         assert!(evaluate_calc_menu_size_parameters(0).is_none());
+    }
+
+    #[test]
+    fn menu_item_text_mark_command_refcon_and_count_evaluation() {
+        // CountMItems
+        let count_params = evaluate_count_m_items_parameters(0x4000);
+        assert_eq!(count_params.menu_handle(), 0x4000);
+
+        // GetItemCmd
+        let get_cmd = evaluate_get_item_cmd_parameters(0x4000, 2, 0x1000).unwrap();
+        assert_eq!(get_cmd.menu_handle(), 0x4000);
+        assert_eq!(get_cmd.item(), 2);
+        assert_eq!(get_cmd.cmd_char_ptr(), 0x1000);
+        assert!(evaluate_get_item_cmd_parameters(0x4000, 2, 0).is_none());
+
+        // SetItemCmd
+        let set_cmd = evaluate_set_item_cmd_parameters(0x4000, 3, b'Q').unwrap();
+        assert_eq!(set_cmd.menu_handle(), 0x4000);
+        assert_eq!(set_cmd.item(), 3);
+        assert_eq!(set_cmd.cmd_char(), b'Q');
+        assert!(evaluate_set_item_cmd_parameters(0, 3, b'Q').is_none());
+        assert!(evaluate_set_item_cmd_parameters(0x4000, 0, b'Q').is_none());
+
+        // GetItemMark
+        let get_mark = evaluate_get_item_mark_parameters(0x4000, 1, 0x2000).unwrap();
+        assert_eq!(get_mark.menu_handle(), 0x4000);
+        assert_eq!(get_mark.item(), 1);
+        assert_eq!(get_mark.mark_ptr(), 0x2000);
+        assert!(evaluate_get_item_mark_parameters(0x4000, 1, 0).is_none());
+
+        // SetItemMark
+        let set_mark = evaluate_set_item_mark_parameters(0x4000, 4, 0x12).unwrap();
+        assert_eq!(set_mark.menu_handle(), 0x4000);
+        assert_eq!(set_mark.item(), 4);
+        assert_eq!(set_mark.mark_char(), 0x12);
+        assert!(evaluate_set_item_mark_parameters(0, 4, 0x12).is_none());
+        assert!(evaluate_set_item_mark_parameters(0x4000, 0, 0x12).is_none());
+
+        // CheckItem
+        assert_eq!(evaluate_check_item_mark(true), STANDARD_CHECKMARK_GLYPH);
+        assert_eq!(evaluate_check_item_mark(false), 0);
+        let check_true = evaluate_check_item_parameters(0x4000, 2, true).unwrap();
+        assert_eq!(check_true.menu_handle(), 0x4000);
+        assert_eq!(check_true.item(), 2);
+        assert!(check_true.checked());
+        assert_eq!(check_true.mark_char(), STANDARD_CHECKMARK_GLYPH);
+        let check_false = evaluate_check_item_parameters(0x4000, 2, false).unwrap();
+        assert_eq!(check_false.mark_char(), 0);
+        assert!(evaluate_check_item_parameters(0, 2, true).is_none());
+        assert!(evaluate_check_item_parameters(0x4000, 0, true).is_none());
+
+        // GetMenuItemText
+        let get_text = evaluate_get_menu_item_text_parameters(0x4000, 1, 0x3000).unwrap();
+        assert_eq!(get_text.menu_handle(), 0x4000);
+        assert_eq!(get_text.item(), 1);
+        assert_eq!(get_text.str_ptr(), 0x3000);
+        assert!(evaluate_get_menu_item_text_parameters(0x4000, 1, 0).is_none());
+
+        // SetMenuItemText
+        let set_text = evaluate_set_menu_item_text_parameters(0x4000, 1, 0x3000).unwrap();
+        assert_eq!(set_text.menu_handle(), 0x4000);
+        assert_eq!(set_text.item(), 1);
+        assert_eq!(set_text.str_ptr(), 0x3000);
+        assert!(evaluate_set_menu_item_text_parameters(0, 1, 0x3000).is_none());
+        assert!(evaluate_set_menu_item_text_parameters(0x4000, 0, 0x3000).is_none());
+
+        // MenuItemProperty (Command ID / RefCon)
+        let prop = evaluate_menu_item_property_parameters(0x4000, 2, 0x5555, 5).unwrap();
+        assert_eq!(prop.menu_handle(), 0x4000);
+        assert_eq!(prop.item(), 2);
+        assert_eq!(prop.value_or_ptr(), 0x5555);
+        assert_eq!(
+            evaluate_menu_item_property_parameters(0, 2, 0x5555, 5),
+            Err(-5623) // menuInvalidErr
+        );
+        assert_eq!(
+            evaluate_menu_item_property_parameters(0x4000, 0, 0x5555, 5),
+            Err(-5622) // menuItemNotFoundErr
+        );
+        assert_eq!(
+            evaluate_menu_item_property_parameters(0x4000, 6, 0x5555, 5),
+            Err(-5622) // menuItemNotFoundErr
+        );
     }
 }
