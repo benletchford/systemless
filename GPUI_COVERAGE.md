@@ -1,5 +1,19 @@
 # GPUI Kit system-interface coverage
 
+### Standard File filename abbreviation
+
+The GPUI Open and Save row painters now use the guest's CPU-specific display
+policy: 68k abbreviates names longer than 36 characters with three periods;
+PPC retains the full name. Snapshot entry names and accessibility labels remain
+complete, so display abbreviation does not change selection or file operations.
+The text continues through the guest glyph canvas rather than host typography.
+The character-boundary test covers accented Mac Roman characters and exact-limit
+names. The modal snapshot regression verifies the policy, text origins and
+directory markers in monochrome 68k, colour 68k and PPC, with both semantic and
+pointer routes (8.99 seconds). The GPUI Open/Save click routing test passes
+(0.70 seconds). These checks do not establish long-name visual parity, selected
+or scrolled row parity, or the remaining directory/volume label typography.
+
 This is the working inventory for presenting Macintosh system UI through GPUI
 Kit on both 68K and PowerPC. A row is complete only when the guest state is
 observable on both architectures, GPUI renders it without obscuring

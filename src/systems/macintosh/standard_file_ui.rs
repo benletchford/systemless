@@ -78,6 +78,8 @@ pub struct StandardFileSnapshot {
     /// Horizontal inset and baseline relative to each guest list row.
     pub list_text_origin: (i16, i16),
     pub directory_marker: &'static str,
+    /// Guest painter character limit; full entry names remain canonical.
+    pub list_name_limit: Option<usize>,
     pub confirming_replace: bool,
     pub new_folder: Option<StandardFileNewFolderSnapshot>,
     /// True only for the modern standard entry points. This alone does not
