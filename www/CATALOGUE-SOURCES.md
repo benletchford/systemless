@@ -137,29 +137,38 @@ shows `open mailbox` revealing a leaflet and incrementing Moves to 1. This
 establishes an interactive excerpt, not the full Zork I game or save/restart
 qualification. Its game-data redistribution permission remains unestablished.
 
-After [font resource swapping](https://github.com/benletchford/systemless/pull/4318)
-and [removed-window update cleanup](https://github.com/benletchford/systemless/pull/4323),
+After [font resource swapping](https://github.com/benletchford/systemless/pull/4318),
+[removed-window update cleanup](https://github.com/benletchford/systemless/pull/4323)
+and [PtrAndHand](https://github.com/benletchford/systemless/pull/4329),
 Civilization II PPC Demo 1.0 was replayed on tested head
-`936d81094d1370e4c4c09b4d3b630e3be2f524b2` using its unchanged original
+`d205704846625ecd99f7174685fe8378c086df3d` using its unchanged original
 8,160,693-byte archive (SHA-256
 `6ed949cc2a1b14589c28c35c7babd32bc135caff3b64e06f445a493cc0b16611`).
-The initial bounded replay completes at frontend/guest tick 180 with zero
-assertions and no exhausted frames. The inspected capture shows menus and a
-CD-ROM notice with a corrupted background. The former tick-13 failure was caused
-by a queued update event for a disposed window; the cleanup prevents that event
-from reaching the released application object, as documented in
-[the resolved window-object issue](https://github.com/benletchford/systemless/issues/4316).
-A continuation passes one pixel assertion on the inspected OK-button fill, then
-clicks OK at v=350, h=529 (held for two ticks). Execution stops at
-[unsupported PtrAndHand](https://github.com/benletchford/systemless/issues/4325),
-frontend tick 183 / guest tick 182, before the next 180-tick action completes.
-The inspected failure capture has a blank desktop with only the Apple menu;
-no main-menu or gameplay checkpoint is established. The sourced PPC demo does
-not supply the requested 68K package; exact-archive redistribution rights,
-Systemless hosting and browser qualification remain unresolved. No catalogue
-entry is added or enabled.
+The bounded continuation asserts the inspected notice OK-button fill at tick
+180 and clicks v=350, h=529 with a two-tick hold. The old tick-183 unsupported
+PtrAndHand stop is gone; the inspected tick-362 frame shows the MacSoft splash.
+The tick-962 frame shows the main menu with corrupted graphics; an unattended
+tick-1562 frame is black, so a stable menu is not established by that run.
+A separate interaction asserts the inspected main-menu OK fill and clicks
+v=560, h=475 to accept Start a New Game. It passes through the default world
+size, difficulty, civilization count, barbarian activity, standard rules,
+gender, Romans, Caesar and city-style choices. Accepting the civilization
+introduction produces the map interface and initial guidance at frontend/guest
+tick 4644, with two assertions and no exhausted frames. The inspected image
+shows red/black triangles across the terrain and red/green speckles in dialog
+backgrounds; frames, icons and text are also malformed. This is
+[startup progress with a rendering defect](https://github.com/benletchford/systemless/issues/4331),
+not proof of playable gameplay. Clicking guidance OK at v=398, h=609 with a
+two-tick hold stops at [unsupported PBRenameSync](https://github.com/benletchford/systemless/issues/4332),
+PC `01F00014`, LR `011009A4`, frontend tick 4647 / guest tick 4646. Both prior
+assertions pass; the failure capture retains the corrupted map interface.
+The sourced PPC demo does not supply the requested 68K package; exact-archive
+redistribution rights, sustained gameplay, save/load, audio, Systemless hosting
+and browser qualification remain unresolved. No catalogue entry is added or
+enabled.
 
-Current failures are recorded separately for [Civilization II handle append startup](https://github.com/benletchford/systemless/issues/4325),
+Current failures are recorded separately for [Civilization II parameter-block rename](https://github.com/benletchford/systemless/issues/4332),
+[Civilization II bitmap rendering](https://github.com/benletchford/systemless/issues/4331),
 [Combat Mission accelerator startup](https://github.com/benletchford/systemless/issues/4253),
 [Worms Blast early exit](https://github.com/benletchford/systemless/issues/4254),
 [Oni bundled CarbonLib memory planning](https://github.com/benletchford/systemless/issues/4256),
