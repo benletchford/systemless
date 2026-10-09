@@ -3200,6 +3200,17 @@ impl FixtureRunner {
         self.bus.synthetic_reservation_range()
     }
 
+    /// Request a process switch at the next eligible Event Manager opportunity.
+    /// A parked WaitNextEvent is already such an opportunity; it can return
+    /// the notification without waiting for the requested sleep to expire.
+    /// Macintosh Toolbox Essentials (1992), pp. 2-19--2-22.
+    pub fn request_foreground(&mut self, foreground: bool) {
+        self.process_context.event_queue().with_mut(|queue| {
+            queue.activation.request(foreground);
+        });
+        self.wake_pending_wait_next_event_if_input_available();
+    }
+
     /// Move the mouse without changing the button state. Coordinates are in
     /// the runner's presented framebuffer; a centered native framebuffer is
     /// translated to Macintosh global coordinates at this host-input boundary.
@@ -11057,6 +11068,7 @@ impl FixtureRunner {
             mut modifiers,
             mut has_event,
         ) = self.dispatcher.with_process_state(|dispatcher| {
+            dispatcher.service_process_activation(&mut self.bus, true);
             dispatcher.dequeue_toolbox_event(&mut self.m68k.cpu, &mut self.bus, pending.event_mask)
         });
         if !has_event {

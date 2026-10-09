@@ -849,3 +849,71 @@ fn mb_state_stays_pressed_with_solo_pending_mousedown() {
              a mouseDown is queued (no paired mouseUp yet)"
     );
 }
+
+
+#[test]
+fn foreground_request_wakes_sleeping_event_loop_with_mask_and_interrupt_safety() {
+    for masked in [false, true] {
+        for interrupt in [false, true] {
+            let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+            let event_ptr = 0x0020_0000;
+            let result_ptr = 0x0020_0020;
+            runner.dispatcher.set_sent_open_app_event_for_test(true);
+            runner.dispatcher.application_size.with_mut(|size| {
+                *size = Some(crate::loader::ApplicationSizeResource {
+                    flags: 0x4800,
+                    preferred_size: 0,
+                    minimum_size: 0,
+                })
+            });
+            runner.dispatcher.pending_wait_sleep_ticks = 3600;
+            runner.dispatcher.pending_wait_next_event_return = Some(PendingWaitNextEventReturn {
+                event_ptr,
+                result_ptr,
+                event_mask: if masked { 0x0008 } else { 0x8000 },
+                mouse_rgn: 0,
+                resume_pc: None,
+                resume_sp: None,
+            });
+            if interrupt {
+                runner.active_interrupt_callback = Some(ActiveInterruptCallback {
+                    source: ActiveInterruptCallbackSource::Timer,
+                    resume_pc: 0x10000,
+                    resume_sp: 0x007F_FFC0,
+                    d_regs: [0; 8],
+                    a_regs: [0; 8],
+                    sr: 0x2000,
+                    ccr: 0,
+                    restore_port: None,
+                });
+            }
+            runner.request_foreground(false);
+            if masked || interrupt {
+                assert_eq!(runner.bus.read_word(event_ptr), 0);
+                assert_eq!(runner.bus.read_word(result_ptr), 0);
+                assert_eq!(runner.dispatcher.pending_wait_sleep_ticks, 3600);
+                assert!(runner.dispatcher.pending_wait_next_event_return.is_some());
+                runner.active_interrupt_callback = None;
+                runner
+                    .dispatcher
+                    .pending_wait_next_event_return
+                    .as_mut()
+                    .unwrap()
+                    .event_mask = 0x8000;
+                runner.request_foreground(false);
+            }
+            assert_eq!(runner.bus.read_word(event_ptr), 15);
+            assert_eq!(runner.bus.read_long(event_ptr + 2), 0x0100_0000);
+            assert_eq!(runner.bus.read_word(result_ptr), 0xFFFF);
+            assert_eq!(runner.dispatcher.pending_wait_sleep_ticks, 0);
+            assert!(runner.dispatcher.pending_wait_next_event_return.is_none());
+            assert!(
+                runner
+                    .process_context
+                    .event_queue()
+                    .with_ref(|queue| queue.activation.is_foreground()),
+                "guest must handle suspend before its next yield"
+            );
+        }
+    }
+}

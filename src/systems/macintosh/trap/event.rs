@@ -522,7 +522,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    pub(super) fn service_process_activation(&mut self, bus: &mut MacMemoryBus, yields: bool) {
+    pub(crate) fn service_process_activation(&mut self, bus: &mut MacMemoryBus, yields: bool) {
         if !self.event_queue.with_ref(|queue| queue.activation.needs_event_service()) {
             return;
         }
