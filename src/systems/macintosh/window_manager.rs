@@ -2930,6 +2930,196 @@ pub fn evaluate_is_window_visible(window_ptr: u32, is_visible: bool) -> bool {
     window_ptr != 0 && is_visible
 }
 
+/// Architecture-neutral parameter validation for RepositionWindow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RepositionWindowParameters {
+    window_ptr: u32,
+    parent_window_ptr: u32,
+    method: u16,
+}
+
+#[allow(dead_code)]
+impl RepositionWindowParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn parent_window_ptr(&self) -> u32 {
+        self.parent_window_ptr
+    }
+
+    pub const fn method(&self) -> u16 {
+        self.method
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_reposition_window_parameters(
+    window_ptr: u32,
+    parent_window_ptr: u32,
+    method: u16,
+) -> Result<RepositionWindowParameters, i16> {
+    if window_ptr == 0 || !(1..=9).contains(&method) {
+        return Err(-50);
+    }
+    Ok(RepositionWindowParameters {
+        window_ptr,
+        parent_window_ptr,
+        method,
+    })
+}
+
+/// Architecture-neutral parameter validation for BringToFront.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BringToFrontParameters {
+    window_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl BringToFrontParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_bring_to_front_parameters(window_ptr: u32) -> Option<BringToFrontParameters> {
+    if window_ptr == 0 {
+        return None;
+    }
+    Some(BringToFrontParameters { window_ptr })
+}
+
+/// Architecture-neutral parameter validation for SelectWindow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectWindowParameters {
+    window_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl SelectWindowParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_select_window_parameters(window_ptr: u32) -> Option<SelectWindowParameters> {
+    if window_ptr == 0 {
+        return None;
+    }
+    Some(SelectWindowParameters { window_ptr })
+}
+
+/// Architecture-neutral parameter validation for ShowWindow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShowWindowParameters {
+    window_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl ShowWindowParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_show_window_parameters(window_ptr: u32) -> Option<ShowWindowParameters> {
+    if window_ptr == 0 {
+        return None;
+    }
+    Some(ShowWindowParameters { window_ptr })
+}
+
+/// Architecture-neutral parameter validation for HideWindow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HideWindowParameters {
+    window_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl HideWindowParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_hide_window_parameters(window_ptr: u32) -> Option<HideWindowParameters> {
+    if window_ptr == 0 {
+        return None;
+    }
+    Some(HideWindowParameters { window_ptr })
+}
+
+/// Architecture-neutral parameter validation for ShowHide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShowHideParameters {
+    window_ptr: u32,
+    show: bool,
+}
+
+#[allow(dead_code)]
+impl ShowHideParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn show(&self) -> bool {
+        self.show
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_show_hide_parameters(window_ptr: u32, show: bool) -> Option<ShowHideParameters> {
+    if window_ptr == 0 {
+        return None;
+    }
+    Some(ShowHideParameters { window_ptr, show })
+}
+
+/// Architecture-neutral parameter validation for CheckUpdate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheckUpdateParameters {
+    event_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl CheckUpdateParameters {
+    pub const fn event_ptr(&self) -> u32 {
+        self.event_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_check_update_parameters(event_ptr: u32) -> CheckUpdateParameters {
+    CheckUpdateParameters { event_ptr }
+}
+
+/// Architecture-neutral parameter validation for CalculateVisibleRegion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CalculateVisibleRegionParameters {
+    window_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl CalculateVisibleRegionParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_calculate_visible_region_parameters(
+    window_ptr: u32,
+) -> Option<CalculateVisibleRegionParameters> {
+    if window_ptr == 0 {
+        return None;
+    }
+    Some(CalculateVisibleRegionParameters { window_ptr })
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -4022,5 +4212,54 @@ mod tests {
         assert!(!evaluate_is_window_visible(0, true));
         assert!(!evaluate_is_window_visible(0x1000, false));
         assert!(evaluate_is_window_visible(0x1000, true));
+    }
+
+    #[test]
+    fn window_positioning_visibility_selection_and_update_evaluation() {
+        // RepositionWindow
+        assert_eq!(evaluate_reposition_window_parameters(0, 0, 1), Err(-50));
+        assert_eq!(evaluate_reposition_window_parameters(0x1000, 0, 0), Err(-50));
+        assert_eq!(evaluate_reposition_window_parameters(0x1000, 0, 10), Err(-50));
+        let repo = evaluate_reposition_window_parameters(0x1000, 0x2000, 5).unwrap();
+        assert_eq!(repo.window_ptr(), 0x1000);
+        assert_eq!(repo.parent_window_ptr(), 0x2000);
+        assert_eq!(repo.method(), 5);
+
+        // BringToFront
+        assert_eq!(evaluate_bring_to_front_parameters(0), None);
+        let btf = evaluate_bring_to_front_parameters(0x1000).unwrap();
+        assert_eq!(btf.window_ptr(), 0x1000);
+
+        // SelectWindow
+        assert_eq!(evaluate_select_window_parameters(0), None);
+        let sel = evaluate_select_window_parameters(0x1000).unwrap();
+        assert_eq!(sel.window_ptr(), 0x1000);
+
+        // ShowWindow
+        assert_eq!(evaluate_show_window_parameters(0), None);
+        let show = evaluate_show_window_parameters(0x1000).unwrap();
+        assert_eq!(show.window_ptr(), 0x1000);
+
+        // HideWindow
+        assert_eq!(evaluate_hide_window_parameters(0), None);
+        let hide = evaluate_hide_window_parameters(0x1000).unwrap();
+        assert_eq!(hide.window_ptr(), 0x1000);
+
+        // ShowHide
+        assert_eq!(evaluate_show_hide_parameters(0, true), None);
+        let sh_true = evaluate_show_hide_parameters(0x1000, true).unwrap();
+        assert_eq!(sh_true.window_ptr(), 0x1000);
+        assert!(sh_true.show());
+        let sh_false = evaluate_show_hide_parameters(0x1000, false).unwrap();
+        assert!(!sh_false.show());
+
+        // CheckUpdate
+        let chk = evaluate_check_update_parameters(0x3000);
+        assert_eq!(chk.event_ptr(), 0x3000);
+
+        // CalculateVisibleRegion
+        assert_eq!(evaluate_calculate_visible_region_parameters(0), None);
+        let calc = evaluate_calculate_visible_region_parameters(0x1000).unwrap();
+        assert_eq!(calc.window_ptr(), 0x1000);
     }
 }
