@@ -9605,8 +9605,9 @@ impl super::TrapDispatcher {
             (true, 0x21E) => {
                 let sp = cpu.read_reg(Register::A7);
                 let icon_id = bus.read_word(sp) as i16;
+                let params = crate::cursor_manager::evaluate_get_cicon_parameters(icon_id);
                 let handle = if let Some((_, resource_ptr)) =
-                    self.find_or_load_resource_any(bus, *b"cicn", icon_id)
+                    self.find_or_load_resource_any(bus, *b"cicn", params.icon_id)
                 {
                     let resource_size = bus.get_alloc_size(resource_ptr).unwrap_or(0);
                     if resource_size == 0 {
@@ -9762,22 +9763,25 @@ impl super::TrapDispatcher {
                 let icon_handle = bus.read_long(sp);
                 let rect_ptr = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
+                let params = crate::cursor_manager::evaluate_plot_cicon_parameters(
+                    rect_ptr, icon_handle,
+                );
 
-                if icon_handle == 0 {
+                if params.cicon_handle == 0 {
                     return Some(Ok(()));
                 }
-                let icon_ptr = bus.read_long(icon_handle);
+                let icon_ptr = bus.read_long(params.cicon_handle);
                 if icon_ptr == 0 {
                     return Some(Ok(()));
                 }
-                if rect_ptr == 0 {
+                if params.rect_ptr == 0 {
                     return Some(Ok(()));
                 }
 
-                let dst_top = bus.read_word(rect_ptr) as i16;
-                let dst_left = bus.read_word(rect_ptr + 2) as i16;
-                let dst_bottom = bus.read_word(rect_ptr + 4) as i16;
-                let dst_right = bus.read_word(rect_ptr + 6) as i16;
+                let dst_top = bus.read_word(params.rect_ptr) as i16;
+                let dst_left = bus.read_word(params.rect_ptr + 2) as i16;
+                let dst_bottom = bus.read_word(params.rect_ptr + 4) as i16;
+                let dst_right = bus.read_word(params.rect_ptr + 6) as i16;
 
                 // CIcon layout (Inside Macintosh Volume V, V-64):
                 //   0: iconPMap (PixMap, 50 bytes)
@@ -10191,8 +10195,9 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let icon_handle = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
-                if icon_handle != 0 {
-                    let icon_ptr = bus.read_long(icon_handle);
+                let params = crate::cursor_manager::evaluate_dispose_cicon_parameters(icon_handle);
+                if params.cicon_handle != 0 {
+                    let icon_ptr = bus.read_long(params.cicon_handle);
                     if icon_ptr != 0 {
                         let icon_pm_table_handle = bus.read_long(icon_ptr + 42);
                         let icon_data_handle = bus.read_long(icon_ptr + 78);
@@ -10201,14 +10206,14 @@ impl super::TrapDispatcher {
                         Self::free_handle_and_target(bus, icon_pm_table_handle);
                         Self::free_handle_and_target(bus, icon_data_handle);
                         self.untrack_handle_ptr(icon_ptr);
-                        self.forget_resource_handle_index_for_handle(icon_handle);
+                        self.forget_resource_handle_index_for_handle(params.cicon_handle);
                         self.with_resource_manager_mut(|resource_manager| {
-                            resource_manager.loaded_handles.remove(&icon_handle);
-                            resource_manager.resource_handle_files.remove(&icon_handle);
+                            resource_manager.loaded_handles.remove(&params.cicon_handle);
+                            resource_manager.resource_handle_files.remove(&params.cicon_handle);
                         });
                         bus.free(icon_ptr);
-                        bus.write_long(icon_handle, 0);
-                        bus.free(icon_handle);
+                        bus.write_long(params.cicon_handle, 0);
+                        bus.free(params.cicon_handle);
                     }
                 }
                 Ok(())
@@ -12180,6 +12185,7 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let handle = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
+                let _params = crate::cursor_manager::evaluate_dispose_ccursor_parameters(handle);
                 self.dispose_color_compound_handle(bus, handle);
                 Ok(())
             }
@@ -12417,27 +12423,29 @@ impl super::TrapDispatcher {
                 let offset_h = bus.read_word(sp + 2) as i16;
                 let rect_ptr = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
+                let params = crate::cursor_manager::evaluate_shield_cursor_parameters(
+                    rect_ptr, offset_v, offset_h,
+                );
 
-                if rect_ptr != 0 {
-                    let shield_top = (bus.read_word(rect_ptr) as i16).wrapping_add(offset_v);
-                    let shield_left = (bus.read_word(rect_ptr + 2) as i16).wrapping_add(offset_h);
-                    let shield_bottom = (bus.read_word(rect_ptr + 4) as i16).wrapping_add(offset_v);
-                    let shield_right = (bus.read_word(rect_ptr + 6) as i16).wrapping_add(offset_h);
-                    let (mouse_v, mouse_h) = self.mouse_position();
-                    let (hot_v, hot_h) = self
+                if params.rect_ptr != 0 {
+                    let shield_rect = (
+                        bus.read_word(params.rect_ptr) as i16,
+                        bus.read_word(params.rect_ptr + 2) as i16,
+                        bus.read_word(params.rect_ptr + 4) as i16,
+                        bus.read_word(params.rect_ptr + 6) as i16,
+                    );
+                    let mouse_pos = self.mouse_position();
+                    let hot_spot = self
                         .cursor_data()
                         .map(|(_, _, hot_v, hot_h)| (hot_v, hot_h))
                         .unwrap_or((0, 0));
-                    let cursor_top = mouse_v.saturating_sub(hot_v);
-                    let cursor_left = mouse_h.saturating_sub(hot_h);
-                    let cursor_bottom = cursor_top.saturating_add(16);
-                    let cursor_right = cursor_left.saturating_add(16);
 
-                    if cursor_top < shield_bottom
-                        && cursor_bottom > shield_top
-                        && cursor_left < shield_right
-                        && cursor_right > shield_left
-                    {
+                    if crate::cursor_manager::evaluate_cursor_shield_overlap(
+                        shield_rect,
+                        (params.offset_v, params.offset_h),
+                        mouse_pos,
+                        hot_spot,
+                    ) {
                         self.cursor_state.hide();
                     }
                 }
@@ -14345,11 +14353,12 @@ impl super::TrapDispatcher {
             (true, 0x21B) => {
                 let sp = cpu.read_reg(Register::A7);
                 let crsr_id = bus.read_word(sp) as i16;
-                let handle = match self.find_or_load_resource_any(bus, *b"crsr", crsr_id) {
+                let params = crate::cursor_manager::evaluate_get_ccursor_parameters(crsr_id);
+                let handle = match self.find_or_load_resource_any(bus, *b"crsr", params.cursor_id) {
                     Some((_, data_ptr)) => self
                         .promote_compiled_crsr_resource(bus, data_ptr)
                         .unwrap_or_else(|| {
-                            self.get_or_create_resource_handle(bus, *b"crsr", crsr_id, data_ptr)
+                            self.get_or_create_resource_handle(bus, *b"crsr", params.cursor_id, data_ptr)
                         }),
                     None => 0,
                 };
@@ -14370,9 +14379,10 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let crsr_handle = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
+                let params = crate::cursor_manager::evaluate_set_ccursor_parameters(crsr_handle);
 
-                if crsr_handle != 0 {
-                    let crsr_ptr = bus.read_long(crsr_handle);
+                if params.cursor_handle != 0 {
+                    let crsr_ptr = bus.read_long(params.cursor_handle);
                     if crsr_ptr != 0 {
                         if let Some(cursor) = self.cursor_image_from_ccrsr(bus, crsr_ptr) {
                             self.cursor_state.install(cursor);

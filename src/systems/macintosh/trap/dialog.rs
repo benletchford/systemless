@@ -13747,6 +13747,7 @@ impl super::TrapDispatcher {
             // InitCursor ($A850): Sets arrow cursor, resets cursor level to 0,
             // makes visible (IM:I I-167).
             (true, 0x050) => {
+                let _action = crate::cursor_manager::evaluate_init_cursor();
                 self.cursor_state.init();
                 Ok(())
             }
@@ -13761,20 +13762,29 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let crsr_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
+                let params = crate::cursor_manager::evaluate_set_cursor_parameters(crsr_ptr);
 
                 // Read cursor bitmap (16x16 = 32 bytes)
-                let mut data = [0u8; 32];
+                let mut data = [0u8; crate::cursor_manager::CURSOR_BITMAP_SIZE];
                 for (i, byte) in data.iter_mut().enumerate() {
-                    *byte = bus.read_byte(crsr_ptr + i as u32);
+                    *byte = bus.read_byte(
+                        params.cursor_ptr + crate::cursor_manager::CURSOR_DATA_OFFSET as u32 + i as u32,
+                    );
                 }
                 // Read cursor mask (16x16 = 32 bytes)
-                let mut mask = [0u8; 32];
+                let mut mask = [0u8; crate::cursor_manager::CURSOR_BITMAP_SIZE];
                 for (i, byte) in mask.iter_mut().enumerate() {
-                    *byte = bus.read_byte(crsr_ptr + 32 + i as u32);
+                    *byte = bus.read_byte(
+                        params.cursor_ptr + crate::cursor_manager::CURSOR_MASK_OFFSET as u32 + i as u32,
+                    );
                 }
                 // Read hotspot
-                let hot_v = bus.read_word(crsr_ptr + 64) as i16;
-                let hot_h = bus.read_word(crsr_ptr + 66) as i16;
+                let hot_v = bus.read_word(
+                    params.cursor_ptr + crate::cursor_manager::CURSOR_HOT_V_OFFSET as u32,
+                ) as i16;
+                let hot_h = bus.read_word(
+                    params.cursor_ptr + crate::cursor_manager::CURSOR_HOT_H_OFFSET as u32,
+                ) as i16;
 
                 self.cursor_state
                     .install(CursorImage::mono(data, mask, hot_v, hot_h));
@@ -13785,6 +13795,7 @@ impl super::TrapDispatcher {
             // HideCursor ($A852): Decrements cursor level and hides while level < 0
             // per IM:I I-168.
             (true, 0x052) => {
+                let _action = crate::cursor_manager::evaluate_hide_cursor();
                 self.cursor_state.hide();
                 Ok(())
             }
@@ -13793,6 +13804,7 @@ impl super::TrapDispatcher {
             // ShowCursor ($A853): Increments cursor level toward 0; extra calls
             // at level 0 are no-op (IM:I I-168).
             (true, 0x053) => {
+                let _action = crate::cursor_manager::evaluate_show_cursor();
                 self.cursor_state.show();
                 Ok(())
             }
@@ -13842,7 +13854,10 @@ impl super::TrapDispatcher {
             // Systemless HLE keeps cursor state internal).
             //
             // ObscureCursor ($A856): No args / no result per IM:I I-168 MPW C declaration ObscureCursor(void) ONEWORDINLINE(0xA856) — HLE no-op; SP unchanged across calls.
-            (true, 0x056) => Ok(()),
+            (true, 0x056) => {
+                let _action = crate::cursor_manager::evaluate_obscure_cursor();
+                Ok(())
+            }
 
             // GetCursor ($A9B9)
             // FUNCTION GetCursor(cursorID: INTEGER): CursHandle;
@@ -13876,18 +13891,19 @@ impl super::TrapDispatcher {
             (true, 0x1B9) => {
                 let sp = cpu.read_reg(Register::A7);
                 let cursor_id = bus.read_word(sp) as i16;
+                let params = crate::cursor_manager::evaluate_get_cursor_parameters(cursor_id);
 
                 let handle = if let Some((refnum, ptr)) =
-                    self.find_or_load_resource_any(bus, *b"CURS", cursor_id)
+                    self.find_or_load_resource_any(bus, *b"CURS", params.cursor_id)
                 {
                     self.get_or_create_resource_handle_in_file(
-                        bus, *b"CURS", cursor_id, ptr, refnum,
+                        bus, *b"CURS", params.cursor_id, ptr, refnum,
                     )
-                } else if let Some(ptr) = self.synthesize_system_cursor(bus, cursor_id) {
+                } else if let Some(ptr) = self.synthesize_system_cursor(bus, params.cursor_id) {
                     // Built-in cursor synthesised + cached. Use the
                     // resource-handle helper so subsequent GetCursor
                     // calls for the same ID return the same handle.
-                    self.get_or_create_resource_handle(bus, *b"CURS", cursor_id, ptr)
+                    self.get_or_create_resource_handle(bus, *b"CURS", params.cursor_id, ptr)
                 } else {
                     0
                 };
