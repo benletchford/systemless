@@ -25,6 +25,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn solid_styled_caret_overwrites_ink_without_inverting_or_selecting() {
+        use systemless::runner::{TextEditInkSnapshot, TextEditLineGeometry};
+        let glyphs = ClassicLine::plain(b"W", 3, 12);
+        let ink = TextEditInkSnapshot { pixel: 1, rgb: [20, 40, 60], inverted_rgb: [235, 215, 195] };
+        let mut line = StyledTextEditLine {
+            geometry: TextEditLineGeometry { top: 0, left: 0, height: 16, ascent: 12 },
+            baseline: 12, selection: None,
+            runs: vec![StyledTextEditRun { bytes: 0..1, left: 0,
+                measured_positions: vec![0, 10], glyphs, ink: ink.clone() }],
+        };
+        let original = line.pixels().unwrap();
+        let &(x, y) = original.keys().next().unwrap();
+        let caret = TextEditInkSnapshot { pixel: 7, rgb: [100, 80, 160], inverted_rgb: [155, 175, 95] };
+        let painted = line.pixels_with_solid_caret(Some((y, x, y + 2, x + 1)), &caret).unwrap();
+        assert_eq!(painted[&(x, y)], caret.rgb);
+        assert_eq!(painted[&(x, y + 1)], caret.rgb);
+        for (&point, &rgb) in &original {
+            if point != (x, y) && point != (x, y + 1) { assert_eq!(painted[&point], rgb); }
+        }
+        assert_eq!(line.pixels_with_solid_caret(None, &caret), Some(original));
+        assert!(line.pixels_with_solid_caret(Some((y, x, y, x + 1)), &caret).is_none());
+        line.selection = Some((0, 0, 16, 10));
+        assert!(line.pixels_with_solid_caret(Some((y, x, y + 2, x + 1)), &caret).is_none());
+    }
+
+    #[test]
     fn selected_trailing_dialog_space_does_not_become_a_caret() {
         let line = ClassicLine::plain(b"Pilot ", 0, 12);
         let layout = systemless::runner::DialogEditTextLayout {
@@ -670,6 +696,26 @@ impl StyledTextEditLine {
         Some(pixels)
     }
 
+    /// Paint a qualified solid caret after run ink. The caller must resolve
+    /// the native pen/theme policy; a style colour alone does not establish
+    /// classic PaintRect's pattern or transfer mode. Geometry is already
+    /// clipped to the guest-owned view by guest_styled_caret_rect.
+    pub fn pixels_with_solid_caret(
+        &self, rect: Option<(i16, i16, i16, i16)>,
+        ink: &systemless::runner::TextEditInkSnapshot,
+    ) -> Option<std::collections::BTreeMap<(i16, i16), [u8; 3]>> {
+        // Selection and insertion caret are mutually exclusive in TextEdit.
+        if self.selection.is_some() { return None; }
+        let mut pixels = self.pixels()?;
+        if let Some((top, left, bottom, right)) = rect {
+            if top >= bottom || left >= right { return None; }
+            for y in top..bottom { for x in left..right {
+                pixels.insert((x, y), ink.rgb);
+            } }
+        }
+        Some(pixels)
+    }
+
     /// srcOr's set mask pixels replace foreground in both native CPU paths.
     /// Resolve overlapping runs in draw order, retaining the last run's ink.
     /// Background erasure and selection are separate presentation operations.
@@ -702,6 +748,16 @@ pub(crate) fn classic_styled_text_edit_selection(
     scale: f32, port_origin: (f32, f32),
 ) -> Option<impl gpui_kit::IntoElement> {
     classic_styled_text_pixels(line.pixels_with_selection(background)?, scale, port_origin)
+}
+
+/// Solid guest caret paint only: patterned pens and themed caps require
+/// their own qualified raster rather than silent substitution here.
+pub(crate) fn classic_styled_text_edit_solid_caret(
+    line: StyledTextEditLine, rect: Option<(i16, i16, i16, i16)>,
+    ink: &systemless::runner::TextEditInkSnapshot,
+    scale: f32, port_origin: (f32, f32),
+) -> Option<impl gpui_kit::IntoElement> {
+    classic_styled_text_pixels(line.pixels_with_solid_caret(rect, ink)?, scale, port_origin)
 }
 
 fn classic_styled_text_pixels(
