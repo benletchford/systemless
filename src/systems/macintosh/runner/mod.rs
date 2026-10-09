@@ -4058,6 +4058,10 @@ impl FixtureRunner {
         self.bus.write_long(addr::CUR_STACK_BASE, app_globals_start);
         self.bus.write_long(addr::CURRENT_A5, app.a5_base);
         self.bus.write_word(addr::ROM85, 0x0000);
+        // Lo3Bytes is a constant, including when MMU32Bit is true. Legacy
+        // code uses it directly to remove flag bits from tagged pointers.
+        // Inside Macintosh Volume I (1985), p. I-85; Volume III, p. III-228.
+        self.bus.write_long(addr::LO3_BYTES, 0x00FF_FFFF);
         // MMU32Bit ($0CB2): TRUE when 32-bit addressing mode is in effect.
         // Inside Macintosh: Memory 1992, p. 4-25 says applications can test
         // this low-memory byte directly; Systemless's TrapDispatcher already
@@ -4826,6 +4830,9 @@ impl FixtureRunner {
         self.bus
             .write_long(addr::DOUBLE_TIME, DEFAULT_DOUBLE_TIME_TICKS);
         self.bus.write_byte(addr::MMU32_BIT, 1);
+        // Reapply the documented constant after adopting native low memory.
+        // Inside Macintosh Volume I (1985), p. I-85; Volume III, p. III-228.
+        self.bus.write_long(addr::LO3_BYTES, 0x00FF_FFFF);
         self.bus.write_byte(addr::SD_VOLUME, 1);
         self.bus.write_word(0x09dc, 1); // PaintWhite
         let ram_size = self.bus.ram_size();

@@ -62,6 +62,10 @@ pub mod addr {
     /// Inside Macintosh Volume I, I-260 documents the value and global name;
     /// MPW SysEqu.h defines `DoubleTime` at $02F0.
     pub const DOUBLE_TIME: u32 = 0x02F0;
+    /// Lo3Bytes: constant mask for the low three bytes of a tagged address.
+    /// Inside Macintosh Volume I (1985), p. I-85 gives $00FFFFFF;
+    /// Volume III (1985), p. III-228 places the long at $031A.
+    pub const LO3_BYTES: u32 = 0x031A;
     /// DefltStack: default stack allocation in bytes (long).
     /// Inside Macintosh Volume III (1985), low-memory globals table, lists
     /// `DefltStack` at `$0322`; Volume II, II-17, describes it as the default
