@@ -401,7 +401,7 @@ fn ppc_write_microseconds(cpu: &PpcCpu, memory: &mut PpcSectionMem, tick_count: 
     ppc_write_microseconds_value(
         cpu,
         memory,
-        u64::from(tick_count).saturating_mul(PPC_MICROSECONDS_PER_TICK),
+        crate::time_manager::evaluate_microseconds(tick_count),
     );
 }
 
@@ -414,45 +414,19 @@ fn ppc_write_microseconds_value(cpu: &PpcCpu, memory: &mut PpcSectionMem, usecs:
 }
 
 fn ppc_seconds_to_date(memory: &mut PpcSectionMem, seconds: u32, date_ptr: u32) {
-    if date_ptr == 0 || !ppc_memory_can_write_bytes(memory, date_ptr, 14) {
+    if date_ptr == 0 || !ppc_memory_can_write_bytes(memory, date_ptr, crate::time_manager::DATE_TIME_REC_SIZE as u32) {
         return;
     }
 
-    let mut remaining_days = seconds / 86_400;
-    let seconds_today = seconds % 86_400;
-    let mut year = 1904u16;
-    loop {
-        let days_this_year = if ppc_is_gregorian_leap_year(year) {
-            366
-        } else {
-            365
-        };
-        if remaining_days < days_this_year {
-            break;
-        }
-        remaining_days -= days_this_year;
-        year += 1;
-    }
-
-    let mut month = 1u16;
-    loop {
-        let days_this_month = ppc_days_in_gregorian_month(year, month);
-        if remaining_days < days_this_month {
-            break;
-        }
-        remaining_days -= days_this_month;
-        month += 1;
-    }
-
-    let days_since_epoch = seconds / 86_400;
+    let rec = crate::time_manager::evaluate_seconds_to_date(seconds);
     let fields = [
-        year,
-        month,
-        remaining_days as u16 + 1,
-        (seconds_today / 3_600) as u16,
-        ((seconds_today % 3_600) / 60) as u16,
-        (seconds_today % 60) as u16,
-        ((days_since_epoch + 5) % 7) as u16 + 1,
+        rec.year,
+        rec.month,
+        rec.day,
+        rec.hour,
+        rec.minute,
+        rec.second,
+        rec.day_of_week,
     ];
 
     // Inside Macintosh: Operating System Utilities (1994), pp. 4-23–4-25 and 4-38:
@@ -460,19 +434,6 @@ fn ppc_seconds_to_date(memory: &mut PpcSectionMem, seconds: u32, date_ptr: u32) 
     // big-endian DateTimeRec fields, with Sunday numbered 1 through Saturday 7.
     for (index, field) in fields.into_iter().enumerate() {
         let _ = memory.write_u16_be(date_ptr + index as u32 * 2, field);
-    }
-}
-
-fn ppc_is_gregorian_leap_year(year: u16) -> bool {
-    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
-}
-
-fn ppc_days_in_gregorian_month(year: u16, month: u16) -> u32 {
-    match month {
-        2 if ppc_is_gregorian_leap_year(year) => 29,
-        2 => 28,
-        4 | 6 | 9 | 11 => 30,
-        _ => 31,
     }
 }
 
@@ -531,13 +492,14 @@ pub(super) fn dispatch_time_import(context: PpcTimeDispatchContext<'_>) -> Optio
             // numTicks vertical-retrace ticks and returns the ending system
             // tick in finalTicks. Yielding keeps the native call parked while
             // the frontend advances the emulated VBL clock.
+            let params = crate::time_manager::evaluate_delay_parameters(cpu.gpr[3], cpu.gpr[4], tick_count);
             let deadline = toolbox_startup
                 .delay_deadline
-                .get_or_insert_with(|| tick_count.wrapping_add(cpu.gpr[3]));
-            let reached = tick_count.wrapping_sub(*deadline) < 0x8000_0000;
-            if cpu.gpr[3] == 0 || reached {
-                if cpu.gpr[4] != 0 {
-                    let _ = memory.write_u32_be(cpu.gpr[4], tick_count);
+                .get_or_insert_with(|| params.deadline());
+            let reached = params.is_reached(*deadline);
+            if params.is_immediate() || reached {
+                if params.final_ticks_ptr != 0 {
+                    let _ = memory.write_u32_be(params.final_ticks_ptr, tick_count);
                 }
                 toolbox_startup.delay_deadline = None;
                 Some(PpcImportAction::ReturnPreserve)

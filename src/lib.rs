@@ -150,6 +150,7 @@ pub mod sound {
 }
 pub(crate) use systems::macintosh::text_edit;
 pub(crate) use systems::macintosh::thread_manager;
+pub(crate) use systems::macintosh::time_manager;
 #[deprecated(note = "use `systemless::systems::macintosh::trace`")]
 pub mod trace {
     pub use crate::systems::macintosh::trace::*;

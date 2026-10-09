@@ -916,82 +916,6 @@ fn nearest_color_index(palette: &[[u8; 3]], r: u8, g: u8, b: u8) -> u8 {
     best as u8
 }
 
-/// Returns true if `year` is a leap year in the Gregorian calendar.
-fn is_leap_year(year: u32) -> bool {
-    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
-}
-
-/// Days in each month (index 1-based). February is 28; caller must add 1 for leap years.
-const DAYS_IN_MONTH: [u32; 13] = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-
-/// Convert seconds since Mac epoch (Jan 1, 1904 00:00:00) to DateTimeRec fields.
-/// Returns (year, month, day, hour, minute, second, dayOfWeek).
-/// dayOfWeek: 1=Sunday..7=Saturday.
-/// Inside Macintosh Volume II, II-379
-fn secs_to_date(secs: u32) -> (u16, u16, u16, u16, u16, u16, u16) {
-    // Jan 1, 1904 was a Friday = dayOfWeek 6
-    let day_of_week = ((secs / 86400 + 5) % 7 + 1) as u16; // +5 because Jan 1 1904 = Friday (6), Sunday=1
-
-    let mut remaining = secs;
-    let second = (remaining % 60) as u16;
-    remaining /= 60;
-    let minute = (remaining % 60) as u16;
-    remaining /= 60;
-    let hour = (remaining % 24) as u16;
-    let mut days = remaining / 24;
-
-    let mut year = 1904u32;
-    loop {
-        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
-        if days < days_in_year {
-            break;
-        }
-        days -= days_in_year;
-        year += 1;
-    }
-
-    let mut month = 1u32;
-    loop {
-        let mut dim = DAYS_IN_MONTH[month as usize];
-        if month == 2 && is_leap_year(year) {
-            dim += 1;
-        }
-        if days < dim {
-            break;
-        }
-        days -= dim;
-        month += 1;
-    }
-    let day = days + 1; // 1-based
-
-    (
-        year as u16,
-        month as u16,
-        day as u16,
-        hour,
-        minute,
-        second,
-        day_of_week,
-    )
-}
-
-/// Convert DateTimeRec fields to seconds since Mac epoch (Jan 1, 1904 00:00:00).
-/// Inside Macintosh Volume II, II-379
-fn date_to_secs(year: u32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> u32 {
-    let mut days: u32 = 0;
-    for y in 1904..year {
-        days += if is_leap_year(y) { 366 } else { 365 };
-    }
-    for m in 1..month {
-        days += DAYS_IN_MONTH[m as usize];
-        if m == 2 && is_leap_year(year) {
-            days += 1;
-        }
-    }
-    days += day - 1; // day is 1-based
-    days * 86400 + hour * 3600 + minute * 60 + second
-}
-
 fn trace_munger_enabled() -> bool {
     *TRACE_MUNGER.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_MUNGER").is_some())
 }
@@ -6855,19 +6779,19 @@ impl super::TrapDispatcher {
             (false, 0x3B) => {
                 let num_ticks = cpu.read_reg(Register::A0);
                 let trap_pc = cpu.read_reg(Register::PC).wrapping_sub(2);
+                let tick = bus.read_long(0x016A);
+                let params = crate::time_manager::evaluate_delay_parameters(num_ticks, 0, tick);
                 if trace_title_diag_enabled() {
-                    let tick = bus.read_long(0x016A);
                     if (68..=110).contains(&tick) {
                         eprintln!(
                             "[TITLE-DIAG] Delay tick={} pc=${:08X} ticks={}",
-                            tick, trap_pc, num_ticks
+                            tick, trap_pc, params.num_ticks
                         );
                     }
                 }
-                if num_ticks == 0 {
+                if params.is_immediate() {
                     // Zero delay: return current ticks immediately
-                    let current_ticks = bus.read_long(0x016A);
-                    cpu.write_reg(Register::D0, current_ticks);
+                    cpu.write_reg(Register::D0, tick);
                 } else {
                     // Queue the delay for the runner to consume tick-by-tick.
                     // On a real Mac, Delay blocks via PrimeTime + interrupt wait
@@ -6875,13 +6799,13 @@ impl super::TrapDispatcher {
                     // one-at-a-time through advance_guest_tick(), firing VBL and
                     // timer tasks at each boundary. The runner writes finalTicks
                     // to D0 when the delay is fully consumed.
-                    self.pending_delay_ticks = num_ticks;
+                    self.pending_delay_ticks = params.num_ticks;
                 }
                 if let Err(err) = self.record_trace_event(
                     bus,
                     trap_pc,
                     "delay",
-                    Self::trace_field_map(&[("ticks", num_ticks.to_string())]),
+                    Self::trace_field_map(&[("ticks", params.num_ticks.to_string())]),
                     false,
                 ) {
                     return Some(Err(err));
@@ -10471,26 +10395,26 @@ impl super::TrapDispatcher {
                 let secs = cpu.read_reg(Register::D0);
                 let date_ptr = cpu.read_reg(Register::A0);
                 if date_ptr != 0 {
-                    let (year, month, day, hour, minute, second, day_of_week) = secs_to_date(secs);
-                    bus.write_word(date_ptr, year); // year
-                    bus.write_word(date_ptr + 2, month); // month
-                    bus.write_word(date_ptr + 4, day); // day
-                    bus.write_word(date_ptr + 6, hour); // hour
-                    bus.write_word(date_ptr + 8, minute); // minute
-                    bus.write_word(date_ptr + 10, second); // second
-                    bus.write_word(date_ptr + 12, day_of_week); // dayOfWeek
+                    let rec = crate::time_manager::evaluate_seconds_to_date(secs);
+                    bus.write_word(date_ptr, rec.year); // year
+                    bus.write_word(date_ptr + 2, rec.month); // month
+                    bus.write_word(date_ptr + 4, rec.day); // day
+                    bus.write_word(date_ptr + 6, rec.hour); // hour
+                    bus.write_word(date_ptr + 8, rec.minute); // minute
+                    bus.write_word(date_ptr + 10, rec.second); // second
+                    bus.write_word(date_ptr + 12, rec.day_of_week); // dayOfWeek
                     if trace_entropy_enabled() {
                         eprintln!(
                             "[ENTROPY] Secs2Date pc=${:08X} secs={} -> {:04}-{:02}-{:02} {:02}:{:02}:{:02} dow={}",
                             cpu.read_reg(Register::PC),
                             secs,
-                            year,
-                            month,
-                            day,
-                            hour,
-                            minute,
-                            second,
-                            day_of_week
+                            rec.year,
+                            rec.month,
+                            rec.day,
+                            rec.hour,
+                            rec.minute,
+                            rec.second,
+                            rec.day_of_week
                         );
                     }
                 }
@@ -10506,24 +10430,27 @@ impl super::TrapDispatcher {
             (true, 0x1C7) => {
                 let date_ptr = cpu.read_reg(Register::A0);
                 if date_ptr != 0 {
-                    let year = bus.read_word(date_ptr) as u32;
-                    let month = bus.read_word(date_ptr + 2) as u32;
-                    let day = bus.read_word(date_ptr + 4) as u32;
-                    let hour = bus.read_word(date_ptr + 6) as u32;
-                    let minute = bus.read_word(date_ptr + 8) as u32;
-                    let second = bus.read_word(date_ptr + 10) as u32;
-                    let secs = date_to_secs(year, month, day, hour, minute, second);
+                    let rec = crate::time_manager::DateTimeRecord {
+                        year: bus.read_word(date_ptr),
+                        month: bus.read_word(date_ptr + 2),
+                        day: bus.read_word(date_ptr + 4),
+                        hour: bus.read_word(date_ptr + 6),
+                        minute: bus.read_word(date_ptr + 8),
+                        second: bus.read_word(date_ptr + 10),
+                        day_of_week: bus.read_word(date_ptr + 12),
+                    };
+                    let secs = crate::time_manager::evaluate_date_to_seconds(&rec);
                     cpu.write_reg(Register::D0, secs);
                     if trace_entropy_enabled() {
                         eprintln!(
                             "[ENTROPY] Date2Secs pc=${:08X} {:04}-{:02}-{:02} {:02}:{:02}:{:02} -> secs={}",
                             cpu.read_reg(Register::PC),
-                            year,
-                            month,
-                            day,
-                            hour,
-                            minute,
-                            second,
+                            rec.year,
+                            rec.month,
+                            rec.day,
+                            rec.hour,
+                            rec.minute,
+                            rec.second,
                             secs
                         );
                     }

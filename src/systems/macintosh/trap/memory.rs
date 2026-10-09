@@ -739,61 +739,44 @@ impl super::TrapDispatcher {
         task_ptr: u32,
         slot: Option<i16>,
     ) -> i16 {
+        let q_type = bus.read_word(task_ptr + crate::time_manager::TASK_Q_TYPE_OFFSET);
+        let vbl_count = bus.read_word(task_ptr + crate::time_manager::VBL_COUNT_OFFSET);
+        let vbl_phase = bus.read_word(task_ptr + crate::time_manager::VBL_PHASE_OFFSET);
         if trace_vbl_enabled() {
-            let q_type = bus.read_word(task_ptr + 4) as i16;
-            let vbl_addr = bus.read_long(task_ptr + 6);
-            let vbl_count = bus.read_word(task_ptr + 10) as i16;
-            let vbl_phase = bus.read_word(task_ptr + 12) as i16;
+            let vbl_addr = bus.read_long(task_ptr + crate::time_manager::TASK_ADDR_OFFSET);
             eprintln!(
                 "[VBL] install tick={} task=${:08X} qType={} addr=${:08X} count={} phase={} slot={:?}",
                 self.current_tick(), task_ptr, q_type, vbl_addr, vbl_count, vbl_phase, slot
             );
         }
-        if task_ptr == 0 || bus.read_word(task_ptr + 4) as i16 != 1 {
-            return -2; // vTypErr
-        }
-        // BasiliskII accepts slot = -1 for slot-based VBL install/remove.
-        // Preserve the documented slotNumErr for more-negative values.
-        if matches!(slot, Some(s) if s < -1) {
-            return -360; // slotNumErr
-        }
-
-        let vbl_count = bus.read_word(task_ptr + 10) as i16;
-        let vbl_phase = bus.read_word(task_ptr + 12) as i16;
-        bus.write_word(task_ptr + 10, vbl_count.wrapping_add(vbl_phase) as u16);
-
-        self.vbl_tasks.with_mut(|vbl_tasks| {
-            vbl_tasks.retain(|task| task.task_ptr != task_ptr);
-            vbl_tasks.push(super::dispatch::VblTask {
-                task_ptr,
-                architecture: CallbackTaskArchitecture::M68k,
-                slot,
-                pending: false,
+        let eval = crate::time_manager::evaluate_v_install(task_ptr, q_type, vbl_count, vbl_phase, slot);
+        if eval.result == crate::time_manager::NO_ERR {
+            bus.write_word(task_ptr + crate::time_manager::VBL_COUNT_OFFSET, eval.initial_count);
+            self.vbl_tasks.with_mut(|vbl_tasks| {
+                vbl_tasks.retain(|task| task.task_ptr != task_ptr);
+                vbl_tasks.push(super::dispatch::VblTask {
+                    task_ptr,
+                    architecture: CallbackTaskArchitecture::M68k,
+                    slot,
+                    pending: false,
+                });
             });
-        });
-        self.sync_vbl_links(bus);
-        0
+            self.sync_vbl_links(bus);
+        }
+        eval.result
     }
 
     fn remove_vbl_task(&mut self, bus: &mut MacMemoryBus, task_ptr: u32, slot: Option<i16>) -> i16 {
-        if task_ptr == 0 || bus.read_word(task_ptr + 4) as i16 != 1 {
-            return -2; // vTypErr
-        }
-        if matches!(slot, Some(s) if s < -1) {
-            return -360; // slotNumErr
-        }
-
-        // Real ROM's (Slot)VRemove returns qErr (-1) if the task isn't
-        // currently in the VBL queue.
+        let q_type = bus.read_word(task_ptr + crate::time_manager::TASK_Q_TYPE_OFFSET);
         let was_in_queue = self.vbl_tasks.iter().any(|task| task.task_ptr == task_ptr);
-        if !was_in_queue {
-            return -1; // qErr
+        let eval = crate::time_manager::evaluate_v_remove(task_ptr, q_type, was_in_queue, slot);
+        if eval.result == crate::time_manager::NO_ERR {
+            self.vbl_tasks
+                .with_mut(|vbl_tasks| vbl_tasks.retain(|task| task.task_ptr != task_ptr));
+            bus.write_long(task_ptr + crate::time_manager::TASK_Q_LINK_OFFSET, 0);
+            self.sync_vbl_links(bus);
         }
-        self.vbl_tasks
-            .with_mut(|vbl_tasks| vbl_tasks.retain(|task| task.task_ptr != task_ptr));
-        bus.write_long(task_ptr, 0);
-        self.sync_vbl_links(bus);
-        0
+        eval.result
     }
 
     pub(super) fn new_process_classic_ptr(&mut self, bus: &mut MacMemoryBus, size: u32) -> u32 {
@@ -2109,33 +2092,33 @@ impl super::TrapDispatcher {
             // Extended fields: tmWakeUp(+14,4) tmReserved(+18,4)
             (false, 0x58) => {
                 let task_ptr = cpu.read_reg(Register::A0);
-                let tm_addr = bus.read_long(task_ptr + 6);
+                let tm_addr = bus.read_long(task_ptr + crate::time_manager::TASK_ADDR_OFFSET);
+                let q_type = bus.read_word(task_ptr + crate::time_manager::TASK_Q_TYPE_OFFSET);
                 let extended = matches!(
                     raw_trap_route(self.current_trap_word).os_routine_variant,
                     OsRoutineVariant::TimeTaskExtended
                 );
-                if !extended || bus.read_long(task_ptr + 14) == 0 {
-                    self.callback_scheduling.remove_extended_wakeup(task_ptr);
-                }
-                // Remove any existing task for the same record address
-                self.timer_tasks.with_mut(|timer_tasks| {
-                    timer_tasks.retain(|task| task.task_ptr != task_ptr);
-                    timer_tasks.push(super::dispatch::TimerTask {
-                        task_ptr,
-                        architecture: CallbackTaskArchitecture::M68k,
-                        extended,
-                        callback: tm_addr,
-                        active: false,
-                        fire_at_tick: 0,
-                        fire_at_subtick: 0,
-                        last_fired_tick: None,
+                let action = crate::time_manager::evaluate_ins_time(task_ptr, q_type, extended);
+                if action.is_valid() {
+                    if !action.extended || bus.read_long(task_ptr + crate::time_manager::TM_WAKE_UP_OFFSET) == 0 {
+                        self.callback_scheduling.remove_extended_wakeup(task_ptr);
+                    }
+                    self.timer_tasks.with_mut(|timer_tasks| {
+                        timer_tasks.retain(|task| task.task_ptr != task_ptr);
+                        timer_tasks.push(super::dispatch::TimerTask {
+                            task_ptr,
+                            architecture: CallbackTaskArchitecture::M68k,
+                            extended: action.extended,
+                            callback: tm_addr,
+                            active: false,
+                            fire_at_tick: 0,
+                            fire_at_subtick: 0,
+                            last_fired_tick: None,
+                        });
                     });
-                });
-                self.sync_time_task_links(bus);
-                // InsTime clears the qType high-order bit (task inactive until PrimeTime).
-                // Processes 1994, 3-12: "InsTime procedure initially clears this bit."
-                let q = bus.read_word(task_ptr + 4);
-                bus.write_word(task_ptr + 4, q & 0x7FFF);
+                    self.sync_time_task_links(bus);
+                    bus.write_word(task_ptr + crate::time_manager::TASK_Q_TYPE_OFFSET, action.cleared_q_type);
+                }
                 Ok(())
             }
 
@@ -2148,37 +2131,26 @@ impl super::TrapDispatcher {
                 let current_subtick = self
                     .callback_scheduling
                     .current_subtick()
-                    .max(bus.read_long(0x016A) as u64 * 1_000_000);
-                let remaining_subticks = self
+                    .max(bus.read_long(0x016A) as u64 * crate::time_manager::SUBTICKS_PER_TICK);
+                let q_type = bus.read_word(task_ptr + crate::time_manager::TASK_Q_TYPE_OFFSET);
+                let active_fire_at = self
                     .timer_tasks
                     .iter()
                     .find(|task| task.task_ptr == task_ptr && task.active)
-                    .map(|task| task.fire_at_subtick.saturating_sub(current_subtick))
-                    .unwrap_or(0);
-                self.timer_tasks
-                    .with_mut(|timer_tasks| timer_tasks.retain(|task| task.task_ptr != task_ptr));
-                self.sync_time_task_links(bus);
-
-                // The revised and extended Time Managers return unused time
-                // through tmCount. Prefer negated microseconds for maximum
-                // accuracy, falling back to positive milliseconds only when
-                // the microsecond magnitude cannot fit in a signed LongInt.
-                // Inside Macintosh: Processes (1994), pp. 3-14 and 3-21.
-                let remaining_count = if remaining_subticks == 0 {
-                    0
-                } else {
-                    let remaining_us = remaining_subticks.div_ceil(60);
-                    if remaining_us <= i32::MAX as u64 {
-                        -(remaining_us as i32)
-                    } else {
-                        remaining_us.div_ceil(1_000).min(i32::MAX as u64) as i32
-                    }
-                };
-                bus.write_long(task_ptr + 10, remaining_count as u32);
-                // RmvTime clears the qType high-order bit (task no longer active).
-                // Processes 1994, 3-20: "RmvTime sets the high-order bit of the qType field to 0."
-                let q = bus.read_word(task_ptr + 4);
-                bus.write_word(task_ptr + 4, q & 0x7FFF);
+                    .map(|task| task.fire_at_subtick);
+                let eval = crate::time_manager::evaluate_rmv_time(
+                    task_ptr,
+                    q_type,
+                    current_subtick,
+                    active_fire_at,
+                );
+                if eval.is_valid() {
+                    self.timer_tasks
+                        .with_mut(|timer_tasks| timer_tasks.retain(|task| task.task_ptr != task_ptr));
+                    self.sync_time_task_links(bus);
+                    bus.write_long(task_ptr + crate::time_manager::TM_COUNT_OFFSET, eval.remaining_count as u32);
+                    bus.write_word(task_ptr + crate::time_manager::TASK_Q_TYPE_OFFSET, eval.cleared_q_type);
+                }
                 Ok(())
             }
 
@@ -2191,76 +2163,42 @@ impl super::TrapDispatcher {
                 let task_ptr = cpu.read_reg(Register::A0);
                 let delay = cpu.read_reg(Register::D0) as i32;
                 let current_ticks = bus.read_long(0x016A);
-                const SUBTICKS_PER_TICK: u64 = 1_000_000;
-                // Convert delay to 60.15 Hz ticks (VBL rate per Guide to Macintosh Family
-                // Hardware, 2nd Ed., p. 6-798: "once every 16.63 ms").
-                // We use 60 (not 60.15) to keep integer arithmetic exact for common
-                // millisecond values.
-                // Positive = milliseconds, negative = negated microseconds.
-                let requested_delay_subticks = if delay == 0 {
-                    0
-                } else if delay > 0 {
-                    (delay as u64) * 60_000
-                } else {
-                    let us = (-delay) as u64;
-                    (us * 60).max(1)
-                };
-                let current_subtick = self
-                    .callback_scheduling
-                    .current_subtick()
-                    .max(current_ticks as u64 * SUBTICKS_PER_TICK);
-                let task_kind = self
+                let q_type = bus.read_word(task_ptr + crate::time_manager::TASK_Q_TYPE_OFFSET);
+                let is_extended = self
                     .timer_tasks
                     .iter()
                     .find(|task| task.task_ptr == task_ptr)
-                    .map(|task| task.extended);
-                let fire_at_subtick = if task_kind == Some(true) {
-                    // Processes 1994, pp. 3-8--3-9: an extended task whose
-                    // tmWakeUp is nonzero schedules relative to its preceding
-                    // intended expiry, eliminating callback/interrupt drift.
-                    // A target already in the past has an actual delay of 0,
-                    // while the intended (past) target remains the next base.
-                    let prior_wakeup = if bus.read_long(task_ptr + 14) == 0 {
-                        None
-                    } else {
-                        self.callback_scheduling.extended_wakeup(task_ptr)
-                    };
-                    let intended_wakeup = prior_wakeup
-                        .unwrap_or(current_subtick)
-                        .saturating_add(requested_delay_subticks);
-                    self.callback_scheduling
-                        .set_extended_wakeup(task_ptr, intended_wakeup);
-                    // tmWakeUp is explicitly an opaque internal format. Keep
-                    // it nonzero so guest code can preserve or reset it, while
-                    // the exact deadline remains in manager-owned state.
-                    let opaque_wakeup = ((intended_wakeup / 60) as u32).max(1);
-                    bus.write_long(task_ptr + 14, opaque_wakeup);
-                    intended_wakeup.max(current_subtick)
+                    .map(|task| task.extended)
+                    .unwrap_or(false);
+                let prior_wakeup = if is_extended && bus.read_long(task_ptr + crate::time_manager::TM_WAKE_UP_OFFSET) != 0 {
+                    self.callback_scheduling.extended_wakeup(task_ptr)
                 } else {
-                    // Preserve the established next-tick scheduling boundary
-                    // for an original task's zero-delay "as soon as interrupts
-                    // are enabled" request.
-                    let delay_subticks = if delay == 0 {
-                        SUBTICKS_PER_TICK
-                    } else {
-                        requested_delay_subticks
-                    };
-                    current_subtick.saturating_add(delay_subticks)
+                    None
                 };
-                let fire_at = fire_at_subtick.div_ceil(SUBTICKS_PER_TICK) as u32;
-                self.timer_tasks.with_mut(|timer_tasks| {
-                    if let Some(task) = timer_tasks.iter_mut().find(|t| t.task_ptr == task_ptr) {
-                        task.active = true;
-                        task.fire_at_tick = fire_at;
-                        task.fire_at_subtick = fire_at_subtick;
-                        // Re-read tmAddr in case it changed between InsTime and PrimeTime
-                        task.callback = bus.read_long(task_ptr + 6);
+                let eval = crate::time_manager::evaluate_prime_time(
+                    task_ptr,
+                    q_type,
+                    delay,
+                    current_ticks,
+                    self.callback_scheduling.current_subtick(),
+                    is_extended,
+                    prior_wakeup,
+                );
+                if eval.is_valid() {
+                    if let (Some(intended), Some(opaque)) = (eval.intended_wakeup, eval.opaque_wakeup) {
+                        self.callback_scheduling.set_extended_wakeup(task_ptr, intended);
+                        bus.write_long(task_ptr + crate::time_manager::TM_WAKE_UP_OFFSET, opaque);
                     }
-                });
-                // PrimeTime sets the qType high-order bit (task now active/primed).
-                // Processes 1994, 3-20: "PrimeTime sets the high-order bit of the qType field to 1."
-                let q = bus.read_word(task_ptr + 4);
-                bus.write_word(task_ptr + 4, q | 0x8000);
+                    self.timer_tasks.with_mut(|timer_tasks| {
+                        if let Some(task) = timer_tasks.iter_mut().find(|t| t.task_ptr == task_ptr) {
+                            task.active = true;
+                            task.fire_at_tick = eval.fire_at_tick;
+                            task.fire_at_subtick = eval.fire_at_subtick;
+                            task.callback = bus.read_long(task_ptr + crate::time_manager::TASK_ADDR_OFFSET);
+                        }
+                    });
+                    bus.write_word(task_ptr + crate::time_manager::TASK_Q_TYPE_OFFSET, eval.primed_q_type);
+                }
                 Ok(())
             }
 
@@ -2302,15 +2240,15 @@ impl super::TrapDispatcher {
             // Microseconds ($A193): returns D0=low 32 bits / A0=high 32 bits; per MPW Universal Headers Timer.h FOURWORDINLINE glue, the caller writes the 64-bit count through its UnsignedWide buffer pointer using these register values
             (false, 0x93) => {
                 let ticks = bus.read_long(0x016A);
-                let usecs = (ticks as u64) * 16_625;
-                cpu.write_reg(Register::D0, usecs as u32);
-                cpu.write_reg(Register::A0, (usecs >> 32) as u32);
+                let (lo, hi) = crate::time_manager::evaluate_microseconds_registers(ticks);
+                cpu.write_reg(Register::D0, lo);
+                cpu.write_reg(Register::A0, hi);
                 if trace_entropy_enabled() {
                     eprintln!(
                         "[ENTROPY] Microseconds pc=${:08X} ticks={} usecs={}",
                         cpu.read_reg(Register::PC),
                         ticks,
-                        usecs
+                        crate::time_manager::evaluate_microseconds(ticks)
                     );
                 }
                 Ok(())

@@ -19950,3 +19950,32 @@
         assert_eq!(cpu.read_reg(Register::D0) as i16, -50);
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
     }
+
+    #[test]
+    fn secs2date_and_date2secs_roundtrip() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let date_ptr = bus.alloc(14);
+        let secs = 2_082_844_800; // Jan 1, 1970 00:00:00
+
+        // Secs2Date ($A9C6): D0 = secs, A0 = date_ptr
+        cpu.write_reg(Register::D0, secs);
+        cpu.write_reg(Register::A0, date_ptr);
+        let result = disp.dispatch_toolbox(true, 0x1C6, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(date_ptr), 1970);
+        assert_eq!(bus.read_word(date_ptr + 2), 1);
+        assert_eq!(bus.read_word(date_ptr + 4), 1);
+        assert_eq!(bus.read_word(date_ptr + 6), 0);
+        assert_eq!(bus.read_word(date_ptr + 8), 0);
+        assert_eq!(bus.read_word(date_ptr + 10), 0);
+
+        // Date2Secs ($A9C7): A0 = date_ptr, D0 = result secs
+        cpu.write_reg(Register::A0, date_ptr);
+        cpu.write_reg(Register::D0, 0);
+        let result = disp.dispatch_toolbox(true, 0x1C7, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), secs);
+    }
