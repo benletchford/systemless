@@ -329,6 +329,13 @@ impl StandardFileNewFolderState {
         }
         match character {
             8 | 0x7f | 0x1c | 0x1d => self.edit.apply_key(character),
+            // Text (1993), "Caret Position and Movement": on the first/last
+            // line Up/Down moves to the beginning/end. This field is one line.
+            0x1e | 0x1f => {
+                let text = self.edit.text().to_vec();
+                let caret = if character == 0x1e { 0 } else { text.len() };
+                self.edit = crate::text_edit::TextEditBuffer::new(text, caret, caret);
+            }
             0x20..=0xff => self.insert_name_bytes(&[character]),
             _ => {}
         }
@@ -356,6 +363,24 @@ impl StandardFileNewFolderState {
 #[cfg(test)]
 mod new_folder_tests {
     use super::{StandardFileNewFolderAction as Action, StandardFileNewFolderState};
+
+    #[test]
+    fn new_folder_vertical_arrows_use_single_line_boundaries() {
+        let mut state = StandardFileNewFolderState::default();
+        let mut scrap = Vec::new();
+        for modifiers in [0, 0x0200, 0x0800] {
+            assert_eq!(state.key(0x1f, modifiers, &mut scrap), None);
+            assert_eq!(state.edit.selection(), 15..15);
+            assert_eq!(state.key(0x1e, modifiers, &mut scrap), None);
+            assert_eq!(state.edit.selection(), 0..0);
+        }
+        state.key(b'X' as u32, 0, &mut scrap);
+        assert_eq!(state.edit.text(), b"Xuntitled folder");
+        state.key(0x1f, 0, &mut scrap);
+        state.key(b'Y' as u32, 0, &mut scrap);
+        assert_eq!(state.edit.text(), b"Xuntitled folderY");
+        assert_eq!(state.edit.selection(), 17..17);
+    }
 
     #[test]
     fn new_folder_error_is_a_single_action_modal_alert() {

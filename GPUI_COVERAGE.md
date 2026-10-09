@@ -1522,8 +1522,9 @@ the 31-byte HFS name limit. This state is not yet connected to either retained
 panel event loop, process scrap or GPUI rendering, so these are component tests
 only. A slash remains a legal name character at this layer; filesystem path
 normalization must not turn it into unintended directory traversal when creation
-is connected. Pointer selection, Shift-selection and native clipboard parity
-also remain unqualified.
+is connected. Pointer selection and native clipboard parity also remain unqualified. Classic
+TextEdit does not support Shift/Option-arrow selection (Text, 1993, “Caret
+Position and Movement”); do not assume modern modifier-arrow semantics.
 
 The 68K FSpDirCreate handler now delegates to a reusable child-directory
 operation, preserving its empty-name, missing-parent, read-only and duplicate
@@ -1702,3 +1703,12 @@ and physical dialog-item input. Menu handling must retain guest-permitted
 commands: Macintosh Toolbox Essentials (1992), “Menus in Dialog Boxes” explains
 that System 7 modal dialogs may permit selected Edit and Help commands rather
 than disabling the entire menu bar.
+
+New Folder now interprets Up/Down as beginning/end of its single-line name,
+following Text (1993), “Caret Position and Movement.” The shared-state test
+passes for boundary movement and insertion at both ends, including unchanged
+classic behaviour with Shift/Option held. The cross-mode workflow now asserts
+caret positions after actual guest Up/Down events; all six scenarios pass
+across monochrome 68k, colour 68k and PPC (30.26 seconds).
+Pointer selection and multiline TextEdit navigation are separate unfinished
+paths, not covered by this single-line correction.
