@@ -3224,8 +3224,9 @@ impl FixtureRunner {
         }
         let (key, char_code) = self.remap_key(mac_key, char_code);
         self.dispatcher.read_tick_count(&self.bus);
+        let threshold_ticks = self.bus.read_word(crate::memory::globals::addr::KEY_THRESH);
         self.dispatcher.with_process_state(|d| {
-            d.push_key_down(key, char_code);
+            d.push_key_down_with_threshold(key, char_code, threshold_ticks);
         });
         self.sync_key_map_lowmem();
         self.wake_pending_wait_next_event_if_input_available();
@@ -4093,6 +4094,14 @@ impl FixtureRunner {
         // impossible. Lemmings uses that exact sequence for its nuke control.
         self.bus
             .write_long(addr::DOUBLE_TIME, DEFAULT_DOUBLE_TIME_TICKS);
+        self.bus.write_word(
+            addr::KEY_THRESH,
+            crate::memory::globals::DEFAULT_AUTO_KEY_THRESHOLD_TICKS,
+        );
+        self.bus.write_word(
+            addr::KEY_REP_THRESH,
+            crate::memory::globals::DEFAULT_AUTO_KEY_RATE_TICKS,
+        );
         // RndSeed ($0156): system random seed initialized during boot.
         // On a real Mac, the boot code seeds this from the real-time clock
         // so that programs that read it directly (without calling Random)
@@ -4829,6 +4838,14 @@ impl FixtureRunner {
         );
         self.bus
             .write_long(addr::DOUBLE_TIME, DEFAULT_DOUBLE_TIME_TICKS);
+        self.bus.write_word(
+            addr::KEY_THRESH,
+            crate::memory::globals::DEFAULT_AUTO_KEY_THRESHOLD_TICKS,
+        );
+        self.bus.write_word(
+            addr::KEY_REP_THRESH,
+            crate::memory::globals::DEFAULT_AUTO_KEY_RATE_TICKS,
+        );
         self.bus.write_byte(addr::MMU32_BIT, 1);
         // Reapply the documented constant after adopting native low memory.
         // Inside Macintosh Volume I (1985), p. I-85; Volume III, p. III-228.
@@ -10446,8 +10463,9 @@ impl FixtureRunner {
         let sys_evt_mask = self
             .bus
             .read_word(crate::memory::globals::addr::SYS_EVT_MASK);
+        let rate_ticks = self.bus.read_word(crate::memory::globals::addr::KEY_REP_THRESH);
         self.dispatcher.with_process_state(|d| {
-            d.post_auto_key_if_due(sys_evt_mask);
+            d.post_auto_key_if_due(sys_evt_mask, rate_ticks);
         });
 
         // Sync MBState ($0172) from the internal button state.

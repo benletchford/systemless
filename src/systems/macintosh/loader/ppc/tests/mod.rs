@@ -812,6 +812,7 @@ mod apple_event_handlers;
 mod apple_event_descriptors;
 
 mod hardware_compatibility;
+mod keyboard_timing;
 
 mod math_compatibility;
 

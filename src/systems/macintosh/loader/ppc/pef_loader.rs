@@ -634,6 +634,14 @@ fn load_pef_application_with_optional_disk_fragment(
         crate::memory::globals::addr::MENU_FLASH,
         crate::memory::globals::DEFAULT_MENU_FLASH_COUNT,
     );
+    let _ = memory.write_u16_be(
+        crate::memory::globals::addr::KEY_THRESH,
+        crate::memory::globals::DEFAULT_AUTO_KEY_THRESHOLD_TICKS,
+    );
+    let _ = memory.write_u16_be(
+        crate::memory::globals::addr::KEY_REP_THRESH,
+        crate::memory::globals::DEFAULT_AUTO_KEY_RATE_TICKS,
+    );
     let _ = memory.write_u16_be(crate::memory::globals::addr::RES_LOAD, 0x0100);
     let _ = memory.write_u32_be(
         crate::memory::globals::addr::DEFLT_STACK,

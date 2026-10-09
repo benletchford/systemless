@@ -21,6 +21,36 @@ pub(super) fn dispatch_low_memory_import(
         default_dir_id,
     } = context;
     match target {
+        PpcImportDispatcherTarget::LMGetKeyThresh
+        | PpcImportDispatcherTarget::LMGetKeyRepThresh => {
+            // Events.h: these accessors return SInt16 values in ticks.
+            // Read the shared word on every call so guest writes are visible.
+            let address = if *target == PpcImportDispatcherTarget::LMGetKeyThresh {
+                crate::memory::globals::addr::KEY_THRESH
+            } else {
+                crate::memory::globals::addr::KEY_REP_THRESH
+            };
+            Some(
+                memory
+                    .read_u16_be(address)
+                    .map_or(PpcImportAction::Halt, |value| {
+                        PpcImportAction::Return(ppc_i16_result(value as i16))
+                    }),
+            )
+        }
+        PpcImportDispatcherTarget::LMSetKeyThresh
+        | PpcImportDispatcherTarget::LMSetKeyRepThresh => {
+            let address = if *target == PpcImportDispatcherTarget::LMSetKeyThresh {
+                crate::memory::globals::addr::KEY_THRESH
+            } else {
+                crate::memory::globals::addr::KEY_REP_THRESH
+            };
+            Some(
+                memory
+                    .write_u16_be(address, cpu.gpr[3] as u16)
+                    .map_or(PpcImportAction::Halt, |_| PpcImportAction::ReturnPreserve),
+            )
+        }
         PpcImportDispatcherTarget::LMGetGhostWindow => Some(PpcImportAction::Return(
             memory.read_u32_be(crate::memory::globals::addr::GHOST_WINDOW).unwrap_or(0),
         )),

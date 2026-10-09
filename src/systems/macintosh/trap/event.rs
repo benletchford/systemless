@@ -419,7 +419,7 @@ impl super::TrapDispatcher {
         now.wrapping_sub(due) < 0x8000_0000
     }
 
-    pub(crate) fn post_auto_key_if_due(&mut self, system_event_mask: u16) {
+    pub(crate) fn post_auto_key_if_due(&mut self, system_event_mask: u16, rate_ticks: u16) {
         // Auto-key is a low-level event posted by the Operating System Event
         // Manager once the threshold/rate elapses; it is not synthesized only
         // when an application happens to poll. Macintosh Toolbox Essentials,
@@ -441,7 +441,7 @@ impl super::TrapDispatcher {
 
         let tick = self.current_tick();
         self.input_state
-            .advance_key_repeat(tick.wrapping_add(Self::AUTO_KEY_RATE_TICKS));
+            .advance_key_repeat(tick.wrapping_add(u32::from(rate_ticks)));
 
         let message = repeat.message();
         let modifiers = self.current_event_modifiers();
@@ -455,9 +455,9 @@ impl super::TrapDispatcher {
         });
     }
 
-    fn enqueue_auto_key_if_due(&mut self, system_event_mask: u16, event_mask: u16) {
+    fn enqueue_auto_key_if_due(&mut self, system_event_mask: u16, event_mask: u16, rate_ticks: u16) {
         if Self::event_matches_mask(event_mask, Self::AUTO_KEY_EVENT) {
-            self.post_auto_key_if_due(system_event_mask);
+            self.post_auto_key_if_due(system_event_mask, rate_ticks);
         }
     }
 
@@ -513,6 +513,7 @@ impl super::TrapDispatcher {
         self.enqueue_auto_key_if_due(
             bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK),
             event_mask,
+            bus.read_word(crate::memory::globals::addr::KEY_REP_THRESH),
         );
         let pending_menu = self.peek_pending_native_menu_event(event_mask);
         let queued = self
@@ -558,6 +559,7 @@ impl super::TrapDispatcher {
         self.enqueue_auto_key_if_due(
             bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK),
             event_mask,
+            bus.read_word(crate::memory::globals::addr::KEY_REP_THRESH),
         );
         let pending = self.peek_pending_native_menu_event(event_mask);
         let queued = self.event_queue.iter().find(|event| {
@@ -580,6 +582,7 @@ impl super::TrapDispatcher {
         self.enqueue_auto_key_if_due(
             bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK),
             event_mask,
+            bus.read_word(crate::memory::globals::addr::KEY_REP_THRESH),
         );
         if Self::event_matches_mask(event_mask, 6) {
             self.service_window_picture_updates(cpu, bus);
@@ -829,6 +832,7 @@ impl super::TrapDispatcher {
         self.enqueue_auto_key_if_due(
             bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK),
             event_mask,
+            bus.read_word(crate::memory::globals::addr::KEY_REP_THRESH),
         );
         let queued_idx = self.event_queue.iter().position(|event| {
             Self::is_low_level_os_event(event.what)

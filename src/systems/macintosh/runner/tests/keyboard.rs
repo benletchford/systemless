@@ -363,3 +363,41 @@ fn caps_lock_latch_is_preserved_in_low_memory_keymap() {
     runner.push_key_up(0x39, 0);
     assert_eq!(runner.bus.read_byte(caps_lock_byte) & 0x02, 0);
 }
+
+#[test]
+fn native_keyboard_preferences_control_initial_delay_and_repeat_rate() {
+    let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+    app.ppc
+        .as_mut()
+        .unwrap()
+        .memory
+        .write_u32_be(PPC_CODE_BASE, 0x4800_0000)
+        .unwrap();
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.init_app(&app);
+    runner.set_instructions_per_tick(1);
+    let native = runner.native.application_mut().unwrap();
+    native.memory.write_u16_be(addr::KEY_THRESH, 3).unwrap();
+    native.memory.write_u16_be(addr::KEY_REP_THRESH, 2).unwrap();
+    runner.bus.write_long(addr::TICKS, 100);
+    runner.push_key_down(0x00, b'a');
+
+    for tick in 1..=5 {
+        let (steps, running) = runner.run_steps(1, None);
+        assert_eq!(steps, 1);
+        assert!(running);
+        let repeats = runner
+            .process_context
+            .event_queue()
+            .iter()
+            .filter(|event| event.what == 5)
+            .map(|event| event.when)
+            .collect::<Vec<_>>();
+        let expected: &[u32] = match tick {
+            1 | 2 => &[],
+            3 | 4 => &[103],
+            _ => &[103, 105],
+        };
+        assert_eq!(repeats, expected);
+    }
+}

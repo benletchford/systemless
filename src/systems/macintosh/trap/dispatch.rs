@@ -2871,8 +2871,12 @@ impl TrapDispatcher {
         f(self)
     }
 
-    pub(crate) const AUTO_KEY_THRESHOLD_TICKS: u32 = 16;
-    pub(crate) const AUTO_KEY_RATE_TICKS: u32 = 4;
+    #[cfg(test)]
+    pub(crate) const AUTO_KEY_THRESHOLD_TICKS: u32 =
+        crate::memory::globals::DEFAULT_AUTO_KEY_THRESHOLD_TICKS as u32;
+    #[cfg(test)]
+    pub(crate) const AUTO_KEY_RATE_TICKS: u32 =
+        crate::memory::globals::DEFAULT_AUTO_KEY_RATE_TICKS as u32;
     const CAPS_LOCK_KEY_CODE: u8 = 0x39;
 
     pub(crate) fn set_menu_bar_policy(&mut self, policy: crate::runner::MenuBarPolicy) {
@@ -5818,6 +5822,19 @@ impl TrapDispatcher {
 
     /// Push a key-down event into the event queue.
     pub fn push_key_down(&mut self, key_code: u8, char_code: u8) {
+        self.push_key_down_with_threshold(
+            key_code,
+            char_code,
+            crate::memory::globals::DEFAULT_AUTO_KEY_THRESHOLD_TICKS,
+        );
+    }
+
+    pub(crate) fn push_key_down_with_threshold(
+        &mut self,
+        key_code: u8,
+        char_code: u8,
+        threshold_ticks: u16,
+    ) {
         self.screen_takeover_active = false;
         // A physical key remains down until keyUp. Host browsers/windowing
         // systems may emit repeated keydown callbacks while it is held, but
@@ -5863,11 +5880,11 @@ impl TrapDispatcher {
         });
 
         if Self::key_generates_auto_key(key_code) {
-            // Auto-key timing defaults are 16 ticks for the first repeat and
-            // 4 ticks thereafter. Inside Macintosh Volume I, I-246.
+            // The initial delay comes from KeyThresh at the input boundary.
+            // Inside Macintosh Volume I, I-246.
             let next_tick = self
                 .current_tick()
-                .wrapping_add(Self::AUTO_KEY_THRESHOLD_TICKS);
+                .wrapping_add(u32::from(threshold_ticks));
             self.input_state
                 .arm_key_repeat(key_code, char_code, next_tick);
         }
