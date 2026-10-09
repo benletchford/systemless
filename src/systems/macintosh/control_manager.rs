@@ -69,6 +69,67 @@ pub(crate) fn new_control_generation() -> u64 {
         .expect("control lifetime generation exhausted")
 }
 
+/// One horizontal run of a standard popup indicator, in global guest pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ControlIndicatorSpan {
+    pub left: i16,
+    pub top: i16,
+    pub width: i16,
+}
+
+/// Classic CPU CDEF variants; these are shapes, never host font glyphs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PopupIndicatorKind { Classic68k, ClassicPpc }
+
+pub(crate) fn popup_indicator_spans(
+    kind: PopupIndicatorKind, bounds: (i16, i16, i16, i16), enabled: bool,
+) -> Vec<ControlIndicatorSpan> {
+    let (top, _, bottom, right) = bounds;
+    let mut spans = Vec::new();
+    match kind {
+        PopupIndicatorKind::Classic68k => {
+            let x = right.saturating_sub(12);
+            if enabled {
+                for row in 0..6i16 {
+                    spans.push(ControlIndicatorSpan {
+                        left: x.saturating_sub(5).saturating_add(row),
+                        top: top.saturating_add(6 + row), width: 11 - 2 * row,
+                    });
+                }
+            } else {
+                for row in [0i16, 2, 4] {
+                    let start = x.saturating_sub(4).saturating_add(row);
+                    for dx in (0..9 - 2 * row).step_by(2) {
+                        spans.push(ControlIndicatorSpan {
+                            left: start.saturating_add(dx),
+                            top: top.saturating_add(7 + row), width: 1,
+                        });
+                    }
+                }
+            }
+        }
+        PopupIndicatorKind::ClassicPpc => {
+            let x = right.saturating_sub(9);
+            let y = top.saturating_add(bottom.saturating_sub(top) / 2);
+            for offset in 0..3i16 {
+                for top in [y.saturating_sub(3 - offset), y.saturating_add(3 - offset)] {
+                    spans.push(ControlIndicatorSpan {
+                        left: x.saturating_sub(offset), top, width: 2 * offset + 1,
+                    });
+                }
+            }
+        }
+    }
+    spans
+}
+
+/// Resolved standard indicator shape and solid guest ink.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ControlPopupIndicator {
+    pub spans: Vec<ControlIndicatorSpan>,
+    pub rgb: [u8; 3],
+}
+
 /// Guest-resolved popup text ink. Checker phase uses global guest pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControlTextInk {
@@ -117,6 +178,8 @@ pub struct ControlSnapshot {
     pub popup_text_inset: i16,
     /// Ink resolved by the same CPU CDEF state as guest drawing.
     pub popup_ink: Option<ControlTextInk>,
+    /// Standard classic indicator; themed variants await faithful projection.
+    pub popup_indicator: Option<ControlPopupIndicator>,
     /// Resolved global selected-box bounds from the CPU CDEF.
     pub popup_box_bounds: Option<(i16, i16, i16, i16)>,
     /// Font resolved from the live owner port and popup CDEF variation.
@@ -209,6 +272,7 @@ pub(crate) fn snapshot_control_record(
         popup_title_width: popup.then_some(popup_title_width.unwrap_or(0)),
         popup_text_inset: 15,
         popup_ink: None,
+        popup_indicator: None,
         popup_box_bounds: None,
         // GrafPort and CGrafPort share txFont/txSize offsets. The popup
         // variation uses the owner font for both title and selected item.

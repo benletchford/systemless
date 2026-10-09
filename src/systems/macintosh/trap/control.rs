@@ -65,6 +65,15 @@ impl super::TrapDispatcher {
             .map_or(255, |(index, _)| index as u8)
     }
 
+    pub(crate) fn popup_indicator_rgb(&self, bus: &MacMemoryBus) -> [u8; 3] {
+        if self.screen_mode.4 != 8 { return [0; 3]; }
+        // Resolve the same logical black index as fb_hline/fb_set_pixel.
+        let palette = crate::display::rgba_palette_from_clut_with_gamma(
+            &self.device_clut, &self.display_gamma.table());
+        let [r, g, b, _] = palette[usize::from(Self::logical_black_pixel_index(bus))].to_le_bytes();
+        [r, g, b]
+    }
+
     pub(crate) fn popup_text_ink(&self, enabled: bool) -> crate::control_manager::ControlTextInk {
         use crate::control_manager::ControlTextInk;
         if enabled { return ControlTextInk::Solid([0; 3]); }

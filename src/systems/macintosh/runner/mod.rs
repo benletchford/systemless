@@ -1,7 +1,7 @@
 //! Fixture Runner - Loading and execution infrastructure
 
 use crate::callback_manager::CallbackTaskArchitecture;
-pub use crate::control_manager::{scrollbar_drag_position, ControlFontStyle, ControlSnapshot, ControlTextInk};
+pub use crate::control_manager::{scrollbar_drag_position, ControlFontStyle, ControlSnapshot, ControlTextInk, ControlIndicatorSpan, ControlPopupIndicator};
 use crate::cpu::{M68kCpu, Register, StepResult};
 use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
 pub use crate::dialog_manager::{DialogEditTextLayout, DialogStaticTextLayout, DialogItemKind, DialogItemSnapshot, DialogSnapshot};
@@ -2497,6 +2497,9 @@ impl FixtureRunner {
                             snapshot.popup_box_bounds = Some((top.saturating_add(1),
                                 left.saturating_add(snapshot.popup_title_width.unwrap_or(0).max(0)),
                                 bottom.saturating_sub(2), right.saturating_sub(1)));
+                            snapshot.popup_indicator = crate::loader::ppc::ppc_popup_indicator(
+                                &app.gworlds, snapshot.popup_box_bounds.unwrap(),
+                                record.active, snapshot.enabled);
                         }
                         snapshot
                     })
@@ -2527,6 +2530,14 @@ impl FixtureRunner {
                             snapshot.popup_box_bounds = Some(self.dispatcher.popup_control_box_rect(
                                 &self.bus, top, left, bottom, right, menu_id,
                                 snapshot.popup_title_width.unwrap_or(0), snapshot.proc_id));
+                            if self.dispatcher.ui_theme_id() == UiThemeId::ClassicSystem7 {
+                                snapshot.popup_indicator = Some(crate::control_manager::ControlPopupIndicator {
+                                    spans: crate::control_manager::popup_indicator_spans(
+                                        crate::control_manager::PopupIndicatorKind::Classic68k,
+                                        snapshot.popup_box_bounds.unwrap(), snapshot.enabled),
+                                    rgb: self.dispatcher.popup_indicator_rgb(&self.bus),
+                                });
+                            }
                         }
                         snapshot
                     })

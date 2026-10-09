@@ -3301,6 +3301,19 @@ pub(crate) fn ppc_popup_text_ink(
     crate::control_manager::ControlTextInk::Solid([rgb.r, rgb.g, rgb.b])
 }
 
+pub(crate) fn ppc_popup_indicator(
+    gworlds: &[PpcGWorldRecord], bounds: (i16, i16, i16, i16),
+    active: bool, enabled: bool,
+) -> Option<crate::control_manager::ControlPopupIndicator> {
+    if ppc_ui_theme(gworlds) != UiThemeId::ClassicSystem7 { return None; }
+    let rgb = ppc_control_palette(gworlds, active).frame_dark;
+    Some(crate::control_manager::ControlPopupIndicator {
+        spans: crate::control_manager::popup_indicator_spans(
+            crate::control_manager::PopupIndicatorKind::ClassicPpc, bounds, enabled),
+        rgb: [rgb.r, rgb.g, rgb.b],
+    })
+}
+
 fn ppc_control_palette(gworlds: &[PpcGWorldRecord], active: bool) -> crate::ui_theme::UiThemePalette {
     let palette = ppc_ui_theme(gworlds).provider().palette();
     if active { palette } else {
@@ -3788,40 +3801,14 @@ pub(super) fn ppc_draw_control_inner(
                         ppc_theme_rgb(palette.frame_dark),
                         None,
                     );
-                    let arrow_h = draw_right.saturating_sub(9);
-                    let center_v =
-                        draw_top.saturating_add(draw_bottom.saturating_sub(draw_top) / 2);
-                    for offset in 0..3i16 {
-                        wrote |= ppc_line_to(
-                            memory,
-                            gworlds,
-                            draw_owner,
-                            (
-                                arrow_h.saturating_sub(offset),
-                                center_v.saturating_sub(3 - offset),
-                            ),
-                            (
-                                arrow_h.saturating_add(offset),
-                                center_v.saturating_sub(3 - offset),
-                            ),
-                            ppc_theme_rgb(palette.frame_dark),
-                            None,
-                        );
-                        wrote |= ppc_line_to(
-                            memory,
-                            gworlds,
-                            draw_owner,
-                            (
-                                arrow_h.saturating_sub(offset),
-                                center_v.saturating_add(3 - offset),
-                            ),
-                            (
-                                arrow_h.saturating_add(offset),
-                                center_v.saturating_add(3 - offset),
-                            ),
-                            ppc_theme_rgb(palette.frame_dark),
-                            None,
-                        );
+                    for span in crate::control_manager::popup_indicator_spans(
+                        crate::control_manager::PopupIndicatorKind::ClassicPpc,
+                        (draw_top, draw_left, draw_bottom, draw_right), enabled,
+                    ) {
+                        wrote |= ppc_line_to(memory, gworlds, draw_owner,
+                            (span.left, span.top),
+                            (span.left.saturating_add(span.width - 1), span.top),
+                            ppc_theme_rgb(palette.frame_dark), None);
                     }
                 }
                 let selected = memory
