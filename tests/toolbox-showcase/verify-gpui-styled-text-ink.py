@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Compare inactive styled TextEdit GPUI ink to device-snapped guest pixels.
+"""Compare styled TextEdit GPUI ink to device-snapped guest pixels.
 
-This verifies only the captured field, not surrounding chrome, selection,
-caret, interactions or arbitrary background/transfer policies.
+This verifies only the captured field, not surrounding chrome, caret,
+interactions or arbitrary background/transfer policies.
 """
 import argparse
 import hashlib
 import json
 import math
+import subprocess
 from pathlib import Path
 from PIL import Image
 
@@ -53,15 +54,25 @@ def main():
     parser.add_argument("manifest", type=Path)
     args = parser.parse_args()
     manifest = json.loads(args.manifest.read_text())
+    repo = Path(__file__).resolve().parents[2]
+    if "fixture" in manifest:
+        assert sha256(repo / manifest["fixture"]) == manifest["fixture_sha256"], "fixture hash differs"
+    if "source_sha256" in manifest:
+        for path, expected in manifest["source_sha256"].items():
+            source = subprocess.check_output(["git", "show", f"{manifest['source_commit']}:{path}"], cwd=repo)
+            assert hashlib.sha256(source).hexdigest() == expected, f"pinned source hash differs: {path}"
     cases = manifest["cases"]
-    required = {(mode, scale) for mode in ["mono", "colour", "ppc16", "ppc8"]
-                for scale in [0.75, 1.0, 1.5, 2.0]}
-    actual = {(case["mode"], case["scale"]) for case in cases}
+    states = manifest.get("states", ["inactive"])
+    assert states and len(states) == len(set(states)), "missing or duplicate states"
+    assert set(states) <= {"inactive", "selected", "suspended", "resumed"}, "unknown qualification state"
+    required = {(mode, scale, state) for mode in ["mono", "colour", "ppc16", "ppc8"]
+                for scale in [0.75, 1.0, 1.5, 2.0] for state in states}
+    actual = {(case["mode"], case["scale"], case.get("state", "inactive")) for case in cases}
     assert len(cases) == len(required) and actual == required, "incomplete or duplicate CPU/scale matrix"
     assert all(case["device_scale"] == 2 for case in cases), "unqualified device density"
     for case in cases:
         verify_case(args.manifest.parent, case, manifest["field_bounds"])
-    print(f"verified {len(manifest['cases'])} inactive styled field captures")
+    print(f"verified {len(manifest['cases'])} styled field captures")
 
 
 if __name__ == "__main__":

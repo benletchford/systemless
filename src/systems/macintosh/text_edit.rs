@@ -413,6 +413,40 @@ mod tests {
         let (geometry, placed) = split.styled_line_geometry(0, |_, _| 5).unwrap();
         assert_eq!(geometry.left, 102);
         assert_eq!(placed, vec![(0..2, vec![102, 107, 112]), (2..3, vec![112, 117])]);
+        let mut selected = split.clone();
+        selected.active = true;
+        selected.selection = (0, 5);
+        selected.justification = 0;
+        selected.view_rect = selected.dest_rect;
+        for policy in [super::TextEditLineLayoutPolicy::CumulativeGuestMetrics,
+            super::TextEditLineLayoutPolicy::PpcRunMetrics] {
+            selected.line_layout_policy = policy;
+            let end = if policy == super::TextEditLineLayoutPolicy::PpcRunMetrics { 3 } else { 5 };
+            let geometry = selected.guest_styled_line_geometry(0).unwrap().0;
+            let rect = selected.guest_styled_selection_rect(0).unwrap().unwrap();
+            assert_eq!(rect, (10, 20, 10 + geometry.height,
+                geometry.left + selected.guest_styled_range_width(0..end).unwrap()));
+            selected.selection = (5, 0);
+            assert_eq!(selected.guest_styled_selection_rect(0), Some(Some(rect)), "normalize reversed selection");
+            selected.active = false;
+            assert_eq!(selected.guest_styled_selection_rect(0), Some(None));
+            selected.active = true;
+            selected.selection = (0, 5);
+            selected.view_rect = (12, 22, 15, 25);
+            assert_eq!(selected.guest_styled_selection_rect(0), Some(Some((12, 22, 15, 25))), "clip decoration to the guest view");
+            selected.view_rect = selected.dest_rect;
+        }
+        selected.line_layout_policy = super::TextEditLineLayoutPolicy::PpcRunMetrics;
+        selected.dest_rect.0 = 32760;
+        selected.view_rect = (0, 20, i16::MAX, 200);
+        selected.selection = (0, 3);
+        let geometry = selected.guest_styled_line_geometry(0).unwrap().0;
+        let rect = selected.guest_styled_selection_rect(0).unwrap().unwrap();
+        assert_eq!(rect.0, i16::MAX - geometry.ascent,
+            "PPC selection derives its top from the saturated drawing baseline");
+        assert_eq!(rect.2, i16::MAX);
+        assert!(selected.guest_styled_range_width(0..6).is_none());
+        assert!(selected.guest_styled_selection_rect(1).is_none());
         for policy in [super::TextEditLineLayoutPolicy::CumulativeGuestMetrics,
             super::TextEditLineLayoutPolicy::PpcRunMetrics] {
             split.line_layout_policy = policy;
@@ -706,6 +740,61 @@ impl TextEditSnapshot {
             }
         }
         Some((geometry, placed))
+    }
+
+    /// Measure a canonical styled byte range using the owning CPU's TEClick
+    /// policy, including trailing spaces/returns when the caller requests them.
+    pub fn guest_styled_range_width(&self, range: Range<usize>) -> Option<i16> {
+        if !self.styled { return None; }
+        let bytes = self.text.get(range.clone())?;
+        let runs = self.style_runs.as_ref()?;
+        if runs.first()?.start != 0 || runs.iter().any(|run| run.start > self.text.len())
+            || runs.windows(2).any(|pair| pair[0].start >= pair[1].start) { return None; }
+        let mut width = 0i16;
+        for (offset, &byte) in bytes.iter().enumerate() {
+            let run = runs.iter().rev().find(|run| run.start <= range.start + offset)?;
+            width = width.saturating_add(styled_byte_advance(self.line_layout_policy,
+                run.font, run.size, run.face, byte));
+        }
+        Some(width)
+    }
+
+    /// Active classic selection geometry, port-local and clipped to viewRect.
+    /// Some(None) means no visible selection; None means unsupported/invalid
+    /// geometry. Theme painting and inactive outline highlighting are separate.
+    pub fn guest_styled_selection_rect(&self, index: usize) -> Option<Option<(i16, i16, i16, i16)>> {
+        let (geometry, _) = self.guest_styled_line_geometry(index)?;
+        if !self.active || self.selection.0 == self.selection.1 { return Some(None); }
+        let starts = self.line_starts.as_ref()?;
+        let line_start = *starts.get(index)?;
+        let mut line_end = *starts.get(index + 1)?;
+        if self.line_layout_policy == TextEditLineLayoutPolicy::PpcRunMetrics {
+            while line_end > line_start && matches!(self.text[line_end - 1], b' ' | b'\r' | b'\n') { line_end -= 1; }
+        }
+        let start = self.selection.0.min(self.selection.1).max(line_start);
+        let end = self.selection.0.max(self.selection.1).min(line_end);
+        if start >= end { return Some(None); }
+        let left_width = self.guest_styled_range_width(line_start..start)?;
+        let right_width = self.guest_styled_range_width(line_start..end)?;
+        let (mut left, right, top) = match self.line_layout_policy {
+            TextEditLineLayoutPolicy::CumulativeGuestMetrics =>
+                (geometry.left.checked_add(left_width)?, geometry.left.checked_add(right_width)?, geometry.top),
+            TextEditLineLayoutPolicy::PpcRunMetrics => {
+                let baseline = self.dest_rect.0.saturating_add(geometry.ascent)
+                    .saturating_add(i16::try_from(index).ok()?.saturating_mul(geometry.height));
+                (geometry.left.saturating_add(left_width), geometry.left.saturating_add(right_width),
+                    baseline.saturating_sub(geometry.ascent))
+            }
+        };
+        if start == line_start && matches!(self.justification, 0 | -2) {
+            left = match self.line_layout_policy {
+                TextEditLineLayoutPolicy::CumulativeGuestMetrics => left.saturating_sub(1),
+                TextEditLineLayoutPolicy::PpcRunMetrics => self.dest_rect.1,
+            };
+        }
+        let rect = (top.max(self.view_rect.0), left.max(self.view_rect.1),
+            top.saturating_add(geometry.height).min(self.view_rect.2), right.min(self.view_rect.3));
+        Some((rect.0 < rect.2 && rect.1 < rect.3).then_some(rect))
     }
 
     fn metrics_for_line(&self, index: usize) -> Option<(i16, i16)> {

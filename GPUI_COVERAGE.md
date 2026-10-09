@@ -3727,3 +3727,32 @@ python3 tests/toolbox-showcase/verify-gpui-styled-text-ink.py \
 The verifier requires all four modes and four scales once each, device density
 2, file hashes and zero mismatched field pixels. This is implementation-to-
 guest comparison; it does not add new Macintosh-oracle evidence.
+
+Styled selection now has a read-only guest geometry projection. It measures
+canonical byte ranges with the shared CPU advance policy, normalizes reversed
+ranges, retains the left inset rule and view clipping, and distinguishes
+classic trailing space/return selection from PPC's trimmed visible-line range.
+PPC selection top is derived from its saturated drawing baseline; the GPUI ink
+plan also retains the native baseline addition order. The snapshot regression
+passes clipping, inactive/no-range cases and the signed-coordinate saturation
+boundary (0.09s). Existing four-mode inactive ink comparison passes (3.43s).
+
+The styled canvas can apply classic selection by inverting resolved pixel
+colours after ordered run painting. It uses each run's physical inverted ink
+and a caller-supplied qualified erased background, retaining RGB16 style
+intent rather than substituting a host accent colour. The public fixture
+capture drives a real guest drag from byte 0 to 26 across style changes and
+can request suspend/resume through the frontend session. Each transition
+checks unchanged guest text, selection and style runs and waits for null-event
+repaint completion before comparing every native field pixel and rendering.
+
+At this checkpoint, initial selected PPC16 at scale 1 and all four monochrome
+selected/suspended scales have exact compositor field comparisons. The larger
+selected/suspended/resumed CPU/scale capture matrix is not yet archived as
+qualification. The verifier still passes the existing 16 archived inactive
+captures, now checking pinned Git source and fixture hashes as well as PNG
+hashes, dimensions and complete CPU/scale/state matrices. Production and
+no-default-features checks pass (13.24s/7.14s). General backgrounds, modern
+theme selection, caret rendering, live hit-testing and styled production scene
+ownership remain unfinished; capture session activation does not independently
+prove the native host-window observer.
