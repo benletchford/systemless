@@ -60,6 +60,13 @@ pub(super) fn dispatch_math_import(
             cpu.fpr[1] = value.asin().to_bits();
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::MathAcos => {
+            // Inside Macintosh: PowerPC Numerics (1994), pp. 10-33--10-34:
+            // acos returns radians in [0, pi] for arguments in [-1, 1].
+            let value = f64::from_bits(cpu.fpr[1]);
+            cpu.fpr[1] = value.acos().to_bits();
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::MathTan => {
             // Inside Macintosh: PowerPC Numerics (1994), pp. 10-32--10-33.
             let value = f64::from_bits(cpu.fpr[1]);

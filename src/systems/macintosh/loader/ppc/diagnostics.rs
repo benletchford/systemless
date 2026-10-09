@@ -309,6 +309,7 @@ pub(crate) fn ppc_import_extra_cycles_for_target(target: &PpcImportDispatcherTar
         | PpcImportDispatcherTarget::MathSin
         | PpcImportDispatcherTarget::MathCos
         | PpcImportDispatcherTarget::MathAsin
+        | PpcImportDispatcherTarget::MathAcos
         | PpcImportDispatcherTarget::MathTan
         | PpcImportDispatcherTarget::MathAtan
         | PpcImportDispatcherTarget::MathAtan2
