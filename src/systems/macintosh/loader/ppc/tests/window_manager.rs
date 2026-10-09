@@ -9137,3 +9137,299 @@ fn std_bits_copies_into_the_current_port_like_copy_bits() {
     );
     assert_eq!(std_bits, copy_bits);
 }
+
+#[test]
+fn import_bindings_classify_window_state_title_greatest_area_and_port_bounds_imports() {
+    for lib in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowIdealUserState"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowIdealUserState)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowidealuserstate"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowIdealUserState)
+        );
+
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetWindowIdealUserState"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowIdealUserState)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setwindowidealuserstate"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowIdealUserState)
+        );
+
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowStandardState"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowStandardState)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowstandardstate"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowStandardState)
+        );
+
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetWindowStandardState"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowStandardState)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setwindowstandardstate"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowStandardState)
+        );
+
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowTitle"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowTitle)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowtitle"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowTitle)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWTitle"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowTitle)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwtitle"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowTitle)
+        );
+
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetWindowTitle"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowTitle)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setwindowtitle"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowTitle)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetWTitle"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowTitle)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setwtitle"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowTitle)
+        );
+
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowGreatestArea"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowGreatestArea)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowgreatestarea"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowGreatestArea)
+        );
+
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowPortBounds"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowPortBounds)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowportbounds"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowPortBounds)
+        );
+    }
+}
+
+#[test]
+fn window_state_title_greatest_area_and_port_bounds_commands_dispatch_with_canonical_evaluation() {
+    for lib in [
+        b"InterfaceLib".as_slice(),
+        b"AppearanceLib".as_slice(),
+        b"CarbonLib".as_slice(),
+    ] {
+        let lib_str = std::str::from_utf8(lib).unwrap();
+        let pef = synthetic_pef_with_library_import(lib, b"GetWindowPortBounds");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1400;
+        let bounds_ptr = scratch;
+        let rect_ptr = scratch + 0x100;
+        let title_in_ptr = scratch + 0x200;
+        let title_out_ptr = scratch + 0x300;
+        loaded.memory.add_region(scratch, vec![0; 0x1000]);
+
+        let win = create_test_cwindow(&mut loaded, bounds_ptr, (30, 40, 230, 340), 0, true, u32::MAX);
+
+        // 1. GetWindowPortBounds
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "GetWindowPortBounds");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win;
+        loaded.cpu.gpr[4] = rect_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], rect_ptr);
+        assert_eq!(ppc_read_rect(&mut loaded.memory, rect_ptr), Some((0, 0, 200, 300)));
+
+        // Error cases for GetWindowPortBounds
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = rect_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win;
+        loaded.cpu.gpr[4] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+
+        // 2. GetWindowGreatestArea
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "GetWindowGreatestArea");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = rect_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+        assert_eq!(ppc_read_rect(&mut loaded.memory, rect_ptr), Some((0, 0, 480, 640)));
+
+        // Error case: out_greatest = 0
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+
+        // 3. SetWindowTitle & GetWindowTitle
+        assert!(ppc_write_pstring_bytes(&mut loaded.memory, title_in_ptr, b"Canonical Title"));
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "SetWindowTitle");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win;
+        loaded.cpu.gpr[4] = title_in_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "GetWindowTitle");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win;
+        loaded.cpu.gpr[4] = title_out_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, title_out_ptr).as_deref(),
+            Some(b"Canonical Title".as_slice())
+        );
+
+        // Error cases: SetWindowTitle & GetWindowTitle with window = 0
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "SetWindowTitle");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = title_in_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "GetWindowTitle");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = title_out_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+
+        // 4. SetWindowIdealUserState & GetWindowIdealUserState
+        let ideal_rect = (55, 65, 255, 365);
+        ppc_write_rect(&mut loaded.memory, rect_ptr, ideal_rect.0, ideal_rect.1, ideal_rect.2, ideal_rect.3).unwrap();
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "SetWindowIdealUserState");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win;
+        loaded.cpu.gpr[4] = rect_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+        let out_rect_ptr = scratch + 0x400;
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "GetWindowIdealUserState");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win;
+        loaded.cpu.gpr[4] = out_rect_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+        assert_eq!(ppc_read_rect(&mut loaded.memory, out_rect_ptr), Some(ideal_rect));
+
+        // Error cases: SetWindowIdealUserState / GetWindowIdealUserState with window = 0
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = out_rect_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "SetWindowIdealUserState");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = rect_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+
+        // 5. SetWindowStandardState & GetWindowStandardState
+        let std_rect = (35, 25, 435, 595);
+        ppc_write_rect(&mut loaded.memory, rect_ptr, std_rect.0, std_rect.1, std_rect.2, std_rect.3).unwrap();
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "SetWindowStandardState");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win;
+        loaded.cpu.gpr[4] = rect_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "GetWindowStandardState");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win;
+        loaded.cpu.gpr[4] = out_rect_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+        assert_eq!(ppc_read_rect(&mut loaded.memory, out_rect_ptr), Some(std_rect));
+
+        // Error cases: SetWindowStandardState / GetWindowStandardState with window = 0
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = out_rect_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import(lib_str, "SetWindowStandardState");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = rect_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+    }
+}
