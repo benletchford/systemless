@@ -1,0 +1,53 @@
+{
+  "base_commit": "4122f6e5ff143b149bd24da8ec19028e2b78f7ab",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "7ce8d6014a28a07aca430d9bd0ce8654fb7325e548aca23940b18be5025dbe79",
+    "src/bin/gpui_demo_menu.rs": "82d303a5b6423583d5d6da53847405012dcd22faa2c3f5a5cbabff06eb368565"
+  },
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "scope": "All three final File menu compositions visually reviewed at historical viewport. Command shortcuts and hierarchy indicator share the label column; guest scene remains present. Lossless encoding preserves exact decoded pixels. No exact guest geometry or native font oracle claim.",
+  "gaps": [
+    "exact guest menu geometry",
+    "command display case",
+    "scale/state and native font/input",
+    "arbitrary marks and styled rows"
+  ],
+  "captures": [
+    {
+      "mode": "mono",
+      "file": "menu-file-column-mono.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "original_capture_sha256": "012724275ce2e567c6942ad1cdb971e283e2111445ede53d2f4e444df3b4e9d1",
+      "sha256": "86c5f4af490e951d86b57a649b147fe9d9572b766679738aa63dae8d098c7548",
+      "decoded_pixel_sha256": "7361fcf5beb1bd5661506b8d35bcd05f7d2a05d1ffa3e4e7d603ce54beee10b7",
+      "command": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit --screen-depth 1 --capture-standard-menu-id 131 --capture-standard-menu /tmp/output.png"
+    },
+    {
+      "mode": "colour",
+      "file": "menu-file-column-colour.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "original_capture_sha256": "01c9e5130495821faffdec304b772e48b93203a60b20f632a637f5cde0fa62ad",
+      "sha256": "e1c95dc75463d869a0578345c31c0eb693a1d0e001992db355cc4c985f5f03a3",
+      "decoded_pixel_sha256": "e036fa6823df367b40e73b45848f19d4b0c496ec6d30ebbe669b88bb4f2e379a",
+      "command": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit --screen-depth 8 --capture-standard-menu-id 131 --capture-standard-menu /tmp/output.png"
+    },
+    {
+      "mode": "ppc",
+      "file": "menu-file-column-ppc.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "original_capture_sha256": "01c9e5130495821faffdec304b772e48b93203a60b20f632a637f5cde0fa62ad",
+      "sha256": "e1c95dc75463d869a0578345c31c0eb693a1d0e001992db355cc4c985f5f03a3",
+      "decoded_pixel_sha256": "e036fa6823df367b40e73b45848f19d4b0c496ec6d30ebbe669b88bb4f2e379a",
+      "command": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit --prefer-powerpc --capture-standard-menu-id 131 --capture-standard-menu /tmp/output.png"
+    }
+  ]
+}

@@ -314,6 +314,15 @@ impl Render for GuestMenuPopup {
                     column.border_l_1().border_color(cx.theme().border)
                 })
                 .p(px(4.));
+            let name_width = menu.items.iter().filter(|item| !item.separator).map(|item| {
+                let bytes: Vec<_> = item.text.chars().map(|ch|
+                    systemless::systems::macintosh::mac_roman::encode_mac_roman_char(ch).unwrap_or(b'?')).collect();
+                let line = super::text::ClassicLine::styled(&bytes, 0, 12, item.style);
+                let left = line.ink.iter().map(|&(x, _, _)| x).min().unwrap_or(0).min(0);
+                let right = line.ink.iter().map(|&(x, _, width)| x + width).max().unwrap_or(0)
+                    .max(line.positions.last().copied().unwrap_or(0));
+                right - left
+            }).max().unwrap_or(0);
             for item in &menu.items {
                 if item.separator {
                     column = column.child(div().h(px(1.)).my(px(3.)).bg(cx.theme().border));
@@ -366,8 +375,9 @@ impl Render for GuestMenuPopup {
                                 super::text::classic_menu_symbol(
                                     &if item.mark == 0x12 { "✓".to_owned() } else { char::from(item.mark).to_string() },
                                     if enabled { cx.theme().foreground } else { cx.theme().muted_foreground }))))
-                        .child(super::text::classic_menu_label(&item.text, item.style, 1.,
-                            if enabled { cx.theme().foreground } else { cx.theme().muted_foreground }))
+                        .child(div().w(px(name_width as f32)).flex_shrink_0().child(
+                            super::text::classic_menu_label(&item.text, item.style, 1.,
+                                if enabled { cx.theme().foreground } else { cx.theme().muted_foreground })))
                         .when(item.key_equivalent.is_some(), |row| row.child(
                             div().ml(px(12.)).child(super::text::classic_menu_symbol(
                                 &format!("⌘{}", item.key_equivalent.unwrap().to_uppercase()),
