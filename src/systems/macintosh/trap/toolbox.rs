@@ -4780,7 +4780,9 @@ impl super::TrapDispatcher {
             .copied()
             .take_while(|&b| b != 0)
             .map(|b| {
-                if b.is_ascii_graphic() || b == b' ' {
+                // draw_char consumes guest character codes, not Unicode scalars.
+                // Keep high Mac Roman bytes intact for the guest font resolver.
+                if b >= 0x80 || b.is_ascii_graphic() || b == b' ' {
                     b as char
                 } else {
                     ' '

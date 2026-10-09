@@ -20145,3 +20145,17 @@
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::D0), secs);
     }
+
+    #[test]
+    fn standard_list_fallback_preserves_mac_roman_glyph_codes() {
+        let text = TrapDispatcher::list_cell_text(b"Caf\x8e\t\x80  \0ignored");
+        assert_eq!(text.chars().map(|ch| ch as u32).collect::<Vec<_>>(),
+            vec![67, 97, 102, 0x8e, 32, 0x80]);
+        for (byte, unicode) in [(0x8e_u8, 'é'), (0x80, 'Ä')] {
+            let guest = crate::quickdraw::text::get_glyph(3, 12, char::from(byte)).unwrap();
+            let decoded = crate::quickdraw::text::get_unicode_glyph(3, 12, unicode).unwrap();
+            assert_eq!(guest.0.advance, decoded.0.advance);
+            assert_eq!(guest.1, decoded.1);
+        }
+        assert_eq!(TrapDispatcher::list_cell_text(b"plain text  "), "plain text");
+    }
