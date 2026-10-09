@@ -8187,6 +8187,12 @@ fn menu_bar_lifecycle_and_lowmem_commands_dispatch_with_canonical_evaluation() {
 
             let pef = synthetic_pef_with_library_import(lib, b"GetMBarHeight");
             let mut loaded = load_pef_application(&pef).unwrap();
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], 20);
+
+            let pef = synthetic_pef_with_library_import(lib, b"GetMBarHeight");
+            let mut loaded = load_pef_application(&pef).unwrap();
             loaded.memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, 25).unwrap();
             let probe = loaded.run_with_hle_imports(64);
             assert_eq!(probe.handled_import_count, 1);
@@ -8279,6 +8285,22 @@ fn menu_bar_lifecycle_and_lowmem_commands_dispatch_with_canonical_evaluation() {
             loaded.cpu.gpr[3] = snapshot;
             let probe = loaded.run_with_hle_imports(64);
             assert_eq!(probe.handled_import_count, 1);
+
+            // Null source handle reports parameter error
+            let pef = synthetic_pef_with_library_import(lib, b"SetMenuBar");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.last_mem_error(), PPC_PARAM_ERR);
+
+            // Null menu bar ID returns 0
+            let pef = synthetic_pef_with_library_import(lib, b"GetNewMBar");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], 0);
         }
 
         // 8. GetMenuHandle & GetMHandle
