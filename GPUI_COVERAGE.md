@@ -2943,3 +2943,25 @@ keyboard selection remains intact (0.20 seconds). These checks establish
 shared metadata and glyph fidelity, not native font-oracle parity or composed
 visual qualification of unusual command characters. Exact menu geometry,
 scales, states and remaining system text surfaces still require qualification.
+
+### Guest-tracked popup row typography
+
+Standard popup row names now use binary guest glyph canvases with the owner
+GrafPort font/size and live QuickDraw style. Marks and Command characters use
+the same guest font, with hierarchy pixels from the shared Menu Manager raster.
+The snapshot exposes text/baseline/mark/command anchors from the same standard
+MDEF layout used by both CPU painters. Rows retain guest bounds, height, scrolling
+origin and clipping; text is no longer shaped or ellipsized by host typography.
+Input continues to bubble to the existing guest tracker. The updated example
+type-check passes. Visual captures, icon-bearing row context, colour/disabled
+pattern fidelity and scroll-arrow glyph replacement remain unfinished; this
+change does not qualify popup parity or native font fidelity.
+
+The eight popup regressions pass (214.15 seconds), covering guest-linked menu
+state, cancellation, scrolling in both directions, release and actual GPUI
+pointer routing across monochrome 68k, colour 68k and PPC. All three full
+open-popup compositions were reviewed and archived losslessly in
+`popup-guest-strike-review.json` with source, fixture, file and pixel hashes.
+The selected long label is readable and the disabled row label remains present.
+This fixture does not qualify icons, marks/commands, alternate owner fonts,
+scroll arrows, further scales or native colour/disabled-pattern parity.

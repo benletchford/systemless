@@ -59,43 +59,22 @@ pub fn popup(popup: &GuestPopupSnapshot, scale: f32, cx: &App) -> Div {
         let enabled = popup.menu.enabled && item.enabled;
         let mut row = div()
             .absolute()
-            .left(unit(1))
+            .left_0()
             .top(unit(offset))
-            .w(unit((i32::from(right) - i32::from(left) - 2).max(0)))
+            .w(unit((i32::from(right) - i32::from(left)).max(0)))
             .h(unit(i32::from(*height)))
             .flex()
-            .items_center()
-            .text_size(unit(i32::from(popup.font.point_size())))
-            .text_color(if enabled {
-                cx.theme().foreground
-            } else {
-                cx.theme().muted_foreground
-            });
+            .items_center();
         if selected {
             row = row.bg(cx.theme().selection);
         }
         if item.separator {
             row = row.child(div().w_full().h(unit(1)).bg(cx.theme().border));
         } else {
-            row = row
-                .child(div().w(unit(16)).flex_shrink_0().child(if item.checked {
-                    "✓"
-                } else {
-                    ""
-                }))
-                .child(
-                    div()
-                        .flex_1()
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .child(item.text.clone()),
-                );
-            if let Some(key) = item.key_equivalent {
-                row = row.child(div().px_1().child(format!("⌘{key}")));
-            }
-            if item.submenu_id.is_some() {
-                row = row.child(div().px_1().child("▸"));
-            }
+            row = row.overflow_hidden().child(super::text::classic_popup_row(
+                popup, item, *height, scale,
+                if enabled { cx.theme().foreground } else { cx.theme().muted_foreground },
+            ));
         }
         pane = pane.child(row);
         offset += i32::from(*height);

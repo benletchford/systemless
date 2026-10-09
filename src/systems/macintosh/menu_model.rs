@@ -123,6 +123,18 @@ pub struct GuestPopupSnapshot {
 }
 
 impl GuestPopupSnapshot {
+    /// Standard popup text anchors resolved by the same layout as both guest painters.
+    /// Coordinates are relative to the pane; icon-bearing rows need their icon context.
+    pub fn text_anchors(&self, row_top: i16, row_height: i16) -> (i16, i16, i16, i16) {
+        let metrics = self.font.metrics();
+        let layout = crate::menu_manager::standard_menu_item_layout(
+            (0, self.bounds.3.saturating_sub(self.bounds.1)),
+            (row_top, row_height), crate::menu_manager::StandardMenuIconKind::None,
+            false, (metrics.ascent, metrics.descent), false,
+        );
+        (layout.mark_left, layout.text_left, layout.command_left, layout.text_baseline)
+    }
+
     /// Whether the top and bottom row slots are occupied by scrolling arrows.
     /// Uses the same hidden-content calculation as the standard guest tracker.
     pub fn scroll_indicators(&self) -> (bool, bool) {
