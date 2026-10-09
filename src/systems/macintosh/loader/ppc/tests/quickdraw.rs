@@ -5570,3 +5570,51 @@ fn set_origin_keeps_visible_screen_pixels_inside_the_port_region() {
         Some(255)
     );
 }
+
+#[test]
+fn shared_ppc_styled_run_ink_matches_guest_pixels_at_font_ratios() {
+    use std::collections::BTreeSet;
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CharExtra")).unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    assert_eq!(front.depth, 8);
+    let bytes = b"A i\x8e";
+    for font in [3, 4] {
+        for size in [9, 10, 12, 14, 24] {
+            for style in 0..128 {
+                assert!(ppc_paint_rect_bounds(&mut loaded.memory, &loaded.gworlds,
+                    PPC_MAIN_GWORLD, (0, 0, 120, 160), PPC_RGB_WHITE, Some(0)));
+                let advance = ppc_draw_text_bytes_styled(&mut loaded.memory, &loaded.gworlds,
+                    PPC_MAIN_GWORLD, (30, 60), font, size, 0, PPC_RGB_BLACK, Some(1), style, bytes);
+                let (shared_advance, pixels) = crate::quickdraw::text::ppc_styled_run_ink(font, size, style, bytes);
+                assert_eq!(advance, shared_advance);
+                let expected: BTreeSet<_> = pixels.into_iter().map(|(x, y)| (x + 30, y + 60)).collect();
+                assert!(expected.iter().all(|&(x, y)| (0..160).contains(&x) && (0..120).contains(&y)));
+                let mut painted = BTreeSet::new();
+                for y in 0..120 { for x in 0..160 {
+                    if ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)) == Some(1) {
+                        painted.insert((x, y));
+                    }
+                } }
+                assert_eq!(painted, expected, "font {font}, size {size}, style {style}");
+            }
+        }
+    }
+}
+
+#[test]
+fn shared_ppc_font_pixel_bounds_preserve_native_floor_and_saturation() {
+    use crate::quickdraw::text::ppc_font_source_pixel_bounds as bounds;
+    for value in [-10000i32, -17, -1, 0, 1, 17, 1000000] {
+        for (n, d) in [(1, 2), (2, 3), (5, 4), (3, 1), (10000, 3)] {
+            if value.saturating_mul(n) == i32::MIN { continue; }
+            let (left, top, right, bottom) = bounds(value, value, n, d).unwrap();
+            let expected = ppc_scale_font_floor(value, n, d);
+            let end = ppc_scale_font_floor(value + 1, n, d).max(expected + 1);
+            assert_eq!((left, top, right, bottom), (expected, expected, end, end));
+        }
+    }
+    assert_eq!(bounds(-3, -7, 1, 2), Some((-2, -4, -1, -3)));
+    assert_eq!(bounds(0, 0, 0, 1), None);
+    assert_eq!(bounds(0, 0, 1, 0), None);
+    assert_eq!(bounds(i32::MAX, 0, 1, 1), None);
+}

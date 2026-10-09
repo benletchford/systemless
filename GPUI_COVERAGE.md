@@ -3602,3 +3602,33 @@ The final shared-advance comparison and snapshot regression pass together (6s),
 covering 1,310,720 PPC byte/style/font/size combinations. Both native styled
 TextEdit allocation/measurement tests pass (0.47s), as does the classic styled
 TEDelete/TEInsert regression (0.04s). No new styled visual qualification is claimed.
+
+PPC styled run ink now has a shared source-strike visitor extracted from the
+native QuickDraw painter, including hollow outline/shadow synthesis and its
+special run underline interaction. The native painter and pure GPUI recipe also
+share rational pixel footprints: floor negative bearings and retain at least
+one destination pixel for a shrinking source pixel. `ClassicLine::ppc_styled_run`
+accepts the guest's measured insertion positions independently of mask extents,
+then builds the same binary horizontal ink spans used by the compositor. It is
+explicitly a zero-CharExtra recipe; caller palette, transfer mode, clipping and
+ownership policy still apply.
+
+A native-memory drawing comparison passes for 1,280 cases: Geneva/Monaco,
+9/10/12/14/24 points, every low-seven-bit face combination, and `A i` plus Mac
+Roman byte 0x8e. The test clears and draws the guest framebuffer, then compares
+all pixels in its asserted containing region with the pure run recipe (13.06s).
+This is guest-implementation equivalence, not an external Macintosh oracle.
+The GPUI component regression passes 640 size/style cases (4.66s), preserving
+independent insertion positions and every binary ink pixel after span packing.
+Styled field replacement remains guarded: classic 68k synthesis, resolved
+palette ink/port spacing, selection/caret and scaled live/headless compositions
+still need integration and qualification before claiming faithful replacement.
+The final footprint saturation/bounds regression and 1,280-case guest ink
+comparison pass together (10.84s). The pure recipe is a binary union for
+srcCopy/srcOr presentation; overlapping hits in other transfer modes can have
+different semantics and remain guest-owned. Nonzero CharExtra stays in the
+native painter; its existing nonspace-spacing regression passes (0.10s).
+The final GPUI component regression passes (5.77s), and the production binary
+and no-default-features checks pass (19.07s and 13.04s respectively). The new
+run component is not yet wired into styled-field ownership, so these results
+must not be interpreted as a rendered styled-field scene qualification.
