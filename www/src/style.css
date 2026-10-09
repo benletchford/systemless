@@ -887,6 +887,7 @@ input {
   height: 100%;
   aspect-ratio: var(--game-aspect-ratio);
   image-rendering: pixelated;
+  cursor: none;
   outline: none;
   touch-action: none;
   user-select: none;

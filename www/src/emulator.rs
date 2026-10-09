@@ -251,6 +251,8 @@ pub struct Machine {
     rendered_screen_mode: Option<(u32, u32, u16, u16, u16)>,
     rendered_scale: u32,
     rendered_outline: bool,
+    host_cursor: crate::host_cursor::HostCursor,
+    cursor_scale: f64,
     rendered_cursor: Option<display::CursorImage>,
     rendered_cursor_in_frame: bool,
     rendered_mouse_pos: (i16, i16),
@@ -493,6 +495,8 @@ impl Machine {
             rendered_screen_mode: None,
             rendered_scale: 0,
             rendered_outline: false,
+            host_cursor: crate::host_cursor::HostCursor::default(),
+            cursor_scale: 0.0,
             rendered_cursor: None,
             rendered_cursor_in_frame: false,
             rendered_mouse_pos: (0, 0),
@@ -695,7 +699,9 @@ impl Machine {
             self.runner.prepare_text_presentation();
             self.runner.composite_frame();
         }
-        let visual_work = self.has_unpainted_visual_change(candidate_visual_work);
+        let cursor_changed = self.host_cursor.update(self.runner.dispatcher().cursor(), self.cursor_scale);
+        if cursor_changed { self.rendered_epoch = None; }
+        let visual_work = cursor_changed || self.has_unpainted_visual_change(candidate_visual_work);
 
         // Drain whatever was mixed into the runner's audio buffer. Keep this
         // batched to one browser queue post per frame; Sound Manager still
@@ -734,8 +740,8 @@ impl Machine {
             || self.rendered_screen_mode != Some(dispatcher.screen_mode)
             || self.rendered_scale != self.output_scale
             || self.rendered_outline != self.runner.bus().has_visible_outline_detail()
-            || self.rendered_mouse_pos != dispatcher.mouse_position()
-            || self.rendered_cursor.as_ref() != dispatcher.cursor()
+            || (self.software_cursor().is_some() && self.rendered_mouse_pos != dispatcher.mouse_position())
+            || self.rendered_cursor.as_ref() != self.software_cursor()
             || !self.frame_palette_valid
             || self.frame_palette_clut != *dispatcher.device_clut
     }
@@ -887,6 +893,18 @@ impl Machine {
         Ok(())
     }
 
+    pub fn set_cursor_scale(&mut self, scale: f64) {
+        self.cursor_scale = scale;
+    }
+
+    pub fn cursor_css(&self) -> &str {
+        &self.host_cursor.css
+    }
+
+    fn software_cursor(&self) -> Option<&display::CursorImage> {
+        self.runner.dispatcher().cursor().filter(|_| self.host_cursor.software)
+    }
+
     pub fn render_indexed(&mut self) -> Option<&crate::indexed_frame::IndexedFrame> {
         if self.runner.bus().has_visible_outline_detail() {
             return None;
@@ -897,7 +915,7 @@ impl Machine {
                 dispatcher.screen_mode,
                 *dispatcher.device_clut,
                 dispatcher.mouse_position(),
-                dispatcher.cursor().cloned(),
+                self.software_cursor().cloned(),
             )
         };
         if !self
@@ -927,7 +945,7 @@ impl Machine {
                 dispatcher.screen_mode,
                 *dispatcher.device_clut,
                 dispatcher.mouse_position(),
-                dispatcher.cursor().cloned(),
+                self.software_cursor().cloned(),
             )
         };
         let logical = (u32::from(mode.2), u32::from(mode.3));
@@ -1010,7 +1028,7 @@ impl Machine {
                 dispatcher.screen_mode,
                 *dispatcher.device_clut,
                 dispatcher.mouse_position(),
-                dispatcher.cursor().cloned(),
+                self.software_cursor().cloned(),
             )
         };
         let cursor_matches = match (&self.rendered_cursor, cursor.as_ref()) {
@@ -1030,7 +1048,7 @@ impl Machine {
             && self.rendered_screen_mode == Some(screen_mode)
             && self.rendered_scale == self.output_scale
             && self.rendered_outline == outline
-            && self.rendered_mouse_pos == mouse_pos
+            && (cursor.is_none() || self.rendered_mouse_pos == mouse_pos)
             && cursor_matches
             && !palette_changed
         {

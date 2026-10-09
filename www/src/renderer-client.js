@@ -31,7 +31,7 @@ export class RendererClient {
         this.logicalCanvas.setAttribute("data-render-credit-return-ms", String(data.elapsedMs));
       }
     };
-    this.identity = { generation, rendererGeneration: ++nextRendererGeneration, protocolVersion: 4 };
+    this.identity = { generation, rendererGeneration: ++nextRendererGeneration, protocolVersion: 5 };
     this.phase = "booting";
     this.backend = null;
     this.kinds = ["rgba"];
@@ -105,7 +105,7 @@ export class RendererClient {
     if (this.phase === "failed" || this.phase === "disposed"
         || message?.generation !== this.identity.generation
         || message.rendererGeneration !== this.identity.rendererGeneration) return;
-    if (message.protocolVersion !== 4) return this.fail(new Error("Renderer protocol mismatch"));
+    if (message.protocolVersion !== 5) return this.fail(new Error("Renderer protocol mismatch"));
     if (message.type === "ready") {
       if (this.phase !== "booting" || !message.kinds?.includes("rgba")
           || (this.bitmapWanted && (message.bitmap !== true || message.backend !== "bitmap-webgl"))) {
@@ -150,7 +150,7 @@ export class RendererClient {
       if (this.phase === "failed" || this.phase === "disposed"
           || message.generation !== this.identity.generation
           || message.rendererGeneration !== this.identity.rendererGeneration) return;
-      if (!this.bitmapWanted || this.phase !== "ready" || message.protocolVersion !== 4) {
+      if (!this.bitmapWanted || this.phase !== "ready" || message.protocolVersion !== 5) {
         throw new Error("Unexpected presentation bitmap");
       }
       if (!Number.isSafeInteger(message.sequence) || message.sequence < 1
@@ -163,6 +163,7 @@ export class RendererClient {
       }
       const started = performance.now();
       this.bitmapPresenter.paintBitmap(message.bitmap, message.width, message.height);
+      if (typeof message.cursorCss === "string") this.logicalCanvas.style.setProperty("cursor", message.cursorCss);
       this.logicalCanvas.setAttribute("data-render-host-submit-ms", String(performance.now() - started));
       this.bitmapSequence = message.sequence;
       this.bitmapDisplayGeneration = message.displayGeneration;
@@ -180,6 +181,7 @@ export class RendererClient {
     this.lastSubmittedSequence = metrics.sequence;
     this.canvas.style.visibility = "visible";
     const canvas = this.logicalCanvas;
+    if (typeof metrics.cursorCss === "string") canvas.style.setProperty("cursor", metrics.cursorCss);
     canvas.setAttribute("data-render-sequence", String(metrics.sequence));
     canvas.setAttribute("data-render-packet-kind", metrics.kind);
     canvas.setAttribute("data-render-packet-bytes", String(metrics.bytes));
@@ -195,7 +197,7 @@ export class RendererClient {
     try {
       this.worker.postMessage({ ...this.identity, type: "connectOwner", port: channel.port1 }, [channel.port1]);
       this.owner.postMessage({ type: "connectRenderer", generation: this.identity.generation,
-        rendererGeneration: this.identity.rendererGeneration, rendererProtocol: 4,
+        rendererGeneration: this.identity.rendererGeneration, rendererProtocol: 5,
         sequence: this.sequence, displayGeneration: this.displayGeneration,
         port: channel.port2 }, [channel.port2]);
       this.logicalCanvas.setAttribute("data-render-transport", "direct");
@@ -205,8 +207,8 @@ export class RendererClient {
     }
   }
 
-  paint(width, height, pixels) {
-    return this.paintPacket({ kind: "rgba", complete: true, width, height, pixels });
+  paint(width, height, pixels, cursorCss) {
+    return this.paintPacket({ kind: "rgba", complete: true, width, height, pixels, cursorCss });
   }
 
   paintPacket(frame) {

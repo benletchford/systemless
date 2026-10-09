@@ -44,10 +44,10 @@ export class RendererTransport {
 
   send(packet) {
     const views = packetViews(packet);
-    this.inFlight = { sequence: packet.sequence, sentAt: this.now(), kind: packet.kind,
+    this.inFlight = { sequence: packet.sequence, sentAt: this.now(), kind: packet.kind, cursorCss: packet.cursorCss,
       bytes: views.reduce((bytes, view) => bytes + view.byteLength, 0) };
     try {
-      this.endpoint.postMessage({ ...packet, ...this.identity, type: "frame", protocolVersion: 4 },
+      this.endpoint.postMessage({ ...packet, ...this.identity, type: "frame", protocolVersion: 5 },
         [...new Set(views.map(view => view.buffer))]);
     } catch (error) {
       // A failed structured clone normally retains ownership. Return the newest
@@ -60,7 +60,7 @@ export class RendererTransport {
   receive(message) {
     if (this.closed || message?.generation !== this.identity.generation
         || message.rendererGeneration !== this.identity.rendererGeneration) return;
-    if (message.protocolVersion !== 4) {
+    if (message.protocolVersion !== 5) {
       this.fail(new Error("Renderer protocol mismatch"));
       return;
     }
@@ -71,7 +71,7 @@ export class RendererTransport {
     if (!this.inFlight || message.sequence !== this.inFlight.sequence
         || (message.type !== "submitted" && message.type !== "dropped")) return;
     const elapsedMs = this.now() - this.inFlight.sentAt;
-    const { kind, bytes } = this.inFlight;
+    const { kind, bytes, cursorCss } = this.inFlight;
     this.inFlight = null;
     this.recycle(message.buffer);
     this.recycle(message.paletteBuffer);
@@ -82,7 +82,7 @@ export class RendererTransport {
     if (next && !this.closed) this.send(next);
     // Settle the next credit before notifying the host: a callback can submit
     // another frame synchronously and must not create a second in-flight send.
-    if (message.type === "submitted" && !this.closed) this.onSubmitted?.({ sequence: message.sequence, elapsedMs, renderMs: message.renderMs, kind, bytes });
+    if (message.type === "submitted" && !this.closed) this.onSubmitted?.({ sequence: message.sequence, elapsedMs, renderMs: message.renderMs, kind, bytes, cursorCss });
   }
 
   recycle(buffer) {

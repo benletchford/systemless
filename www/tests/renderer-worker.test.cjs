@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 const read = name => fs.readFileSync(path.join(__dirname, '../src', name), 'utf8');
-const identity = { generation: 7, rendererGeneration: 2, protocolVersion: 4 };
+const identity = { generation: 7, rendererGeneration: 2, protocolVersion: 5 };
 const frame = (sequence, fields = {}) => ({ ...identity, type: 'frame', kind: 'rgba', complete: true,
   sequence, guestTick: 100, displayGeneration: 1, width: 2, height: 1,
   pixels: new Uint8Array([sequence, 2, 3, 255, 4, 5, 6, 255]), ...fields });
@@ -243,11 +243,12 @@ test('direct owner port returns image ownership without sending pixels through t
   const w=renderer(), packets=[];
   const port={start(){},postMessage(message,transfer=[]){packets.push(structuredClone(message,{transfer}));}};
   w.send({...identity,type:'connectOwner',port});
-  const image=frame(1);
+  const image=frame(1, {cursorCss:"crosshair"});
   port.onmessage({data:image});w.flush();
   assert.equal(image.pixels.byteLength,0);
   assert.deepEqual(w.messages.map(m=>m.type),['ready','directSubmitted']);
   assert.equal(w.messages[1].buffer,undefined);
+  assert.equal(w.messages[1].cursorCss,"crosshair");
   assert.deepEqual(packets.map(m=>m.type),['submitted']);
   w.send(frame(2));
   assert.equal(w.messages.at(-1).type,'error');
@@ -258,16 +259,18 @@ test('direct owner port returns image ownership without sending pixels through t
 test('bitmap credit waits for host submission and bounds newer images during a host stall', async () => {
   const w=renderer({gpu:true,bitmap:true});await w.initialized;
   assert.equal(w.messages[0].backend,'bitmap-webgl');assert.equal(w.messages[0].bitmap,true);
-  const first=frame(1);await w.send(first);w.flush();
+  const first=frame(1, {cursorCss:"crosshair"});await w.send(first);w.flush();
   assert.equal(first.pixels.byteLength,8);assert.equal(w.bitmaps.length,1);
   assert.equal(w.messages.at(-1).type,'bitmap');
-  await w.send(frame(2));await w.send(frame(3));w.flush();
+  assert.equal(w.messages.at(-1).cursorCss,"crosshair");
+  await w.send(frame(2, {cursorCss:"none"}));await w.send(frame(3, {cursorCss:"help"}));w.flush();
   assert.equal(w.bitmaps.length,1);assert.equal(w.timers.size,0);
   await w.send({...identity,type:'bitmapSubmitted',sequence:1,displayGeneration:1,generation:0});
   assert.equal(first.pixels.byteLength,8);
   await w.send({...identity,type:'bitmapSubmitted',sequence:1,displayGeneration:1});
   assert.equal(first.pixels.byteLength,0);w.flush();assert.equal(w.bitmaps.length,2);
   assert.equal(w.messages.at(-1).sequence,3);
+  assert.equal(w.messages.at(-1).cursorCss,"help");
   await w.send({...identity,type:'bitmapSubmitted',sequence:1,displayGeneration:1});
   assert.equal(w.messages.at(-1).type,'bitmap');
   await w.send({...identity,type:'bitmapSubmitted',sequence:3,displayGeneration:1});
