@@ -31,7 +31,7 @@ pub use crate::standard_file_ui::{
     StandardFileEntrySnapshot, StandardFileGetLayout, StandardFileKind, StandardFilePutLayout,
     StandardFileNameTextLayout, StandardFileSnapshot, StandardFileReplacementLayout, StandardFileNewFolderSnapshot, StandardFileNewFolderLayout,
 };
-pub use crate::text_edit::{TextEditManagerSnapshot, TextEditSnapshot};
+pub use crate::text_edit::{TextEditManagerSnapshot, TextEditSnapshot, TextEditStyleRunSnapshot};
 use crate::trap::dispatch::TrapTableProfile;
 use crate::trap::TrapDispatcher;
 use crate::ui_theme::{ThemeMetricsMode, UiTheme, UiThemeId};

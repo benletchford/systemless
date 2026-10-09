@@ -1072,6 +1072,8 @@ mod tests {
             face: 0,
             size: 12,
             styled: false,
+            style_runs: None,
+            line_metrics: None,
         };
         let viewport = Rect::from((20, 0, 160, 180));
         let pieces = text_edit_pieces(&[record.clone()], &[], &[], &[front.clone(), back.clone()], viewport);

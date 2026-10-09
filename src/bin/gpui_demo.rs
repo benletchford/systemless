@@ -6613,6 +6613,45 @@ mod desktop {
         }
 
         #[test]
+        fn styled_text_edit_snapshots_preserve_guest_runs_across_cpu_modes() {
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 11));
+                wait_for_menu(&mut session, 129, 11, true);
+                let record = (0..100).find_map(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    session.runner_mut().text_edit_snapshot().records.into_iter()
+                        .find(|record| record.styled && record.style_runs.as_ref().is_some_and(|runs| runs.iter().any(|run| run.start == 26)))
+                }).expect("styled page must expose canonical mixed style runs");
+                let runs = record.style_runs.as_ref().unwrap();
+                assert_eq!(runs[0].start, 0);
+                assert!(runs.windows(2).all(|pair| pair[0].start < pair[1].start));
+                assert!(runs.iter().all(|run| run.start <= record.text.len()));
+                assert!(runs.iter().any(|run| run.face != 0));
+                assert!(runs.iter().any(|run| run.font == 3));
+                let bold = runs.iter().find(|run| run.start == 7).unwrap();
+                assert_eq!((bold.font, bold.face, bold.size, bold.color), (3, 1, 12, (0x1111, 0x2222, 0xdddd)));
+                let italic = runs.iter().find(|run| run.start == 20).unwrap();
+                assert_eq!((italic.font, italic.face, italic.size, italic.color), (4, 2, 14, (0x1111, 0x9999, 0x2222)));
+                assert_eq!(runs.iter().find(|run| run.start == 26).unwrap().face, 4);
+                let metrics = record.line_metrics.as_ref().unwrap();
+                assert_eq!(metrics.len(), record.line_count);
+                assert!(metrics.iter().all(|&(height, ascent)| height > 0 && ascent > 0 && ascent <= height));
+                assert!(record.display_lines().is_some());
+                // Mixed run presentation remains guest-owned until the GPUI
+                // renderer preserves its line metrics and editing boundaries.
+                let windows = session.runner_mut().window_frame_snapshot();
+                assert!(super::super::frames::text_edit_pieces(&[record], &[], &[], &windows,
+                    super::super::frames::Rect::from((0, 0, 600, 800))).is_empty());
+            }
+        }
+
+        #[test]
         fn text_edit_snapshots_resolve_guest_port_geometry_on_both_cpus() {
             for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
                 let mut session = MacintoshSession::new(true, depth);
