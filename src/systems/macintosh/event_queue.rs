@@ -83,6 +83,9 @@ pub struct EventManagerSnapshot {
 pub struct EventQueue {
     events: VecDeque<QueuedEvent>,
     menu_bar_invalid: bool,
+    // A switch is synthesized by Toolbox event scans, not an OS queue entry
+    // that FlushEvents or GetOSEvent may remove. Both CPU gateways share it.
+    pub(crate) activation: crate::process_manager::activation::ProcessActivation,
 }
 
 impl EventQueue {
@@ -92,7 +95,7 @@ impl EventQueue {
     }
 
     pub(crate) fn is_pristine(&self) -> bool {
-        self.events.is_empty() && !self.menu_bar_invalid
+        self.events.is_empty() && !self.menu_bar_invalid && self.activation.is_pristine()
     }
 
     /// Mark the menu bar for one deferred redraw by the Toolbox Event
@@ -115,6 +118,15 @@ impl EventQueue {
     /// Merge another detached queue into this one by preserving all existing events,
     /// appending the other queue's events, and OR-ing their menu bar invalidation flags.
     pub fn merge(&mut self, mut other: Self) {
+        assert!(
+            self.activation.is_pristine()
+                || other.activation.is_pristine()
+                || self.activation == other.activation,
+            "cannot merge conflicting process activation states"
+        );
+        if self.activation.is_pristine() {
+            self.activation = std::mem::take(&mut other.activation);
+        }
         if other.take_menu_bar_invalidation() {
             self.invalidate_menu_bar();
         }
@@ -141,6 +153,7 @@ impl FromIterator<QueuedEvent> for EventQueue {
         Self {
             events: iter.into_iter().collect(),
             menu_bar_invalid: false,
+            activation: Default::default(),
         }
     }
 }
@@ -148,6 +161,30 @@ impl FromIterator<QueuedEvent> for EventQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merging_detached_queue_preserves_pending_activation() {
+        let mut source = EventQueue::default();
+        source.activation.request(false);
+        assert!(!source.is_pristine());
+        let mut destination = EventQueue::default();
+        destination.merge(source.clone());
+        assert_eq!(destination.activation, source.activation);
+        destination.merge(EventQueue::default());
+        assert_eq!(destination.activation, source.activation);
+        destination.merge(source.clone());
+        assert_eq!(destination.activation, source.activation);
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot merge conflicting process activation states")]
+    fn merging_conflicting_activation_states_is_rejected() {
+        let mut first = EventQueue::default();
+        first.activation.request(false);
+        let mut second = EventQueue::default();
+        second.activation.clipboard_changed();
+        first.merge(second);
+    }
 
     #[test]
     fn clone_is_a_detached_snapshot() {

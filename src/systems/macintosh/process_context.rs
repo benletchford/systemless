@@ -10782,6 +10782,7 @@ impl ProcessContext {
 
     pub(crate) fn reset_application_size(&self, size: Option<crate::loader::ApplicationSizeResource>) {
         self.application_size.with_mut(|current| *current = size);
+        self.event_queue.with_mut(|queue| queue.activation.reset_for_launch(size));
     }
 
     pub(crate) fn attach_apple_event_launch_state(
@@ -14000,6 +14001,36 @@ mod tests {
         assert_eq!(classic.current_tick(), 41);
         assert_eq!(native.current_tick(), 42);
         assert!(!classic.ptr_eq(&native));
+    }
+
+    #[test]
+    fn attached_event_queues_share_activation_across_gateways_and_reset_at_launch() {
+        use crate::process_manager::activation::ActivationNotification;
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessEventQueue::default();
+        let mut native = SharedProcessEventQueue::default();
+        context.attach_event_queue(&mut classic);
+        context.attach_event_queue(&mut native);
+        let policy = Some(crate::loader::ApplicationSizeResource {
+            flags: 0x4000, preferred_size: 0, minimum_size: 0,
+        });
+        classic.with_mut(|queue| {
+            queue.activation.request(false);
+            queue.activation.begin_event_call(policy, true, true);
+        });
+        let detached = native.clone();
+        let suspend = ActivationNotification::OperatingSystem { resume: false, convert_clipboard: false };
+        assert_eq!(native.with_ref(|queue| queue.activation.peek()), Some(suspend));
+        native.replace_events(Default::default());
+        assert_eq!(native.with_mut(|queue| queue.activation.consume()), Some(suspend));
+        classic.with_mut(|queue| queue.activation.begin_event_call(policy, true, true));
+        assert!(!native.with_ref(|queue| queue.activation.is_foreground()));
+        assert_eq!(native.with_ref(|queue| queue.activation.peek()), Some(ActivationNotification::Window { active: false }));
+        assert_eq!(detached.with_ref(|queue| queue.activation.peek()), Some(suspend));
+        context.reset_application_size(None);
+        assert!(classic.with_ref(|queue| queue.activation.is_foreground()));
+        assert_eq!(native.with_ref(|queue| queue.activation.peek()), None);
+        assert_eq!(detached.with_ref(|queue| queue.activation.peek()), Some(suspend));
     }
 
     #[test]
