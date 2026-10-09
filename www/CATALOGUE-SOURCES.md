@@ -160,3 +160,9 @@ The latter is a different archive from the closed #1633 report; neither its
 older gameplay claim nor distribution permission transfers between packages.
 The current Pararena checkpoint remains Demo 2.01, and Allied General’s
 initial missing-movie alert is already part of #4171’s reproduction.
+
+The final original-demo startup checks record [Day of the Tentacle’s TempMaxMem
+import gap](https://github.com/benletchford/systemless/issues/4262),
+[Myth’s missing installed-data alert](https://github.com/benletchford/systemless/issues/3440),
+and [Alley 19’s explicit game selection](https://github.com/benletchford/systemless/issues/4238#issuecomment-6081069164).
+Alley 19’s bundled 68K catalogue reader does not establish a 68K game slice.
