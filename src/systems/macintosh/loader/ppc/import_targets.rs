@@ -906,6 +906,7 @@ pub enum PpcImportDispatcherTarget {
     ExitToShell,
     MathCeil,
     MathSqrt,
+    MathHypot,
     MathExp,
     MathSin,
     MathCos,
@@ -2159,6 +2160,7 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("MathLib", "ceil") => PpcImportDispatcherTarget::MathCeil,
         ("MathLib", "sqrt") => PpcImportDispatcherTarget::MathSqrt,
+        ("MathLib", "hypot") => PpcImportDispatcherTarget::MathHypot,
         ("MathLib", "exp") => PpcImportDispatcherTarget::MathExp,
         ("MathLib", "fabs") => {
             PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::Fabs)

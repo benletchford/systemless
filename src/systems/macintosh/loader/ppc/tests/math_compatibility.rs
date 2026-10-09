@@ -841,3 +841,72 @@ fn mathlib_rint_respects_fpscr_rounding_and_exception_flags() {
     assert!(cpu.fpscr_bit(2));
     assert!(cpu.fpscr_bit(7));
 }
+#[test]
+fn mathlib_hypot_uses_floating_arguments_and_avoids_intermediate_range_loss() {
+    for (x, y, expected) in [
+        (3.0_f64, 4.0_f64, 5.0_f64),
+        (-3.0, 4.0, 5.0),
+        (4.0, -3.0, 5.0),
+        (3e200, 4e200, 5e200),
+        (3e-200, 4e-200, 5e-200),
+    ] {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_library_import(b"MathLib", b"hypot")).unwrap();
+        assert_eq!(
+            loaded.imports[0].dispatcher_target,
+            PpcImportDispatcherTarget::MathHypot
+        );
+        loaded.cpu.gpr[3] = 0xfeed_face;
+        loaded.cpu.fpr[1] = x.to_bits();
+        loaded.cpu.fpr[2] = y.to_bits();
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let result = f64::from_bits(loaded.cpu.fpr[1]);
+        assert!(result.is_finite() && result > 0.0);
+        assert!((result / expected - 1.0).abs() <= 2.0 * f64::EPSILON);
+        assert_eq!(loaded.cpu.gpr[3], 0xfeed_face);
+        assert_eq!(loaded.cpu.fpr[2], y.to_bits());
+    }
+}
+
+#[test]
+fn mathlib_hypot_preserves_magnitudes_for_signed_zero_and_infinity_over_nan() {
+    let target = dispatcher_target_for_import("MathLib", "hypot");
+    let mut cpu = PpcCpu::new();
+    let mut memory = PpcSectionMem::new();
+    for (x, y, expected) in [
+        (-0.0_f64, 0.0_f64, 0.0_f64),
+        (0.0, -0.0, 0.0),
+        (-0.0, -7.0, 7.0),
+        (-7.0, -0.0, 7.0),
+        (f64::INFINITY, 3.0, f64::INFINITY),
+        (3.0, f64::NEG_INFINITY, f64::INFINITY),
+        (f64::NAN, f64::INFINITY, f64::INFINITY),
+        (f64::NEG_INFINITY, f64::NAN, f64::INFINITY),
+    ] {
+        cpu.gpr[3] = 0xfeed_face;
+        cpu.fpr[1] = x.to_bits();
+        cpu.fpr[2] = y.to_bits();
+        assert_eq!(
+            dispatch_simple_hot_import_fast(&target, &mut cpu, &mut memory, 0),
+            Some(PpcImportAction::ReturnPreserve)
+        );
+        assert_eq!(cpu.fpr[1], expected.to_bits());
+        assert_eq!(cpu.fpr[2], y.to_bits());
+        assert_eq!(cpu.gpr[3], 0xfeed_face);
+    }
+    for (x, y) in [(f64::NAN, 3.0_f64), (3.0_f64, f64::NAN)] {
+        cpu.fpr[1] = x.to_bits();
+        cpu.fpr[2] = y.to_bits();
+        assert_eq!(
+            super::super::dispatch_math::dispatch_math_import(&target, &mut cpu, &mut memory),
+            Some(PpcImportAction::ReturnPreserve)
+        );
+        assert!(f64::from_bits(cpu.fpr[1]).is_nan());
+    }
+    assert_eq!(
+        ppc_import_extra_cycles_for_target(&target),
+        ppc_import_extra_cycles_for_target(&PpcImportDispatcherTarget::MathSqrt)
+    );
+}

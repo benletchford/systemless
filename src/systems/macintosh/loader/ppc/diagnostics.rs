@@ -304,6 +304,7 @@ pub(crate) fn ppc_import_extra_cycles_for_target(target: &PpcImportDispatcherTar
         PpcImportDispatcherTarget::Q3ViewEndRendering => 0,
         PpcImportDispatcherTarget::MathCeil
         | PpcImportDispatcherTarget::MathSqrt
+        | PpcImportDispatcherTarget::MathHypot
         | PpcImportDispatcherTarget::MathExp
         | PpcImportDispatcherTarget::MathSin
         | PpcImportDispatcherTarget::MathCos
