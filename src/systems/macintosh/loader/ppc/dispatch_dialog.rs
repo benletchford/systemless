@@ -1053,6 +1053,8 @@ pub(super) fn dispatch_dialog_import(
                 vfs_resources,
                 current_resource_refnum,
                 filter_result,
+                &scrap.text_edit,
+                *quickdraw_back_color,
             );
             Some(match pass {
                 PpcModalDialogPass::Done(action) => action,
@@ -1194,6 +1196,8 @@ pub(super) fn dispatch_dialog_import(
                 vfs_resources,
                 current_resource_refnum,
                 filter_result,
+                &scrap.text_edit,
+                *quickdraw_back_color,
             );
             caller_registers.restore(cpu);
             let action = match pass {
@@ -1375,6 +1379,8 @@ pub(super) fn dispatch_dialog_import(
                 vfs_resources,
                 current_resource_refnum,
                 filter_result,
+                &scrap.text_edit,
+                *quickdraw_back_color,
             );
             caller_registers.restore(cpu);
             let action = match pass {
@@ -5088,6 +5094,8 @@ fn ppc_modal_dialog(
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
     filter_result: Option<PpcModalFilterResult>,
+    text_edit: &crate::process_context::SharedProcessTextEditManager,
+    back_color: PpcRgbColor,
 ) -> PpcModalDialogPass {
     use PpcModalDialogPass::Done;
     // Toolbox Essentials (1992), pp. 5-33--5-36, 6-79--6-80:
@@ -5154,6 +5162,14 @@ fn ppc_modal_dialog(
     };
     *current_gworld = dialog;
     *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
+    if text_edit.has_click_tracking() {
+        let handle = memory.read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET).unwrap_or(0);
+        super::dispatch_textedit::track_ppc_text_edit_selection(
+            memory, handles, gworlds, text_edit, input, event_queue, handle,
+            (0, 0), false, tick_count, dialog, fore_color, back_color, fore_indices,
+        );
+        return Done(PpcImportAction::Yield(u64::MAX));
+    }
     let mut event = match event {
         // The filter has seen this event and declined it.
         Some(event) => event,
@@ -5307,14 +5323,11 @@ fn ppc_modal_dialog(
                 let te_handle = memory
                     .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
                     .unwrap_or(0);
-                ppc_te_click(
-                    memory,
-                    handles,
-                    te_handle,
-                    event.where_v.saturating_sub(bounds.0),
-                    event.where_h.saturating_sub(bounds.1),
-                    event.modifiers & 0x0200 != 0,
-                    0,
+                super::dispatch_textedit::track_ppc_text_edit_selection(
+                    memory, handles, gworlds, text_edit, input, event_queue, te_handle,
+                    (event.where_v.saturating_sub(bounds.0), event.where_h.saturating_sub(bounds.1)),
+                    event.modifiers & 0x0200 != 0, tick_count, dialog,
+                    fore_color, back_color, fore_indices,
                 );
                 handled_edit_event = true;
                 None

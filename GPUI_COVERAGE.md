@@ -2765,3 +2765,29 @@ need verification.
 All three classic modal theme-parity regressions pass (0.10 seconds), including
 the corrected clicked insertion `(3, 3)` expectation; default/cancel and update
 event behavior remain covered.
+
+Work in progress: the real modal regression now includes a held glyph drag
+from offset 1 to 4. It initially failed on monochrome 68k with `(1, 1)`.
+Classic ModalDialog now retains its call while shared TEClick tracking owns
+the mouse, updates the active DITL selection and writes it back on release.
+That intermediate regression passed the drag assertion in monochrome
+and colour 68k, then failed on PPC with `(1, 1)` instead of `(1, 4)` (14.43
+seconds); the PPC failure is resolved below.
+
+PPC ModalDialog now resumes the shared native TEClick tracker before consuming
+another filtered dialog event. The complete three-mode regression passes
+(11.81 seconds): switching, independent text, Shift extension, held glyph drag
+`(1, 4)`, then typing to replace the released range while preserving the other
+field. All 13 `modaldialog` regressions pass (0.05 seconds), including an
+explicit held-stack/no-item-result assertion followed by mouse release. The
+classic release path now saves the current painted selection pixels rather
+than reusing pre-drag rendered pixels. Classic click selection is applied
+once through the shared TEClick helper; the final real-fixture check passes
+(11.25 seconds). Reverse Shift-click now extends `(1, 3)` back to `(0, 3)`
+in all three modes; the expanded fixture regression passes (12.26 seconds).
+All 13 modal regressions also pass on the final implementation (0.04 seconds).
+Composed selection snapshots and broader callback/lifecycle qualification
+remain open.
+
+The existing nested-modal focus/editing regression also passes on both CPU
+paths (3.46 seconds), including dismissal and resumed modeless editing.

@@ -8708,6 +8708,42 @@ mod desktop {
                 let current = session.runner_mut().dialog_snapshot().into_iter()
                     .find(|dialog| dialog.guest_id == id).unwrap();
                 assert_eq!(current.items[8].selection, Some((1, 3)), "Shift click mode={powerpc}/{depth:?}");
+                session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x38, character: 0 });
+                for input in [
+                    MacintoshInput::MouseDown { vertical: field.bounds.0 + 5, horizontal: field.bounds.1 + 1 },
+                    MacintoshInput::MouseUp { vertical: field.bounds.0 + 5, horizontal: field.bounds.1 + 1 },
+                ] {
+                    session.deliver_input(input);
+                    settle(&mut session);
+                }
+                session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x38, character: 0 });
+                settle(&mut session);
+                let current = session.runner_mut().dialog_snapshot().into_iter()
+                    .find(|dialog| dialog.guest_id == id).unwrap();
+                assert_eq!(current.items[8].selection, Some((0, 3)), "reverse Shift click mode={powerpc}/{depth:?}");
+                for input in [
+                    MacintoshInput::MouseDown { vertical: field.bounds.0 + 5, horizontal: field.bounds.1 + 1 + line.positions[1] as i16 },
+                    MacintoshInput::MouseMove { vertical: field.bounds.0 + 5, horizontal: field.bounds.1 + 1 + line.positions[4] as i16 },
+                    MacintoshInput::MouseUp { vertical: field.bounds.0 + 5, horizontal: field.bounds.1 + 1 + line.positions[4] as i16 },
+                ] {
+                    session.deliver_input(input);
+                    for _ in 0..10 {
+                        let tick = session.runner().guest_tick().saturating_add(1);
+                        session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                    }
+                }
+                settle(&mut session);
+                let current = session.runner_mut().dialog_snapshot().into_iter()
+                    .find(|dialog| dialog.guest_id == id).unwrap();
+                assert_eq!(current.items[8].selection, Some((1, 4)), "held drag mode={powerpc}/{depth:?}");
+                session.deliver_input(MacintoshInput::KeyDown { mac_key: 7, character: b'X' });
+                session.deliver_input(MacintoshInput::KeyUp { mac_key: 7, character: b'X' });
+                settle(&mut session);
+                expected[1].replace_range(1..4, "X");
+                let current = session.runner_mut().dialog_snapshot().into_iter()
+                    .find(|dialog| dialog.guest_id == id).unwrap();
+                assert_eq!(current.items[8].text, expected[1], "typing must resume after drag release");
+                assert_eq!(current.items[6].text, expected[0]);
             }
         }
 
