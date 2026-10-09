@@ -120,3 +120,49 @@ None is approved for hosting or enablement.
 Cro-Mag Rally’s bundled Apple notice is 445 bytes with SHA-256
 `c42dc88684a50f50d81e90dc917e7401b2eaa879fc6f331496758ab285431310`. Permission for the game alone would not
 clear that bundled component for unchanged-package hosting.
+
+## Current native runtime checkpoints
+
+The [candidate queue](CATALOGUE-CANDIDATES.md) now includes bounded native
+checkpoints collected on 9 October 2026 from the exact original archives above.
+The runs use Systemless 0.83.0 with the merged absolute-path and Lo3Bytes fixes;
+later runs also include the [merged MoveWindow correction](https://github.com/benletchford/systemless/pull/4252).
+The linked public issue notes state each run’s selection, timing and limitations.
+These scripts have zero assertions: completion only means the requested actions
+finished. Visible menus, alerts and splashes do not establish playable missions.
+
+The Infocom sampler’s Zork I excerpt is identified as Release 55, serial 850823.
+A [bounded command response](https://github.com/benletchford/systemless/issues/4228#issuecomment-6080564528)
+shows `open mailbox` revealing a leaflet and incrementing Moves to 1. This
+establishes an interactive excerpt, not the full Zork I game or save/restart
+qualification. Its game-data redistribution permission remains unestablished.
+
+Current failures are recorded separately for [Civilization II font dispatch](https://github.com/benletchford/systemless/issues/4249),
+[Combat Mission accelerator startup](https://github.com/benletchford/systemless/issues/4253),
+[Worms Blast early exit](https://github.com/benletchford/systemless/issues/4254),
+[Heroes III temporary handle locking](https://github.com/benletchford/systemless/issues/4255),
+[Oni bundled CarbonLib memory planning](https://github.com/benletchford/systemless/issues/4256),
+and [Unreal Tournament memory copying](https://github.com/benletchford/systemless/issues/4259).
+Tony Hawk’s narrower version-query issue was closed as covered by the broader
+[OpenGL capability work](https://github.com/benletchford/systemless/issues/3575);
+that closure does not mean the public runtime implements the query.
+
+For multi-application packages, record the selected executable. Explicitly
+selecting the Aliens versus Predator game reaches its InputSprocket requirement
+alert; a default-selection halt must not be attributed to that game without
+resolving the selection. King of Dragon Pass requires navigating to its root
+demo document from the player’s chooser to reach the title. Neither checkpoint
+provides gameplay or distribution clearance.
+
+[Additional classic demo checkpoints](https://github.com/benletchford/systemless/issues/4240#issuecomment-6080877856)
+record Myst Preview’s error alert and the exact Populous II demo’s prompt/title.
+The latter is a different archive from the closed #1633 report; neither its
+older gameplay claim nor distribution permission transfers between packages.
+The current Pararena checkpoint remains Demo 2.01, and Allied General’s
+initial missing-movie alert is already part of #4171’s reproduction.
+
+The final original-demo startup checks record [Day of the Tentacle’s TempMaxMem
+import gap](https://github.com/benletchford/systemless/issues/4262),
+[Myth’s missing installed-data alert](https://github.com/benletchford/systemless/issues/3440),
+and [Alley 19’s explicit game selection](https://github.com/benletchford/systemless/issues/4238#issuecomment-6081069164).
+Alley 19’s bundled 68K catalogue reader does not establish a 68K game slice.
