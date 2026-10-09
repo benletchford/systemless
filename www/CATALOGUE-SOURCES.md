@@ -161,13 +161,49 @@ older gameplay claim nor distribution permission transfers between packages.
 The current Pararena checkpoint remains Demo 2.01, and Allied General’s
 initial missing-movie alert is already part of #4171’s reproduction.
 
-The final original-demo startup checks record [Day of the Tentacle’s TempMaxMem
-import gap](https://github.com/benletchford/systemless/issues/4262),
-[Myth’s missing installed-data alert](https://github.com/benletchford/systemless/issues/3440),
+The final original-demo startup checks record
+[Myth’s missing installed-data alert](https://github.com/benletchford/systemless/issues/3440)
 and [Alley 19’s explicit game selection](https://github.com/benletchford/systemless/issues/4238#issuecomment-6081069164).
 Alley 19’s bundled 68K catalogue reader does not establish a 68K game slice.
 
 ## Generic runtime follow-ups
+
+The [temporary-memory maximum fix](https://github.com/benletchford/systemless/pull/4298)
+resolves Day of the Tentacle's former PPC TempMaxMem stop. The query shares the
+actual handle allocator's side-effect-free allocation plan, including the master
+pointer, reusable blocks, reserved mappings and allocation limits. All 85 PPC
+Memory Manager and 116 common process-context tests pass; the new regressions
+verify allocation of the reported maximum and failure at one extra byte.
+
+The unchanged original PPC demo displays its opening spiral at frontend/guest
+tick 180, the LucasArts logo at 780, the company caption at 1380, and animated
+footage with the two tentacles at 3180. A separate classic 68K replay of the same
+archive displays the opening logo at frontend tick 180 / reported guest tick
+780. The reports identify their respective architectures; these are separate
+route checks, not a timing comparison. Named captures were inspected. The
+bounded scenarios complete with zero automatic assertions, no guest halt and
+no exhausted frame budgets. The original README describes a non-interactive
+demonstration; full playback, audio fidelity and browser qualification remain
+unverified. The archive is 1,640,963 bytes with SHA-256
+`cb5719f0b4b8a5f96806e9359a6fc6f266eb134ca871de0bf92860b7437e6394`;
+exact-archive redistribution permission remains unestablished.
+
+The unchanged Alpha Centauri 1.4b6 PPC demo reaches its welcome dialog at
+frontend/guest tick 780 and waits there through 1380. A two-tick click at
+(v 493, h 273), followed by 180 ticks, renders its main menu at 1562. Selecting
+Quick Start at (v 193, h 604) and running 600 ticks reaches the Gaian Planetfall
+introduction at 2164. Dismissing it at (v 571, h 582) and running 600 ticks reaches
+the first-base naming prompt at 2766. Accepting Gaia's Landing at (v 169, h 399)
+renders the initial map, then stops at
+[missing MathLib:hypot](https://github.com/benletchford/systemless/issues/4301)
+at frontend tick 2793 / guest tick 2792 (PC `01F00488`, SP `07F695F0`,
+LR `01009C70`). The intended tick-2948 checkpoint is never reached; the scenario
+fails on action 28. Named captures, including the failure capture, were inspected.
+These zero-assertion bounded input/setup checks establish no successful turn,
+sustained gameplay, save/load, audio fidelity or browser qualification. The
+archive remains 18,267,807 bytes with SHA-256
+`2ab4f1de7291d3704b08d7b12dd659ef3b4fbab4b10914f31b02c2ccec931191`;
+exact-archive redistribution permission remains unestablished.
 
 [Temporary handle locking](https://github.com/benletchford/systemless/pull/4264)
 and [uncached memory copying](https://github.com/benletchford/systemless/pull/4267)
