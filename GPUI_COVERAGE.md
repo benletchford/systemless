@@ -3575,3 +3575,16 @@ insertion remains anchored to the guest caret and classic TEDelete/TEInsert
 retain their established style semantics. The latest example check passes;
 production command check (13.78s) and public no-default-features check (7.24s)
 pass. This completes the identified PPC edit bug, not styled GPUI rendering.
+
+Styled TextEdit run placement now has a shared `styled_line_geometry` projection:
+it returns canonical Mac Roman byte ranges and every insertion boundary for
+visible runs, aligned together using the existing CPU-specific line geometry.
+The caller supplies the owning guest painter's byte advances; this API does not
+resolve fonts through host typography or convert canonical RGB16 styles into
+host colours. Tests cover mixed advances, a Mac Roman high byte, trimmed styled
+whitespace, right/centre alignment, shared style boundaries, saturation and
+invalid overlapping ownership under both line policies. This is compositor
+plumbing, not evidence of faithful styled GPUI painting. The next integration
+must supply CPU-specific strike/ratio/spacing and palette-resolved ink, including
+68k per-character versus PPC per-run underline/outline synthesis, before removing
+the styled-field guest-rendering guard.

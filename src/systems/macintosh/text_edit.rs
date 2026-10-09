@@ -381,8 +381,32 @@ mod tests {
         assert_eq!(split.visible_style_runs(0).unwrap().iter()
             .map(|(range, run)| (range.clone(), run.start)).collect::<Vec<_>>(),
             vec![(0..2, 0), (2..3, 2)], "retain byte boundaries while trimming styled whitespace");
+        split.dest_rect = (10, 20, 100, 200);
+        split.justification = -1;
+        let (geometry, placed) = split.styled_line_geometry(0, |byte, style| {
+            if style.start == 0 { if byte == 0x8e { 7 } else { 3 } } else { 11 }
+        }).unwrap();
+        assert_eq!(geometry.left, 179, "right alignment uses all mixed-run advances");
+        assert_eq!(placed, vec![(0..2, vec![179, 182, 189]), (2..3, vec![189, 200])]);
+        split.justification = 1;
+        let (geometry, placed) = split.styled_line_geometry(0, |_, _| 5).unwrap();
+        assert_eq!(geometry.left, 102);
+        assert_eq!(placed, vec![(0..2, vec![102, 107, 112]), (2..3, vec![112, 117])]);
+        for policy in [super::TextEditLineLayoutPolicy::CumulativeGuestMetrics,
+            super::TextEditLineLayoutPolicy::PpcRunMetrics] {
+            split.line_layout_policy = policy;
+            let (geometry, placed) = split.styled_line_geometry(0, |_, _| i16::MAX).unwrap();
+            assert_eq!(geometry, split.line_geometry(0, i16::MAX).unwrap());
+            assert_eq!(placed[0].1.last(), placed[1].1.first(), "style boundary has one insertion position");
+        }
+        split.dest_rect.1 = -20000;
+        split.justification = 0;
+        let (_, placed) = split.styled_line_geometry(0, |_, _| i16::MAX).unwrap();
+        assert_eq!(placed[0].1, vec![-19999, 12768, i16::MAX],
+            "clamp the guest pen after applying the scroll origin");
         split.style_runs.as_mut().unwrap()[1].start = 0;
         assert!(split.visible_style_runs(0).is_none(), "reject overlapping style ownership");
+        assert!(split.styled_line_geometry(0, |_, _| 1).is_none());
         let mut layout = record.clone();
         layout.dest_rect = (10, 20, 100, 200);
         layout.view_rect = layout.dest_rect;
@@ -538,6 +562,42 @@ impl TextEditSnapshot {
             if left < right { visible.push((left..right, run)); }
         }
         Some(visible)
+    }
+
+    /// Place visible style runs using advances supplied by the owning guest
+    /// drawing path. The callback receives Mac Roman bytes and canonical styles;
+    /// it must retain guest strike/scaling/spacing policy, not host shaping.
+    /// The returned positions include every insertion boundary, including at a
+    /// style change. Each run shares the CPU-resolved line baseline.
+    pub fn styled_line_geometry(
+        &self, index: usize,
+        mut advance: impl FnMut(u8, &TextEditStyleRunSnapshot) -> i16,
+    ) -> Option<(TextEditLineGeometry, Vec<(Range<usize>, Vec<i16>)>)> {
+        let runs = self.visible_style_runs(index)?;
+        let mut pen = 0i16;
+        let mut placed = Vec::with_capacity(runs.len());
+        for (range, style) in runs {
+            let mut positions = Vec::with_capacity(range.len() + 1);
+            positions.push(pen);
+            for &byte in self.text.get(range.clone())? {
+                let width = advance(byte, style);
+                pen = pen.saturating_add(width);
+                positions.push(width);
+            }
+            placed.push((range, positions));
+        }
+        let geometry = self.line_geometry(index, pen)?;
+        // Measure width separately from replaying the pen: clamping a relative
+        // offset before adding a negative scroll origin loses visible positions.
+        let mut pen = geometry.left;
+        for (_, positions) in &mut placed {
+            positions[0] = pen;
+            for position in &mut positions[1..] {
+                pen = pen.saturating_add(*position);
+                *position = pen;
+            }
+        }
+        Some((geometry, placed))
     }
 
     fn metrics_for_line(&self, index: usize) -> Option<(i16, i16)> {
