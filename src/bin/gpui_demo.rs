@@ -1454,7 +1454,7 @@ mod desktop {
                                     .h(guest_px(f32::from(title.ascent + title.descent)))
                                     .child(super::text::classic_line(glyphs, title.ascent,
                                         title.ascent + title.descent, (0, 0), false,
-                                        scene_scale, foreground, cx.theme().selection))));
+                                        super::text::ClassicLineGeometry::Title, scene_scale, foreground, cx.theme().selection))));
                         // Keep controls over the standard WDEF hit cells. Input still
                         // reaches FindWindow/TrackGoAway/DragWindow in the guest.
                         // Inside Macintosh I, I-287--I-289.
@@ -1701,7 +1701,7 @@ mod desktop {
                                 .child(super::text::classic_line(
                                     glyphs, record.font_ascent, record.line_height,
                                     if record.active { selection } else { (0, 0) }, caret,
-                                    self.display_scale, cx.theme().foreground, cx.theme().selection,
+                                    super::text::ClassicLineGeometry::TextEdit, self.display_scale, cx.theme().foreground, cx.theme().selection,
                                 )),
                         );
                     }
@@ -6709,7 +6709,7 @@ mod desktop {
                 let end = starts[1].min(first.text.len());
                 let line = super::super::text::ClassicLine::plain(&first.text[..end], first.font, first.size);
                 let dest = first.global_dest_rect.unwrap();
-                let horizontal = dest.1 + line.positions[3] as i16;
+                let horizontal = dest.1 + 1 + line.positions[3] as i16;
                 let vertical = dest.0 + first.font_ascent;
                 session.deliver_input(MacintoshInput::MouseDown { vertical, horizontal });
                 for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
@@ -6729,6 +6729,35 @@ mod desktop {
                 assert_eq!(next.generation, first.generation);
                 assert_eq!(next.global_view_rect, first.global_view_rect);
                 assert!(next.drawing_intact, "painted text must remain eligible; powerpc={powerpc}, depth={depth:?}");
+                // Compare the actual guest first-line pixels with the GPUI
+                // binary spans, including its one-pixel inset and caret.
+                let end = next.line_starts.as_ref().unwrap()[1];
+                let mut visible_end = end;
+                while visible_end > 0 && matches!(next.text[visible_end - 1], b' ' | b'\r' | b'\n') {
+                    visible_end -= 1;
+                }
+                let glyphs = super::super::text::ClassicLine::plain(&next.text[..visible_end], next.font, next.size);
+                let geometry = super::super::text::ClassicLineGeometry::TextEdit;
+                let mut expected = std::collections::HashSet::new();
+                for &(x, y, width) in &glyphs.ink {
+                    for px in x..x + width {
+                        expected.insert((i32::from(dest.1) + geometry.ink_x(px),
+                            i32::from(dest.0 + next.font_ascent) + y));
+                    }
+                }
+                if next.caret_visible {
+                    let x = i32::from(dest.1) + geometry.caret_x(glyphs.positions[3], 3);
+                    expected.extend((i32::from(dest.0)..i32::from(dest.0 + next.line_height)).map(|y| (x, y)));
+                }
+                let frame = session.video_frame().unwrap();
+                for y in i32::from(dest.0)..i32::from(dest.0 + next.line_height) {
+                    for x in i32::from(dest.1)..i32::from(dest.3) {
+                        let offset = ((y as u32 * frame.width + x as u32) * 4) as usize;
+                        let ink = frame.pixels[offset..offset + 3].iter().all(|value| *value < 128);
+                        assert_eq!(ink, expected.contains(&(x, y)),
+                            "TE line ink at {x},{y}, PPC={powerpc}, depth={depth:?}");
+                    }
+                }
                 session.deliver_input(MacintoshInput::KeyDown {
                     mac_key: 0x00,
                     character: b'a',

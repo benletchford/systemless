@@ -330,6 +330,27 @@ impl ClassicLine {
     }
 }
 
+/// Guest pen geometry differs between WDEF titles and TextEdit lines.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ClassicLineGeometry {
+    Title,
+    TextEdit,
+}
+
+impl ClassicLineGeometry {
+    pub(crate) fn ink_x(self, x: i32) -> i32 {
+        x + if matches!(self, Self::TextEdit) { 1 } else { 0 }
+    }
+
+    fn selection_x(self, x: i32, offset: usize) -> i32 {
+        if matches!(self, Self::TextEdit) && offset == 0 { 0 } else { self.ink_x(x) }
+    }
+
+    pub(crate) fn caret_x(self, x: i32, offset: usize) -> i32 {
+        self.ink_x(x) - i32::from(matches!(self, Self::TextEdit) && offset > 0)
+    }
+}
+
 /// Paint a plain document TE line with guest baseline, advances, selection and
 /// blink phase. Parent clipping and guest destRect supply scrolling/wrapping.
 pub(crate) fn classic_line(
@@ -338,6 +359,7 @@ pub(crate) fn classic_line(
     line_height: i16,
     selection: (usize, usize),
     caret: bool,
+    geometry: ClassicLineGeometry,
     scale: f32,
     foreground: gpui_kit::Hsla,
     selection_color: gpui_kit::Hsla,
@@ -347,12 +369,12 @@ pub(crate) fn classic_line(
         move |bounds, _, _| bounds,
         move |_, bounds, window, _| {
             let position =
-                |offset: usize| line.positions[offset.min(line.positions.len() - 1)] as f32 * scale;
+                |offset: usize| line.positions[offset.min(line.positions.len() - 1)];
             let origin = bounds.origin;
             let height = px(f32::from(line_height) * scale);
             if selection.0 != selection.1 {
-                let left = px(position(selection.0));
-                let right = px(position(selection.1));
+                let left = px(geometry.selection_x(position(selection.0), selection.0) as f32 * scale);
+                let right = px(geometry.ink_x(position(selection.1)) as f32 * scale);
                 window.paint_quad(fill(
                     Bounds::new(point(origin.x + left, origin.y), size(right - left, height)),
                     selection_color,
@@ -362,7 +384,7 @@ pub(crate) fn classic_line(
                 window.paint_quad(fill(
                     Bounds::new(
                         point(
-                            origin.x + px(x as f32 * scale),
+                            origin.x + px(geometry.ink_x(x) as f32 * scale),
                             origin.y + px((y + i32::from(ascent)) as f32 * scale),
                         ),
                         size(px(width as f32 * scale), px(scale)),
@@ -373,7 +395,7 @@ pub(crate) fn classic_line(
             if caret {
                 window.paint_quad(fill(
                     Bounds::new(
-                        point(origin.x + px(position(selection.0)), origin.y),
+                        point(origin.x + px(geometry.caret_x(position(selection.0), selection.0) as f32 * scale), origin.y),
                         size(px(scale), height),
                     ),
                     foreground,
