@@ -156,6 +156,8 @@ pub struct GuestMenu {
 /// One 1-based Menu Manager item.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GuestMenuItem {
+    /// Raw Menu Manager mark byte; hierarchical marks are submenu IDs.
+    pub mark: u8,
     /// Live Menu Manager QuickDraw style bits for the item text.
     pub style: u8,
     pub number: i16,
@@ -205,6 +207,7 @@ mod tests {
 
     fn item() -> GuestMenuItem {
         GuestMenuItem {
+            mark: 0,
             style: 0,
             number: 2,
             text: "Open".to_owned(),
@@ -259,4 +262,13 @@ mod tests {
         menus.custom_bar_definition = true;
         assert!(menus.requires_guest_menu_rendering());
     }
+}
+
+/// Pixels of the standard Menu Manager hierarchy triangle, relative to its
+/// left edge and vertical centre. Shared by guest and frontend painters.
+pub fn standard_hierarchy_indicator_pixels() -> Vec<(i16, i16)> {
+    let mut pixels = Vec::new();
+    crate::menu_manager::for_each_standard_hierarchy_indicator_pixel(0, 0,
+        |x, y| pixels.push((x, y)));
+    pixels
 }

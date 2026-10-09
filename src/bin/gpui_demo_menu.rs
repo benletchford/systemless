@@ -361,12 +361,21 @@ impl Render for GuestMenuPopup {
                                 },
                             ))
                         })
-                        .child(if item.checked { "✓ " } else { "  " })
+                        .child(div().w(px(12.)).flex_shrink_0().when(
+                            item.mark != 0 && item.submenu_id.is_none(), |slot| slot.child(
+                                super::text::classic_menu_symbol(
+                                    &if item.mark == 0x12 { "✓".to_owned() } else { char::from(item.mark).to_string() },
+                                    if enabled { cx.theme().foreground } else { cx.theme().muted_foreground }))))
                         .child(super::text::classic_menu_label(&item.text, item.style, 1.,
                             if enabled { cx.theme().foreground } else { cx.theme().muted_foreground }))
                         .when(item.key_equivalent.is_some(), |row| row.child(
-                            format!("    ⌘{}", item.key_equivalent.unwrap().to_uppercase())))
-                        .when(item.submenu_id.is_some(), |row| row.child("  ›").aria_expanded(selected)),
+                            div().ml(px(12.)).child(super::text::classic_menu_symbol(
+                                &format!("⌘{}", item.key_equivalent.unwrap().to_uppercase()),
+                                if enabled { cx.theme().foreground } else { cx.theme().muted_foreground }))))
+                        .when(item.submenu_id.is_some(), |row| row.child(div().ml(px(12.)).child(
+                            super::text::classic_menu_hierarchy_indicator(
+                                if enabled { cx.theme().foreground } else { cx.theme().muted_foreground })))
+                            .aria_expanded(selected)),
                     !enabled,
                 ).test_support());
             }
