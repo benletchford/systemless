@@ -6466,6 +6466,21 @@ mod desktop {
                     }
                     assert_eq!(session.runner().standard_file_snapshot().unwrap().name.as_deref(), Some(name.as_str()));
                 }
+                if !replacing {
+                    let current = session.runner().standard_file_snapshot().unwrap();
+                    let rect = current.put_layout.as_ref().unwrap().name;
+                    let (font, size, _) = current.directory_font;
+                    let glyphs = super::super::text::ClassicLine::plain(&name_bytes, font, size);
+                    for (offset, advance) in glyphs.positions.iter().enumerate() {
+                        let horizontal = rect.1 + if powerpc { 0 } else { 1 } + *advance as i16;
+                        session.deliver_input(MacintoshInput::MouseDown { vertical: rect.0 + 10, horizontal });
+                        session.deliver_input(MacintoshInput::MouseUp { vertical: rect.0 + 10, horizontal });
+                        step(&mut session);
+                        step(&mut session);
+                        assert_eq!(session.runner().standard_file_snapshot().unwrap().name_selection,
+                            Some((offset, offset)), "Save glyph insertion boundary, powerpc={powerpc}");
+                    }
+                }
                 let origin = session.runner().dispatcher().mouse_position();
                 let click = ControlActivation::begin_file(&mut session, panel.guest_id, panel.generation, FileAction::Accept).unwrap();
                 step(&mut session);

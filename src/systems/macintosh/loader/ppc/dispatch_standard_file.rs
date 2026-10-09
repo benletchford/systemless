@@ -2128,6 +2128,12 @@ fn ppc_dispatch_standard_file(
                             PPC_STANDARD_FILE_PUT_NAME_RECT,
                         ) {
                             tracking.list_has_focus = false;
+                            let offset = crate::standard_file_ui::classic_text_offset_at_x(
+                                &tracking.name, i32::from(local.1 - PPC_STANDARD_FILE_PUT_NAME_RECT.1),
+                                |prefix| i32::from(ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, prefix)),
+                            );
+                            tracking.sel_start = offset;
+                            tracking.sel_end = offset;
                         } else if ppc_standard_file_point_in_rect(
                             local,
                             PPC_STANDARD_FILE_PUT_SCROLL_RECT,
