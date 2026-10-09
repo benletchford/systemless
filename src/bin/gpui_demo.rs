@@ -5727,8 +5727,8 @@ mod desktop {
             use super::super::activation::{ControlActivation, FileAction};
             use systemless::systems::macintosh::debug::{handle_debug_request, DebugReply, DebugRequest, M68K_SPACE, PPC_SPACE};
 
-            for (powerpc, depth, replacing) in [(false, Some(1)), (false, Some(8)), (true, None)].into_iter()
-                .flat_map(|(cpu, depth)| [false, true].map(move |replacing| (cpu, depth, replacing))) {
+            for (powerpc, depth, replacing, keyboard) in [(false, Some(1)), (false, Some(8)), (true, None)].into_iter()
+                .flat_map(|(cpu, depth)| [(false, false), (true, false), (true, true)].map(move |(replacing, keyboard)| (cpu, depth, replacing, keyboard))) {
                 let mut session = MacintoshSession::new(true, depth);
                 session.runner_mut().set_prefer_powerpc_executables(powerpc);
                 let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -5775,17 +5775,37 @@ mod desktop {
                     let confirmation = session.runner().standard_file_snapshot().unwrap();
                     assert_ne!(confirmation.generation, panel.generation);
                     assert_eq!(confirmation.name_has_focus, Some(false));
-                    let click = ControlActivation::begin_file(&mut session, confirmation.guest_id, confirmation.generation, FileAction::CancelReplacement).unwrap();
+                    // Ordinary typing must not leak through the subsidiary modal loop.
+                    session.deliver_input(MacintoshInput::KeyDown { mac_key: 0, character: b'X' });
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character: b'X' });
                     step(&mut session);
-                    let click = click.advance(&mut session).unwrap();
-                    step(&mut session);
-                    assert!(click.advance(&mut session).is_none());
+                    assert_eq!(session.runner().standard_file_snapshot().unwrap().name, confirmation.name);
+                    if keyboard {
+                        // Files (1992), p. 3-7: Escape cancels; Return invokes the default.
+                        session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x35, character: 27 });
+                        session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x35, character: 27 });
+                        step(&mut session);
+                        step(&mut session);
+                    } else {
+                        let click = ControlActivation::begin_file(&mut session, confirmation.guest_id, confirmation.generation, FileAction::CancelReplacement).unwrap();
+                        step(&mut session);
+                        let click = click.advance(&mut session).unwrap();
+                        step(&mut session);
+                        assert!(click.advance(&mut session).is_none());
+                    }
                     let parent = session.runner().standard_file_snapshot().unwrap();
                     assert!(!parent.confirming_replace);
                     assert_eq!(parent.name_has_focus, Some(true));
                     assert_eq!(parent.name.as_deref(), Some(name.as_str()));
                     assert!(ControlActivation::begin_file(&mut session, confirmation.guest_id, confirmation.generation, FileAction::CancelReplacement).is_none());
                     for action in [FileAction::Accept, FileAction::Replace] {
+                        if keyboard && matches!(action, FileAction::Replace) {
+                            session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x24, character: 13 });
+                            session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x24, character: 13 });
+                            step(&mut session);
+                            step(&mut session);
+                            continue;
+                        }
                         let current = session.runner().standard_file_snapshot().unwrap();
                         let click = ControlActivation::begin_file(&mut session, current.guest_id, current.generation, action).unwrap();
                         step(&mut session);

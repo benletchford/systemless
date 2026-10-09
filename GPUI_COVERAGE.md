@@ -1429,3 +1429,11 @@ normal pointer delivery. A node-level regression checks hidden/unhidden state
 without losing the parent role, label or identity. This qualifies the Save panel
 boundary only; native screen-reader operation and modal isolation of unrelated
 application/window controls remain open.
+
+
+Replacement confirmation's guest integration test now includes Escape cancellation
+and Return acceptance on monochrome 68K, colour 68K and PPC, alongside semantic
+pointer activation. Ordinary typing while confirmation is open must leave the
+parent filename unchanged. All nine Save scenarios pass (20.54s). Command-period,
+keypad Enter, visible keyboard button feedback and native-oracle equivalence
+remain unqualified.
