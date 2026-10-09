@@ -143,7 +143,7 @@ pub struct PpcQ3GroupMembershipRecord {
     pub before: Option<u32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PpcQ3FileGroupRecord {
     pub file: u32,
     pub offset: u32,
@@ -151,6 +151,10 @@ pub struct PpcQ3FileGroupRecord {
     pub group_type: u32,
     pub parent_group: u32,
     pub group_depth: u32,
+    /// Parser-only groups borrow their members until exposed to the guest.
+    pub owns_members: bool,
+    /// Loading groups whose positions expose this reconstructed group.
+    pub retained_by: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -9668,12 +9672,22 @@ pub fn ppc_q3_object_release_reference(stores: &mut PpcQ3ObjectStores<'_>, objec
 }
 
 pub fn ppc_q3_object_dispose_unreferenced(stores: &mut PpcQ3ObjectStores<'_>, object: u32) {
-    let released_group_members: Vec<u32> = stores
+    let owns_members = stores.q3_file_groups.iter()
+        .find(|record| record.group == object)
+        .map(|record| record.owns_members)
+        .unwrap_or(true);
+    let mut released_group_members: Vec<u32> = stores
         .q3_group_memberships
         .iter()
-        .filter(|record| record.group == object)
+        .filter(|record| owns_members && record.group == object)
         .map(|record| record.object)
         .collect();
+    for record in stores.q3_file_groups.iter_mut() {
+        if record.retained_by.contains(&object) {
+            record.retained_by.retain(|owner| *owner != object);
+            released_group_members.push(record.group);
+        }
+    }
     let released_view_slots: Vec<u32> = stores
         .q3_views
         .iter()
@@ -9743,10 +9757,10 @@ pub fn ppc_q3_object_dispose_unreferenced(stores: &mut PpcQ3ObjectStores<'_>, ob
         .q3_group_memberships
         .retain(|record| record.group != object && record.object != object);
     // Objects read from a metafile retain their group hierarchy after the file object closes.
-    // Drop group metadata only when the group itself (or its parent) is disposed.
+    // A retained child can outlive its parent, including its ownership metadata.
     stores
         .q3_file_groups
-        .retain(|record| record.group != object && record.parent_group != object);
+        .retain(|record| record.group != object);
     for view in stores.q3_views.iter_mut() {
         if view.renderer == object {
             view.renderer = 0;
@@ -10804,6 +10818,7 @@ pub(crate) fn ppc_q3_file_read_object(
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     q3_objects: &mut Vec<PpcQ3ObjectRecord>,
+    q3_object_refs: &mut Vec<PpcQ3ObjectReferenceRecord>,
     next_q3_object: &mut u32,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -10882,6 +10897,7 @@ pub(crate) fn ppc_q3_file_read_object(
         }
         let parent_group = ppc_q3_file_ensure_group_stack(
             q3_objects,
+            q3_object_refs,
             next_q3_object,
             q3_group_memberships,
             q3_file_groups,
@@ -10890,7 +10906,10 @@ pub(crate) fn ppc_q3_file_read_object(
             &chunk.group_stack,
         );
         if let Some(parent_group) = parent_group {
-            ppc_q3_group_add_membership_once(q3_group_memberships, parent_group, object);
+            ppc_q3_file_group_add_member(
+                q3_objects, q3_object_refs, q3_group_memberships, q3_file_groups,
+                parent_group, object,
+            );
         }
         ppc_q3_file_record_object_body(
             process_memory_manager,
@@ -10951,6 +10970,8 @@ pub(crate) fn ppc_q3_file_read_object(
                 ppc_q3_file_mirror_container_geometry_into_group(
                     q3_group_memberships,
                     q3_objects,
+                    q3_object_refs,
+                    q3_file_groups,
                     parent_group,
                     object,
                 );
@@ -12145,6 +12166,8 @@ pub(crate) fn ppc_q3_file_record_container_children(
 pub fn ppc_q3_file_mirror_container_geometry_into_group(
     q3_group_memberships: &mut Vec<PpcQ3GroupMembershipRecord>,
     q3_objects: &[PpcQ3ObjectRecord],
+    q3_object_refs: &mut Vec<PpcQ3ObjectReferenceRecord>,
+    q3_file_groups: &mut [PpcQ3FileGroupRecord],
     group: u32,
     container: u32,
 ) {
@@ -12156,11 +12179,16 @@ pub fn ppc_q3_file_mirror_container_geometry_into_group(
     for child in child_objects {
         let child_type = ppc_q3_object_type_for_handle(q3_objects, child);
         if ppc_q3_object_type_is_geometry(child_type) {
-            ppc_q3_group_add_membership_once(q3_group_memberships, group, child);
+            ppc_q3_file_group_add_member(
+                q3_objects, q3_object_refs, q3_group_memberships, q3_file_groups,
+                group, child,
+            );
         } else if child_type == PPC_Q3_TYPE_CONTAINER || ppc_q3_object_type_is_group(child_type) {
             ppc_q3_file_mirror_container_geometry_into_group(
                 q3_group_memberships,
                 q3_objects,
+                q3_object_refs,
+                q3_file_groups,
                 group,
                 child,
             );
@@ -12264,6 +12292,7 @@ pub fn ppc_q3_file_next_object_chunk(
 
 pub fn ppc_q3_file_ensure_group_stack(
     q3_objects: &mut Vec<PpcQ3ObjectRecord>,
+    q3_object_refs: &mut Vec<PpcQ3ObjectReferenceRecord>,
     next_q3_object: &mut u32,
     q3_group_memberships: &mut Vec<PpcQ3GroupMembershipRecord>,
     q3_file_groups: &mut Vec<PpcQ3FileGroupRecord>,
@@ -12285,7 +12314,10 @@ pub fn ppc_q3_file_ensure_group_stack(
             group_depth,
         )?;
         if parent_group != 0 {
-            ppc_q3_group_add_membership_once(q3_group_memberships, parent_group, group);
+            ppc_q3_file_group_add_member(
+                q3_objects, q3_object_refs, q3_group_memberships, q3_file_groups,
+                parent_group, group,
+            );
         }
         parent_group = group;
     }
@@ -12333,6 +12365,8 @@ pub fn ppc_q3_file_group_for_chunk(
         };
     }
     q3_file_groups.push(PpcQ3FileGroupRecord {
+        owns_members: false,
+        retained_by: Vec::new(),
         file,
         offset: group_chunk.offset,
         group,
@@ -12443,6 +12477,58 @@ pub fn ppc_q3_group_add_object(
         q3_group_memberships.push(record);
     }
     position
+}
+
+pub fn ppc_q3_file_group_retain_object(
+    q3_objects: &[PpcQ3ObjectRecord],
+    q3_object_refs: &mut Vec<PpcQ3ObjectReferenceRecord>,
+    q3_group_memberships: &[PpcQ3GroupMembershipRecord],
+    q3_file_groups: &mut [PpcQ3FileGroupRecord],
+    object: u32,
+) -> bool {
+    if !ppc_q3_object_exists(q3_objects, object) {
+        return false;
+    }
+    let borrowed_group = q3_file_groups.iter().position(|record| {
+        record.group == object && !record.owns_members
+    });
+    if let Some(index) = borrowed_group {
+        // Q3File_ReadObject returns flattened objects. Their reconstructed
+        // groups initially describe the file hierarchy without owning it.
+        // Transfer the group's initial reference to its first guest owner,
+        // and acquire each member before the flattened loading list can die.
+        q3_file_groups[index].owns_members = true;
+        for member in q3_group_memberships.iter().filter(|record| record.group == object) {
+            ppc_q3_file_group_retain_object(
+                q3_objects, q3_object_refs, q3_group_memberships,
+                q3_file_groups, member.object,
+            );
+        }
+        true
+    } else {
+        ppc_q3_object_retain(q3_objects, q3_object_refs, object)
+    }
+}
+
+pub fn ppc_q3_file_group_add_member(
+    q3_objects: &[PpcQ3ObjectRecord],
+    q3_object_refs: &mut Vec<PpcQ3ObjectReferenceRecord>,
+    q3_group_memberships: &mut Vec<PpcQ3GroupMembershipRecord>,
+    q3_file_groups: &mut [PpcQ3FileGroupRecord],
+    group: u32,
+    object: u32,
+) {
+    let already_present = q3_group_memberships.iter()
+        .any(|record| record.group == group && record.object == object);
+    ppc_q3_group_add_membership_once(q3_group_memberships, group, object);
+    // Reading may continue after the guest has retained a reconstructed group.
+    if !already_present && q3_file_groups.iter()
+        .any(|record| record.group == group && record.owns_members)
+    {
+        ppc_q3_file_group_retain_object(
+            q3_objects, q3_object_refs, q3_group_memberships, q3_file_groups, object,
+        );
+    }
 }
 
 pub fn ppc_q3_group_add_membership_once(
@@ -12634,7 +12720,7 @@ pub fn ppc_q3_group_get_position_object(
     memory: &mut PpcSectionMem,
     q3_group_memberships: &[PpcQ3GroupMembershipRecord],
     q3_objects: &[PpcQ3ObjectRecord],
-    q3_file_groups: &[PpcQ3FileGroupRecord],
+    q3_file_groups: &mut [PpcQ3FileGroupRecord],
     q3_object_refs: &mut Vec<PpcQ3ObjectReferenceRecord>,
     q3_lights: &[PpcQ3LightRecord],
     q3_trimeshes: &[PpcQ3TriMeshRecord],
@@ -12665,7 +12751,23 @@ pub fn ppc_q3_group_get_position_object(
     if memory.write_u32_be(object_out_ptr, object).is_none() {
         return false;
     }
-    if !ppc_q3_object_retain(q3_objects, q3_object_refs, object) {
+    // A loading list exposes reconstructed file groups through its positions,
+    // even though its raw members are the flattened objects read from the file.
+    // Keep that logical ownership until the list is disposed, so releasing a
+    // returned handle does not change subsequent position queries.
+    if !q3_group_memberships.iter().any(|member| member.group == group && member.object == object) {
+        if let Some(index) = q3_file_groups.iter().position(|record| {
+            record.group == object && !record.retained_by.contains(&group)
+        }) {
+            ppc_q3_file_group_retain_object(
+                q3_objects, q3_object_refs, q3_group_memberships, q3_file_groups, object,
+            );
+            q3_file_groups[index].retained_by.push(group);
+        }
+    }
+    if !ppc_q3_file_group_retain_object(
+        q3_objects, q3_object_refs, q3_group_memberships, q3_file_groups, object,
+    ) {
         q3_error_state.post(PPC_Q3_ERROR_INVALID_OBJECT_PARAMETER);
         return false;
     }

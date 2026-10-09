@@ -4894,6 +4894,8 @@ fn hle_import_runner_reads_q3_file_objects_and_records_hierarchy() {
     assert_eq!(
         loaded.q3_file_groups,
         vec![PpcQ3FileGroupRecord {
+            owns_members: false,
+            retained_by: Vec::new(),
             file,
             offset: 24,
             group: display_group,
@@ -4972,6 +4974,8 @@ fn hle_import_runner_reads_q3_file_objects_and_records_hierarchy() {
         loaded.q3_file_groups,
         vec![
             PpcQ3FileGroupRecord {
+                owns_members: false,
+                retained_by: Vec::new(),
                 file,
                 offset: 24,
                 group: display_group,
@@ -4980,6 +4984,8 @@ fn hle_import_runner_reads_q3_file_objects_and_records_hierarchy() {
                 group_depth: 1,
             },
             PpcQ3FileGroupRecord {
+                owns_members: false,
+                retained_by: Vec::new(),
                 file,
                 offset: 48,
                 group: object_group,
@@ -5584,6 +5590,8 @@ fn hle_import_runner_keeps_grouped_q3_file_container_trimesh_wrapped() {
     assert_eq!(
         loaded.q3_file_groups,
         vec![PpcQ3FileGroupRecord {
+            owns_members: false,
+            retained_by: Vec::new(),
             file,
             offset: 8,
             group: display_group,
@@ -7865,6 +7873,8 @@ fn q3_file_container_geometry_is_mirrored_into_parent_group() {
     ppc_q3_file_mirror_container_geometry_into_group(
         &mut q3_group_memberships,
         &q3_objects,
+        &mut Vec::new(),
+        &mut [],
         group,
         container,
     );
@@ -7880,6 +7890,8 @@ fn q3_file_container_geometry_is_mirrored_into_parent_group() {
     ppc_q3_file_mirror_container_geometry_into_group(
         &mut q3_group_memberships,
         &q3_objects,
+        &mut Vec::new(),
+        &mut [],
         group,
         container,
     );
@@ -8139,6 +8151,8 @@ fn q3_group_positions_for_grouped_3dmf_model_lists_use_top_level_groups() {
     ];
     let q3_file_groups = vec![
         PpcQ3FileGroupRecord {
+            owns_members: false,
+            retained_by: Vec::new(),
             file,
             offset: 0x100,
             group: first_group,
@@ -8147,6 +8161,8 @@ fn q3_group_positions_for_grouped_3dmf_model_lists_use_top_level_groups() {
             group_depth: 2,
         },
         PpcQ3FileGroupRecord {
+            owns_members: false,
+            retained_by: Vec::new(),
             file,
             offset: 0x500,
             group: second_group,
@@ -8155,6 +8171,8 @@ fn q3_group_positions_for_grouped_3dmf_model_lists_use_top_level_groups() {
             group_depth: 2,
         },
         PpcQ3FileGroupRecord {
+            owns_members: false,
+            retained_by: Vec::new(),
             file,
             offset: 0x900,
             group: third_group,
@@ -8303,6 +8321,8 @@ fn q3_group_positions_preserve_top_level_objects_before_nested_3dmf_groups() {
         },
     ];
     let q3_file_groups = vec![PpcQ3FileGroupRecord {
+        owns_members: false,
+        retained_by: Vec::new(),
         file,
         offset: 0x200,
         group: nested_group,
@@ -24906,6 +24926,8 @@ fn hle_import_runner_removes_q3_side_state_on_object_dispose() {
             before: None,
         });
     loaded.q3_file_groups.push(PpcQ3FileGroupRecord {
+        owns_members: false,
+        retained_by: Vec::new(),
         file: PPC_Q3_OBJECT_BASE + PPC_Q3_OBJECT_STRIDE * 3,
         offset: 24,
         group: object,
@@ -24914,6 +24936,8 @@ fn hle_import_runner_removes_q3_side_state_on_object_dispose() {
         group_depth: 1,
     });
     loaded.q3_file_groups.push(PpcQ3FileGroupRecord {
+        owns_members: false,
+        retained_by: Vec::new(),
         file: object,
         offset: 48,
         group: file_owned_group,
@@ -25326,6 +25350,8 @@ fn hle_import_runner_removes_q3_side_state_on_object_dispose() {
     assert_eq!(
         loaded.q3_file_groups,
         vec![PpcQ3FileGroupRecord {
+            owns_members: false,
+            retained_by: Vec::new(),
             file: object,
             offset: 48,
             group: file_owned_group,
@@ -26537,4 +26563,113 @@ fn import_bindings_classify_quickdraw_3d_accelerator_imports() {
         dispatcher_target_for_import("QuickDraw\u{2122} 3D Accelerator", "QAEngineGestalt"),
         PpcImportDispatcherTarget::QAEngineGestalt
     );
+}
+
+#[test]
+fn q3_loaded_file_groups_keep_geometry_after_the_loading_list_is_disposed() {
+    for nested in [false, true] {
+        for retain_early in [false, true] {
+            check_loaded_file_group_lifetimes(nested, retain_early);
+        }
+    }
+}
+
+fn check_loaded_file_group_lifetimes(nested: bool, retain_early: bool) {
+    fn call(loaded: &mut PpcLoadedApp, target: PpcImportDispatcherTarget, args: &[u32]) -> u32 {
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = target;
+        loaded.cpu.gpr[3..3 + args.len()].copy_from_slice(args);
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        loaded.cpu.gpr[3]
+    }
+    fn chunk(bytes: &mut Vec<u8>, kind: &[u8; 4], body: &[u8]) {
+        bytes.extend_from_slice(kind);
+        bytes.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(body);
+    }
+    let file = PPC_Q3_OBJECT_BASE;
+    let storage = file + PPC_Q3_OBJECT_STRIDE;
+    let storage_ptr = PPC_DATA_BASE + 0x1000;
+    let output_ptr = PPC_DATA_BASE + 0x2000;
+    let pef = synthetic_pef_with_library_import(b"QuickDraw\xaa 3D", b"Q3File_ReadObject");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut mesh = vec![0; PPC_Q3_TRIMESH_DATA_SIZE as usize];
+    mesh[PPC_Q3_TRIMESH_NUM_POINTS_OFFSET as usize..PPC_Q3_TRIMESH_NUM_POINTS_OFFSET as usize + 4]
+        .copy_from_slice(&3u32.to_be_bytes());
+    let mut container = Vec::new();
+    chunk(&mut container, b"tmsh", &mesh);
+    let mut bytes = Vec::new();
+    chunk(&mut bytes, b"3DMF", &[]);
+    chunk(&mut bytes, b"bgng", b"dspg\0\0\0\0");
+    for _ in 0..2 {
+        chunk(&mut bytes, b"bgng", b"dspg\0\0\0\0");
+        if nested { chunk(&mut bytes, b"bgng", b"dspg\0\0\0\0"); }
+        for _ in 0..2 {
+            chunk(&mut bytes, b"cntr", &container);
+        }
+        if nested { chunk(&mut bytes, b"endg", &[]); }
+        chunk(&mut bytes, b"endg", &[]);
+    }
+    chunk(&mut bytes, b"endg", &[]);
+    loaded.memory.add_region(storage_ptr, bytes.clone());
+    loaded.memory.add_region(output_ptr, vec![0; 4]);
+    loaded.q3_objects.push(test_q3_object(file, PPC_Q3_TYPE_FILE));
+    loaded.q3_objects.push(PpcQ3ObjectRecord {
+        object: storage,
+        kind: PpcQ3ObjectKind::MemoryStorage,
+        object_type: PPC_Q3_STORAGE_TYPE_MEMORY,
+        source: PpcQ3ObjectSource::default(),
+        data_ptr: storage_ptr,
+        data_size: bytes.len() as u32,
+    });
+    loaded.next_q3_object = storage + PPC_Q3_OBJECT_STRIDE;
+    loaded.q3_files.push(PpcQ3FileRecord {
+        file, storage, is_open: true, object_type: 0, read_offset: 0, read_object: 0,
+    });
+    let list = call(&mut loaded, PpcImportDispatcherTarget::Q3DisplayGroupNew, &[]);
+    for _ in 0..if retain_early { 3 } else { 4 } {
+        let object = call(&mut loaded, PpcImportDispatcherTarget::Q3FileReadObject, &[file]);
+        assert_ne!(object, 0);
+        assert_ne!(call(&mut loaded, PpcImportDispatcherTarget::Q3GroupAddObject, &[list, object]), 0);
+        assert_eq!(call(&mut loaded, PpcImportDispatcherTarget::Q3ObjectDispose, &[object]), 1);
+    }
+    if !retain_early {
+    assert_eq!(call(&mut loaded, PpcImportDispatcherTarget::Q3FileClose, &[file]), 1);
+    assert_eq!(call(&mut loaded, PpcImportDispatcherTarget::Q3ObjectDispose, &[file]), 1);
+    }
+    assert_eq!(call(&mut loaded, PpcImportDispatcherTarget::Q3GroupCountObjects, &[list, output_ptr]), 1);
+    assert_eq!(loaded.memory.read_u32_be(output_ptr), Some(2));
+    let mut groups = Vec::new();
+    for position in 1..=2 {
+        assert_eq!(call(&mut loaded, PpcImportDispatcherTarget::Q3GroupGetPositionObject,
+            &[list, position, output_ptr]), 1);
+        groups.push(loaded.memory.read_u32_be(output_ptr).unwrap());
+    }
+    // The loading list must still own a group after its fetched handle dies.
+    assert_eq!(call(&mut loaded, PpcImportDispatcherTarget::Q3ObjectDispose, &[groups[0]]), 1);
+    assert_eq!(call(&mut loaded, PpcImportDispatcherTarget::Q3GroupGetPositionObject,
+        &[list, 1, output_ptr]), 1);
+    assert_eq!(loaded.memory.read_u32_be(output_ptr), Some(groups[0]));
+    if retain_early {
+        let object = call(&mut loaded, PpcImportDispatcherTarget::Q3FileReadObject, &[file]);
+        assert_ne!(object, 0);
+        assert_ne!(call(&mut loaded, PpcImportDispatcherTarget::Q3GroupAddObject, &[list, object]), 0);
+        assert_eq!(call(&mut loaded, PpcImportDispatcherTarget::Q3ObjectDispose, &[object]), 1);
+        assert_eq!(call(&mut loaded, PpcImportDispatcherTarget::Q3FileClose, &[file]), 1);
+        assert_eq!(call(&mut loaded, PpcImportDispatcherTarget::Q3ObjectDispose, &[file]), 1);
+    }
+    let meshes: Vec<_> = loaded.q3_trimeshes.iter().map(|mesh| mesh.trimesh).collect();
+    assert_eq!(meshes.len(), 4);
+    assert_eq!(call(&mut loaded, PpcImportDispatcherTarget::Q3ObjectDispose, &[list]), 1);
+    for mesh in meshes {
+        assert!(loaded.q3_trimeshes.iter().any(|record| record.trimesh == mesh),
+            "loaded geometry {mesh:#x} vanished while its model group is retained");
+    }
+    for group in groups {
+        assert_eq!(call(&mut loaded, PpcImportDispatcherTarget::Q3ObjectDispose, &[group]), 1);
+    }
+    assert!(loaded.q3_trimeshes.is_empty(), "model disposal must release its geometry");
 }

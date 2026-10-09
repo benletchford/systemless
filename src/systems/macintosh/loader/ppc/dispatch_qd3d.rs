@@ -1210,6 +1210,7 @@ pub(super) fn dispatch_q3_storage_file_import(
                 process_memory_manager,
                 memory,
                 stores.q3_objects,
+                stores.q3_object_refs,
                 next_q3_object,
                 heap_cursor,
                 heap_limit,
@@ -1989,7 +1990,7 @@ pub(super) struct PpcQ3ObjectGroupDispatchContext<'a> {
     pub(super) q3_objects: &'a [PpcQ3ObjectRecord],
     pub(super) q3_object_refs: &'a mut Vec<PpcQ3ObjectReferenceRecord>,
     pub(super) q3_group_memberships: &'a [PpcQ3GroupMembershipRecord],
-    pub(super) q3_file_groups: &'a [PpcQ3FileGroupRecord],
+    pub(super) q3_file_groups: &'a mut [PpcQ3FileGroupRecord],
     pub(super) q3_lights: &'a [PpcQ3LightRecord],
     pub(super) q3_error_state: &'a mut PpcQ3ErrorState,
 }
