@@ -1334,6 +1334,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::PtrToXHand
         | PpcImportDispatcherTarget::HandToHand
         | PpcImportDispatcherTarget::HandAndHand
+        | PpcImportDispatcherTarget::PtrAndHand
         | PpcImportDispatcherTarget::NewHandle { .. }
         | PpcImportDispatcherTarget::NewString
         | PpcImportDispatcherTarget::NewHandleSys { .. }

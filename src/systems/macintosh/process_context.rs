@@ -8983,6 +8983,73 @@ impl ProcessNativeMemoryManager {
         Self::NO_ERR
     }
 
+    /// Append a snapshot to a process-owned handle from either CPU adapter.
+    /// Inside Macintosh: Memory (1992), pp. 2-65--2-66.
+    pub(crate) fn append_process_handle_from_native_import(
+        &mut self,
+        memory: &mut GuestAddressSpace,
+        handle: u32,
+        bytes: &[u8],
+    ) -> i16 {
+        let Some(ptr) = PpcMemory::read_u32_be(memory, handle).filter(|ptr| *ptr != 0) else {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Self::NIL_HANDLE_ERR;
+        };
+        if let Some(record) = self.native_allocation(handle) {
+            if record.ptr != ptr || self.ptr_to_handle.get(&ptr) != Some(handle) {
+                self.set_native_mem_error(Self::MEM_WZ_ERR);
+                return Self::MEM_WZ_ERR;
+            }
+            let Some(new_size) = u32::try_from(bytes.len())
+                .ok()
+                .and_then(|count| record.size.checked_add(count))
+            else {
+                self.set_native_mem_error(Self::MEM_FULL_ERR);
+                return Self::MEM_FULL_ERR;
+            };
+            if !memory.preflight_writable_range(handle, 4)
+                || (new_size <= record.capacity && !memory.preflight_writable_range(ptr, new_size))
+            {
+                self.set_native_mem_error(Self::PARAM_ERR);
+                return Self::PARAM_ERR;
+            }
+            return self.append_bytes_to_native_handle(memory, handle, bytes);
+        }
+        let Some(allocator) = self.classic_allocator.clone() else {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Self::NIL_HANDLE_ERR;
+        };
+        if allocator.allocation_size(handle) != Some(4) {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Self::NIL_HANDLE_ERR;
+        }
+        let Some(old_size) = allocator.allocation_size(ptr) else {
+            self.set_native_mem_error(Self::MEM_WZ_ERR);
+            return Self::MEM_WZ_ERR;
+        };
+        if self.ptr_to_handle.get(&ptr) != Some(handle) {
+            self.set_native_mem_error(Self::MEM_WZ_ERR);
+            return Self::MEM_WZ_ERR;
+        }
+        let Some(new_size) = u32::try_from(bytes.len())
+            .ok()
+            .and_then(|count| old_size.checked_add(count))
+        else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Self::MEM_FULL_ERR;
+        };
+        let result = self.set_process_handle_size_from_native_import(memory, handle, new_size);
+        if result != Self::NO_ERR {
+            return result;
+        }
+        let destination = PpcMemory::read_u32_be(memory, handle)
+            .expect("successful process handle resize retains its master slot");
+        memory
+            .write_bytes(destination + old_size, bytes)
+            .expect("successful process handle resize preflights its backing range");
+        Self::NO_ERR
+    }
+
     pub(crate) fn dispose_native_handle(
         &mut self,
         memory: &mut GuestAddressSpace,
@@ -9361,6 +9428,12 @@ impl ProcessNativeMemoryManager {
             self.set_native_mem_error(Self::MEM_FULL_ERR);
             return Self::MEM_FULL_ERR;
         };
+        // Locked blocks may grow in place but cannot move to a new block.
+        // Inside Macintosh: Memory (1992), pp. 2-40--2-41.
+        if new_ptr != record.ptr && self.state_for_handle(handle).unwrap_or(0) & 0x80 != 0 {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Self::MEM_FULL_ERR;
+        }
         let mut bytes = Vec::with_capacity(record.size as usize);
         for offset in 0..record.size {
             let Some(byte) = PpcMemory::read_u8(memory, record.ptr + offset) else {
