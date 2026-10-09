@@ -3375,7 +3375,9 @@ impl FixtureRunner {
             generation: tracking.generation,
             kind: StandardFileKind::Put,
             confirming_replace: tracking.confirming_replace,
-            new_folder: tracking.new_folder.as_ref().map(|folder| folder.snapshot(tracking.bounds)),
+            new_folder: tracking.new_folder.as_ref().map(|folder| folder.snapshot(tracking.bounds, 1, |bytes| {
+                TrapDispatcher::fb_measure_string(&crate::trap::types::decode_mac_roman(bytes), 0, 12)
+            })),
             standard_entry_point: tracking.standard_entry_point,
             bounds: tracking.bounds,
             directory_id: tracking.current_dir_id,

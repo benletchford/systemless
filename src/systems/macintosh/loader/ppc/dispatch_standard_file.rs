@@ -1114,7 +1114,7 @@ fn ppc_standard_file_draw_put_dialog(
             let _ = ppc_fill_front_rect(memory, front, layout.bounds, PPC_RGB_WHITE);
             let _ = ppc_frame_front_rect(memory, front, layout.bounds, PPC_RGB_BLACK, 2);
         }
-        let prompt = folder.snapshot(bounds).prompt();
+        let prompt = folder.prompt();
         if folder.error.is_some() {
             ppc_draw_dialog_text(memory, gworlds, layout.error_message(), prompt.as_bytes(), PPC_RGB_BLACK);
             ppc_standard_file_draw_button(memory, front, gworlds, (0,0,0,0), layout.create, b"OK", true, true);

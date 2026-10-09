@@ -2867,7 +2867,7 @@ impl super::TrapDispatcher {
             let layout = crate::standard_file_ui::StandardFileNewFolderLayout::new(tracking.bounds);
             let local = |r: (i16, i16, i16, i16)| (r.0 - layout.bounds.0, r.1 - layout.bounds.1, r.2 - layout.bounds.0, r.3 - layout.bounds.1);
             let name = decode_mac_roman(folder.edit.text());
-            let prompt = folder.snapshot(tracking.bounds).prompt().to_string();
+            let prompt = folder.prompt().to_string();
             if folder.error.is_some() {
                 let items = vec![
                     DialogItem { item_type: 4, rect: local(layout.create), text: "OK".into(), ..DialogItem::default() },

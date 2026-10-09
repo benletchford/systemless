@@ -297,7 +297,9 @@ impl PpcToolboxStartupState {
             generation: tracking.generation,
             kind: StandardFileKind::Put,
             confirming_replace: tracking.confirming_replace,
-            new_folder: tracking.new_folder.as_ref().map(|folder| folder.snapshot(tracking.bounds)),
+            new_folder: tracking.new_folder.as_ref().map(|folder| folder.snapshot(tracking.bounds, 2, |bytes| {
+                ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes)
+            })),
             standard_entry_point: tracking.standard_entry_point,
             bounds: tracking.bounds,
             directory_id: tracking.dir_id,
