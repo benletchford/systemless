@@ -3297,3 +3297,14 @@ font metrics, guest event routing or application-drawn text. It does not prove
 native font parity or explain the underlying GPUI quad failure. A matching
 active twelve-capture matrix is running; general title resources, native host
 interaction and performance qualification remain open.
+
+The matching active matrix is complete and reviewed: all twelve titles are
+visible and each title region is pixel-identical to its original active quad
+capture. Stable binary/source/fixture hashes and all original artifact hashes
+were verified before lossless archival as `popup-snapped-title-active-*` and
+`popup-snapped-title-active-review.json`. Together, these two matrices cover the
+fixture's active and suspended title at 0.75, 1.0, 1.5 and 2.0 on monochrome
+68K, colour 68K and PPC. The title-drag regression continues to cover forwarding
+guest coordinates. Arbitrary title resources, native host input/activation,
+native font parity and performance remain unqualified; disabled popup ink and
+arrow shape still require faithful guest-resolved presentation.
