@@ -3120,6 +3120,204 @@ pub fn evaluate_calculate_visible_region_parameters(
     Some(CalculateVisibleRegionParameters { window_ptr })
 }
 
+/// Architecture-neutral parameters for NewWindow and NewCWindow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NewWindowParameters {
+    storage_ptr: u32,
+    bounds_ptr: u32,
+    title_ptr: u32,
+    visible: bool,
+    proc_id: i16,
+    behind: u32,
+    go_away: bool,
+    ref_con: u32,
+}
+
+#[allow(dead_code)]
+impl NewWindowParameters {
+    pub const fn storage_ptr(&self) -> u32 {
+        self.storage_ptr
+    }
+
+    pub const fn bounds_ptr(&self) -> u32 {
+        self.bounds_ptr
+    }
+
+    pub const fn title_ptr(&self) -> u32 {
+        self.title_ptr
+    }
+
+    pub const fn visible(&self) -> bool {
+        self.visible
+    }
+
+    pub const fn proc_id(&self) -> i16 {
+        self.proc_id
+    }
+
+    pub const fn behind(&self) -> u32 {
+        self.behind
+    }
+
+    pub const fn go_away(&self) -> bool {
+        self.go_away
+    }
+
+    pub const fn ref_con(&self) -> u32 {
+        self.ref_con
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_new_window_parameters(
+    storage_ptr: u32,
+    bounds_ptr: u32,
+    title_ptr: u32,
+    visible: bool,
+    proc_id: i16,
+    behind: u32,
+    go_away: bool,
+    ref_con: u32,
+) -> Option<NewWindowParameters> {
+    if bounds_ptr == 0 {
+        return None;
+    }
+    Some(NewWindowParameters {
+        storage_ptr,
+        bounds_ptr,
+        title_ptr,
+        visible,
+        proc_id,
+        behind,
+        go_away,
+        ref_con,
+    })
+}
+
+/// Architecture-neutral parameters for GetNewWindow and GetNewCWindow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetNewWindowParameters {
+    window_id: i16,
+    storage_ptr: u32,
+    behind: u32,
+}
+
+#[allow(dead_code)]
+impl GetNewWindowParameters {
+    pub const fn window_id(&self) -> i16 {
+        self.window_id
+    }
+
+    pub const fn storage_ptr(&self) -> u32 {
+        self.storage_ptr
+    }
+
+    pub const fn behind(&self) -> u32 {
+        self.behind
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_new_window_parameters(
+    window_id: i16,
+    storage_ptr: u32,
+    behind: u32,
+) -> GetNewWindowParameters {
+    GetNewWindowParameters {
+        window_id,
+        storage_ptr,
+        behind,
+    }
+}
+
+/// Architecture-neutral parameters for CreateNewWindow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreateNewWindowParameters {
+    window_class: u32,
+    attributes: u32,
+    bounds_ptr: u32,
+    out_window_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl CreateNewWindowParameters {
+    pub const fn window_class(&self) -> u32 {
+        self.window_class
+    }
+
+    pub const fn attributes(&self) -> u32 {
+        self.attributes
+    }
+
+    pub const fn bounds_ptr(&self) -> u32 {
+        self.bounds_ptr
+    }
+
+    pub const fn out_window_ptr(&self) -> u32 {
+        self.out_window_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_create_new_window_parameters(
+    window_class: u32,
+    attributes: u32,
+    bounds_ptr: u32,
+    out_window_ptr: u32,
+) -> Result<CreateNewWindowParameters, i16> {
+    if !matches!(window_class, 6 | 13) || bounds_ptr == 0 || out_window_ptr == 0 {
+        return Err(-50);
+    }
+    Ok(CreateNewWindowParameters {
+        window_class,
+        attributes,
+        bounds_ptr,
+        out_window_ptr,
+    })
+}
+
+/// Architecture-neutral parameters for DisposeWindow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisposeWindowParameters {
+    window_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl DisposeWindowParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_dispose_window_parameters(window_ptr: u32) -> Option<DisposeWindowParameters> {
+    if window_ptr == 0 {
+        return None;
+    }
+    Some(DisposeWindowParameters { window_ptr })
+}
+
+/// Architecture-neutral parameters for CloseWindow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CloseWindowParameters {
+    window_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl CloseWindowParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_close_window_parameters(window_ptr: u32) -> Option<CloseWindowParameters> {
+    if window_ptr == 0 {
+        return None;
+    }
+    Some(CloseWindowParameters { window_ptr })
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -4261,5 +4459,64 @@ mod tests {
         assert_eq!(evaluate_calculate_visible_region_parameters(0), None);
         let calc = evaluate_calculate_visible_region_parameters(0x1000).unwrap();
         assert_eq!(calc.window_ptr(), 0x1000);
+    }
+
+    #[test]
+    fn window_creation_template_instantiation_and_destruction_evaluation() {
+        // NewWindow
+        assert_eq!(
+            evaluate_new_window_parameters(0x1000, 0, 0x2000, true, 0, 0xFFFFFFFF, true, 42),
+            None
+        );
+        let new_win = evaluate_new_window_parameters(
+            0x1000, 0x2000, 0x3000, true, 1, 0xFFFFFFFF, false, 99,
+        )
+        .unwrap();
+        assert_eq!(new_win.storage_ptr(), 0x1000);
+        assert_eq!(new_win.bounds_ptr(), 0x2000);
+        assert_eq!(new_win.title_ptr(), 0x3000);
+        assert!(new_win.visible());
+        assert_eq!(new_win.proc_id(), 1);
+        assert_eq!(new_win.behind(), 0xFFFFFFFF);
+        assert!(!new_win.go_away());
+        assert_eq!(new_win.ref_con(), 99);
+
+        // GetNewWindow
+        let get_win = evaluate_get_new_window_parameters(128, 0x1000, 0xFFFFFFFF);
+        assert_eq!(get_win.window_id(), 128);
+        assert_eq!(get_win.storage_ptr(), 0x1000);
+        assert_eq!(get_win.behind(), 0xFFFFFFFF);
+
+        // CreateNewWindow
+        assert_eq!(
+            evaluate_create_new_window_parameters(1, 0, 0x1000, 0x2000),
+            Err(-50)
+        );
+        assert_eq!(
+            evaluate_create_new_window_parameters(6, 0, 0, 0x2000),
+            Err(-50)
+        );
+        assert_eq!(
+            evaluate_create_new_window_parameters(6, 0, 0x1000, 0),
+            Err(-50)
+        );
+        let create_win = evaluate_create_new_window_parameters(6, 7, 0x1000, 0x2000).unwrap();
+        assert_eq!(create_win.window_class(), 6);
+        assert_eq!(create_win.attributes(), 7);
+        assert_eq!(create_win.bounds_ptr(), 0x1000);
+        assert_eq!(create_win.out_window_ptr(), 0x2000);
+
+        let create_sheet = evaluate_create_new_window_parameters(13, 0, 0x1000, 0x2000).unwrap();
+        assert_eq!(create_sheet.window_class(), 13);
+
+        // DisposeWindow
+        assert_eq!(evaluate_dispose_window_parameters(0), None);
+        let disp = evaluate_dispose_window_parameters(0x5000).unwrap();
+        assert_eq!(disp.window_ptr(), 0x5000);
+
+        // CloseWindow
+        assert_eq!(evaluate_close_window_parameters(0), None);
+        let close = evaluate_close_window_parameters(0x6000).unwrap();
+        assert_eq!(close.window_ptr(), 0x6000);
     }
 }
