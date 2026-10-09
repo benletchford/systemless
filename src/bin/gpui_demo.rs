@@ -1195,7 +1195,10 @@ mod desktop {
                         })
                         .trigger(
                             Button::new(identity)
-                                .label(menu.title.clone())
+                                .accessibility_label(menu.title.clone())
+                                .child(super::text::classic_menu_label(&menu.title, 0,
+                                    if self.menu_presented { self.display_scale } else { 1. },
+                                    if menu.enabled { cx.theme().foreground } else { cx.theme().muted_foreground }))
                                 .ghost()
                                 .small()
                                 .compact()
