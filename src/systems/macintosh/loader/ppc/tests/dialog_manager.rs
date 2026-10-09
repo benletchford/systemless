@@ -1845,6 +1845,124 @@ fn hle_import_runner_handles_dialog_text_and_modal_defaults() {
 }
 
 #[test]
+fn dialog_select_switches_borrowed_text_and_layout_between_edit_fields() {
+    let pef = synthetic_pef_with_import(b"GetNewDialog");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut dlog = vec![0; 22];
+    dlog[4..6].copy_from_slice(&100i16.to_be_bytes());
+    dlog[6..8].copy_from_slice(&260i16.to_be_bytes());
+    dlog[10] = 1;
+    dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+    let mut ditl = vec![0; 42];
+    ditl[0..2].copy_from_slice(&1u16.to_be_bytes());
+    ditl[6..8].copy_from_slice(&12i16.to_be_bytes());
+    ditl[8..10].copy_from_slice(&20i16.to_be_bytes());
+    ditl[10..12].copy_from_slice(&32i16.to_be_bytes());
+    ditl[12..14].copy_from_slice(&220i16.to_be_bytes());
+    ditl[14] = PPC_DIALOG_ITEM_EDIT_TEXT;
+    ditl[15] = 5;
+    ditl[16..21].copy_from_slice(b"Pilot");
+    ditl[26..28].copy_from_slice(&40i16.to_be_bytes());
+    ditl[28..30].copy_from_slice(&20i16.to_be_bytes());
+    ditl[30..32].copy_from_slice(&60i16.to_be_bytes());
+    ditl[32..34].copy_from_slice(&220i16.to_be_bytes());
+    ditl[34] = PPC_DIALOG_ITEM_EDIT_TEXT;
+    ditl[35] = 5;
+    ditl[36..41].copy_from_slice(b"Alias");
+    for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
+        let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: 128,
+                name: Vec::new(),
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    loaded.cpu.gpr[3] = 128;
+    let probe = loaded.run_with_hle_imports(128);
+    assert_eq!(probe.unsupported_import_index, None);
+    let dialog = loaded.cpu.gpr[3];
+    let items_handle = loaded
+        .memory
+        .read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET)
+        .unwrap();
+    let items_ptr = loaded.memory.read_u32_be(items_handle).unwrap();
+    let item_text_handle = loaded.memory.read_u32_be(items_ptr + 2).unwrap();
+    let second_item_text_handle = loaded.memory.read_u32_be(items_ptr + 22).unwrap();
+    let te_handle = loaded
+        .memory
+        .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
+        .unwrap();
+    let te_ptr = loaded.memory.read_u32_be(te_handle).unwrap();
+    assert_ne!(te_handle, 0);
+    assert!(loaded
+        .event_queue()
+        .iter()
+        .any(|event| event.what == 6 && event.message == dialog));
+    assert_eq!(
+        loaded.memory.read_u32_be(te_ptr + PPC_TE_HTEXT_OFFSET),
+        Some(item_text_handle)
+    );
+    assert_eq!(
+        ppc_te_text_bytes(&mut loaded.memory, &test_handle_records!(loaded), te_handle),
+        Some(b"Pilot".to_vec())
+    );
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(dialog + PPC_DIALOG_EDIT_FIELD_OFFSET),
+        Some(0)
+    );
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(dialog + PPC_DIALOG_EDIT_OPEN_OFFSET),
+        Some(1)
+    );
+    assert_eq!(
+        loaded.memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET),
+        Some(0)
+    );
+    assert_eq!(
+        loaded.memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET),
+        Some(0)
+    );
+
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 32]);
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::DialogSelect);
+    for (field, y, text_handle, text, rect) in [
+        (1, 50, second_item_text_handle, b"Alias".as_slice(), (40, 20, 60, 220)),
+        (0, 20, item_text_handle, b"Pilot".as_slice(), (12, 20, 32, 220)),
+        (1, 50, second_item_text_handle, b"Alias".as_slice(), (40, 20, 60, 220)),
+    ] {
+        ppc_write_event_record(&mut loaded.memory, scratch, 1, 0, 10, y, 30, 0);
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = scratch;
+        loaded.cpu.gpr[4] = scratch + 16;
+        loaded.cpu.gpr[5] = scratch + 20;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u16_be(dialog + PPC_DIALOG_EDIT_FIELD_OFFSET), Some(field));
+        let handle = loaded.memory.read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET).unwrap();
+        let ptr = loaded.memory.read_u32_be(handle).unwrap();
+        assert_eq!(loaded.memory.read_u32_be(ptr + PPC_TE_HTEXT_OFFSET), Some(text_handle));
+        assert_eq!(ppc_te_text_bytes(&mut loaded.memory, &test_handle_records!(loaded), handle), Some(text.to_vec()));
+        assert_eq!(ppc_read_rect(&mut loaded.memory, ptr), Some(rect));
+        assert_eq!(ppc_read_rect(&mut loaded.memory, ptr + 8), Some(rect));
+    }
+}
+
+#[test]
 fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
     let pef = synthetic_pef_with_import(b"GetNewDialog");
     let mut loaded = load_pef_application(&pef).unwrap();
