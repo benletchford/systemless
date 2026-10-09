@@ -2857,6 +2857,13 @@ impl super::TrapDispatcher {
             self.draw_dialog(bus, layout.bounds, 2, "", &items, 2, "", 0, false, 0);
         }
         if let Some(folder) = &tracking.new_folder {
+            // Standard File owns this subsidiary dialog's text state. Native
+            // Mac OS 8.1 uses the Roman system font on both CPUs, independently
+            // of the caller's drawing font (Files 1992, pp. 3-6–3-7).
+            let saved_text = (self.tx_font, self.tx_size, self.tx_face);
+            self.tx_font = 0;
+            self.tx_size = 12;
+            self.tx_face = 0;
             let layout = crate::standard_file_ui::StandardFileNewFolderLayout::new(tracking.bounds);
             let local = |r: (i16, i16, i16, i16)| (r.0 - layout.bounds.0, r.1 - layout.bounds.1, r.2 - layout.bounds.0, r.3 - layout.bounds.1);
             let name = decode_mac_roman(folder.edit.text());
@@ -2876,6 +2883,7 @@ impl super::TrapDispatcher {
                 ];
                 self.draw_dialog(bus, layout.bounds, 2, "", &items, 1, &name, 4, false, 0);
             }
+            (self.tx_font, self.tx_size, self.tx_face) = saved_text;
         }
         self.standard_file_drawn = bus.screen_mark();
     }
@@ -3196,6 +3204,22 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         mut tracking: StandardFilePutTrackingState,
     ) {
+        if let Some(folder) = tracking.new_folder.as_mut().filter(|folder| folder.is_selecting()) {
+            let layout = crate::standard_file_ui::StandardFileNewFolderLayout::new(tracking.bounds);
+            let release = self.event_queue.iter().position(|event| event.what == 2)
+                .and_then(|index| self.event_queue.remove(index));
+            let point = release.as_ref().map(|event| (event.where_v, event.where_h))
+                .unwrap_or_else(|| self.window_tracking_mouse_pos(bus));
+            let offset = folder.offset_at_x(i32::from(point.1 - layout.name.1 - 1), |bytes| {
+                i32::from(Self::fb_measure_string(&decode_mac_roman(bytes), 0, 12))
+            });
+            let changed = folder.track_selection(offset, release.is_none() && self.window_tracking_button_down(bus));
+            if changed || release.is_some() || !self.standard_file_dialog_intact(bus, tracking.bounds) {
+                self.draw_standard_file_put_dialog(bus, &tracking);
+            }
+            self.standard_file_put_tracking = Some(tracking);
+            return;
+        }
         let mut action = None;
         let mut consumed_event = false;
         while let Some(event) = self.event_queue.pop_front() {
@@ -3203,6 +3227,18 @@ impl super::TrapDispatcher {
             if let Some(mut folder) = tracking.new_folder.take() {
                 use crate::standard_file_ui::{StandardFileNewFolderAction, StandardFileNewFolderLayout};
                 let layout = StandardFileNewFolderLayout::new(tracking.bounds);
+                if event.what == 1 && folder.error.is_none()
+                    && event.where_v >= layout.name.0 && event.where_v < layout.name.2
+                    && event.where_h >= layout.name.1 && event.where_h < layout.name.3 {
+                    let offset = folder.offset_at_x(i32::from(event.where_h - layout.name.1 - 1), |bytes| {
+                        i32::from(Self::fb_measure_string(&decode_mac_roman(bytes), 0, 12))
+                    });
+                    folder.begin_selection(offset, event.modifiers & 0x0200 != 0);
+                    tracking.new_folder = Some(folder);
+                    self.draw_standard_file_put_dialog(bus, &tracking);
+                    self.standard_file_put_tracking = Some(tracking);
+                    return;
+                }
                 let handle = bus.read_long(addr::TE_SCRP_HANDLE);
                 let ptr = if handle == 0 { 0 } else { bus.read_long(handle) };
                 let mut scrap = if ptr == 0 { Vec::new() } else { bus.read_bytes(ptr, usize::from(bus.read_word(addr::TE_SCRP_LENGTH))) };

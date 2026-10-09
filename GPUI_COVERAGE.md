@@ -1725,3 +1725,53 @@ The existing `one_bit_color_port_light_gray_fill_matches_native_pattern_fallback
 regression covers the RGBForeColor(0xeeee)/PaintRect operation. The native replay
 is deliberately BasiliskII-only so a colour PPC run cannot masquerade as
 monochrome evidence. Other monochrome UI qualification remains necessary.
+
+### New Folder pointer selection
+
+The `standard-file-new-folder-pointer` native replay establishes matching Mac OS
+8.1 behaviour on BasiliskII and SheepShaver: click beyond the name to place the
+caret at its end, append `x`, drag back to the leading edge to select the name,
+and type `a` to replace it. All six selection checkpoint images were reviewed;
+34 retained capture files and both replay identities match their manifests.
+Text (1993), TEClick, p. 2-85 specifies retained mouse ownership and selection
+extension.
+
+The shared New Folder state now retains an anchor, clamps Mac Roman byte
+offsets, extends selection during held dragging and preserves the final range
+on release. CPU adapters use guest font measurement, poll their existing mouse
+state and consume the gesture's release. PPC discards old releases preceding a
+new accepted event; the initial regression exposed a stale mouse-up that changed
+an end caret to a partial selection. Stationary polling avoids redundant redraws.
+Proportional glyph hit testing uses exact midpoint comparisons, including
+odd-width glyphs. The 68k child scopes drawing to Roman system font 0/12 and
+restores the caller's font, size and face; its hit testing uses the same metrics.
+
+Validation:
+
+- Ten focused New Folder tests passed before adapter integration; the additional
+  proportional/Mac Roman glyph-midpoint test also passes.
+- The six-scenario guest workflow passes on monochrome 68k, colour 68k and PPC,
+  including assertions at mouse-down and release, appending text, dragging beyond
+  the field, replacement, cancellation, duplicate-name error and successful
+  creation. The latest run after the system-font correction passed in 33.17s.
+- `--capture-standard-file-new-folder-selected-composed` performs a real partial
+  drag through the shared live compositor. All three modes were reviewed; a fresh
+  colour-68k capture after the font correction matches the PPC selected prefix
+  for this checkpoint.
+
+Exact pointer-to-GPUI-displayed-glyph alignment remains incomplete: the host
+font differs from the guest font used for hit testing. Host focus-loss handling,
+double-click word selection, and full accessibility text editing also remain
+unqualified. These results establish guest pointer semantics for the exercised
+paths, not complete GPUI text-editing readiness. The full GPUI example regression
+suite passed: 73 tests, zero failures, in 215.61s.
+
+The remaining alignment defect is confirmed in the live path: `pointer` applies
+only the aspect-fit transform, while the New Folder field renders proportional
+host text as separate prefix, selection and suffix elements with host padding.
+The CPU adapters interpret that unadjusted position using guest font widths and
+CPU-specific insets. A fix must use the rendered text geometry to resolve the
+Mac Roman offset, preserve that mapping throughout captured dragging, and route
+the result through guest interaction semantics. Verification must click actual
+displayed glyph boundaries at multiple scene scales, including accented Roman
+characters, rather than only exercising guest-coordinate endpoints.

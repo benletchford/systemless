@@ -85,6 +85,7 @@ pub(super) struct PpcStandardFilePutTrackingState {
 }
 
 pub(super) struct PpcStandardFileDispatchContext<'a> {
+    pub(super) input: PpcInputSnapshot,
     pub(super) next_vfs_dir_id: &'a mut u32,
     pub(super) heap_limit: u32,
     pub(super) handles: &'a mut Vec<PpcHandleRecord>,
@@ -110,6 +111,7 @@ pub(super) fn dispatch_standard_file_import(
     context: PpcStandardFileDispatchContext<'_>,
 ) -> Option<PpcImportAction> {
     let PpcStandardFileDispatchContext {
+        input,
         next_vfs_dir_id,
         heap_limit,
         handles,
@@ -152,6 +154,7 @@ pub(super) fn dispatch_standard_file_import(
             next_vfs_dir_id,
             heap_limit,
             handles,
+            input,
         )),
         PpcImportDispatcherTarget::StandardFileCompatibility(operation) => {
             Some(ppc_dispatch_standard_file(
@@ -174,6 +177,7 @@ pub(super) fn dispatch_standard_file_import(
             next_vfs_dir_id,
             heap_limit,
             handles,
+            input,
             ))
         }
         _ => None,
@@ -1855,6 +1859,7 @@ fn ppc_dispatch_standard_file(
     next_vfs_dir_id: &mut u32,
     heap_limit: u32,
     handles: &mut Vec<PpcHandleRecord>,
+    input: PpcInputSnapshot,
 ) -> PpcImportAction {
     let mode = operation.mode();
     let requested_origin = operation.requested_origin(cpu);
@@ -1897,15 +1902,53 @@ fn ppc_dispatch_standard_file(
                         false,
                     );
                 }
+                if let Some(folder) = tracking.new_folder.as_mut().filter(|folder| folder.is_selecting()) {
+                    let layout = crate::standard_file_ui::StandardFileNewFolderLayout::new(tracking.bounds);
+                    let release = event_queue.iter().position(|event| event.what == 2)
+                        .and_then(|index| event_queue.remove(index));
+                    let h = release.as_ref().map_or(input.mouse_h, |event| event.where_h);
+                    let offset = folder.offset_at_x(i32::from(h - layout.name.1 - 2), |bytes| {
+                        i32::from(ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes))
+                    });
+                    let changed = folder.track_selection(offset, release.is_none() && input.mouse_button);
+                    if changed || release.is_some() {
+                        ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+                    }
+                    startup.standard_file_put_tracking = Some(tracking);
+                    return PpcImportAction::Yield(u64::MAX);
+                }
                 let event = event_queue
                     .iter()
                     .position(|event| matches!(event.what, 1 | 3 | 5))
-                    .and_then(|index| event_queue.remove(index));
+                    .and_then(|index| {
+                        let event = event_queue.remove(index);
+                        // Standard File has advanced past these releases. They
+                        // cannot belong to a new selection gesture (TEClick,
+                        // Text 1993, p. 2-85).
+                        for stale in (0..index).rev() {
+                            if event_queue[stale].what == 2 {
+                                event_queue.remove(stale);
+                            }
+                        }
+                        event
+                    });
                 if let Some(mut folder) = tracking.new_folder.take() {
                     use crate::standard_file_ui::{StandardFileNewFolderAction, StandardFileNewFolderLayout};
                     let mut dismiss = false;
                     if let Some(event) = event {
                         let layout = StandardFileNewFolderLayout::new(tracking.bounds);
+                        if event.what == 1 && folder.error.is_none()
+                            && event.where_v >= layout.name.0 && event.where_v < layout.name.2
+                            && event.where_h >= layout.name.1 && event.where_h < layout.name.3 {
+                            let offset = folder.offset_at_x(i32::from(event.where_h - layout.name.1 - 2), |bytes| {
+                                i32::from(ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes))
+                            });
+                            folder.begin_selection(offset, event.modifiers & 0x0200 != 0);
+                            tracking.new_folder = Some(folder);
+                            ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+                            startup.standard_file_put_tracking = Some(tracking);
+                            return PpcImportAction::Yield(u64::MAX);
+                        }
                         let mut scrap = ppc_te_scrap_bytes(memory);
                         let original = scrap.clone();
                         let action = folder.event(&layout, event.what, event.message, event.modifiers, (event.where_v, event.where_h), &mut scrap);
