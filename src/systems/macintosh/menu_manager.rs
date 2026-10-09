@@ -3853,6 +3853,197 @@ fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     ))
 }
 
+/// Architecture-neutral initialization state for InitMenus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InitMenusState {
+    pub the_menu: u16,
+}
+
+#[allow(dead_code)]
+pub const fn evaluate_init_menus() -> InitMenusState {
+    InitMenusState { the_menu: 0 }
+}
+
+/// Architecture-neutral parameter validation for GetNewMBar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetNewMBarParameters {
+    menu_bar_id: i16,
+}
+
+#[allow(dead_code)]
+impl GetNewMBarParameters {
+    pub const fn menu_bar_id(&self) -> i16 {
+        self.menu_bar_id
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_new_mbar_parameters(menu_bar_id: i16) -> Option<GetNewMBarParameters> {
+    if menu_bar_id == 0 {
+        None
+    } else {
+        Some(GetNewMBarParameters { menu_bar_id })
+    }
+}
+
+/// Architecture-neutral parameter validation for GetMenuBar.
+#[allow(dead_code)]
+pub const fn evaluate_get_menu_bar_parameters(current_menu_list: u32) -> Option<u32> {
+    if current_menu_list == 0 {
+        None
+    } else {
+        Some(current_menu_list)
+    }
+}
+
+/// Architecture-neutral parameter validation for SetMenuBar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetMenuBarParameters {
+    menu_list_handle: u32,
+}
+
+#[allow(dead_code)]
+impl SetMenuBarParameters {
+    pub const fn menu_list_handle(&self) -> u32 {
+        self.menu_list_handle
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_set_menu_bar_parameters(menu_list_handle: u32) -> Option<SetMenuBarParameters> {
+    if menu_list_handle == 0 {
+        None
+    } else {
+        Some(SetMenuBarParameters { menu_list_handle })
+    }
+}
+
+/// Architecture-neutral action state for ClearMenuBar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClearMenuBarState {
+    pub the_menu: u16,
+}
+
+#[allow(dead_code)]
+pub const fn evaluate_clear_menu_bar() -> ClearMenuBarState {
+    ClearMenuBarState { the_menu: 0 }
+}
+
+/// Architecture-neutral parameter extraction for GetMenuHandle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetMenuHandleParameters {
+    menu_id: i16,
+}
+
+#[allow(dead_code)]
+impl GetMenuHandleParameters {
+    pub const fn menu_id(&self) -> i16 {
+        self.menu_id
+    }
+}
+
+#[allow(dead_code)]
+pub const fn evaluate_get_menu_handle_parameters(menu_id: i16) -> GetMenuHandleParameters {
+    GetMenuHandleParameters { menu_id }
+}
+
+/// Architecture-neutral evaluation for DrawMenuBar.
+#[allow(dead_code)]
+pub const fn evaluate_draw_menu_bar(host_menu_bar_hidden: bool) -> bool {
+    !host_menu_bar_hidden
+}
+
+/// Architecture-neutral parameter extraction for FlashMenuBar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlashMenuBarParameters {
+    menu_id: i16,
+}
+
+#[allow(dead_code)]
+impl FlashMenuBarParameters {
+    pub const fn menu_id(&self) -> i16 {
+        self.menu_id
+    }
+}
+
+#[allow(dead_code)]
+pub const fn evaluate_flash_menu_bar_parameters(menu_id: i16) -> FlashMenuBarParameters {
+    FlashMenuBarParameters { menu_id }
+}
+
+/// Architecture-neutral target classification for FlashMenuBar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlashMenuBarTarget {
+    Title { highlight_id: i16 },
+    EntireBar,
+}
+
+#[allow(dead_code)]
+pub const fn evaluate_flash_menu_bar_target(
+    requested_menu_id: i16,
+    is_regular: bool,
+    selected_root_menu_id: i16,
+) -> FlashMenuBarTarget {
+    if is_regular && requested_menu_id != 0 {
+        let highlight_id = if selected_root_menu_id == requested_menu_id {
+            0
+        } else {
+            requested_menu_id
+        };
+        FlashMenuBarTarget::Title { highlight_id }
+    } else {
+        FlashMenuBarTarget::EntireBar
+    }
+}
+
+/// Architecture-neutral parameter extraction for HiliteMenu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HiliteMenuParameters {
+    menu_id: i16,
+}
+
+#[allow(dead_code)]
+impl HiliteMenuParameters {
+    pub const fn menu_id(&self) -> i16 {
+        self.menu_id
+    }
+}
+
+#[allow(dead_code)]
+pub const fn evaluate_hilite_menu_parameters(menu_id: i16) -> HiliteMenuParameters {
+    HiliteMenuParameters { menu_id }
+}
+
+/// Standard Menu Bar height in pixels when uninitialized.
+pub const DEFAULT_MBAR_HEIGHT: u16 = 20;
+
+/// Architecture-neutral resolution for GetMBarHeight.
+#[allow(dead_code)]
+pub const fn evaluate_get_mbar_height(stored_height: Option<u16>) -> u16 {
+    match stored_height {
+        Some(height) => height,
+        None => DEFAULT_MBAR_HEIGHT,
+    }
+}
+
+/// Architecture-neutral parameter extraction for SetMBarHeight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetMBarHeightParameters {
+    height: i16,
+}
+
+#[allow(dead_code)]
+impl SetMBarHeightParameters {
+    pub const fn height(&self) -> i16 {
+        self.height
+    }
+}
+
+#[allow(dead_code)]
+pub const fn evaluate_set_mbar_height_parameters(height: i16) -> SetMBarHeightParameters {
+    SetMBarHeightParameters { height }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5923,5 +6114,64 @@ mod tests {
             "an application-defined root must retain pointer ownership",
         );
         assert_eq!(tracking, before);
+    }
+
+    #[test]
+    fn menu_bar_lifecycle_height_and_highlighting_evaluation() {
+        // InitMenus
+        assert_eq!(evaluate_init_menus().the_menu, 0);
+
+        // GetNewMBar
+        assert_eq!(evaluate_get_new_mbar_parameters(128).unwrap().menu_bar_id(), 128);
+        assert!(evaluate_get_new_mbar_parameters(0).is_none());
+
+        // GetMenuBar
+        assert_eq!(evaluate_get_menu_bar_parameters(0x1234), Some(0x1234));
+        assert_eq!(evaluate_get_menu_bar_parameters(0), None);
+
+        // SetMenuBar
+        assert_eq!(evaluate_set_menu_bar_parameters(0x5678).unwrap().menu_list_handle(), 0x5678);
+        assert!(evaluate_set_menu_bar_parameters(0).is_none());
+
+        // ClearMenuBar
+        assert_eq!(evaluate_clear_menu_bar().the_menu, 0);
+
+        // GetMenuHandle
+        assert_eq!(evaluate_get_menu_handle_parameters(101).menu_id(), 101);
+
+        // DrawMenuBar
+        assert!(evaluate_draw_menu_bar(false));
+        assert!(!evaluate_draw_menu_bar(true));
+
+        // FlashMenuBar
+        assert_eq!(evaluate_flash_menu_bar_parameters(200).menu_id(), 200);
+        // Regular menu, selected matches requested -> toggles off (0)
+        assert_eq!(
+            evaluate_flash_menu_bar_target(200, true, 200),
+            FlashMenuBarTarget::Title { highlight_id: 0 }
+        );
+        // Regular menu, selected differs -> highlights requested (200)
+        assert_eq!(
+            evaluate_flash_menu_bar_target(200, true, 100),
+            FlashMenuBarTarget::Title { highlight_id: 200 }
+        );
+        // Non-regular menu -> entire bar
+        assert_eq!(
+            evaluate_flash_menu_bar_target(200, false, 100),
+            FlashMenuBarTarget::EntireBar
+        );
+        // Zero menu id -> entire bar
+        assert_eq!(
+            evaluate_flash_menu_bar_target(0, true, 0),
+            FlashMenuBarTarget::EntireBar
+        );
+
+        // HiliteMenu
+        assert_eq!(evaluate_hilite_menu_parameters(300).menu_id(), 300);
+
+        // GetMBarHeight & SetMBarHeight
+        assert_eq!(evaluate_get_mbar_height(Some(24)), 24);
+        assert_eq!(evaluate_get_mbar_height(None), DEFAULT_MBAR_HEIGHT);
+        assert_eq!(evaluate_set_mbar_height_parameters(22).height(), 22);
     }
 }

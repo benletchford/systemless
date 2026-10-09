@@ -51,8 +51,9 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
 
     match binding.dispatcher_target {
         PpcImportDispatcherTarget::InitMenus => {
+            let init_state = crate::menu_manager::evaluate_init_menus();
             toolbox_startup.menus_initialized = true;
-            let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, 0);
+            let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, init_state.the_menu);
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
             };
@@ -509,8 +510,13 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             )))
         }
         PpcImportDispatcherTarget::GetNewMBar => {
+            let Some(params) =
+                crate::menu_manager::evaluate_get_new_mbar_parameters(cpu.gpr[3] as u16 as i16)
+            else {
+                return Some(PpcImportAction::Return(0));
+            };
             let result_handle = ppc_get_new_mbar(
-                cpu.gpr[3] as u16 as i16,
+                params.menu_bar_id(),
                 process_memory_manager,
                 memory,
                 heap_cursor,
@@ -552,6 +558,7 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             ))
         }
         PpcImportDispatcherTarget::ClearMenuBar => {
+            let clear_state = crate::menu_manager::evaluate_clear_menu_bar();
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
             };
@@ -575,7 +582,7 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                 );
                 *last_mem_error = result;
                 if *last_mem_error == PPC_NO_ERR {
-                    let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, 0);
+                    let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, clear_state.the_menu);
                 }
             }
             // ClearMenuBar also deletes every entry from the application
@@ -592,7 +599,13 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SetMenuBar => {
-            let source = cpu.gpr[3];
+            let Some(params) =
+                crate::menu_manager::evaluate_set_menu_bar_parameters(cpu.gpr[3])
+            else {
+                *last_mem_error = PPC_PARAM_ERR;
+                return Some(PpcImportAction::ReturnPreserve);
+            };
+            let source = params.menu_list_handle();
             let Some(menu_list) = ppc_menu_list_definition(memory, source) else {
                 *last_mem_error = PPC_PARAM_ERR;
                 return Some(PpcImportAction::ReturnPreserve);
@@ -638,15 +651,21 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::GetMenuHandle => Some(PpcImportAction::Return(
-            ppc_get_menu_handle(memory, *current_menu_list, cpu.gpr[3] as u16 as i16),
-        )),
+        PpcImportDispatcherTarget::GetMenuHandle => {
+            let params =
+                crate::menu_manager::evaluate_get_menu_handle_parameters(cpu.gpr[3] as u16 as i16);
+            Some(PpcImportAction::Return(ppc_get_menu_handle(
+                memory,
+                *current_menu_list,
+                params.menu_id(),
+            )))
+        }
         PpcImportDispatcherTarget::DrawMenuBar => {
             // An explicit draw satisfies any earlier deferred request.
             event_queue.take_menu_bar_invalidation();
             toolbox_startup.menu_bar_draw_count =
                 toolbox_startup.menu_bar_draw_count.saturating_add(1);
-            if !toolbox_startup.host_menu_bar_hidden {
+            if crate::menu_manager::evaluate_draw_menu_bar(toolbox_startup.host_menu_bar_hidden) {
                 let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
                 let _ = ppc_draw_menu_bar_with_colors(
                     memory,
@@ -673,35 +692,43 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             // bar when the ID is zero or does not identify a regular title.
             // PROCEDURE FlashMenuBar (menuID: INTEGER);
             // Macintosh Toolbox Essentials (1992), pp. 3-141--3-142.
-            let requested_menu_id = cpu.gpr[3] as u16 as i16;
+            let params =
+                crate::menu_manager::evaluate_flash_menu_bar_parameters(cpu.gpr[3] as u16 as i16);
+            let requested_menu_id = params.menu_id();
             let requested_is_regular = requested_menu_id != 0
                 && ppc_regular_menu_contains_id(memory, *current_menu_list, requested_menu_id);
+            let selected_menu_id = memory.read_u16_be(PPC_THE_MENU_ADDR).unwrap_or(0) as i16;
+            let selected_root_menu_id =
+                ppc_root_menu_id_for_selection(memory, *current_menu_list, selected_menu_id);
+            let target = crate::menu_manager::evaluate_flash_menu_bar_target(
+                requested_menu_id,
+                requested_is_regular,
+                selected_root_menu_id,
+            );
             let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
             let menu_colors = MenuColorTable::new(&menu_color_bytes);
-            if requested_is_regular {
-                let selected_menu_id = memory.read_u16_be(PPC_THE_MENU_ADDR).unwrap_or(0) as i16;
-                let selected_root_menu_id =
-                    ppc_root_menu_id_for_selection(memory, *current_menu_list, selected_menu_id);
-                ppc_set_menu_title_highlight_with_colors(
-                    memory,
-                    gworlds,
-                    *current_menu_list,
-                    if selected_root_menu_id == requested_menu_id {
-                        0
-                    } else {
-                        requested_menu_id
-                    },
-                    screen_clut,
-                    menu_colors,
-                    toolbox_startup.host_menu_bar_hidden,
-                );
-            } else if !toolbox_startup.host_menu_bar_hidden {
-                let _ = ppc_flash_entire_menu_bar_with_colors(
-                    memory,
-                    gworlds,
-                    screen_clut,
-                    menu_colors,
-                );
+            match target {
+                crate::menu_manager::FlashMenuBarTarget::Title { highlight_id } => {
+                    ppc_set_menu_title_highlight_with_colors(
+                        memory,
+                        gworlds,
+                        *current_menu_list,
+                        highlight_id,
+                        screen_clut,
+                        menu_colors,
+                        toolbox_startup.host_menu_bar_hidden,
+                    );
+                }
+                crate::menu_manager::FlashMenuBarTarget::EntireBar => {
+                    if !toolbox_startup.host_menu_bar_hidden {
+                        let _ = ppc_flash_entire_menu_bar_with_colors(
+                            memory,
+                            gworlds,
+                            screen_clut,
+                            menu_colors,
+                        );
+                    }
+                }
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -744,12 +771,14 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             // highlights the requested title; zero or an unknown menu ID
             // leaves every title normal. Macintosh Toolbox Essentials
             // (1992), p. 3-119.
+            let params =
+                crate::menu_manager::evaluate_hilite_menu_parameters(cpu.gpr[3] as u16 as i16);
             let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
             ppc_set_menu_title_highlight_with_colors(
                 memory,
                 gworlds,
                 *current_menu_list,
-                cpu.gpr[3] as u16 as i16,
+                params.menu_id(),
                 screen_clut,
                 MenuColorTable::new(&menu_color_bytes),
                 toolbox_startup.host_menu_bar_hidden,
@@ -812,11 +841,17 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                     .unwrap_or(0),
             ))
         }
-        PpcImportDispatcherTarget::GetMBarHeight => Some(PpcImportAction::Return(u32::from(
-            memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20),
-        ))),
+        PpcImportDispatcherTarget::GetMBarHeight => {
+            let height = crate::menu_manager::evaluate_get_mbar_height(
+                memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR),
+            );
+            Some(PpcImportAction::Return(u32::from(height)))
+        }
         PpcImportDispatcherTarget::SetMBarHeight => {
-            let _ = memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, cpu.gpr[3] as u16);
+            let params = crate::menu_manager::evaluate_set_mbar_height_parameters(
+                cpu.gpr[3] as u16 as i16,
+            );
+            let _ = memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, params.height() as u16);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::MenuSelect => ppc_step_menu_tracking(
