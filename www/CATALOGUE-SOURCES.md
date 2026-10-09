@@ -171,9 +171,16 @@ Alley 19’s bundled 68K catalogue reader does not establish a 68K game slice.
 
 [Temporary handle locking](https://github.com/benletchford/systemless/pull/4264)
 and [uncached memory copying](https://github.com/benletchford/systemless/pull/4267)
-have merged. Heroes III passes its former TempHLock stop and reaches the
-[SetMenuItemCommandID import gap](https://github.com/benletchford/systemless/issues/4265).
-This is startup progress, not a gameplay checkpoint.
+have merged. The [menu command-ID fix](https://github.com/benletchford/systemless/pull/4277)
+also passes all 93 PowerPC Menu Manager tests and the public CI checks. The
+unchanged Heroes III original demo passes its former TempHLock and
+SetMenuItemCommandID stops and reaches the
+[SetMenuItemRefCon import gap](https://github.com/benletchford/systemless/issues/4279)
+at frontend tick 116 / guest tick 115 (PC `01F00038`, SP `07F6F880`,
+LR `0125FB28`). The replay reverified the original archive at 110,469,948 bytes
+and SHA-256 `3e5f77588f00ca681717aeaed8060d1e400a1774fb6c9787232209d64c007680`.
+No gameplay checkpoint is reached and exact-archive redistribution permission
+remains unestablished.
 
 The [volume-reference fix](https://github.com/benletchford/systemless/pull/4271)
 uses the documented reference fallback for bare filenames and reference-only
