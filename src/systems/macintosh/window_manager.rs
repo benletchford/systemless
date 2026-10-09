@@ -3519,6 +3519,324 @@ pub fn evaluate_pin_rect(
     (pinned_v, pinned_h)
 }
 
+/// Architecture-neutral parameter validation for InvalRect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalRectParameters {
+    rect_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl InvalRectParameters {
+    pub const fn rect_ptr(&self) -> u32 {
+        self.rect_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_inval_rect_parameters(rect_ptr: u32) -> Option<InvalRectParameters> {
+    if rect_ptr == 0 {
+        None
+    } else {
+        Some(InvalRectParameters { rect_ptr })
+    }
+}
+
+/// Architecture-neutral parameter validation for InvalRgn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalRgnParameters {
+    rgn_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl InvalRgnParameters {
+    pub const fn rgn_ptr(&self) -> u32 {
+        self.rgn_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_inval_rgn_parameters(rgn_ptr: u32) -> Option<InvalRgnParameters> {
+    if rgn_ptr == 0 {
+        None
+    } else {
+        Some(InvalRgnParameters { rgn_ptr })
+    }
+}
+
+/// Architecture-neutral parameter validation for ValidRect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValidRectParameters {
+    rect_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl ValidRectParameters {
+    pub const fn rect_ptr(&self) -> u32 {
+        self.rect_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_valid_rect_parameters(rect_ptr: u32) -> Option<ValidRectParameters> {
+    if rect_ptr == 0 {
+        None
+    } else {
+        Some(ValidRectParameters { rect_ptr })
+    }
+}
+
+/// Architecture-neutral parameter validation for ValidRgn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValidRgnParameters {
+    rgn_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl ValidRgnParameters {
+    pub const fn rgn_ptr(&self) -> u32 {
+        self.rgn_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_valid_rgn_parameters(rgn_ptr: u32) -> Option<ValidRgnParameters> {
+    if rgn_ptr == 0 {
+        None
+    } else {
+        Some(ValidRgnParameters { rgn_ptr })
+    }
+}
+
+/// Architecture-neutral parameter validation for BeginUpdate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BeginUpdateParameters {
+    window_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl BeginUpdateParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_begin_update_parameters(window_ptr: u32) -> Option<BeginUpdateParameters> {
+    if window_ptr == 0 {
+        None
+    } else {
+        Some(BeginUpdateParameters { window_ptr })
+    }
+}
+
+/// Architecture-neutral parameter validation for EndUpdate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EndUpdateParameters {
+    window_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl EndUpdateParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_end_update_parameters(window_ptr: u32) -> Option<EndUpdateParameters> {
+    if window_ptr == 0 {
+        None
+    } else {
+        Some(EndUpdateParameters { window_ptr })
+    }
+}
+
+/// Architecture-neutral parameter validation for DrawGrowIcon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DrawGrowIconParameters {
+    window_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl DrawGrowIconParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_draw_grow_icon_parameters(window_ptr: u32) -> Option<DrawGrowIconParameters> {
+    if window_ptr == 0 {
+        None
+    } else {
+        Some(DrawGrowIconParameters { window_ptr })
+    }
+}
+
+/// Architecture-neutral parameter validation for GetWMgrPort.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetWMgrPortParameters {
+    port_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl GetWMgrPortParameters {
+    pub const fn port_ptr(&self) -> u32 {
+        self.port_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_wmgr_port_parameters(port_ptr: u32) -> Option<GetWMgrPortParameters> {
+    if port_ptr == 0 {
+        None
+    } else {
+        Some(GetWMgrPortParameters { port_ptr })
+    }
+}
+
+/// Architecture-neutral parameter validation for ClipAbove.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClipAboveParameters {
+    window_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl ClipAboveParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_clip_above_parameters(window_ptr: u32) -> Option<ClipAboveParameters> {
+    if window_ptr == 0 {
+        None
+    } else {
+        Some(ClipAboveParameters { window_ptr })
+    }
+}
+
+/// Architecture-neutral parameter validation for SetWinColor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetWinColorParameters {
+    window_ptr: u32,
+    color_table_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl SetWinColorParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn color_table_ptr(&self) -> u32 {
+        self.color_table_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_set_win_color_parameters(
+    window_ptr: u32,
+    color_table_ptr: u32,
+) -> Option<SetWinColorParameters> {
+    if color_table_ptr == 0 {
+        None
+    } else {
+        Some(SetWinColorParameters {
+            window_ptr,
+            color_table_ptr,
+        })
+    }
+}
+
+/// Architecture-neutral parameter validation for PaintOne.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaintOneParameters {
+    window_ptr: u32,
+    clobbered_rgn_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl PaintOneParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn clobbered_rgn_ptr(&self) -> u32 {
+        self.clobbered_rgn_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_paint_one_parameters(
+    window_ptr: u32,
+    clobbered_rgn_ptr: u32,
+) -> PaintOneParameters {
+    PaintOneParameters {
+        window_ptr,
+        clobbered_rgn_ptr,
+    }
+}
+
+/// Architecture-neutral parameter validation for PaintBehind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaintBehindParameters {
+    window_ptr: u32,
+    clobbered_rgn_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl PaintBehindParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn clobbered_rgn_ptr(&self) -> u32 {
+        self.clobbered_rgn_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_paint_behind_parameters(
+    window_ptr: u32,
+    clobbered_rgn_ptr: u32,
+) -> PaintBehindParameters {
+    PaintBehindParameters {
+        window_ptr,
+        clobbered_rgn_ptr,
+    }
+}
+
+/// Architecture-neutral parameter validation for CalcVisBehind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CalcVisBehindParameters {
+    window_ptr: u32,
+    clobbered_rgn_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl CalcVisBehindParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn clobbered_rgn_ptr(&self) -> u32 {
+        self.clobbered_rgn_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_calc_vis_behind_parameters(
+    window_ptr: u32,
+    clobbered_rgn_ptr: u32,
+) -> CalcVisBehindParameters {
+    CalcVisBehindParameters {
+        window_ptr,
+        clobbered_rgn_ptr,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -4792,5 +5110,74 @@ mod tests {
         // Clamping without rect (None)
         let pinned_none = evaluate_pin_rect(None, 123, 456);
         assert_eq!(pinned_none, (123, 456));
+    }
+
+    #[test]
+    fn window_invalidation_update_clipping_and_painting_evaluation() {
+        // InvalRect
+        let inval_rect = evaluate_inval_rect_parameters(0x1000).unwrap();
+        assert_eq!(inval_rect.rect_ptr(), 0x1000);
+        assert!(evaluate_inval_rect_parameters(0).is_none());
+
+        // InvalRgn
+        let inval_rgn = evaluate_inval_rgn_parameters(0x2000).unwrap();
+        assert_eq!(inval_rgn.rgn_ptr(), 0x2000);
+        assert!(evaluate_inval_rgn_parameters(0).is_none());
+
+        // ValidRect
+        let valid_rect = evaluate_valid_rect_parameters(0x3000).unwrap();
+        assert_eq!(valid_rect.rect_ptr(), 0x3000);
+        assert!(evaluate_valid_rect_parameters(0).is_none());
+
+        // ValidRgn
+        let valid_rgn = evaluate_valid_rgn_parameters(0x4000).unwrap();
+        assert_eq!(valid_rgn.rgn_ptr(), 0x4000);
+        assert!(evaluate_valid_rgn_parameters(0).is_none());
+
+        // BeginUpdate
+        let begin_update = evaluate_begin_update_parameters(0x5000).unwrap();
+        assert_eq!(begin_update.window_ptr(), 0x5000);
+        assert!(evaluate_begin_update_parameters(0).is_none());
+
+        // EndUpdate
+        let end_update = evaluate_end_update_parameters(0x6000).unwrap();
+        assert_eq!(end_update.window_ptr(), 0x6000);
+        assert!(evaluate_end_update_parameters(0).is_none());
+
+        // DrawGrowIcon
+        let draw_grow = evaluate_draw_grow_icon_parameters(0x7000).unwrap();
+        assert_eq!(draw_grow.window_ptr(), 0x7000);
+        assert!(evaluate_draw_grow_icon_parameters(0).is_none());
+
+        // GetWMgrPort
+        let get_wmgr = evaluate_get_wmgr_port_parameters(0x8000).unwrap();
+        assert_eq!(get_wmgr.port_ptr(), 0x8000);
+        assert!(evaluate_get_wmgr_port_parameters(0).is_none());
+
+        // ClipAbove
+        let clip = evaluate_clip_above_parameters(0x9000).unwrap();
+        assert_eq!(clip.window_ptr(), 0x9000);
+        assert!(evaluate_clip_above_parameters(0).is_none());
+
+        // SetWinColor
+        let win_color = evaluate_set_win_color_parameters(0xA000, 0xB000).unwrap();
+        assert_eq!(win_color.window_ptr(), 0xA000);
+        assert_eq!(win_color.color_table_ptr(), 0xB000);
+        assert!(evaluate_set_win_color_parameters(0xA000, 0).is_none());
+
+        // PaintOne
+        let paint_one = evaluate_paint_one_parameters(0xC000, 0xD000);
+        assert_eq!(paint_one.window_ptr(), 0xC000);
+        assert_eq!(paint_one.clobbered_rgn_ptr(), 0xD000);
+
+        // PaintBehind
+        let paint_behind = evaluate_paint_behind_parameters(0xE000, 0xF000);
+        assert_eq!(paint_behind.window_ptr(), 0xE000);
+        assert_eq!(paint_behind.clobbered_rgn_ptr(), 0xF000);
+
+        // CalcVisBehind
+        let calc_vis = evaluate_calc_vis_behind_parameters(0x11000, 0x12000);
+        assert_eq!(calc_vis.window_ptr(), 0x11000);
+        assert_eq!(calc_vis.clobbered_rgn_ptr(), 0x12000);
     }
 }

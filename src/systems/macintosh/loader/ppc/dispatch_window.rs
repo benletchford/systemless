@@ -748,9 +748,11 @@ pub(super) fn dispatch_window_import(
             Some(PpcImportAction::Return(window))
         }
         PpcImportDispatcherTarget::SetWinColor => {
-            let window = cpu.gpr[3];
-            let color_table = cpu.gpr[4];
-            if color_table != 0 {
+            if let Some(params) =
+                crate::window_manager::evaluate_set_win_color_parameters(cpu.gpr[3], cpu.gpr[4])
+            {
+                let window = params.window_ptr();
+                let color_table = params.color_table_ptr();
                 let storage = if window == 0 { PPC_MAIN_GWORLD } else { window };
                 if !ppc_window_is_dialog(memory, storage) {
                     let _ = memory.write_u32_be(
@@ -788,6 +790,8 @@ pub(super) fn dispatch_window_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::PaintOne => {
+            let params =
+                crate::window_manager::evaluate_paint_one_parameters(cpu.gpr[3], cpu.gpr[4]);
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
             };
@@ -795,8 +799,8 @@ pub(super) fn dispatch_window_import(
                 Some(&mut allocator),
                 memory,
                 gworlds,
-                cpu.gpr[3],
-                cpu.gpr[4],
+                params.window_ptr(),
+                params.clobbered_rgn_ptr(),
                 toolbox_startup.host_menu_bar_hidden,
                 heap_cursor,
                 heap_limit,
@@ -806,6 +810,8 @@ pub(super) fn dispatch_window_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::PaintBehind => {
+            let params =
+                crate::window_manager::evaluate_paint_behind_parameters(cpu.gpr[3], cpu.gpr[4]);
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
             };
@@ -813,8 +819,8 @@ pub(super) fn dispatch_window_import(
                 Some(&mut allocator),
                 memory,
                 gworlds,
-                cpu.gpr[3],
-                cpu.gpr[4],
+                params.window_ptr(),
+                params.clobbered_rgn_ptr(),
                 toolbox_startup.host_menu_bar_hidden,
                 heap_cursor,
                 heap_limit,
@@ -824,6 +830,8 @@ pub(super) fn dispatch_window_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::CalcVisBehind => {
+            let params =
+                crate::window_manager::evaluate_calc_vis_behind_parameters(cpu.gpr[3], cpu.gpr[4]);
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
             };
@@ -831,8 +839,8 @@ pub(super) fn dispatch_window_import(
                 Some(&mut allocator),
                 memory,
                 gworlds,
-                cpu.gpr[3],
-                cpu.gpr[4],
+                params.window_ptr(),
+                params.clobbered_rgn_ptr(),
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
@@ -894,61 +902,88 @@ pub(super) fn dispatch_window_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetWMgrPort => {
-            let port_ptr = cpu.gpr[3];
-            if port_ptr != 0 && ppc_memory_can_write_bytes(memory, port_ptr, 4) {
-                let _ = memory.write_u32_be(port_ptr, PPC_MAIN_GWORLD);
+            if let Some(params) =
+                crate::window_manager::evaluate_get_wmgr_port_parameters(cpu.gpr[3])
+            {
+                let port_ptr = params.port_ptr();
+                if ppc_memory_can_write_bytes(memory, port_ptr, 4) {
+                    let _ = memory.write_u32_be(port_ptr, PPC_MAIN_GWORLD);
+                }
             }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::InvalRect => {
-            let window = *current_gworld;
-            if window != PPC_MAIN_GWORLD {
-                if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
-                    ppc_invalidate_window_local_rect(memory, window, rect);
-                    ppc_enqueue_window_update_event(event_queue, window, tick_count, input);
+            if let Some(params) =
+                crate::window_manager::evaluate_inval_rect_parameters(cpu.gpr[3])
+            {
+                let window = *current_gworld;
+                if window != PPC_MAIN_GWORLD {
+                    if let Some(rect) = ppc_read_rect(memory, params.rect_ptr()) {
+                        ppc_invalidate_window_local_rect(memory, window, rect);
+                        ppc_enqueue_window_update_event(event_queue, window, tick_count, input);
+                    }
                 }
             }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::InvalRgn => {
-            let window = *current_gworld;
-            if window != PPC_MAIN_GWORLD {
-                if let Some(rect) = ppc_read_rgn_bbox(memory, cpu.gpr[3]) {
-                    ppc_invalidate_window_local_rect(memory, window, rect);
-                    ppc_enqueue_window_update_event(event_queue, window, tick_count, input);
+            if let Some(params) =
+                crate::window_manager::evaluate_inval_rgn_parameters(cpu.gpr[3])
+            {
+                let window = *current_gworld;
+                if window != PPC_MAIN_GWORLD {
+                    if let Some(rect) = ppc_read_rgn_bbox(memory, params.rgn_ptr()) {
+                        ppc_invalidate_window_local_rect(memory, window, rect);
+                        ppc_enqueue_window_update_event(event_queue, window, tick_count, input);
+                    }
                 }
             }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::ValidRect => {
-            let window = *current_gworld;
-            if window != PPC_MAIN_GWORLD {
-                if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
-                    ppc_validate_window_local_rect(memory, window, rect);
+            if let Some(params) =
+                crate::window_manager::evaluate_valid_rect_parameters(cpu.gpr[3])
+            {
+                let window = *current_gworld;
+                if window != PPC_MAIN_GWORLD {
+                    if let Some(rect) = ppc_read_rect(memory, params.rect_ptr()) {
+                        ppc_validate_window_local_rect(memory, window, rect);
+                    }
                 }
             }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::ValidRgn => {
-            let window = *current_gworld;
-            if window != PPC_MAIN_GWORLD {
-                if let Some(rect) = ppc_read_rgn_bbox(memory, cpu.gpr[3]) {
-                    ppc_validate_window_local_rect(memory, window, rect);
+            if let Some(params) =
+                crate::window_manager::evaluate_valid_rgn_parameters(cpu.gpr[3])
+            {
+                let window = *current_gworld;
+                if window != PPC_MAIN_GWORLD {
+                    if let Some(rect) = ppc_read_rgn_bbox(memory, params.rgn_ptr()) {
+                        ppc_validate_window_local_rect(memory, window, rect);
+                    }
                 }
             }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::BeginUpdate => {
-            let window = cpu.gpr[3];
-            if window != 0 && gworlds.iter().any(|record| record.port == window) {
-                *current_gworld = window;
-                *current_gdevice = ppc_gworld_device(gworlds, window).unwrap_or(*current_gdevice);
+            if let Some(params) =
+                crate::window_manager::evaluate_begin_update_parameters(cpu.gpr[3])
+            {
+                let window = params.window_ptr();
+                if gworlds.iter().any(|record| record.port == window) {
+                    *current_gworld = window;
+                    *current_gdevice =
+                        ppc_gworld_device(gworlds, window).unwrap_or(*current_gdevice);
+                }
             }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::EndUpdate => {
-            let window = cpu.gpr[3];
-            if window != 0 {
+            if let Some(params) =
+                crate::window_manager::evaluate_end_update_parameters(cpu.gpr[3])
+            {
+                let window = params.window_ptr();
                 let update_rgn = memory
                     .read_u32_be(window.wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET))
                     .unwrap_or(0);
@@ -958,7 +993,11 @@ pub(super) fn dispatch_window_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::DrawGrowIcon => {
-            ppc_draw_grow_icon(memory, gworlds, window_list, cpu.gpr[3]);
+            if let Some(params) =
+                crate::window_manager::evaluate_draw_grow_icon_parameters(cpu.gpr[3])
+            {
+                ppc_draw_grow_icon(memory, gworlds, window_list, params.window_ptr());
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::FindWindow => {
@@ -1027,8 +1066,10 @@ pub(super) fn dispatch_window_import(
             Some(PpcImportAction::Return(variant as u16 as u32))
         }
         PpcImportDispatcherTarget::ClipAbove => {
-            let start_window = cpu.gpr[3];
-            if start_window != 0 {
+            if let Some(params) =
+                crate::window_manager::evaluate_clip_above_parameters(cpu.gpr[3])
+            {
+                let start_window = params.window_ptr();
                 let target_port = if *current_gworld != 0 {
                     *current_gworld
                 } else {
