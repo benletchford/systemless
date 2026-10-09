@@ -93,3 +93,30 @@ archive before Systemless hosting.
 | [myst](https://classicmacdemos.com/download/myst/) | 30373828 | `082ba9257fe93e1e5229e3a0688229d97c86653a75127634d79def0366588110` | Myst Preview has 47 CODE resources and accompanying preview media. No standalone licence or affirmative distribution grant found in inspected contents; it is not the full original game. |
 | [day-of-the-tentacle](https://classicmacdemos.com/download/day-of-the-tentacle/) | 1640963 | `cb5719f0b4b8a5f96806e9359a6fc6f266eb134ca871de0bf92860b7437e6394` | Bundled README identifies version 1.0 (16 October 1995) as a non-interactive demonstration. PowerPC PEF slice and two CODE resources are present; no whole-archive grant found. Do not claim interactive gameplay. |
 | [afterlife](https://classicmacdemos.com/download/afterlife/) | 16091905 | `84e5934a9b1121f335df8df8102cd75e14f8ca5f9141de2d6364630b1cb46657` | Separate Afterlife Demo (68040) and Afterlife Demo (PowerPC) applications; the latter has a PPC PEF slice. Bundled README specifies both architectures but supplies no affirmative archive grant. |
+
+## Thirteen remaining public demo receipts
+
+These intact packages were downloaded and extracted for research. Each exposes
+a PPC PEF application; that does not validate gameplay or exclude other slices.
+The findings below concern inspected documents, not an exhaustive legal clearance.
+None is approved for hosting or enablement.
+
+| Source | Bytes | SHA-256 | Scoped findings |
+| --- | ---: | --- | --- |
+| [aliens-versus-predator](https://classicmacdemos.com/download/aliens-versus-predator/) | 62318221 | `324b54c18a90946405558d69b42748290adc2e874308263fa8fde47b0d39c7fb` | Main game exposes a PPC PEF slice. GameRanger is also bundled; the game README supplies no affirmative complete-package grant. |
+| [bugdom](https://classicmacdemos.com/download/bugdom/) | 5420336 | `9fabbaa5196414bdd84fdb50f2ddd7ba1d41539e7b74d2eb41cbeb4365dd5fea` | PPC PEF demo application; both bundled READMEs inspected without an affirmative archive distribution grant. |
+| [caesar-iii](https://classicmacdemos.com/download/caesar-iii/) | 16322298 | `86b450d46db30b922663efd48dc953edbd6959d3287849ed5fe5164c93421c3b` | PPC PEF application. Bundled Read Me includes an EULA requiring written consent for reproduction and transfer of copies. |
+| [combat-mission-beyond-overlord](https://classicmacdemos.com/download/combat-mission-beyond-overlord/) | 29834005 | `d15675c1f9b0ed6a61c5b80b4f9135926ec973adaa2bb5b0131a477de3022bfc` | PPC PEF application; exact bundled archive permission remains unestablished. Linked demo documentation does not itself clear hosting. |
+| [cro-mag-rally](https://classicmacdemos.com/download/cro-mag-rally/) | 41903184 | `05e79d0048b15326f979c4b3662f2b83bcecf555bb78b7427984b692d6c19393` | PPC PEF demo application. Bundled OpenGL 1.2.1 Software Redistribution notice expressly prohibits distribution of those Apple files; permission must cover the intact package. |
+| [deus-ex](https://classicmacdemos.com/download/deus-ex/) | 134619323 | `c4489b10cf0e9a8938ba6c4e00123cb0e3470793fb30a4b67b7f804ab4f4eeb9` | PPC PEF game and Relauncher applications. Both bundled HTML READMEs inspected without an affirmative complete-archive grant. |
+| [heroes-of-might-and-magic-iii](https://classicmacdemos.com/download/heroes-of-might-and-magic-iii/) | 110469948 | `3e5f77588f00ca681717aeaed8060d1e400a1774fb6c9787232209d64c007680` | PPC PEF application; bundled README includes copyright notices but no affirmative archive grant. |
+| [oni](https://classicmacdemos.com/download/oni/) | 79260591 | `cdce9923d9923157c82f99751514d1ddc15dfc347811cd71f15c6045bf595314` | PPC PEF application plus bundled CarbonLib, InputSprocket, and Bink libraries. Both READMEs inspected without a complete-package grant. |
+| [otto-matic](https://classicmacdemos.com/download/otto-matic/) | 24859488 | `8a50b4cd61c777f1a2e57fe65475eafb4cffb54be33e1cc72537aaf6539d97d9` | PPC PEF demo application; original manual reviewed without a complete-archive redistribution grant. Remaining bundled terms need inspection. |
+| [sid-meiers-alpha-centauri](https://classicmacdemos.com/download/sid-meiers-alpha-centauri/) | 18267807 | `2ab4f1de7291d3704b08d7b12dd659ef3b4fbab4b10914f31b02c2ccec931191` | PPC PEF demo application. README mentions a demo distribution, but supplies no affirmative permission to host it. |
+| [tony-hawks-pro-skater-2](https://classicmacdemos.com/download/tony-hawks-pro-skater-2/) | 23248987 | `3576065f578a4ec66315d56e3a5deeb37b8a14c578c63efc289aee55be93ea24` | Separate OS9 and OSX demo applications expose PPC PEF slices. Bundled README inspected without a complete-archive grant; validate the intended classic route separately. |
+| [total-annihilation](https://classicmacdemos.com/download/total-annihilation/) | 26623305 | `9e56e224f4128fa024e37dff9171d95686bf4d898f7ebd85e690eaebdfbc37ef` | PPC PEF TA Demo application; no standalone original README found in the extracted package. Exact-package permission remains unestablished. |
+| [worms-blast](https://classicmacdemos.com/download/worms-blast/) | 33241466 | `f317272ccd3fd17d5ba808c29da9d499317f0477ebf7d358c7e5fa59214b7b3b` | PPC PEF application; bundled HTML README inspected without an affirmative complete-archive distribution grant. |
+
+Cro-Mag Rally’s bundled Apple notice is 445 bytes with SHA-256
+`c42dc88684a50f50d81e90dc917e7401b2eaa879fc6f331496758ab285431310`. Permission for the game alone would not
+clear that bundled component for unchanged-package hosting.
