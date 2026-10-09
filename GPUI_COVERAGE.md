@@ -3632,3 +3632,29 @@ The final GPUI component regression passes (5.77s), and the production binary
 and no-default-features checks pass (19.07s and 13.04s respectively). The new
 run component is not yet wired into styled-field ownership, so these results
 must not be interpreted as a rendered styled-field scene qualification.
+
+Classic 68k TextEdit now has a shared per-character glyph coverage function
+extracted from `draw_char`. Native QuickDraw continues to own erasure, clipping,
+palette resolution, transfer modes and pen/spacing updates. The shared function
+retains integer strike scaling, intrinsic/synthetic italic, bold, descender
+breaks in per-character underlines, and outline/shadow interactions. Continuous
+DrawString underline bounds/breaks are also passed through; this state is not
+invented for TextEdit. The pure `classic_textedit_glyph_ink` recipe refuses
+unrepresentable raster bounds, preserving the option to retain guest pixels.
+
+`ClassicLine::classic_textedit_run` assembles this ink without replacing the
+caller's guest insertion positions. It is separate from the existing line-wide
+label recipe and from PPC ratio/run synthesis, and currently requires zero
+CharExtra/SpaceExtra with srcOr. A real guest-memory comparison passes all 5,120
+cases across monochrome/8bpp ports, Geneva/Monaco, 9/10/12/14/24 points, all 128
+low-seven-bit face combinations, descender `g` and Mac Roman byte 0x8e (4.12s).
+The GPUI run/span regression passes 640 size/style cases with descenders,
+interior space and the high byte (1.20s). These are guest implementation
+comparisons, not new Macintosh-oracle or rendered scene qualification.
+Styled TextEdit ownership remains guarded pending resolved palette/spacing,
+selection/caret integration, and live/headless CPU/scale/state verification.
+The final shared-coverage tests pass together (4.46s), including explicit
+continuous-underline breaks. The classic styled TEDelete/TEInsert regression
+also passes (0.02s). Production and no-default-features checks pass (14.83s and
+6.90s). The new GPUI run constructors remain unwired pending the field's resolved
+paint data and interaction/scene qualification; no release readiness is claimed.

@@ -26999,3 +26999,60 @@ fn copy_bits_converts_between_direct_color_depths() {
             assert_eq!(bus.read_byte(pixels + 1), expected);
         }
     }
+
+    #[test]
+    fn shared_classic_textedit_ink_matches_mono_and_colour_guest_glyphs() {
+        use std::collections::BTreeSet;
+        for depth in [1, 8] {
+            let (mut d, mut cpu, mut bus) = setup();
+            let row_bytes = if depth == 1 { 12 } else { 96 };
+            let base = bus.alloc(row_bytes * 80);
+            let port = bus.alloc(96);
+            if depth == 8 {
+                let ctab = make_test_ctab_handle(&mut bus, &TrapDispatcher::standard_mac_8bpp_clut(), 0x1234, 0);
+                let handle = bus.alloc(4);
+                let pixmap = bus.alloc(50);
+                bus.write_long(handle, pixmap);
+                write_pixmap_8(&mut bus, pixmap, base, 96, 80, ctab);
+                bus.write_long(port + 2, handle);
+                bus.write_word(port + 6, 0xC000);
+            } else {
+                bus.write_long(port + 2, base);
+                bus.write_word(port + 6, row_bytes as u16);
+                write_rect(&mut bus, port + 8, 0, 0, 80, 96);
+            }
+            write_rect(&mut bus, port + 16, 0, 0, 80, 96);
+            let vis = make_complex_rgn(&mut bus, (0, 0, 80, 96), &[]);
+            bus.write_long(port + 24, vis);
+            bus.write_long(port + 28, vis);
+            d.set_current_port_state(&mut bus, &mut cpu, port, None);
+            d.fg_color = (0, 0, 0);
+            d.tx_mode = 1;
+            let background = vec![if depth == 1 { 0 } else { 5 }; (row_bytes * 80) as usize];
+            for font in [3, 4] {
+                for size in [9, 10, 12, 14, 24] {
+                    for face in 0..128 {
+                        for byte in [b'g', 0x8e] {
+                            bus.write_bytes(base, &background);
+                            d.tx_font = font;
+                            d.tx_size = size;
+                            d.tx_face = i16::from(face);
+                            d.pn_loc = (40, 30);
+                            d.draw_char(&mut cpu, &mut bus, byte as char);
+                            let (advance, pixels) = crate::quickdraw::text::classic_textedit_glyph_ink(font, size, byte, face).unwrap();
+                            assert_eq!(i32::from(d.pn_loc.1) - 30, advance);
+                            let expected: BTreeSet<_> = pixels.into_iter().map(|(x, y)| (x + 30, y + 40)).collect();
+                            assert!(expected.iter().all(|&(x, y)| (0..96).contains(&x) && (0..80).contains(&y)));
+                            let mut painted = BTreeSet::new();
+                            for y in 0..80i16 { for x in 0..96i16 {
+                                let value = bus.read_byte(base + y as u32 * row_bytes + if depth == 1 { x as u32 / 8 } else { x as u32 });
+                                let set = if depth == 1 { value & (0x80 >> (x % 8)) != 0 } else { value != 5 };
+                                if set { painted.insert((x, y)); }
+                            } }
+                            assert_eq!(painted, expected, "depth {depth}, font {font}, size {size}, face {face}, byte {byte}");
+                        }
+                    }
+                }
+            }
+        }
+    }

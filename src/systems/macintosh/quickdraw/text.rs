@@ -792,3 +792,356 @@ pub fn ppc_styled_run_ink(font: i16, size: i16, face_bits: u8, bytes: &[u8])
     (advance.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
         pixels.into_iter().collect())
 }
+
+/// Classic 68k glyph coverage used by draw_char, including per-character or
+/// caller-supplied continuous underline breaks. Keep original guest coverage;
+/// palette, transfer mode, clipping, background erasure and pen updates belong
+/// to the caller. Coordinates use the guest's (vertical, horizontal) pen.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+pub(crate) fn classic_glyph_coverage(
+    glyph: &Glyph, data: &[u8], tx_font: i16, tx_size: i16,
+    metrics: &FontMetrics, fs: i16, use_precaptured_italic: bool, face: u8,
+    pen: (i16, i16),
+    underline_info: Option<(i16, i16, &[std::collections::HashSet<i16>])>,
+    y: i16, x: i16,
+) -> u8 {
+    use crate::quickdraw::fonts::style::{get_italic_slant,
+        get_italic_underline_extend_left, get_italic_underline_extend_right, get_underline_offset};
+    let (v, h) = pen;
+    let is_bold = face & 1 != 0;
+    let is_italic = face & 2 != 0 && !use_precaptured_italic;
+    let is_underline = face & 4 != 0;
+    let is_outline = face & 8 != 0;
+    let is_shadow = face & 16 != 0;
+    let bold_extra: i16 = if is_bold { 1 } else { 0 };
+    let scaled_ascent = metrics.ascent * fs;
+    let top = v - scaled_ascent;
+    let left = h + glyph.origin_x as i16 * fs;
+    let ul_thick = get_underline_thickness(tx_font, tx_size);
+let check_pixel = |r: i16, c: i16| -> u8 {
+    // Bounds check in SCALED coordinates first (avoids Rust's
+    // truncate-toward-zero division giving wrong results for negatives)
+    if c < 0 || c >= glyph.width as i16 * fs {
+        return 0;
+    }
+
+    // Map screen-relative row to glyph data row
+    // r is relative to font top (v - scaled_ascent)
+    // content_row_scaled = r - scaled_ascent - origin_y * fs
+    let content_row_scaled = r - scaled_ascent - glyph.origin_y as i16 * fs;
+    if content_row_scaled < 0 || content_row_scaled >= glyph.height as i16 * fs {
+        return 0;
+    }
+
+    // Now safe to divide (both values are non-negative)
+    let gc = c / fs;
+    let content_row = content_row_scaled / fs;
+
+    // Row-major 8-bit coverage (one byte per pixel).
+    let b_idx =
+        glyph.data_offset + (content_row as usize) * glyph.width as usize + gc as usize;
+    if b_idx >= data.len() {
+        return 0;
+    }
+    data[b_idx]
+};
+
+    if !(is_bold || is_italic || is_underline || is_outline || is_shadow) {
+        return check_pixel(y - top, x - left);
+    }
+    // All helper closures below return the per-pixel coverage
+    // byte (0=off, 255=fully on, 1..254=partial). Bold smear
+    // and underline clamp to full alpha where they set a pixel
+    // (they're auxiliary strokes, not antialiased).
+
+    // 1. Raw glyph with Italic slant
+    let get_italic_pixel = |curr_y: i16, curr_x: i16| -> u8 {
+        let slant = if is_italic {
+            get_italic_slant(tx_font, tx_size, &metrics, v, curr_y) * fs
+        } else {
+            0
+        };
+        let c = curr_x - left - slant;
+        let r = curr_y - top;
+        check_pixel(r, c)
+    };
+
+    // 2. Add Bold smear: take the max of this column and the
+    //    one to its left so antialiased stem edges stay
+    //    crisp at their new rightward boundary.
+    let get_bold_pixel = |curr_y: i16, curr_x: i16| -> u8 {
+        let p = get_italic_pixel(curr_y, curr_x);
+        if is_bold {
+            p.max(get_italic_pixel(curr_y, curr_x - 1))
+        } else {
+            p
+        }
+    };
+
+    // 3. Add Underline (uses global descender info if available).
+    //    The underline ribbon is a solid, non-antialiased
+    //    stroke: when the pixel lies inside the ribbon it
+    //    gets clamped to full coverage (255) regardless of
+    //    the antialiased glyph value beneath.
+    let get_underlined_pixel = |curr_y: i16, curr_x: i16| -> u8 {
+        let mut p = get_bold_pixel(curr_y, curr_x);
+
+        if is_underline && curr_y > v && curr_y < v + 1 + ul_thick {
+            let italic_extend = if is_italic {
+                get_italic_underline_extend_left(
+                    tx_font,
+                    tx_size,
+                    is_bold,
+                    use_precaptured_italic,
+                )
+            } else {
+                0
+            };
+
+            let underline_offset =
+                get_underline_offset(tx_font, tx_size, glyph, is_shadow);
+
+            let italic_extend_right = if is_italic {
+                get_italic_underline_extend_right(tx_font, tx_size)
+            } else {
+                0
+            };
+
+            // Check if this x is within the underline range
+            let (underline_start, underline_end, in_range) =
+                if let Some((start, end, ref breaks)) = underline_info {
+                    // Use global underline info from draw_string
+                    let effective_start = start - italic_extend + underline_offset;
+                    let effective_end =
+                        end + underline_offset + italic_extend_right;
+                    let in_range =
+                        curr_x >= effective_start && curr_x < effective_end;
+
+                    let row_idx = (curr_y - (v + 1)) as usize;
+                    let has_break = if row_idx < breaks.len() {
+                        breaks[row_idx].contains(&curr_x)
+                    } else {
+                        false
+                    };
+
+                    if in_range && !has_break {
+                        p = 255;
+                    }
+                    (effective_start, effective_end, in_range)
+                } else {
+                    // Fallback: per-character underline
+                    let start = h;
+                    let end = h + glyph.advance as i16 + bold_extra;
+                    let effective_start = start - italic_extend + underline_offset;
+                    let effective_end =
+                        end + underline_offset + italic_extend_right;
+                    let in_range =
+                        curr_x >= effective_start && curr_x < effective_end;
+                    if in_range {
+                        // Check this character's descenders only
+                        // Note: Fallback doesn't support complex per-row/smart breaks yet,
+                        // but Geneva 24 shouldn't be using fallback heavily in contiguous strings.
+                        // If it does, we assume simplified break logic for now.
+                        let mut has_descender = false;
+                        for dy_desc in 0..=metrics.descent {
+                            // We use check_bold_pixel here since we don't have check_effective_pixel in scope
+                            // But wait, get_bold_pixel IS defined here.
+                            if get_bold_pixel(v + dy_desc, curr_x - 1) >= 128
+                                || get_bold_pixel(v + dy_desc, curr_x) >= 128
+                                || get_bold_pixel(v + dy_desc, curr_x + 1) >= 128
+                            {
+                                has_descender = true;
+                                break;
+                            }
+                        }
+                        if !has_descender {
+                            p = 255;
+                        }
+                    }
+                    (effective_start, end, in_range)
+                };
+            let _ = (underline_start, underline_end, in_range); // suppress warnings
+        }
+        p
+    };
+
+    let mut pixel = get_underlined_pixel(y, x);
+
+    if is_outline || is_shadow {
+        // Shadow offset for smear should match the advance_extra (always 2)
+        let shadow_offset = 2;
+
+        // For "Everything" style, tune horizontal smear to preserve gaps
+        // while keeping edge shadows intact.
+        let is_everything =
+            is_italic && is_bold && is_outline && is_shadow && is_underline;
+        let (underline_start, underline_end) = underline_info
+            .as_ref()
+            .map(|(start, end, _)| (*start, *end))
+            .unwrap_or((i16::MIN, i16::MAX));
+        let in_underline_range = x >= underline_start && x < underline_end;
+        let is_break = underline_info
+            .as_ref()
+            .map(|(_, _, breaks)| {
+                // For smear, assume checking breaks[0] or generic break?
+                // Smear logic uses 'is_break' for line 3 (v+2).
+                // v+2 corresponds to row_idx 1.
+                if breaks.len() > 1 {
+                    breaks[1].contains(&x)
+                } else if !breaks.is_empty() {
+                    breaks[0].contains(&x)
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false);
+
+        let smear_max = if is_outline && is_shadow {
+            3
+        } else if is_shadow {
+            shadow_offset
+        } else {
+            1
+        };
+        let dx_max = if is_everything {
+            if y == v {
+                if in_underline_range {
+                    1
+                } else {
+                    smear_max
+                }
+            } else if y == v + 1 {
+                if in_underline_range {
+                    1
+                } else {
+                    0
+                }
+            } else if y == v + 2 {
+                if is_break {
+                    0
+                } else {
+                    smear_max
+                }
+            } else {
+                smear_max
+            }
+        } else {
+            smear_max
+        };
+
+        let mut is_smeared = false;
+        if !(is_everything && y == v + 1 && !in_underline_range) {
+            // QuickDraw shadow algorithm (DrawText.a lines 837-901):
+            // 1. Smear buffer RIGHT (ROXR.L) and DOWN (OR with line above)
+            // 2. Draw smeared buffer at (-1, -1) offset
+            // 3. XOR with original at normal position
+            // The (-1,-1) offset means outline appears on ALL sides.
+            // The -1 in our loop accounts for this offset.
+            // Outline/shadow uses a binary smear test (>=128
+            // coverage counts as "set") — the halo stroke is
+            // not antialiased.
+            'smear: for dy in -1..=smear_max {
+                for dx in -1..=dx_max {
+                    if get_underlined_pixel(y - dy, x - dx) >= 128 {
+                        is_smeared = true;
+                        break 'smear;
+                    }
+                }
+            }
+        }
+
+        // Outline/shadow halo: full-coverage where smeared
+        // but the original glyph pixel is empty — producing
+        // the hollow/shifted silhouette effect.
+        pixel = if is_smeared && get_underlined_pixel(y, x) < 128 {
+            255
+        } else {
+            0
+        };
+    }
+
+    pixel
+}
+
+/// Classic 68k TextEdit's per-character binary ink at a zero pen baseline.
+/// This retains its integer strike scaling and descender-aware underline.
+/// Zero CharExtra/SpaceExtra and no DrawString continuous-underline state;
+/// palette, transfer mode, erasure, clipping and ownership stay with the caller.
+#[doc(hidden)]
+pub fn classic_textedit_glyph_ink(
+    font: i16, size: i16, byte: u8, face: u8,
+) -> Option<(i32, Vec<(i16, i16)>)> {
+    let (_, scale) = crate::quickdraw::fonts::get_font_face_scaled(font, size);
+    let style = QuickDrawTextStyle::from_bits(face);
+    let (hit, precaptured) = if style.italic() {
+        get_glyph_italic(font, size, byte as char).map(|hit| (Some(hit), true))
+            .unwrap_or_else(|| (get_glyph(font, size, byte as char), false))
+    } else { (get_glyph(font, size, byte as char), false) };
+    let Some((glyph, data)) = hit else {
+        return Some(((6 + style.advance_extra()) * i32::from(scale), Vec::new()));
+    };
+    let metrics = get_font_metrics(font, size);
+    let fs = i32::from(scale);
+    let ascent = i32::from(metrics.ascent) * fs;
+    let descent = i32::from(metrics.descent) * fs;
+    let left = i32::from(glyph.origin_x) * fs;
+    let visual_top = i32::from(glyph.origin_y) * fs;
+    let bottom = visual_top + i32::from(glyph.height) * fs;
+    let right = left + i32::from(glyph.width) * fs;
+    let synthetic = style.italic() && !precaptured;
+    let pad = if style.shadow() { 2 } else if style.outline() { 1 } else { 0 };
+    let italic_extend = if synthetic && style.underline() {
+        crate::quickdraw::fonts::style::get_italic_underline_extend_left(font, size, style.bold(), false)
+    } else { 0 };
+    let offset = if style.underline() {
+        crate::quickdraw::fonts::style::get_underline_offset(font, size, glyph, style.shadow())
+    } else { 0 };
+    let draw_left = (-pad - i32::from(italic_extend) + i32::from(offset)).min(left - pad);
+    let draw_right = (i32::from(glyph.advance) * fs + style.advance_extra() + pad + 2 + i32::from(offset))
+        .max(right + i32::from(style.bold()) + if synthetic { (ascent + descent) / 2 } else { 0 } + pad + 2);
+    let draw_top = (-ascent).min(visual_top) - pad;
+    let draw_bottom = if style.underline() && style.shadow() {
+        (bottom + pad + 1).max(descent + pad + 1).max(6)
+    } else if style.underline() {
+        (bottom + pad).max(1 + i32::from(get_underline_thickness(font, size)) + 1)
+    } else if style.shadow() { (bottom + pad + 1).max(descent + pad + 1) }
+    else { bottom + pad };
+    let (left, top, right, bottom) = if !(style.bold() || synthetic || style.underline() || style.outline() || style.shadow()) {
+        (left, visual_top, right, bottom)
+    } else { (draw_left, draw_top, draw_right, draw_bottom) };
+    let (left, top, right, bottom) = (i16::try_from(left).ok()?, i16::try_from(top).ok()?,
+        i16::try_from(right).ok()?, i16::try_from(bottom).ok()?);
+    // The coverage path itself uses the native i16 scaled metrics.
+    i16::try_from(ascent).ok()?;
+    i16::try_from(descent).ok()?;
+    let mut pixels = Vec::new();
+    for y in top..bottom { for x in left..right {
+        if classic_glyph_coverage(glyph, data, font, size, &metrics, scale, precaptured,
+            face, (0, 0), None, y, x) >= crate::quickdraw::fonts::MONO_COVERAGE_THRESHOLD {
+            pixels.push((x, y));
+        }
+    } }
+    Some((i32::from(glyph.advance) * fs + style.advance_extra(), pixels))
+}
+
+#[cfg(test)]
+mod classic_textedit_ink_tests {
+    use super::*;
+
+    #[test]
+    fn shared_classic_coverage_honors_continuous_underline_breaks() {
+        let (glyph, data) = get_glyph(3, 12, ' ').unwrap();
+        let metrics = get_font_metrics(3, 12);
+        let end = i16::from(glyph.advance);
+        assert!(end > 1);
+        let breaks = [std::collections::HashSet::from([1])];
+        for x in 0..end {
+            let coverage = classic_glyph_coverage(glyph, data, 3, 12, &metrics,
+                1, false, 4, (0, 0), Some((0, end, &breaks)), 1, x);
+            assert_eq!(coverage, if x == 1 { 0 } else { 255 });
+        }
+        assert_eq!(classic_glyph_coverage(glyph, data, 3, 12, &metrics,
+            1, false, 4, (0, 0), Some((0, end, &breaks)), 1, end), 0);
+    }
+}
