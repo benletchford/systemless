@@ -100,7 +100,9 @@ impl CanvasFrame {
         if let Self::Offscreen(frame) = self {
             frame.cursor_css.clear();
             frame.cursor_css.push_str(css);
-            if frame.fallback.is_none() { return; }
+            if frame.fallback.is_none() {
+                return;
+            }
         }
         if canvas.style().get_property_value("cursor").ok().as_deref() != Some(css) {
             let _ = canvas.style().set_property("cursor", css);
@@ -144,7 +146,11 @@ impl CanvasFrame {
             .unwrap_or_default();
         if self.supports_packet(&kind) {
             if let Self::Offscreen(frame) = self {
-                let _ = Reflect::set(packet, &JsValue::from_str("cursorCss"), &JsValue::from_str(&frame.cursor_css));
+                let _ = Reflect::set(
+                    packet,
+                    &JsValue::from_str("cursorCss"),
+                    &JsValue::from_str(&frame.cursor_css),
+                );
                 crate::renderer_bridge::paint_packet(&frame.handle, packet);
             }
         } else if let Self::Offscreen(frame) = self {
@@ -257,7 +263,9 @@ impl OffscreenFrame {
             ) {
                 if let Ok(pixels) = pixels.dyn_into::<Uint8Array>() {
                     self.cursor_css = Reflect::get(&recovery, &JsValue::from_str("cursorCss"))
-                        .ok().and_then(|v| v.as_string()).unwrap_or_else(|| "none".into());
+                        .ok()
+                        .and_then(|v| v.as_string())
+                        .unwrap_or_else(|| "none".into());
                     self.paint_js(width as u32, height as u32, &pixels);
                 }
             }
@@ -275,7 +283,13 @@ impl OffscreenFrame {
             self.needs_snapshot = false;
             self.painted = true;
         } else {
-            crate::renderer_bridge::paint_renderer(&self.handle, width, height, pixels, &self.cursor_css);
+            crate::renderer_bridge::paint_renderer(
+                &self.handle,
+                width,
+                height,
+                pixels,
+                &self.cursor_css,
+            );
         }
     }
 

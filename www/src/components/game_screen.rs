@@ -2684,11 +2684,20 @@ async fn boot_catalogue_worker(
                 replace_worker_visual_frame(&mut state, WorkerVisualFrame::Direct);
             }
         }
-        if ["frame", "gpuFrame", "indexedFrame", "compactFrame", "directFrame"].iter().any(|key| {
-            Reflect::get(&data, &JsValue::from_str(key)).is_ok_and(|v| !v.is_undefined())
-        }) {
+        if [
+            "frame",
+            "gpuFrame",
+            "indexedFrame",
+            "compactFrame",
+            "directFrame",
+        ]
+        .iter()
+        .any(|key| Reflect::get(&data, &JsValue::from_str(key)).is_ok_and(|v| !v.is_undefined()))
+        {
             state.cursor_css = Reflect::get(&data, &JsValue::from_str("cursorCss"))
-                .ok().and_then(|v| v.as_string()).unwrap_or_else(|| "none".into());
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_else(|| "none".into());
         }
         let running = state.running;
         let next = state.requests.complete(running);
@@ -2817,7 +2826,10 @@ fn start_worker_render_loop(
             let mut state = runtime.state.borrow_mut();
             take_worker_visual_frame(&mut state)
         };
-        if visual_frame.as_ref().is_some_and(|frame| !matches!(frame, WorkerVisualFrame::Direct)) {
+        if visual_frame
+            .as_ref()
+            .is_some_and(|frame| !matches!(frame, WorkerVisualFrame::Direct))
+        {
             renderer.set_cursor_css(&canvas, &runtime.state.borrow().cursor_css);
         }
         match visual_frame {
@@ -2925,7 +2937,11 @@ fn start_worker_render_loop(
             set_js_property(&message, "directRender", &JsValue::from_bool(direct_render));
             let scale = canvas_backing_scale(&canvas);
             let logical = (canvas.width() / scale, canvas.height() / scale);
-            set_js_property(&message, "cursorScale", &JsValue::from_f64(canvas_cursor_scale(&canvas, logical)));
+            set_js_property(
+                &message,
+                "cursorScale",
+                &JsValue::from_f64(canvas_cursor_scale(&canvas, logical)),
+            );
             set_js_property(
                 &message,
                 "outputScale",
@@ -4469,11 +4485,21 @@ fn canvas_cursor_scale(canvas: &HtmlCanvasElement, logical: (u32, u32)) -> f64 {
         .and_then(|window| window.match_media("(any-pointer: fine)").ok().flatten())
         .is_some_and(|query| query.matches());
     let navigator = web_sys::window().map(|window| window.navigator());
-    let ua = navigator.as_ref().and_then(|n| n.user_agent().ok()).unwrap_or_default();
+    let ua = navigator
+        .as_ref()
+        .and_then(|n| n.user_agent().ok())
+        .unwrap_or_default();
     let touch_points = navigator.as_ref().map_or(0, |n| n.max_touch_points());
     let pointer = canvas.get_attribute("data-cursor-pointer");
-    if !crate::host_cursor::native_pointer_supported(&ua, touch_points, fine_pointer, pointer.as_deref())
-        || logical.0 == 0 { return 0.0; }
+    if !crate::host_cursor::native_pointer_supported(
+        &ua,
+        touch_points,
+        fine_pointer,
+        pointer.as_deref(),
+    ) || logical.0 == 0
+    {
+        return 0.0;
+    }
     canvas.get_bounding_client_rect().width() / logical.0 as f64
 }
 

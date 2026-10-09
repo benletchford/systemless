@@ -699,8 +699,12 @@ impl Machine {
             self.runner.prepare_text_presentation();
             self.runner.composite_frame();
         }
-        let cursor_changed = self.host_cursor.update(self.runner.dispatcher().cursor(), self.cursor_scale);
-        if cursor_changed { self.rendered_epoch = None; }
+        let cursor_changed = self
+            .host_cursor
+            .update(self.runner.dispatcher().cursor(), self.cursor_scale);
+        if cursor_changed {
+            self.rendered_epoch = None;
+        }
         let visual_work = cursor_changed || self.has_unpainted_visual_change(candidate_visual_work);
 
         // Drain whatever was mixed into the runner's audio buffer. Keep this
@@ -740,7 +744,8 @@ impl Machine {
             || self.rendered_screen_mode != Some(dispatcher.screen_mode)
             || self.rendered_scale != self.output_scale
             || self.rendered_outline != self.runner.bus().has_visible_outline_detail()
-            || (self.software_cursor().is_some() && self.rendered_mouse_pos != dispatcher.mouse_position())
+            || (self.software_cursor().is_some()
+                && self.rendered_mouse_pos != dispatcher.mouse_position())
             || self.rendered_cursor.as_ref() != self.software_cursor()
             || !self.frame_palette_valid
             || self.frame_palette_clut != *dispatcher.device_clut
@@ -902,7 +907,10 @@ impl Machine {
     }
 
     fn software_cursor(&self) -> Option<&display::CursorImage> {
-        self.runner.dispatcher().cursor().filter(|_| self.host_cursor.software)
+        self.runner
+            .dispatcher()
+            .cursor()
+            .filter(|_| self.host_cursor.software)
     }
 
     pub fn render_indexed(&mut self) -> Option<&crate::indexed_frame::IndexedFrame> {
