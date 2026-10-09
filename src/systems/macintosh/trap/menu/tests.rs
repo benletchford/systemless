@@ -4163,7 +4163,7 @@ fn long_menu_mutations_preserve_trailing_item_and_refresh_guest_edits() {
 
     let snapshot = disp.guest_menu_snapshot(&bus);
     assert_eq!(snapshot.menus[0].items[39].text, "Last");
-    assert_eq!(snapshot.menus[0].items[39].key_equivalent, Some('q'));
+    assert_eq!(snapshot.menus[0].items[39].key_equivalent, Some('Q'));
     assert_eq!(
         menu_key_result(&mut disp, &mut cpu, &mut bus, b'Q'),
         ((menu_id as u32) << 16) | 40
@@ -11482,7 +11482,7 @@ fn guest_menu_snapshot_exposes_only_the_inserted_menu_list() {
     assert_eq!(snapshot.menus[0].title, "Gam…");
     assert_eq!(snapshot.menus[0].items[0].number, 1);
     assert_eq!(snapshot.menus[0].items[0].text, "New Level…");
-    assert_eq!(snapshot.menus[0].items[0].key_equivalent, Some('n'));
+    assert_eq!(snapshot.menus[0].items[0].key_equivalent, Some('N'));
     assert!(snapshot.menus[0].items[0].checked);
     assert_eq!(snapshot.menus[1].title, "Systemless");
 

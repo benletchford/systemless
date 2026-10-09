@@ -2927,3 +2927,19 @@ losslessly with source/fixture/file/pixel hashes in `menu-file-column-review.jso
 The reproduction chooses menu ID 131. The prior build and keyboard-selection
 regression cover this unchanged source. Exact guest geometry, command display
 case, arbitrary marks/styled rows and scale/state/native fidelity remain open.
+
+### Menu command character fidelity
+
+The shared menu projection preserves the guest command character's case and
+Mac Roman identity. GPUI menu rows and their accessibility labels no longer
+uppercase the projected character. Shortcut matching continues through the
+existing guest Menu Manager and event paths; presentation does not normalize
+the command. The exhaustive projection regression covers all 256 bytes in
+regular and hierarchical menu partitions (0.01 seconds). The GPUI text
+regression compares the ink and advance of every displayable command byte
+against the raw guest strike (0.01 seconds). Live guest-memory mutation and
+inserted-menu snapshot regressions pass (0.02 seconds each), and GPUI live
+keyboard selection remains intact (0.20 seconds). These checks establish
+shared metadata and glyph fidelity, not native font-oracle parity or composed
+visual qualification of unusual command characters. Exact menu geometry,
+scales, states and remaining system text surfaces still require qualification.

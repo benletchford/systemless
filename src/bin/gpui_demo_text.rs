@@ -91,6 +91,17 @@ mod tests {
     }
 
     #[test]
+    fn menu_command_display_preserves_every_mac_roman_glyph_and_advance() {
+        for byte in 0x21..=255 {
+            let decoded = systemless::systems::macintosh::mac_roman::decode_mac_roman(&[byte]);
+            let raw = ClassicLine::plain(&[byte], 0, 12);
+            let displayed = ClassicLine::unicode(&decoded, 0, 12);
+            assert_eq!(displayed.positions, raw.positions, "command {byte:#x}");
+            assert_eq!(displayed.ink, raw.ink, "command {byte:#x}");
+        }
+    }
+
+    #[test]
     fn unicode_labels_resolve_guest_mac_roman_and_symbol_glyphs() {
         let bytes = b"A\x8e\xa3\xb9\xa9";
         let text = systemless::systems::macintosh::mac_roman::decode_mac_roman(bytes);
