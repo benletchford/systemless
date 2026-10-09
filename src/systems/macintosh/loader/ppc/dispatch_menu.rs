@@ -132,6 +132,10 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::NewMenu => {
+            let params = crate::menu_manager::evaluate_new_menu_parameters(
+                cpu.gpr[3] as u16 as i16,
+                cpu.gpr[4],
+            );
             let menu_proc = ppc_menu_definition_handle(
                 0,
                 process_memory_manager,
@@ -158,8 +162,8 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                     last_mem_error,
                     handles,
                     menu_proc,
-                    cpu.gpr[3] as u16 as i16,
-                    cpu.gpr[4],
+                    params.menu_id(),
+                    params.title_ptr(),
                 )
             };
             *last_mem_error = if menu == 0 {
@@ -171,30 +175,39 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             Some(PpcImportAction::Return(menu))
         }
         PpcImportDispatcherTarget::DisposeMenu => {
-            let menu_handle = cpu.gpr[3];
-            for resource in vfs_resources
-                .iter_mut()
-                .filter(|resource| resource.handle == menu_handle)
+            if let Some(params) =
+                crate::menu_manager::evaluate_dispose_menu_parameters(cpu.gpr[3])
             {
-                resource.handle = 0;
+                let menu_handle = params.menu_handle();
+                for resource in vfs_resources
+                    .iter_mut()
+                    .filter(|resource| resource.handle == menu_handle)
+                {
+                    resource.handle = 0;
+                }
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                let _ = allocator.dispose_handle(
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    menu_handle,
+                );
+                toolbox_startup.menu_item_commands.forget(menu_handle);
             }
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let _ = allocator.dispose_handle(
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                menu_handle,
-            );
-            toolbox_startup.menu_item_commands.forget(menu_handle);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetMenu => {
+            let Some(params) =
+                crate::menu_manager::evaluate_get_menu_parameters(cpu.gpr[3] as u16 as i16)
+            else {
+                return Some(PpcImportAction::Return(0));
+            };
             let menu_handle = ppc_load_menu_resource(
-                cpu.gpr[3] as u16 as i16,
+                params.menu_id(),
                 process_memory_manager,
                 memory,
                 heap_cursor,
@@ -321,16 +334,22 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             *last_mem_error = result;
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::CalcMenuSize => Some(ppc_dispatch_calc_menu_size(
-            cpu,
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            heap_limit,
-            vfs_resources,
-            current_resource_refnum,
-            toolbox_startup,
-        )),
+        PpcImportDispatcherTarget::CalcMenuSize => {
+            if crate::menu_manager::evaluate_calc_menu_size_parameters(cpu.gpr[3]).is_some() {
+                Some(ppc_dispatch_calc_menu_size(
+                    cpu,
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    vfs_resources,
+                    current_resource_refnum,
+                    toolbox_startup,
+                ))
+            } else {
+                Some(PpcImportAction::ReturnPreserve)
+            }
+        }
         PpcImportDispatcherTarget::PopUpMenuSelect => ppc_step_menu_tracking(
             cpu,
             process_memory_manager,
