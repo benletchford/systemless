@@ -3318,6 +3318,207 @@ pub fn evaluate_close_window_parameters(window_ptr: u32) -> Option<CloseWindowPa
     Some(CloseWindowParameters { window_ptr })
 }
 
+/// Architecture-neutral parameter validation for SizeWindow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SizeWindowParameters {
+    window_ptr: u32,
+    width: i16,
+    height: i16,
+    update: bool,
+}
+
+#[allow(dead_code)]
+impl SizeWindowParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn width(&self) -> i16 {
+        self.width
+    }
+
+    pub const fn height(&self) -> i16 {
+        self.height
+    }
+
+    pub const fn update(&self) -> bool {
+        self.update
+    }
+
+    pub const fn clamped_dimensions(&self) -> (u32, u32) {
+        let width = self.width as u16 as u32;
+        let height = self.height as u16 as u32;
+        (
+            if width == 0 { 1 } else { width },
+            if height == 0 { 1 } else { height },
+        )
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_size_window_parameters(
+    window_ptr: u32,
+    width: i16,
+    height: i16,
+    update: bool,
+) -> Option<SizeWindowParameters> {
+    if window_ptr == 0 {
+        return None;
+    }
+    Some(SizeWindowParameters {
+        window_ptr,
+        width,
+        height,
+        update,
+    })
+}
+
+/// Architecture-neutral parameter validation for MoveWindow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MoveWindowParameters {
+    window_ptr: u32,
+    h_global: i16,
+    v_global: i16,
+    bring_to_front: bool,
+}
+
+#[allow(dead_code)]
+impl MoveWindowParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn h_global(&self) -> i16 {
+        self.h_global
+    }
+
+    pub const fn v_global(&self) -> i16 {
+        self.v_global
+    }
+
+    pub const fn bring_to_front(&self) -> bool {
+        self.bring_to_front
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_move_window_parameters(
+    window_ptr: u32,
+    h_global: i16,
+    v_global: i16,
+    bring_to_front: bool,
+) -> Option<MoveWindowParameters> {
+    if window_ptr == 0 {
+        return None;
+    }
+    Some(MoveWindowParameters {
+        window_ptr,
+        h_global,
+        v_global,
+        bring_to_front,
+    })
+}
+
+/// Architecture-neutral parameter validation for FindWindow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FindWindowParameters {
+    point: (i16, i16),
+    window_out: u32,
+}
+
+#[allow(dead_code)]
+impl FindWindowParameters {
+    pub const fn point(&self) -> (i16, i16) {
+        self.point
+    }
+
+    pub const fn v(&self) -> i16 {
+        self.point.0
+    }
+
+    pub const fn h(&self) -> i16 {
+        self.point.1
+    }
+
+    pub const fn window_out(&self) -> u32 {
+        self.window_out
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_find_window_parameters(point: u32, window_out: u32) -> FindWindowParameters {
+    let v = (point >> 16) as u16 as i16;
+    let h = point as u16 as i16;
+    FindWindowParameters {
+        point: (v, h),
+        window_out,
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_find_window_in_screen_and_menu_bar(
+    v: i16,
+    h: i16,
+    screen_width: i16,
+    screen_height: i16,
+    menu_bar_height: i16,
+    fullscreen_context_active: bool,
+) -> (bool, bool) {
+    let in_screen = (0..screen_height).contains(&v) && (0..screen_width).contains(&h);
+    let in_menu_bar = !fullscreen_context_active
+        && in_screen
+        && v < menu_bar_height.max(0).min(screen_height);
+    (in_screen, in_menu_bar)
+}
+
+/// Architecture-neutral parameter validation for PinRect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PinRectParameters {
+    rect_ptr: u32,
+    point: (i16, i16),
+}
+
+#[allow(dead_code)]
+impl PinRectParameters {
+    pub const fn rect_ptr(&self) -> u32 {
+        self.rect_ptr
+    }
+
+    pub const fn point(&self) -> (i16, i16) {
+        self.point
+    }
+
+    pub const fn pt_v(&self) -> i16 {
+        self.point.0
+    }
+
+    pub const fn pt_h(&self) -> i16 {
+        self.point.1
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_pin_rect_parameters(rect_ptr: u32, pt: u32) -> PinRectParameters {
+    let pt_v = (pt >> 16) as u16 as i16;
+    let pt_h = pt as u16 as i16;
+    PinRectParameters {
+        rect_ptr,
+        point: (pt_v, pt_h),
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_pin_rect(
+    rect: Option<(i16, i16, i16, i16)>,
+    pt_v: i16,
+    pt_h: i16,
+) -> (i16, i16) {
+    let (top, left, bottom, right) = rect.unwrap_or((i16::MIN, i16::MIN, i16::MAX, i16::MAX));
+    let pinned_v = pt_v.max(top).min(bottom.saturating_sub(1));
+    let pinned_h = pt_h.max(left).min(right.saturating_sub(1));
+    (pinned_v, pinned_h)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -4518,5 +4719,78 @@ mod tests {
         assert_eq!(evaluate_close_window_parameters(0), None);
         let close = evaluate_close_window_parameters(0x6000).unwrap();
         assert_eq!(close.window_ptr(), 0x6000);
+    }
+
+    #[test]
+    fn window_sizing_movement_hittest_and_pinning_evaluation() {
+        // SizeWindow
+        assert_eq!(evaluate_size_window_parameters(0, 100, 200, true), None);
+        let size = evaluate_size_window_parameters(0x1000, 320, 240, false).unwrap();
+        assert_eq!(size.window_ptr(), 0x1000);
+        assert_eq!(size.width(), 320);
+        assert_eq!(size.height(), 240);
+        assert!(!size.update());
+        assert_eq!(size.clamped_dimensions(), (320, 240));
+
+        let size_zero = evaluate_size_window_parameters(0x1000, 0, 0, true).unwrap();
+        assert_eq!(size_zero.clamped_dimensions(), (1, 1));
+
+        // MoveWindow
+        assert_eq!(evaluate_move_window_parameters(0, 100, 150, true), None);
+        let mov = evaluate_move_window_parameters(0x2000, 50, 75, true).unwrap();
+        assert_eq!(mov.window_ptr(), 0x2000);
+        assert_eq!(mov.h_global(), 50);
+        assert_eq!(mov.v_global(), 75);
+        assert!(mov.bring_to_front());
+
+        // FindWindow
+        let point_packed = ((120u32) << 16) | (240u32);
+        let find = evaluate_find_window_parameters(point_packed, 0x3000);
+        assert_eq!(find.v(), 120);
+        assert_eq!(find.h(), 240);
+        assert_eq!(find.point(), (120, 240));
+        assert_eq!(find.window_out(), 0x3000);
+
+        // evaluate_find_window_in_screen_and_menu_bar
+        // In menu bar:
+        let (in_screen, in_menu) = evaluate_find_window_in_screen_and_menu_bar(10, 100, 640, 480, 20, false);
+        assert!(in_screen);
+        assert!(in_menu);
+
+        // In content area:
+        let (in_screen, in_menu) = evaluate_find_window_in_screen_and_menu_bar(50, 100, 640, 480, 20, false);
+        assert!(in_screen);
+        assert!(!in_menu);
+
+        // Fullscreen context suppresses menu bar:
+        let (in_screen, in_menu) = evaluate_find_window_in_screen_and_menu_bar(10, 100, 640, 480, 20, true);
+        assert!(in_screen);
+        assert!(!in_menu);
+
+        // Offscreen:
+        let (in_screen, in_menu) = evaluate_find_window_in_screen_and_menu_bar(500, 700, 640, 480, 20, false);
+        assert!(!in_screen);
+        assert!(!in_menu);
+
+        // PinRect
+        let pt_packed = ((150u32) << 16) | (250u32);
+        let pin = evaluate_pin_rect_parameters(0x4000, pt_packed);
+        assert_eq!(pin.rect_ptr(), 0x4000);
+        assert_eq!(pin.pt_v(), 150);
+        assert_eq!(pin.pt_h(), 250);
+
+        // Clamping within rect (10, 20, 100, 200) -> bottom-1 is 99, right-1 is 199
+        let pinned = evaluate_pin_rect(Some((10, 20, 100, 200)), 150, 250);
+        assert_eq!(pinned, (99, 199));
+
+        let pinned_inside = evaluate_pin_rect(Some((10, 20, 100, 200)), 50, 60);
+        assert_eq!(pinned_inside, (50, 60));
+
+        let pinned_above_left = evaluate_pin_rect(Some((10, 20, 100, 200)), 5, 5);
+        assert_eq!(pinned_above_left, (10, 20));
+
+        // Clamping without rect (None)
+        let pinned_none = evaluate_pin_rect(None, 123, 456);
+        assert_eq!(pinned_none, (123, 456));
     }
 }
