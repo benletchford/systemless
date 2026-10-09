@@ -1479,6 +1479,7 @@ pub(crate) fn dispatch_supported_import(
             unreachable!("textedit imports return through dispatch_textedit_import")
         }
         PpcImportDispatcherTarget::DSpStartup
+        | PpcImportDispatcherTarget::DSpSetDebugMode
         | PpcImportDispatcherTarget::DSpGetVersion
         | PpcImportDispatcherTarget::DSpShutdown
         | PpcImportDispatcherTarget::DSpGetFirstContext
