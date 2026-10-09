@@ -1734,7 +1734,7 @@ impl PpcLoadedApp {
                         q3_objects: &q3_objects,
                         q3_object_refs: &mut q3_object_refs,
                         q3_group_memberships: &q3_group_memberships,
-                        q3_file_groups: &q3_file_groups,
+                        q3_file_groups: &mut q3_file_groups,
                         q3_lights: &q3_lights,
                         q3_error_state: &mut q3_error_state,
                     },
