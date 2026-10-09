@@ -12,6 +12,7 @@ pub(crate) mod copy_bits;
 pub mod cpu;
 #[cfg(feature = "debug")]
 pub mod debug;
+pub(crate) mod cursor_manager;
 pub mod debug_overlay;
 pub(crate) mod desk_manager;
 pub(crate) mod dialog_manager;

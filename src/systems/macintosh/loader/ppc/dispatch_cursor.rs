@@ -45,6 +45,7 @@ pub(super) fn dispatch_cursor_import(
             // Sets the standard arrow cursor and makes it visible.
             // PROCEDURE InitCursor;
             // Inside Macintosh: Imaging With QuickDraw (1994), p. 8-22.
+            let _action = crate::cursor_manager::evaluate_init_cursor();
             cursor_state.init();
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -52,22 +53,40 @@ pub(super) fn dispatch_cursor_import(
             // Carbon's accessor copies the QuickDraw arrow Cursor into the
             // caller's 68-byte record and returns the same pointer.
             // Carbon Porting Guide (2002), "A Porting Example".
-            let out = cpu.gpr[3];
-            if !ppc_memory_can_write_bytes(memory, out, 68) {
+            let params = crate::cursor_manager::evaluate_get_qd_globals_arrow_parameters(cpu.gpr[3]);
+            if !ppc_memory_can_write_bytes(
+                memory,
+                params.destination_ptr,
+                crate::cursor_manager::CURSOR_RECORD_SIZE as u32,
+            ) {
                 return Some(PpcImportAction::Return(0));
             }
             let (data, mask, hot_v, hot_h) = crate::display::default_arrow_cursor();
-            let _ = memory.write_bytes(out, &data);
-            let _ = memory.write_bytes(out + 32, &mask);
-            let _ = memory.write_u16_be(out + 64, hot_v as u16);
-            let _ = memory.write_u16_be(out + 66, hot_h as u16);
-            Some(PpcImportAction::Return(out))
+            let _ = memory.write_bytes(
+                params.destination_ptr + crate::cursor_manager::CURSOR_DATA_OFFSET as u32,
+                &data,
+            );
+            let _ = memory.write_bytes(
+                params.destination_ptr + crate::cursor_manager::CURSOR_MASK_OFFSET as u32,
+                &mask,
+            );
+            let _ = memory.write_u16_be(
+                params.destination_ptr + crate::cursor_manager::CURSOR_HOT_V_OFFSET as u32,
+                hot_v as u16,
+            );
+            let _ = memory.write_u16_be(
+                params.destination_ptr + crate::cursor_manager::CURSOR_HOT_H_OFFSET as u32,
+                hot_h as u16,
+            );
+            Some(PpcImportAction::Return(params.destination_ptr))
         }
         PpcImportDispatcherTarget::HideCursor => {
+            let _action = crate::cursor_manager::evaluate_hide_cursor();
             cursor_state.hide();
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::ShowCursor => {
+            let _action = crate::cursor_manager::evaluate_show_cursor();
             cursor_state.show();
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -76,67 +95,90 @@ pub(super) fn dispatch_cursor_import(
             // ShowCursor. The mouse driver decides whether the shield rectangle
             // currently requires erasing the cursor.
             // Imaging With QuickDraw (1994), p. 8-29.
+            let _params = crate::cursor_manager::evaluate_shield_cursor_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4] as i16,
+                (cpu.gpr[4] >> 16) as i16,
+            );
             cursor_state.hide();
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::CrsrDevNextDevice => {
             // The reference machine exposes a single aggregate mouse through
             // the Event Manager, not a Cursor Device Manager device chain.
-            if cpu.gpr[3] != 0 && ppc_memory_can_write_bytes(memory, cpu.gpr[3], 4) {
-                let _ = memory.write_u32_be(cpu.gpr[3], 0);
+            let params = crate::cursor_manager::evaluate_crsr_dev_next_device_parameters(cpu.gpr[3]);
+            if params.device_ptr != 0 && ppc_memory_can_write_bytes(memory, params.device_ptr, 4) {
+                let _ = memory.write_u32_be(params.device_ptr, 0);
             }
             Some(PpcImportAction::Return(ppc_i16_result(-1)))
         }
         PpcImportDispatcherTarget::CrsrDevMoveTo => {
+            let _params = crate::cursor_manager::evaluate_crsr_dev_move_to_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4] as i32,
+                cpu.gpr[5] as i32,
+            );
             Some(PpcImportAction::Return(ppc_i16_result(-1)))
         }
-        PpcImportDispatcherTarget::GetCursor => Some(PpcImportAction::Return(ppc_get_cursor(
-            cpu,
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            vfs_resources,
-            current_resource_refnum,
-            last_resource_error,
-        ))),
+        PpcImportDispatcherTarget::GetCursor => {
+            let params = crate::cursor_manager::evaluate_get_cursor_parameters(cpu.gpr[3] as u16 as i16);
+            Some(PpcImportAction::Return(ppc_get_cursor(
+                params.cursor_id,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                vfs_resources,
+                current_resource_refnum,
+                last_resource_error,
+            )))
+        }
         PpcImportDispatcherTarget::SetCursor => {
-            ppc_set_cursor(memory, cpu.gpr[3], cursor_state);
+            let params = crate::cursor_manager::evaluate_set_cursor_parameters(cpu.gpr[3]);
+            ppc_set_cursor(memory, params.cursor_ptr, cursor_state);
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::GetCCursor => Some(PpcImportAction::Return(ppc_get_ccursor(
-            cpu,
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            vfs_resources,
-            current_resource_refnum,
-            last_resource_error,
-        ))),
-        PpcImportDispatcherTarget::GetCIcon => Some(PpcImportAction::Return(ppc_get_cicon(
-            cpu,
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            vfs_resources,
-            current_resource_refnum,
-            last_resource_error,
-        ))),
+        PpcImportDispatcherTarget::GetCCursor => {
+            let params = crate::cursor_manager::evaluate_get_ccursor_parameters(cpu.gpr[3] as u16 as i16);
+            Some(PpcImportAction::Return(ppc_get_ccursor(
+                params.cursor_id,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                vfs_resources,
+                current_resource_refnum,
+                last_resource_error,
+            )))
+        }
+        PpcImportDispatcherTarget::GetCIcon => {
+            let params = crate::cursor_manager::evaluate_get_cicon_parameters(cpu.gpr[3] as u16 as i16);
+            Some(PpcImportAction::Return(ppc_get_cicon(
+                params.icon_id,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                vfs_resources,
+                current_resource_refnum,
+                last_resource_error,
+            )))
+        }
         PpcImportDispatcherTarget::PlotCIcon => {
-            let _ = ppc_plot_cicon(cpu, memory, gworlds, current_gworld, screen_clut);
+            let params = crate::cursor_manager::evaluate_plot_cicon_parameters(cpu.gpr[3], cpu.gpr[4]);
+            let _ = ppc_plot_cicon(&params, memory, gworlds, current_gworld, screen_clut);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::DisposeCIcon => {
+            let params = crate::cursor_manager::evaluate_dispose_cicon_parameters(cpu.gpr[3]);
             ppc_dispose_cicon(
-                cpu,
+                params.cicon_handle,
                 process_memory_manager,
                 memory,
                 heap_cursor,
@@ -146,7 +188,12 @@ pub(super) fn dispatch_cursor_import(
             );
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::SetCCursor | PpcImportDispatcherTarget::DisposeCCursor => {
+        PpcImportDispatcherTarget::SetCCursor => {
+            let _params = crate::cursor_manager::evaluate_set_ccursor_parameters(cpu.gpr[3]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::DisposeCCursor => {
+            let _params = crate::cursor_manager::evaluate_dispose_ccursor_parameters(cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
         _ => None,
@@ -154,7 +201,7 @@ pub(super) fn dispatch_cursor_import(
 }
 
 fn ppc_get_ccursor(
-    cpu: &mut PpcCpu,
+    crsr_id: i16,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -165,7 +212,6 @@ fn ppc_get_ccursor(
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
 ) -> u32 {
-    let crsr_id = cpu.gpr[3] as u16 as i16;
     let res_type = u32::from_be_bytes(*b"crsr");
     let Some(index) = ppc_vfs_resource_index(
         vfs_resources,
@@ -192,7 +238,7 @@ fn ppc_get_ccursor(
 }
 
 fn ppc_get_cicon(
-    cpu: &PpcCpu,
+    icon_id: i16,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -203,7 +249,6 @@ fn ppc_get_cicon(
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
 ) -> u32 {
-    let icon_id = cpu.gpr[3] as u16 as i16;
     let icon_type = u32::from_be_bytes(*b"cicn");
     let Some(index) = ppc_vfs_resource_index(
         vfs_resources,
@@ -417,14 +462,14 @@ fn ppc_scale_icon_coordinate(
 }
 
 fn ppc_plot_cicon(
-    cpu: &PpcCpu,
+    params: &crate::cursor_manager::PlotCIconParameters,
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     current_gworld: u32,
     _screen_clut: &[[u16; 3]; 256],
 ) -> bool {
-    let rect_ptr = cpu.gpr[3];
-    let icon_handle = cpu.gpr[4];
+    let rect_ptr = params.rect_ptr;
+    let icon_handle = params.cicon_handle;
     let (Some(port_dst_rect), Some(icon_ptr)) = (
         ppc_read_rect(memory, rect_ptr),
         memory.read_u32_be(icon_handle).filter(|ptr| *ptr != 0),
@@ -562,7 +607,7 @@ fn ppc_plot_cicon(
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_dispose_cicon(
-    cpu: &PpcCpu,
+    icon_handle: u32,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -570,7 +615,6 @@ fn ppc_dispose_cicon(
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
 ) {
-    let icon_handle = cpu.gpr[3];
     let icon_ptr = memory.read_u32_be(icon_handle).unwrap_or(0);
     let (color_table_handle, pixel_data_handle) = if icon_ptr == 0 {
         (0, 0)
@@ -601,19 +645,29 @@ fn ppc_set_cursor(
     // SetCursor(crsr: Cursor) installs the 16-by-16 data and mask bitmaps plus
     // the Point hotspot stored at byte offset 64 in the 68-byte Cursor record.
     // Imaging With QuickDraw (1994), pp. 8-19 and 8-25.
-    let mut data = [0; 32];
-    let mut mask = [0; 32];
-    memory.read_bytes_into(cursor_ptr, &mut data)?;
-    memory.read_bytes_into(cursor_ptr.checked_add(32)?, &mut mask)?;
-    let hot_v = memory.read_u16_be(cursor_ptr.checked_add(64)?)? as i16;
-    let hot_h = memory.read_u16_be(cursor_ptr.checked_add(66)?)? as i16;
+    let mut data = [0; crate::cursor_manager::CURSOR_BITMAP_SIZE];
+    let mut mask = [0; crate::cursor_manager::CURSOR_BITMAP_SIZE];
+    memory.read_bytes_into(
+        cursor_ptr.checked_add(crate::cursor_manager::CURSOR_DATA_OFFSET as u32)?,
+        &mut data,
+    )?;
+    memory.read_bytes_into(
+        cursor_ptr.checked_add(crate::cursor_manager::CURSOR_MASK_OFFSET as u32)?,
+        &mut mask,
+    )?;
+    let hot_v = memory.read_u16_be(
+        cursor_ptr.checked_add(crate::cursor_manager::CURSOR_HOT_V_OFFSET as u32)?,
+    )? as i16;
+    let hot_h = memory.read_u16_be(
+        cursor_ptr.checked_add(crate::cursor_manager::CURSOR_HOT_H_OFFSET as u32)?,
+    )? as i16;
 
     cursor_state.install(crate::display::CursorImage::mono(data, mask, hot_v, hot_h));
     Some(())
 }
 
 fn ppc_get_cursor(
-    cpu: &mut PpcCpu,
+    cursor_id: i16,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -624,7 +678,6 @@ fn ppc_get_cursor(
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
 ) -> u32 {
-    let cursor_id = cpu.gpr[3] as u16 as i16;
     let res_type = u32::from_be_bytes(*b"CURS");
     let index = match ppc_vfs_resource_index(
         vfs_resources,
