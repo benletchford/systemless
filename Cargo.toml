@@ -89,7 +89,7 @@ debug-server = ["debug"]
 gpui-demo = ["dep:gpui-kit", "native-audio"]
 # Host-control interaction tests without adding GPUI's test harness to the
 # ordinary demo build.
-gpui-demo-test = ["gpui-demo", "gpui-kit/test-support"]
+gpui-demo-test = ["gpui-demo", "gpui-kit/test-support", "debug"]
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.54", optional = true, features = [
