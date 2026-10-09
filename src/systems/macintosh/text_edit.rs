@@ -365,6 +365,8 @@ pub struct TextEditSnapshot {
     pub active: bool,
     /// Guest-controlled blink phase; Systemless TEIdle uses zero for visible.
     pub caret_visible: bool,
+    /// PPC clamps caret/selection measurement to the trimmed visible line end.
+    pub clips_line_offsets_to_visible_text: bool,
     pub justification: i16,
     pub line_count: usize,
     /// Guest byte offsets for the start of each line and the final end offset.
@@ -383,6 +385,42 @@ pub struct TextEditSnapshot {
 }
 
 impl TextEditSnapshot {
+    /// Select exactly one guest caret owner, retaining inclusive byte ends.
+    /// Both draw paths choose the first matching line at a wrap boundary;
+    /// the 68k path considers only lines intersecting viewRect and falls back
+    /// to the last visible line. PPC trims spaces and line-break bytes before
+    /// measuring, while 68k measures through the canonical line end.
+    pub fn caret_line(&self) -> Option<(usize, usize)> {
+        if self.styled || !self.active || !self.caret_visible || self.selection.0 != self.selection.1 {
+            return None;
+        }
+        let starts = self.line_starts.as_ref()?;
+        let mut fallback = None;
+        for (index, span) in starts.windows(2).enumerate() {
+            let top = i32::from(self.dest_rect.0) + index as i32 * i32::from(self.line_height);
+            if !self.clips_line_offsets_to_visible_text
+                && (top + i32::from(self.line_height) <= i32::from(self.view_rect.0)
+                    || top >= i32::from(self.view_rect.2)) {
+                continue;
+            }
+            let (start, end) = (span[0], span[1]);
+            self.text.get(start..end)?;
+            let mut measured_end = end;
+            if self.clips_line_offsets_to_visible_text {
+                while measured_end > start && matches!(self.text[measured_end - 1], b' ' | b'\r' | b'\n') {
+                    measured_end -= 1;
+                }
+            }
+            let offset = self.selection.0.min(measured_end).max(start) - start;
+            fallback = Some((index, offset));
+            if self.selection.0 >= start && (self.selection.0 <= end
+                || self.clips_line_offsets_to_visible_text && index + 2 == starts.len()) {
+                return fallback;
+            }
+        }
+        if self.clips_line_offsets_to_visible_text { None } else { fallback }
+    }
+
     /// Decode guest-defined lines without changing their byte offsets or wrapping.
     /// Inside Macintosh: Text (1993), pp. 2-66--2-68.
     pub fn display_lines(&self) -> Option<Vec<String>> {
@@ -525,6 +563,7 @@ pub(crate) fn snapshot_guest_records(
                 active: word(read, ptr + 0x24)? != 0,
                 // TERec internal caretState: Text (1993), pp. 2-64--2-69, 2-84.
                 caret_visible: word(read, ptr + 0x38)? == 0,
+                clips_line_offsets_to_visible_text: false,
                 justification: word(read, ptr + 0x3a)? as i16,
                 line_count,
                 line_starts,

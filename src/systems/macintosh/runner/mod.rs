@@ -3329,7 +3329,9 @@ impl FixtureRunner {
             .into_iter()
             .map(|frame| frame.guest_id)
             .collect();
+        let clips_line_offsets_to_visible_text = self.native.application().is_some();
         for record in &mut snapshot.records {
+            record.clips_line_offsets_to_visible_text = clips_line_offsets_to_visible_text;
             if !window_ports.contains(&record.owner_port) {
                 continue;
             }

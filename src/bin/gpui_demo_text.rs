@@ -358,7 +358,7 @@ pub(crate) fn classic_line(
     ascent: i16,
     line_height: i16,
     selection: (usize, usize),
-    caret: bool,
+    caret: Option<usize>,
     geometry: ClassicLineGeometry,
     scale: f32,
     foreground: gpui_kit::Hsla,
@@ -392,10 +392,10 @@ pub(crate) fn classic_line(
                     foreground,
                 ));
             }
-            if caret {
+            if let Some(offset) = caret {
                 window.paint_quad(fill(
                     Bounds::new(
-                        point(origin.x + px(geometry.caret_x(position(selection.0), selection.0) as f32 * scale), origin.y),
+                        point(origin.x + px(geometry.caret_x(position(offset), offset) as f32 * scale), origin.y),
                         size(px(scale), height),
                     ),
                     foreground,
