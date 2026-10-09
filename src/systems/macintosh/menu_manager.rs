@@ -4045,6 +4045,95 @@ pub const fn evaluate_set_mbar_height_parameters(height: i16) -> SetMBarHeightPa
     SetMBarHeightParameters { height }
 }
 
+/// Architecture-neutral parameter extraction for NewMenu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NewMenuParameters {
+    menu_id: i16,
+    title_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl NewMenuParameters {
+    pub const fn menu_id(&self) -> i16 {
+        self.menu_id
+    }
+
+    pub const fn title_ptr(&self) -> u32 {
+        self.title_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub const fn evaluate_new_menu_parameters(menu_id: i16, title_ptr: u32) -> NewMenuParameters {
+    NewMenuParameters { menu_id, title_ptr }
+}
+
+/// Architecture-neutral parameter validation for DisposeMenu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisposeMenuParameters {
+    menu_handle: u32,
+}
+
+#[allow(dead_code)]
+impl DisposeMenuParameters {
+    pub const fn menu_handle(&self) -> u32 {
+        self.menu_handle
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_dispose_menu_parameters(menu_handle: u32) -> Option<DisposeMenuParameters> {
+    if menu_handle == 0 {
+        None
+    } else {
+        Some(DisposeMenuParameters { menu_handle })
+    }
+}
+
+/// Architecture-neutral parameter validation for GetMenu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetMenuParameters {
+    menu_id: i16,
+}
+
+#[allow(dead_code)]
+impl GetMenuParameters {
+    pub const fn menu_id(&self) -> i16 {
+        self.menu_id
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_menu_parameters(menu_id: i16) -> Option<GetMenuParameters> {
+    if menu_id == 0 {
+        None
+    } else {
+        Some(GetMenuParameters { menu_id })
+    }
+}
+
+/// Architecture-neutral parameter validation for CalcMenuSize.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CalcMenuSizeParameters {
+    menu_handle: u32,
+}
+
+#[allow(dead_code)]
+impl CalcMenuSizeParameters {
+    pub const fn menu_handle(&self) -> u32 {
+        self.menu_handle
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_calc_menu_size_parameters(menu_handle: u32) -> Option<CalcMenuSizeParameters> {
+    if menu_handle == 0 {
+        None
+    } else {
+        Some(CalcMenuSizeParameters { menu_handle })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6174,5 +6263,25 @@ mod tests {
         assert_eq!(evaluate_get_mbar_height(Some(24)), 24);
         assert_eq!(evaluate_get_mbar_height(None), DEFAULT_MBAR_HEIGHT);
         assert_eq!(evaluate_set_mbar_height_parameters(22).height(), 22);
+    }
+
+    #[test]
+    fn menu_creation_disposal_and_sizing_evaluation() {
+        // NewMenu
+        let new_menu = evaluate_new_menu_parameters(101, 0x1234);
+        assert_eq!(new_menu.menu_id(), 101);
+        assert_eq!(new_menu.title_ptr(), 0x1234);
+
+        // DisposeMenu
+        assert_eq!(evaluate_dispose_menu_parameters(0x5000).unwrap().menu_handle(), 0x5000);
+        assert!(evaluate_dispose_menu_parameters(0).is_none());
+
+        // GetMenu
+        assert_eq!(evaluate_get_menu_parameters(128).unwrap().menu_id(), 128);
+        assert!(evaluate_get_menu_parameters(0).is_none());
+
+        // CalcMenuSize
+        assert_eq!(evaluate_calc_menu_size_parameters(0x6000).unwrap().menu_handle(), 0x6000);
+        assert!(evaluate_calc_menu_size_parameters(0).is_none());
     }
 }
