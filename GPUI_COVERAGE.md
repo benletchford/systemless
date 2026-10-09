@@ -3856,3 +3856,18 @@ insertion style differ even at the same guest byte boundary. Both initial
 scale-1 captures match every composed field pixel at device density 2 and were
 visually inspected. This is a targeted policy counterexample, not a complete
 caret matrix. Example build passes (15.11s), production check passes (14.75s).
+The two start-position colour counterexample captures and their original guest
+baselines are archived under
+`tests/toolbox-showcase/reference/gpui-demo/styled-caret-colour/review.json`,
+pinned to `1ed0293b`, source/fixture/executable and original/archive image hashes.
+Lossless recompression was checked for RGBA equality. The targeted verifier
+checks both complete field rasters and their differing uniform caret columns:
+
+```sh
+python3 tests/toolbox-showcase/verify-gpui-styled-caret-colour.py \
+  tests/toolbox-showcase/reference/gpui-demo/styled-caret-colour/review.json
+```
+
+The verifier passes both cases and explicitly reports that this is not full
+matrix qualification. CPU/scale/blink/activation coverage and styled production
+ownership remain required.
