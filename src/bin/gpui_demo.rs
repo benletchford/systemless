@@ -1754,8 +1754,13 @@ mod desktop {
                                 continue;
                             };
                             let popup_font = control.popup_font.unwrap_or_default();
-                            let title_width = i32::from(control.popup_title_width.unwrap_or(0))
-                                .clamp(0, source.width().saturating_sub(20));
+                            let Some((box_top, box_left, box_bottom, box_right)) = control.popup_box_bounds else {
+                                continue;
+                            };
+                            let title_width = i32::from(box_left) - source.left;
+                            let box_y = i32::from(box_top) - source.top;
+                            let box_width = i32::from(box_right) - i32::from(box_left);
+                            let box_height = i32::from(box_bottom) - i32::from(box_top);
                             // Keep text in the guest ControlRecord coordinate system.
                             // Host borders must not inset the CDEF text canvas.
                             overlay = overlay
@@ -1767,21 +1772,21 @@ mod desktop {
                                             if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })),
                                 )
                                 .child(
-                                    div().absolute().left(guest_px(title_width as f32)).top(guest_px(0.))
-                                        .w(guest_px((source.width() - title_width) as f32)).h_full()
+                                    div().absolute().left(guest_px(title_width as f32)).top(guest_px(box_y as f32))
+                                        .w(guest_px(box_width as f32)).h(guest_px(box_height as f32))
                                         .border_1().border_color(cx.theme().border).bg(cx.theme().secondary),
                                 )
                                 .child(
-                                    div().absolute().left(guest_px(title_width as f32)).top(guest_px(0.))
-                                        .w(guest_px((source.width() - title_width - 19).max(0) as f32))
-                                        .h_full().overflow_hidden()
+                                    div().absolute().left(guest_px(title_width as f32)).top(guest_px(box_y as f32))
+                                        .w(guest_px((box_width - 19).max(0) as f32))
+                                        .h(guest_px(box_height as f32)).overflow_hidden()
                                         .child(super::text::classic_popup_control_label(
                                             selected, popup_font, false, control.popup_text_inset, scene_scale,
                                             if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })),
                                 )
                                 .child(
-                                    div().absolute().right(guest_px(0.)).top(guest_px(0.))
-                                        .w(guest_px(18.)).h_full().flex().items_center().justify_center().child("▾"),
+                                    div().absolute().left(guest_px((title_width + box_width - 18) as f32)).top(guest_px(box_y as f32))
+                                        .w(guest_px(18.)).h(guest_px(box_height as f32)).flex().items_center().justify_center().child("▾"),
                                 );
                         }
                         0 => {
@@ -5884,6 +5889,13 @@ mod desktop {
                     assert_eq!(control.title, title);
                     assert_eq!(control.popup_title_width, Some(width));
                     assert_eq!(control.popup_text_inset, if powerpc { 5 } else { 15 });
+                    let (top, left, bottom, right) = control.bounds;
+                    let box_bounds = control.popup_box_bounds.expect("popup CDEF must expose its resolved box");
+                    assert_eq!((box_bounds.0, box_bounds.1, box_bounds.2), (top + 1, left + width, bottom - 2));
+                    assert!(box_bounds.3 <= right - 1);
+                    if powerpc || (control.proc_id - 1008) & 1 != 0 {
+                        assert_eq!(box_bounds.3, right - 1);
+                    }
                     assert_eq!(control.popup_font.unwrap().point_size(), if id == 144 { 9 } else { 12 });
                     assert_eq!(control.value, 1);
                     let menu = menus.menus.iter().find(|menu| menu.id == id)
@@ -7843,128 +7855,141 @@ mod desktop {
                 assert!(session.runner_mut().select_guest_menu_item(129, 16));
                 wait_for_menu(&mut session, 129, 16, true);
                 settle(&mut session);
-                let (sender, receiver) = std::sync::mpsc::channel();
-                let (window, view) = cx.update(|cx| {
-                    gpui_kit::open_window(Default::default(), cx, |_, cx| {
-                        cx.new(|cx| super::Demo::new(sender, Default::default(), cx))
-                    })
-                    .unwrap()
-                });
-                let (top, left, _, _) = session.runner_mut().window_bounds();
-                let mut point = (top + 112, left + 280);
-                for phase in 0..3 {
-                    let popup = session.runner_mut().guest_popup_snapshot();
-                    if phase > 0 {
-                        let popup = popup
-                            .as_ref()
-                            .expect("guest popup should remain open while held");
-                        point = (
-                            popup.content_top
-                                + popup.row_heights[..3].iter().sum::<i16>()
-                                + popup.row_heights[3] / 2,
-                            popup.bounds.1 + 30,
-                        );
-                    }
-                    cx.update_window(window.into(), |_, window, cx| {
-                        view.update(cx, |demo, _| {
-                            demo.width = 800;
-                            demo.height = 600;
-                            demo.controls = session.runner_mut().control_snapshot();
-                            demo.windows = session.runner_mut().window_frame_snapshot();
-                            demo.menus = session.runner_mut().guest_menu_snapshot();
-                            demo.guest_popup = popup;
-                        });
-                        window.render_frame(cx);
-                        let position = view.update(cx, |demo, _| {
-                            gpui_kit::point(
-                                gpui_kit::px(
-                                    demo.display_origin.0
-                                        + (f32::from(point.1) + 0.25) * demo.display_scale,
-                                ),
-                                gpui_kit::px(
-                                    demo.display_origin.1
-                                        + (f32::from(point.0) + 0.25) * demo.display_scale,
-                                ),
-                            )
-                        });
-                        let event = match phase {
-                            0 => MouseDownEvent {
-                                position,
-                                button: MouseButton::Left,
-                                click_count: 1,
-                                ..Default::default()
-                            }
-                            .to_platform_input(),
-                            1 => MouseMoveEvent {
-                                position,
-                                pressed_button: Some(MouseButton::Left),
-                                ..Default::default()
-                            }
-                            .to_platform_input(),
-                            _ => MouseUpEvent {
-                                position,
-                                button: MouseButton::Left,
-                                click_count: 1,
-                                ..Default::default()
-                            }
-                            .to_platform_input(),
-                        };
-                        window.dispatch_event(event, cx);
-                    })
-                    .unwrap();
-                    let inputs: Vec<_> = receiver
-                        .try_iter()
-                        .filter_map(|command| match command {
-                            super::Command::Input(input) => Some(input),
-                            _ => None,
+                for scale in [0.75, 1., 1.5, 2.] {
+                    let (sender, receiver) = std::sync::mpsc::channel();
+                    let (window, view) = cx.update(|cx| {
+                        gpui_kit::open_window(gpui_kit::WindowOptions {
+                            window_bounds: Some(gpui_kit::WindowBounds::Windowed(gpui_kit::Bounds::new(
+                                gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)),
+                                gpui_kit::size(gpui_kit::px(800. * scale), gpui_kit::px(600. * scale))))),
+                            ..Default::default()
+                        }, cx, |_, cx| {
+                            cx.new(|cx| super::Demo::new(sender, Default::default(), cx))
                         })
-                        .collect();
-                    assert!(
-                        inputs.iter().any(|input| match input {
-                            MacintoshInput::MouseDown {
-                                vertical,
-                                horizontal,
-                            } if phase == 0 => (*vertical, *horizontal) == point,
-                            MacintoshInput::MouseMove {
-                                vertical,
-                                horizontal,
-                            } if phase == 1 => (*vertical, *horizontal) == point,
-                            MacintoshInput::MouseUp {
-                                vertical,
-                                horizontal,
-                            } if phase == 2 => (*vertical, *horizontal) == point,
-                            _ => false,
-                        }),
-                        "GPUI phase {phase} must reach guest coordinates on {powerpc:?}/{depth:?}"
-                    );
-                    for input in inputs {
-                        session.deliver_input(input);
+                        .unwrap()
+                    });
+                    let (top, left, _, _) = session.runner_mut().window_bounds();
+                    let mut point = (top + 112, left + 280);
+                    for phase in 0..3 {
+                        let popup = session.runner_mut().guest_popup_snapshot();
+                        if phase > 0 {
+                            let popup = popup
+                                .as_ref()
+                                .expect("guest popup should remain open while held");
+                            point = (
+                                popup.content_top
+                                    + popup.row_heights[..3].iter().sum::<i16>()
+                                    + popup.row_heights[3] / 2,
+                                popup.bounds.1 + 30,
+                            );
+                        }
+                        cx.update_window(window.into(), |_, window, cx| {
+                            view.update(cx, |demo, _| {
+                                demo.width = 800;
+                                demo.height = 600;
+                                if demo.image.is_none() {
+                                    demo.image = Some(std::sync::Arc::new(gpui_kit::RenderImage::new(vec![
+                                        image::Frame::new(image::RgbaImage::new(800, 600))
+                                    ])));
+                                }
+                                demo.controls = session.runner_mut().control_snapshot();
+                                demo.windows = session.runner_mut().window_frame_snapshot();
+                                demo.menus = session.runner_mut().guest_menu_snapshot();
+                                demo.guest_popup = popup;
+                            });
+                            window.render_frame(cx);
+                            let position = view.update(cx, |demo, _| {
+                                assert!((demo.display_scale - scale).abs() < 0.001, "popup test must render at requested scale");
+                                gpui_kit::point(
+                                    gpui_kit::px(
+                                        demo.display_origin.0
+                                            + (f32::from(point.1) + 0.25) * demo.display_scale,
+                                    ),
+                                    gpui_kit::px(
+                                        demo.display_origin.1
+                                            + (f32::from(point.0) + 0.25) * demo.display_scale,
+                                    ),
+                                )
+                            });
+                            let event = match phase {
+                                0 => MouseDownEvent {
+                                    position,
+                                    button: MouseButton::Left,
+                                    click_count: 1,
+                                    ..Default::default()
+                                }
+                                .to_platform_input(),
+                                1 => MouseMoveEvent {
+                                    position,
+                                    pressed_button: Some(MouseButton::Left),
+                                    ..Default::default()
+                                }
+                                .to_platform_input(),
+                                _ => MouseUpEvent {
+                                    position,
+                                    button: MouseButton::Left,
+                                    click_count: 1,
+                                    ..Default::default()
+                                }
+                                .to_platform_input(),
+                            };
+                            window.dispatch_event(event, cx);
+                        })
+                        .unwrap();
+                        let inputs: Vec<_> = receiver
+                            .try_iter()
+                            .filter_map(|command| match command {
+                                super::Command::Input(input) => Some(input),
+                                _ => None,
+                            })
+                            .collect();
+                        assert!(
+                            inputs.iter().any(|input| match input {
+                                MacintoshInput::MouseDown {
+                                    vertical,
+                                    horizontal,
+                                } if phase == 0 => (*vertical, *horizontal) == point,
+                                MacintoshInput::MouseMove {
+                                    vertical,
+                                    horizontal,
+                                } if phase == 1 => (*vertical, *horizontal) == point,
+                                MacintoshInput::MouseUp {
+                                    vertical,
+                                    horizontal,
+                                } if phase == 2 => (*vertical, *horizontal) == point,
+                                _ => false,
+                            }),
+                            "GPUI phase {phase} must reach guest coordinates on {powerpc:?}/{depth:?}"
+                        );
+                        for input in inputs {
+                            session.deliver_input(input);
+                        }
+                        for _ in 0..20 {
+                            session.runner_mut().run_steps(50_000, None);
+                        }
+                        if phase == 1 {
+                            assert_eq!(
+                                session
+                                    .runner_mut()
+                                    .guest_popup_snapshot()
+                                    .unwrap()
+                                    .highlighted_item,
+                                4
+                            );
+                        }
                     }
-                    for _ in 0..20 {
+                    assert!((0..100).any(|_| {
                         session.runner_mut().run_steps(50_000, None);
-                    }
-                    if phase == 1 {
-                        assert_eq!(
-                            session
-                                .runner_mut()
-                                .guest_popup_snapshot()
-                                .unwrap()
-                                .highlighted_item,
-                            4
-                        );
-                    }
+                        session
+                            .runner_mut()
+                            .control_snapshot()
+                            .iter()
+                            .any(|control| {
+                                control.visible && control.popup_menu_id == Some(143) && control.value == 4
+                            })
+                    }));
+                    assert!(session.runner_mut().guest_popup_snapshot().is_none());
                 }
-                assert!((0..100).any(|_| {
-                    session.runner_mut().run_steps(50_000, None);
-                    session
-                        .runner_mut()
-                        .control_snapshot()
-                        .iter()
-                        .any(|control| {
-                            control.visible && control.popup_menu_id == Some(143) && control.value == 4
-                        })
-                }));
-                assert!(session.runner_mut().guest_popup_snapshot().is_none());
             }
         }
 
@@ -10471,6 +10496,7 @@ mod desktop {
                         popup_menu_id: None,
                         popup_title_width: None,
                         popup_text_inset: 15,
+                        popup_box_bounds: None,
                         popup_font: None,
                         font_style: None,
                     }];
@@ -11004,6 +11030,7 @@ mod desktop {
                         popup_menu_id: None,
                         popup_title_width: None,
                         popup_text_inset: 15,
+                        popup_box_bounds: None,
                         popup_font: None,
                         font_style: None,
                     }];
@@ -11142,6 +11169,7 @@ mod desktop {
                         popup_menu_id: None,
                         popup_title_width: None,
                         popup_text_inset: 15,
+                        popup_box_bounds: None,
                         popup_font: None,
                         font_style: None,
                     }];

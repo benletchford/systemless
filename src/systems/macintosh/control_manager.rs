@@ -98,6 +98,8 @@ pub struct ControlSnapshot {
     pub popup_title_width: Option<i16>,
     /// Selected label inset from the guest CDEF box (CPU-specific).
     pub popup_text_inset: i16,
+    /// Resolved global selected-box bounds from the CPU CDEF.
+    pub popup_box_bounds: Option<(i16, i16, i16, i16)>,
     /// Font resolved from the live owner port and popup CDEF variation.
     pub popup_font: Option<crate::menu_model::GuestMenuFont>,
 }
@@ -187,6 +189,7 @@ pub(crate) fn snapshot_control_record(
             .flatten(),
         popup_title_width: popup.then_some(popup_title_width.unwrap_or(0)),
         popup_text_inset: 15,
+        popup_box_bounds: None,
         // GrafPort and CGrafPort share txFont/txSize offsets. The popup
         // variation uses the owner font for both title and selected item.
         // Inside Macintosh VI (1991), p. 3-18.

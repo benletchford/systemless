@@ -3077,3 +3077,80 @@ with source hashes in `popup-coordinate-ppc-review.json`. Initial sandboxed
 captures failed at host service access; the successful compositor run used
 macOS host access. Both 68k compositions also passed and were visually reviewed and archived.
 Scale/state interaction verification remains pending; the host arrow and themed border still need faithful replacement.
+
+### Popup scale qualification in progress
+
+The actual GPUI pointer-to-guest popup regression now exercises 0.75, 1, 1.5
+and 2 times scene scales on all three CPU/display modes. Explicit mock window
+bounds and a scene image force real scaling; each event asserts the rendered
+scale before checking guest press, held movement, release, highlighted row and
+final control value. The regression passes all twelve CPU/scale combinations (235.83 seconds).
+This verifies the guest event path at those scene scales, not native pointer
+capture or exact guest text/chrome pixel parity.
+
+The reusable capture script accepts `--surface popup` for closed selected
+controls at these scales. Its command help and whitespace checks pass. The
+four monochrome compositions passed and were visually reviewed: title
+and selected labels fit and truncation stays before the arrow. The colour/PPC
+matrix is running; inactive popup states and native oracle parity remain open.
+Future runs also record and verify the capture binary hash to reject a binary
+change mid-matrix. The already-running matrix predates that manifest addition.
+
+The four reviewed monochrome scale compositions are archived with image hashes
+in `popup-selected-scale-mono-review.json`. Inspection of the PPC CDEF reveals
+that its selected box additionally insets top by 1, bottom by 2 and right by 1
+before resolving text geometry. The current snapshot does not retain that box;
+exact PPC baseline and clip parity therefore remain incomplete despite passing
+input routing. Carry the resolved CDEF box into the presentation snapshot.
+
+### Resolved popup CDEF box snapshot
+
+Control snapshots now retain the selected box separately from contrlRect.
+68k calls the existing popup_control_box_rect geometry path, including live
+menu-based auto width and screen-edge clamping; PPC supplies its actual
+1/2/1 top/bottom/right insets and title reservation. The GPUI selected chrome,
+text canvas, truncation area and arrow container consume that box. This also
+corrects the earlier assumption that the vertical insets were PPC-only. The
+locked GPUI example check passes; the three-mode resolved-box regression passes (94.45 seconds). The completed scale matrix predates this correction and cannot prove
+its visual parity. Fresh compositions and exact chrome/state parity remain open.
+
+The resolved-box implementation also passes the locked GPUI example build.
+A fresh twelve-capture matrix is running with binary-hash verification in a
+new output directory. Earlier scale images are retained as historical evidence
+only; they do not qualify this geometry revision.
+
+The first fresh resolved-box monochrome composition at 0.75 scale is reviewed
+and archived with source/image hashes in `popup-resolved-box-review.json`.
+Selected text fits the inset box and truncates before the arrow. A post-change
+run of actual GPUI pointer tracking at all twelve CPU/scale combinations has
+been requested; its result is still pending.
+
+All four fresh monochrome resolved-box compositions have now been visually
+reviewed and archived with hashes in the same review manifest. Text fits the
+resolved box at each scale. The post-change pointer test started successfully
+inside the sandbox after automatic approval review timed out before launching
+the elevated attempt. Colour/PPC captures and post-change input results remain
+pending; no full popup or production-readiness claim is made.
+
+All four fresh colour 68k resolved-box captures are also reviewed and archived
+with hashes in the resolved-box review manifest. Labels remain bounded and the
+long selected title truncates before the arrow at all four scales. PPC capture
+and post-change input results remain pending.
+
+The fresh resolved-box matrix completed successfully, including constant binary
+hash and scene scale/aspect checks. All twelve full compositions have been
+visually reviewed and archived in `popup-resolved-box-review.json`, retaining
+commands, dimensions, source/binary/fixture/image hashes. PPC uses its smaller
+text inset and all three modes retain bounded labels at each scale. Exact
+chrome and disabled/inactive parity remain open. Post-change input is pending.
+
+The ordinary crate also passes `cargo check --locked --no-default-features`
+(18.73 seconds). All twelve archived image hashes and the recorded source
+hashes match the current files, with twelve distinct CPU/scale pairs. These
+checks do not establish inactive-state, native font or production readiness.
+
+The post-change actual GPUI pointer regression passes all twelve CPU/scale
+combinations (281.96 seconds), including press, held movement, release, exact
+guest coordinates, highlighted row, committed control value and popup closure.
+No native host pointer-capture or inactive/disabled/chrome qualification follows
+from this result. The full production migration remains incomplete.

@@ -2487,6 +2487,12 @@ impl FixtureRunner {
                         |address| app.memory.read_u8(address),
                     ).map(|mut snapshot| {
                         snapshot.popup_text_inset = 5;
+                        if snapshot.popup_menu_id.is_some() {
+                            let (top, left, bottom, right) = snapshot.bounds;
+                            snapshot.popup_box_bounds = Some((top.saturating_add(1),
+                                left.saturating_add(snapshot.popup_title_width.unwrap_or(0).max(0)),
+                                bottom.saturating_sub(2), right.saturating_sub(1)));
+                        }
                         snapshot
                     })
                 })
@@ -2509,7 +2515,15 @@ impl FixtureRunner {
                         record.font_style,
                         |owner| owners.get(&owner).copied(),
                         |address| Some(self.bus.read_byte(address)),
-                    )
+                    ).map(|mut snapshot| {
+                        if let Some(menu_id) = snapshot.popup_menu_id {
+                            let (top, left, bottom, right) = snapshot.bounds;
+                            snapshot.popup_box_bounds = Some(self.dispatcher.popup_control_box_rect(
+                                &self.bus, top, left, bottom, right, menu_id,
+                                snapshot.popup_title_width.unwrap_or(0), snapshot.proc_id));
+                        }
+                        snapshot
+                    })
                 })
                 .collect()
         }
