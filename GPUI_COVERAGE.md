@@ -3924,3 +3924,27 @@ production ownership or arbitrary theme/background/custom-font policies.
 
 The corrected run is in progress against `d7c3e82f`; results must be archived
 and reviewed before replacing the invalidated full-matrix qualification.
+
+The corrected matrix has dedicated verification and archive tools:
+
+```sh
+# Observe completed cases without asserting full qualification:
+python3 tests/toolbox-showcase/verify-gpui-styled-text-matrix.py \
+  --partial /tmp/systemless-styled-text-matrix-new/progress.json
+# After the existing capture job reports completion:
+python3 tests/toolbox-showcase/archive-gpui-styled-text-matrix.py \
+  /tmp/systemless-styled-text-matrix-new/progress.json \
+  tests/toolbox-showcase/reference/gpui-demo/styled-text-qualified
+python3 tests/toolbox-showcase/verify-gpui-styled-text-matrix.py \
+  tests/toolbox-showcase/reference/gpui-demo/styled-text-qualified/review.json
+```
+
+The full verifier requires all 192 distinct CPU/depth/scale/state/insertion
+combinations, source hashes and a completed job. It checks actual depth and
+phase sidecars, active state, selection, generation, view geometry and all
+field pixels. Negative checks reject wrong depth and duplicate cases. Partial
+checking explicitly reports incomplete qualification; 43 completed cases have
+been independently rechecked. The archive tool refuses a live incomplete job,
+verifies originals, retains original byte hashes, losslessly recompresses PNGs
+with RGBA equality and verifies the archive again. The original corrected job
+continues on its unchanged executable; the final archive is not yet produced.
