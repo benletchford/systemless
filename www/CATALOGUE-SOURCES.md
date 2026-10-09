@@ -78,3 +78,18 @@ The Myth demo installer contains a 17,884-byte `Myth Demo Read Me` (SHA-256
 and a 19,280-byte `Multiplayer Read Me` (SHA-256
 `35b13c24a435a9cba1fa3fda5ae228a861903842712d34ba6c642deb038e8659`).
 Neither inspected document gives archive redistribution permission.
+
+## Five classic demo archive identities
+
+These complete downloads are research receipts, not distribution clearance or
+playability claims. CODE-resource counts alone do not validate executable 68K
+behavior. Preserve the original packages and establish permission for each exact
+archive before Systemless hosting.
+
+| Original source | Bytes | SHA-256 | Identity and remaining evidence |
+| --- | ---: | --- | --- |
+| [sid-meiers-civilization-ii](https://classicmacdemos.com/download/sid-meiers-civilization-ii/) | 8160693 | `6ed949cc2a1b14589c28c35c7babd32bc135caff3b64e06f445a493cc0b16611` | Civilization II PPC Demo 1.0 (25 July 1997), with a PowerPC PEF application. README inspected without an affirmative archive grant; this does not supply the 68K package in #2856. |
+| [populous-ii-trials-of-the-olympian-gods](https://classicmacdemos.com/download/populous-ii-trials-of-the-olympian-gods/) | 604487 | `490f2097a2d1b466d09cefe860a61c973ca74475921a41bdd8583ede694d9b1d` | MacPopulousII Demo has seven CODE resources. Bundled READ ME expressly requires prior written consent for copying/reproduction; exact archive permission is required. |
+| [myst](https://classicmacdemos.com/download/myst/) | 30373828 | `082ba9257fe93e1e5229e3a0688229d97c86653a75127634d79def0366588110` | Myst Preview has 47 CODE resources and accompanying preview media. No standalone licence or affirmative distribution grant found in inspected contents; it is not the full original game. |
+| [day-of-the-tentacle](https://classicmacdemos.com/download/day-of-the-tentacle/) | 1640963 | `cb5719f0b4b8a5f96806e9359a6fc6f266eb134ca871de0bf92860b7437e6394` | Bundled README identifies version 1.0 (16 October 1995) as a non-interactive demonstration. PowerPC PEF slice and two CODE resources are present; no whole-archive grant found. Do not claim interactive gameplay. |
+| [afterlife](https://classicmacdemos.com/download/afterlife/) | 16091905 | `84e5934a9b1121f335df8df8102cd75e14f8ca5f9141de2d6364630b1cb46657` | Separate Afterlife Demo (68040) and Afterlife Demo (PowerPC) applications; the latter has a PPC PEF slice. Bundled README specifies both architectures but supplies no affirmative archive grant. |
