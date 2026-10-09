@@ -186,7 +186,7 @@
       "rendered_original_capture_sha256": "872afb2a05a5a290479641fb552f5973f906b2878cc3402f9d9012cdfaf4e3a0"
     },
     {
-      "mode": "ppc16",
+      "mode": "ppc8",
       "scale": 0.75,
       "device_scale": 2,
       "rendered": "ppc16-0.75.png",
@@ -203,10 +203,12 @@
         "/tmp/systemless-styled-ink-review/ppc16-0.75.png"
       ],
       "guest_original_capture_sha256": "8e61a5e819675982c7be3f37ec612eb3163e253a81ea4ff609fcf3ee614d8950",
-      "rendered_original_capture_sha256": "179aec7bc07367d33bbe8d553e80d35587d1ddae3d6d229ab0dd02ebe70f2d37"
+      "rendered_original_capture_sha256": "179aec7bc07367d33bbe8d553e80d35587d1ddae3d6d229ab0dd02ebe70f2d37",
+      "requested_mode": "ppc16",
+      "actual_depth": 8
     },
     {
-      "mode": "ppc16",
+      "mode": "ppc8",
       "scale": 1.0,
       "device_scale": 2,
       "rendered": "ppc16-1.png",
@@ -223,10 +225,12 @@
         "/tmp/systemless-styled-ink-review/ppc16-1.png"
       ],
       "guest_original_capture_sha256": "8e61a5e819675982c7be3f37ec612eb3163e253a81ea4ff609fcf3ee614d8950",
-      "rendered_original_capture_sha256": "57a0c7325b3e2b0e5a10bb5e2d4480112127ab60c6465ee303f597b190b3a0cb"
+      "rendered_original_capture_sha256": "57a0c7325b3e2b0e5a10bb5e2d4480112127ab60c6465ee303f597b190b3a0cb",
+      "requested_mode": "ppc16",
+      "actual_depth": 8
     },
     {
-      "mode": "ppc16",
+      "mode": "ppc8",
       "scale": 1.5,
       "device_scale": 2,
       "rendered": "ppc16-1.5.png",
@@ -243,10 +247,12 @@
         "/tmp/systemless-styled-ink-review/ppc16-1.5.png"
       ],
       "guest_original_capture_sha256": "8e61a5e819675982c7be3f37ec612eb3163e253a81ea4ff609fcf3ee614d8950",
-      "rendered_original_capture_sha256": "ac2b50aa4d4786316a3735b7949061d968d02b70acb4e21daf657c41be144616"
+      "rendered_original_capture_sha256": "ac2b50aa4d4786316a3735b7949061d968d02b70acb4e21daf657c41be144616",
+      "requested_mode": "ppc16",
+      "actual_depth": 8
     },
     {
-      "mode": "ppc16",
+      "mode": "ppc8",
       "scale": 2.0,
       "device_scale": 2,
       "rendered": "ppc16-2.png",
@@ -263,7 +269,9 @@
         "/tmp/systemless-styled-ink-review/ppc16-2.png"
       ],
       "guest_original_capture_sha256": "8e61a5e819675982c7be3f37ec612eb3163e253a81ea4ff609fcf3ee614d8950",
-      "rendered_original_capture_sha256": "872afb2a05a5a290479641fb552f5973f906b2878cc3402f9d9012cdfaf4e3a0"
+      "rendered_original_capture_sha256": "872afb2a05a5a290479641fb552f5973f906b2878cc3402f9d9012cdfaf4e3a0",
+      "requested_mode": "ppc16",
+      "actual_depth": 8
     },
     {
       "mode": "ppc8",
@@ -354,5 +362,7 @@
       "rendered_original_capture_sha256": "872afb2a05a5a290479641fb552f5973f906b2878cc3402f9d9012cdfaf4e3a0"
     }
   ],
-  "archive_encoding": "Lossless PNG recompression; RGBA pixels verified unchanged; original capture byte hashes retained per case"
+  "archive_encoding": "Lossless PNG recompression; RGBA pixels verified unchanged; original capture byte hashes retained per case",
+  "depth_correction": "Pinned capture helper initialized PPC at 8bpp when no explicit depth was supplied. Original PPC16 labels were incorrect; native/composed pixel comparisons remain evidence at PPC8 only.",
+  "qualification_invalid_reason": "PPC16 capture cases actually used 8bpp; the required four-mode compositor matrix is incomplete pending recapture."
 }

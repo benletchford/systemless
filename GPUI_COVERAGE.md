@@ -1,5 +1,16 @@
 # GPUI Kit system-interface coverage
 
+Qualification correction (2026-10-10): the styled ink, selection and caret
+capture helper initialized PPC at 8bpp when no explicit depth was supplied.
+Earlier compositor captures labelled PPC16 actually establish PPC8 raster
+evidence. The manifests now record the actual depth; the full ink/selection
+matrix verifiers refuse qualification until true PPC16 recaptures replace the
+missing coverage. The two-case caret colour counterexample remains valid as
+colour 68k versus PPC8. Existing CPU-specific native unit tests are unaffected.
+The helper now explicitly sets PPC16 by default and emits actual depth/state
+sidecars. New four-state PPC16 smoke captures pass exact field comparison;
+the complete corrected compositor matrix remains pending.
+
 ### Standard File filename abbreviation
 
 The GPUI Open and Save row painters now use the guest's CPU-specific display
@@ -3871,3 +3882,22 @@ python3 tests/toolbox-showcase/verify-gpui-styled-caret-colour.py \
 The verifier passes both cases and explicitly reports that this is not full
 matrix qualification. CPU/scale/blink/activation coverage and styled production
 ownership remain required.
+
+Styled caret captures accept `--capture-styled-caret-state` with `visible`,
+`blink-off`, `suspended` or `resumed`. Blink-off advances the guest clock and
+waits for the application's TEIdle, intact drawing and a null event; it never
+writes caretState or introduces host blinking. Activation still uses session
+requests. Captures retain actual depth, phase, active state, insertion range,
+generation, tick and view geometry in a JSON sidecar after successful rendering.
+Text, canonical styles, selection and owner generation must survive each phase.
+
+This exposed PPC TEIdle toggling the flag without updating caret pixels. The
+native dispatcher now erases and redraws the guest view only when TEIdle changes
+phase, using the existing port background and native TextEdit painter. The
+four-mode fixture framebuffer regression passes visible/hidden/visible pixels
+and preserved text/style/selection (23.14s); the existing PPC guest timing/phase
+regression passes (0.07s). Four true PPC16 scale-1 captures at insertion 0 pass
+all field pixels through the shared compositor and confirm depth 16 in sidecars.
+Example build passes (85s), production check passes (98s). These smoke captures
+are temporary; the corrected complete CPU/scale/insertion/activation matrix
+and production styled ownership remain unfinished.

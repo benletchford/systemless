@@ -25,7 +25,7 @@ def main():
     verifier = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(verifier)
     cases = manifest['cases']
-    assert len(cases) == 2 and {case['mode'] for case in cases} == {'colour', 'ppc16'}
+    assert len(cases) == 2 and {case['mode'] for case in cases} == {'colour', 'ppc8'}
     colours = {}
     for case in cases:
         assert case['scale'] == 1 and case['device_scale'] == 2 and case['insertion_offset'] == 0
@@ -37,7 +37,7 @@ def main():
         colour = tuple(case['caret_rgb'])
         assert top < bottom and all(guest.getpixel((x, y)) == colour for y in range(top, bottom))
         colours[case['mode']] = colour
-    assert colours['colour'] != colours['ppc16'], 'the CPU paint-policy counterexample disappeared'
+    assert colours['colour'] != colours['ppc8'], 'the CPU paint-policy counterexample disappeared'
     print('verified two styled caret colour counterexample captures; no full-matrix qualification')
 
 

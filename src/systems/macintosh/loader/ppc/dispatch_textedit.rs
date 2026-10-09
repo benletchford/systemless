@@ -624,9 +624,21 @@ pub(super) fn dispatch_textedit_import(
         }
         PpcImportDispatcherTarget::TEIdle => {
             // Text (1993), p. 2-51: TEIdle only blinks an insertion-point
-            // caret in an active record. Keep its public timing/state fields
-            // coherent even though the framebuffer redraw stays deterministic.
-            ppc_te_idle(memory, cpu.gpr[3], tick_count);
+            // caret in an active record. Repaint only when the guest phase
+            // changes; toggling caretState alone leaves stale caret pixels.
+            if ppc_te_idle(memory, cpu.gpr[3], tick_count) {
+                if let Some(te_ptr) = ppc_te_record_ptr(memory, cpu.gpr[3]) {
+                    let port = memory.read_u32_be(te_ptr + PPC_TE_IN_PORT_OFFSET)
+                        .unwrap_or(current_gworld);
+                    if let Some(view) = ppc_read_rect(memory, te_ptr + PPC_TE_VIEW_RECT_OFFSET) {
+                        let background = ppc_port_rgb_colors(memory, port)
+                            .map_or(*quickdraw_back_color, |colors| colors.1);
+                        ppc_paint_rect_bounds(memory, gworlds, port, view, background, None);
+                    }
+                }
+                ppc_te_draw(memory, handles, gworlds, cpu.gpr[3], current_gworld,
+                    *quickdraw_fore_color, quickdraw_fore_indices);
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::TEUpdate => {

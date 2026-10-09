@@ -674,7 +674,7 @@
       "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
     },
     {
-      "mode": "ppc16",
+      "mode": "ppc8",
       "state": "selected",
       "scale": 0.75,
       "device_scale": 2,
@@ -697,10 +697,12 @@
       "rendered_original_capture_sha256": "8951a32c0ae9f1fa6719c8fcbaf57f8405adbf00c7f30525abf10c8b4f986098",
       "rendered_sha256": "697863d77737ef145ebaacbc997f18f6b4421b8f74b79873bd85a94a078ee6e4",
       "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
-      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba",
+      "requested_mode": "ppc16",
+      "actual_depth": 8
     },
     {
-      "mode": "ppc16",
+      "mode": "ppc8",
       "state": "selected",
       "scale": 1.0,
       "device_scale": 2,
@@ -723,10 +725,12 @@
       "rendered_original_capture_sha256": "9be44662fa80c7aba556b49d19dc41281ec99141cec86daf4eab989516c3a476",
       "rendered_sha256": "b8c01e28d3aba58dfe9ffdb36346d674606bfdc63a390b6584af119032653171",
       "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
-      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba",
+      "requested_mode": "ppc16",
+      "actual_depth": 8
     },
     {
-      "mode": "ppc16",
+      "mode": "ppc8",
       "state": "selected",
       "scale": 1.5,
       "device_scale": 2,
@@ -749,10 +753,12 @@
       "rendered_original_capture_sha256": "af4382103e1a4e93556ffc2d91ea5fcc4931e435895bd27501f8b783b95b2277",
       "rendered_sha256": "b63ed4bc671af21e69514f8515a79d24050b0590f24c57820535cadfb9a4e873",
       "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
-      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba",
+      "requested_mode": "ppc16",
+      "actual_depth": 8
     },
     {
-      "mode": "ppc16",
+      "mode": "ppc8",
       "state": "selected",
       "scale": 2.0,
       "device_scale": 2,
@@ -775,10 +781,12 @@
       "rendered_original_capture_sha256": "0550f5a94a8e1ee8154db2dccdc725831e9965a9b5a3c3533dd8905af9578cf4",
       "rendered_sha256": "e639520417a787a663f0d4b418c19680a8fa16b221e22600c7a6cc6ef84b0566",
       "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
-      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba",
+      "requested_mode": "ppc16",
+      "actual_depth": 8
     },
     {
-      "mode": "ppc16",
+      "mode": "ppc8",
       "state": "suspended",
       "scale": 0.75,
       "device_scale": 2,
@@ -801,10 +809,12 @@
       "rendered_original_capture_sha256": "31234520330ce7cd02d1944388a588e790bbc49abe821d0edfa693bbfa9b415d",
       "rendered_sha256": "24ec8e97f02ea8c33bd6d1b7c1ec8b49c77ed10c79fce6cd1c24d490da55395c",
       "guest_original_capture_sha256": "feba0d166004c13b75f004ed5e979a98dcdca84706269b5c341d02d09a76a6db",
-      "guest_sha256": "d2455c6757fca38ea483fbe40514df19059468abb6c3c34e4661b09627d51a13"
+      "guest_sha256": "d2455c6757fca38ea483fbe40514df19059468abb6c3c34e4661b09627d51a13",
+      "requested_mode": "ppc16",
+      "actual_depth": 8
     },
     {
-      "mode": "ppc16",
+      "mode": "ppc8",
       "state": "suspended",
       "scale": 1.0,
       "device_scale": 2,
@@ -827,10 +837,12 @@
       "rendered_original_capture_sha256": "2fb86339e738b5c588c2d70f4e9ed3fedcf747c244b154ad3438b249e9b0caab",
       "rendered_sha256": "126b269ff84eac87faa4bb64fcc22a3bbbef133ff2fb0b81cb35dea088c468b2",
       "guest_original_capture_sha256": "feba0d166004c13b75f004ed5e979a98dcdca84706269b5c341d02d09a76a6db",
-      "guest_sha256": "d2455c6757fca38ea483fbe40514df19059468abb6c3c34e4661b09627d51a13"
+      "guest_sha256": "d2455c6757fca38ea483fbe40514df19059468abb6c3c34e4661b09627d51a13",
+      "requested_mode": "ppc16",
+      "actual_depth": 8
     },
     {
-      "mode": "ppc16",
+      "mode": "ppc8",
       "state": "suspended",
       "scale": 1.5,
       "device_scale": 2,
@@ -853,10 +865,12 @@
       "rendered_original_capture_sha256": "c181569c89855a703b7e19f22afc6ff752fe6693ec8fe64df121af7556c6e043",
       "rendered_sha256": "26033b0691c8d98d1bff02cd9ea11adac68203a35d28908b53a36bb64520511f",
       "guest_original_capture_sha256": "feba0d166004c13b75f004ed5e979a98dcdca84706269b5c341d02d09a76a6db",
-      "guest_sha256": "d2455c6757fca38ea483fbe40514df19059468abb6c3c34e4661b09627d51a13"
+      "guest_sha256": "d2455c6757fca38ea483fbe40514df19059468abb6c3c34e4661b09627d51a13",
+      "requested_mode": "ppc16",
+      "actual_depth": 8
     },
     {
-      "mode": "ppc16",
+      "mode": "ppc8",
       "state": "suspended",
       "scale": 2.0,
       "device_scale": 2,
@@ -879,10 +893,12 @@
       "rendered_original_capture_sha256": "beda09a14de0d1726f411ada506f39a8e0fde5901ae492a4a7ed6b6fd3dff6ee",
       "rendered_sha256": "39f7802a9f7b28ff570744e433d7395b83092e5b06470856cf1fd753398ec171",
       "guest_original_capture_sha256": "feba0d166004c13b75f004ed5e979a98dcdca84706269b5c341d02d09a76a6db",
-      "guest_sha256": "d2455c6757fca38ea483fbe40514df19059468abb6c3c34e4661b09627d51a13"
+      "guest_sha256": "d2455c6757fca38ea483fbe40514df19059468abb6c3c34e4661b09627d51a13",
+      "requested_mode": "ppc16",
+      "actual_depth": 8
     },
     {
-      "mode": "ppc16",
+      "mode": "ppc8",
       "state": "resumed",
       "scale": 0.75,
       "device_scale": 2,
@@ -905,10 +921,12 @@
       "rendered_original_capture_sha256": "8951a32c0ae9f1fa6719c8fcbaf57f8405adbf00c7f30525abf10c8b4f986098",
       "rendered_sha256": "697863d77737ef145ebaacbc997f18f6b4421b8f74b79873bd85a94a078ee6e4",
       "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
-      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba",
+      "requested_mode": "ppc16",
+      "actual_depth": 8
     },
     {
-      "mode": "ppc16",
+      "mode": "ppc8",
       "state": "resumed",
       "scale": 1.0,
       "device_scale": 2,
@@ -931,10 +949,12 @@
       "rendered_original_capture_sha256": "9be44662fa80c7aba556b49d19dc41281ec99141cec86daf4eab989516c3a476",
       "rendered_sha256": "b8c01e28d3aba58dfe9ffdb36346d674606bfdc63a390b6584af119032653171",
       "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
-      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba",
+      "requested_mode": "ppc16",
+      "actual_depth": 8
     },
     {
-      "mode": "ppc16",
+      "mode": "ppc8",
       "state": "resumed",
       "scale": 1.5,
       "device_scale": 2,
@@ -957,10 +977,12 @@
       "rendered_original_capture_sha256": "af4382103e1a4e93556ffc2d91ea5fcc4931e435895bd27501f8b783b95b2277",
       "rendered_sha256": "b63ed4bc671af21e69514f8515a79d24050b0590f24c57820535cadfb9a4e873",
       "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
-      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba",
+      "requested_mode": "ppc16",
+      "actual_depth": 8
     },
     {
-      "mode": "ppc16",
+      "mode": "ppc8",
       "state": "resumed",
       "scale": 2.0,
       "device_scale": 2,
@@ -983,7 +1005,9 @@
       "rendered_original_capture_sha256": "0550f5a94a8e1ee8154db2dccdc725831e9965a9b5a3c3533dd8905af9578cf4",
       "rendered_sha256": "e639520417a787a663f0d4b418c19680a8fa16b221e22600c7a6cc6ef84b0566",
       "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
-      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba",
+      "requested_mode": "ppc16",
+      "actual_depth": 8
     },
     {
       "mode": "ppc8",
@@ -1321,5 +1345,7 @@
       "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
       "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
     }
-  ]
+  ],
+  "depth_correction": "Pinned capture helper initialized PPC at 8bpp when no explicit depth was supplied. Original PPC16 labels were incorrect; native/composed pixel comparisons remain evidence at PPC8 only.",
+  "qualification_invalid_reason": "PPC16 capture cases actually used 8bpp; the required four-mode compositor matrix is incomplete pending recapture."
 }
