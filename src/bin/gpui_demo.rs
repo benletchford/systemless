@@ -215,6 +215,9 @@ mod desktop {
         #[arg(long, hide = true)]
         capture_styled_text_edit_caret: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, default_value_t = 26)]
+        capture_styled_caret_offset: usize,
+        #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_styled_text_edit_selected: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
@@ -4188,9 +4191,11 @@ mod desktop {
     #[cfg(feature = "gpui-demo-test")]
     fn capture_styled_text_edit_ink(
         game: &std::path::Path, output: &std::path::Path,
-        prefer_powerpc: bool, depth: Option<u16>, scale: f32, selected: bool, caret: bool, activation: &[bool],
+        prefer_powerpc: bool, depth: Option<u16>, scale: f32, selected: bool, caret_offset: Option<usize>, activation: &[bool],
     ) {
         use gpui_kit::{platform, HeadlessAppContext};
+        let caret = caret_offset.is_some();
+        let insertion = caret_offset.unwrap_or(26);
         struct Preview {
             image: Arc<RenderImage>,
             record: systemless::runner::TextEditSnapshot,
@@ -4242,11 +4247,13 @@ mod desktop {
         }).expect("settled showcase styled field");
         assert!(!record.active, "styled fixture starts inactive");
         if selected || caret {
+            assert!(insertion <= record.text.len(), "caret offset is a guest byte boundary");
+            let before = record.clone();
             let dest = record.global_dest_rect.unwrap();
             let geometry = record.guest_styled_line_geometry(0).unwrap().0;
             let vertical = dest.0 - record.dest_rect.0 + geometry.top + geometry.ascent;
             let left = dest.1 - record.dest_rect.1 + geometry.left;
-            let right = left + record.guest_styled_range_width(0..26).unwrap();
+            let right = left + record.guest_styled_range_width(0..insertion).unwrap();
             let left = if caret { right } else { left };
             for input in [MacintoshInput::MouseDown { vertical, horizontal: left },
                 MacintoshInput::MouseMove { vertical, horizontal: right },
@@ -4259,9 +4266,12 @@ mod desktop {
                 let settled = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
                 session.runner_mut().text_edit_snapshot().records.into_iter().find(|next|
                     settled && next.guest_id == record.guest_id && next.active
-                        && next.selection == (if caret { (26, 26) } else { (0, 26) })
+                        && next.selection == (if caret { (insertion, insertion) } else { (0, 26) })
                         && (!caret || next.caret_visible && next.drawing_intact))
             }).expect("guest styled drag or click reaches the measured insertion boundary");
+            assert_eq!(record.text, before.text, "pointer input preserves guest text");
+            assert_eq!(record.style_runs, before.style_runs, "pointer input preserves style intent");
+            assert_eq!(record.generation, before.generation, "pointer input preserves owner identity");
         }
         let original = record.clone();
         for &active in activation {
@@ -4684,31 +4694,31 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_selected_suspended.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), true, false, &[false]);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[false]);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_selected_resumed.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), true, false, &[false, true]);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[false, true]);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_selected.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), true, false, &[]);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[]);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_caret.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), false, true, &[]);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), false, Some(args.capture_styled_caret_offset), &[]);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_ink.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), false, false, &[]);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), false, None, &[]);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -5383,6 +5393,7 @@ mod desktop {
                         capture_text_edit: None,
                         capture_styled_text_edit_ink: None,
                         capture_styled_text_edit_caret: None,
+                        capture_styled_caret_offset: 26,
                         capture_styled_text_edit_selected: None,
                         capture_styled_text_edit_selected_suspended: None,
                         capture_styled_text_edit_selected_resumed: None,
