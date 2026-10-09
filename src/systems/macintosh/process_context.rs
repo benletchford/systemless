@@ -10449,6 +10449,15 @@ impl ProcessContext {
         adapter.attach_to(&self.mixed_mode_m68k);
     }
 
+    /// Replace the global TEXT scrap after an external clipboard change.
+    /// Private application scrap is converted by the guest on resume, not here.
+    /// Macintosh Toolbox Essentials (1992), pp. 2-58--2-61.
+    pub(crate) fn import_clipboard_text(&self, text: Vec<u8>) {
+        self.scrap_state.zero();
+        self.scrap_state.initialize_and_append_entry(*b"TEXT", text);
+        self.event_queue().with_mut(|queue| queue.activation.clipboard_changed());
+    }
+
     pub(crate) fn attach_scrap_state(&self, adapter: &mut SharedProcessScrapState) {
         adapter.attach_to(&self.scrap_state);
     }
@@ -14001,6 +14010,46 @@ mod tests {
         assert_eq!(classic.current_tick(), 41);
         assert_eq!(native.current_tick(), 42);
         assert!(!classic.ptr_eq(&native));
+    }
+
+    #[test]
+    fn external_clipboard_import_updates_both_gateways_and_resume_conversion() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessScrapState::default();
+        let mut native = SharedProcessScrapState::default();
+        context.attach_scrap_state(&mut classic);
+        context.attach_scrap_state(&mut native);
+        classic.initialize_and_append_entry(*b"PICT", vec![1, 2]);
+        let policy = Some(crate::loader::ApplicationSizeResource {
+            flags: 0x4800, preferred_size: 0, minimum_size: 0,
+        });
+        context.event_queue().with_mut(|queue| {
+            queue.activation.request(false);
+            queue.activation.begin_event_call(policy, true, true);
+            assert_eq!(queue.activation.consume().unwrap().os_message(), Some(0x0100_0000));
+            queue.activation.begin_event_call(policy, true, true);
+        });
+        let text = vec![b'A', 0x8e, b'\r', b'B'];
+        context.import_clipboard_text(text.clone());
+        for adapter in [&classic, &native] {
+            assert_eq!(adapter.flavor(*b"TEXT").unwrap().data, text);
+            assert!(adapter.flavor(*b"PICT").is_none());
+            assert_eq!(adapter.summary().count, 1);
+            assert!(adapter.summary().handle_dirty);
+        }
+        context.event_queue().with_mut(|queue| {
+            queue.activation.request(true);
+            queue.activation.begin_event_call(policy, true, true);
+            assert_eq!(queue.activation.consume().unwrap().os_message(), Some(0x0100_0003));
+            queue.activation.begin_event_call(policy, true, true);
+            queue.activation.request(false);
+            queue.activation.begin_event_call(policy, true, true);
+            queue.activation.consume();
+            queue.activation.begin_event_call(policy, true, true);
+            queue.activation.request(true);
+            queue.activation.begin_event_call(policy, true, true);
+            assert_eq!(queue.activation.consume().unwrap().os_message(), Some(0x0100_0001));
+        });
     }
 
     #[test]

@@ -3200,6 +3200,14 @@ impl FixtureRunner {
         self.bus.synthetic_reservation_range()
     }
 
+    /// Import changed host clipboard text before requesting foreground resume.
+    /// Bytes must be Macintosh Roman with carriage-return line endings. This
+    /// replaces global scrap flavors and leaves private TextEdit scrap to the
+    /// application's resume handler (Toolbox Essentials, pp. 2-58--2-61).
+    pub fn import_clipboard_text(&mut self, text: Vec<u8>) {
+        self.process_context.import_clipboard_text(text);
+    }
+
     /// Request a process switch at the next eligible Event Manager opportunity.
     /// A parked WaitNextEvent is already such an opportunity; it can return
     /// the notification without waiting for the requested sleep to expire.

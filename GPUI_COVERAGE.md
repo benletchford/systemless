@@ -2145,3 +2145,20 @@ These captures do not qualify native host activation observer integration or
 native-oracle process switching. Monochrome custom guest panels remain black, consistent with the native
 one-bit evidence and PaintRect regression recorded above. Background
 scheduling, modal/menu transitions and clipboard conversion remain open.
+
+### Clipboard bridge continuation
+
+`MacintoshSession::import_clipboard_text` and the runner forwarding API now
+replace the shared global scrap with Macintosh Roman TEXT bytes and mark
+clipboard conversion for the next resume. Callers must supply CR line endings
+and import before requesting resume. Private TextEdit scrap remains guest-owned.
+The focused `external_clipboard_import_updates_both_gateways_and_resume_conversion`
+regression passes: both attached CPU adapters see the replacement, old formats
+are cleared, and conversion is requested on the next resume only. This is
+shared-state evidence, not end-to-end native clipboard qualification.
+
+The GPUI host bridge remains unfinished. Continue with host text conversion,
+change detection that preserves newer guest scrap, import-before-resume ordering,
+and guest-to-host export after guest suspend handling. Define behavior for
+unrepresentable Unicode and non-text clipboard formats, and verify actual guest
+conversion on both CPUs. No host clipboard reads or writes are wired yet.

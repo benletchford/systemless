@@ -111,6 +111,13 @@ impl MacintoshSession {
         }
     }
 
+    /// Import changed host clipboard text as Macintosh Roman bytes with CR
+    /// line endings, before requesting resume. Guest code owns private scrap
+    /// conversion in response to the resulting resume notification.
+    pub fn import_clipboard_text(&mut self, text: Vec<u8>) {
+        self.runner.import_clipboard_text(text);
+    }
+
     /// Request a foreground change without bypassing the guest Event Manager.
     /// The request takes effect at an eligible scheduling call, respecting
     /// modality and the application's SIZE suspend/resume policy.
