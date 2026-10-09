@@ -63,6 +63,7 @@ pub(super) struct PpcStandardFileFilteringState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PpcStandardFilePutTrackingState {
+    pub(super) confirming_replace: bool,
     pub(super) generation: u64,
     pub(super) standard_entry_point: bool,
     pub(super) call: PpcStandardFileCall,
@@ -1033,6 +1034,20 @@ fn ppc_standard_file_draw_put_dialog(
         true,
         true,
     );
+    if tracking.confirming_replace {
+        let layout = crate::standard_file_ui::StandardFileReplacementLayout::new(bounds);
+        if !ppc_draw_themed_dialog_frame(memory, gworlds, layout.bounds, layout.bounds, 2) {
+            let _ = ppc_fill_front_rect(memory, front, layout.bounds, PPC_RGB_WHITE);
+            let _ = ppc_frame_front_rect(memory, front, layout.bounds, PPC_RGB_BLACK, 2);
+        }
+        let mut message = b"Replace existing \"".to_vec();
+        message.extend_from_slice(&tracking.name);
+        message.extend_from_slice(b"\"?");
+        ppc_draw_dialog_text(memory, gworlds, layout.message, &message, PPC_RGB_BLACK);
+        for (rect, label, default) in [(layout.cancel, b"Cancel".as_slice(), false), (layout.replace, b"Replace".as_slice(), true)] {
+            ppc_standard_file_draw_button(memory, front, gworlds, (0, 0, 0, 0), rect, label, true, default);
+        }
+    }
 }
 
 fn ppc_standard_file_write_cancel_reply(
@@ -1686,6 +1701,7 @@ fn ppc_standard_file_put_start(
     );
     startup.next_standard_file_generation = startup.next_standard_file_generation.saturating_add(1);
     let tracking = PpcStandardFilePutTrackingState {
+        confirming_replace: false,
         generation: startup.next_standard_file_generation,
         standard_entry_point: operation == PpcStandardFileOperation::StandardPutFile,
         call: ppc_standard_file_call(mode, cpu),
@@ -1779,6 +1795,23 @@ fn ppc_dispatch_standard_file(
                     .iter()
                     .position(|event| matches!(event.what, 1 | 3 | 5))
                     .and_then(|index| event_queue.remove(index));
+                if tracking.confirming_replace {
+                    let layout = crate::standard_file_ui::StandardFileReplacementLayout::new(tracking.bounds);
+                    if let Some(event) = event {
+                        match layout.action(event.what, event.message, event.modifiers, event.where_v, event.where_h) {
+                            Some(true) => return ppc_standard_file_finish_put(memory, startup, tracking, vfs_directories, vfs_files, vfs_resource_files, vfs_volumes, working_directories, next_working_directory_ref_num, true),
+                            Some(false) => {
+                                tracking.confirming_replace = false;
+                                startup.next_standard_file_generation = startup.next_standard_file_generation.saturating_add(1);
+                                tracking.generation = startup.next_standard_file_generation;
+                            },
+                            None => {}
+                        }
+                    }
+                    ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+                    startup.standard_file_put_tracking = Some(tracking);
+                    return PpcImportAction::Yield(u64::MAX);
+                }
                 let mut accept = false;
                 if let Some(event) = event {
                     if event.what == 1 {
@@ -1967,6 +2000,13 @@ fn ppc_dispatch_standard_file(
                             ppc_standard_file_insert_name_character(&mut tracking, character);
                         }
                     }
+                }
+                if accept && ppc_fsspec_target_exists(vfs_directories, vfs_files, vfs_resource_files, tracking.dir_id, &tracking.name) {
+                    // Files (1992), p. 3-7: retain Save until Replace is confirmed.
+                    tracking.confirming_replace = true;
+                    startup.next_standard_file_generation = startup.next_standard_file_generation.saturating_add(1);
+                    tracking.generation = startup.next_standard_file_generation;
+                    accept = false;
                 }
                 if accept {
                     return ppc_standard_file_finish_put(

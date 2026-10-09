@@ -2838,6 +2838,16 @@ impl super::TrapDispatcher {
             &location_label,
         );
         self.draw_standard_file_put_list(bus, tracking);
+        if tracking.confirming_replace {
+            let layout = crate::standard_file_ui::StandardFileReplacementLayout::new(tracking.bounds);
+            let local = |r: (i16, i16, i16, i16)| (r.0 - layout.bounds.0, r.1 - layout.bounds.1, r.2 - layout.bounds.0, r.3 - layout.bounds.1);
+            let items = vec![
+                DialogItem { item_type: 4, rect: local(layout.replace), text: "Replace".into(), ..DialogItem::default() },
+                DialogItem { item_type: 4, rect: local(layout.cancel), text: "Cancel".into(), ..DialogItem::default() },
+                DialogItem { item_type: 8, rect: local(layout.message), text: format!("Replace existing \"{}\"?", tracking.name), ..DialogItem::default() },
+            ];
+            self.draw_dialog(bus, layout.bounds, 2, "", &items, 1, "", 0, false, 0);
+        }
         self.standard_file_drawn = bus.screen_mark();
     }
 
@@ -3128,6 +3138,7 @@ impl super::TrapDispatcher {
         let entries = self.standard_file_get_candidates_in_directory(current_dir_id, None);
         self.next_standard_file_generation = self.next_standard_file_generation.saturating_add(1);
         let tracking = StandardFilePutTrackingState {
+            confirming_replace: false,
             generation: self.next_standard_file_generation,
             standard_entry_point,
             modern_reply,
@@ -3158,6 +3169,21 @@ impl super::TrapDispatcher {
         let mut consumed_event = false;
         while let Some(event) = self.event_queue.pop_front() {
             consumed_event = true;
+            if tracking.confirming_replace {
+                let layout = crate::standard_file_ui::StandardFileReplacementLayout::new(tracking.bounds);
+                match layout.action(event.what, event.message, event.modifiers, event.where_v, event.where_h) {
+                    Some(true) => { self.finish_standard_file_put_tracking(cpu, bus, tracking, true); return; }
+                    Some(false) => {
+                        tracking.confirming_replace = false;
+                        self.next_standard_file_generation = self.next_standard_file_generation.saturating_add(1);
+                        tracking.generation = self.next_standard_file_generation;
+                    },
+                    None => {}
+                }
+                self.draw_standard_file_put_dialog(bus, &tracking);
+                self.standard_file_put_tracking = Some(tracking);
+                return;
+            }
             match event.what {
                 1 => {
                     action = self.standard_file_put_mouse_action(
@@ -3188,7 +3214,18 @@ impl super::TrapDispatcher {
                     self.standard_file_put_tracking = Some(tracking);
                     return;
                 }
-                self.finish_standard_file_put_tracking(cpu, bus, tracking, true);
+                // Files (1992), p. 3-7: an existing name requires confirmation.
+                let name = decode_mac_roman(&encode_mac_roman_lossy(&tracking.name));
+                if self.find_vfs_file_in_directory(tracking.current_dir_id, &name).is_some()
+                    || self.find_vfs_rsrc_file_in_directory(tracking.current_dir_id, &name).is_some() {
+                    tracking.confirming_replace = true;
+                    self.next_standard_file_generation = self.next_standard_file_generation.saturating_add(1);
+                    tracking.generation = self.next_standard_file_generation;
+                    self.draw_standard_file_put_dialog(bus, &tracking);
+                    self.standard_file_put_tracking = Some(tracking);
+                } else {
+                    self.finish_standard_file_put_tracking(cpu, bus, tracking, true);
+                }
             }
             Some(StandardFilePutAction::Navigate) => {
                 let target = tracking

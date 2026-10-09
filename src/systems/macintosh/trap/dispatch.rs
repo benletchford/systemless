@@ -756,6 +756,7 @@ pub struct DialogTrackingState {
 /// Inside Macintosh: Files (1992), pp. 3-13, 3-45 to 3-47.
 #[derive(Clone, Debug)]
 pub(crate) struct StandardFilePutTrackingState {
+    pub(crate) confirming_replace: bool,
     pub generation: u64,
     pub standard_entry_point: bool,
     pub modern_reply: bool,

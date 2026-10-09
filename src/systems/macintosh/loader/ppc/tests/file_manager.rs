@@ -3152,6 +3152,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     #[test]
     fn standard_file_name_edit_at_maximum_length_is_safe() {
         let mut tracking = PpcStandardFilePutTrackingState {
+            confirming_replace: false,
             generation: 1,
             standard_entry_point: true,
             call: PpcStandardFileCall {

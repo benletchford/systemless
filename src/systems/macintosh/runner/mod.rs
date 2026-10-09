@@ -29,7 +29,7 @@ use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{ProcessContext, ProcessMemoryManager, SharedProcessFileSystem};
 pub use crate::standard_file_ui::{
     StandardFileEntrySnapshot, StandardFileGetLayout, StandardFileKind, StandardFilePutLayout,
-    StandardFileSnapshot,
+    StandardFileSnapshot, StandardFileReplacementLayout,
 };
 pub use crate::text_edit::{TextEditManagerSnapshot, TextEditSnapshot};
 use crate::trap::dispatch::TrapTableProfile;
@@ -3340,6 +3340,7 @@ impl FixtureRunner {
                 guest_id: tracking.reply_ptr,
                 generation: tracking.generation,
                 kind: StandardFileKind::Get,
+                confirming_replace: false,
                 standard_entry_point: tracking.standard_entry_point,
                 bounds: tracking.bounds,
                 directory_id: tracking.current_dir_id,
@@ -3372,6 +3373,7 @@ impl FixtureRunner {
             guest_id: tracking.reply_ptr,
             generation: tracking.generation,
             kind: StandardFileKind::Put,
+            confirming_replace: tracking.confirming_replace,
             standard_entry_point: tracking.standard_entry_point,
             bounds: tracking.bounds,
             directory_id: tracking.current_dir_id,
@@ -3396,7 +3398,7 @@ impl FixtureRunner {
                 tracking.sel_start.max(0) as usize,
                 tracking.sel_end.max(0) as usize,
             )),
-            name_has_focus: Some(true),
+            name_has_focus: Some(!tracking.confirming_replace),
             directory_label: Some(directory_label),
             get_layout: None,
             put_layout: Some(put_layout),

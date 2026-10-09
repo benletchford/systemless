@@ -13448,6 +13448,14 @@
         disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
+        // Files (1992), p. 3-7: a conflicting name must wait for Replace.
+        assert!(disp.standard_file_put_tracking.as_ref().unwrap().confirming_replace);
+        assert_eq!(bus.read_byte(reply_ptr), 0);
+        disp.event_queue.push_back(QueuedEvent {
+            what: 3, message: 0x0000_240D, when: 0,
+            where_v: 0, where_h: 0, modifiers: 0,
+        });
+        disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus).unwrap().unwrap();
         assert_eq!(bus.read_byte(reply_ptr), 1);
         assert_eq!(bus.read_byte(reply_ptr + 1), 1);
         assert_eq!(
