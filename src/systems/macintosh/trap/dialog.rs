@@ -1293,6 +1293,75 @@ impl super::TrapDispatcher {
         (top, x)
     }
 
+    fn track_text_edit_selection<C: CpuOps>(
+        &mut self, cpu: &mut C, bus: &mut MacMemoryBus, te_handle: u32,
+        initial_point: (i16, i16), extend: bool,
+    ) -> bool {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr == 0 {
+            self.textedit_states.clear_click_tracking();
+            return false;
+        }
+        let previous_selection = (
+            bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET),
+            bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET),
+        );
+        let tracking = self.textedit_states.take_click_tracking();
+        let point = if tracking.is_some() {
+            let port = bus.read_long(te_ptr + Self::TE_IN_PORT_OFFSET);
+            let (top, left) = self.port_bounds_top_left(bus, port);
+            let (v, h) = self.window_tracking_mouse_pos(bus);
+            (v.wrapping_add(top), h.wrapping_add(left))
+        } else {
+            initial_point
+        };
+        let offset = self.te_point_to_char(bus, te_handle, point).max(0) as usize;
+        let anchor = tracking.map_or_else(
+            || {
+                if extend {
+                    let start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
+                    let end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
+                    if offset < start {
+                        end
+                    } else {
+                        start
+                    }
+                } else {
+                    offset
+                }
+            },
+            |tracking| tracking.anchor,
+        );
+        let length = bus.read_word(te_ptr + Self::TE_LENGTH_OFFSET) as usize;
+        let anchor = anchor.min(length);
+        bus.write_word(
+            te_ptr + Self::TE_SEL_START_OFFSET,
+            anchor.min(offset) as u16,
+        );
+        bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, anchor.max(offset) as u16);
+        bus.write_word(te_ptr + Self::TE_SEL_POINT_OFFSET, point.0 as u16);
+        bus.write_word(te_ptr + Self::TE_SEL_POINT_OFFSET + 2, point.1 as u16);
+        bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.current_tick());
+        if previous_selection != (anchor.min(offset) as u16, anchor.max(offset) as u16) {
+            self.draw_te_contents(cpu, bus, te_handle, true);
+        }
+        if self.window_tracking_button_down(bus) {
+            self.textedit_states.retain_click_tracking(
+                crate::text_edit::TextEditClickTracking {
+                    handle: te_handle,
+                    anchor,
+                    native: false,
+                    last_point: point,
+                },
+            );
+        } else {
+            if let Some(index) = self.event_queue.iter().position(|event| event.what == 2) {
+                self.event_queue.remove(index);
+            }
+        }
+        self.textedit_states.has_classic_click_tracking()
+    }
+
     /// Inverse of `te_char_to_point`: locate the character offset whose
     /// glyph cell contains `point` (vertical, horizontal). Used by
     /// TEGetOffset ($A83C) per Inside Macintosh Volume V, V-172.
@@ -11540,9 +11609,29 @@ impl super::TrapDispatcher {
                                     bus, dialog_ptr,
                                 );
                                 if is_edit_text {
-                                    self.activate_dialog_edit_item(
-                                        bus, cpu, dialog_ptr, &items, item_no,
-                                    );
+                                    let was_tracking = self.textedit_states.has_classic_click_tracking();
+                                    if !was_tracking {
+                                        self.activate_dialog_edit_item(
+                                            bus, cpu, dialog_ptr, &items, item_no,
+                                        );
+                                    }
+                                    let handle = bus.read_long(dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+                                    self.track_text_edit_selection(cpu, bus, handle,
+                                        (where_v.saturating_sub(bounds.0), where_h.saturating_sub(bounds.1)),
+                                        _modifiers & 0x0200 != 0);
+                                    let ptr = Self::te_record_ptr(bus, handle);
+                                    if ptr != 0 {
+                                        let item = &mut items[(item_no - 1) as usize];
+                                        let previous = (item.sel_start, item.sel_end);
+                                        item.sel_start = bus.read_word(ptr + Self::TE_SEL_START_OFFSET) as i16;
+                                        item.sel_end = bus.read_word(ptr + Self::TE_SEL_END_OFFSET) as i16;
+                                        let edit_text = item.text.clone();
+                                        if !was_tracking || previous != (item.sel_start, item.sel_end) {
+                                            let default_item = bus.read_word(dialog_ptr + crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET) as i16;
+                                            self.redraw_standard_dialog_items(bus, bounds, &items, default_item,
+                                                &edit_text, item_no, dialog_ptr, Some(item_no));
+                                        }
+                                    }
                                 }
                                 trace_detail = format!(
                                     "bounds=({},{},{},{}) item_hit={} item_type=${:02X} disabled=false outcome=enabled_item",
@@ -11709,7 +11798,9 @@ impl super::TrapDispatcher {
                 // DialogSelect shares IsDialogEvent's one-byte Pascal
                 // Boolean ABI: canonical TRUE is 1, not a word-sized -1.
                 bus.write_byte(sp + 12, if result { 1 } else { 0 });
-                cpu.write_reg(Register::A7, sp + 12);
+                if !self.textedit_states.has_classic_click_tracking() {
+                    cpu.write_reg(Register::A7, sp + 12);
+                }
                 Ok(())
             }
 
@@ -15880,62 +15971,8 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::A7, sp + 10);
                     return Some(Ok(()));
                 }
-                let previous_selection = (
-                    bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET),
-                    bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET),
-                );
-                let tracking = self.textedit_states.take_click_tracking();
-                let point = if tracking.is_some() {
-                    let port = bus.read_long(te_ptr + Self::TE_IN_PORT_OFFSET);
-                    let (top, left) = self.port_bounds_top_left(bus, port);
-                    let (v, h) = self.window_tracking_mouse_pos(bus);
-                    (v.wrapping_add(top), h.wrapping_add(left))
-                } else {
-                    (bus.read_word(sp + 6) as i16, bus.read_word(sp + 8) as i16)
-                };
-                let offset = self.te_point_to_char(bus, te_handle, point).max(0) as usize;
-                let anchor = tracking.map_or_else(
-                    || {
-                        if bus.read_byte(sp + 4) != 0 {
-                            let start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
-                            let end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
-                            if offset < start {
-                                end
-                            } else {
-                                start
-                            }
-                        } else {
-                            offset
-                        }
-                    },
-                    |tracking| tracking.anchor,
-                );
-                let length = bus.read_word(te_ptr + Self::TE_LENGTH_OFFSET) as usize;
-                let anchor = anchor.min(length);
-                bus.write_word(
-                    te_ptr + Self::TE_SEL_START_OFFSET,
-                    anchor.min(offset) as u16,
-                );
-                bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, anchor.max(offset) as u16);
-                bus.write_word(te_ptr + Self::TE_SEL_POINT_OFFSET, point.0 as u16);
-                bus.write_word(te_ptr + Self::TE_SEL_POINT_OFFSET + 2, point.1 as u16);
-                bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.current_tick());
-                if previous_selection != (anchor.min(offset) as u16, anchor.max(offset) as u16) {
-                    self.draw_te_contents(cpu, bus, te_handle, true);
-                }
-                if self.window_tracking_button_down(bus) {
-                    self.textedit_states.retain_click_tracking(
-                        crate::text_edit::TextEditClickTracking {
-                            handle: te_handle,
-                            anchor,
-                            native: false,
-                            last_point: point,
-                        },
-                    );
-                } else {
-                    if let Some(index) = self.event_queue.iter().position(|event| event.what == 2) {
-                        self.event_queue.remove(index);
-                    }
+                let point = (bus.read_word(sp + 6) as i16, bus.read_word(sp + 8) as i16);
+                if !self.track_text_edit_selection(cpu, bus, te_handle, point, bus.read_byte(sp + 4) != 0) {
                     cpu.write_reg(Register::A7, sp + 10);
                 }
                 Ok(())

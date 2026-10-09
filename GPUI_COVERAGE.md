@@ -2708,3 +2708,27 @@ encoding. Tested glyph forms, baseline and caret placement are consistent with
 the paired guest frames. This does not establish native Macintosh font fidelity,
 the dialog field scale/state matrix, font mutation, multiline/styled/scrolled
 fields, or exhaustive selection/editing behavior; those remain unfinished.
+
+DialogSelect editText mouse handling now shares the retained TEClick selection
+machinery on both CPU paths. 68k previously activated the field without placing
+or dragging its insertion point; PPC placed it once without retaining mouse
+ownership. Both now track held movement and Shift extension until release, then
+return to guest editing. The classic retained trap preserves its Pascal stack
+until release and synchronizes the DITL selection; it avoids resetting the
+shared TERec or repainting an unchanged field on every tracking poll.
+
+The shared GPUI dialog-field geometry now distinguishes a collapsed guest
+selection from a range collapsed only by PPC trailing-space trimming. A selected
+trailing space cannot acquire a spurious caret. The focused regression passes
+(0.02 seconds). The three-mode fixture uses the GUI scheduler and actual guest
+mouse/modifier events to verify full, partial, reverse and Shift-extended ranges,
+compares the renderer's glyph/highlight geometry with every guest field pixel,
+and verifies typing after release (12 selection checks; 20.65 seconds, passes).
+Five existing classic TEClick tests pass (0.03 seconds), 12 DialogSelect tests
+pass (0.04 seconds), and the PPC public-record editing test passes (0.04 seconds).
+All six focused text tests pass (0.25 seconds), as does the three-mode modeless
+lifecycle regression (6.38 seconds). Default and JIT/headless checks pass.
+This qualifies the tested modeless field's guest behavior and geometry. It does
+not establish composed selected-field scale/state coverage, switching among
+multiple edit fields, ClikLoop callbacks, native Macintosh fidelity or the
+remaining styled/multiline/scrolled field requirements.

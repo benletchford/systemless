@@ -8651,6 +8651,78 @@ mod desktop {
         }
 
         #[test]
+        fn dialog_field_highlight_geometry_matches_guest_pixels() {
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(132, 7));
+                settle(&mut session);
+                let dialog = session.runner_mut().dialog_snapshot().into_iter()
+                    .find(|dialog| dialog.visible && dialog.items.len() == 4).unwrap();
+                let bounds = dialog.items[3].bounds;
+                let layout = dialog.items[3].edit_text_layout.as_ref().unwrap();
+                let line = super::super::text::ClassicLine::unicode("Pilot", layout.font.0, layout.font.1);
+                for (anchor, endpoint, extend, expected_selection) in [
+                    (0, 5, false, (0, 5)), (1, 3, false, (1, 3)),
+                    (3, 1, false, (1, 3)), (0, 0, true, (0, 3)),
+                ] {
+                    if extend { session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x38, character: 0 }); }
+                    let start_x = bounds.1 + 1 + line.positions[anchor] as i16;
+                    let end_x = bounds.1 + 1 + line.positions[endpoint] as i16;
+                    for input in [
+                        MacintoshInput::MouseDown { vertical: bounds.0 + 5, horizontal: start_x },
+                        MacintoshInput::MouseMove { vertical: bounds.0 + 5, horizontal: end_x },
+                        MacintoshInput::MouseUp { vertical: bounds.0 + 5, horizontal: end_x },
+                    ] {
+                        session.deliver_input(input);
+                        for _ in 0..10 {
+                            let tick = session.runner().guest_tick().saturating_add(1);
+                            session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                        }
+                    }
+                    if extend { session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x38, character: 0 }); }
+                    settle(&mut session);
+                    let selected = session.runner_mut().dialog_snapshot().into_iter()
+                        .find(|next| next.guest_id == dialog.guest_id).unwrap();
+                    let item = &selected.items[3];
+                    assert_eq!(item.text, "Pilot");
+                    assert_eq!(item.selection, Some((expected_selection.0 as i16, expected_selection.1 as i16)), "PPC={powerpc}, depth={depth:?}");
+                    let layout = item.edit_text_layout.as_ref().unwrap();
+                    let line = super::super::text::ClassicLine::unicode(&item.text, layout.font.0, layout.font.1);
+                    let geometry = super::super::text::dialog_field_geometry(&line, 5, layout, expected_selection,
+                        true, true, i32::from(bounds.3 - bounds.1), i32::from(bounds.2 - bounds.0));
+                    assert!(geometry.caret.is_none());
+                    let highlight = geometry.selection.unwrap();
+                    let mut ink = std::collections::HashSet::new();
+                    for &(x, y, width) in &line.ink {
+                        ink.extend((x..x + width).map(|px| (px + 1, y + i32::from(layout.baseline))));
+                    }
+                    let frame = session.video_frame().unwrap();
+                    for y in 0..i32::from(bounds.2 - bounds.0) {
+                        for x in 0..i32::from(bounds.3 - bounds.1) {
+                            let selected = y >= highlight.0 && y < highlight.2 && x >= highlight.1 && x < highlight.3;
+                            let expected = ink.contains(&(x, y)) ^ selected;
+                            let offset = (((y + i32::from(bounds.0)) as u32 * frame.width
+                                + (x + i32::from(bounds.1)) as u32) * 4) as usize;
+                            let actual = frame.pixels[offset..offset + 3].iter().all(|value| *value < 128);
+                            assert_eq!(actual, expected, "dialog field pixel {x},{y}, PPC={powerpc}, depth={depth:?}");
+                        }
+                    }
+                }
+                session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x06, character: b'z' });
+                session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x06, character: b'z' });
+                settle(&mut session);
+                assert!(session.runner_mut().dialog_snapshot().iter().any(|next| {
+                    next.guest_id == dialog.guest_id && next.items[3].text == "zot"
+                }), "release must restore guest editing, PPC={powerpc}, depth={depth:?}");
+            }
+        }
+
+        #[test]
         fn modeless_dialog_tracks_guest_lifecycle_on_both_cpus() {
             for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
                 let mut session = MacintoshSession::new(true, depth);

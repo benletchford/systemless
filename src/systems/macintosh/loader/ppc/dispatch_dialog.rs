@@ -201,6 +201,7 @@ pub(super) struct PpcDialogDispatchContext<'a> {
     pub(super) param_text: &'a SharedProcessDialogText,
     pub(super) tick_count: u32,
     pub(super) input: PpcInputSnapshot,
+    pub(super) scrap: &'a mut PpcScrapState,
     pub(super) quickdraw_text_mode: i16,
     pub(super) quickdraw_text_size: i16,
     pub(super) quickdraw_fore_color: &'a mut PpcRgbColor,
@@ -237,6 +238,7 @@ pub(super) fn dispatch_dialog_import(
         param_text,
         tick_count,
         input,
+        scrap,
         quickdraw_text_mode,
         quickdraw_text_size,
         quickdraw_fore_color,
@@ -1467,6 +1469,7 @@ pub(super) fn dispatch_dialog_import(
                 last_resource_error,
                 param_text,
                 tick_count,
+                input, scrap, event_queue, *quickdraw_fore_color, *quickdraw_back_color, quickdraw_fore_indices,
             ))
         }
         _ => None,
@@ -1705,6 +1708,12 @@ fn ppc_dispatch_dialog_compatibility(
     last_resource_error: &mut i16,
     param_text: &SharedProcessDialogText,
     tick_count: u32,
+    input: PpcInputSnapshot,
+    scrap: &mut PpcScrapState,
+    event_queue: &mut EventQueue,
+    fore_color: PpcRgbColor,
+    back_color: PpcRgbColor,
+    fore_indices: &HashMap<u32, u8>,
 ) -> PpcImportAction {
     let dialog = cpu.gpr[3];
     match operation {
@@ -1839,15 +1848,11 @@ fn ppc_dispatch_dialog_compatibility(
                         let te_handle = memory
                             .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
                             .unwrap_or(0);
-                        ppc_te_click(
-                            memory,
-                            handles,
-                            te_handle,
-                            event.where_v.saturating_sub(bounds.0),
-                            event.where_h.saturating_sub(bounds.1),
-                            event.modifiers & 0x0200 != 0,
-                            event.when,
-                        );
+                        let held = super::dispatch_textedit::track_ppc_text_edit_selection(
+                            memory, handles, gworlds, &scrap.text_edit, input, event_queue, te_handle,
+                            (event.where_v.saturating_sub(bounds.0), event.where_h.saturating_sub(bounds.1)),
+                            event.modifiers & 0x0200 != 0, event.when, dialog, fore_color, back_color, fore_indices);
+                        if held { return PpcImportAction::Yield(u64::MAX); }
                     } else if is_resource_control {
                         if let Some(item) =
                             items.get(usize::from(item_no as u16).saturating_sub(1))

@@ -4240,7 +4240,7 @@ impl TrapDispatcher {
             || (is_track_box_refire && self.zoom_box_tracking.is_some())
             || (is_grow_window_refire && self.is_grow_window_tracking())
             || (is_region_refire && self.is_region_tracking())
-            || (trap_no_autopop == 0xA9D4
+            || (matches!(trap_no_autopop, 0xA9D4 | 0xA980)
                 && self.textedit_states.has_classic_click_tracking())
     }
 

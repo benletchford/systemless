@@ -25,6 +25,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn selected_trailing_dialog_space_does_not_become_a_caret() {
+        let line = ClassicLine::plain(b"Pilot ", 0, 12);
+        let layout = systemless::runner::DialogEditTextLayout {
+            font: (0, 12), baseline: 12, line_height: 16,
+            wrap: false, text_edit_geometry: true,
+        };
+        let geometry = dialog_field_geometry(&line, 5, &layout, (5, 6), true, true, 260, 20);
+        assert_eq!(geometry.selection, None);
+        assert_eq!(geometry.caret, None, "the guest selection remains non-empty after trimming");
+        let collapsed = dialog_field_geometry(&line, 5, &layout, (6, 6), true, true, 260, 20);
+        assert_eq!(collapsed.caret, Some((0, line.positions[5], 16, line.positions[5] + 1)));
+        assert_eq!(dialog_field_geometry(&line, 5, &layout, (6, 6), false, true, 260, 20).caret, None);
+    }
+
+    #[test]
     fn shared_styled_glyph_plain_face_matches_gpui_binary_ink() {
         use std::collections::BTreeSet;
         for (font, size) in [(0, 12), (3, 9), (3, 12)] {
@@ -491,6 +506,40 @@ pub(crate) fn classic_directory_label(
     )
 }
 
+#[derive(Debug, PartialEq)]
+pub(crate) struct DialogFieldGeometry {
+    pub selection: Option<(i32, i32, i32, i32)>,
+    pub caret: Option<(i32, i32, i32, i32)>,
+}
+
+pub(crate) fn dialog_field_geometry(
+    line: &ClassicLine, visible_length: usize,
+    layout: &systemless::runner::DialogEditTextLayout,
+    selection: (usize, usize), focused: bool, caret_visible: bool,
+    width: i32, height: i32,
+) -> DialogFieldGeometry {
+    let start = selection.0.min(visible_length);
+    let end = selection.1.min(visible_length).max(start);
+    let x = |offset: usize| 1 + line.positions[offset];
+    let highlight = if focused && start < end {
+        let left = if start == 0 { 0 } else { x(start) };
+        let right = if !layout.text_edit_geometry && end == visible_length { width } else { x(end) };
+        Some((0, left, i32::from(layout.line_height).min(height), right))
+    } else { None };
+    // Trimming may collapse the visible range without collapsing the guest
+    // selection. A selected trailing space must never acquire a caret.
+    let caret = if focused && selection.0 == selection.1 && caret_visible {
+        let caret_x = x(start) - i32::from(layout.text_edit_geometry && start != 0);
+        let (top, bottom) = if layout.text_edit_geometry {
+            (0, i32::from(layout.line_height).min(height))
+        } else { (2, height - 1) };
+        let limit = width - i32::from(!layout.text_edit_geometry);
+        (caret_x >= 0 && caret_x < limit && top < bottom)
+            .then_some((top, caret_x, bottom, caret_x + 1))
+    } else { None };
+    DialogFieldGeometry { selection: highlight, caret }
+}
+
 pub(crate) fn classic_dialog_edit_text(
     text: &str, layout: &systemless::runner::DialogEditTextLayout,
     selection: (usize, usize), focused: bool, caret_visible: bool,
@@ -505,16 +554,16 @@ pub(crate) fn classic_dialog_edit_text(
     let length = if layout.text_edit_geometry {
         text.trim_end_matches([' ', '\r', '\n']).chars().count()
     } else { line.positions.len() - 1 };
-    let start = selection.0.min(length);
-    let end = selection.1.min(length).max(start);
     let layout = layout.clone();
     canvas(move |bounds, _, _| bounds, move |_, bounds, window, _| {
-        let x = |offset: usize| px((1 + line.positions[offset]) as f32 * scale);
-        if focused && start < end {
-            let left = if start == 0 { px(0.) } else { x(start) };
-            let right = if !layout.text_edit_geometry && end == length { bounds.size.width } else { x(end) };
-            window.paint_quad(fill(Bounds::new(point(bounds.left() + left, bounds.top()),
-                size((right - left).max(px(0.)), px(f32::from(layout.line_height) * scale).min(bounds.size.height))), selection_color));
+        let geometry = dialog_field_geometry(&line, length, &layout, selection, focused, caret_visible,
+            (f32::from(bounds.size.width) / scale).round() as i32,
+            (f32::from(bounds.size.height) / scale).round() as i32);
+        let rect = |(top, left, bottom, right): (i32, i32, i32, i32)| Bounds::new(
+            point(bounds.left() + px(left as f32 * scale), bounds.top() + px(top as f32 * scale)),
+            size(px((right - left).max(0) as f32 * scale), px((bottom - top).max(0) as f32 * scale)));
+        if let Some(selection) = geometry.selection {
+            window.paint_quad(fill(rect(selection), selection_color));
         }
         for &(x, y, width) in &line.ink {
             window.paint_quad(fill(Bounds::new(
@@ -522,18 +571,8 @@ pub(crate) fn classic_dialog_edit_text(
                     bounds.top() + px((y + i32::from(layout.baseline)) as f32 * scale)),
                 size(px(width as f32 * scale), px(scale))), foreground));
         }
-        if focused && start == end && caret_visible {
-            let caret_x = x(start) - if layout.text_edit_geometry && start != 0 { px(scale) } else { px(0.) };
-            let (top, height) = if layout.text_edit_geometry {
-                (px(0.), px(f32::from(layout.line_height) * scale).min(bounds.size.height))
-            } else {
-                (px(2. * scale), (bounds.size.height - px(3. * scale)).max(px(0.)))
-            };
-            let limit = bounds.size.width - if layout.text_edit_geometry { px(0.) } else { px(scale) };
-            if caret_x >= px(0.) && caret_x < limit {
-                window.paint_quad(fill(Bounds::new(point(bounds.left() + caret_x, bounds.top() + top),
-                    size(px(scale), height)), foreground));
-            }
+        if let Some(caret) = geometry.caret {
+            window.paint_quad(fill(rect(caret), foreground));
         }
     }).size_full().into_any_element()
 }
