@@ -1,6 +1,6 @@
 {
   "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
-  "review": "All six composed states reviewed: selection hidden during suspension and restored on resume, with stable scene geometry and transparent menu logo. Paired raw frames retained. Requests enter through the frontend session API; native host observer integration and native-oracle application switching are not qualified by these captures. Monochrome custom guest panels remain black and require separate investigation.",
+  "review": "All six composed states reviewed: selection hidden during suspension and restored on resume, with stable scene geometry and transparent menu logo. Paired raw frames retained. Requests enter through the frontend session API; native host observer integration and native-oracle application switching are not qualified by these captures. Monochrome custom guest panels preserve the black fill already qualified against the native one-bit oracle; see GPUI_COVERAGE.md and one_bit_color_port_light_gray_fill_matches_native_pattern_fallback.",
   "captures": [
     {
       "file": "reference/gpui-demo/16-text-edit-host-suspended-mono.png",

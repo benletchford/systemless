@@ -2142,6 +2142,6 @@ on monochrome 68k, colour 68k and PPC. The menu uses the existing transparent
 SVG logo instead of the app icon's black tile.
 
 These captures do not qualify native host activation observer integration or
-native-oracle process switching. Monochrome custom guest panels are still
-black, obscuring their headings, and need separate investigation. Background
+native-oracle process switching. Monochrome custom guest panels remain black, consistent with the native
+one-bit evidence and PaintRect regression recorded above. Background
 scheduling, modal/menu transitions and clipboard conversion remain open.
