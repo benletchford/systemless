@@ -2639,3 +2639,33 @@ replacement and Mac Roman editing (157.40 seconds, passes). Default and
 JIT/headless checks pass. Broader CR/scroll pixel checks, composed scale/state
 recaptures, theme caret width, mixed-run presentation and native qualification
 remain unfinished.
+
+The corrected plain TextEdit compositor now has a refreshed 36-capture matrix:
+monochrome 68k, colour 68k and PPC at 0.75x, 1x, 1.5x and 2x, with active
+selection, window inactivity beneath a front dialog, and unobscured guest
+session suspension. All field crops were reviewed in the three
+[text-scale contact sheets](tests/toolbox-showcase/reference/gpui-demo/text-scale-mono-contact.png)
+([colour](tests/toolbox-showcase/reference/gpui-demo/text-scale-colour-contact.png),
+[PPC](tests/toolbox-showcase/reference/gpui-demo/text-scale-ppc-contact.png)).
+Wrapping/inset remain stable, selection tracks the displayed glyphs, front
+occlusion clips the field, and inactive/suspended selection is hidden. Numeric
+checks confirm requested image dimensions and selection bounds within one guest
+pixel across scales. The [review manifest](tests/toolbox-showcase/reference/gpui-demo/text-scale-review.json)
+records fixture/renderer hashes, paired guest frames, pixel-preserving PNG
+encoding, scope and gaps. A fresh helper run matches all 72 original composed
+and guest PNG hashes; this is determinism evidence, not a native oracle.
+
+The hidden test-only `--capture-scale` option sizes fixture-scene captures in
+guest coordinates, using the same `Demo::render` path as live presentation.
+Reproduce with a new empty output directory:
+
+```sh
+cargo build --locked --example gpui-menu-demo --features gpui-demo-test
+python3 tests/toolbox-showcase/capture-gpui-text-scales.py /tmp/new-empty-output
+```
+
+The ordinary default check, example/test build and helper execution pass. This matrix does not qualify
+native host observers, native Macintosh font fidelity, scaled pointer/editing
+interactions, all caret phases, mixed-run TextEdit, or general dialog editing.
+The modeless dialog's remaining host-typography edit field is visible in these
+captures and remains unfinished.
