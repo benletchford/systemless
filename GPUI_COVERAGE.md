@@ -35,12 +35,35 @@ and layout/interaction qualification. Application-drawn text retains guest
 rendering until its ownership and faithful replacement are established.
 
 Current typography does not pass that gate: several standard surfaces use
-fixed host sizes and inherited GPUI theme fonts; document TextEdit clamps its
-guest size to 9..18 points. The painted-glyph input map currently covers New
+fixed host sizes and inherited GPUI theme fonts. Plain document TextEdit now
+uses shared QuickDraw strikes and the canonical TERec baseline without a host
+size clamp. The painted-glyph input map currently covers New
 Folder only. Guest-owned line boundaries alone do not establish metric fidelity,
 and tests for that field cannot qualify menus, titles, other editable fields or
 styled/multiline TextEdit. These are explicit migration gaps requiring font
 selection/metrics policy, broader shared text layout and interaction evidence.
+
+The plain-document text component paints binary glyph spans through GPUI,
+using the same resolved guest FONT/NFNT/sfnt, explicit override, or bundled
+fallback as QuickDraw. Its selection and caret share the glyph advances and
+guest fontAscent. This establishes consistency with Systemless guest drawing;
+it does not assert that bundled outlines reproduce original Apple bitmaps.
+Authentic guest resources/explicit overrides retain precedence. Substituted
+strikes requiring rescaling, styled and justified records still retain guest
+pixels pending faithful support. Other system surfaces still need migration
+from modern host shaping to this shared font policy.
+
+The actual guest geometry/typing regression passes in all three modes (36.57s),
+including a click at a shared-strike insertion boundary. The GPUI platform event
+regression passes first/second-line clicks at 0.75x, 1x, 1.5x and 2x scene scales
+in all three modes (119.31s). The clipping/custom-definition fallback test also
+passes, including an unqualified rescaled-strike size. Six selected/inactive
+composed captures and their unmodified guest frames are recorded in
+[`text-classic-strike-review.json`](tests/toolbox-showcase/reference/gpui-demo/text-classic-strike-review.json).
+The selection-only difference occupies the same 160x30 physical-pixel region
+in all modes, and the colour 68k/PPC document regions are byte-identical.
+This qualifies the showcase plain Geneva 9 slice, not all fonts/styles,
+physical host input, original Macintosh font fidelity or live performance.
 
 On macOS with a working GPUI graphics context, reproduce the popup capture
 matrix with `sh .github/scripts/capture-gpui-popups.sh output/gpui-popups`. It runs

@@ -315,6 +315,8 @@ pub struct TextEditSnapshot {
     /// Guest byte offsets for the start of each line and the final end offset.
     pub line_starts: Option<Vec<usize>>,
     pub line_height: i16,
+    /// TERec fontAscent, measured from the line top to the guest baseline.
+    pub font_ascent: i16,
     pub font: i16,
     pub face: u8,
     pub size: i16,
@@ -422,6 +424,7 @@ pub(crate) fn snapshot_guest_records(
                 line_count,
                 line_starts,
                 line_height,
+                font_ascent: word(read, ptr + 0x1a)? as i16,
                 font: word(read, ptr + 0x4a)? as i16,
                 face: read(ptr + 0x4c)?,
                 size,

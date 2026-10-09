@@ -287,6 +287,10 @@ pub fn text_edit_pieces(
                 || record.face != 0
                 || record.justification != 0
                 || record.line_height <= 0
+                // A scaled substitute strike can differ between CPU drawing
+                // paths. Retain guest pixels until that scaling is qualified.
+                || systemless::quickdraw::fonts::get_font_face_or_default(record.font, record.size).size
+                    != if record.size == 0 { 12 } else { record.size }
                 || record.display_lines().is_none()
             {
                 continue;
@@ -1053,6 +1057,7 @@ mod tests {
             line_count: 1,
             line_starts: Some(vec![0, 5]),
             line_height: 14,
+            font_ascent: 11,
             font: 0,
             face: 0,
             size: 12,
@@ -1070,6 +1075,9 @@ mod tests {
         let partial_pieces = text_edit_pieces(&[partial], &[], &[], &[back.clone()], viewport);
         assert_eq!(partial_pieces.len(), 1);
         assert_eq!(partial_pieces[0].clip, Rect::from((100, 30, 110, 70)));
+        let mut scaled = record.clone();
+        scaled.size = 120;
+        assert!(text_edit_pieces(&[scaled], &[], &[], &[back.clone()], viewport).is_empty());
         let mut styled = record;
         styled.styled = true;
         assert!(text_edit_pieces(&[styled], &[], &[], &[back], viewport).is_empty());
