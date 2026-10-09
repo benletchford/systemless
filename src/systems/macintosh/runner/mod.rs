@@ -3370,6 +3370,8 @@ impl FixtureRunner {
                 guest_id: tracking.reply_ptr,
                 generation: tracking.generation,
                 kind: StandardFileKind::Get,
+                list_text_origin: (4, 11),
+                directory_marker: "▸",
                 confirming_replace: false,
                         new_folder: None,
                 standard_entry_point: tracking.standard_entry_point,
@@ -3404,6 +3406,8 @@ impl FixtureRunner {
             guest_id: tracking.reply_ptr,
             generation: tracking.generation,
             kind: StandardFileKind::Put,
+                list_text_origin: (4, 11),
+                directory_marker: "▸",
             confirming_replace: tracking.confirming_replace,
             new_folder: tracking.new_folder.as_ref().map(|folder| folder.snapshot(tracking.bounds, 1, |bytes| {
                 TrapDispatcher::fb_measure_string(&crate::trap::types::decode_mac_roman(bytes), 0, 12)

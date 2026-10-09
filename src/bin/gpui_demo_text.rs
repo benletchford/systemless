@@ -25,6 +25,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unicode_labels_resolve_guest_mac_roman_and_symbol_glyphs() {
+        let bytes = b"A\x8e\xa3\xb9\xa9";
+        let text = systemless::systems::macintosh::mac_roman::decode_mac_roman(bytes);
+        for (font, size) in [(0, 12), (3, 9), (3, 12)] {
+            let raw = ClassicLine::plain(bytes, font, size);
+            let decoded = ClassicLine::unicode(&text, font, size);
+            assert_eq!(raw.positions, decoded.positions);
+            assert_eq!(raw.ink, decoded.ink);
+        }
+        let symbol = ClassicLine::unicode("▸", 0, 12);
+        let expected = systemless::quickdraw::text::get_unicode_glyph(0, 12, '▸');
+        let advance = expected.map_or(6, |(glyph, _)| i32::from(glyph.advance));
+        assert_eq!(symbol.positions, [0, advance]);
+        if expected.is_some() {
+            assert!(!symbol.ink.is_empty());
+        }
+    }
+
+    #[test]
     fn host_glyph_midpoints_map_to_guest_positions_at_every_scale() {
         for scale in [0.75, 1., 1.5, 2.] {
             let map = TextPointerMap {
@@ -158,7 +177,34 @@ pub(crate) struct ClassicLine {
 
 impl ClassicLine {
     pub fn plain(bytes: &[u8], font: i16, point_size: i16) -> Self {
-        use systemless::quickdraw::{fonts, text::get_glyph};
+        Self::from_glyphs(
+            font,
+            point_size,
+            bytes.iter().map(|byte| {
+                systemless::quickdraw::text::get_glyph(font, point_size, *byte as char)
+            }),
+        )
+    }
+
+    /// HLE labels may include guest-drawn symbols outside Mac Roman, such as
+    /// the 68k Standard File directory triangle. Resolve exactly as QuickDraw.
+    pub fn unicode(text: &str, font: i16, point_size: i16) -> Self {
+        Self::from_glyphs(
+            font,
+            point_size,
+            text.chars()
+                .map(|ch| systemless::quickdraw::text::get_unicode_glyph(font, point_size, ch)),
+        )
+    }
+
+    fn from_glyphs(
+        font: i16,
+        point_size: i16,
+        glyphs: impl Iterator<
+            Item = Option<(&'static systemless::quickdraw::fonts::Glyph, &'static [u8])>,
+        >,
+    ) -> Self {
+        use systemless::quickdraw::fonts;
         let (_, scale) = fonts::get_font_face_scaled(font, point_size);
         let scale = i32::from(scale);
         let mut result = Self {
@@ -166,8 +212,8 @@ impl ClassicLine {
             ink: Vec::new(),
         };
         let mut pen = 0;
-        for byte in bytes {
-            if let Some((glyph, data)) = get_glyph(font, point_size, *byte as char) {
+        for resolved in glyphs {
+            if let Some((glyph, data)) = resolved {
                 let width = usize::from(glyph.width);
                 for row in 0..usize::from(glyph.height) {
                     let mut column = 0;
@@ -282,12 +328,7 @@ fn classic_control_label(
     foreground: gpui_kit::Hsla,
 ) -> impl gpui_kit::IntoElement {
     use gpui_kit::{prelude::*, *};
-    let bytes = label
-        .chars()
-        .map(systemless::systems::macintosh::mac_roman::encode_mac_roman_char)
-        .collect::<Option<Vec<_>>>()
-        .expect("guest button labels originate in Mac Roman buffers");
-    let line = ClassicLine::plain(&bytes, 0, 12);
+    let line = ClassicLine::unicode(label, 0, 12);
     let metrics = systemless::quickdraw::text::get_font_metrics(0, 12);
     canvas(
         move |bounds, _, _| bounds,
@@ -364,6 +405,35 @@ pub(crate) fn classic_file_prompt(
                         foreground,
                     ));
                 }
+            }
+        },
+    )
+    .size_full()
+}
+
+/// Paint one guest-owned Standard File list row; the row clip owns overflow.
+pub(crate) fn classic_file_row(
+    text: &str,
+    origin: (i16, i16),
+    scale: f32,
+    foreground: gpui_kit::Hsla,
+) -> impl gpui_kit::IntoElement {
+    use gpui_kit::{prelude::*, *};
+    let line = ClassicLine::unicode(text, 0, 12);
+    canvas(
+        move |bounds, _, _| bounds,
+        move |_, bounds, window, _| {
+            for &(x, y, width) in &line.ink {
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(
+                            bounds.left() + px((x + i32::from(origin.0)) as f32 * scale),
+                            bounds.top() + px((y + i32::from(origin.1)) as f32 * scale),
+                        ),
+                        size(px(width as f32 * scale), px(scale)),
+                    ),
+                    foreground,
+                ));
             }
         },
     )
