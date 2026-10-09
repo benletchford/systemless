@@ -1,7 +1,7 @@
 //! Fixture Runner - Loading and execution infrastructure
 
 use crate::callback_manager::CallbackTaskArchitecture;
-pub use crate::control_manager::{scrollbar_drag_position, ControlSnapshot};
+pub use crate::control_manager::{scrollbar_drag_position, ControlFontStyle, ControlSnapshot};
 use crate::cpu::{M68kCpu, Register, StepResult};
 use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
 pub use crate::dialog_manager::{DialogItemKind, DialogItemSnapshot, DialogSnapshot};
@@ -2482,6 +2482,7 @@ impl FixtureRunner {
                         record.proc_id,
                         record.popup_menu_id,
                         record.popup_title_width,
+                        record.font_style,
                         |owner| owners.get(&owner).copied(),
                         |address| app.memory.read_u8(address),
                     )
@@ -2502,6 +2503,7 @@ impl FixtureRunner {
                         record.proc_id,
                         record.popup_menu_id,
                         record.popup_title_width,
+                        record.font_style,
                         |owner| owners.get(&owner).copied(),
                         |address| Some(self.bus.read_byte(address)),
                     )

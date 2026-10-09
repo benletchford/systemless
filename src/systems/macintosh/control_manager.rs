@@ -91,6 +91,8 @@ pub struct ControlSnapshot {
     pub minimum: i16,
     pub maximum: i16,
     pub title: String,
+    /// Live Appearance font/style intent; no host-font substitution is implied.
+    pub font_style: Option<ControlFontStyle>,
     /// Standard popup CDEF's associated menu and label width, if applicable.
     pub popup_menu_id: Option<i16>,
     pub popup_title_width: Option<i16>,
@@ -108,6 +110,7 @@ pub(crate) fn snapshot_control_record(
     proc_id: i16,
     popup_menu_id: i16,
     popup_title_width: Option<i16>,
+    font_style: Option<ControlFontStyle>,
     owner_state: impl Fn(u32) -> Option<((i16, i16, i16, i16), bool)>,
     mut read: impl FnMut(u32) -> Option<u8>,
 ) -> Option<ControlSnapshot> {
@@ -176,6 +179,7 @@ pub(crate) fn snapshot_control_record(
         minimum,
         maximum,
         title: crate::mac_roman::decode_mac_roman(&title),
+        font_style,
         popup_menu_id: popup
             .then(|| private_popup_menu_id.or((popup_menu_id != 0).then_some(popup_menu_id)))
             .flatten(),
@@ -237,16 +241,17 @@ pub(crate) struct ProcessControlRecord {
 
 /// The Appearance Manager style override associated with a ControlRef.
 /// RGBColor components are stored in guest byte order as decoded host words.
+#[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ControlFontStyle {
-    pub(crate) flags: i16,
-    pub(crate) font: i16,
-    pub(crate) size: i16,
-    pub(crate) style: i16,
-    pub(crate) mode: i16,
-    pub(crate) justification: i16,
-    pub(crate) foreground: [u16; 3],
-    pub(crate) background: [u16; 3],
+pub struct ControlFontStyle {
+    pub flags: i16,
+    pub font: i16,
+    pub size: i16,
+    pub style: i16,
+    pub mode: i16,
+    pub justification: i16,
+    pub foreground: [u16; 3],
+    pub background: [u16; 3],
 }
 
 /// Canonical Control Manager metadata for one Macintosh process.
@@ -886,6 +891,10 @@ mod tests {
                 proc_id,
                 144,
                 Some(52),
+                Some(ControlFontStyle {
+                    flags: 7, font: 3, size: 10, style: 1, mode: 1,
+                    justification: -1, foreground: [1, 2, 3], background: [4, 5, 6],
+                }),
                 |owner| matches!(owner, 512 | 768).then_some(((20, 40, 300, 400), true)),
                 |address| memory.get(address as usize).copied(),
             )
@@ -894,6 +903,10 @@ mod tests {
             memory[580..582].copy_from_slice(&family.to_be_bytes());
             memory[586..588].copy_from_slice(&size.to_be_bytes());
             let current = snapshot(&memory, 1017).unwrap();
+            let style = current.font_style.unwrap();
+            assert_eq!((style.flags, style.font, style.size, style.style), (7, 3, 10, 1));
+            assert_eq!((style.mode, style.justification), (1, -1));
+            assert_eq!((style.foreground, style.background), ([1, 2, 3], [4, 5, 6]));
             let font = current.popup_font.unwrap();
             assert_eq!((font.family, font.size), (family, size));
             assert_eq!(font.point_size(), if size == 0 { 12 } else { size });

@@ -10004,6 +10004,7 @@ mod desktop {
                         popup_menu_id: None,
                         popup_title_width: None,
                         popup_font: None,
+                        font_style: None,
                     }];
                     demo.width = 800;
                     demo.height = 600;
@@ -10496,6 +10497,7 @@ mod desktop {
                         popup_menu_id: None,
                         popup_title_width: None,
                         popup_font: None,
+                        font_style: None,
                     }];
                     demo.width = 800;
                     demo.height = 600;
@@ -10632,6 +10634,7 @@ mod desktop {
                         popup_menu_id: None,
                         popup_title_width: None,
                         popup_font: None,
+                        font_style: None,
                     }];
                     demo.width = 800;
                     demo.height = 600;

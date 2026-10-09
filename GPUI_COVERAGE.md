@@ -2297,3 +2297,18 @@ were reviewed; commands, hashes and limitations are recorded in
 This is not authentic Macintosh font, physical input, 2×, inactive-field or
 non-ASCII-name qualification. Surrounding Standard File labels still need guest
 font painting, and Appearance control font overrides need snapshot support.
+
+### Appearance control font intent
+
+Control snapshots now retain the process-owned `ControlFontStyleRec` on both
+CPU adapters, including flag bits, font family, size, face, mode, justification
+and foreground/background RGB words. The regular CDEF compositor retains guest
+pixels for an override until GPUI can paint its style faithfully; intersecting
+standard controls also retain guest pixels so the override is not erased. The
+overlap regression passes. This is an intermediate fidelity boundary, not
+completion of GPUI-rendered control text. Dialog-item overlays still need the
+same font/style metadata and ownership treatment.
+The shared reader regression preserves every style field while validating
+record identity and owner-font mutation (0.01 seconds). Default desktop and
+no-default-features type-checks pass. These are structural and compositor
+ownership checks; no new native font/style visual qualification is claimed.
