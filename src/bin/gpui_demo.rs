@@ -325,27 +325,6 @@ mod desktop {
         }
     }
 
-    fn save_name_segments(
-        name: &str,
-        selection: (usize, usize),
-        focused: bool,
-    ) -> (String, String, String) {
-        if !focused {
-            return (name.to_string(), String::new(), String::new());
-        }
-        // TextEdit selections use source-buffer byte offsets. In this Roman
-        // field each source byte becomes one character, even when its host
-        // UTF-8 encoding uses multiple bytes (Inside Macintosh: Text, TESetSelect).
-        let chars: Vec<char> = name.chars().collect();
-        let start = selection.0.min(chars.len());
-        let end = selection.1.max(start).min(chars.len());
-        (
-            chars[..start].iter().collect(),
-            chars[start..end].iter().collect(),
-            chars[end..].iter().collect(),
-        )
-    }
-
     enum Command {
         ImportClipboard(Vec<u8>),
         Foreground(bool, u64),
@@ -2066,54 +2045,27 @@ mod desktop {
                                 && item.enabled
                                 && item.selection.is_some();
                             let selection = item.selection.unwrap_or((0, 0));
-                            let (prefix, selected, suffix) = save_name_segments(
-                                &item.text,
-                                (selection.0.max(0) as usize, selection.1.max(0) as usize),
-                                focused,
-                            );
-                            let mut field = div()
-                                .id(format!(
-                                    "guest-dialog-edit-{}-{}-{}",
-                                    dialog.guest_id, dialog.generation, item.number
-                                ))
+                            let foreground = if item.enabled { cx.theme().foreground } else { cx.theme().muted_foreground };
+                            let field = div()
+                                .id(format!("guest-dialog-edit-{}-{}-{}", dialog.guest_id, dialog.generation, item.number))
                                 .test_support()
                                 .absolute()
-                                .left(guest_px((item_rect.left - source.left) as f32))
-                                .top(guest_px((item_rect.top - source.top) as f32))
-                                .w(guest_px(item_rect.width() as f32))
-                                .h(guest_px(item_rect.height() as f32))
-                                .overflow_hidden()
-                                .flex()
-                                .items_center()
-                                .px_1()
-                                .border_1()
-                                .border_color(if focused {
-                                    cx.theme().accent
-                                } else {
-                                    cx.theme().border
-                                })
+                                .left(guest_px((item_rect.left - source.left - 3) as f32))
+                                .top(guest_px((item_rect.top - source.top - 3) as f32))
+                                .w(guest_px((item_rect.width() + 6) as f32))
+                                .h(guest_px((item_rect.height() + 6) as f32))
+                                .border(guest_px(1.))
+                                .border_color(if focused { cx.theme().accent } else { cx.theme().border })
                                 .bg(cx.theme().background)
-                                .text_size(guest_px(13.))
-                                .text_color(if item.enabled {
-                                    cx.theme().foreground
-                                } else {
-                                    cx.theme().muted_foreground
-                                })
-                                .child(prefix);
-                            if focused && !selected.is_empty() {
-                                field = field.child(
-                                    div()
-                                        .bg(cx.theme().selection)
-                                        .text_color(cx.theme().foreground)
-                                        .child(selected),
-                                );
-                            } else if focused && item.caret_visible == Some(true) {
-                                field = field.child(
-                                    div().relative().w(px(0.)).h(guest_px(14.))
-                                        .child(div().absolute().left_0().top_0().w(guest_px(1.)).h_full().bg(cx.theme().foreground)),
-                                );
-                            }
-                            overlay.child(field.child(suffix))
+                                .child(div().absolute().left(guest_px(3.)).top(guest_px(3.))
+                                    .w(guest_px(item_rect.width() as f32)).h(guest_px(item_rect.height() as f32))
+                                    .overflow_hidden()
+                                    .child(super::text::classic_dialog_edit_text(
+                                        &item.text, item.edit_text_layout.as_ref().unwrap(),
+                                        (selection.0.max(0) as usize, selection.1.max(0) as usize),
+                                        focused, item.caret_visible == Some(true), scene_scale,
+                                        foreground, cx.theme().selection)));
+                            overlay.child(field)
                         }
                         DialogItemKind::Checkbox => overlay.child(
                             super::a11y::AccessibleComponent::new(super::choices::guest_checkbox(
@@ -4744,6 +4696,7 @@ mod desktop {
                     edit_field: None,
                     items: vec![DialogItemSnapshot {
                         static_text_layout: Some(systemless::runner::DialogStaticTextLayout { wrap_advance_extra: 0, face: 0, font: (0, 0), origin: (1, 12), line_height: 16, inclusive_bottom: false }),
+                        edit_text_layout: Some(systemless::runner::DialogEditTextLayout { font: (0, 0), baseline: 12, line_height: 16, wrap: false, text_edit_geometry: false }),
                         control_identity: None,
                         pressed: false,
                         number: 1,
@@ -5000,18 +4953,6 @@ mod desktop {
             assert_ne!(super::rendered_menu_tree(&snapshot, 1), original);
             snapshot.menus[2].items[0].submenu_id = Some(1);
             assert_eq!(super::rendered_menu_tree(&snapshot, 1).len(), 2);
-        }
-
-        #[test]
-        fn save_selection_offsets_follow_mac_roman_characters_after_decoding() {
-            assert_eq!(
-                super::save_name_segments("Résumé", (1, 4), true),
-                ("R".into(), "ésu".into(), "mé".into())
-            );
-            assert_eq!(
-                super::save_name_segments("Résumé", (1, 4), false),
-                ("Résumé".into(), String::new(), String::new())
-            );
         }
 
         #[test]
@@ -8359,6 +8300,7 @@ mod desktop {
                 mixed.items[1].value = Some(1);
                 mixed.items.push(systemless::runner::DialogItemSnapshot {
                     static_text_layout: Some(systemless::runner::DialogStaticTextLayout { wrap_advance_extra: 0, face: 0, font: (0, 0), origin: (1, 12), line_height: 16, inclusive_bottom: false }),
+                    edit_text_layout: Some(systemless::runner::DialogEditTextLayout { font: (0, 0), baseline: 12, line_height: 16, wrap: false, text_edit_geometry: false }),
                     control_identity: None,
                     pressed: false,
                     number: 3,
@@ -8710,8 +8652,8 @@ mod desktop {
 
         #[test]
         fn modeless_dialog_tracks_guest_lifecycle_on_both_cpus() {
-            for powerpc in [false, true] {
-                let mut session = MacintoshSession::new(true, if powerpc { None } else { Some(8) });
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
                 session.runner_mut().set_prefer_powerpc_executables(powerpc);
                 let app = session
                     .load_path(
@@ -8736,6 +8678,18 @@ mod desktop {
                 assert_eq!(windows[0].guest_id, dialog.guest_id);
                 assert_eq!(windows[0].definition_id, Some(4));
                 assert!(dialog.active);
+                let edit_layout = dialog.items[3].edit_text_layout.as_ref()
+                    .expect("ordinary dialog field must expose guest drawing geometry");
+                assert!(edit_layout.line_height > 0 && edit_layout.baseline > 0);
+                if powerpc {
+                    assert!(edit_layout.text_edit_geometry,
+                        "active PPC dialog field must use the live TERec geometry");
+                } else {
+                    let metrics = systemless::quickdraw::text::get_font_metrics(edit_layout.font.0, edit_layout.font.1);
+                    assert_eq!(edit_layout.baseline, metrics.ascent);
+                    assert_eq!(edit_layout.line_height, metrics.ascent + metrics.descent + metrics.leading);
+                    assert!(!edit_layout.text_edit_geometry && !edit_layout.wrap);
+                }
                 assert!(!super::super::frames::dialog_item_pieces(
                     &[dialog.clone()],
                     &windows,
@@ -9966,6 +9920,7 @@ mod desktop {
                         edit_field: None,
                         items: vec![DialogItemSnapshot {
                             static_text_layout: Some(systemless::runner::DialogStaticTextLayout { wrap_advance_extra: 0, face: 0, font: (0, 0), origin: (1, 12), line_height: 16, inclusive_bottom: false }),
+                            edit_text_layout: Some(systemless::runner::DialogEditTextLayout { font: (0, 0), baseline: 12, line_height: 16, wrap: false, text_edit_geometry: false }),
                             control_identity: None,
                             pressed: false,
                             number: 1,
@@ -10097,6 +10052,7 @@ mod desktop {
                         items: vec![
                             DialogItemSnapshot {
                                 static_text_layout: Some(systemless::runner::DialogStaticTextLayout { wrap_advance_extra: 0, face: 0, font: (0, 0), origin: (1, 12), line_height: 16, inclusive_bottom: false }),
+                                edit_text_layout: Some(systemless::runner::DialogEditTextLayout { font: (0, 0), baseline: 12, line_height: 16, wrap: false, text_edit_geometry: false }),
                                 control_identity: None,
                                 pressed: false,
                                 number: 1,
@@ -10111,6 +10067,7 @@ mod desktop {
                             },
                             DialogItemSnapshot {
                                 static_text_layout: Some(systemless::runner::DialogStaticTextLayout { wrap_advance_extra: 0, face: 0, font: (0, 0), origin: (1, 12), line_height: 16, inclusive_bottom: false }),
+                                edit_text_layout: Some(systemless::runner::DialogEditTextLayout { font: (0, 0), baseline: 12, line_height: 16, wrap: false, text_edit_geometry: false }),
                                 control_identity: None,
                                 pressed: false,
                                 number: 2,

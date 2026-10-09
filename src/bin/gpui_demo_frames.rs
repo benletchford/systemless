@@ -216,7 +216,7 @@ pub fn dialog_item_pieces(
                     if (item.kind == DialogItemKind::StaticText && item.static_text_layout.is_none())
                         || !item.visible
                         || (item.kind == DialogItemKind::EditText
-                            && (item.text.contains('\r') || item.bounds.2 - item.bounds.0 > 24))
+                            && (item.edit_text_layout.is_none() || item.text.contains('\r') || item.bounds.2 - item.bounds.0 > 24))
                     {
                         continue;
                     }
@@ -828,6 +828,7 @@ mod tests {
             cancel_item: None, edit_field: None,
             items: vec![DialogItemSnapshot {
                 static_text_layout: Some(systemless::runner::DialogStaticTextLayout { wrap_advance_extra: 0, face: 0, font: (0, 0), origin: (1, 12), line_height: 16, inclusive_bottom: false }),
+                edit_text_layout: Some(systemless::runner::DialogEditTextLayout { font: (0, 0), baseline: 12, line_height: 16, wrap: false, text_edit_geometry: false }),
                 control_identity: Some((10, 1)),
                 pressed: false, number: 1, kind: DialogItemKind::Button,
                 bounds: (90, 90, 110, 180), text: "OK".into(),
@@ -893,6 +894,7 @@ mod tests {
             edit_field: None,
             items: vec![DialogItemSnapshot {
                 static_text_layout: Some(systemless::runner::DialogStaticTextLayout { wrap_advance_extra: 0, face: 0, font: (0, 0), origin: (1, 12), line_height: 16, inclusive_bottom: false }),
+                edit_text_layout: Some(systemless::runner::DialogEditTextLayout { font: (0, 0), baseline: 12, line_height: 16, wrap: false, text_edit_geometry: false }),
                 control_identity: None,
                 pressed: false,
                 number: 1,
@@ -916,6 +918,12 @@ mod tests {
         assert!(dialog_item_pieces(&[dialog.clone()], &windows, viewport).is_empty(),
             "unknown or unsupported statText layout must preserve the guest pixels");
         dialog.items[0].static_text_layout = text_layout;
+        dialog.items[0].kind = DialogItemKind::EditText;
+        assert!(!dialog_item_pieces(&[dialog.clone()], &windows, viewport).is_empty());
+        let edit_layout = dialog.items[0].edit_text_layout.take();
+        assert!(dialog_item_pieces(&[dialog.clone()], &windows, viewport).is_empty(),
+            "unsupported editText geometry must retain guest rendering");
+        dialog.items[0].edit_text_layout = edit_layout;
         dialog.items[0].kind = DialogItemKind::UserItem;
         assert!(dialog_item_pieces(&[dialog.clone()], &windows, viewport).is_empty());
         dialog.items[0].kind = DialogItemKind::StaticText;

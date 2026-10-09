@@ -2667,8 +2667,8 @@ python3 tests/toolbox-showcase/capture-gpui-text-scales.py /tmp/new-empty-output
 The ordinary default check, example/test build and helper execution pass. This matrix does not qualify
 native host observers, native Macintosh font fidelity, scaled pointer/editing
 interactions, all caret phases, mixed-run TextEdit, or general dialog editing.
-The modeless dialog's remaining host-typography edit field is visible in these
-captures and remains unfinished.
+These captures precede the dialog editText guest-glyph replacement below and
+do not qualify its new field rendering.
 
 Scaled plain TextEdit insertion clicks are now checked at the painted glyph
 boundary, including the one-pixel destRect inset. The GPUI test
@@ -2684,3 +2684,27 @@ selection is read from the guest TERec, without a host editing model. This
 qualifies the tested insertion and forward-drag mapping; reverse/cross-line
 dragging, Shift-selection, scaled editing, scrolling and native host input
 remain open.
+
+Ordinary dialog editText fields now use GPUI canvas guest bitmap glyphs instead
+of host typography. `DialogEditTextLayout` records the guest font, baseline,
+line height and painter geometry: 68k uses current port metrics and extends an
+end-of-text selection to the field edge; PPC active fields use validated TERec
+geometry, trimmed selection offsets and the caret backstep, while inactive
+fields use the fixed wrapped Dialog Manager painter. Field chrome remains
+outside the guest display rectangle. Pointer/key delivery stays on the existing
+guest event path. Unsupported or absent layout metadata retains guest pixels;
+there is no host-font substitution for those fields.
+
+The modeless lifecycle/editing test passes in all three modes (4.94 seconds),
+including guest geometry assertions. GPUI field/checkbox click forwarding passes
+(0.12 seconds), and explicit absent-layout clipping/fallback coverage passes.
+Default, example and JIT/headless builds pass. Six actual shared-compositor
+captures (modeless and modal visible-caret scenes across the three modes), with
+paired guest frames, were reviewed in the
+[dialog field contact sheet](tests/toolbox-showcase/reference/gpui-demo/dialog-edit-font-contact.png).
+The [review manifest](tests/toolbox-showcase/reference/gpui-demo/dialog-edit-font-review.json)
+records source/fixture hashes, commands, scope and pixel-preserving archive
+encoding. Tested glyph forms, baseline and caret placement are consistent with
+the paired guest frames. This does not establish native Macintosh font fidelity,
+the dialog field scale/state matrix, font mutation, multiline/styled/scrolled
+fields, or exhaustive selection/editing behavior; those remain unfinished.

@@ -64,7 +64,35 @@ impl PpcLoadedApp {
                             .map(|value| value as i16)
                     })
                     .flatten();
+                    let edit_text_layout = (kind == crate::dialog_manager::DialogItemKind::EditText).then(|| {
+                        if active_edit_index != Some(index) {
+                            return Some(crate::dialog_manager::DialogEditTextLayout {
+                                font: (0, 0), baseline: 12, line_height: 16,
+                                wrap: true, text_edit_geometry: false,
+                            });
+                        }
+                        let handle = self.memory.read_u32_be(dialog + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET)?;
+                        let record = crate::text_edit::snapshot_guest_records(&[(handle, 0)],
+                            &mut |address| self.memory.read_u8(address)).records.into_iter().next()?;
+                        // Only the ordinary single-line TE painter is qualified
+                        // here. Preserve guest pixels for styled/scrolled fields.
+                        if record.styled || record.face != 0 || record.justification != 0
+                            || ppc_current_text_style(&mut self.memory, dialog) != 0
+                            || record.dest_rect != item.rect || record.view_rect != item.rect
+                            || record.display_lines()?.len() != 1 || record.line_height <= 0
+                            || decode_mac_roman(&record.text) != text
+                            || crate::quickdraw::fonts::get_font_face_or_default(record.font, record.size).size
+                                != if record.size == 0 { 12 } else { record.size }
+                        {
+                            return None;
+                        }
+                        Some(crate::dialog_manager::DialogEditTextLayout {
+                            font: (record.font, record.size), baseline: record.font_ascent,
+                            line_height: record.line_height, wrap: false, text_edit_geometry: true,
+                        })
+                    }).flatten();
                     crate::dialog_manager::DialogItemSnapshot {
+                        edit_text_layout,
                         static_text_layout: Some(crate::dialog_manager::DialogStaticTextLayout {
                             wrap_advance_extra: 0, face: 0, font: (0, 0), origin: (1, 12), line_height: 16, inclusive_bottom: false,
                         }),

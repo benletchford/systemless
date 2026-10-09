@@ -8856,6 +8856,21 @@ impl super::TrapDispatcher {
         })
     }
 
+    pub(crate) fn dialog_edit_text_layout(&self) -> Option<crate::dialog_manager::DialogEditTextLayout> {
+        let font = (self.tx_font, self.tx_size);
+        if self.tx_face != 0 || crate::quickdraw::fonts::get_font_face_or_default(font.0, font.1).size
+            != if font.1 == 0 { 12 } else { font.1.max(1) }
+        {
+            return None;
+        }
+        let metrics = get_font_metrics(font.0, Self::font_lookup_size(font.1));
+        Some(crate::dialog_manager::DialogEditTextLayout {
+            font, baseline: metrics.ascent,
+            line_height: metrics.ascent + metrics.descent + metrics.leading,
+            wrap: false, text_edit_geometry: false,
+        })
+    }
+
     fn draw_static_text(
         &self,
         bus: &mut MacMemoryBus,

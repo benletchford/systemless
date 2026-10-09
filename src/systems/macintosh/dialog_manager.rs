@@ -671,6 +671,9 @@ pub struct DialogItemSnapshot {
     /// SetDialogItem may replace this independently of the DialogPtr lifetime.
     pub control_identity: Option<(u32, u64)>,
     pub static_text_layout: Option<DialogStaticTextLayout>,
+    /// Geometry of the guest painter for this editText item. Absent when
+    /// faithful replacement needs unsupported TextEdit layout or font scaling.
+    pub edit_text_layout: Option<DialogEditTextLayout>,
     /// Current guest-owned button tracking highlight.
     pub pressed: bool,
     pub number: i16,
@@ -698,6 +701,19 @@ pub struct DialogStaticTextLayout {
     pub origin: (i16, i16),
     pub line_height: i16,
     pub inclusive_bottom: bool,
+}
+
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DialogEditTextLayout {
+    pub font: (i16, i16),
+    pub baseline: i16,
+    pub line_height: i16,
+    /// PPC inactive fields use the Dialog Manager's wrapped text painter.
+    pub wrap: bool,
+    /// PPC active fields use TERec selection/caret geometry; 68k's dialog
+    /// painter extends an end-of-text selection to the display rectangle edge.
+    pub text_edit_geometry: bool,
 }
 
 /// A live dialog's semantic state, separate from its guest-rendered pixels.
