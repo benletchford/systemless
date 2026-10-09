@@ -376,24 +376,34 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::DeleteMenuItem => {
-            let old_count = ppc_count_menu_items(memory, cpu.gpr[3]);
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let result = ppc_delete_menu_item_with_allocator(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
+            let result = if let Some(params) = crate::menu_manager::evaluate_delete_menu_item_parameters(
                 cpu.gpr[3],
                 cpu.gpr[4] as u16 as i16,
-            );
-            if result == PPC_NO_ERR && ppc_count_menu_items(memory, cpu.gpr[3]) < old_count {
-                toolbox_startup.menu_item_commands.delete(cpu.gpr[3], cpu.gpr[4] as u16);
-                toolbox_startup.menu_item_refcons.delete(cpu.gpr[3], cpu.gpr[4] as u16);
-            }
+            ) {
+                let old_count = ppc_count_menu_items(memory, params.menu_handle());
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                let res = ppc_delete_menu_item_with_allocator(
+                    Some(&mut allocator),
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    params.menu_handle(),
+                    params.item(),
+                );
+                if res == PPC_NO_ERR && ppc_count_menu_items(memory, params.menu_handle()) < old_count {
+                    toolbox_startup.menu_item_commands.delete(params.menu_handle(), params.item() as u16);
+                    toolbox_startup.menu_item_refcons.delete(params.menu_handle(), params.item() as u16);
+                }
+                res
+            } else if cpu.gpr[3] == 0 {
+                PPC_NIL_HANDLE_ERR
+            } else {
+                PPC_NO_ERR
+            };
             *last_mem_error = result;
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -429,24 +439,34 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             current_resource_refnum,
         ),
         PpcImportDispatcherTarget::InsertMenu => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let result = ppc_insert_menu_with_allocator(
-                Some(&mut allocator),
-                None,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
+            let result = if let Some(params) = crate::menu_manager::evaluate_insert_menu_parameters(
                 cpu.gpr[3],
                 cpu.gpr[4] as u16 as i16,
-            );
+            ) {
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                ppc_insert_menu_with_allocator(
+                    Some(&mut allocator),
+                    None,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    params.menu_handle(),
+                    params.before_id(),
+                )
+            } else {
+                PPC_PARAM_ERR
+            };
             *last_mem_error = result;
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::DeleteMenu => {
+            let params = crate::menu_manager::evaluate_delete_menu_parameters(
+                cpu.gpr[3] as u16 as i16,
+            );
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
             };
@@ -458,52 +478,67 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                 last_mem_error,
                 handles,
                 *current_menu_list,
-                cpu.gpr[3] as u16 as i16,
+                params.menu_id(),
             );
             *last_mem_error = result;
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::AppendMenu => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let result = ppc_insert_menu_items_with_allocator(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
+            let result = if let Some(params) = crate::menu_manager::evaluate_append_menu_parameters(
                 cpu.gpr[3],
                 cpu.gpr[4],
-                i16::MAX,
-            );
+            ) {
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                ppc_insert_menu_items_with_allocator(
+                    Some(&mut allocator),
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    params.menu_handle(),
+                    params.data_ptr(),
+                    i16::MAX,
+                )
+            } else {
+                PPC_NIL_HANDLE_ERR
+            };
             *last_mem_error = result;
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::InsertMenuItem => {
-            let old_count = ppc_count_menu_items(memory, cpu.gpr[3]);
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let result = ppc_insert_menu_items_with_allocator(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
+            let result = if let Some(params) = crate::menu_manager::evaluate_insert_menu_item_parameters(
                 cpu.gpr[3],
                 cpu.gpr[4],
                 cpu.gpr[5] as u16 as i16,
-            );
-            if result == PPC_NO_ERR {
-                let added = ppc_count_menu_items(memory, cpu.gpr[3]).saturating_sub(old_count);
-                let after = cpu.gpr[5] as u16 as i16;
-                let after = if after == i16::MAX { old_count } else { after.max(0) as u16 };
-                toolbox_startup.menu_item_commands.insert(cpu.gpr[3], after.min(old_count), added);
-                toolbox_startup.menu_item_refcons.insert(cpu.gpr[3], after.min(old_count), added);
-            }
+            ) {
+                let old_count = ppc_count_menu_items(memory, params.menu_handle());
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                let res = ppc_insert_menu_items_with_allocator(
+                    Some(&mut allocator),
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    params.menu_handle(),
+                    params.data_ptr(),
+                    params.after_item(),
+                );
+                if res == PPC_NO_ERR {
+                    let added = ppc_count_menu_items(memory, params.menu_handle()).saturating_sub(old_count);
+                    let insert_index = params.insertion_index(old_count);
+                    toolbox_startup.menu_item_commands.insert(params.menu_handle(), insert_index, added);
+                    toolbox_startup.menu_item_refcons.insert(params.menu_handle(), insert_index, added);
+                }
+                res
+            } else {
+                PPC_NIL_HANDLE_ERR
+            };
             *last_mem_error = result;
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -512,21 +547,28 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             // Appends the alphabetized names of matching resources.
             // PROCEDURE AppendResMenu(theMenu: MenuHandle; theType: ResType);
             // Macintosh Toolbox Essentials (1992), pp. 3-101--3-102.
-            let result = ppc_insert_resource_menu(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                current_resource_refnum,
-                resource_policy,
-                last_resource_error,
+            let result = if let Some(params) = crate::menu_manager::evaluate_append_res_menu_parameters(
                 cpu.gpr[3],
                 cpu.gpr[4],
-                i16::MAX,
-            );
+            ) {
+                ppc_insert_resource_menu(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    vfs_resources,
+                    current_resource_refnum,
+                    resource_policy,
+                    last_resource_error,
+                    params.menu_handle(),
+                    params.res_type(),
+                    i16::MAX,
+                )
+            } else {
+                PPC_NIL_HANDLE_ERR
+            };
             *last_mem_error = result;
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -536,38 +578,56 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             // PROCEDURE InsertResMenu(theMenu: MenuHandle; theType: ResType;
             //                         afterItem: Integer);
             // Macintosh Toolbox Essentials (1992), pp. 3-103--3-104.
-            let old_count = ppc_count_menu_items(memory, cpu.gpr[3]);
-            let result = ppc_insert_resource_menu(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                current_resource_refnum,
-                resource_policy,
-                last_resource_error,
+            let result = if let Some(params) = crate::menu_manager::evaluate_insert_res_menu_parameters(
                 cpu.gpr[3],
                 cpu.gpr[4],
                 cpu.gpr[5] as u16 as i16,
-            );
-            if result == PPC_NO_ERR {
-                let added = ppc_count_menu_items(memory, cpu.gpr[3]).saturating_sub(old_count);
-                let after = cpu.gpr[5] as u16 as i16;
-                let after = if after == i16::MAX { old_count } else { after.max(0) as u16 };
-                toolbox_startup.menu_item_commands.insert(cpu.gpr[3], after.min(old_count), added);
-                toolbox_startup.menu_item_refcons.insert(cpu.gpr[3], after.min(old_count), added);
-            }
+            ) {
+                let old_count = ppc_count_menu_items(memory, params.menu_handle());
+                let res = ppc_insert_resource_menu(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    vfs_resources,
+                    current_resource_refnum,
+                    resource_policy,
+                    last_resource_error,
+                    params.menu_handle(),
+                    params.res_type(),
+                    params.after_item(),
+                );
+                if res == PPC_NO_ERR {
+                    let added = ppc_count_menu_items(memory, params.menu_handle()).saturating_sub(old_count);
+                    let insert_index = params.insertion_index(old_count);
+                    toolbox_startup.menu_item_commands.insert(params.menu_handle(), insert_index, added);
+                    toolbox_startup.menu_item_refcons.insert(params.menu_handle(), insert_index, added);
+                }
+                res
+            } else {
+                PPC_NIL_HANDLE_ERR
+            };
             *last_mem_error = result;
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::EnableMenuItem => {
-            ppc_set_menu_item_enabled(memory, handles, cpu.gpr[3], cpu.gpr[4] as u16 as i16, true);
+            if let Some(params) = crate::menu_manager::evaluate_enable_menu_item_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4] as u16 as i16,
+            ) {
+                ppc_set_menu_item_enabled(memory, handles, params.menu_handle(), params.item(), params.enabled());
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::DisableMenuItem => {
-            ppc_set_menu_item_enabled(memory, handles, cpu.gpr[3], cpu.gpr[4] as u16 as i16, false);
+            if let Some(params) = crate::menu_manager::evaluate_disable_menu_item_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4] as u16 as i16,
+            ) {
+                ppc_set_menu_item_enabled(memory, handles, params.menu_handle(), params.item(), params.enabled());
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SetItemMark => {

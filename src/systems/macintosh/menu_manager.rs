@@ -4493,6 +4493,363 @@ pub fn evaluate_menu_item_property_parameters(
     })
 }
 
+/// Architecture-neutral placement policy for InsertMenu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuInsertionPlacement {
+    /// Append to regular menu bar (beforeID == 0).
+    Append,
+    /// Install in hierarchical menu partition (beforeID == -1 / 0xFFFF).
+    Hierarchical,
+    /// Insert before an existing menu ID in the regular menu bar.
+    BeforeMenu(i16),
+}
+
+#[allow(dead_code)]
+impl MenuInsertionPlacement {
+    pub const fn from_raw(before_id: i16) -> Self {
+        match before_id {
+            0 => Self::Append,
+            -1 => Self::Hierarchical,
+            id => Self::BeforeMenu(id),
+        }
+    }
+
+    pub const fn is_hierarchical(&self) -> bool {
+        matches!(self, Self::Hierarchical)
+    }
+
+    pub const fn before_id(&self) -> i16 {
+        match self {
+            Self::Append => 0,
+            Self::Hierarchical => -1,
+            Self::BeforeMenu(id) => *id,
+        }
+    }
+}
+
+/// Architecture-neutral parameter extraction and validation for InsertMenu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InsertMenuParameters {
+    menu_handle: u32,
+    placement: MenuInsertionPlacement,
+}
+
+#[allow(dead_code)]
+impl InsertMenuParameters {
+    pub const fn menu_handle(&self) -> u32 {
+        self.menu_handle
+    }
+
+    pub const fn placement(&self) -> MenuInsertionPlacement {
+        self.placement
+    }
+
+    pub const fn before_id(&self) -> i16 {
+        self.placement.before_id()
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_insert_menu_parameters(
+    menu_handle: u32,
+    before_id: i16,
+) -> Option<InsertMenuParameters> {
+    if menu_handle == 0 {
+        None
+    } else {
+        Some(InsertMenuParameters {
+            menu_handle,
+            placement: MenuInsertionPlacement::from_raw(before_id),
+        })
+    }
+}
+
+/// Architecture-neutral parameter extraction and validation for DeleteMenu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeleteMenuParameters {
+    menu_id: i16,
+}
+
+#[allow(dead_code)]
+impl DeleteMenuParameters {
+    pub const fn menu_id(&self) -> i16 {
+        self.menu_id
+    }
+}
+
+#[allow(dead_code)]
+pub const fn evaluate_delete_menu_parameters(menu_id: i16) -> DeleteMenuParameters {
+    DeleteMenuParameters { menu_id }
+}
+
+/// Architecture-neutral parameter extraction and validation for AppendMenu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppendMenuParameters {
+    menu_handle: u32,
+    data_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl AppendMenuParameters {
+    pub const fn menu_handle(&self) -> u32 {
+        self.menu_handle
+    }
+
+    pub const fn data_ptr(&self) -> u32 {
+        self.data_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_append_menu_parameters(
+    menu_handle: u32,
+    data_ptr: u32,
+) -> Option<AppendMenuParameters> {
+    if menu_handle == 0 {
+        None
+    } else {
+        Some(AppendMenuParameters {
+            menu_handle,
+            data_ptr,
+        })
+    }
+}
+
+/// Evaluates the clamped 0-based insertion index for InsertMenuItem or InsertResMenu.
+/// If `after_item == i16::MAX`, inserts at end (`item_count`).
+/// Otherwise clamps `after_item` to `0..=item_count`.
+pub const fn evaluate_menu_insert_index(after_item: i16, item_count: u16) -> u16 {
+    if after_item == i16::MAX {
+        item_count
+    } else {
+        let clamped = if after_item < 0 { 0 } else { after_item as u16 };
+        if clamped > item_count {
+            item_count
+        } else {
+            clamped
+        }
+    }
+}
+
+/// Architecture-neutral parameter extraction and validation for InsertMenuItem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InsertMenuItemParameters {
+    menu_handle: u32,
+    data_ptr: u32,
+    after_item: i16,
+}
+
+#[allow(dead_code)]
+impl InsertMenuItemParameters {
+    pub const fn menu_handle(&self) -> u32 {
+        self.menu_handle
+    }
+
+    pub const fn data_ptr(&self) -> u32 {
+        self.data_ptr
+    }
+
+    pub const fn after_item(&self) -> i16 {
+        self.after_item
+    }
+
+    pub const fn insertion_index(&self, item_count: u16) -> u16 {
+        evaluate_menu_insert_index(self.after_item, item_count)
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_insert_menu_item_parameters(
+    menu_handle: u32,
+    data_ptr: u32,
+    after_item: i16,
+) -> Option<InsertMenuItemParameters> {
+    if menu_handle == 0 {
+        None
+    } else {
+        Some(InsertMenuItemParameters {
+            menu_handle,
+            data_ptr,
+            after_item,
+        })
+    }
+}
+
+/// Architecture-neutral parameter extraction and validation for DeleteMenuItem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeleteMenuItemParameters {
+    menu_handle: u32,
+    item: i16,
+}
+
+#[allow(dead_code)]
+impl DeleteMenuItemParameters {
+    pub const fn menu_handle(&self) -> u32 {
+        self.menu_handle
+    }
+
+    pub const fn item(&self) -> i16 {
+        self.item
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_delete_menu_item_parameters(
+    menu_handle: u32,
+    item: i16,
+) -> Option<DeleteMenuItemParameters> {
+    if menu_handle == 0 || item <= 0 {
+        None
+    } else {
+        Some(DeleteMenuItemParameters { menu_handle, item })
+    }
+}
+
+/// Architecture-neutral parameter extraction and validation for EnableMenuItem / DisableMenuItem / EnableItem / DisableItem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuItemEnableParameters {
+    menu_handle: u32,
+    item: i16,
+    enabled: bool,
+}
+
+#[allow(dead_code)]
+impl MenuItemEnableParameters {
+    pub const fn menu_handle(&self) -> u32 {
+        self.menu_handle
+    }
+
+    pub const fn item(&self) -> i16 {
+        self.item
+    }
+
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub const fn targets_menu_title(&self) -> bool {
+        self.item == 0
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_menu_item_enable_parameters(
+    menu_handle: u32,
+    item: i16,
+    enabled: bool,
+) -> Option<MenuItemEnableParameters> {
+    if menu_handle == 0 || !(0..=31).contains(&item) {
+        None
+    } else {
+        Some(MenuItemEnableParameters {
+            menu_handle,
+            item,
+            enabled,
+        })
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_enable_menu_item_parameters(
+    menu_handle: u32,
+    item: i16,
+) -> Option<MenuItemEnableParameters> {
+    evaluate_menu_item_enable_parameters(menu_handle, item, true)
+}
+
+#[allow(dead_code)]
+pub fn evaluate_disable_menu_item_parameters(
+    menu_handle: u32,
+    item: i16,
+) -> Option<MenuItemEnableParameters> {
+    evaluate_menu_item_enable_parameters(menu_handle, item, false)
+}
+
+/// Architecture-neutral parameter extraction and validation for AppendResMenu / AddResMenu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppendResMenuParameters {
+    menu_handle: u32,
+    res_type: u32,
+}
+
+#[allow(dead_code)]
+impl AppendResMenuParameters {
+    pub const fn menu_handle(&self) -> u32 {
+        self.menu_handle
+    }
+
+    pub const fn res_type(&self) -> u32 {
+        self.res_type
+    }
+
+    pub const fn res_type_bytes(&self) -> [u8; 4] {
+        self.res_type.to_be_bytes()
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_append_res_menu_parameters(
+    menu_handle: u32,
+    res_type: u32,
+) -> Option<AppendResMenuParameters> {
+    if menu_handle == 0 {
+        None
+    } else {
+        Some(AppendResMenuParameters {
+            menu_handle,
+            res_type,
+        })
+    }
+}
+
+/// Architecture-neutral parameter extraction and validation for InsertResMenu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InsertResMenuParameters {
+    menu_handle: u32,
+    res_type: u32,
+    after_item: i16,
+}
+
+#[allow(dead_code)]
+impl InsertResMenuParameters {
+    pub const fn menu_handle(&self) -> u32 {
+        self.menu_handle
+    }
+
+    pub const fn res_type(&self) -> u32 {
+        self.res_type
+    }
+
+    pub const fn after_item(&self) -> i16 {
+        self.after_item
+    }
+
+    pub const fn res_type_bytes(&self) -> [u8; 4] {
+        self.res_type.to_be_bytes()
+    }
+
+    pub const fn insertion_index(&self, item_count: u16) -> u16 {
+        evaluate_menu_insert_index(self.after_item, item_count)
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_insert_res_menu_parameters(
+    menu_handle: u32,
+    res_type: u32,
+    after_item: i16,
+) -> Option<InsertResMenuParameters> {
+    if menu_handle == 0 {
+        None
+    } else {
+        Some(InsertResMenuParameters {
+            menu_handle,
+            res_type,
+            after_item,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6725,5 +7082,93 @@ mod tests {
             evaluate_menu_item_property_parameters(0x4000, 6, 0x5555, 5),
             Err(-5622) // menuItemNotFoundErr
         );
+    }
+
+    #[test]
+    fn menu_insertion_deletion_and_enable_evaluation() {
+        // InsertMenu
+        let ins_append = evaluate_insert_menu_parameters(0x4000, 0).unwrap();
+        assert_eq!(ins_append.menu_handle(), 0x4000);
+        assert_eq!(ins_append.placement(), MenuInsertionPlacement::Append);
+        assert_eq!(ins_append.before_id(), 0);
+        assert!(!ins_append.placement().is_hierarchical());
+
+        let ins_hier = evaluate_insert_menu_parameters(0x4000, -1).unwrap();
+        assert_eq!(ins_hier.placement(), MenuInsertionPlacement::Hierarchical);
+        assert_eq!(ins_hier.before_id(), -1);
+        assert!(ins_hier.placement().is_hierarchical());
+
+        let ins_before = evaluate_insert_menu_parameters(0x4000, 100).unwrap();
+        assert_eq!(ins_before.placement(), MenuInsertionPlacement::BeforeMenu(100));
+        assert_eq!(ins_before.before_id(), 100);
+        assert!(!ins_before.placement().is_hierarchical());
+
+        assert!(evaluate_insert_menu_parameters(0, 0).is_none());
+
+        // DeleteMenu
+        let del_menu = evaluate_delete_menu_parameters(128);
+        assert_eq!(del_menu.menu_id(), 128);
+
+        // AppendMenu
+        let app_menu = evaluate_append_menu_parameters(0x4000, 0x2000).unwrap();
+        assert_eq!(app_menu.menu_handle(), 0x4000);
+        assert_eq!(app_menu.data_ptr(), 0x2000);
+        assert!(evaluate_append_menu_parameters(0, 0x2000).is_none());
+
+        // evaluate_menu_insert_index
+        assert_eq!(evaluate_menu_insert_index(i16::MAX, 5), 5);
+        assert_eq!(evaluate_menu_insert_index(0, 5), 0);
+        assert_eq!(evaluate_menu_insert_index(2, 5), 2);
+        assert_eq!(evaluate_menu_insert_index(10, 5), 5);
+        assert_eq!(evaluate_menu_insert_index(-5, 5), 0);
+
+        // InsertMenuItem
+        let ins_item = evaluate_insert_menu_item_parameters(0x4000, 0x2000, 2).unwrap();
+        assert_eq!(ins_item.menu_handle(), 0x4000);
+        assert_eq!(ins_item.data_ptr(), 0x2000);
+        assert_eq!(ins_item.after_item(), 2);
+        assert_eq!(ins_item.insertion_index(5), 2);
+        assert!(evaluate_insert_menu_item_parameters(0, 0x2000, 2).is_none());
+
+        // DeleteMenuItem
+        let del_item = evaluate_delete_menu_item_parameters(0x4000, 3).unwrap();
+        assert_eq!(del_item.menu_handle(), 0x4000);
+        assert_eq!(del_item.item(), 3);
+        assert!(evaluate_delete_menu_item_parameters(0, 3).is_none());
+        assert!(evaluate_delete_menu_item_parameters(0x4000, 0).is_none());
+        assert!(evaluate_delete_menu_item_parameters(0x4000, -1).is_none());
+
+        // EnableMenuItem / DisableMenuItem
+        let en_title = evaluate_enable_menu_item_parameters(0x4000, 0).unwrap();
+        assert_eq!(en_title.menu_handle(), 0x4000);
+        assert_eq!(en_title.item(), 0);
+        assert!(en_title.enabled());
+        assert!(en_title.targets_menu_title());
+
+        let dis_item = evaluate_disable_menu_item_parameters(0x4000, 5).unwrap();
+        assert_eq!(dis_item.menu_handle(), 0x4000);
+        assert_eq!(dis_item.item(), 5);
+        assert!(!dis_item.enabled());
+        assert!(!dis_item.targets_menu_title());
+
+        assert!(evaluate_enable_menu_item_parameters(0, 1).is_none());
+        assert!(evaluate_enable_menu_item_parameters(0x4000, -1).is_none());
+        assert!(evaluate_enable_menu_item_parameters(0x4000, 32).is_none());
+
+        // AppendResMenu
+        let app_res = evaluate_append_res_menu_parameters(0x4000, 0x464f4e54).unwrap(); // 'FONT'
+        assert_eq!(app_res.menu_handle(), 0x4000);
+        assert_eq!(app_res.res_type(), 0x464f4e54);
+        assert_eq!(app_res.res_type_bytes(), *b"FONT");
+        assert!(evaluate_append_res_menu_parameters(0, 0x464f4e54).is_none());
+
+        // InsertResMenu
+        let ins_res = evaluate_insert_res_menu_parameters(0x4000, 0x464f4e44, i16::MAX).unwrap(); // 'FOND'
+        assert_eq!(ins_res.menu_handle(), 0x4000);
+        assert_eq!(ins_res.res_type(), 0x464f4e44);
+        assert_eq!(ins_res.res_type_bytes(), *b"FOND");
+        assert_eq!(ins_res.after_item(), i16::MAX);
+        assert_eq!(ins_res.insertion_index(10), 10);
+        assert!(evaluate_insert_res_menu_parameters(0, 0x464f4e44, 1).is_none());
     }
 }

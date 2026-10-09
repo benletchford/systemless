@@ -10039,3 +10039,116 @@ fn menu_item_reference_constants_follow_insert_delete_and_disposal() {
     run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeMenu);
     assert_eq!(loaded.toolbox_startup.menu_item_refcons.get(menu, 1), 0);
 }
+
+#[test]
+fn menu_insertion_deletion_and_enable_commands_dispatch_with_canonical_evaluation() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"InsertMenu")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let menu = install_test_menu(&mut loaded, scratch, 128, b"Edit", b"Undo;Cut;Copy");
+
+    // 1. InsertMenu
+    loaded.cpu.gpr[3] = menu;
+    loaded.cpu.gpr[4] = 0; // append to menu bar
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InsertMenu);
+    assert_eq!(loaded.last_mem_error(), 0);
+
+    // InsertMenu with null handle -> PPC_PARAM_ERR
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InsertMenu);
+    assert_eq!(loaded.last_mem_error(), PPC_PARAM_ERR);
+
+    // 2. DeleteMenu
+    loaded.cpu.gpr[3] = 128;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DeleteMenu);
+    assert_eq!(loaded.last_mem_error(), 0);
+
+    // 3. AppendMenu
+    loaded.memory.add_region(scratch + 0x200, vec![0; 0x200]);
+    assert!(ppc_write_pstring_bytes(&mut loaded.memory, scratch + 0x200, b"Paste;Clear"));
+    loaded.cpu.gpr[3] = menu;
+    loaded.cpu.gpr[4] = scratch + 0x200;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AppendMenu);
+    assert_eq!(loaded.last_mem_error(), 0);
+    assert_eq!(ppc_count_menu_items(&mut loaded.memory, menu), 5);
+
+    // AppendMenu with null handle -> PPC_NIL_HANDLE_ERR
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = scratch + 0x200;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AppendMenu);
+    assert_eq!(loaded.last_mem_error(), PPC_NIL_HANDLE_ERR);
+
+    // 4. InsertMenuItem
+    assert!(ppc_write_pstring_bytes(&mut loaded.memory, scratch + 0x300, b"Redo"));
+    loaded.cpu.gpr[3] = menu;
+    loaded.cpu.gpr[4] = scratch + 0x300;
+    loaded.cpu.gpr[5] = 1; // after item 1
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InsertMenuItem);
+    assert_eq!(loaded.last_mem_error(), 0);
+    assert_eq!(ppc_count_menu_items(&mut loaded.memory, menu), 6);
+
+    // InsertMenuItem with null handle -> PPC_NIL_HANDLE_ERR
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = scratch + 0x300;
+    loaded.cpu.gpr[5] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InsertMenuItem);
+    assert_eq!(loaded.last_mem_error(), PPC_NIL_HANDLE_ERR);
+
+    // 5. DeleteMenuItem
+    loaded.cpu.gpr[3] = menu;
+    loaded.cpu.gpr[4] = 2; // delete item 2 ("Redo")
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DeleteMenuItem);
+    assert_eq!(loaded.last_mem_error(), 0);
+    assert_eq!(ppc_count_menu_items(&mut loaded.memory, menu), 5);
+
+    // DeleteMenuItem with invalid item <= 0 -> safely no-op, PPC_NO_ERR
+    loaded.cpu.gpr[3] = menu;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DeleteMenuItem);
+    assert_eq!(loaded.last_mem_error(), 0);
+
+    // DeleteMenuItem with null handle -> PPC_NIL_HANDLE_ERR
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DeleteMenuItem);
+    assert_eq!(loaded.last_mem_error(), PPC_NIL_HANDLE_ERR);
+
+    // 6. EnableMenuItem and DisableMenuItem
+    loaded.cpu.gpr[3] = menu;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DisableMenuItem);
+    let items = ppc_menu_items_from_memory(&mut loaded.memory, menu).unwrap();
+    assert!(!items.items[0].enabled);
+
+    loaded.cpu.gpr[3] = menu;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::EnableMenuItem);
+    let items = ppc_menu_items_from_memory(&mut loaded.memory, menu).unwrap();
+    assert!(items.items[0].enabled);
+
+    // Disable menu title (item 0)
+    loaded.cpu.gpr[3] = menu;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DisableMenuItem);
+
+    // Boundary safety: null handle or out-of-range item (> 31)
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::EnableMenuItem);
+    loaded.cpu.gpr[3] = menu;
+    loaded.cpu.gpr[4] = 50;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::EnableMenuItem);
+
+    // 7. AppendResMenu with null handle -> PPC_NIL_HANDLE_ERR
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 0x464f4e54;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AppendResMenu);
+    assert_eq!(loaded.last_mem_error(), PPC_NIL_HANDLE_ERR);
+
+    // 8. InsertResMenu with null handle -> PPC_NIL_HANDLE_ERR
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 0x464f4e54;
+    loaded.cpu.gpr[5] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InsertResMenu);
+    assert_eq!(loaded.last_mem_error(), PPC_NIL_HANDLE_ERR);
+}
