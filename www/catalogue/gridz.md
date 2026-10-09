@@ -24,7 +24,21 @@ compatibility:
       Headless replay of the intact installer passes the display prompt, opens New
       Game and player setup, and reaches a live board. A board click visibly changes the
       board compared with an equal-duration idle run. Sustained play, save/restart, and
-      browser gameplay remain unverified.
+      extended browser gameplay remain unverified.
+    status: boots
+    evidence: https://github.com/benletchford/systemless/issues/4227
+  - date: "2026-10-09"
+    tester: Catalogue maintainer
+    systemless_version: 0.83.0 browser build from promoted PR head 35083fa004ac
+    architecture: ppc
+    environment: >-
+      Isolated headless Chrome tested staged page resources at the production
+      origin, while fetching the actual Systemless-hosted installer without archive
+      interception. Browser hashing confirms the complete 5,453,841-byte archive
+      and recorded SHA-256. The display prompt, title, New Game, player setup,
+      loading screen, live board, and a board click were observed. This is bounded
+      browser interaction; sustained gameplay and save/restart remain unverified.
+      It does not claim that the staged route was deployed on the live site.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/4227
   - date: "2026-10-09"
@@ -91,8 +105,9 @@ Gridz combines territorial strategy with a three-dimensional board. This entry
 preserves the complete version 1.2 demo installer, including its original terms
 and data.
 
-The PowerPC version reaches a new game and responds to a board click in bounded
-native testing. Longer play and browser gameplay still require validation. The
+The PowerPC version reaches a new game and accepts a board click in bounded
+native and headless browser testing against the hosted installer. Longer play
+and save/restart still require validation. The
 68K version currently has corrupted title rendering. Browser launch remains
 disabled while qualification continues.
 
