@@ -2948,6 +2948,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GetTime
         | PpcImportDispatcherTarget::Delay
         | PpcImportDispatcherTarget::GetDblTime
+        | PpcImportDispatcherTarget::GetCaretTime
         | PpcImportDispatcherTarget::LMGetTime
         | PpcImportDispatcherTarget::SecondsToDate
         | PpcImportDispatcherTarget::Microseconds

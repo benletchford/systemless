@@ -1923,7 +1923,7 @@ fn ppc_dispatch_standard_file(
                         false,
                     );
                 }
-                if tracking.new_folder.as_mut().is_some_and(|folder| folder.idle(tick_count)) {
+                if tracking.new_folder.as_mut().is_some_and(|folder| folder.idle(tick_count, memory.read_u32_be(crate::memory::globals::addr::CARET_TIME).unwrap_or(crate::memory::globals::DEFAULT_CARET_TIME_TICKS))) {
                     ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
                 }
                 if let Some(folder) = tracking.new_folder.as_mut().filter(|folder| folder.is_selecting()) {

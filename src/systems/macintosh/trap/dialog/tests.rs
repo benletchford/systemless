@@ -9170,6 +9170,16 @@
             screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
             "the next DialogSelect null-event blink interval should show the caret again"
         );
+        // GetCaretTime is an inline low-memory read on 68k. DialogSelect's
+        // TextEdit idle path must observe a changed setting without reactivation.
+        for (interval, tick, state, previous) in [(64, 227, 0, 164), (64, 228, 1, 228),
+            (5, 232, 1, 228), (5, 233, 0, 233)] {
+            bus.write_long(crate::memory::globals::addr::CARET_TIME, interval);
+            dispatch_dialog_select_event(&mut disp, &mut cpu, &mut bus, 0, tick);
+            assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_CARET_STATE_OFFSET), state);
+            assert_eq!(bus.read_long(te_ptr + TrapDispatcher::TE_CARET_TIME_OFFSET), previous);
+        }
+
     }
 
     // ---- DrawDialog ($A981) ----

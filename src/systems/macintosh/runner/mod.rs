@@ -2007,6 +2007,7 @@ impl FixtureRunner {
             crate::memory::globals::addr::MENU_FLASH,
             crate::memory::globals::DEFAULT_MENU_FLASH_COUNT,
         );
+        bus.write_long(crate::memory::globals::addr::CARET_TIME, crate::memory::globals::DEFAULT_CARET_TIME_TICKS);
         let profile = crate::machine_profile::reference_machine_profile();
         let visible_row_bytes =
             (u32::from(profile.screen_width) * u32::from(config.screen_depth)).div_ceil(8);
@@ -4562,6 +4563,7 @@ impl FixtureRunner {
             addr::KEY_REP_THRESH,
             crate::memory::globals::DEFAULT_AUTO_KEY_RATE_TICKS,
         );
+        self.bus.write_long(addr::CARET_TIME, crate::memory::globals::DEFAULT_CARET_TIME_TICKS);
         // RndSeed ($0156): system random seed initialized during boot.
         // On a real Mac, the boot code seeds this from the real-time clock
         // so that programs that read it directly (without calling Random)
@@ -5306,6 +5308,7 @@ impl FixtureRunner {
             addr::KEY_REP_THRESH,
             crate::memory::globals::DEFAULT_AUTO_KEY_RATE_TICKS,
         );
+        self.bus.write_long(addr::CARET_TIME, crate::memory::globals::DEFAULT_CARET_TIME_TICKS);
         self.bus.write_byte(addr::MMU32_BIT, 1);
         // Reapply the documented constant after adopting native low memory.
         // Inside Macintosh Volume I (1985), p. I-85; Volume III, p. III-228.

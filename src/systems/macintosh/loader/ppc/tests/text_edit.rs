@@ -1156,8 +1156,15 @@ fn text_edit_snapshot_follows_guest_idle_blink_phase() {
     loaded.set_tick_count(100);
     loaded.cpu.gpr[3] = handle;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::TEActivate { active: true });
+    assert_eq!(loaded.memory.read_u32_be(crate::memory::globals::addr::CARET_TIME), Some(32));
     // Text (1993), p. 2-84: only guest idle calls advance the blink phase.
-    for (tick, visible) in [(131, true), (132, false), (163, false), (164, true)] {
+    // The setting may change while the edit record remains active. The new
+    // interval is measured from the previous blink, not from the setting write.
+    for (interval, tick, visible) in [(32, 131, true), (32, 132, false), (32, 163, false),
+        (32, 164, true), (64, 227, true), (64, 228, false), (5, 232, false), (5, 233, true)] {
+        loaded.memory.write_u32_be(crate::memory::globals::addr::CARET_TIME, interval).unwrap();
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetCaretTime);
+        assert_eq!(loaded.cpu.gpr[3], interval);
         loaded.set_tick_count(tick);
         loaded.cpu.gpr[3] = handle;
         run_test_import(&mut loaded, PpcImportDispatcherTarget::TEIdle);

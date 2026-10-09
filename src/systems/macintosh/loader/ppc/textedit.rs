@@ -2452,7 +2452,8 @@ pub(super) fn ppc_te_idle(memory: &mut PpcSectionMem, handle: u32, tick_count: u
         let previous = memory
             .read_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET)
             .unwrap_or(0);
-        if active && start == end && tick_count.wrapping_sub(previous) >= 32 {
+        if active && start == end && tick_count.wrapping_sub(previous) >= memory.read_u32_be(crate::memory::globals::addr::CARET_TIME)
+            .unwrap_or(crate::memory::globals::DEFAULT_CARET_TIME_TICKS) {
             let caret = memory
                 .read_u16_be(te_ptr + PPC_TE_CARET_STATE_OFFSET)
                 .unwrap_or(0);

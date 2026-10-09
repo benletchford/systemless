@@ -612,6 +612,10 @@ fn import_bindings_classify_timing_and_date_imports() {
         PpcImportDispatcherTarget::Delay
     );
     assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetCaretTime"),
+        PpcImportDispatcherTarget::GetCaretTime
+    );
+    assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "GetDblTime"),
         PpcImportDispatcherTarget::GetDblTime
     );

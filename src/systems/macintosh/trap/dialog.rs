@@ -519,7 +519,6 @@ impl super::TrapDispatcher {
     const TE_N_LINES_OFFSET: u32 = 0x5E;
     const TE_LINE_STARTS_OFFSET: u32 = 0x60;
     const TE_REC_MIN_SIZE: u32 = 128;
-    const TE_CARET_BLINK_TICKS: u32 = 32;
     // TextEdit draws inside the destination rectangle (IM:I I-373 to I-374);
     // BasiliskII/System 7.5.3 `dialog_visual_textedit_smoke` pins the ROM's
     // flush-left glyph origin one pixel in from destRect.left.
@@ -2797,7 +2796,7 @@ impl super::TrapDispatcher {
         }
 
         let last_toggle = bus.read_long(te_ptr + Self::TE_CARET_TIME_OFFSET);
-        if self.current_tick().wrapping_sub(last_toggle) < Self::TE_CARET_BLINK_TICKS {
+        if self.current_tick().wrapping_sub(last_toggle) < bus.read_long(crate::memory::globals::addr::CARET_TIME) {
             return;
         }
 

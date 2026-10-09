@@ -507,6 +507,12 @@ pub(super) fn dispatch_time_import(context: PpcTimeDispatchContext<'_>) -> Optio
                 Some(PpcImportAction::Yield(u64::from(cycles_per_tick.max(1))))
             }
         }
+        // GetCaretTime: Toolbox Essentials (1992), p. 2-113.
+        // FUNCTION GetCaretTime: LongInt; reads the live CaretTime global.
+        PpcImportDispatcherTarget::GetCaretTime => Some(PpcImportAction::Return(
+            memory.read_u32_be(crate::memory::globals::addr::CARET_TIME)
+                .unwrap_or(crate::memory::globals::DEFAULT_CARET_TIME_TICKS),
+        )),
         PpcImportDispatcherTarget::GetDblTime => Some(PpcImportAction::Return(
             memory
                 .read_u32_be(crate::memory::globals::addr::DOUBLE_TIME)

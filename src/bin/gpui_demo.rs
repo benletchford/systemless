@@ -5936,6 +5936,7 @@ mod desktop {
         #[test]
         fn semantic_new_folder_create_cancel_and_stale_actions_across_modes() {
             use super::super::activation::{ControlActivation, FileAction};
+            use systemless::memory::{globals::addr::CARET_TIME, MemoryBus};
             for (powerpc, depth, duplicate_directory) in [(false, Some(1)), (false, Some(8)), (true, None)].into_iter().flat_map(|(cpu, depth)| [false, true].map(move |directory| (cpu, depth, directory))) {
                 let mut session = MacintoshSession::new(true, depth);
                 session.runner_mut().set_prefer_powerpc_executables(powerpc);
@@ -5994,7 +5995,11 @@ mod desktop {
                 step(&mut session);
                 assert_eq!(session.runner().standard_file_snapshot().unwrap().new_folder.unwrap().selection, (15, 15), "end release: PPC={powerpc}, depth={depth:?}");
                 let caret_tick = session.runner().guest_tick();
-                for (elapsed, visible) in [(31, true), (32, false), (64, true)] {
+                for (interval, elapsed, visible) in [(32, 31, true), (32, 32, false),
+                    (32, 64, true), (64, 127, true), (64, 128, false), (5, 132, false), (5, 133, true)] {
+                    // Simulate the guest's General Controls preference changing
+                    // while this same edit field remains active.
+                    session.runner_mut().bus_mut().write_long(CARET_TIME, interval);
                     // A GUI deadline caps time; PPC returns at each VBL boundary.
                     // Exercise every guest tick rather than treating one slice as
                     // an instruction to jump directly to the checkpoint.
@@ -6008,6 +6013,7 @@ mod desktop {
                     assert_eq!(folder.caret_visible, visible,
                         "New Folder idle caret: PPC={powerpc}, depth={depth:?}, elapsed={elapsed}");
                 }
+                session.runner_mut().bus_mut().write_long(CARET_TIME, 32);
                 session.deliver_input(MacintoshInput::KeyDown { mac_key: 0, character: b'x' });
                 session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character: b'x' });
                 step(&mut session);

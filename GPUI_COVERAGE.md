@@ -1924,7 +1924,15 @@ unchanged selection/scroll endpoint. The non-test `gpui-demo` feature build
 also passes without exposing test-only capture arguments.
 The full GPUI interaction suite passes all 75 tests with this change.
 
-Host-focus behaviour and adjustable guest caret-rate settings remain open.
-Toolbox Essentials (1992), p. 2-113 documents GetCaretTime and its CaretTime
-global; its C summary defines the global at `$02F4`. The default-interval
-implementation does not yet consume that setting.
+Caret timing now follows the live guest `CaretTime` long at `$02F4`, seeded
+to 32 ticks at launch. Toolbox Essentials (1992), p. 2-113 documents
+GetCaretTime and its global; the Event Manager C summary supplies the address.
+Both CPU TextEdit paths and New Folder idle processing read that value rather
+than retaining a fixed interval. The PPC GetCaretTime import returns the same
+live value. Fifteen focused caret tests, the PPC TextEdit blink/import test,
+import classification and launch-default checks pass. They cover changes
+from 32 to 64 to 5 ticks without reactivation, preserving the previous blink
+timestamp, and shared-state tick wraparound. The expanded real New Folder
+workflow passes all interval checkpoints in monochrome 68k, colour 68k and
+PPC, with both duplicate-file and duplicate-directory retry paths.
+Host-focus behaviour remains open.

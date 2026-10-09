@@ -3208,7 +3208,7 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         mut tracking: StandardFilePutTrackingState,
     ) {
-        if tracking.new_folder.as_mut().is_some_and(|folder| folder.idle(self.current_tick())) {
+        if tracking.new_folder.as_mut().is_some_and(|folder| folder.idle(self.current_tick(), bus.read_long(addr::CARET_TIME))) {
             self.draw_standard_file_put_dialog(bus, &tracking);
         }
         if let Some(folder) = tracking.new_folder.as_mut().filter(|folder| folder.is_selecting()) {
