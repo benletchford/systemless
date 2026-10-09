@@ -3321,6 +3321,7 @@ impl super::TrapDispatcher {
         let sel_end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
         let (selection_start, selection_end) =
             normalize_selection_bounds(sel_start, sel_end, usize::MAX);
+        let mut solid_caret_rect = None;
         if selection_start == selection_end {
             if te_active && caret_visible {
                 if let Some(&(line_start, line_end, line_top, line_bottom, line_x)) = visual_lines
@@ -3391,6 +3392,7 @@ impl super::TrapDispatcher {
                                 },
                                 ShapeOp::Paint,
                             );
+                            solid_caret_rect = Some((top, left, bottom, right));
                         }
                     }
                 }
@@ -3492,7 +3494,7 @@ impl super::TrapDispatcher {
         }
 
         // Text (1993), p. 2-88: allocation is not evidence of painted text.
-        bus.record_text_edit_drawing(te_handle, te_port, view_rect);
+        bus.record_text_edit_caret_drawing(te_handle, te_port, view_rect, solid_caret_rect);
         if switched_port {
             self.set_current_port_state(bus, cpu, previous_port, Some(previous_gdevice));
         }

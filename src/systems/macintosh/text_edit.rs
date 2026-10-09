@@ -278,7 +278,7 @@ mod tests {
         use super::{TextEditPaintSnapshot, TextEditCharExtraSnapshot};
         let mut paint = TextEditPaintSnapshot { depth: 8, mode: 1,
             char_extra: TextEditCharExtraSnapshot::ClassicFixed(0x8000),
-            space_extra: 0x8000, style_ink: Vec::new() };
+            space_extra: 0x8000, style_ink: Vec::new(), solid_caret: None };
         assert!(paint.supports_zero_spacing_src_or());
         paint.space_extra = -0x8000;
         assert!(!paint.supports_zero_spacing_src_or());
@@ -627,6 +627,9 @@ pub struct TextEditPaintSnapshot {
     pub space_extra: i32,
     /// One ink per canonical style run, in the same order.
     pub style_ink: Vec<TextEditInkSnapshot>,
+    /// Solid native caret fragment retained at drawing time, before restoring
+    /// the caller's foreground. Missing evidence retains guest caret rendering.
+    pub solid_caret: Option<((i16, i16, i16, i16), TextEditInkSnapshot)>,
 }
 
 impl TextEditPaintSnapshot {

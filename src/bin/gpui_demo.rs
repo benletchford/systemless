@@ -4162,14 +4162,20 @@ mod desktop {
         eprintln!("saved composed GPUI capture to {}", output.display());
     }
 
-    /// Classic PPC PaintRect uses the insertion style, independently of the
-    /// final run painted. This capture uses the default classic theme only.
+    /// Classic PPC uses the insertion style; 68k uses retained native solid
+    /// paint evidence, independently of the restored caller foreground.
+    /// This capture uses the default classic theme only.
     #[cfg(feature = "gpui-demo-test")]
-    fn ppc_styled_caret_paint(
+    fn styled_caret_paint(
         record: &systemless::runner::TextEditSnapshot, index: usize,
     ) -> Option<((i16, i16, i16, i16), systemless::runner::TextEditInkSnapshot)> {
-        if record.line_layout_policy != systemless::runner::TextEditLineLayoutPolicy::PpcRunMetrics {
-            return None;
+        if record.line_layout_policy == systemless::runner::TextEditLineLayoutPolicy::CumulativeGuestMetrics {
+            if !record.active || !record.caret_visible || record.selection.0 != record.selection.1 { return None; }
+            let paint = record.paint.as_ref()?.solid_caret.as_ref()?;
+            let (owner, _) = record.caret_line()?;
+            let width = paint.0.3.checked_sub(paint.0.1)?;
+            return (owner == index && record.guest_styled_caret_rect(index, width)?? == paint.0)
+                .then(|| paint.clone());
         }
         let rect = record.guest_styled_caret_rect(index, 1)??;
         let (owner, offset) = record.caret_line()?;
@@ -4185,7 +4191,6 @@ mod desktop {
         prefer_powerpc: bool, depth: Option<u16>, scale: f32, selected: bool, caret: bool, activation: &[bool],
     ) {
         use gpui_kit::{platform, HeadlessAppContext};
-        assert!(!caret || prefer_powerpc, "classic caret pen/pattern metadata is not qualified yet");
         struct Preview {
             image: Arc<RenderImage>,
             record: systemless::runner::TextEditSnapshot,
@@ -4204,7 +4209,7 @@ mod desktop {
                     if line.selection.is_some() {
                         let background = systemless::runner::TextEditInkSnapshot { pixel: 0, rgb: [255; 3], inverted_rgb: [0; 3] };
                         ink = ink.child(super::text::classic_styled_text_edit_selection(line, &background, self.scale, origin).unwrap());
-                    } else if let Some((rect, caret_ink)) = ppc_styled_caret_paint(record, index) {
+                    } else if let Some((rect, caret_ink)) = styled_caret_paint(record, index) {
                         ink = ink.child(super::text::classic_styled_text_edit_solid_caret(line, Some(rect), &caret_ink, self.scale, origin).unwrap());
                     } else {
                         ink = ink.child(super::text::classic_styled_text_edit_ink(line, self.scale, origin).unwrap());
@@ -4280,7 +4285,7 @@ mod desktop {
         let mut native_ink = std::collections::BTreeMap::new();
         for index in 0..record.line_count {
             let line = super::text::StyledTextEditLine::from_guest(&record, index).unwrap();
-            native_ink.extend(if let Some((rect, ink)) = ppc_styled_caret_paint(&record, index) {
+            native_ink.extend(if let Some((rect, ink)) = styled_caret_paint(&record, index) {
                 line.pixels_with_solid_caret(Some(rect), &ink).unwrap()
             } else {
                 line.pixels_with_selection(&systemless::runner::TextEditInkSnapshot {

@@ -131,6 +131,9 @@ impl std::fmt::Debug for PresentationSlot {
     }
 }
 impl PresentationSlot {
+    pub(crate) fn text_edit_solid_caret(&self, handle: u32) -> Option<((i16, i16, i16, i16), u16, u16)> {
+        self.1.borrow().get(&handle)?.solid_caret
+    }
     pub(crate) fn forget_text_edit_drawing(&self, handle: u32) {
         self.1.borrow_mut().remove(&handle);
     }
@@ -2898,9 +2901,16 @@ impl MacMemoryBus {
     pub(crate) fn forget_text_edit_drawing(&self, handle: u32) {
         self.presentation.forget_text_edit_drawing(handle);
     }
-    pub(crate) fn record_text_edit_drawing(&self, handle: u32, port: u32, rect: (i16, i16, i16, i16)) {
-        let drawing = crate::text_edit::TextEditDrawing::capture(port, rect, |addr| Some(self.read_byte(addr)));
+    pub(crate) fn record_text_edit_caret_drawing(
+        &self, handle: u32, port: u32, view: (i16, i16, i16, i16),
+        caret: Option<(i16, i16, i16, i16)>,
+    ) {
+        let mut drawing = crate::text_edit::TextEditDrawing::capture(port, view, |addr| Some(self.read_byte(addr)));
+        if let (Some(drawing), Some(rect)) = (&mut drawing, caret) { drawing.qualify_solid_caret(rect); }
         self.presentation.record_text_edit_drawing(handle, drawing);
+    }
+    pub(crate) fn text_edit_solid_caret(&self, handle: u32) -> Option<((i16, i16, i16, i16), u16, u16)> {
+        self.presentation.text_edit_solid_caret(handle)
     }
     pub(crate) fn text_edit_drawing_regions(&self, handle: u32, port: u32, rect: (i16, i16, i16, i16), screen_base: u32) -> Vec<(i16, i16, i16, i16)> {
         let drawing = crate::text_edit::TextEditDrawing::capture(port, rect, |addr| Some(self.read_byte(addr)));

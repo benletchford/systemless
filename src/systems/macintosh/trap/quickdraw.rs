@@ -25970,6 +25970,12 @@ impl super::TrapDispatcher {
         }).collect();
         Some(TextEditPaintSnapshot { depth, mode,
             char_extra: TextEditCharExtraSnapshot::ClassicFixed(self.char_extra),
-            space_extra: bus.read_long(port + 76) as i32, style_ink })
+            space_extra: bus.read_long(port + 76) as i32, style_ink,
+            solid_caret: bus.text_edit_solid_caret(record.guest_id)
+                .filter(|(_, painted_depth, _)| record.drawing_intact && *painted_depth == depth)
+                .map(|(rect, _, pixel)| (rect, TextEditInkSnapshot {
+                    pixel, rgb: rgb_at(pixel as u8),
+                    inverted_rgb: rgb_at(pixel as u8 ^ if depth == 1 { 1 } else { 255 }),
+                })) })
     }
 }
