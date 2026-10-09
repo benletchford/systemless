@@ -1679,3 +1679,53 @@ fn process_suspend_event_respects_masks_priority_and_stable_peeking() {
         Some(crate::process_manager::activation::ActivationNotification::Window { active: false })
     );
 }
+
+#[test]
+fn wait_next_event_schedules_process_switch_and_window_activation_by_size_policy() {
+    use super::super::test_helpers::TEST_SP;
+    for flags in [0, 0x0800, 0x4000, 0x4800] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window = bus.alloc(256);
+        let event_ptr = bus.alloc(16);
+        disp.window_list.push(window);
+        bus.write_byte(window + 110, 255);
+        bus.write_byte(window + 111, 255);
+        disp.application_size.with_mut(|size| *size = Some(crate::loader::ApplicationSizeResource {
+            flags, preferred_size: 0, minimum_size: 0,
+        }));
+        let accepts = flags & 0x4000 != 0;
+        let owns_activation = flags == 0x4800;
+        for foreground in [false, true] {
+            disp.event_queue.with_mut(|queue| queue.activation.request(foreground));
+            let mut expected = Vec::new();
+            if accepts { expected.push(15); }
+            if !owns_activation { expected.push(8); }
+            for what in expected {
+                cpu.write_reg(Register::A7, TEST_SP);
+                bus.write_long(TEST_SP, 0);
+                bus.write_long(TEST_SP + 4, 0);
+                bus.write_long(TEST_SP + 8, event_ptr);
+                bus.write_word(TEST_SP + 12, 0x8100);
+                disp.dispatch_toolbox(true, 0x060, &mut cpu, &mut bus).unwrap().unwrap();
+                assert_eq!(bus.read_word(event_ptr), what, "flags={flags:04x} foreground={foreground}");
+                if what == 15 {
+                    assert_eq!(bus.read_long(event_ptr + 2), 0x0100_0000 | u32::from(foreground));
+                } else {
+                    assert_eq!(bus.read_long(event_ptr + 2), window);
+                    assert_eq!(bus.read_word(event_ptr + 14) & 1, u16::from(foreground));
+                    assert_eq!(bus.read_byte(window + 111) != 0, foreground);
+                }
+            }
+            // The following scheduling call completes suspend, and must not
+            // manufacture another activation or suspend/resume notification.
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, 0);
+            bus.write_long(TEST_SP + 4, 0);
+            bus.write_long(TEST_SP + 8, event_ptr);
+            bus.write_word(TEST_SP + 12, 0x8100);
+            disp.dispatch_toolbox(true, 0x060, &mut cpu, &mut bus).unwrap().unwrap();
+            assert_eq!(bus.read_word(event_ptr), 0);
+            assert_eq!(disp.event_queue.with_ref(|queue| queue.activation.is_foreground()), foreground);
+        }
+    }
+}

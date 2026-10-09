@@ -801,6 +801,9 @@ pub(crate) fn dispatch_supported_import(
             event_queue,
             input,
             tick_count: *tick_count,
+            process_mode,
+            window_list,
+            dialog_callback_active: !dialog_callback_stack.is_empty(),
         })
     {
         return Some(action);

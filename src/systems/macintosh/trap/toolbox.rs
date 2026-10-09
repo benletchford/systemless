@@ -6164,6 +6164,7 @@ impl super::TrapDispatcher {
                 let event_ptr = bus.read_long(sp);
                 let event_mask = bus.read_word(sp + 4);
 
+                self.service_process_activation(bus, false);
                 self.service_invalid_menu_bar(bus);
 
                 // tick_count is maintained by the runner via advance_guest_tick()
@@ -6206,6 +6207,7 @@ impl super::TrapDispatcher {
                 let event_ptr = bus.read_long(sp + 8);
                 let event_mask = bus.read_word(sp + 12);
 
+                self.service_process_activation(bus, true);
                 self.service_invalid_menu_bar(bus);
 
                 // tick_count is maintained by the runner via advance_guest_tick()
@@ -6327,6 +6329,7 @@ impl super::TrapDispatcher {
                 let event_ptr = bus.read_long(sp);
                 let event_mask = bus.read_word(sp + 4);
 
+                self.service_process_activation(bus, true);
                 self.service_invalid_menu_bar(bus);
 
                 // tick_count is maintained by the runner via advance_guest_tick()

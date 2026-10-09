@@ -549,6 +549,9 @@ pub(super) struct PpcEventDispatchContext<'a> {
     pub(super) event_queue: &'a mut EventQueue,
     pub(super) input: PpcInputSnapshot,
     pub(super) tick_count: u32,
+    pub(super) process_mode: u32,
+    pub(super) window_list: &'a SharedProcessWindowList,
+    pub(super) dialog_callback_active: bool,
 }
 
 pub(super) fn dispatch_event_import(
@@ -568,6 +571,9 @@ pub(super) fn dispatch_event_import(
         event_queue,
         input,
         tick_count,
+        process_mode,
+        window_list,
+        dialog_callback_active,
     } = context;
     match binding.dispatcher_target {
         PpcImportDispatcherTarget::GetMainEventLoop => {
@@ -1238,6 +1244,12 @@ pub(super) fn dispatch_event_import(
                 PpcImportDispatcherTarget::GetOSEvent
             );
             if !os_only {
+                ppc_service_process_activation(memory, gworlds, window_list,
+                    toolbox_startup, event_queue, process_mode, tick_count,
+                    matches!(binding.dispatcher_target,
+                        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent)),
+                    dialog_callback_active);
+
                 let wait_ticks = if matches!(
                     binding.dispatcher_target,
                     PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent)
@@ -1325,6 +1337,10 @@ pub(super) fn dispatch_event_import(
                 PpcImportDispatcherTarget::OSEventAvail
             );
             if !os_only {
+                ppc_service_process_activation(memory, gworlds, window_list,
+                    toolbox_startup, event_queue, process_mode, tick_count, true,
+                    dialog_callback_active);
+
                 toolbox_startup.event_loop_poll_until_tick = Some(tick_count.wrapping_add(1));
                 ppc_service_invalid_menu_bar(
                     event_queue,

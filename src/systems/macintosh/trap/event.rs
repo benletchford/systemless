@@ -522,6 +522,32 @@ impl super::TrapDispatcher {
         }
     }
 
+    pub(super) fn service_process_activation(&mut self, bus: &mut MacMemoryBus, yields: bool) {
+        if !self.event_queue.with_ref(|queue| queue.activation.needs_event_service()) {
+            return;
+        }
+        let front = self.front_window_for_trap(bus);
+        // Toolbox Essentials (1992), "Switching Contexts", pp. 2-19--2-20:
+        // dBoxProc blocks major switching; movableDBoxProc does not.
+        let allowed = (front == 0 || self.window_proc_id(front) != 1)
+            && !self.is_dialog_tracking() && !self.is_menu_tracking()
+            && !self.is_standard_file_get_tracking() && !self.is_standard_file_put_tracking()
+            && !self.is_control_tracking() && !self.is_window_tracking()
+            && !self.is_go_away_tracking() && !self.is_grow_window_tracking()
+            && !self.is_region_tracking();
+        let policy = self.application_size.with_ref(|size| *size);
+        let notification = self.event_queue.with_mut(|queue| {
+            queue.activation.begin_event_call(policy, yields, allowed);
+            queue.activation.peek()
+        });
+        if allowed {
+            if let Some(crate::process_manager::activation::ActivationNotification::Window { active }) = notification {
+                self.hilite_process_front_window(bus, front, active);
+                self.event_queue.with_mut(|queue| queue.activation.consume());
+            }
+        }
+    }
+
     fn peek_process_activation_event(&self, event_mask: u16) -> Option<super::dispatch::QueuedEvent> {
         let tick = self.current_tick();
         let position = self.input_state.mouse_position();

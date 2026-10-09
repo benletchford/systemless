@@ -2861,7 +2861,7 @@ impl super::TrapDispatcher {
         })
     }
 
-    fn window_proc_id(&self, window_ptr: u32) -> i16 {
+    pub(super) fn window_proc_id(&self, window_ptr: u32) -> i16 {
         self.window_proc_ids.get(&window_ptr).copied().unwrap_or(0)
     }
 
@@ -3076,6 +3076,16 @@ impl super::TrapDispatcher {
             where_h: 0,
             modifiers: active_flag,
         });
+    }
+
+    pub(super) fn hilite_process_front_window(&mut self, bus: &mut MacMemoryBus, window: u32, active: bool) {
+        if window != 0 {
+            // Same Window Manager operation as HiliteWindow (Volume I, I-286).
+            // Process switching must not directly activate TextEdit or controls.
+            bus.write_byte(window + Self::WINDOW_HILITED_OFFSET, if active { 0xff } else { 0 });
+            self.draw_single_window_chrome_inline(bus, window, active);
+            self.queue_window_activation_event(bus, window, active);
+        }
     }
 
     pub(crate) fn acknowledge_window_activation_event(
