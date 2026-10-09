@@ -176,6 +176,52 @@ redistribution rights, sustained gameplay, save/load, audio, Systemless hosting
 and browser qualification remain unresolved. No catalogue entry is added or
 enabled.
 
+### Civilization II subsequent development replay
+
+A newer bounded headless replay uses the same unchanged archive with committed
+keyboard timing head `f30748a20c7b6c3fd5d1eac0e1d294a5382a750b`
+([PR #4344](https://github.com/benletchford/systemless/pull/4344)), which includes
+the merged [offscreen window-list fix](https://github.com/benletchford/systemless/pull/4343),
+and **uncommitted picture callback/clipping work** under
+[issue #4339](https://github.com/benletchford/systemless/issues/4339). This is
+local development evidence, not a claim that those graphics changes are released.
+
+Dismissing the first-city tutorial at v=221, h=613 reveals Rome's city controls
+at frontend tick 6522 / guest tick 6501. Clicking Change at v=301, h=672 opens
+an inspected production chooser at frontend tick 6704 / guest tick 6683,
+listing Settlers, Warriors, Phalanx, Barracks and Colossus. The prior
+`LMGetKeyThresh` halt is gone. Accepting the selected Phalanx at v=570, h=590
+returns to the city, and Done at v=508, h=684 returns to the map with Rome.
+Return opens the Civilization Advances tutorial at frontend tick 7670 / guest
+tick 7649. Dismissing that prompt at v=340, h=615 opens the research chooser
+at frontend tick 8272 / guest tick 8251, with Writing selected and a visible
+Science Advisor recommendation. Accepting Writing at v=476, h=289 returns to
+the map at frontend tick 8874 / guest tick 8853. The inspected status panel
+shows 3980 B.C., advanced from 4000 B.C., establishing the first completed
+year transition. A longer scenario sends eight further bounded Return
+interactions, taking a checkpoint after each. Its final inspected checkpoint
+at frontend tick 13690 / guest tick 13669 shows 3860 B.C. and the Civilization
+Advance dialog announcing the discovery of Writing. This establishes bounded
+turn/research progress, not that each input corresponds to exactly one turn.
+Dismissing the discovery details opens the next research chooser, with Code of
+Laws selected and the Science Advisor recommendation visible. After accepting
+it and dismissing the Writing tutorial, Command-S opens the Save File dialog
+at frontend tick 16042. Clicking Save at v=339, h=518 produces the inspected
+“Game saved!” confirmation for Dictator Caesar of the Romans, 3840 B.C., at
+frontend tick 16644 / guest tick 16623. This is the application’s save
+confirmation in the reproduction’s in-memory filesystem, not proof of
+persistent export, reload or restart.
+The inspected terrain, city icons and controls are substantially improved over the earlier corrupted frames.
+
+These exploratory scenarios complete with zero assertions and zero exhausted
+frames; no independent image oracle was used. They do not yet establish
+full graphics correctness, sustained gameplay, save/load, audio, permission to distribute the exact archive or a
+Systemless-hosted browser route. Standard QuickDraw procedure-table
+initialization remains unfinished under #4339. The PowerPC demo remains distinct
+from the requested 68K or dual-architecture candidate. No entry is added or enabled.
+
+### Remaining runtime blockers
+
 Current failures are recorded separately for [Civilization II bitmap rendering](https://github.com/benletchford/systemless/issues/4331),
 [Combat Mission accelerator startup](https://github.com/benletchford/systemless/issues/4253),
 [Worms Blast early exit](https://github.com/benletchford/systemless/issues/4254),
