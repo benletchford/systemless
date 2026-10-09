@@ -51,7 +51,7 @@ pub(super) fn dispatch_time_import(context: PpcTimeDispatchContext<'_>) -> Optio
         }
         PpcImportDispatcherTarget::RmvTime => {
             callback_scheduling
-                .advance_current_subtick_min(u64::from(tick_count) * 1_000_000);
+                .advance_current_subtick_min(u64::from(tick_count) * crate::time_manager::SUBTICKS_PER_TICK);
             timer_tasks.with_mut(|timer_tasks| {
                 ppc_remove_time_task(memory, timer_tasks, callback_scheduling, cpu.gpr[3]);
             });
@@ -120,22 +120,22 @@ pub(crate) fn ppc_install_vbl_task(
     task_ptr: u32,
     slot: Option<i16>,
 ) -> i16 {
-    if task_ptr == 0 || memory.read_u16_be(task_ptr + 4).unwrap_or(0) != 1 {
-        return -2;
+    let q_type = memory.read_u16_be(task_ptr + crate::time_manager::TASK_Q_TYPE_OFFSET).unwrap_or(0);
+    let vbl_count = memory.read_u16_be(task_ptr + crate::time_manager::VBL_COUNT_OFFSET).unwrap_or(0);
+    let vbl_phase = memory.read_u16_be(task_ptr + crate::time_manager::VBL_PHASE_OFFSET).unwrap_or(0);
+    let eval = crate::time_manager::evaluate_v_install(task_ptr, q_type, vbl_count, vbl_phase, slot);
+    if eval.result == crate::time_manager::NO_ERR {
+        let _ = memory.write_u16_be(task_ptr + crate::time_manager::VBL_COUNT_OFFSET, eval.initial_count);
+        vbl_tasks.retain(|task| task.task_ptr != task_ptr);
+        vbl_tasks.push(PpcVblTaskRecord {
+            task_ptr,
+            architecture: CallbackTaskArchitecture::PowerPc,
+            slot,
+            pending: false,
+        });
+        ppc_sync_vbl_task_links(memory, vbl_tasks);
     }
-    let vbl_count = memory.read_u16_be(task_ptr + 10).unwrap_or(0);
-    let vbl_phase = memory.read_u16_be(task_ptr + 12).unwrap_or(0);
-    let _ = memory.write_u16_be(task_ptr + 10, vbl_count.wrapping_add(vbl_phase));
-
-    vbl_tasks.retain(|task| task.task_ptr != task_ptr);
-    vbl_tasks.push(PpcVblTaskRecord {
-        task_ptr,
-        architecture: CallbackTaskArchitecture::PowerPc,
-        slot,
-        pending: false,
-    });
-    ppc_sync_vbl_task_links(memory, vbl_tasks);
-    PPC_NO_ERR
+    eval.result
 }
 
 pub(crate) fn ppc_install_time_task(
@@ -145,23 +145,25 @@ pub(crate) fn ppc_install_time_task(
     task_ptr: u32,
     extended: bool,
 ) {
-    if task_ptr == 0 || !ppc_memory_can_write_bytes(memory, task_ptr, 14) {
+    if !ppc_memory_can_write_bytes(memory, task_ptr, crate::time_manager::TM_TASK_RECORD_SIZE as u32) {
         return;
     }
-    // Inside Macintosh: Processes (1994), pp. 3-17--3-19: InsTime inserts
-    // the record inactive and clears the active high bit in qType.
-    let q_type = memory.read_u16_be(task_ptr + 4).unwrap_or(0) & 0x7fff;
-    let _ = memory.write_u32_be(task_ptr, 0);
-    let _ = memory.write_u16_be(task_ptr + 4, q_type);
-    if !extended || memory.read_u32_be(task_ptr + 14).unwrap_or(0) == 0 {
+    let q_type = memory.read_u16_be(task_ptr + crate::time_manager::TASK_Q_TYPE_OFFSET).unwrap_or(0);
+    let action = crate::time_manager::evaluate_ins_time(task_ptr, q_type, extended);
+    if !action.is_valid() {
+        return;
+    }
+    let _ = memory.write_u32_be(task_ptr + crate::time_manager::TASK_Q_LINK_OFFSET, 0);
+    let _ = memory.write_u16_be(task_ptr + crate::time_manager::TASK_Q_TYPE_OFFSET, action.cleared_q_type);
+    if !action.extended || memory.read_u32_be(task_ptr + crate::time_manager::TM_WAKE_UP_OFFSET).unwrap_or(0) == 0 {
         scheduling.remove_extended_wakeup(task_ptr);
     }
     timer_tasks.retain(|task| task.task_ptr != task_ptr);
     timer_tasks.push(PpcTimerTaskRecord {
         task_ptr,
         architecture: CallbackTaskArchitecture::PowerPc,
-        extended,
-        callback: memory.read_u32_be(task_ptr + 6).unwrap_or(0),
+        extended: action.extended,
+        callback: memory.read_u32_be(task_ptr + crate::time_manager::TASK_ADDR_OFFSET).unwrap_or(0),
         active: false,
         fire_at_tick: 0,
         fire_at_subtick: 0,
@@ -171,7 +173,7 @@ pub(crate) fn ppc_install_time_task(
     if ppc_timer_trace_enabled() {
         eprintln!(
             "[TIMER-PPC] install task=${task_ptr:08X} callback=${:08X}",
-            memory.read_u32_be(task_ptr + 6).unwrap_or(0)
+            memory.read_u32_be(task_ptr + crate::time_manager::TASK_ADDR_OFFSET).unwrap_or(0)
         );
     }
 }
@@ -184,52 +186,44 @@ pub(crate) fn ppc_prime_time_task(
     count: i32,
     current_tick: u32,
 ) {
-    if task_ptr == 0 || !ppc_memory_can_write_bytes(memory, task_ptr, 14) {
+    if !ppc_memory_can_write_bytes(memory, task_ptr, crate::time_manager::TM_TASK_RECORD_SIZE as u32) {
         return;
     }
-    // Inside Macintosh: Processes (1994), pp. 3-19--3-20: PrimeTime stores
-    // the requested delay and marks the installed task active.
-    let q_type = memory.read_u16_be(task_ptr + 4).unwrap_or(0) | 0x8000;
-    let _ = memory.write_u16_be(task_ptr + 4, q_type);
-    let _ = memory.write_u32_be(task_ptr + 10, count as u32);
-    const SUBTICKS_PER_TICK: u64 = 1_000_000;
-    let requested_delay_subticks = if count == 0 {
-        0
-    } else if count > 0 {
-        u64::from(count as u32) * 60_000
-    } else {
-        (u64::from(count.unsigned_abs()) * 60).max(1)
-    };
-    let current_subtick = scheduling
-        .advance_current_subtick_min(u64::from(current_tick) * SUBTICKS_PER_TICK);
-    if let Some(task) = timer_tasks
-        .iter_mut()
+    let q_type = memory.read_u16_be(task_ptr + crate::time_manager::TASK_Q_TYPE_OFFSET).unwrap_or(0);
+    let is_extended = timer_tasks
+        .iter()
         .find(|task| task.task_ptr == task_ptr)
-    {
-        task.callback = memory.read_u32_be(task_ptr + 6).unwrap_or(0);
+        .map(|task| task.extended)
+        .unwrap_or(false);
+    let prior_wakeup = if is_extended && memory.read_u32_be(task_ptr + crate::time_manager::TM_WAKE_UP_OFFSET).unwrap_or(0) != 0 {
+        scheduling.extended_wakeup(task_ptr)
+    } else {
+        None
+    };
+    let eval = crate::time_manager::evaluate_prime_time(
+        task_ptr,
+        q_type,
+        count,
+        current_tick,
+        scheduling.current_subtick(),
+        is_extended,
+        prior_wakeup,
+    );
+    if !eval.is_valid() {
+        return;
+    }
+    let _ = scheduling.advance_current_subtick_min(eval.current_subtick);
+    let _ = memory.write_u16_be(task_ptr + crate::time_manager::TASK_Q_TYPE_OFFSET, eval.primed_q_type);
+    let _ = memory.write_u32_be(task_ptr + crate::time_manager::TM_COUNT_OFFSET, eval.count as u32);
+    if let (Some(intended), Some(opaque)) = (eval.intended_wakeup, eval.opaque_wakeup) {
+        scheduling.set_extended_wakeup(task_ptr, intended);
+        let _ = memory.write_u32_be(task_ptr + crate::time_manager::TM_WAKE_UP_OFFSET, opaque);
+    }
+    if let Some(task) = timer_tasks.iter_mut().find(|task| task.task_ptr == task_ptr) {
+        task.callback = memory.read_u32_be(task_ptr + crate::time_manager::TASK_ADDR_OFFSET).unwrap_or(0);
         task.active = true;
-        task.fire_at_subtick = if task.extended {
-            let prior_wakeup = if memory.read_u32_be(task_ptr + 14).unwrap_or(0) == 0 {
-                None
-            } else {
-                scheduling.extended_wakeup(task_ptr)
-            };
-            let intended_wakeup = prior_wakeup
-                .unwrap_or(current_subtick)
-                .saturating_add(requested_delay_subticks);
-            scheduling.set_extended_wakeup(task_ptr, intended_wakeup);
-            let opaque_wakeup = ((intended_wakeup / 60) as u32).max(1);
-            let _ = memory.write_u32_be(task_ptr + 14, opaque_wakeup);
-            intended_wakeup.max(current_subtick)
-        } else {
-            let delay_subticks = if count == 0 {
-                SUBTICKS_PER_TICK
-            } else {
-                requested_delay_subticks
-            };
-            current_subtick.saturating_add(delay_subticks)
-        };
-        task.fire_at_tick = task.fire_at_subtick.div_ceil(SUBTICKS_PER_TICK) as u32;
+        task.fire_at_subtick = eval.fire_at_subtick;
+        task.fire_at_tick = eval.fire_at_tick;
         if ppc_timer_trace_enabled() {
             eprintln!(
                 "[TIMER-PPC] prime task=${task_ptr:08X} count={count} now={current_tick} fire_at={} callback=${:08X}",
@@ -250,29 +244,26 @@ pub(crate) fn ppc_remove_time_task(
     scheduling: &SharedProcessCallbackScheduling,
     task_ptr: u32,
 ) {
-    if task_ptr == 0 || !ppc_memory_can_write_bytes(memory, task_ptr, 14) {
+    if !ppc_memory_can_write_bytes(memory, task_ptr, crate::time_manager::TM_TASK_RECORD_SIZE as u32) {
         return;
     }
-    let current_subtick = scheduling.current_subtick();
-    let remaining_subticks = timer_tasks
+    let q_type = memory.read_u16_be(task_ptr + crate::time_manager::TASK_Q_TYPE_OFFSET).unwrap_or(0);
+    let active_fire_at = timer_tasks
         .iter()
         .find(|task| task.task_ptr == task_ptr && task.active)
-        .map(|task| task.fire_at_subtick.saturating_sub(current_subtick))
-        .unwrap_or(0);
-    let remaining_count = if remaining_subticks == 0 {
-        0
-    } else {
-        let remaining_us = remaining_subticks.div_ceil(60);
-        if remaining_us <= i32::MAX as u64 {
-            -(remaining_us as i32)
-        } else {
-            remaining_us.div_ceil(1_000).min(i32::MAX as u64) as i32
-        }
-    };
-    let q_type = memory.read_u16_be(task_ptr + 4).unwrap_or(0) & 0x7fff;
-    let _ = memory.write_u32_be(task_ptr, 0);
-    let _ = memory.write_u16_be(task_ptr + 4, q_type);
-    let _ = memory.write_u32_be(task_ptr + 10, remaining_count as u32);
+        .map(|task| task.fire_at_subtick);
+    let eval = crate::time_manager::evaluate_rmv_time(
+        task_ptr,
+        q_type,
+        scheduling.current_subtick(),
+        active_fire_at,
+    );
+    if !eval.is_valid() {
+        return;
+    }
+    let _ = memory.write_u32_be(task_ptr + crate::time_manager::TASK_Q_LINK_OFFSET, 0);
+    let _ = memory.write_u16_be(task_ptr + crate::time_manager::TASK_Q_TYPE_OFFSET, eval.cleared_q_type);
+    let _ = memory.write_u32_be(task_ptr + crate::time_manager::TM_COUNT_OFFSET, eval.remaining_count as u32);
     timer_tasks.retain(|task| task.task_ptr != task_ptr);
     ppc_sync_time_task_links(memory, timer_tasks);
     if ppc_timer_trace_enabled() {
@@ -295,17 +286,15 @@ pub(crate) fn ppc_remove_vbl_task(
     vbl_tasks: &mut Vec<PpcVblTaskRecord>,
     task_ptr: u32,
 ) -> i16 {
-    if task_ptr == 0 || memory.read_u16_be(task_ptr + 4).unwrap_or(0) != 1 {
-        return -2;
+    let q_type = memory.read_u16_be(task_ptr + crate::time_manager::TASK_Q_TYPE_OFFSET).unwrap_or(0);
+    let was_in_queue = vbl_tasks.iter().any(|task| task.task_ptr == task_ptr);
+    let eval = crate::time_manager::evaluate_v_remove(task_ptr, q_type, was_in_queue, None);
+    if eval.result == crate::time_manager::NO_ERR {
+        vbl_tasks.retain(|task| task.task_ptr != task_ptr);
+        let _ = memory.write_u32_be(task_ptr + crate::time_manager::TASK_Q_LINK_OFFSET, 0);
+        ppc_sync_vbl_task_links(memory, vbl_tasks);
     }
-    let before = vbl_tasks.len();
-    vbl_tasks.retain(|task| task.task_ptr != task_ptr);
-    if vbl_tasks.len() == before {
-        return -1;
-    }
-    let _ = memory.write_u32_be(task_ptr, 0);
-    ppc_sync_vbl_task_links(memory, vbl_tasks);
-    PPC_NO_ERR
+    eval.result
 }
 
 pub(super) fn ppc_sync_vbl_task_links(memory: &mut PpcSectionMem, vbl_tasks: &[PpcVblTaskRecord]) {
