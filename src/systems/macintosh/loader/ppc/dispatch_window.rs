@@ -3827,6 +3827,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                 controls,
                 gworlds,
                 window_list,
+                event_queue,
                 current_gworld,
                 current_gdevice,
                 window,
@@ -5637,6 +5638,8 @@ pub(super) fn ppc_close_window(
         return;
     };
     let window = params.window_ptr();
+    // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 4-105.
+    event_queue.retain(|event| !(event.what == 6 && event.message == window));
     let previous_front = ppc_front_visible_process_window(memory, window_list);
     let was_visible = ppc_window_is_visible(memory, window);
     let exposed = was_visible
@@ -5765,10 +5768,14 @@ pub(super) fn ppc_dispose_window(
     controls: &mut Vec<PpcControlRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
     window_list: &SharedProcessWindowList,
+    event_queue: &mut VecDeque<PpcQueuedEvent>,
     current_gworld: &mut u32,
     current_gdevice: &mut u32,
     window: u32,
 ) {
+    // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 4-106:
+    // pending update events must not survive removal of their window.
+    event_queue.retain(|event| !(event.what == 6 && event.message == window));
     for control in ppc_window_control_handles(memory, window) {
         ppc_dispose_control(
             Some(allocator),

@@ -94,11 +94,28 @@ fn active_draw_sprocket_blanking_window_owns_clicks_and_is_disposed() {
     );
     assert_eq!(loaded.cpu.gpr[3], 0);
 
+    let update = |message| PpcQueuedEvent {
+        what: 6,
+        message,
+        when: 0,
+        where_v: 0,
+        where_h: 0,
+        modifiers: 0,
+    };
+    loaded.set_event_queue([update(blanking), update(later_dialog)]);
     loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
     loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_INACTIVE;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
     assert_eq!(loaded.draw_sprocket.blanking_window, None);
     assert!(!loaded.window_list.contains_window(blanking));
+    assert!(!loaded
+        .event_queue()
+        .iter()
+        .any(|event| event.what == 6 && event.message == blanking));
+    assert!(loaded
+        .event_queue()
+        .iter()
+        .any(|event| event.what == 6 && event.message == later_dialog));
 }
 
 #[test]

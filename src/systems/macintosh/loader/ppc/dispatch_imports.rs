@@ -925,6 +925,7 @@ pub(crate) fn dispatch_supported_import(
             controls,
             gworlds,
             window_list,
+            event_queue,
             gworld_allocations: &mut toolbox_startup.gworld_allocations,
             current_gworld,
             current_gdevice,
