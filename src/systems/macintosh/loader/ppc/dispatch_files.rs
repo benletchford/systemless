@@ -166,8 +166,9 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 default_dir_id,
             ))))
         }
-        PpcImportDispatcherTarget::PBHRenameSync => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_h_rename_sync(
+        PpcImportDispatcherTarget::PBHRenameSync | PpcImportDispatcherTarget::PBRenameSync => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_rename_sync(
+                matches!(binding.dispatcher_target, PpcImportDispatcherTarget::PBHRenameSync),
                 cpu,
                 memory,
                 vfs_directories,

@@ -10338,3 +10338,151 @@ fn pb_h_rename_sync_reports_errors_without_mutating_files() {
         assert_eq!(loaded.vfs_files[0].path, "Source");
     }
 }
+
+#[test]
+fn pb_rename_sync_uses_basic_block_and_default_directory() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PBRenameSync")).unwrap();
+    loaded
+        .default_dir_id
+        .with_mut(|dir| *dir = PPC_PREFERENCES_DIR_ID);
+    let pb = PPC_DATA_BASE + 0x5000;
+    let old_ptr = pb + 0x100;
+    let new_ptr = pb + 0x200;
+    loaded.memory.add_region(pb, vec![0; 32]);
+    loaded.memory.add_region(old_ptr, vec![0; 64]);
+    loaded.memory.add_region(new_ptr, vec![0; 64]);
+    write_ppc_pstring(&mut loaded.memory, old_ptr, b"Old Log");
+    write_ppc_pstring(&mut loaded.memory, new_ptr, b"New Log");
+    loaded.memory.write_u32_be(pb + 18, old_ptr).unwrap();
+    loaded.memory.write_u32_be(pb + 28, new_ptr).unwrap();
+    assert_eq!(loaded.memory.read_u32_be(pb + 48), None);
+    let original_path = "System Folder/Preferences/Old Log";
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: original_path.into(),
+        data: b"data fork".to_vec().into(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        dirty: false,
+    });
+    loaded.push_vfs_resource_file(PpcVfsResourceFileRecord {
+        path: original_path.into(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        resource_len: 13,
+        raw_data: Some(b"resource fork".to_vec().into()),
+        map_attrs: 0,
+        dirty: false,
+    });
+    loaded.push_test_open_file(PpcFileRecord {
+        ref_num: PPC_FIRST_FILE_REF_NUM,
+        path: original_path.into(),
+        position: 3,
+    });
+    loaded.cpu.gpr[3] = pb;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(0));
+    assert_eq!(
+        loaded.vfs_files[0].path,
+        "System Folder/Preferences/New Log"
+    );
+    assert_eq!(loaded.vfs_resource_files[0].path, loaded.vfs_files[0].path);
+    assert_eq!(loaded.files[0].path, loaded.vfs_files[0].path);
+    assert_eq!(loaded.files[0].position, 3);
+    assert_eq!(loaded.take_dirty_vfs_files()[0].data, b"data fork");
+    assert_eq!(
+        loaded.take_dirty_vfs_resource_forks()[0].data,
+        b"resource fork"
+    );
+    assert_eq!(loaded.take_deleted_vfs_file_paths(), vec![original_path]);
+}
+
+#[test]
+fn pb_rename_sync_validates_pathnames_and_result_before_mutation() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PBRenameSync")).unwrap();
+    let pb = PPC_DATA_BASE + 0x5000;
+    let old_ptr = pb + 0x100;
+    let new_ptr = pb + 0x200;
+    loaded.memory.add_region(pb, vec![0; 32]);
+    loaded.memory.add_region(old_ptr, vec![0; 128]);
+    loaded.memory.add_region(new_ptr, vec![0; 128]);
+    loaded.memory.write_u32_be(pb + 18, old_ptr).unwrap();
+    loaded.memory.write_u32_be(pb + 28, new_ptr).unwrap();
+    loaded
+        .memory
+        .write_u16_be(pb + 22, PPC_BOOT_VOLUME_REF_NUM as u16)
+        .unwrap();
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: "System Folder/Preferences/Source".into(),
+        data: b"unchanged".to_vec().into(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        dirty: false,
+    });
+    for (old, new, error) in [
+        (":System Folder:Preferences:Source", "New", PPC_BD_NAM_ERR),
+        (
+            ":System Folder:Preferences:Source",
+            ":System Folder:Moved",
+            PPC_BD_NAM_ERR,
+        ),
+        (
+            ":System Folder:Preferences:Absent",
+            ":System Folder:Preferences:New",
+            PPC_FNF_ERR,
+        ),
+    ] {
+        write_ppc_pstring(&mut loaded.memory, old_ptr, old.as_bytes());
+        write_ppc_pstring(&mut loaded.memory, new_ptr, new.as_bytes());
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = pb;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(error));
+        assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(error as u16));
+        assert_eq!(loaded.vfs_files[0].path, "System Folder/Preferences/Source");
+        assert!(!loaded.vfs_files[0].dirty);
+        assert!(loaded.take_deleted_vfs_file_paths().is_empty());
+    }
+    write_ppc_pstring(
+        &mut loaded.memory,
+        old_ptr,
+        b":System Folder:Preferences:Source",
+    );
+    write_ppc_pstring(
+        &mut loaded.memory,
+        new_ptr,
+        b":System Folder:Preferences:New",
+    );
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = pb;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.vfs_files[0].path, "System Folder/Preferences/New");
+
+    write_ppc_pstring(
+        &mut loaded.memory,
+        old_ptr,
+        b":System Folder:Preferences:New",
+    );
+    write_ppc_pstring(
+        &mut loaded.memory,
+        new_ptr,
+        b":System Folder:Preferences:Forbidden",
+    );
+    loaded.take_deleted_vfs_file_paths();
+    loaded.memory.add_readonly_region(pb + 16, vec![0x12, 0x34]);
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = pb;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(0x1234));
+    assert_eq!(loaded.vfs_files[0].path, "System Folder/Preferences/New");
+    assert!(loaded.take_deleted_vfs_file_paths().is_empty());
+}

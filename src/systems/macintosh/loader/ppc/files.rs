@@ -4410,11 +4410,13 @@ pub(super) fn ppc_h_rename(
         cpu.gpr[4],
         cpu.gpr[5],
         cpu.gpr[6],
+        false,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn ppc_pb_h_rename_sync(
+pub(super) fn ppc_pb_rename_sync(
+    hierarchical: bool,
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &mut Vec<PpcVfsDirectory>,
@@ -4426,11 +4428,12 @@ pub(super) fn ppc_pb_h_rename_sync(
     vfs_resources: &mut Vec<PpcVfsResourceRecord>,
     default_dir_id: u32,
 ) -> i16 {
-    // Inside Macintosh: Files (1992), pp. 2-198--2-199. The synchronous
-    // parameter block supplies ioNamePtr, ioVRefNum, ioMisc and ioDirID;
+    // Inside Macintosh Volume IV (1986), p. IV-154; Files (1992),
+    // pp. 2-198--2-199. The common fields are ioNamePtr, ioVRefNum and
+    // ioMisc; only the hierarchical block supplies ioDirID.
     // ioResult receives the same error returned in r3.
     let pb = cpu.gpr[3];
-    let Some(end) = pb.checked_add(52) else {
+    let Some(end) = pb.checked_add(if hierarchical { 52 } else { 32 }) else {
         return PPC_PARAM_ERR;
     };
     if pb == 0 || !ppc_memory_can_write_bytes(memory, pb + 16, 2) {
@@ -4440,7 +4443,11 @@ pub(super) fn ppc_pb_h_rename_sync(
         memory.read_u32_be(pb + 18),
         memory.read_u16_be(pb + 22),
         memory.read_u32_be(pb + 28),
-        memory.read_u32_be(end - 4),
+        if hierarchical {
+            memory.read_u32_be(end - 4)
+        } else {
+            Some(0)
+        },
     );
     let (Some(old_ptr), Some(vref), Some(new_ptr), Some(dir_id)) = fields else {
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
@@ -4459,6 +4466,7 @@ pub(super) fn ppc_pb_h_rename_sync(
         dir_id,
         old_ptr,
         new_ptr,
+        !hierarchical,
     );
     ppc_complete_pb(memory, pb, result)
 }
@@ -4478,8 +4486,9 @@ fn ppc_rename_by_name(
     requested_dir_id: u32,
     old_ptr: u32,
     new_ptr: u32,
+    basic_pathnames: bool,
 ) -> i16 {
-    // HRename and PBHRenameSync share the same fork and open-path updates.
+    // Basic and hierarchical file renames share fork and open-path updates.
     if !matches!(vref, 0 | PPC_BOOT_VOLUME_REF_NUM) {
         return PPC_NSV_ERR;
     }
@@ -4489,8 +4498,31 @@ fn ppc_rename_by_name(
     ) else {
         return PPC_PARAM_ERR;
     };
-    let old_name = ppc_normalize_vfs_path(&decode_mac_roman(&old_bytes));
-    let new_name = decode_mac_roman(&new_bytes);
+    let old_raw_name = decode_mac_roman(&old_bytes);
+    let old_name = ppc_normalize_vfs_path(&old_raw_name);
+    let mut new_name = decode_mac_roman(&new_bytes);
+    // PBRename requires both names to be pathnames when either uses colons.
+    // The parent must remain unchanged: this operation cannot move a file.
+    // Inside Macintosh Volume IV (1986), p. IV-154.
+    if basic_pathnames && (old_raw_name.ends_with(':') || new_name.ends_with(':')) {
+        return PPC_BD_NAM_ERR;
+    }
+    if basic_pathnames && (old_raw_name.contains(':') || new_name.contains(':')) {
+        if !old_raw_name.contains(':') || !new_name.contains(':') {
+            return PPC_BD_NAM_ERR;
+        }
+        let normalized_new = ppc_normalize_vfs_path(&new_name);
+        let old_parent = old_name.rsplit_once('/').map(|(parent, _)| parent);
+        let Some((new_parent, leaf)) = normalized_new.rsplit_once('/') else {
+            return PPC_BD_NAM_ERR;
+        };
+        if !old_parent.is_some_and(|parent| parent.eq_ignore_ascii_case(new_parent))
+            || leaf.is_empty()
+        {
+            return PPC_BD_NAM_ERR;
+        }
+        new_name = leaf.to_string();
+    }
     if old_name.is_empty() || new_name.is_empty() {
         return PPC_PARAM_ERR;
     }
@@ -4504,6 +4536,9 @@ fn ppc_rename_by_name(
     let requested_path = ppc_join_vfs_path(parent_path, &old_name);
     let old_path = ppc_vfs_file_or_resource_path(vfs_files, vfs_resource_files, &requested_path)
         .or_else(|| {
+            if basic_pathnames {
+                return None;
+            }
             vfs_directories
                 .iter()
                 .find(|directory| directory.path.eq_ignore_ascii_case(&requested_path))
