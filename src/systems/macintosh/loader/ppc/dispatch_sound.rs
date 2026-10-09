@@ -220,6 +220,9 @@ pub(super) fn dispatch_sound_import(
         PpcImportDispatcherTarget::SndSetInfo => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_snd_set_info(cpu, memory, sound),
         ))),
+        PpcImportDispatcherTarget::ParseAIFFHeader => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_parse_aiff_header(cpu, memory, files, vfs_files),
+        ))),
         PpcImportDispatcherTarget::ParseSndHeader => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_parse_snd_header(cpu, memory, handles),
         ))),

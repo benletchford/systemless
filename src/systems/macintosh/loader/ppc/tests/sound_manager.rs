@@ -2122,3 +2122,132 @@ fn file_playback_rejects_a_data_fork_that_is_not_aiff() {
         .iter()
         .any(|candidate| candidate.guest_ptr == channel && candidate.has_active_playback()));
 }
+
+fn aiff_header_api_fixture(compressed: bool) -> Vec<u8> {
+    let mut data = b"FORM\0\0\0\0AIFF".to_vec();
+    if compressed {
+        data[8..12].copy_from_slice(b"AIFC");
+    }
+    data.extend_from_slice(b"COMM");
+    data.extend_from_slice(&(if compressed { 22u32 } else { 18u32 }).to_be_bytes());
+    data.extend_from_slice(&2u16.to_be_bytes());
+    data.extend_from_slice(&(if compressed { 1u32 } else { 2u32 }).to_be_bytes());
+    data.extend_from_slice(&16u16.to_be_bytes());
+    // 22,050.5 Hz, retaining a fractional half-hertz in 16.16.
+    data.extend_from_slice(&[0x40, 0x0d, 0xac, 0x45, 0, 0, 0, 0, 0, 0]);
+    if compressed {
+        data.extend_from_slice(b"ima4FVER\0\0\0\x04\xa2\x80\x51\x40");
+    }
+    data.extend_from_slice(b"SSND");
+    let bytes = if compressed { 68u32 } else { 8u32 };
+    data.extend_from_slice(&(bytes + 8).to_be_bytes());
+    data.extend_from_slice(&[0; 8]);
+    data.resize(data.len() + bytes as usize, 0);
+    let size = data.len() as u32 - 8;
+    data[4..8].copy_from_slice(&size.to_be_bytes());
+    data
+}
+
+#[test]
+fn parse_aiff_header_reports_pcm_and_compressed_metadata_without_decoding() {
+    for compressed in [false, true] {
+        let pef = synthetic_pef_with_library_import(b"SoundLib", b"ParseAIFFHeader");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        assert_eq!(
+            loaded.imports[0].dispatcher_target,
+            PpcImportDispatcherTarget::ParseAIFFHeader
+        );
+        let data = aiff_header_api_fixture(compressed);
+        let path = "Audio/Test.aiff";
+        loaded.push_test_open_file(PpcFileRecord {
+            ref_num: 128,
+            path: path.into(),
+            position: 17,
+        });
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: path.into(),
+            data: data.into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+        let info = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(info, vec![0xaa; 40]);
+        loaded.cpu.gpr[3] = 128;
+        loaded.cpu.gpr[4] = info;
+        loaded.cpu.gpr[5] = info + 28;
+        loaded.cpu.gpr[6] = info + 32;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::ParseAIFFHeader);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.memory.read_u32_be(info), Some(0));
+        assert_eq!(
+            loaded.memory.read_u32_be(info + 4),
+            Some(u32::from_be_bytes(if compressed {
+                *b"ima4"
+            } else {
+                *b"twos"
+            }))
+        );
+        assert_eq!(loaded.memory.read_u16_be(info + 8), Some(2));
+        assert_eq!(loaded.memory.read_u16_be(info + 10), Some(16));
+        assert_eq!(loaded.memory.read_u32_be(info + 12), Some(0x5622_8000));
+        let frames = if compressed { 1 } else { 2 };
+        assert_eq!(loaded.memory.read_u32_be(info + 16), Some(frames));
+        assert_eq!(loaded.memory.read_u32_be(info + 20), Some(0));
+        assert_eq!(loaded.memory.read_u32_be(info + 24), Some(0));
+        assert_eq!(loaded.memory.read_u32_be(info + 28), Some(frames));
+        assert_eq!(
+            loaded.memory.read_u32_be(info + 32),
+            Some(if compressed { 70 } else { 54 })
+        );
+        assert_eq!(loaded.memory.read_u32_be(info + 36), Some(0xaaaa_aaaa));
+        for (refnum, out, error) in [
+            (999, info, PPC_RF_NUM_ERR),
+            (128, 0, PPC_PARAM_ERR),
+            (128, 0xffff_fffe, PPC_PARAM_ERR),
+        ] {
+            loaded.memory.write_bytes(info, &[0xaa; 40]).unwrap();
+            loaded.cpu.gpr[3] = refnum;
+            loaded.cpu.gpr[4] = out;
+            loaded.cpu.gpr[5] = info + 28;
+            loaded.cpu.gpr[6] = info + 32;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::ParseAIFFHeader);
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(error));
+            assert_eq!(loaded.memory.read_u32_be(info + 28), Some(0xaaaa_aaaa));
+            assert_eq!(loaded.memory.read_u32_be(info + 32), Some(0xaaaa_aaaa));
+        }
+    }
+}
+
+#[test]
+fn parse_aiff_header_rejects_malformed_forms_and_chunk_offsets() {
+    let valid = aiff_header_api_fixture(true);
+    assert!(ppc_parse_aiff_header_fields(&valid).is_some());
+    let mut malformed = vec![vec![], valid[..11].to_vec()];
+    for (at, bytes) in [
+        (4, vec![0xff; 4]),
+        (4, 4u32.to_be_bytes().to_vec()),
+        (16, 17u32.to_be_bytes().to_vec()),
+        (20, vec![0; 2]),
+        (26, vec![0; 2]),
+        (28, vec![0x80, 0x0d]),
+        (28, vec![0x7f, 0xff]),
+        (50, vec![0; 4]),
+        (58, u32::MAX.to_be_bytes().to_vec()),
+        (62, u32::MAX.to_be_bytes().to_vec()),
+    ] {
+        let mut data = valid.clone();
+        data[at..at + bytes.len()].copy_from_slice(&bytes);
+        malformed.push(data);
+    }
+    let mut crossed = valid.clone();
+    crossed[4..8].copy_from_slice(&66u32.to_be_bytes());
+    malformed.push(crossed);
+    for data in malformed {
+        assert!(ppc_parse_aiff_header_fields(&data).is_none());
+    }
+    let mut trailing = valid;
+    trailing.extend_from_slice(b"ignored bytes outside FORM");
+    assert!(ppc_parse_aiff_header_fields(&trailing).is_some());
+}

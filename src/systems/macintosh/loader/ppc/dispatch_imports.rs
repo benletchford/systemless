@@ -2724,6 +2724,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::SndGetInfo
         | PpcImportDispatcherTarget::SndSetInfo
         | PpcImportDispatcherTarget::ParseSndHeader
+        | PpcImportDispatcherTarget::ParseAIFFHeader
         | PpcImportDispatcherTarget::SndDoCommand
         | PpcImportDispatcherTarget::SndDoImmediate
         | PpcImportDispatcherTarget::SndPlayDoubleBuffer
