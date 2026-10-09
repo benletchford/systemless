@@ -4076,17 +4076,22 @@ pub(super) fn ppc_dispatch_legacy_window(
             let window = cpu.gpr[3];
             let region_code = cpu.gpr[4];
             let io_rgn = cpu.gpr[5];
-            let result = if window != 0 && io_rgn != 0 {
-                let bounds = if region_code == 32 {
-                    ppc_window_global_structure_bounds(memory, gworlds, window)
-                } else {
-                    ppc_window_global_content_bounds(memory, gworlds, window)
-                };
-                let (top, left, bottom, right) = bounds.unwrap_or((0, 0, 100, 100));
-                let _ = ppc_write_rgn_bbox(memory, io_rgn, top, left, bottom, right);
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
+            let result = match crate::window_manager::evaluate_get_window_region_parameters(
+                window,
+                region_code,
+                io_rgn,
+            ) {
+                Ok(params) => {
+                    let bounds = if params.region_code() == crate::window_manager::WINDOW_STRUCTURE_RGN {
+                        ppc_window_global_structure_bounds(memory, gworlds, params.window_ptr())
+                    } else {
+                        ppc_window_global_content_bounds(memory, gworlds, params.window_ptr())
+                    };
+                    let (top, left, bottom, right) = bounds.unwrap_or((0, 0, 100, 100));
+                    let _ = ppc_write_rgn_bbox(memory, params.io_rgn(), top, left, bottom, right);
+                    PPC_NO_ERR
+                }
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
@@ -4344,86 +4349,106 @@ pub(super) fn ppc_dispatch_legacy_window(
         PpcLegacyWindowOperation::InvalWindowRect => {
             let window = cpu.gpr[3];
             let in_rect = cpu.gpr[4];
-            let result = if window != 0 {
-                let rect = if in_rect != 0 {
-                    ppc_read_rect(memory, in_rect)
-                } else {
-                    ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET))
-                };
-                if let Some(r) = rect {
-                    ppc_invalidate_window_local_rect(memory, window, r);
-                    ppc_enqueue_window_update_event(event_queue, window, when, input);
+            let can_read = in_rect == 0 || ppc_memory_can_read_bytes(memory, in_rect, 8);
+            let result = match crate::window_manager::evaluate_inval_window_rect_parameters(
+                window,
+                in_rect,
+                can_read,
+            ) {
+                Ok(params) => {
+                    let rect = if params.in_rect_ptr() != 0 {
+                        ppc_read_rect(memory, params.in_rect_ptr())
+                    } else {
+                        ppc_read_rect(memory, params.window_ptr().wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET))
+                    };
+                    if let Some(r) = rect {
+                        ppc_invalidate_window_local_rect(memory, params.window_ptr(), r);
+                        ppc_enqueue_window_update_event(event_queue, params.window_ptr(), when, input);
+                    }
+                    PPC_NO_ERR
                 }
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcLegacyWindowOperation::InvalWindowRgn => {
             let window = cpu.gpr[3];
             let in_rgn = cpu.gpr[4];
-            let result = if window != 0 {
-                let rect = if in_rgn != 0 {
-                    ppc_read_rgn_bbox(memory, in_rgn)
-                } else {
-                    ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET))
-                };
-                if let Some(r) = rect {
-                    ppc_invalidate_window_local_rect(memory, window, r);
-                    ppc_enqueue_window_update_event(event_queue, window, when, input);
+            let result = match crate::window_manager::evaluate_inval_window_rgn_parameters(
+                window,
+                in_rgn,
+            ) {
+                Ok(params) => {
+                    let rect = if params.in_rgn() != 0 {
+                        ppc_read_rgn_bbox(memory, params.in_rgn())
+                    } else {
+                        ppc_read_rect(memory, params.window_ptr().wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET))
+                    };
+                    if let Some(r) = rect {
+                        ppc_invalidate_window_local_rect(memory, params.window_ptr(), r);
+                        ppc_enqueue_window_update_event(event_queue, params.window_ptr(), when, input);
+                    }
+                    PPC_NO_ERR
                 }
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcLegacyWindowOperation::ValidWindowRect => {
             let window = cpu.gpr[3];
             let in_rect = cpu.gpr[4];
-            let result = if window != 0 {
-                let rect = if in_rect != 0 {
-                    ppc_read_rect(memory, in_rect)
-                } else {
-                    ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET))
-                };
-                if let Some(r) = rect {
-                    ppc_validate_window_local_rect(memory, window, r);
-                    let update_rgn = memory
-                        .read_u32_be(window.wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET))
-                        .unwrap_or(0);
-                    if ppc_read_rgn_bbox(memory, update_rgn).map_or(true, |(t, l, b, r)| t >= b || l >= r) {
-                        event_queue.retain(|event| !(event.what == 6 && event.message == window));
+            let can_read = in_rect == 0 || ppc_memory_can_read_bytes(memory, in_rect, 8);
+            let result = match crate::window_manager::evaluate_valid_window_rect_parameters(
+                window,
+                in_rect,
+                can_read,
+            ) {
+                Ok(params) => {
+                    let rect = if params.in_rect_ptr() != 0 {
+                        ppc_read_rect(memory, params.in_rect_ptr())
+                    } else {
+                        ppc_read_rect(memory, params.window_ptr().wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET))
+                    };
+                    if let Some(r) = rect {
+                        ppc_validate_window_local_rect(memory, params.window_ptr(), r);
+                        let update_rgn = memory
+                            .read_u32_be(params.window_ptr().wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET))
+                            .unwrap_or(0);
+                        if ppc_read_rgn_bbox(memory, update_rgn).map_or(true, |(t, l, b, r)| t >= b || l >= r) {
+                            event_queue.retain(|event| !(event.what == 6 && event.message == params.window_ptr()));
+                        }
                     }
+                    PPC_NO_ERR
                 }
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcLegacyWindowOperation::ValidWindowRgn => {
             let window = cpu.gpr[3];
             let in_rgn = cpu.gpr[4];
-            let result = if window != 0 {
-                let rect = if in_rgn != 0 {
-                    ppc_read_rgn_bbox(memory, in_rgn)
-                } else {
-                    ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET))
-                };
-                if let Some(r) = rect {
-                    ppc_validate_window_local_rect(memory, window, r);
-                    let update_rgn = memory
-                        .read_u32_be(window.wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET))
-                        .unwrap_or(0);
-                    if ppc_read_rgn_bbox(memory, update_rgn).map_or(true, |(t, l, b, r)| t >= b || l >= r) {
-                        event_queue.retain(|event| !(event.what == 6 && event.message == window));
+            let result = match crate::window_manager::evaluate_valid_window_rgn_parameters(
+                window,
+                in_rgn,
+            ) {
+                Ok(params) => {
+                    let rect = if params.in_rgn() != 0 {
+                        ppc_read_rgn_bbox(memory, params.in_rgn())
+                    } else {
+                        ppc_read_rect(memory, params.window_ptr().wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET))
+                    };
+                    if let Some(r) = rect {
+                        ppc_validate_window_local_rect(memory, params.window_ptr(), r);
+                        let update_rgn = memory
+                            .read_u32_be(params.window_ptr().wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET))
+                            .unwrap_or(0);
+                        if ppc_read_rgn_bbox(memory, update_rgn).map_or(true, |(t, l, b, r)| t >= b || l >= r) {
+                            event_queue.retain(|event| !(event.what == 6 && event.message == params.window_ptr()));
+                        }
                     }
+                    PPC_NO_ERR
                 }
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
@@ -4453,63 +4478,77 @@ pub(super) fn ppc_dispatch_legacy_window(
             let window = cpu.gpr[3];
             let region_code = cpu.gpr[4];
             let out_rect = cpu.gpr[5];
-            let result = if window != 0 && out_rect != 0 {
-                let bounds = if region_code == 32 {
-                    ppc_window_global_structure_bounds(memory, gworlds, window)
-                } else {
-                    ppc_window_global_content_bounds(memory, gworlds, window)
-                };
-                let (top, left, bottom, right) = bounds.unwrap_or((40, 40, 240, 340));
-                let _ = ppc_write_rect(memory, out_rect, top, left, bottom, right);
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
+            let can_write = ppc_memory_can_write_bytes(memory, out_rect, 8);
+            let result = match crate::window_manager::evaluate_get_window_bounds_parameters(
+                window,
+                region_code,
+                out_rect,
+                can_write,
+            ) {
+                Ok(params) => {
+                    let bounds = if params.region_code() == crate::window_manager::WINDOW_STRUCTURE_RGN {
+                        ppc_window_global_structure_bounds(memory, gworlds, params.window_ptr())
+                    } else {
+                        ppc_window_global_content_bounds(memory, gworlds, params.window_ptr())
+                    };
+                    let (top, left, bottom, right) = bounds.unwrap_or(crate::window_manager::DEFAULT_WINDOW_USER_STATE);
+                    let _ = ppc_write_rect(memory, params.out_rect_ptr(), top, left, bottom, right);
+                    PPC_NO_ERR
+                }
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcLegacyWindowOperation::SetWindowBounds => {
             let window = cpu.gpr[3];
-            let _region_code = cpu.gpr[4];
+            let region_code = cpu.gpr[4];
             let in_rect = cpu.gpr[5];
-            let result = if window != 0 && in_rect != 0 {
-                if let Some((top, left, bottom, right)) = ppc_read_rect(memory, in_rect) {
-                    let width = (right.saturating_sub(left)).max(1) as u32;
-                    let height = (bottom.saturating_sub(top)).max(1) as u32;
-                    let was_visible = ppc_window_is_visible(memory, window);
-                    let previous_structure =
-                        ppc_window_global_structure_bounds(memory, gworlds, window);
-                    let _ = ppc_move_window_coordinates(memory, gworlds, window, left, top);
-                    let _ = ppc_size_window_dimensions(memory, gworlds, window, width, height);
-                    ppc_recalculate_window_vis_regions(
-                        process_memory_manager,
-                        memory,
-                        window_list,
-                        heap_cursor,
-                        heap_limit,
-                        last_mem_error,
-                        handles,
-                    );
-                    let next_structure =
-                        ppc_window_global_structure_bounds(memory, gworlds, window);
-                    ppc_repaint_window_geometry_transition(
-                        memory,
-                        gworlds,
-                        window_list,
-                        window,
-                        was_visible,
-                        previous_structure,
-                        next_structure,
-                        toolbox_startup.host_menu_bar_hidden,
-                        event_queue,
-                        when,
-                        input,
-                    );
-                    PPC_NO_ERR
-                } else {
-                    PPC_PARAM_ERR
+            let can_read = ppc_memory_can_read_bytes(memory, in_rect, 8);
+            let result = match crate::window_manager::evaluate_set_window_bounds_parameters(
+                window,
+                region_code,
+                in_rect,
+                can_read,
+            ) {
+                Ok(params) => {
+                    if let Some((top, left, bottom, right)) = ppc_read_rect(memory, params.in_rect_ptr()) {
+                        let width = (right.saturating_sub(left)).max(1) as u32;
+                        let height = (bottom.saturating_sub(top)).max(1) as u32;
+                        let was_visible = ppc_window_is_visible(memory, params.window_ptr());
+                        let previous_structure =
+                            ppc_window_global_structure_bounds(memory, gworlds, params.window_ptr());
+                        let _ = ppc_move_window_coordinates(memory, gworlds, params.window_ptr(), left, top);
+                        let _ = ppc_size_window_dimensions(memory, gworlds, params.window_ptr(), width, height);
+                        ppc_recalculate_window_vis_regions(
+                            process_memory_manager,
+                            memory,
+                            window_list,
+                            heap_cursor,
+                            heap_limit,
+                            last_mem_error,
+                            handles,
+                        );
+                        let next_structure =
+                            ppc_window_global_structure_bounds(memory, gworlds, params.window_ptr());
+                        ppc_repaint_window_geometry_transition(
+                            memory,
+                            gworlds,
+                            window_list,
+                            params.window_ptr(),
+                            was_visible,
+                            previous_structure,
+                            next_structure,
+                            toolbox_startup.host_menu_bar_hidden,
+                            event_queue,
+                            when,
+                            input,
+                        );
+                        PPC_NO_ERR
+                    } else {
+                        PPC_PARAM_ERR
+                    }
                 }
-            } else {
-                PPC_PARAM_ERR
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }

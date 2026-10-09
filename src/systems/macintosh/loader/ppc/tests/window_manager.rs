@@ -6009,6 +6009,17 @@ fn window_default_cancel_button_focus_and_region_commands_dispatch_with_canonica
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+
+            // Invalid rgn_handle = 0 returns paramErr (-50)
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 32;
+            loaded.cpu.gpr[5] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, -50);
         }
 
         // 6. GetWindowFeatures
@@ -6642,6 +6653,30 @@ fn window_invalidation_geometry_and_attribute_commands_dispatch_with_canonical_e
             assert_eq!(loaded.cpu.gpr[3] as i16, 0);
             assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((0, 0, 0, 0)));
 
+            // in_rect = 0 invalidates whole portRect
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "InvalWindowRect");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((0, 0, 100, 200)));
+
+            // in_rect = 0 validates whole portRect
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "ValidWindowRect");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((0, 0, 0, 0)));
+
             // window = 0 returns paramErr
             loaded.cpu.pc = loaded.entry_pc;
             loaded.cpu.lr = PPC_HALT_PC;
@@ -6675,6 +6710,30 @@ fn window_invalidation_geometry_and_attribute_commands_dispatch_with_canonical_e
             loaded.cpu.lr = PPC_HALT_PC;
             loaded.cpu.gpr[3] = window;
             loaded.cpu.gpr[4] = rgn_handle;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((0, 0, 0, 0)));
+
+            // rgn_handle = 0 invalidates whole portRect
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "InvalWindowRgn");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((0, 0, 100, 200)));
+
+            // rgn_handle = 0 validates whole portRect
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "ValidWindowRgn");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 0;
             let probe = loaded.run_with_hle_imports(64);
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
@@ -6764,6 +6823,40 @@ fn window_invalidation_geometry_and_attribute_commands_dispatch_with_canonical_e
             loaded.cpu.gpr[3] = 0;
             loaded.cpu.gpr[4] = 33;
             loaded.cpu.gpr[5] = scratch_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+
+            // out_rect = 0 returns paramErr
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 33;
+            loaded.cpu.gpr[5] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+
+            // SetWindowBounds in_rect = 0 returns paramErr
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetWindowBounds");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 33;
+            loaded.cpu.gpr[5] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+
+            // SetWindowBounds window = 0 returns paramErr
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = 33;
+            loaded.cpu.gpr[5] = in_rect_ptr;
             let probe = loaded.run_with_hle_imports(64);
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
