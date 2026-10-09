@@ -2121,6 +2121,34 @@ fn hidden_ppc_geometry_changes_do_not_repaint_visible_pixels() {
 }
 
 #[test]
+fn moving_window_with_guest_modified_port_rect_preserves_backing_dimensions() {
+    let pef = synthetic_pef_with_import(b"MoveWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+    let window = create_test_cwindow(
+        &mut loaded, bounds_ptr, (40, 30, 520, 670), 0, false, u32::MAX,
+    );
+    let pixmap_handle = loaded.memory.read_u32_be(window + 2).unwrap();
+    let pixmap = loaded.memory.read_u32_be(pixmap_handle).unwrap();
+    let before_pixel_bounds = ppc_read_rect(&mut loaded.memory, pixmap + 6).unwrap();
+    // portRect is guest-writable and need not describe the allocated PixMap.
+    ppc_write_rect(&mut loaded.memory, window + 16, 0, 0, 1600, 1800).unwrap();
+    loaded.cpu.gpr[3] = window;
+    loaded.cpu.gpr[4] = 100;
+    loaded.cpu.gpr[5] = 80;
+    loaded.cpu.gpr[6] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MoveWindow);
+    assert_eq!(ppc_read_rect(&mut loaded.memory, window + 16), Some((0, 0, 1600, 1800)));
+    let record = loaded.gworlds.iter().find(|record| record.port == window).unwrap();
+    assert_eq!((record.width, record.height), (640, 480));
+    let after = ppc_read_rect(&mut loaded.memory, pixmap + 6).unwrap();
+    assert_eq!(after.2 - after.0, before_pixel_bounds.2 - before_pixel_bounds.0);
+    assert_eq!(after.3 - after.1, before_pixel_bounds.3 - before_pixel_bounds.1);
+    assert_eq!((after.0, after.1), (-80, -100));
+}
+
+#[test]
 fn disposing_hidden_ppc_window_does_not_repaint_exposed_pixels() {
     let pef = synthetic_pef_with_import(b"DisposeWindow");
     let mut loaded = load_pef_application(&pef).unwrap();

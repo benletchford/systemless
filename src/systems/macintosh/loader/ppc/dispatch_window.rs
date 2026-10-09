@@ -2516,7 +2516,7 @@ pub(super) fn ppc_size_window(
 
 pub(super) fn ppc_move_window_coordinates(
     memory: &mut PpcSectionMem,
-    gworlds: &mut [PpcGWorldRecord],
+    _gworlds: &mut [PpcGWorldRecord],
     window_ptr: u32,
     new_left: i16,
     new_top: i16,
@@ -2560,12 +2560,11 @@ pub(super) fn ppc_move_window_coordinates(
         ),
     )?;
 
-    if let Some(record) = gworlds.iter().find(|record| record.port == window_ptr) {
-        debug_assert_eq!(
-            (record.width, record.height),
-            ppc_rect_dimensions(port_top, port_left, port_bottom, port_right)
-        );
-    }
+    // portRect is guest-writable and describes local coordinates, not the
+    // allocated backing surface. It may legitimately differ from the cached
+    // GWorld dimensions. Moving translates PixMap bounds while preserving
+    // their extent; it must neither resize the backing nor assert equality
+    // between these independent rectangles.
 
     if ppc_hle_trace_enabled() {
         eprintln!(
