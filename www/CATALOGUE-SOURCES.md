@@ -137,25 +137,31 @@ shows `open mailbox` revealing a leaflet and incrementing Moves to 1. This
 establishes an interactive excerpt, not the full Zork I game or save/restart
 qualification. Its game-data redistribution permission remains unestablished.
 
-After [font resource swapping](https://github.com/benletchford/systemless/pull/4318),
+After [font resource swapping](https://github.com/benletchford/systemless/pull/4318)
+and [removed-window update cleanup](https://github.com/benletchford/systemless/pull/4323),
 Civilization II PPC Demo 1.0 was replayed on tested head
-`47c95f900caa1ecb4ea748aa948f8c28851375f4` using its unchanged original
+`936d81094d1370e4c4c09b4d3b630e3be2f524b2` using its unchanged original
 8,160,693-byte archive (SHA-256
 `6ed949cc2a1b14589c28c35c7babd32bc135caff3b64e06f445a493cc0b16611`).
-The bounded native replay fails at frontend tick 13 / guest tick 12, before its
-180-tick action completes, with zero assertions and no exhausted frames.
-The inspected failure capture shows menus and a CD-ROM notice with a corrupted
-background. A [window-object trace](https://github.com/benletchford/systemless/issues/4316)
-shows a virtual call through a zero pointer after guest object release and
-memory reuse; the root cause remains unproven. This is startup failure evidence,
-not gameplay. The sourced PPC demo does not supply the requested 68K package;
-exact-archive redistribution rights, Systemless hosting and browser qualification
-remain unresolved. No catalogue entry is added or enabled.
+The initial bounded replay completes at frontend/guest tick 180 with zero
+assertions and no exhausted frames. The inspected capture shows menus and a
+CD-ROM notice with a corrupted background. The former tick-13 failure was caused
+by a queued update event for a disposed window; the cleanup prevents that event
+from reaching the released application object, as documented in
+[the resolved window-object issue](https://github.com/benletchford/systemless/issues/4316).
+A continuation passes one pixel assertion on the inspected OK-button fill, then
+clicks OK at v=350, h=529 (held for two ticks). Execution stops at
+[unsupported PtrAndHand](https://github.com/benletchford/systemless/issues/4325),
+frontend tick 183 / guest tick 182, before the next 180-tick action completes.
+The inspected failure capture has a blank desktop with only the Apple menu;
+no main-menu or gameplay checkpoint is established. The sourced PPC demo does
+not supply the requested 68K package; exact-archive redistribution rights,
+Systemless hosting and browser qualification remain unresolved. No catalogue
+entry is added or enabled.
 
-Current failures are recorded separately for [Civilization II window-object startup](https://github.com/benletchford/systemless/issues/4316),
+Current failures are recorded separately for [Civilization II handle append startup](https://github.com/benletchford/systemless/issues/4325),
 [Combat Mission accelerator startup](https://github.com/benletchford/systemless/issues/4253),
 [Worms Blast early exit](https://github.com/benletchford/systemless/issues/4254),
-[Heroes III menu command dispatch](https://github.com/benletchford/systemless/issues/4265),
 [Oni bundled CarbonLib memory planning](https://github.com/benletchford/systemless/issues/4256),
 and [Unreal Tournament menu input](https://github.com/benletchford/systemless/issues/4272).
 Tony Hawk’s narrower version-query issue was closed as covered by the broader
