@@ -1374,6 +1374,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::CountMItems
         | PpcImportDispatcherTarget::GetMenuItemText
         | PpcImportDispatcherTarget::SetMenuItemText
+        | PpcImportDispatcherTarget::SetMenuItemCommandID
+        | PpcImportDispatcherTarget::GetMenuItemCommandID
         | PpcImportDispatcherTarget::DeleteMenuItem
         | PpcImportDispatcherTarget::CalcMenuSize
         | PpcImportDispatcherTarget::PopUpMenuSelect
