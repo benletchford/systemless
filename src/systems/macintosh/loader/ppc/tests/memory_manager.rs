@@ -1861,6 +1861,24 @@ fn ppc_handle_imports_mutate_the_process_memory_manager_immediately() {
             native.cpu.gpr[3] = handle;
             native.cpu.gpr[4] = 64;
             native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(memory_manager.native_allocation(handle), Some(original));
+            assert_eq!(
+                memory_manager.native_heap_state().unwrap().last_mem_error,
+                PPC_MEM_FULL_ERR
+            );
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.imports[0].dispatcher_target = PpcImportDispatcherTarget::HUnlock;
+            native.cpu.gpr[3] = handle;
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(memory_manager.handle_state(handle), 0x20);
+
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.imports[0].dispatcher_target = PpcImportDispatcherTarget::SetHandleSize;
+            native.cpu.gpr[3] = handle;
+            native.cpu.gpr[4] = 64;
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
             let grown = memory_manager.native_allocation(handle).unwrap();
             assert_ne!(grown.ptr, original.ptr);
             assert_eq!((grown.size, grown.capacity), (64, 64));
@@ -1898,6 +1916,12 @@ fn ppc_handle_imports_mutate_the_process_memory_manager_immediately() {
             native.run_with_process_memory_manager(64, false, false, memory_manager);
             assert_eq!(native.cpu.gpr[3], 64);
 
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.imports[0].dispatcher_target = PpcImportDispatcherTarget::HLock;
+            native.cpu.gpr[3] = handle;
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(memory_manager.handle_state(handle), 0xa0);
             native.cpu.pc = native.entry_pc;
             native.cpu.lr = PPC_HALT_PC;
             native.imports[0].dispatcher_target = PpcImportDispatcherTarget::EmptyHandle;
