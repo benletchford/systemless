@@ -125,6 +125,7 @@ mod dispatch_drawsprocket;
 mod dispatch_event;
 mod dispatch_files;
 mod dispatch_fonts;
+mod font_swap;
 mod dispatch_gestalt;
 mod dispatch_graphics_devices;
 mod dispatch_gworlds;
