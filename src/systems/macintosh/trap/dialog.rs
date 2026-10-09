@@ -8061,31 +8061,10 @@ impl super::TrapDispatcher {
         font_id: i16,
         font_size: i16,
     ) -> String {
-        if available_width <= 0 {
-            return String::new();
-        }
-        if Self::fb_measure_string(title, font_id, font_size) <= available_width {
-            return title.to_owned();
-        }
-
-        let ellipses = "...";
-        let ellipses_width = Self::fb_measure_string(ellipses, font_id, font_size);
-        if ellipses_width > available_width {
-            return String::new();
-        }
-
-        let mut prefix = String::new();
-        let mut prefix_width = 0;
-        for ch in title.chars() {
-            let char_width = Self::fb_measure_string(&ch.to_string(), font_id, font_size);
-            if prefix_width + char_width + ellipses_width > available_width {
-                break;
-            }
-            prefix.push(ch);
-            prefix_width += char_width;
-        }
-        prefix.push_str(ellipses);
-        prefix
+        let chars: Vec<_> = title.chars().collect();
+        crate::control_manager::popup_display_text(&chars, &['.', '.', '.'], available_width,
+            |chars| Self::fb_measure_string(&chars.iter().collect::<String>(), font_id, font_size))
+            .into_iter().collect()
     }
 
     fn redraw_dialog_popup_controls(

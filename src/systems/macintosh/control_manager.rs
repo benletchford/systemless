@@ -1081,3 +1081,43 @@ mod tests {
         assert!(state.drag_tracking_enabled(10));
     }
 }
+
+/// Standard popup CDEF truncation, measured in guest advances.
+/// Preserve character/byte boundaries and use three periods, never host shaping.
+pub fn popup_display_text<T: Clone>(
+    title: &[T], ellipsis: &[T], available_width: i16,
+    measure: impl Fn(&[T]) -> i16,
+) -> Vec<T> {
+    if available_width <= 0 { return Vec::new(); }
+    if measure(title) <= available_width { return title.to_vec(); }
+    let suffix_width = measure(ellipsis);
+    if suffix_width > available_width { return Vec::new(); }
+    let mut prefix = Vec::new();
+    let mut width = 0i16;
+    for item in title {
+        let advance = measure(std::slice::from_ref(item));
+        if width.saturating_add(advance).saturating_add(suffix_width) > available_width { break; }
+        prefix.push(item.clone());
+        width = width.saturating_add(advance);
+    }
+    prefix.extend_from_slice(ellipsis);
+    prefix
+}
+
+#[cfg(test)]
+mod popup_display_tests {
+    #[test]
+    fn popup_display_text_preserves_character_boundaries_and_suffix_budget() {
+        let title: Vec<_> = "é£πABCDE".chars().collect();
+        let measure = |chars: &[char]| chars.iter().map(|ch| if *ch == '.' { 1 } else { 4 }).sum();
+        let display = |width| super::popup_display_text(&title, &['.', '.', '.'], width, measure)
+            .into_iter().collect::<String>();
+        assert_eq!(display(0), "");
+        assert_eq!(display(2), "");
+        assert_eq!(display(3), "...");
+        assert_eq!(display(15), "é£π...");
+        assert_eq!(display(31), "é£πABCD...");
+        assert_eq!(display(32), "é£πABCDE");
+        assert_eq!(display(i16::MAX), "é£πABCDE");
+    }
+}

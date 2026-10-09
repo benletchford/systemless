@@ -3092,35 +3092,8 @@ pub(super) fn ppc_popup_control_display_title(
     text_font: i16,
     text_size: i16,
 ) -> Vec<u8> {
-    if available_width <= 0 {
-        return Vec::new();
-    }
-    if ppc_text_bytes_advance_for_font(title, text_font, text_size) <= available_width {
-        return title.to_vec();
-    }
-
-    let ellipsis = b"...";
-    let ellipsis_width = ppc_text_bytes_advance_for_font(ellipsis, text_font, text_size);
-    if ellipsis_width > available_width {
-        return Vec::new();
-    }
-
-    let mut prefix = Vec::new();
-    let mut prefix_width = 0i16;
-    for byte in title {
-        let byte_width = ppc_text_byte_advance_for_font(*byte, text_font, text_size);
-        if prefix_width
-            .saturating_add(byte_width)
-            .saturating_add(ellipsis_width)
-            > available_width
-        {
-            break;
-        }
-        prefix.push(*byte);
-        prefix_width = prefix_width.saturating_add(byte_width);
-    }
-    prefix.extend_from_slice(ellipsis);
-    prefix
+    crate::control_manager::popup_display_text(title, b"...", available_width,
+        |bytes| ppc_text_bytes_advance_for_font(bytes, text_font, text_size))
 }
 
 pub(super) fn ppc_draw_control(
