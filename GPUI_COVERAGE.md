@@ -3687,3 +3687,29 @@ guarded pending background/transfer/selection integration, glyph-aligned
 interaction mapping and shared live/headless CPU/scale/activation evidence.
 Production binary and no-default-features checks pass after these changes
 (1m30s/11.22s), with dead-code warnings for the guarded run constructors.
+
+Styled TextEdit now has an ordered GPUI ink plan that keeps absolute measured
+byte boundaries separate from each run's actual native paint origin. Run masks
+use the shared classic per-character or PPC whole-run recipes, CPU baseline
+and justification, and resolved ink colours. Overlapping masks resolve in
+native draw order. Saturated/unrepresentable paint coordinates are refused;
+background and selection remain separate operations. A new GPUI canvas paints
+this resolved bitmap ink with device-snapped paths and caller-owned clipping.
+
+The Showcase styled snapshot regression now compares every field pixel to the
+ordered ink plan over the fixture's white erased background across monochrome
+68k, colour 68k, 8bpp PPC and default 16bpp PPC (final 3.29s). It covers mixed
+Geneva/Monaco sizes/faces/colours and actual paint/measurement distinctions,
+not arbitrary styles, font overrides, transfer modes or selections.
+
+`--capture-styled-text-edit-ink` uses the public fixture and shared GPUI/headless
+renderer to remove the inactive field's guest text pixels and repaint only its
+new canvas. It saves the original `.guest.png` alongside the composed image.
+The white fixture background is painted by GPUI rather than relying on a
+filtered guest texture: the first capture exposed grey edge bleed, corrected
+before the final matrix. All 16 field captures match the device-snapped native
+raster exactly across the four CPU/display cases at 0.75/1/1.5/2 scales and
+device density 2. The production binary check passes (3.78s), and the capture
+example builds (5.79s). Styled document scene ownership is still guarded:
+these captures qualify inactive ink on this fixture, not live input, general
+backgrounds, active selection/caret, or lifecycle replacement.

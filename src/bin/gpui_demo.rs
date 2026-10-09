@@ -210,6 +210,9 @@ mod desktop {
         capture_text_edit: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_styled_text_edit_ink: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_text_edit_selected: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -4147,6 +4150,83 @@ mod desktop {
         eprintln!("saved composed GPUI capture to {}", output.display());
     }
 
+    #[cfg(feature = "gpui-demo-test")]
+    fn capture_styled_text_edit_ink(
+        game: &std::path::Path, output: &std::path::Path,
+        prefer_powerpc: bool, depth: Option<u16>, scale: f32,
+    ) {
+        use gpui_kit::{platform, HeadlessAppContext};
+        struct Preview {
+            image: Arc<RenderImage>,
+            record: systemless::runner::TextEditSnapshot,
+            scale: f32,
+        }
+        impl Render for Preview {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let record = &self.record;
+                let view = record.global_view_rect.unwrap();
+                let dest = record.global_dest_rect.unwrap();
+                let origin = ((dest.1 - record.dest_rect.1) as f32 * self.scale,
+                    (dest.0 - record.dest_rect.0) as f32 * self.scale);
+                let mut ink = div().absolute().size_full();
+                for index in 0..record.line_count {
+                    let line = super::text::StyledTextEditLine::from_guest(record, index).unwrap();
+                    ink = ink.child(super::text::classic_styled_text_edit_ink(line, self.scale, origin).unwrap());
+                }
+                div().relative().size_full()
+                    .child(img(self.image.clone()).absolute().size_full())
+                    .child(div().absolute().overflow_hidden().bg(gpui_kit::white())
+                        .left(px(f32::from(view.1) * self.scale)).top(px(f32::from(view.0) * self.scale))
+                        .w(px(f32::from(view.3 - view.1) * self.scale)).h(px(f32::from(view.2 - view.0) * self.scale))
+                        .child(ink))
+            }
+        }
+        let mut session = MacintoshSession::new(true, if prefer_powerpc { Some(8) } else { depth });
+        session.runner_mut().set_prefer_powerpc_executables(prefer_powerpc);
+        if prefer_powerpc { if let Some(depth) = depth { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); } }
+        let app = session.load_path(game).unwrap();
+        session.initialize(&app);
+        assert!((0..300).any(|_| {
+            session.runner_mut().run_steps(100_000, None);
+            session.runner_mut().guest_menu_snapshot().menus.iter().any(|menu| menu.id == 129 && !menu.items.is_empty())
+        }));
+        assert!(session.runner_mut().select_guest_menu_item(129, 11));
+        let record = (0..300).find_map(|_| {
+            session.runner_mut().run_steps(100_000, None);
+            let settled = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
+            session.runner_mut().text_edit_snapshot().records.into_iter().find(|record|
+                settled && record.drawing_intact && record.styled && record.style_runs.as_ref()
+                    .is_some_and(|runs| runs.iter().any(|run| run.start == 26)))
+        }).expect("settled showcase styled field");
+        assert!(!record.active, "ink-only capture requires an inactive field");
+        let mut frame = session.video_frame().unwrap();
+        image::save_buffer(output.with_extension("guest.png"), &frame.pixels, frame.width, frame.height,
+            image::ColorType::Rgba8).unwrap();
+        let view = record.global_view_rect.unwrap();
+        let dest = record.global_dest_rect.unwrap();
+        let origin = (dest.0 - record.dest_rect.0, dest.1 - record.dest_rect.1);
+        let mut native_ink = std::collections::BTreeMap::new();
+        for index in 0..record.line_count {
+            native_ink.extend(super::text::StyledTextEditLine::from_guest(&record, index).unwrap().pixels().unwrap());
+        }
+        for y in view.0..view.2 { for x in view.1..view.3 {
+            let at = ((y as u32 * frame.width + x as u32) * 4) as usize;
+            let expected = native_ink.get(&(x - origin.1, y - origin.0)).copied().unwrap_or([255; 3]);
+            assert_eq!(&frame.pixels[at..at + 3], expected.as_slice(), "native styled pixel ({x},{y})");
+            frame.pixels[at..at + 4].copy_from_slice(&[255; 4]);
+        } }
+        let mut visual = HeadlessAppContext::with_platform(platform::current_platform(true).text_system(),
+            Arc::new(gpui_kit::assets::Assets), platform::current_headless_renderer);
+        visual.update(gpui_kit::init);
+        let window = visual.open_window(size(px(frame.width as f32 * scale), px(frame.height as f32 * scale)), |_, cx| {
+            cx.new(|_| Preview { image: Arc::new(RenderImage::new(vec![image::Frame::new(
+                image::RgbaImage::from_raw(frame.width, frame.height, gpui_pixels(frame.pixels)).unwrap())])), record, scale })
+        }).unwrap();
+        visual.run_until_parked();
+        visual.capture_screenshot(window.into()).unwrap().save(output).unwrap();
+        eprintln!("saved GPUI styled ink capture to {}", output.display());
+    }
+
     pub(super) fn main() {
         run(Args::parse());
     }
@@ -4516,6 +4596,12 @@ mod desktop {
         if let Some(output) = args.capture_lists_cancelled.as_ref() {
             capture_fixture_screen(&args.game, output, args.prefer_powerpc,
                 args.screen_depth, CaptureCase::ListsCancelled, args.capture_scale);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_styled_text_edit_ink.as_ref() {
+            capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
+                args.screen_depth, args.capture_scale.unwrap_or(1.));
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -5188,6 +5274,7 @@ mod desktop {
                         capture_lists_cancelled: None,
                         capture_scale: None,
                         capture_text_edit: None,
+                        capture_styled_text_edit_ink: None,
                         capture_text_edit_selected: None,
                         capture_text_edit_edited: None,
                         capture_text_edit_inactive: None,
@@ -6844,6 +6931,31 @@ mod desktop {
                         frame.pixels.get(at..at + 3) == Some(ink.rgb.as_slice())
                     }));
                     assert!(present, "resolved run ink {:?} appears in guest field, PPC={powerpc}, depth={depth:?}", ink);
+                }
+                // Compare complete ordered styled ink against the native
+                // field, including empty background pixels. This fixture has
+                // a white erased view and no active selection/caret.
+                assert!(!record.active);
+                let mut styled_pixels = std::collections::BTreeMap::new();
+                for index in 0..record.line_count {
+                    let line = super::super::text::StyledTextEditLine::from_guest(&record, index)
+                        .expect("resolved zero-spacing srcOr styled line");
+                    assert!(line.runs.windows(2).all(|pair| pair[0].bytes.end == pair[1].bytes.start));
+                    for run in &line.runs {
+                        assert_eq!(run.measured_positions.len(), run.bytes.len() + 1);
+                    }
+                    styled_pixels.extend(line.pixels().unwrap());
+                }
+                let dest = record.global_dest_rect.unwrap();
+                let port_origin = (dest.0 - record.dest_rect.0, dest.1 - record.dest_rect.1);
+                for y in view.0..view.2 {
+                    for x in view.1..view.3 {
+                        let expected = styled_pixels.get(&(x - port_origin.1, y - port_origin.0))
+                            .copied().unwrap_or([255; 3]);
+                        let at = ((y as u32 * frame.width + x as u32) * 4) as usize;
+                        assert_eq!(&frame.pixels[at..at + 3], expected.as_slice(),
+                            "ordered styled ink at ({x},{y}), PPC={powerpc}, depth={depth:?}, override={ppc_depth:?}");
+                    }
                 }
                 let metrics = record.line_metrics.as_ref().unwrap();
                 assert_eq!(metrics.len(), record.line_count);
