@@ -171,6 +171,12 @@ mod desktop {
         capture_text_edit_edited: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_text_edit_inactive: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_text_edit_reactivated: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_popup_controls: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -1478,7 +1484,7 @@ mod desktop {
                             record.selection.0.saturating_sub(line_start).min(line_end - line_start),
                             record.selection.1.saturating_sub(line_start).min(line_end - line_start),
                         );
-                        let (before, selected, after) = save_name_segments(&line, selection, true);
+                        let (before, selected, after) = save_name_segments(&line, selection, record.active);
                         let soft_wrap_end = index + 2 < starts.len() && starts[index + 1] == line_end;
                         let caret = record.active && record.caret_visible && record.selection.0 == record.selection.1
                             && record.selection.0 >= line_start
@@ -2623,6 +2629,8 @@ mod desktop {
         TextEdit,
         TextEditSelected,
         TextEditEdited,
+        TextEditInactive,
+        TextEditReactivated,
         PopupControls,
         PopupControlsSelected,
         PopupControlsOpen,
@@ -2761,7 +2769,7 @@ mod desktop {
         let lists_page = matches!(capture, CaptureCase::Lists | CaptureCase::ListsSelected | CaptureCase::ListsHeld | CaptureCase::ListsCancelled);
         let text_edit_page = matches!(
             capture,
-            CaptureCase::TextEdit | CaptureCase::TextEditSelected | CaptureCase::TextEditEdited
+            CaptureCase::TextEdit | CaptureCase::TextEditSelected | CaptureCase::TextEditEdited | CaptureCase::TextEditInactive | CaptureCase::TextEditReactivated
         );
         let popup_page = matches!(
             capture,
@@ -3679,7 +3687,7 @@ mod desktop {
         }
         let controls = session.runner_mut().control_snapshot();
         let lists = session.runner_mut().list_manager_snapshot();
-        if matches!(capture, CaptureCase::TextEditSelected | CaptureCase::TextEditEdited) {
+        if matches!(capture, CaptureCase::TextEditSelected | CaptureCase::TextEditEdited | CaptureCase::TextEditInactive | CaptureCase::TextEditReactivated) {
             // The showcase Reset control invokes TESetText then
             // TESetSelect(0, 14); send a real guest click through TrackControl.
             // Inside Macintosh: Text (1993), pp. 2-75--2-78.
@@ -3715,6 +3723,35 @@ mod desktop {
                 }));
             }
         }
+        let activation_capture = matches!(capture, CaptureCase::TextEditInactive | CaptureCase::TextEditReactivated);
+        if activation_capture {
+            assert!(session.runner_mut().select_guest_menu_item(132, 7));
+            assert!((0..300).any(|_| {
+                session.runner_mut().run_steps(100_000, None);
+                session.runner_mut().text_edit_snapshot().records.iter().any(|record|
+                    record.view_rect == (76, 34, 211, 326) && !record.active && record.selection == (0, 14))
+            }), "document selection must become inactive");
+            // Let the dialog consume its activation and initial update events.
+            for _ in 0..30 { session.runner_mut().run_steps(100_000, None); }
+            if matches!(capture, CaptureCase::TextEditReactivated) {
+                for input in [
+                    MacintoshInput::MouseDown { vertical: 100, horizontal: 70 },
+                    MacintoshInput::MouseUp { vertical: 100, horizontal: 70 },
+                ] {
+                    session.deliver_input(input);
+                    for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
+                }
+                assert!((0..300).any(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    session.runner_mut().text_edit_snapshot().records.iter().any(|record|
+                        record.view_rect == (76, 34, 211, 326) && record.active && record.selection == (0, 14))
+                }), "document activation must preserve the selection");
+                // Activation precedes the newly exposed document's updateEvt.
+                for _ in 0..30 { session.runner_mut().run_steps(100_000, None); }
+            }
+        }
+        let windows = if activation_capture { session.runner_mut().window_frame_snapshot() } else { windows };
+        let dialogs = if activation_capture { session.runner_mut().dialog_snapshot() } else { dialogs };
         let text_edits = session.runner_mut().text_edit_snapshot().records;
         let standard_file = session.runner_mut().standard_file_snapshot();
         let menus = session.runner_mut().guest_menu_snapshot();
@@ -4167,6 +4204,16 @@ mod desktop {
                 args.screen_depth,
                 CaptureCase::TextEditEdited,
             );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_text_edit_inactive.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::TextEditInactive);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_text_edit_reactivated.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::TextEditReactivated);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -4750,6 +4797,8 @@ mod desktop {
                         capture_text_edit: None,
                         capture_text_edit_selected: None,
                         capture_text_edit_edited: None,
+                        capture_text_edit_inactive: None,
+                        capture_text_edit_reactivated: None,
                         capture_popup_controls: None,
                         capture_popup_controls_selected: None,
                         capture_popup_controls_open: None,
@@ -8156,6 +8205,60 @@ mod desktop {
                         .iter()
                         .all(|current| current.guest_id != dialog.guest_id)
                 }));
+            }
+        }
+
+        #[test]
+        fn showcase_text_selection_survives_modeless_window_activation() {
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 7));
+                wait_for_menu(&mut session, 129, 7, true);
+                settle(&mut session);
+                for input in [
+                    MacintoshInput::MouseDown { vertical: 132, horizontal: 75 },
+                    MacintoshInput::MouseMove { vertical: 132, horizontal: 150 },
+                    MacintoshInput::MouseUp { vertical: 132, horizontal: 150 },
+                ] {
+                    session.deliver_input(input);
+                    settle(&mut session);
+                }
+                let text = session.runner_mut().text_edit_snapshot().records.into_iter()
+                    .find(|record| record.view_rect == (76, 34, 211, 326)).unwrap();
+                assert!(text.active);
+                assert_ne!(text.selection.0, text.selection.1);
+                assert!(session.runner_mut().select_guest_menu_item(132, 7));
+                assert!((0..300).any(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    session.runner_mut().text_edit_snapshot().records.iter().any(|record|
+                        record.guest_id == text.guest_id && !record.active)
+                }), "document must deactivate behind modeless dialog: PPC={powerpc}, depth={depth:?}");
+                let inactive = session.runner_mut().text_edit_snapshot().records.into_iter()
+                    .find(|record| record.guest_id == text.guest_id).unwrap();
+                assert_eq!(inactive.selection, text.selection);
+                assert_eq!(inactive.text, text.text);
+                // caret_visible is the raw guest blink phase, not effective
+                // visibility; TEDeactivate preserves it and clears active.
+                assert!(!inactive.active);
+                // Exposed document content: the activation click must not edit
+                // or relocate the selection in its inactive TextEdit record.
+                session.deliver_input(MacintoshInput::MouseDown { vertical: 100, horizontal: 70 });
+                settle(&mut session);
+                session.deliver_input(MacintoshInput::MouseUp { vertical: 100, horizontal: 70 });
+                assert!((0..300).any(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    session.runner_mut().text_edit_snapshot().records.iter().any(|record|
+                        record.guest_id == text.guest_id && record.active)
+                }), "document must reactivate: PPC={powerpc}, depth={depth:?}, windows={:?}, text={:?}", session.runner_mut().window_stack_snapshot(), session.runner_mut().text_edit_snapshot());
+                let active = session.runner_mut().text_edit_snapshot().records.into_iter()
+                    .find(|record| record.guest_id == text.guest_id).unwrap();
+                assert_eq!(active.selection, text.selection);
+                assert_eq!(active.text, text.text);
             }
         }
 

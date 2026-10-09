@@ -1,5 +1,5 @@
 {
-  "fixture_sha256": "b1218d2ce2273950fe30911c26cd1b0c0037f86c703cf7dce9906a79bcf4f381",
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
   "scenario": "oracle/textedit.json",
   "scenario_sha256": "e69a6233f0fd85cbff2036e4b11ad0cc05576e2d709fcc13ebe0d14d163b3a90",
   "capture_date": "2026-10-09",
@@ -88,7 +88,7 @@
         },
         {
           "file": "reference/basiliskii-68k/10-te-mouse-selected.png",
-          "sha256": "d36ddd58f515713616e1af922b3bb31cebf602ed40ce556ed1ff050c2c6a0aff"
+          "sha256": "bb95c0d473ce0e2daae8e4b7d0bb304e6727a253c218b9909f54dd4b6a53800d"
         },
         {
           "file": "reference/basiliskii-68k/10-te-selected.png",
@@ -104,15 +104,15 @@
         },
         {
           "file": "reference/basiliskii-68k/10-te-pasted.png",
-          "sha256": "e41783c71584f5938cde41895e5cfa2bb568b9c58cbb1102e12301e985e6119b"
+          "sha256": "bdef73fe389a93b484cb1b5c2e9023dead5bda9549cf6548adfef36b8421f6aa"
         },
         {
           "file": "reference/basiliskii-68k/10-te-typed.png",
-          "sha256": "c4896d27a16bad3d32b1a076db987d85b13643f03cae9870ed8b37eafff4793d"
+          "sha256": "1e317ee56db027f62da8696b18a57dc664b118439777e8350cb8b169b68a691a"
         },
         {
           "file": "reference/basiliskii-68k/10-te-reset.png",
-          "sha256": "e538d2e5a18ae5491e75dd83a507dd94e7de1a6bb654f9a09bf182cb64ddeab3"
+          "sha256": "d5ef3b539ba603b73f60e201161a73c2316f9a18b363e9c29f9298978bcbdc58"
         },
         {
           "file": "reference/basiliskii-68k/10-textedit.png",
@@ -120,9 +120,9 @@
         }
       ],
       "clock_source": "live guest clock",
-      "source_capture_record_sha256": "ecf19eb8f977f1cdf90eaedcf2a63d15a0e0054b7676e614cb53a7a632864959",
-      "runner_sha256": "168848da1de6b2433500daf70711f998c57bfd3b5b0796663d7e5d55a01e18df",
-      "capture_recipe_sha256": "68589f5d3a4e72a5dc98ddd7a3b37d378836ad68c072d2a5c22177aa413c61b6",
+      "source_capture_record_sha256": "c34691f0b364e8a91fcfa12154d2edd869304477cea4fb2e431073d89e66b9f3",
+      "runner_sha256": "85198ba255a5f0e830384e7706ec36d1f983ca0b714c7049be0b53f3a782b067",
+      "capture_recipe_sha256": "0738b6cea00dbcd7865e8a1a9126f5e33dda0d1f6ec52473d6466d7e9d5bc8fa",
       "rom_sha256": "05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca",
       "system_disk_archive_sha256": "2a4985fec6b5b2a23f6141fd6de9a3066dcd87a6fe1412faefdd9d6c87876295",
       "preferences_sha256": "a3c1c62f438817267bce62afc9748921a21427fb2237677fc7434d2cbccab2be",
@@ -168,11 +168,11 @@
         },
         {
           "file": "reference/sheepshaver-ppc/10-te-typed.png",
-          "sha256": "c8b58490706402dc5ad238e293c9b1484d27a802aacf207741b7436a869a79b6"
+          "sha256": "37c64b0ed750d04df4dcae250a3bb255eee5314c1f9743ef615a73eb4b236236"
         },
         {
           "file": "reference/sheepshaver-ppc/10-te-reset.png",
-          "sha256": "e0b263debef37061ba91f7bbeb560e715f4f3e2765ef3c41695dd470348ec52e"
+          "sha256": "11f43e46c84cce602e30c03f9bd8986c16167b247105bbc20425da35dfcbaab6"
         },
         {
           "file": "reference/sheepshaver-ppc/10-textedit.png",
@@ -180,9 +180,9 @@
         }
       ],
       "clock_source": "60.15 Hz wall-clock pacing",
-      "source_capture_record_sha256": "40e4dca543033673b2abc5cbac10ace99235a99c135f812d6db26b6654771362",
-      "runner_sha256": "76bc0dd0f274d28da9e0f044cd0abcf7e60aa70a2b4c7814ce721b682cdde801",
-      "capture_recipe_sha256": "68589f5d3a4e72a5dc98ddd7a3b37d378836ad68c072d2a5c22177aa413c61b6",
+      "source_capture_record_sha256": "ee182cd4086eb755e41cc5bd4f36bf1a2178927fce41a4a44535120e29b88fc3",
+      "runner_sha256": "7d5edcfb7c24858bf803d7cc88c7e5ccd85cef03ca84fb25dd5c9d6cef958a4b",
+      "capture_recipe_sha256": "0738b6cea00dbcd7865e8a1a9126f5e33dda0d1f6ec52473d6466d7e9d5bc8fa",
       "rom_sha256": "fd13c05d678bbc7bbb527f7f418cd2dbada522af422a97452eee3bfc5010f032",
       "system_disk_archive_sha256": "797d3d28fc8aefcb67c53ea21af40692e89c52fdc10fe79d10c512e2df0018c6",
       "preferences_sha256": "307e437a99d6c2e56ce234d44e7c5386c0889513c407cd307ff7fff47e213436",

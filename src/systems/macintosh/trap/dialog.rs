@@ -3943,14 +3943,14 @@ impl super::TrapDispatcher {
     // ========== DLOG / DITL Resource Parsing ==========
 
     /// Parse a DLOG resource from guest memory.
-    /// Returns (bounds, procID, visible, itemsID, title, position).
+    /// Returns (bounds, procID, visible, itemsID, title, position, goAway, refCon).
     /// Inside Macintosh Volume I, I-437
     /// Macintosh Toolbox Essentials 1992, p. 6-148
     fn parse_dlog(
         bus: &MacMemoryBus,
         ptr: u32,
         data_len: u32,
-    ) -> ((i16, i16, i16, i16), i16, bool, i16, String, u16) {
+    ) -> ((i16, i16, i16, i16), i16, bool, i16, String, u16, bool, u32) {
         let bytes = bus.read_bytes(ptr, data_len as usize);
         crate::dialog_manager::parse_dialog_template(&bytes)
             .map(|template| {
@@ -3962,9 +3962,11 @@ impl super::TrapDispatcher {
                     template.items_id,
                     title,
                     template.position,
+                    template.go_away,
+                    template.ref_con,
                 )
             })
-            .unwrap_or(((0, 0, 0, 0), 0, false, 0, String::new(), 0))
+            .unwrap_or(((0, 0, 0, 0), 0, false, 0, String::new(), 0, false, 0))
     }
 
     /// Parse an ALRT resource from guest memory.
@@ -10904,7 +10906,7 @@ impl super::TrapDispatcher {
 
                 if let Some(dlog_data) = dlog_ptr {
                     let dlog_len = bus.get_alloc_size(dlog_data).unwrap_or(0);
-                    let (raw_bounds, proc_id, visible, items_id, title, position) =
+                    let (raw_bounds, proc_id, visible, items_id, title, position, go_away, ref_con) =
                         Self::parse_dlog(bus, dlog_data, dlog_len);
                     let mut bounds = raw_bounds;
 
@@ -11002,7 +11004,8 @@ impl super::TrapDispatcher {
                         .is_some()
                         .then(|| self.copy_dialog_item_color_table_resource(bus, items_id))
                         .flatten();
-                    // Honor the DLOG resource's visible flag per IM:I I-424.
+                    // Preserve the DLOG visibility, close-box flag and reference
+                    // value when creating the window (MTE 1992, pp. 6-147–6-148).
                     let dlg_ptr = self.finish_dialog_creation(
                         bus,
                         cpu,
@@ -11011,8 +11014,8 @@ impl super::TrapDispatcher {
                         &title,
                         visible,
                         proc_id,
-                        false,
-                        0,
+                        go_away,
+                        ref_con,
                         items_handle,
                         items,
                         dialog_color_table,

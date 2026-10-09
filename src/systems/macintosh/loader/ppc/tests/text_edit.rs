@@ -1143,6 +1143,49 @@ fn te_update_clips_partial_glyphs_at_the_view_bottom() {
 }
 
 #[test]
+fn text_edit_activation_repaints_selection_without_update_or_idle() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TENew")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 32]);
+    ppc_write_rect(&mut loaded.memory, scratch, 20, 10, 60, 120).unwrap();
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = scratch;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TENew);
+    let handle = loaded.cpu.gpr[3];
+    loaded.memory.write_u8(scratch + 16, b'M').unwrap();
+    loaded.cpu.gpr[3] = scratch + 16;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetText);
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetSelect);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let pixels = |memory: &mut PpcSectionMem| {
+        let mut result = Vec::new();
+        for y in 20..60 {
+            for x in 10..120 { result.push(ppc_quickdraw_read_pixel(memory, front, (x, y))); }
+        }
+        result
+    };
+    loaded.cpu.gpr[3] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEActivate { active: false });
+    let inactive = pixels(&mut loaded.memory);
+    loaded.cpu.gpr[3] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEActivate { active: true });
+    let active = pixels(&mut loaded.memory);
+    assert_ne!(active, inactive, "activation must paint the selection immediately");
+    loaded.cpu.gpr[3] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEActivate { active: false });
+    assert_eq!(pixels(&mut loaded.memory), inactive, "deactivation must remove selection pixels");
+    let snapshot = crate::text_edit::snapshot_guest_records(&[(handle, 1)],
+        &mut |addr| loaded.memory.read_u8(addr));
+    assert_eq!(snapshot.records[0].selection, (0, 1));
+    assert!(!snapshot.records[0].active);
+}
+
+#[test]
 fn text_edit_snapshot_follows_guest_idle_blink_phase() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TENew")).unwrap();
     let scratch = PPC_DATA_BASE + 0x1000;

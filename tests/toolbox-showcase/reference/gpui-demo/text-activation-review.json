@@ -1,0 +1,54 @@
+{
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "review": "All six composed states reviewed. Paired raw frames retained. Window activation only; host suspension not qualified.",
+  "captures": [
+    {
+      "file": "reference/gpui-demo/16-text-edit-inactive-mono.png",
+      "sha256": "e3da4ec4b2f551b416fdb9f3191036e174cb911fc76143910c9dbcb049cfa03d"
+    },
+    {
+      "file": "reference/gpui-demo/16-text-edit-inactive-mono.guest.png",
+      "sha256": "3dcb5b689df525614d358aa3c6831e2c742d46075a965c2553327e21caf4e700"
+    },
+    {
+      "file": "reference/gpui-demo/16-text-edit-reactivated-mono.png",
+      "sha256": "fcbd2342fa54930ecf7b68e83fff4925b2da86dafa82984121b4817162b001d3"
+    },
+    {
+      "file": "reference/gpui-demo/16-text-edit-reactivated-mono.guest.png",
+      "sha256": "f63b8455c95580c0f27487eb87236254afcca2eae16a8d09dfd5e248ec86615c"
+    },
+    {
+      "file": "reference/gpui-demo/16-text-edit-inactive-colour.png",
+      "sha256": "a4b11a49c083db9f00f595f366d59e13acad8804d3ff92708a1d08e875cfc684"
+    },
+    {
+      "file": "reference/gpui-demo/16-text-edit-inactive-colour.guest.png",
+      "sha256": "770326ccbba1876f53202d986d28ed40a414f87a6075efa8260ec9f0f5f45a03"
+    },
+    {
+      "file": "reference/gpui-demo/16-text-edit-reactivated-colour.png",
+      "sha256": "b7b6a176ec506a7f412656e54db53439dd905d9a3291994eb054c60908a51e30"
+    },
+    {
+      "file": "reference/gpui-demo/16-text-edit-reactivated-colour.guest.png",
+      "sha256": "dbeb94170d916dea45bca07c641f769941940f082b5b545051a051160e6a20cb"
+    },
+    {
+      "file": "reference/gpui-demo/16-text-edit-inactive-ppc.png",
+      "sha256": "5c147f833d02154ba3e0262660ceeb06a64aa9e5849e9b2b94576c68ec991f59"
+    },
+    {
+      "file": "reference/gpui-demo/16-text-edit-inactive-ppc.guest.png",
+      "sha256": "b59915ac56903d032c2e0f1bee9ec03afef0c0b94462e2e6bdf65739424e4405"
+    },
+    {
+      "file": "reference/gpui-demo/16-text-edit-reactivated-ppc.png",
+      "sha256": "b7b6a176ec506a7f412656e54db53439dd905d9a3291994eb054c60908a51e30"
+    },
+    {
+      "file": "reference/gpui-demo/16-text-edit-reactivated-ppc.guest.png",
+      "sha256": "dbeb94170d916dea45bca07c641f769941940f082b5b545051a051160e6a20cb"
+    }
+  ]
+}

@@ -1,5 +1,5 @@
 {
-  "fixture_sha256": "b1218d2ce2273950fe30911c26cd1b0c0037f86c703cf7dce9906a79bcf4f381",
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
   "scenario": "oracle/overview.json",
   "scenario_sha256": "9c73706f6fb5939aaa32d4dbd458d17e2092c86d30525c1b98e8234ca6d69b4f",
   "capture_date": "2026-10-09",
@@ -193,7 +193,7 @@
       "width": 800,
       "height": 600,
       "depth": 8,
-      "source_capture_record_sha256": "9e07ac7b267c68b7a699c8120e00fdc1fcf26d1a26a3e98acb4b7ba462d7ad82",
+      "source_capture_record_sha256": "e54dd789752731005336cead4d89b901e584d0a2fe6ce0abeadd4613ea75222e",
       "checkpoints": [
         {
           "file": "reference/basiliskii-68k/overview-01-graphics.png",
@@ -543,7 +543,7 @@
         },
         {
           "file": "reference/basiliskii-68k/overview-06-modal-changed.png",
-          "sha256": "f663b5e6f4c28e6a0430fe5d4e7f4f955411071e9a5856a1dd7dc888ba97564e",
+          "sha256": "aac1e7d844df893100c7ccd7327ad971088208bd87aa33124fa260eec61ba15e",
           "regions": [
             [
               40,
@@ -629,7 +629,7 @@
         },
         {
           "file": "reference/basiliskii-68k/overview-07-textedit.png",
-          "sha256": "1524ce4c9e8737fa717f41203fcf37dd00a7778c4ebf4686530085c06120ab18",
+          "sha256": "1802c0e589968b658c7acbc7335ab7c1bf405db6f168659d3bc67625adfa2358",
           "regions": [
             [
               40,
@@ -835,7 +835,7 @@
         },
         {
           "file": "reference/basiliskii-68k/overview-12-standard-file.png",
-          "sha256": "cffca68e5d4a092658aa36c6212e7796d9eab283cad88b5468ee080ff9729848",
+          "sha256": "c2fdbf8f7774e3654d6a66cd8304a877500c9576f1a07decb6d66177d4d45255",
           "regions": [
             [
               40,
@@ -1215,7 +1215,7 @@
         },
         {
           "file": "reference/basiliskii-68k/overview-15-events.png",
-          "sha256": "3d574899c6a8936a10ed7168b3eaa4c0903627d10de613a76c0e13bcb1cbc9f0",
+          "sha256": "3121436c8f14be799b912a412c2a30bb4f59ce7926f85ba46ebaea6580a3e755",
           "regions": [
             [
               64,
@@ -1253,7 +1253,7 @@
         },
         {
           "file": "reference/basiliskii-68k/overview-15-events-held.png",
-          "sha256": "2f828f54a9706d7c73c778a4554e6c584150571fd34d7942b01553a910117ce4",
+          "sha256": "74c39712e56f116f51756fdf4dc0a01c86a96bfcbd78fa3423f57ccbf12f2297",
           "regions": [
             [
               64,
@@ -1303,7 +1303,7 @@
         },
         {
           "file": "reference/basiliskii-68k/overview-15-events-key.png",
-          "sha256": "9da0925875d11e1e1fdc13ae6f366b95cb38adb0ab01d98581ce2f7c7b3c68a7",
+          "sha256": "7e149b2c5516dc2ddb8cf1f69f8a6d41335a1b1aa647c8b20e523ec9f8468ad1",
           "regions": [
             [
               64,
@@ -1359,7 +1359,7 @@
         },
         {
           "file": "reference/basiliskii-68k/overview-15-cross.png",
-          "sha256": "bcc6ca93c3208da2f4aa9f9de1f78cc7548bf0ddfa83afaa5ab27fda9459cd87",
+          "sha256": "9b210065ce02ad2a352c6fb443acbdfc7ab04ebcf0346d560867710587b02c35",
           "regions": [
             [
               64,
@@ -1397,7 +1397,7 @@
         },
         {
           "file": "reference/basiliskii-68k/overview-15-watch.png",
-          "sha256": "004f6ede60254505d470e2475c2abb3d14654d2ca0c3af7ae2c503c50d194b5e",
+          "sha256": "bef976de1c560c31db33fd3ba1e523997dd29558cf455f8ded4c1ec56d284a18",
           "regions": [
             [
               64,
@@ -1435,7 +1435,7 @@
         },
         {
           "file": "reference/basiliskii-68k/overview-15-hidden.png",
-          "sha256": "50cb13d2c2d663f0432e8c3c14f6a88696b031e7a64208264f2a43ebaf4d358c",
+          "sha256": "54895940a941f8fd2937c5f42346af1cea785a2a9b06c132570f4b2a337d013e",
           "regions": [
             [
               64,
@@ -1473,7 +1473,7 @@
         },
         {
           "file": "reference/basiliskii-68k/overview-15-arrow.png",
-          "sha256": "dcf2078fafba755f0cb05b8ed0b79baf3eeec9bc9142ac6b290cbe258938b9dd",
+          "sha256": "7fad8ebbb716bca2873bd5a6dca107728d952f00f2a54f50e39805343ca42df1",
           "regions": [
             [
               64,
@@ -1550,8 +1550,8 @@
           ]
         }
       ],
-      "runner_sha256": "168848da1de6b2433500daf70711f998c57bfd3b5b0796663d7e5d55a01e18df",
-      "capture_recipe_sha256": "68589f5d3a4e72a5dc98ddd7a3b37d378836ad68c072d2a5c22177aa413c61b6",
+      "runner_sha256": "85198ba255a5f0e830384e7706ec36d1f983ca0b714c7049be0b53f3a782b067",
+      "capture_recipe_sha256": "0738b6cea00dbcd7865e8a1a9126f5e33dda0d1f6ec52473d6466d7e9d5bc8fa",
       "rom_sha256": "05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca",
       "system_disk_archive_sha256": "2a4985fec6b5b2a23f6141fd6de9a3066dcd87a6fe1412faefdd9d6c87876295",
       "preferences_sha256": "a3c1c62f438817267bce62afc9748921a21427fb2237677fc7434d2cbccab2be",
@@ -1561,7 +1561,7 @@
         "SYSTEMLESS_BASILISK_INSTRUCTIONS_PER_TICK": "<runner default>",
         "SYSTEMLESS_BASILISK_CPUS": "<runner default>"
       },
-      "source_pcm_sha256": "0ee85d51aa5da5743138f9da2bc71d8c2f6d302b209cf528a3bb84a3eaf91ae4",
+      "source_pcm_sha256": "a0f0086768e0981c3f511d7aa76e4d703f3a1aff764863f66042d498a22b1a20",
       "replay_verification": {
         "checkpoints": 59,
         "outcome_regions": 85,
@@ -1596,7 +1596,7 @@
       "width": 800,
       "height": 600,
       "depth": 32,
-      "source_capture_record_sha256": "1950233d4b4bd1459124077d60ec0260ef33c96d72b6dcbc23d3c92028aa7b65",
+      "source_capture_record_sha256": "f6229074bbc5250977f06b98bc52fed9bd6e53366ae3524209efba0be50f393c",
       "checkpoints": [
         {
           "file": "reference/sheepshaver-ppc/overview-01-graphics.png",
@@ -1620,7 +1620,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-02-controls-initial.png",
-          "sha256": "74962f4e1ef69ba4d69aa4b417daeb11c23fc57acf8564c16fdfb22daa938566",
+          "sha256": "55f3e38de45759acd11f6ed161817b3833525f46fe8e26f5df5543678821e0ba",
           "regions": [
             [
               40,
@@ -1680,7 +1680,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-03-windows.png",
-          "sha256": "21d309a31c2aaa911c5e6c90eaa3758c534e780dbf47e24fbf197ae93f45b5a3",
+          "sha256": "8c5fafcc569dfd0742207e3767dfcfd493f40c12eef1d798222fd92b366fb3c8",
           "regions": [
             [
               40,
@@ -1700,7 +1700,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-04-drawing.png",
-          "sha256": "45699ac583caea7ea57e1840c34f141b4f08eacf6c1be3b3a21768925b04efa0",
+          "sha256": "fe6427f733ba6203d10fd7b195064c40eaab81b1d6ac841575d317e0935ee587",
           "regions": [
             [
               40,
@@ -1720,7 +1720,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-05-preferences-initial.png",
-          "sha256": "22c0c9de62effad619f0b6f28612dc7dde2c303ce70f49dba15e50320e403fd1",
+          "sha256": "6fdb0cf0c5df4f48a4095355740e9d71d30e98164043f78dd219810a008e7e02",
           "regions": [
             [
               40,
@@ -1740,7 +1740,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-05-preferences-changed.png",
-          "sha256": "1487f6f7e21c005c3176caac094c874ea63dae0b06bda067dd4404771f9d8d9a",
+          "sha256": "b8c9008dd2bdb3de356c384728dfea941189e896f952e527ee1e05440a0ef691",
           "regions": [
             [
               40,
@@ -1780,7 +1780,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-05-difficulty-selected.png",
-          "sha256": "c7f888ed28fb29a11a19389f49100f2de8ad4d70f55c7791895e26a46d5721ef",
+          "sha256": "0c15d8c6ca9daf309b7d632825bbbc2ba47944c3521f9d18dc8f5da7cdd1a458",
           "regions": [
             [
               40,
@@ -1860,7 +1860,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-05-renderer-selected.png",
-          "sha256": "2cf3b51838ef6c77c7f850ee2623c2fcd1e5e5732af7c6dfbcd83a3fbe36061b",
+          "sha256": "8300810efc778b50042ef6d020e56ff8889a82501eedbec506c4109a3ea90f66",
           "regions": [
             [
               40,
@@ -1880,7 +1880,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-05-preferences-reset.png",
-          "sha256": "356a3b4bdc064014e9e343b0e3d374e62699e4234ae0e53b7be05beea9e1c4cf",
+          "sha256": "6fdb0cf0c5df4f48a4095355740e9d71d30e98164043f78dd219810a008e7e02",
           "regions": [
             [
               40,
@@ -1946,7 +1946,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-06-modal-changed.png",
-          "sha256": "c2b31d3a26a94aae0f236e75cb9368842f693117df866a01a178a4d401dda0d2",
+          "sha256": "b8937c7671910763fbdba34ea412b924a9899756db395ef87fc984143aac9ea3",
           "regions": [
             [
               40,
@@ -1992,7 +1992,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-06-alert.png",
-          "sha256": "b874873353271fe69e5aed05f2ae3a3ee4db4e6a3376af637bb86ebe43ccb13c",
+          "sha256": "5a85440ed8165794785c222b45cc2ee4fbd662973b436dd7ac6a077c55f3eb02",
           "regions": [
             [
               40,
@@ -2032,7 +2032,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-07-textedit.png",
-          "sha256": "7ebaa73aefa9b6efced2ab2507646c3f7ea9a319aaf1a92a88dfce5fa44a2773",
+          "sha256": "a679ebe09d5220a72354c22a0962615be63607685eafcc5325fb5626b9481fb7",
           "regions": [
             [
               40,
@@ -2058,7 +2058,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-08-palettes.png",
-          "sha256": "b32cf80d3505a98fab40f02646c3436e4bfb56e07981c6cc4415d69644209820",
+          "sha256": "02c4ae11c67fa11d62914ee2e374e21bbdb0fb98d785f83fb96bd1fa5b8a15c2",
           "regions": [
             [
               40,
@@ -2078,7 +2078,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-08-palettes-animated.png",
-          "sha256": "b32cf80d3505a98fab40f02646c3436e4bfb56e07981c6cc4415d69644209820",
+          "sha256": "63b358d4b18779de01c09bc98381312a9267af41fc2abbb0d13f224bacc39f69",
           "regions": [
             [
               40,
@@ -2158,7 +2158,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-10-sound-before-beep.png",
-          "sha256": "1638f68016f0c3aaed78560c71d764270b77e7727fd66c822f6523c584e5f7a2",
+          "sha256": "5a5d8759f991815e533d785e21d498d3a92871c132e37f5ae412c3a0540dbf02",
           "regions": [
             [
               40,
@@ -2178,7 +2178,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-10-sound-beeped.png",
-          "sha256": "45accc79c6b5d875e1a8ed9054fd2e48aaae7a8b2f79dd9cc4c1ae418ece3ccf",
+          "sha256": "45de0cd9afa39e079e417d3af4e5465688a9415e0b47bcee27757be66eea63b0",
           "regions": [
             [
               40,
@@ -2238,7 +2238,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-12-standard-file.png",
-          "sha256": "dba8a25334d2d709b574fb7f043718e0878ad97b88d9c30725b67b8d7c000b56",
+          "sha256": "17de00a411ea1e3fd32b3b3cb14da6a72569996809e2d94f0a94a90b0cd75bde",
           "regions": [
             [
               40,
@@ -2478,7 +2478,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-13-resources-loaded.png",
-          "sha256": "0857180b1953b6294b2190f362d158f3bce1d888411c66687194e998356cb88f",
+          "sha256": "1f03f57dc033d2072305df541bf408f9313c42b12e468c235a4130b761e41aa1",
           "regions": [
             [
               40,
@@ -2498,7 +2498,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-13-resources-released.png",
-          "sha256": "34a73896d046de1c1b80c61dc123db2871ab06594913c49d53cc48360191b1a9",
+          "sha256": "27d8309168475da12882e5294e46c6841609738602d67230e11890c2e30a917e",
           "regions": [
             [
               40,
@@ -2518,7 +2518,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-13-resources-reloaded.png",
-          "sha256": "0857180b1953b6294b2190f362d158f3bce1d888411c66687194e998356cb88f",
+          "sha256": "1f03f57dc033d2072305df541bf408f9313c42b12e468c235a4130b761e41aa1",
           "regions": [
             [
               40,
@@ -2538,7 +2538,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-14-sprites.png",
-          "sha256": "e7a35412f79e0e1dd8485a34d912dec8068fe5dd1812bb40ee86cbc4eae3c571",
+          "sha256": "b76b35f8c96d87861206d7476fe1fb8ce04438a918c27f4692e0bbdaf14db985",
           "regions": [
             [
               40,
@@ -2618,7 +2618,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-15-events.png",
-          "sha256": "d848a5fa12534a4b31dab119791c0af3dfc4504f6938f5a45ce1f9bb232fa2ce",
+          "sha256": "02cdf8a285ee215ec77e1ae5b88727668e6a58c493d0db8eac3b427c9bf2844b",
           "regions": [
             [
               64,
@@ -2656,7 +2656,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-15-events-held.png",
-          "sha256": "667294274e9e3d48412b74aad0baa5475a5ca9eb2e46dd7db5b6a393e8c4b863",
+          "sha256": "c89207aa4fb3f1d86b5765d2b1f462affcf67d269943e3359f633b28c0290b46",
           "regions": [
             [
               64,
@@ -2706,7 +2706,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-15-events-key.png",
-          "sha256": "d4d707a92f3ae34ec7ec6ca39422e1f1c5141b61a45f96e2f6c8a743269d01b8",
+          "sha256": "3120a2af9a6dfead8117b8bef5317d9c0eb3eaa58e89fe93c803b9e30aeeb082",
           "regions": [
             [
               64,
@@ -2762,7 +2762,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-15-cross.png",
-          "sha256": "87927b88e0b23a93db06a5cffb4c35de986b77698b0aa6b5a4669acdd35d1c83",
+          "sha256": "46b91095748608ea9c5003317704dd2a52d68d60b011706354bb6df24ef22c10",
           "regions": [
             [
               64,
@@ -2800,7 +2800,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-15-watch.png",
-          "sha256": "7120c579582f86fae109de61de7735ad1d2840345f33ccfedcc046490bb5dac9",
+          "sha256": "89a6af8667f3027d42219f0505e8ef1a0351a26fe0784eba85d3b5a35b532575",
           "regions": [
             [
               64,
@@ -2838,7 +2838,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-15-hidden.png",
-          "sha256": "02593664e7b085a1d0afea34e9aef91299b09484ac54c12ec393d0ffea2093a8",
+          "sha256": "41a29a6ca92d11bc60298fd89a56f3e180fcfd846503574c3eb150033573d0b0",
           "regions": [
             [
               64,
@@ -2876,7 +2876,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-15-arrow.png",
-          "sha256": "f7967f376d121175fe5b614a9997083dab3f991256c2010b2bfe53bfe74c5b4d",
+          "sha256": "a04d56d5bbad38f1604f5837a30bef2b9e0ac4108b52b929ed20fd80b886f988",
           "regions": [
             [
               64,
@@ -2953,8 +2953,8 @@
           ]
         }
       ],
-      "runner_sha256": "76bc0dd0f274d28da9e0f044cd0abcf7e60aa70a2b4c7814ce721b682cdde801",
-      "capture_recipe_sha256": "68589f5d3a4e72a5dc98ddd7a3b37d378836ad68c072d2a5c22177aa413c61b6",
+      "runner_sha256": "7d5edcfb7c24858bf803d7cc88c7e5ccd85cef03ca84fb25dd5c9d6cef958a4b",
+      "capture_recipe_sha256": "0738b6cea00dbcd7865e8a1a9126f5e33dda0d1f6ec52473d6466d7e9d5bc8fa",
       "rom_sha256": "fd13c05d678bbc7bbb527f7f418cd2dbada522af422a97452eee3bfc5010f032",
       "system_disk_archive_sha256": "797d3d28fc8aefcb67c53ea21af40692e89c52fdc10fe79d10c512e2df0018c6",
       "preferences_sha256": "307e437a99d6c2e56ce234d44e7c5386c0889513c407cd307ff7fff47e213436",
@@ -2964,7 +2964,7 @@
         "SYSTEMLESS_SHEEPSHAVER_INSTRUCTIONS_PER_TICK": "<runner default>",
         "SYSTEMLESS_SHEEPSHAVER_CPUS": "<runner default>"
       },
-      "source_pcm_sha256": "180f125dade8bd79058c91d9b68091834d44c2aa641f91af7b1180c258916203",
+      "source_pcm_sha256": "c07d8d38c2584b0d71586757775a0bb6196e57a70141a5f501c2d1703c3d54c4",
       "replay_verification": {
         "checkpoints": 59,
         "outcome_regions": 85,

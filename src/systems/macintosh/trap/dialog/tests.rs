@@ -251,7 +251,7 @@
         bus.write_byte(ptr + 21, 0); // padding only, not a position field
         bus.write_word(ptr + 22, 0x280A); // poison: centerMainScreen if over-read
 
-        let (bounds, proc_id, visible, items_id, title, position) =
+        let (bounds, proc_id, visible, items_id, title, position, _, _) =
             TrapDispatcher::parse_dlog(&bus, ptr, 22);
 
         assert_eq!(bounds, (228, 198, 372, 455));
@@ -278,7 +278,7 @@
         bus.write_byte(ptr + 21, 0);
         bus.write_word(ptr + 22, 0x280A);
 
-        let (_, _, _, _, _, position) = TrapDispatcher::parse_dlog(&bus, ptr, 24);
+        let (_, _, _, _, _, position, _, _) = TrapDispatcher::parse_dlog(&bus, ptr, 24);
 
         assert_eq!(position, 0x280A);
     }
@@ -296,9 +296,9 @@
 
         // MTE 1992 p. 6-148: the optional position word follows the Pascal
         // title string after a 0-or-1-byte alignment pad.
-        let (odd_bounds, _, _, odd_items, odd_title, odd_position) =
+        let (odd_bounds, _, _, odd_items, odd_title, odd_position, _, _) =
             TrapDispatcher::parse_dlog(&bus, odd_ptr, odd.len() as u32);
-        let (even_bounds, _, _, even_items, even_title, even_position) =
+        let (even_bounds, _, _, even_items, even_title, even_position, _, _) =
             TrapDispatcher::parse_dlog(&bus, even_ptr, even.len() as u32);
 
         assert_eq!(odd_bounds, (10, 20, 110, 220));
@@ -324,7 +324,7 @@
             let ptr = bus.alloc(dlog.len() as u32);
             bus.write_bytes(ptr, &dlog);
 
-            let (_, _, _, _, _, parsed_position) =
+            let (_, _, _, _, _, parsed_position, _, _) =
                 TrapDispatcher::parse_dlog(&bus, ptr, dlog.len() as u32);
 
             assert_eq!(parsed_position, position);
@@ -1682,6 +1682,29 @@
         assert_eq!(bus.read_word(0x0A60) as i16, -192);
         assert!(disp.window_list.is_empty());
         assert!(disp.dialog_items.is_empty());
+    }
+
+    #[test]
+    fn get_new_dialog_preserves_resource_close_flag_and_reference_value() {
+        // Macintosh Toolbox Essentials (1992), pp. 6-147–6-148:
+        // GetNewDialog initializes the window from its DLOG template.
+        for go_away in [false, true] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let mut dlog = build_test_dlog((40, 50, 120, 240), 1911, 0);
+            dlog[12] = u8::from(go_away);
+            dlog[14..18].copy_from_slice(&0x12345678u32.to_be_bytes());
+            let ditl = build_test_ditl_item(4, (50, 80, 70, 140), b"OK");
+            disp.install_test_resource(&mut bus, *b"DLOG", 1910, &dlog);
+            disp.install_test_resource(&mut bus, *b"DITL", 1911, &ditl);
+            bus.write_long(TEST_SP, u32::MAX);
+            bus.write_long(TEST_SP + 4, 0);
+            bus.write_word(TEST_SP + 8, 1910);
+            disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus).unwrap().unwrap();
+            let window = bus.read_long(TEST_SP + 10);
+            assert_ne!(window, 0);
+            assert_eq!(bus.read_byte(window + 112) != 0, go_away);
+            assert_eq!(bus.read_long(window + 152), 0x12345678);
+        }
     }
 
     #[test]

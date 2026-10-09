@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn select_window_delivers_activation_pair_and_ignores_reselection() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SelectWindow")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1400;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let document = create_test_cwindow(&mut loaded, scratch, (40, 50, 240, 350), 0, true, u32::MAX);
+    let dialog = create_test_cwindow(&mut loaded, scratch, (90, 120, 260, 430), 4, true, u32::MAX);
+    loaded.event_queue.clear();
+    loaded.cpu.gpr[3] = document;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SelectWindow);
+    let activation: Vec<_> = loaded.event_queue.iter()
+        .filter(|event| event.what == 8)
+        .map(|event| (event.message, event.modifiers & 1))
+        .collect();
+    assert_eq!(activation, vec![(dialog, 0), (document, 1)]);
+    assert!(loaded.event_queue.iter().any(|event| event.what == 6 && event.message == document),
+        "newly exposed document needs an update event");
+    loaded.event_queue.clear();
+    loaded.cpu.gpr[3] = document;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SelectWindow);
+    assert!(loaded.event_queue.iter().all(|event| event.what != 8));
+}
+
+#[test]
 fn select_window_preserves_classic_visible_region() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SelectWindow")).unwrap();
     let scratch = PPC_DATA_BASE + 0x1400;

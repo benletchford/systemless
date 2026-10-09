@@ -3016,9 +3016,17 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn activate_shown_front_window(&mut self, bus: &mut MacMemoryBus, the_window: u32) {
+    fn activate_shown_front_window(&mut self, bus: &mut MacMemoryBus, the_window: u32, previous_front: u32) {
         if the_window == 0 {
             return;
+        }
+        // ShowWindow of the hidden first window changes the visible front.
+        // Preserve the old visible front before revealing it: dialog creation
+        // may already have changed the cached front pointer. MTE (1992),
+        // pp. 2-51 and 4-88: deactivate the old window before activating the new.
+        if previous_front != 0 && previous_front != the_window {
+            bus.write_byte(previous_front + Self::WINDOW_HILITED_OFFSET, 0);
+            self.queue_window_activation_event(bus, previous_front, false);
         }
         self.front_window = the_window;
         self.sync_cached_front_window_render_state(bus);
@@ -4527,6 +4535,7 @@ impl super::TrapDispatcher {
                 if the_window != 0 {
                     let was_visible = self.window_visible(bus, the_window);
                     let was_front = self.frontmost_tracked_window(bus) == the_window;
+                    let previous_front = self.frontmost_visible_window_in_list(bus);
                     // A hidden window may have had its portRect edited directly.
                     // The Window Manager derives its content region from the
                     // current port rectangle when revealing it (IM:I I-284, I-289).
@@ -4542,7 +4551,7 @@ impl super::TrapDispatcher {
                             // Inside Macintosh Volume I, I-285: ShowWindow
                             // of an invisible frontmost window highlights it
                             // and generates an activate event.
-                            self.activate_shown_front_window(bus, the_window);
+                            self.activate_shown_front_window(bus, the_window, previous_front);
                         }
                         if let Some(content_rect) = self.window_content_global_rect(bus, the_window)
                         {

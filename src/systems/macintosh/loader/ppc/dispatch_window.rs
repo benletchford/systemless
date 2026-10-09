@@ -855,6 +855,16 @@ pub(super) fn dispatch_window_import(
                 let window = params.window_ptr();
                 let previous_front = ppc_front_visible_process_window(memory, window_list);
                 ppc_reorder_window(gworlds, window_list, window, 0, true);
+                // Macintosh Toolbox Essentials (1992), SelectWindow, p. 4-87:
+                // selecting a window generates deactivation followed by
+                // activation, including when the selected window is hidden.
+                ppc_enqueue_window_activation_transition(
+                    memory,
+                    event_queue,
+                    previous_front,
+                    Some(window),
+                    tick_count,
+                );
                 ppc_recalculate_window_vis_regions(
                     process_memory_manager,
                     memory,
@@ -872,6 +882,13 @@ pub(super) fn dispatch_window_import(
                         previous_front,
                         toolbox_startup.host_menu_bar_hidden,
                     );
+                    // SelectWindow exposes content formerly covered by other
+                    // windows; the application redraws it on updateEvt.
+                    // Macintosh Toolbox Essentials (1992), pp. 4-43–4-44.
+                    if let Some(bounds) = ppc_read_rect(memory, cpu.gpr[3] + 16) {
+                        ppc_invalidate_window_local_rect(memory, cpu.gpr[3], bounds);
+                        ppc_enqueue_window_update_event(event_queue, cpu.gpr[3], tick_count, input);
+                    }
                 }
                 *current_gworld = window;
                 *current_gdevice =
