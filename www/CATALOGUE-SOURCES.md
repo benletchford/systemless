@@ -194,16 +194,36 @@ frontend/guest tick 780 and waits there through 1380. A two-tick click at
 Quick Start at (v 193, h 604) and running 600 ticks reaches the Gaian Planetfall
 introduction at 2164. Dismissing it at (v 571, h 582) and running 600 ticks reaches
 the first-base naming prompt at 2766. Accepting Gaia's Landing at (v 169, h 399)
-renders the initial map, then stops at
-[missing MathLib:hypot](https://github.com/benletchford/systemless/issues/4301)
-at frontend tick 2793 / guest tick 2792 (PC `01F00488`, SP `07F695F0`,
-LR `01009C70`). The intended tick-2948 checkpoint is never reached; the scenario
-fails on action 28. Named captures, including the failure capture, were inspected.
-These zero-assertion bounded input/setup checks establish no successful turn,
-sustained gameplay, save/load, audio fidelity or browser qualification. The
-archive remains 18,267,807 bytes with SHA-256
+and running 180 ticks reaches the first-base welcome panel at 2948 after the
+[MathLib hypot](https://github.com/benletchford/systemless/pull/4305) and
+[acos fixes](https://github.com/benletchford/systemless/pull/4307).
+
+Closing the welcome panel at (v 570, h 250) and running 60 ticks reaches the active
+map at 3010. Clicking Turn Complete at (v 415, h 677) and running 180 ticks opens
+the Operations Director confirmation at 3192. Selecting Yes at (v 196, h 397),
+running 30 ticks, then confirming OK at (v 225, h 397) and running 600 ticks
+returns to the map at 3826 showing Mission Year 2102, Energy 12 and Turn Complete.
+Each click holds the button for two frontend ticks. The
+[synchronous rename fix](https://github.com/benletchford/systemless/pull/4312)
+resolves the former null call to weak `InterfaceLib:PBHRenameSync` at frontend
+3253 / guest 3252. This replay also passed on exact PR revision
+`21afa9142dae2dff3593c8cbceffc22d51ac395c` after rebasing the newer public
+Menu/Help Manager changes. Named captures were inspected; no halted guest or
+exhausted frame budget was reported. These zero-assertion checks establish a
+bounded native first-turn interaction, not sustained gameplay, save/load,
+audio fidelity or browser qualification. The original archive remains
+18,267,807 bytes with SHA-256
 `2ab4f1de7291d3704b08d7b12dd659ef3b4fbab4b10914f31b02c2ccec931191`;
 exact-archive redistribution permission remains unestablished.
+
+The SimFarm source recheck on 10 October 2026 (Sydney) covered the issue-linked
+Macintosh Garden [disk package](https://github.com/benletchford/systemless/issues/802#issuecomment-6085271274)
+and [CD package](https://github.com/benletchford/systemless/issues/802#issuecomment-6086209908).
+Fresh primary signed downloads returned HTTP 410; both listed mirrors returned
+HTTP 403 for each package. No disk or CD archive bytes were obtained. The source
+page's advertised CD MD5 `17f707b325825dd87e535870bcf99572` is not a verified
+archive receipt or redistribution grant. These results cover only the inspected
+locations; they do not establish global unavailability.
 
 [Temporary handle locking](https://github.com/benletchford/systemless/pull/4264)
 and [uncached memory copying](https://github.com/benletchford/systemless/pull/4267)
