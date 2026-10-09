@@ -2818,3 +2818,16 @@ The selected nickname glyph span is consistent with each paired guest frame,
 and the previous name-field caret is absent. This qualifies the captured
 active selection at the historical viewport; the explicit scale/inactive
 matrix and native-oracle font/input qualification remain open.
+
+
+The reproducible scale harness now accepts `--surface modal`, preserving the
+existing document capture default. All 12 active modal selection captures
+complete across monochrome 68k, colour 68k and PPC at 0.75, 1, 1.5 and 2.
+The harness verifies scene dimensions, aspect ratio and consistent host density;
+each capture asserts guest nickname offsets 3--6. All twelve field crops were
+visually reviewed: the selected glyph span and absence of the previous name
+caret are consistent. Paired frames, a contact sheet and the scoped
+`dialog-modal-selection-scale-review.json` are archived with pixel/file hashes.
+Only mono 0.75 received full-screen visual review in this matrix. Inactive/modal
+host transitions, full-scene review at remaining scales, native pointer mapping
+and native Macintosh font fidelity remain open.

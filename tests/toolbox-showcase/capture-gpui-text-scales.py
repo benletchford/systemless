@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Capture fresh GPUI TextEdit scale/state evidence on macOS.
+"""Capture fresh GPUI document or modal TextEdit scale evidence on macOS.
 
 Build first: cargo build --locked --example gpui-menu-demo --features gpui-demo-test
 Run with an empty output directory; this never replaces reference captures.
+Use --surface modal for the active nickname selection (offsets 3..6).
+Modal inactive/host-suspended states are not yet included.
 Uses only the Python standard library. Visual review remains required.
 """
 import argparse
@@ -23,6 +25,8 @@ def dimensions(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', type=Path)
+    parser.add_argument('--surface', choices=['document', 'modal'], default='document',
+                        help='guest-owned text surface to capture')
     arguments = parser.parse_args()
     output = arguments.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -33,14 +37,18 @@ def main():
     fixture = repository / 'tests/toolbox-showcase/toolbox-showcase.sit'
     records = []
     density = None
+    states = ([('active', '--capture-text-edit-selected'),
+               ('inactive', '--capture-text-edit-inactive'),
+               ('host-suspended', '--capture-text-edit-host-suspended')]
+              if arguments.surface == 'document' else
+              [('active', '--capture-modal-dialog-selection')])
+    prefix = 'text' if arguments.surface == 'document' else 'dialog-modal-selection'
     for mode, options in [('mono', ['--screen-depth', '1']),
                           ('colour', ['--screen-depth', '8']),
                           ('ppc', ['--prefer-powerpc'])]:
-        for state, flag in [('active', '--capture-text-edit-selected'),
-                            ('inactive', '--capture-text-edit-inactive'),
-                            ('host-suspended', '--capture-text-edit-host-suspended')]:
+        for state, flag in states:
             for scale, label in [(0.75, '075'), (1., '100'), (1.5, '150'), (2., '200')]:
-                image = output / f'text-scale-{mode}-{state}-{label}.png'
+                image = output / f'{prefix}-scale-{mode}-{state}-{label}.png'
                 command = [str(binary), str(fixture), *options,
                            '--capture-scale', str(scale), flag, str(image)]
                 with image.with_suffix('.log').open('w') as log:
@@ -61,10 +69,10 @@ def main():
                                                'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
                                               for path in (image, guest)]})
                 print(image.name, flush=True)
-    manifest = {'fixture_sha256': hashlib.sha256(fixture.read_bytes()).hexdigest(),
+    manifest = {'surface': arguments.surface, 'fixture_sha256': hashlib.sha256(fixture.read_bytes()).hexdigest(),
                 'scope': 'Shared GPUI compositor and guest session API; not native host observer or native Macintosh qualification.',
                 'visual_review': 'pending', 'captures': records}
-    (output / 'text-scale-review.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    (output / f'{prefix}-scale-review.json').write_text(json.dumps(manifest, indent=2) + '\n')
 
 
 if __name__ == '__main__':
