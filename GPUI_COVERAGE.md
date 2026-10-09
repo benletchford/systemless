@@ -4083,8 +4083,10 @@ This qualifies that revision's one-line public fixture raster and guest states
 through the shared macOS Metal headless compositor. It does not establish
 production ownership, live GPUI pointer mapping, arbitrary fonts/backgrounds
 or themes, other platforms, or the newer whole-field canvas. A separate
-whole-field multiline run against `716378c4` is now in progress; its first true
-PPC16 capture matches every composed field pixel and has been visually reviewed.
+whole-field multiline run against `716378c4` reached 16/16 terminal passes; its
+manifest and images still need independent verification and repository archival.
+The first true PPC16 capture matches every composed field pixel and has been
+visually reviewed.
 
 Styled TextEdit visibility candidates now reuse the plain-field window-owner,
 standard-definition, control-overlap, guest-visible region, painted-region
@@ -4092,4 +4094,15 @@ and front-window occlusion rules. Plain eligibility retains its existing font
 and layout guards. A candidate is not an ownership grant: the whole-field
 native paint plan must qualify separately before drawing it. Regression checks
 cover partial painted regions, missing drawing evidence, custom windows and
-front-window clipping. Production styled rendering remains unwired.
+front-window clipping. The live worker now qualifies whole-field styled recipes against the same
+RGBA frame that it submits for display, before converting that frame to BGRA.
+The live renderer and ordinary composed-capture renderer use the shared
+whole-field canvas, standard-owner visibility candidates, and scene scale and
+origin. Plans are replaced with each snapshot, so a mismatch or lost drawing
+evidence restores guest presentation. The explicit classic white-background
+candidate and PPC insertion-style caret candidate must match every native
+field pixel; changed themes, unsupported paint and application modifications
+remain guest-rendered. Guest event routing and byte offsets are unchanged.
+Live pointer, centered-scene, clipping and lifecycle capture qualification for
+this integration is still required; prior isolated canvas captures do not
+prove those paths.
