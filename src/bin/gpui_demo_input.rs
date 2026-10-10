@@ -385,12 +385,12 @@ impl GuestComposition {
         Some((expected, request, bytes, caret))
     }
 
-    /// Pin both the original selection and an explicit document replacement.
+    /// Pin both the original selection and an explicit guest replacement.
     /// Old frames remain valid while the guest consumes the selection request.
     pub fn commit_range(&mut self, range: std::ops::Range<usize>, text: &str)
         -> Option<(TextInputOwner, TextInputOwner, Vec<u8>)> {
         let expected = self.owner.as_ref()?.clone();
-        if self.preedit.is_some() || !matches!(expected.target, TextInputTarget::Document { .. })
+        if self.preedit.is_some() || !matches!(expected.target, TextInputTarget::Document { .. } | TextInputTarget::StandardFile { .. })
             || range.start > range.end || range.end > expected.text.len() || range.end > i16::MAX as usize {
             return None;
         }

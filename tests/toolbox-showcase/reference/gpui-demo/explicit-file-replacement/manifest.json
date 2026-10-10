@@ -1,0 +1,8 @@
+{
+  "base_head": "27895711a4a097b1f4f178df94efd708c22aeffd",
+  "scope": "Save and New Folder explicit-range requests: GPUI test-window handler and actual production worker guest events across mono68k, colour68k, PPC8, PPC16. Worker verifies caret, stale rejection, subsidiary return and parent preservation. No physical IME, visual capture or independent native qualification.",
+  "sha256": {
+    "worker.log": "8d21d4c72e67be991fc47fe9832cdb53349ce14196aa57da9a3e4e52043e1e57",
+    "platform.log": "be62adffe9ee2ba39b1366636001db3cf8fe5671db2990c7d1ece1a34915afea"
+  }
+}
