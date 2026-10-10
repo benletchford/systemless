@@ -7,8 +7,10 @@ developer: Ingemar Ragnemalm
 year: 1997
 architectures:
 - 68k
+- ppc
 default_architecture: 68k
 category: Arcade
+launch_enabled: false
 compatibility:
   status: playable
   verified:
@@ -23,12 +25,40 @@ compatibility:
       steering moves the butterfly, collects a heart and raises score from 0 to 10.
       Inspected captures and a fresh six-assertion replay pass at 929 frontend / 1504
       guest ticks with zero exhausted frames. Both original files and both forks
-      independently match unar extraction byte-for-byte. PPC startup and movement work with
-      compatibility fixes, but sustained steering and heart collection remain under
-      investigation; PPC is not launch-approved. Browser v0.94.0 at promoted head 1451faa8e2be starts level 1 and
-      responds to horizontal mouse steering, but sustained vertical steering and heart
-      collection were not established. Launch remains disabled. Public gameplay, complete
-      levels, saves and audio remain unverified.
+      independently match unar extraction byte-for-byte. Longer ordinary mouse inputs
+      also reverse vertical motion; short inertia-heavy runs alone do not establish
+      a control defect. Complete levels, saves and audio remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4452
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: 1451faa8e2beb7b79e12933603218ecdb7510d83
+    architecture: 68k
+    environment: >-
+      Ordinary Chrome worker/WebGL preview v0.94.0, 800-by-600/8-bit display and
+      crossOriginIsolated true. Game > Macho mode is turned off for original normal
+      mode, then New game and an ordinary click start level 1. Longer bounded mouse
+      input moves the butterfly down, left, up and right and collects a heart;
+      score rises from 0 to 10. Actual captures inspected. Local-origin CORS uses
+      only an unchanged integrity-checked hosted archive fixture matching the
+      original SHA-256 and 213248-byte size. Public replay, complete levels,
+      saves and audio remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4452
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: 0f4ee1ae9fa59ab6d6be0c511aee0c5d920e4142
+    architecture: ppc
+    environment: >-
+      Actual native v0.93.0 PowerPC replay of the unchanged original fat package,
+      explicit PPC slice and exact nested executable, 800-by-600 display and 8-bit
+      depth. Original normal-mode selection, New game and click start level 1;
+      longer ordinary mouse inputs move the butterfly across the playfield and
+      collect hearts, raising score from 0 through 10 to 30. Actual captures
+      inspected. Fresh 16-pixel assertion replay passes at 1476 frontend / 1429
+      guest ticks with zero exhausted frames. OpenRFPerm #4449 and rounded erase
+      #4450 supply the required runtime support and are now merged. PPC browser
+      qualification, public replay, complete levels, saves and audio remain pending.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4452
 runtime:
@@ -61,8 +91,9 @@ artifacts:
       Original 213248-byte MacBinary/Compact Pro package, not repacked or converted.
       The game has four nonzero CODE segments plus CODE 0 and a native pwpc cfrg/PEF
       slice. The original docs identify the Valentine 1997 version 1.1 release. This
-      entry currently qualifies only its 68K route; PPC work continues in issues 4447 and
-      4448 and the catalogue delivery issue.
+      native 68K and PPC gameplay are qualified; the 68K browser route is qualified and
+      the PPC browser route remains pending. Launch stays disabled until both browser
+      routes are checked.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -92,10 +123,10 @@ steer the butterfly, collect the floating hearts and avoid the flypaper. The
 original game includes normal levels, bonus levels and a harder mode.
 
 This is the complete original **HeartQuest 1.1** freeware distribution, including
-its documentation and copyright notices. This entry uses its verified 68K version;
-the package also includes a PowerPC version whose support is still being tested.
+its documentation and copyright notices. The original package includes both 68K and PowerPC versions.
 
-Bounded native testing verifies starting play, steering and collecting a heart
-with score advancement. Browser testing starts level 1 and shows horizontal movement, but reliable vertical
-steering and heart collection remain under investigation. Launch approval is pending.
-Public gameplay, full levels, saves and audio remain unverified.
+Bounded native testing verifies starting play, steering and heart collection on
+both original versions. Ordinary 68K browser testing also verifies movement and
+score advancement in normal mode. PowerPC browser qualification and launch
+approval remain pending. Public gameplay, complete levels, saves and audio remain
+unverified.
