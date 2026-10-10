@@ -1,0 +1,23 @@
+{
+  "status": "passed",
+  "cases": 128,
+  "seconds": 57.48,
+  "base_commit": "9b0ee59ffef1e553ee58ee8e93091aca10337b77",
+  "source_state": "base plus source.patch",
+  "command": "cargo test --locked --profile ci-test --example gpui-menu-demo --features gpui-demo-test styled_menu_pointer_and_keyboard_choices_reach_guest -- --nocapture",
+  "executable": "target/ci-test/examples/gpui_menu_demo-957ebf4d71285d8e",
+  "post_execution_executable_sha256": "312142c06ce634a075d3e04fb061c6772ddef44521377178270ccd2e863627f5",
+  "checks": [
+    "four actual CPU/depth modes and four centered scene scales",
+    "pointer and keyboard selection of all four guest-styled items",
+    "exact single menu command with guest identity/generation",
+    "no leaked scene input; popup closes and guest focus restores",
+    "production identity guard and existing Toolbox selection path; guest check mark confirms resulting page"
+  ],
+  "limits": [
+    "GPUI test-platform events, not physical host input",
+    "worker command transport is manually applied through the same guard/path",
+    "no cancellation, nested tracking, inactive menu or independent font oracle qualification",
+    "not production performance evidence"
+  ]
+}

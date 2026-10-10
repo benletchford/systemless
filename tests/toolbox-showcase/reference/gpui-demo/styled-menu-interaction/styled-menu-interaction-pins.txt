@@ -1,0 +1,4 @@
+34a315bae4ba0027d999ab435894c3797af3a3d0124dd35ab782948155c8387e  src/bin/gpui_demo.rs
+2b1670dfc7dac7147d3ed579e91342bf59b99ee18f478f41b0306c98d7702d8c  src/bin/gpui_demo_text.rs
+7db2ffeb026f8bcdf411960bffa05c3c9b023eb0a291b5e42a2c242c30f982f5  tests/toolbox-showcase/showcase.c
+41cf3aa93f2b41d0ce1d49b2bace8572140e9692d37239a749a471744ca5c09f  tests/toolbox-showcase/toolbox-showcase.sit

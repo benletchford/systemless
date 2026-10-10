@@ -8647,6 +8647,106 @@ mod desktop {
 
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
+        fn styled_menu_pointer_and_keyboard_choices_reach_guest(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::{test::TestWindowExt, AppContext};
+            use systemless::memory::MemoryBus;
+            cx.update(gpui_kit::init);
+            for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 11));
+                wait_for_menu(&mut session, 129, 11, true);
+                settle(&mut session);
+                for input in [
+                    MacintoshInput::KeyDown { mac_key: 0x3a, character: 0 },
+                    MacintoshInput::KeyDown { mac_key: 0x2e, character: b'm' },
+                    MacintoshInput::KeyUp { mac_key: 0x2e, character: b'm' },
+                    MacintoshInput::KeyUp { mac_key: 0x3a, character: 0 },
+                ] { session.deliver_input(input); }
+                settle(&mut session);
+                assert_eq!(session.runner().is_powerpc_app(), powerpc);
+                assert_eq!(session.runner().presented_screen_depth(), Some(u32::from(depth)));
+                let expected_styles = [8, 16, 28, 31];
+                for scale in [0.75, 1., 1.5, 2.] {
+                    let (sender, receiver) = std::sync::mpsc::channel();
+                    let (window, view) = cx.update(|cx| {
+                        gpui_kit::open_window(gpui_kit::WindowOptions {
+                            window_bounds: Some(gpui_kit::WindowBounds::Windowed(gpui_kit::Bounds::new(
+                                gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)),
+                                gpui_kit::size(gpui_kit::px(880. * scale), gpui_kit::px(600. * scale))))),
+                            ..Default::default()
+                        }, cx, |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap()
+                    });
+                    for keyboard in [false, true] {
+                        for item in 1..=4i16 {
+                            let menus = session.runner_mut().guest_menu_snapshot();
+                            let menu = menus.menus.iter().find(|menu| menu.id == 129).unwrap();
+                            assert_eq!(menu.items[..4].iter().map(|item| item.style).collect::<Vec<_>>(), expected_styles);
+                            let identity = (menu.guest_id, menu.generation);
+                            let trigger = format!("guest-menu-{}-{}", identity.0, identity.1);
+                            let frame = session.video_frame().unwrap();
+                            cx.update_window(window.into(), |_, window, cx| {
+                                view.update(cx, |demo, cx| {
+                                    demo.menus = menus.clone();
+                                    demo.windows = session.runner_mut().window_frame_snapshot();
+                                    demo.width = frame.width;
+                                    demo.height = frame.height;
+                                    demo.menu_presented = session.runner().guest_menu_bar_presented();
+                                    demo.menu_height = session.runner().bus().read_word(super::MBAR_HEIGHT);
+                                    demo.image = Some(std::sync::Arc::new(gpui_kit::RenderImage::new(vec![
+                                        image::Frame::new(image::RgbaImage::from_raw(frame.width, frame.height,
+                                            super::gpui_pixels(frame.pixels.clone())).unwrap())
+                                    ])));
+                                    cx.notify();
+                                });
+                                window.render_frame(cx);
+                                receiver.try_iter().for_each(drop);
+                                assert!((view.read(cx).display_scale - scale).abs() < 0.001);
+                                assert!(view.read(cx).display_origin.0 > 0.);
+                                window.click(trigger, cx);
+                                if keyboard {
+                                    for _ in 0..item { window.within("guest-popup-menu").press("down", cx); }
+                                    window.within("guest-popup-menu").press("enter", cx);
+                                } else {
+                                    window.click(format!("guest-popup-item-129-{item}"), cx);
+                                }
+                            }).unwrap();
+                            cx.run_until_parked();
+                            cx.update_window(window.into(), |_, window, cx| {
+                                window.render_frame(cx);
+                                assert!(window.try_find("guest-popup-menu").is_none());
+                                assert!(view.read(cx).focus.is_focused(window));
+                            }).unwrap();
+                            let commands: Vec<_> = receiver.try_iter().collect();
+                            let choices: Vec<_> = commands.iter().filter_map(|command| match command {
+                                super::Command::Menu(menu, item, guest_id, generation) => Some((*menu, *item, *guest_id, *generation)),
+                                _ => None,
+                            }).collect();
+                            assert_eq!(choices, [(129, item, identity.0, identity.1)]);
+                            assert!(!commands.iter().any(|command| matches!(command, super::Command::Input(_))),
+                                "menu keys and clicks must not leak into guest scene input");
+                            // Use the production worker's identity guard and existing Toolbox selection path.
+                            let (menu, item, guest_id, generation) = choices[0];
+                            assert!(session.runner_mut().guest_menu_snapshot()
+                                .selectable_result_for_guest(menu, item, guest_id, generation).is_some());
+                            assert!(session.runner_mut().select_guest_menu_item(menu, item));
+                            wait_for_menu(&mut session, menu, item, true);
+                            settle(&mut session);
+                            eprintln!("PASS styled-menu powerpc={powerpc} depth={depth} scale={scale} keyboard={keyboard} item={item}");
+                        }
+                    }
+                    cx.update_window(window.into(), |_, window, cx| window.remove_window()).unwrap();
+                }
+            }
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
         fn hierarchical_menu_keyboard_selection_reaches_guest(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::{test::TestWindowExt, AppContext, Bounds, WindowBounds, WindowOptions};
             use systemless::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};

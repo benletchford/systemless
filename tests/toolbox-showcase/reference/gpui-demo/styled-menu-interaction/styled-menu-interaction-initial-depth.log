@@ -1,0 +1,443 @@
+warning: method `instrument` is never used
+   --> src/systems/macintosh/sound.rs:609:19
+    |
+403 | impl SndChannel {
+    | --------------- method in this implementation
+...
+609 |     pub(crate) fn instrument(&self) -> Option<&SampledInstrument> {
+    |                   ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `dispatch_toolbox` is never used
+    --> src/systems/macintosh/trap/toolbox.rs:6187:19
+     |
+1169 | impl super::TrapDispatcher {
+     | -------------------------- method in this implementation
+...
+6187 |     pub(crate) fn dispatch_toolbox<C: CpuOps>(
+     |                   ^^^^^^^^^^^^^^^^
+
+warning: `systemless` (lib) generated 2 warnings
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+warning: unused variable: `cx`
+    --> src/bin/gpui_demo.rs:8743:65
+     |
+8743 |                     cx.update_window(window.into(), |_, window, cx| window.remove_window()).unwrap();
+     |                                                                 ^^ help: if this is intentional, prefix it with an underscore: `_cx`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `game`, `prefer_powerpc`, `screen_depth`, and `debug_socket` are never read
+  --> src/bin/gpui_demo.rs:4:9
+   |
+ 3 | pub(crate) struct LaunchOptions {
+   |                   ------------- fields in this struct
+ 4 |     pub game: std::path::PathBuf,
+   |         ^^^^
+ 5 |     pub prefer_powerpc: bool,
+   |         ^^^^^^^^^^^^^^
+ 6 |     pub screen_depth: Option<u16>,
+   |         ^^^^^^^^^^^^
+...
+12 |     pub debug_socket: Option<std::path::PathBuf>,
+   |         ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `launch` is never used
+  --> src/bin/gpui_demo.rs:17:15
+   |
+17 | pub(crate) fn launch(options: LaunchOptions) {
+   |               ^^^^^^
+
+warning: field `geometry` is never read
+    --> src/bin/gpui_demo_text.rs:1277:9
+     |
+1276 | pub(crate) struct StyledTextEditLine {
+     |                   ------------------ field in this struct
+1277 |     pub geometry: systemless::runner::TextEditLineGeometry,
+     |         ^^^^^^^^
+     |
+     = note: `StyledTextEditLine` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `pixels_with_selection` is never used
+    --> src/bin/gpui_demo_text.rs:1669:12
+     |
+1631 | impl StyledTextEditLine {
+     | ----------------------- method in this implementation
+...
+1669 |     pub fn pixels_with_selection(
+     |            ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_ink` is never used
+    --> src/bin/gpui_demo_text.rs:1732:15
+     |
+1732 | pub(crate) fn classic_styled_text_edit_ink(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_selection` is never used
+    --> src/bin/gpui_demo_text.rs:1738:15
+     |
+1738 | pub(crate) fn classic_styled_text_edit_selection(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_solid_caret` is never used
+    --> src/bin/gpui_demo_text.rs:1747:15
+     |
+1747 | pub(crate) fn classic_styled_text_edit_solid_caret(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_pixels` is never used
+    --> src/bin/gpui_demo_text.rs:1765:4
+     |
+1765 | fn classic_styled_text_pixels(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_pixels_with_background` is never used
+    --> src/bin/gpui_demo_text.rs:1772:4
+     |
+1772 | fn classic_styled_text_pixels_with_background(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `launch` is never used
+    --> src/bin/gpui_demo.rs:4693:19
+     |
+4693 |     pub(super) fn launch(options: super::LaunchOptions) {
+     |                   ^^^^^^
+
+warning: `systemless` (example "gpui-menu-demo" test) generated 11 warnings (run `cargo fix --example "gpui-menu-demo" -p systemless --tests` to apply 1 suggestion)
+    Finished `ci-test` profile [optimized + debuginfo] target(s) in 14.51s
+     Running unittests src/bin/gpui_demo.rs (target/ci-test/examples/gpui_menu_demo-957ebf4d71285d8e)
+
+running 1 test
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1A8 bkLim=$0044A1A8 zcbFree=2400616 (2.3MB)
+[INIT] Set MainDevice=$00226184, TheGDevice=$00226184 (ptr=$00226150)
+[INIT] GDevice chain: $8A4→$00226184→$00226150 gdPMap→$0022614C→$00226118
+[INIT]   PixMap: rowBytes=$8070 bounds=(0,0,600,800) pixelSize=1
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAF0A randSeed_addr=$003FAE8C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=112 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$002261E0 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00226ADC bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00226ADC pixmap=$002057E8 bounds=(50,40,420,600) goAway=true
+PASS styled-menu powerpc=false depth=1 scale=0.75 keyboard=false item=1
+PASS styled-menu powerpc=false depth=1 scale=0.75 keyboard=false item=2
+[WINDOW] NewCWindow: bounds=(155,180,400,500) procID=8 visible=true title="Auxiliary Window"
+[WINDOW-INIT] init_cgraf_window: window=$0023CD68 bounds=(155,180,400,500) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023CD68 pixmap=$0023CE68 bounds=(155,180,400,500) goAway=true
+[WINDOW] NewCWindow: bounds=(250,330,495,575) procID=8 visible=true title="Stacked Inspector"
+[WINDOW-INIT] init_cgraf_window: window=$0023CF44 bounds=(250,330,495,575) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023CF44 pixmap=$0023D044 bounds=(250,330,495,575) goAway=true
+PASS styled-menu powerpc=false depth=1 scale=0.75 keyboard=false item=3
+[TRAP] GetIcon(128) -> handle=$00225E1C ptr=$0023D1C8
+[TRAP] OpenPicture: handle=$0023D1C4 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$0023D1C4
+[TRAP] GetIcon(128) -> handle=$0023D16C ptr=$0023D1C8
+[TRAP] OpenPicture: handle=$0023D1B4 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$0023D1B4
+PASS styled-menu powerpc=false depth=1 scale=0.75 keyboard=false item=4
+PASS styled-menu powerpc=false depth=1 scale=0.75 keyboard=true item=1
+PASS styled-menu powerpc=false depth=1 scale=0.75 keyboard=true item=2
+[WINDOW] NewCWindow: bounds=(155,180,400,500) procID=8 visible=true title="Auxiliary Window"
+[WINDOW-INIT] init_cgraf_window: window=$0023D1C8 bounds=(155,180,400,500) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023D1C8 pixmap=$0023D3DC bounds=(155,180,400,500) goAway=true
+[WINDOW] NewCWindow: bounds=(250,330,495,575) procID=8 visible=true title="Stacked Inspector"
+[WINDOW-INIT] init_cgraf_window: window=$0023D9B8 bounds=(250,330,495,575) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023D9B8 pixmap=$0023DAB8 bounds=(250,330,495,575) goAway=true
+PASS styled-menu powerpc=false depth=1 scale=0.75 keyboard=true item=3
+[TRAP] GetIcon(128) -> handle=$0023DC14 ptr=$0023DC18
+[TRAP] OpenPicture: handle=$0023DC04 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$0023DC04
+[TRAP] GetIcon(128) -> handle=$0023DBBC ptr=$0023DC18
+[TRAP] OpenPicture: handle=$0023DC04 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$0023DC04
+PASS styled-menu powerpc=false depth=1 scale=0.75 keyboard=true item=4
+PASS styled-menu powerpc=false depth=1 scale=1 keyboard=false item=1
+PASS styled-menu powerpc=false depth=1 scale=1 keyboard=false item=2
+[WINDOW] NewCWindow: bounds=(155,180,400,500) procID=8 visible=true title="Auxiliary Window"
+[WINDOW-INIT] init_cgraf_window: window=$0023DC18 bounds=(155,180,400,500) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023DC18 pixmap=$0023E120 bounds=(155,180,400,500) goAway=true
+[WINDOW] NewCWindow: bounds=(250,330,495,575) procID=8 visible=true title="Stacked Inspector"
+[WINDOW-INIT] init_cgraf_window: window=$0023E484 bounds=(250,330,495,575) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023E484 pixmap=$0023E584 bounds=(250,330,495,575) goAway=true
+PASS styled-menu powerpc=false depth=1 scale=1 keyboard=false item=3
+[TRAP] GetIcon(128) -> handle=$0023E6E0 ptr=$0023E6E4
+[TRAP] OpenPicture: handle=$0023E6D0 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$0023E6D0
+[TRAP] GetIcon(128) -> handle=$0023E688 ptr=$0023E6E4
+[TRAP] OpenPicture: handle=$0023E6D0 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$0023E6D0
+PASS styled-menu powerpc=false depth=1 scale=1 keyboard=false item=4
+PASS styled-menu powerpc=false depth=1 scale=1 keyboard=true item=1
+PASS styled-menu powerpc=false depth=1 scale=1 keyboard=true item=2
+[WINDOW] NewCWindow: bounds=(155,180,400,500) procID=8 visible=true title="Auxiliary Window"
+[WINDOW-INIT] init_cgraf_window: window=$0023E6E4 bounds=(155,180,400,500) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023E6E4 pixmap=$0023EBEC bounds=(155,180,400,500) goAway=true
+[WINDOW] NewCWindow: bounds=(250,330,495,575) procID=8 visible=true title="Stacked Inspector"
+[WINDOW-INIT] init_cgraf_window: window=$0023EF50 bounds=(250,330,495,575) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023EF50 pixmap=$0023F050 bounds=(250,330,495,575) goAway=true
+PASS styled-menu powerpc=false depth=1 scale=1 keyboard=true item=3
+[TRAP] GetIcon(128) -> handle=$0023F1AC ptr=$0023F1B0
+[TRAP] OpenPicture: handle=$0023F19C frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$0023F19C
+[TRAP] GetIcon(128) -> handle=$0023F154 ptr=$0023F1B0
+[TRAP] OpenPicture: handle=$0023F19C frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$0023F19C
+PASS styled-menu powerpc=false depth=1 scale=1 keyboard=true item=4
+PASS styled-menu powerpc=false depth=1 scale=1.5 keyboard=false item=1
+PASS styled-menu powerpc=false depth=1 scale=1.5 keyboard=false item=2
+[WINDOW] NewCWindow: bounds=(155,180,400,500) procID=8 visible=true title="Auxiliary Window"
+[WINDOW-INIT] init_cgraf_window: window=$0023F1B0 bounds=(155,180,400,500) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023F1B0 pixmap=$0023F6B8 bounds=(155,180,400,500) goAway=true
+[WINDOW] NewCWindow: bounds=(250,330,495,575) procID=8 visible=true title="Stacked Inspector"
+[WINDOW-INIT] init_cgraf_window: window=$0023FA1C bounds=(250,330,495,575) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023FA1C pixmap=$0023FB1C bounds=(250,330,495,575) goAway=true
+PASS styled-menu powerpc=false depth=1 scale=1.5 keyboard=false item=3
+[TRAP] GetIcon(128) -> handle=$0023FC78 ptr=$0023FC7C
+[TRAP] OpenPicture: handle=$0023FC68 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$0023FC68
+[TRAP] GetIcon(128) -> handle=$0023FC20 ptr=$0023FC7C
+[TRAP] OpenPicture: handle=$0023FC68 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$0023FC68
+PASS styled-menu powerpc=false depth=1 scale=1.5 keyboard=false item=4
+PASS styled-menu powerpc=false depth=1 scale=1.5 keyboard=true item=1
+PASS styled-menu powerpc=false depth=1 scale=1.5 keyboard=true item=2
+[WINDOW] NewCWindow: bounds=(155,180,400,500) procID=8 visible=true title="Auxiliary Window"
+[WINDOW-INIT] init_cgraf_window: window=$0023FC7C bounds=(155,180,400,500) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023FC7C pixmap=$00240184 bounds=(155,180,400,500) goAway=true
+[WINDOW] NewCWindow: bounds=(250,330,495,575) procID=8 visible=true title="Stacked Inspector"
+[WINDOW-INIT] init_cgraf_window: window=$002404E8 bounds=(250,330,495,575) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$002404E8 pixmap=$002405E8 bounds=(250,330,495,575) goAway=true
+PASS styled-menu powerpc=false depth=1 scale=1.5 keyboard=true item=3
+[TRAP] GetIcon(128) -> handle=$00240744 ptr=$00240748
+[TRAP] OpenPicture: handle=$00240734 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$00240734
+[TRAP] GetIcon(128) -> handle=$002406EC ptr=$00240748
+[TRAP] OpenPicture: handle=$00240734 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$00240734
+PASS styled-menu powerpc=false depth=1 scale=1.5 keyboard=true item=4
+PASS styled-menu powerpc=false depth=1 scale=2 keyboard=false item=1
+PASS styled-menu powerpc=false depth=1 scale=2 keyboard=false item=2
+[WINDOW] NewCWindow: bounds=(155,180,400,500) procID=8 visible=true title="Auxiliary Window"
+[WINDOW-INIT] init_cgraf_window: window=$00240748 bounds=(155,180,400,500) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00240748 pixmap=$00240C50 bounds=(155,180,400,500) goAway=true
+[WINDOW] NewCWindow: bounds=(250,330,495,575) procID=8 visible=true title="Stacked Inspector"
+[WINDOW-INIT] init_cgraf_window: window=$00240FB4 bounds=(250,330,495,575) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00240FB4 pixmap=$002410B4 bounds=(250,330,495,575) goAway=true
+PASS styled-menu powerpc=false depth=1 scale=2 keyboard=false item=3
+[TRAP] GetIcon(128) -> handle=$00241210 ptr=$00241214
+[TRAP] OpenPicture: handle=$00241200 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$00241200
+[TRAP] GetIcon(128) -> handle=$002411B8 ptr=$00241214
+[TRAP] OpenPicture: handle=$00241200 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$00241200
+PASS styled-menu powerpc=false depth=1 scale=2 keyboard=false item=4
+PASS styled-menu powerpc=false depth=1 scale=2 keyboard=true item=1
+PASS styled-menu powerpc=false depth=1 scale=2 keyboard=true item=2
+[WINDOW] NewCWindow: bounds=(155,180,400,500) procID=8 visible=true title="Auxiliary Window"
+[WINDOW-INIT] init_cgraf_window: window=$00241214 bounds=(155,180,400,500) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00241214 pixmap=$0024171C bounds=(155,180,400,500) goAway=true
+[WINDOW] NewCWindow: bounds=(250,330,495,575) procID=8 visible=true title="Stacked Inspector"
+[WINDOW-INIT] init_cgraf_window: window=$00241A80 bounds=(250,330,495,575) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00241A80 pixmap=$00241B80 bounds=(250,330,495,575) goAway=true
+PASS styled-menu powerpc=false depth=1 scale=2 keyboard=true item=3
+[TRAP] GetIcon(128) -> handle=$00241CDC ptr=$00241CE0
+[TRAP] OpenPicture: handle=$00241CCC frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$00241CCC
+[TRAP] GetIcon(128) -> handle=$00241C84 ptr=$00241CE0
+[TRAP] OpenPicture: handle=$00241CCC frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$00241CCC
+PASS styled-menu powerpc=false depth=1 scale=2 keyboard=true item=4
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1A8 bkLim=$0044A1A8 zcbFree=2400616 (2.3MB)
+[INIT] Set MainDevice=$00226974, TheGDevice=$00226974 (ptr=$00226940)
+[INIT] GDevice chain: $8A4→$00226974→$00226940 gdPMap→$0022693C→$00226908
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAF0A randSeed_addr=$003FAE8C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=816 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$002269D0 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$002272CC bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$002272CC pixmap=$002057E8 bounds=(50,40,420,600) goAway=true
+PASS styled-menu powerpc=false depth=8 scale=0.75 keyboard=false item=1
+PASS styled-menu powerpc=false depth=8 scale=0.75 keyboard=false item=2
+[WINDOW] NewCWindow: bounds=(155,180,400,500) procID=8 visible=true title="Auxiliary Window"
+[WINDOW-INIT] init_cgraf_window: window=$0023D558 bounds=(155,180,400,500) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023D558 pixmap=$0023D658 bounds=(155,180,400,500) goAway=true
+[WINDOW] NewCWindow: bounds=(250,330,495,575) procID=8 visible=true title="Stacked Inspector"
+[WINDOW-INIT] init_cgraf_window: window=$0023D734 bounds=(250,330,495,575) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023D734 pixmap=$0023D834 bounds=(250,330,495,575) goAway=true
+PASS styled-menu powerpc=false depth=8 scale=0.75 keyboard=false item=3
+[TRAP] GetIcon(128) -> handle=$00225E1C ptr=$0023D9B8
+[TRAP] OpenPicture: handle=$0023D9B4 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$0023D9B4
+[TRAP] GetIcon(128) -> handle=$0023D95C ptr=$0023D9B8
+[TRAP] OpenPicture: handle=$0023D9A4 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$0023D9A4
+PASS styled-menu powerpc=false depth=8 scale=0.75 keyboard=false item=4
+PASS styled-menu powerpc=false depth=8 scale=0.75 keyboard=true item=1
+PASS styled-menu powerpc=false depth=8 scale=0.75 keyboard=true item=2
+[WINDOW] NewCWindow: bounds=(155,180,400,500) procID=8 visible=true title="Auxiliary Window"
+[WINDOW-INIT] init_cgraf_window: window=$0023D9B8 bounds=(155,180,400,500) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023D9B8 pixmap=$0023DBCC bounds=(155,180,400,500) goAway=true
+[WINDOW] NewCWindow: bounds=(250,330,495,575) procID=8 visible=true title="Stacked Inspector"
+[WINDOW-INIT] init_cgraf_window: window=$0023E1A8 bounds=(250,330,495,575) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023E1A8 pixmap=$0023E2A8 bounds=(250,330,495,575) goAway=true
+PASS styled-menu powerpc=false depth=8 scale=0.75 keyboard=true item=3
+[TRAP] GetIcon(128) -> handle=$0023E404 ptr=$0023E408
+[TRAP] OpenPicture: handle=$0023E3F4 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$0023E3F4
+[TRAP] GetIcon(128) -> handle=$0023E3AC ptr=$0023E408
+[TRAP] OpenPicture: handle=$0023E3F4 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$0023E3F4
+PASS styled-menu powerpc=false depth=8 scale=0.75 keyboard=true item=4
+PASS styled-menu powerpc=false depth=8 scale=1 keyboard=false item=1
+PASS styled-menu powerpc=false depth=8 scale=1 keyboard=false item=2
+[WINDOW] NewCWindow: bounds=(155,180,400,500) procID=8 visible=true title="Auxiliary Window"
+[WINDOW-INIT] init_cgraf_window: window=$0023E408 bounds=(155,180,400,500) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023E408 pixmap=$0023E910 bounds=(155,180,400,500) goAway=true
+[WINDOW] NewCWindow: bounds=(250,330,495,575) procID=8 visible=true title="Stacked Inspector"
+[WINDOW-INIT] init_cgraf_window: window=$0023EC74 bounds=(250,330,495,575) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023EC74 pixmap=$0023ED74 bounds=(250,330,495,575) goAway=true
+PASS styled-menu powerpc=false depth=8 scale=1 keyboard=false item=3
+[TRAP] GetIcon(128) -> handle=$0023EED0 ptr=$0023EED4
+[TRAP] OpenPicture: handle=$0023EEC0 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$0023EEC0
+[TRAP] GetIcon(128) -> handle=$0023EE78 ptr=$0023EED4
+[TRAP] OpenPicture: handle=$0023EEC0 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$0023EEC0
+PASS styled-menu powerpc=false depth=8 scale=1 keyboard=false item=4
+PASS styled-menu powerpc=false depth=8 scale=1 keyboard=true item=1
+PASS styled-menu powerpc=false depth=8 scale=1 keyboard=true item=2
+[WINDOW] NewCWindow: bounds=(155,180,400,500) procID=8 visible=true title="Auxiliary Window"
+[WINDOW-INIT] init_cgraf_window: window=$0023EED4 bounds=(155,180,400,500) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023EED4 pixmap=$0023F3DC bounds=(155,180,400,500) goAway=true
+[WINDOW] NewCWindow: bounds=(250,330,495,575) procID=8 visible=true title="Stacked Inspector"
+[WINDOW-INIT] init_cgraf_window: window=$0023F740 bounds=(250,330,495,575) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023F740 pixmap=$0023F840 bounds=(250,330,495,575) goAway=true
+PASS styled-menu powerpc=false depth=8 scale=1 keyboard=true item=3
+[TRAP] GetIcon(128) -> handle=$0023F99C ptr=$0023F9A0
+[TRAP] OpenPicture: handle=$0023F98C frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$0023F98C
+[TRAP] GetIcon(128) -> handle=$0023F944 ptr=$0023F9A0
+[TRAP] OpenPicture: handle=$0023F98C frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$0023F98C
+PASS styled-menu powerpc=false depth=8 scale=1 keyboard=true item=4
+PASS styled-menu powerpc=false depth=8 scale=1.5 keyboard=false item=1
+PASS styled-menu powerpc=false depth=8 scale=1.5 keyboard=false item=2
+[WINDOW] NewCWindow: bounds=(155,180,400,500) procID=8 visible=true title="Auxiliary Window"
+[WINDOW-INIT] init_cgraf_window: window=$0023F9A0 bounds=(155,180,400,500) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023F9A0 pixmap=$0023FEA8 bounds=(155,180,400,500) goAway=true
+[WINDOW] NewCWindow: bounds=(250,330,495,575) procID=8 visible=true title="Stacked Inspector"
+[WINDOW-INIT] init_cgraf_window: window=$0024020C bounds=(250,330,495,575) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0024020C pixmap=$0024030C bounds=(250,330,495,575) goAway=true
+PASS styled-menu powerpc=false depth=8 scale=1.5 keyboard=false item=3
+[TRAP] GetIcon(128) -> handle=$00240468 ptr=$0024046C
+[TRAP] OpenPicture: handle=$00240458 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$00240458
+[TRAP] GetIcon(128) -> handle=$00240410 ptr=$0024046C
+[TRAP] OpenPicture: handle=$00240458 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$00240458
+PASS styled-menu powerpc=false depth=8 scale=1.5 keyboard=false item=4
+PASS styled-menu powerpc=false depth=8 scale=1.5 keyboard=true item=1
+PASS styled-menu powerpc=false depth=8 scale=1.5 keyboard=true item=2
+[WINDOW] NewCWindow: bounds=(155,180,400,500) procID=8 visible=true title="Auxiliary Window"
+[WINDOW-INIT] init_cgraf_window: window=$0024046C bounds=(155,180,400,500) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0024046C pixmap=$00240974 bounds=(155,180,400,500) goAway=true
+[WINDOW] NewCWindow: bounds=(250,330,495,575) procID=8 visible=true title="Stacked Inspector"
+[WINDOW-INIT] init_cgraf_window: window=$00240CD8 bounds=(250,330,495,575) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00240CD8 pixmap=$00240DD8 bounds=(250,330,495,575) goAway=true
+PASS styled-menu powerpc=false depth=8 scale=1.5 keyboard=true item=3
+[TRAP] GetIcon(128) -> handle=$00240F34 ptr=$00240F38
+[TRAP] OpenPicture: handle=$00240F24 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$00240F24
+[TRAP] GetIcon(128) -> handle=$00240EDC ptr=$00240F38
+[TRAP] OpenPicture: handle=$00240F24 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$00240F24
+PASS styled-menu powerpc=false depth=8 scale=1.5 keyboard=true item=4
+PASS styled-menu powerpc=false depth=8 scale=2 keyboard=false item=1
+PASS styled-menu powerpc=false depth=8 scale=2 keyboard=false item=2
+[WINDOW] NewCWindow: bounds=(155,180,400,500) procID=8 visible=true title="Auxiliary Window"
+[WINDOW-INIT] init_cgraf_window: window=$00240F38 bounds=(155,180,400,500) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00240F38 pixmap=$00241440 bounds=(155,180,400,500) goAway=true
+[WINDOW] NewCWindow: bounds=(250,330,495,575) procID=8 visible=true title="Stacked Inspector"
+[WINDOW-INIT] init_cgraf_window: window=$002417A4 bounds=(250,330,495,575) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$002417A4 pixmap=$002418A4 bounds=(250,330,495,575) goAway=true
+PASS styled-menu powerpc=false depth=8 scale=2 keyboard=false item=3
+[TRAP] GetIcon(128) -> handle=$00241A00 ptr=$00241A04
+[TRAP] OpenPicture: handle=$002419F0 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$002419F0
+[TRAP] GetIcon(128) -> handle=$002419A8 ptr=$00241A04
+[TRAP] OpenPicture: handle=$002419F0 frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$002419F0
+PASS styled-menu powerpc=false depth=8 scale=2 keyboard=false item=4
+PASS styled-menu powerpc=false depth=8 scale=2 keyboard=true item=1
+PASS styled-menu powerpc=false depth=8 scale=2 keyboard=true item=2
+[WINDOW] NewCWindow: bounds=(155,180,400,500) procID=8 visible=true title="Auxiliary Window"
+[WINDOW-INIT] init_cgraf_window: window=$00241A04 bounds=(155,180,400,500) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00241A04 pixmap=$00241F0C bounds=(155,180,400,500) goAway=true
+[WINDOW] NewCWindow: bounds=(250,330,495,575) procID=8 visible=true title="Stacked Inspector"
+[WINDOW-INIT] init_cgraf_window: window=$00242270 bounds=(250,330,495,575) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00242270 pixmap=$00242370 bounds=(250,330,495,575) goAway=true
+PASS styled-menu powerpc=false depth=8 scale=2 keyboard=true item=3
+[TRAP] GetIcon(128) -> handle=$002424CC ptr=$002424D0
+[TRAP] OpenPicture: handle=$002424BC frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$002424BC
+[TRAP] GetIcon(128) -> handle=$00242474 ptr=$002424D0
+[TRAP] OpenPicture: handle=$002424BC frame=(0,0,40,40)
+[TRAP] ClosePicture: finalized 40x40 picture (92 bytes) for handle=$002424BC
+PASS styled-menu powerpc=false depth=8 scale=2 keyboard=true item=4
+PASS styled-menu powerpc=true depth=8 scale=0.75 keyboard=false item=1
+PASS styled-menu powerpc=true depth=8 scale=0.75 keyboard=false item=2
+PASS styled-menu powerpc=true depth=8 scale=0.75 keyboard=false item=3
+PASS styled-menu powerpc=true depth=8 scale=0.75 keyboard=false item=4
+PASS styled-menu powerpc=true depth=8 scale=0.75 keyboard=true item=1
+PASS styled-menu powerpc=true depth=8 scale=0.75 keyboard=true item=2
+PASS styled-menu powerpc=true depth=8 scale=0.75 keyboard=true item=3
+PASS styled-menu powerpc=true depth=8 scale=0.75 keyboard=true item=4
+PASS styled-menu powerpc=true depth=8 scale=1 keyboard=false item=1
+PASS styled-menu powerpc=true depth=8 scale=1 keyboard=false item=2
+PASS styled-menu powerpc=true depth=8 scale=1 keyboard=false item=3
+PASS styled-menu powerpc=true depth=8 scale=1 keyboard=false item=4
+PASS styled-menu powerpc=true depth=8 scale=1 keyboard=true item=1
+PASS styled-menu powerpc=true depth=8 scale=1 keyboard=true item=2
+PASS styled-menu powerpc=true depth=8 scale=1 keyboard=true item=3
+PASS styled-menu powerpc=true depth=8 scale=1 keyboard=true item=4
+PASS styled-menu powerpc=true depth=8 scale=1.5 keyboard=false item=1
+PASS styled-menu powerpc=true depth=8 scale=1.5 keyboard=false item=2
+PASS styled-menu powerpc=true depth=8 scale=1.5 keyboard=false item=3
+PASS styled-menu powerpc=true depth=8 scale=1.5 keyboard=false item=4
+PASS styled-menu powerpc=true depth=8 scale=1.5 keyboard=true item=1
+PASS styled-menu powerpc=true depth=8 scale=1.5 keyboard=true item=2
+PASS styled-menu powerpc=true depth=8 scale=1.5 keyboard=true item=3
+PASS styled-menu powerpc=true depth=8 scale=1.5 keyboard=true item=4
+PASS styled-menu powerpc=true depth=8 scale=2 keyboard=false item=1
+PASS styled-menu powerpc=true depth=8 scale=2 keyboard=false item=2
+PASS styled-menu powerpc=true depth=8 scale=2 keyboard=false item=3
+PASS styled-menu powerpc=true depth=8 scale=2 keyboard=false item=4
+PASS styled-menu powerpc=true depth=8 scale=2 keyboard=true item=1
+PASS styled-menu powerpc=true depth=8 scale=2 keyboard=true item=2
+PASS styled-menu powerpc=true depth=8 scale=2 keyboard=true item=3
+PASS styled-menu powerpc=true depth=8 scale=2 keyboard=true item=4
+
+thread 'desktop::tests::styled_menu_pointer_and_keyboard_choices_reach_guest' (172751) panicked at src/systems/macintosh/game/launch.rs:87:6:
+frontend selected an unsupported screen depth: "unsupported screen depth 16; expected 1, 2, 4, or 8"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test desktop::tests::styled_menu_pointer_and_keyboard_choices_reach_guest ... FAILED
+
+failures:
+
+failures:
+    desktop::tests::styled_menu_pointer_and_keyboard_choices_reach_guest
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 132 filtered out; finished in 44.99s
+
+error: test failed, to rerun pass `--example gpui-menu-demo`
