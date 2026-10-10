@@ -227,6 +227,10 @@ impl Default for PpcToolboxStartupState {
 }
 
 impl PpcToolboxStartupState {
+    pub(crate) fn is_parked_event_wait(&self, cpu: &PpcCpu) -> bool {
+        self.event_waits.contains_key(&(cpu.pc, cpu.gpr[1], cpu.lr))
+    }
+
     pub(crate) fn select_standard_file_text_range(&mut self, new_folder: bool, range: std::ops::Range<usize>) -> bool {
         let Some(tracking) = self.standard_file_put_tracking.as_mut() else { return false; };
         if !tracking.standard_entry_point || tracking.confirming_replace || tracking.pointer_anchor.is_some() { return false; }

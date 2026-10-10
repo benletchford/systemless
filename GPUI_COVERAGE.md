@@ -4880,3 +4880,19 @@ crossing-stage replacement. Evidence is archived in
 `reference/gpui-demo/post-dialog-regression`. The release checklist now reflects
 the implemented replacement paths; all eight broad production gates remain
 open, including disjoint staged replacement and physical/visual qualification.
+
+
+### Disjoint document-stage replacement checkpoint
+
+The composition adapter represents a disjoint replacement as staged-text commit
+followed by a separately pinned range replacement. It validates both payloads
+before updating predictions, maps normalized staging offsets, and never rewrites
+the intervening guest text. Ten state tests pass; four-mode production document
+worker checks pass (10.85s), preserving final text, caret and intervening styles.
+The initial PPC8 failure showed the second request rejected while the last event
+remained a key event. Selection now recognizes an exact parked PPC WaitNextEvent
+frame (PC/SP/LR), retaining queue, held-input, identity and drawing guards. Logs
+and failure provenance are archived in
+`reference/gpui-demo/disjoint-document-replacement`. Modal disjoint behavior and
+frontend emitted-request qualification remain open, along with physical IME and
+visual/native qualification. This does not close a production gate.

@@ -3442,9 +3442,11 @@ impl FixtureRunner {
             || self.dialog_snapshot().iter().any(|dialog| dialog.visible && dialog.active) {
             return false;
         }
+        let parked_event_wait = self.native.application().is_some_and(|app|
+            app.toolbox_startup.is_parked_event_wait(&app.cpu));
         let events = self.event_manager_snapshot();
         if events.queue_len != 0 || events.mouse_button
-            || !events.last_record.is_some_and(|event| event.what == 0)
+            || !(parked_event_wait || events.last_record.is_some_and(|event| event.what == 0))
             || [0u8, 0x37, 0x3a, 0x3b].iter().any(|key|
                 events.key_map[usize::from(*key / 8)] & (1 << (*key % 8)) != 0) { return false; }
         let records = self.text_edit_snapshot().records;

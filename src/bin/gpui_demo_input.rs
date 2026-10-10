@@ -195,7 +195,7 @@ pub(crate) struct Preedit {
     pub selection_utf16: std::ops::Range<usize>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct GuestComposition {
     owner: Option<TextInputOwner>,
     pending_commits: Vec<(TextInputOwner, Vec<u8>, Option<TextInputOwner>, Option<usize>)>,
@@ -385,6 +385,30 @@ impl GuestComposition {
         Some((expected, request, bytes, caret))
     }
 
+    /// Resolve two disjoint edits independently so intervening styles survive.
+    /// Validate both payloads before accepting any predicted change.
+    pub fn commit_disjoint_range(&mut self, range: std::ops::Range<usize>, text: &str)
+        -> Option<((TextInputOwner, Vec<u8>), (TextInputOwner, TextInputOwner, Vec<u8>))> {
+        self.geometry_ranges(range.clone())?;
+        let owner = self.owner.as_ref()?;
+        let stage = self.preedit.as_ref()?;
+        let stage_end = owner.selection.start.checked_add(stage.text.encode_utf16().count())?;
+        if !(range.end <= owner.selection.start || range.start >= stage_end)
+            || range.is_empty() && (owner.selection.start..=stage_end).contains(&range.start) { return None; }
+        let stage_text = stage.text.clone();
+        let mut predicted = self.clone();
+        let first = predicted.commit(&stage_text)?;
+        // Committed line endings use CR and Macintosh Roman uses one byte per
+        // representable scalar, so UTF-16 staging offsets may shrink here.
+        let mapped = if range.start >= stage_end {
+            let start = owner.selection.start.checked_add(first.1.len())?;
+            start.checked_add(range.start - stage_end)?..start.checked_add(range.end - stage_end)?
+        } else { range };
+        let second = predicted.commit_range(mapped, text)?;
+        *self = predicted;
+        Some((first, second))
+    }
+
     /// Pin both the original selection and an explicit guest replacement.
     /// Old frames remain valid while the guest consumes the selection request.
     pub fn commit_range(&mut self, range: std::ops::Range<usize>, text: &str)
@@ -435,6 +459,24 @@ mod composition_tests {
     fn owner() -> TextInputOwner {
         TextInputOwner { identity: (42, 3), target: TextInputTarget::Document { port: 100 },
             text: vec![b'a', 0x8e, b'b'], selection: 1..2 }
+    }
+
+    #[test]
+    fn disjoint_stage_replacement_keeps_two_pinned_edits() {
+        for range in [0..1, 5..6] {
+            let mut state = GuestComposition::default();
+            let mut initial = owner(); initial.text = b"abcdef".to_vec(); initial.selection = 2..4;
+            state.synchronize(Some(initial.clone())); assert!(state.mark("éZ", 1..2));
+            let (first, (expected, request, bytes)) = state.commit_disjoint_range(range.clone(), "K").unwrap();
+            assert_eq!(first, (initial.clone(), vec![0x8e, b'Z']));
+            assert_eq!(expected.text, [b'a', b'b', 0x8e, b'Z', b'e', b'f']);
+            assert_eq!(request.selection, range); assert_eq!(bytes, b"K");
+            state.synchronize(Some(initial)); assert!(state.owner().is_some());
+        }
+        let mut state = GuestComposition::default(); state.synchronize(Some(owner()));
+        assert!(state.mark("日", 1..1));
+        assert!(state.commit_disjoint_range(0..1, "K").is_none());
+        assert_eq!(state.preedit.as_ref().unwrap().text, "日");
     }
 
     #[test]

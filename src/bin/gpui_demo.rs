@@ -669,7 +669,7 @@ mod desktop {
                                 queued.push_front(Command::CommitText(selected, bytes));
                             } else {
                                 let events = session.runner().event_manager_snapshot();
-                                let in_event = events.queue_len != 0 || events.last_record.is_some_and(|event| event.what != 0);
+                                let in_event = events.queue_len != 0 || events.last_record.as_ref().is_some_and(|event| event.what != 0);
                                 let same_field = match owner.target {
                                     super::input::TextInputTarget::Document { port } => session.runner_mut().text_edit_snapshot().records.iter().any(|record|
                                         record.active && (record.guest_id, record.generation) == owner.identity && record.owner_port == port),
@@ -9764,6 +9764,25 @@ mod desktop {
                 assert_eq!(rejected.text_edits.iter().find(|record| (record.guest_id, record.generation) == replacement_owner.identity).unwrap().text,
                     expected_replacement);
                 eprintln!("PASS worker-explicit-replacement powerpc={powerpc} depth={actual_depth}");
+                let current = rejected.text_edits.iter().find(|record| (record.guest_id, record.generation) == replacement_owner.identity).unwrap();
+                let mut stage = super::super::input::GuestComposition::default();
+                let pinned = super::super::input::TextInputOwner { identity: replacement_owner.identity,
+                    target: replacement_owner.target, text: current.text.clone(), selection: current.selection.0..current.selection.1 };
+                stage.synchronize(Some(pinned.clone())); assert!(stage.mark("é", 1..1));
+                let (first, (expected, request, bytes)) = stage.commit_disjoint_range(0..1, "K").unwrap();
+                let mut final_text = current.text.clone(); final_text.splice(pinned.selection.clone(), [0x8e]); final_text.splice(0..1, [b'K']);
+                worker.0.send(Command::CommitText(first.0, first.1)).unwrap();
+                worker.0.send(Command::ReplaceText(expected, request.selection, bytes, None)).unwrap();
+                let final_update = wait("disjoint staged replacement", &updates, |update| {
+                    update.text_edits.iter().any(|record|
+                        (record.guest_id, record.generation) == pinned.identity && record.text == final_text && record.selection == (1, 1))
+                });
+                let final_record = final_update.text_edits.iter().find(|record| (record.guest_id, record.generation) == pinned.identity).unwrap();
+                let mut shifted_styles = current.style_runs.clone().unwrap();
+                for run in &mut shifted_styles { if run.start >= pinned.selection.end { run.start += 1; } }
+                assert_eq!(final_record.style_runs.as_ref(), Some(&shifted_styles));
+                eprintln!("PASS worker-disjoint-replacement powerpc={powerpc} depth={actual_depth}");
+
                 drop(worker);
             }
         }

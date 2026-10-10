@@ -472,6 +472,12 @@ impl EntityInputHandler for Demo {
         _: &mut Window, cx: &mut Context<Self>) {
         if self.composition.preedit.is_some() && self.composition.owner().is_some() {
             if let Some(range) = range.clone() {
+                if let Some((first, (expected, request, bytes))) = self.composition.commit_disjoint_range(range.clone(), text) {
+                    let _ = self.commands.send(Command::CommitText(first.0, first.1));
+                    let _ = self.commands.send(Command::ReplaceText(expected, request.selection, bytes, None));
+                    cx.notify();
+                    return;
+                }
                 if let Some((expected, request, bytes, caret)) = self.composition.commit_overlapping_range(range, text) {
                     if request.selection == expected.selection {
                         let command = if caret == request.selection.start + bytes.len() {
