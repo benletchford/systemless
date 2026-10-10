@@ -1,0 +1,8 @@
+{
+  "sources": {
+    "src/bin/gpui_demo.rs": "0c6e8a0440e2c9fe3fb4c1061fc8fddfa8ef5f9ead536f8308a44d92dca2254a",
+    "src/bin/gpui_demo_input.rs": "b22e52a38b91c8264e8dfb6d32c065ef19366f6827ba6b08aa2e5ee196440d07"
+  },
+  "scope": "Guarded backend document4, dialog6 including wrapped PPC, file8; not native AX dispatch or complete styled replacement fidelity",
+  "result": "3 passed, 131.60s"
+}
