@@ -905,6 +905,7 @@ fn attached_native_adapters_share_process_resource_mutations_immediately() {
     classic.attach_unconverted_process_services(&mut context);
 
     native.push_resource_file(PpcResourceFileRecord {
+        writable: None,
         ref_num: PPC_FIRST_FILE_REF_NUM,
         path: "Shared/Native.rsrc".to_string(),
     });
@@ -1007,6 +1008,7 @@ fn process_resource_records_remain_canonical_during_native_execution_panic_cross
     classic.attach_unconverted_process_services(&mut context);
 
     native.push_resource_file(PpcResourceFileRecord {
+        writable: None,
         ref_num: PPC_FIRST_FILE_REF_NUM,
         path: "Shared/Native.rsrc".to_string(),
     });
