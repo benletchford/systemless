@@ -35,7 +35,9 @@ def verify_case(directory, case):
     capture = json.loads(image.with_suffix('.capture.json').read_text())
     assert evidence['source_mask'] == 'retained native source; appearance only'
     assert evidence['erased_regions'] is None
-    assert capture['case'] == 'ListsSelectedNativeSource'
+    state_name = case.get('state', 'selected')
+    assert capture['case'] == 'Lists' + state_name.capitalize() + 'NativeSource'
+    assert evidence['transition'] == ('none' if state_name == 'selected' else state_name)
     assert capture['compositor'] == evidence['compositor'] == 'shared Demo renderer'
     assert capture['actual_depth'] == case['depth']
     assert evidence['paint_depths'] == [case['depth']]
@@ -54,13 +56,19 @@ def verify_case(directory, case):
     assert len(states) == 1
     state = states[0]
     assert state['id'] > 0 and state['generation'] > 0
-    assert state['active'] and state['selected'] == [[7, 0]]
-    assert state['visible'] == [0, 0, 9, 1]
+    assert state['active'] == (state_name != 'inactive') and state['selected'] == [[7, 0]]
+    assert state['visible'][0] == (4 if state_name == 'scrolled' else 0)
+    assert state['visible'][1] == 0 and state['visible'][3] == 1
+    if state_name == 'mutated':
+        row = next(cell for cell in state['cells'] if cell['cell'] == [7, 0])
+        assert bytes(row['bytes']).endswith(b'  * updated')
+    if state_name == 'resized':
+        assert state['view_rect'] == [78, 24, 192, 474]
     regions = evidence['owned_regions']
-    assert regions and {tuple(cell) for _, cell, _ in regions} == {(row, 0) for row in range(9)}
+    assert regions and {tuple(cell) for _, cell, _ in regions} == {(row, 0) for row in range(state['visible'][0], state['visible'][2])}
     for owner, cell, (top, left, bottom, right) in regions:
         assert owner == 0 and 0 <= top < bottom <= guest[1] and 0 <= left < right <= guest[0]
-    return case['mode'], case['scale']
+    return case['mode'], case['scale'], state_name
 
 
 def verify(path, partial=False):
@@ -68,14 +76,15 @@ def verify(path, partial=False):
     assert manifest['source_dirty'] is False
     assert manifest['presentation'] == 'smooth retained-source appearance review'
     assert manifest['pixel_qualification'] is False
-    assert manifest['states'] == ['selected']
-    expected = {(mode, scale) for mode in ['mono', 'colour', 'ppc8', 'ppc16']
+    states = manifest['states']
+    assert states in [['selected'], ['scrolled', 'inactive', 'reactivated'], ['mutated', 'resized']]
+    expected = {(mode, scale, state) for state in states for mode in ['mono', 'colour', 'ppc8', 'ppc16']
                 for scale in [0.75, 1, 1.5, 2]}
     observed = [verify_case(path.parent, case) for case in manifest['cases']]
     assert observed and len(observed) == len(set(observed)) and set(observed) <= expected
     if not partial:
         assert manifest['complete'] and set(observed) == expected, 'matrix incomplete'
-    print(f'{len(observed)}/16 captures have intact provenance, depth, geometry and guest selection; raster appearance unqualified')
+    print(f'{len(observed)}/{len(expected)} captures have intact provenance, depth, geometry and guest selection; raster appearance unqualified')
 
 
 if __name__ == '__main__':

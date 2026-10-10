@@ -2829,6 +2829,11 @@ mod desktop {
         Lists,
         ListsSelected,
         ListsSelectedNativeSource,
+        ListsScrolledNativeSource,
+        ListsInactiveNativeSource,
+        ListsReactivatedNativeSource,
+        ListsMutatedNativeSource,
+        ListsResizedNativeSource,
         ListsHeld,
         ListsCancelled,
         ListsScrolled,
@@ -2981,6 +2986,20 @@ mod desktop {
         capture_scale: Option<f32>,
     ) {
         use gpui_kit::{platform, HeadlessAppContext};
+
+        let capture_name = format!("{capture:?}");
+        let retain_native_source = matches!(capture, CaptureCase::ListsSelectedNativeSource
+            | CaptureCase::ListsScrolledNativeSource | CaptureCase::ListsInactiveNativeSource
+            | CaptureCase::ListsReactivatedNativeSource | CaptureCase::ListsMutatedNativeSource
+            | CaptureCase::ListsResizedNativeSource);
+        let capture = match capture {
+            CaptureCase::ListsScrolledNativeSource => CaptureCase::ListsScrolled,
+            CaptureCase::ListsInactiveNativeSource => CaptureCase::ListsInactive,
+            CaptureCase::ListsReactivatedNativeSource => CaptureCase::ListsReactivated,
+            CaptureCase::ListsMutatedNativeSource => CaptureCase::ListsMutated,
+            CaptureCase::ListsResizedNativeSource => CaptureCase::ListsResized,
+            other => other,
+        };
 
         let controls_page = matches!(
             capture,
@@ -4188,7 +4207,6 @@ mod desktop {
         let actual_depth = session.runner().presented_screen_depth();
         let mut source_pixels = frame.pixels;
         if lists_page {
-            let retain_native_source = matches!(capture, CaptureCase::ListsSelectedNativeSource);
             // Remove only visible, qualified ownership from the source texture.
             // A composed capture must prove the shared renderer supplies these
             // pixels; application borders and declined cells stay untouched.
@@ -4309,7 +4327,7 @@ mod desktop {
         });
         std::fs::write(output.with_extension("capture.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
-                "compositor": "shared Demo renderer", "case": format!("{capture:?}"),
+                "compositor": "shared Demo renderer", "case": capture_name,
                 "prefer_powerpc": prefer_powerpc, "requested_depth": screen_depth,
                 "actual_depth": actual_depth, "requested_scale": capture_scale,
                 "scene_scale": scene_scale, "scene_origin": scene_origin,
@@ -4958,6 +4976,16 @@ mod desktop {
                 "resized" => CaptureCase::ListsResized,
                 _ => unreachable!(),
             };
+            let state = if args.capture_lists_retain_native_source {
+                match state {
+                    CaptureCase::ListsScrolled => CaptureCase::ListsScrolledNativeSource,
+                    CaptureCase::ListsInactive => CaptureCase::ListsInactiveNativeSource,
+                    CaptureCase::ListsReactivated => CaptureCase::ListsReactivatedNativeSource,
+                    CaptureCase::ListsMutated => CaptureCase::ListsMutatedNativeSource,
+                    CaptureCase::ListsResized => CaptureCase::ListsResizedNativeSource,
+                    _ => unreachable!(),
+                }
+            } else { state };
             capture_fixture_screen(&args.game, output, args.prefer_powerpc,
                 args.screen_depth, state, args.capture_scale);
             return;
