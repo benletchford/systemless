@@ -13,6 +13,7 @@ architecture_archives:
   68k: classic
   ppc: powerpc
 category: Role-Playing
+launch_enabled: true
 compatibility:
   status: playable
   verified:
