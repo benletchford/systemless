@@ -10,9 +10,23 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
   status: playable
   verified:
+  - date: "2026-10-10"
+    tester: Catalogue maintainer
+    systemless_version: 26233b9b0ed9d5c9a13d270d5b7b2c2995cabe36
+    architecture: 68k
+    environment: >-
+      Fresh optimized release-mode Chrome preview, normal WebAssembly worker at
+      25 MHz. Original Not Yet dismissal, Play Chiral and direct atom placement
+      work with stationary pointer down/up. A clean reload repeats startup and
+      placement with brief back-to-back down/up commands, no drag or runtime patch.
+      Preview requests supplied independently hash-verified original bytes.
+      Full levels, scoring, sound and saves remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4393
   - date: "2026-10-10"
     tester: Catalogue maintainer
     systemless_version: "0.83.0"
@@ -82,13 +96,14 @@ Build molecules by placing coloured atoms on the board. Level 1 asks for two
 molecules containing at least six atoms each.
 
 Choose **Not Yet** at the original registration notice, then **Play Chiral**.
-The current browser player requires a small drag inside these buttons before
-releasing; the stationary-click defect remains under investigation.
+Keep the pointer inside the button until its action completes. Fresh optimized
+release-preview checks accept stationary clicks without a drag.
 Click the playfield to place the atom currently shown in the dispenser.
 
 This entry uses the complete original **1.0.0** archive. Bounded native and
 browser testing covers starting Level 1 and placing an atom. The deployed
 browser benchmark fetches the exact Systemless-hosted archive; a separate
-player preview verifies board input with the button-drag workaround. Level
-completion, sustained play and save persistence remain unverified. Launch stays
-disabled while the stationary-click defect awaits a fix and final approval.
+optimized release-player preview repeats startup and atom placement with brief
+stationary clicks after a clean reload. Level completion, scoring, audio,
+sustained play and save persistence remain unverified. The earlier stale preview
+click symptom remains recorded separately; no new emulator fix is claimed.
