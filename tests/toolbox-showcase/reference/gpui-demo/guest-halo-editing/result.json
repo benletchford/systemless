@@ -1,0 +1,15 @@
+{
+  "base_commit": "ed677d9db4908ca65f70e037f104208e8544df62",
+  "sha256": {
+    "tests/macintosh_styled_halos.rs": "f604cb15928de4c3e2eb5ba1d4114c00e3ef2b5f25146b645de64d8441ca998a",
+    "src/bin/gpui_demo.rs": "f947234c8d2649b375bd5ba43ed5221392cc9f8fbba719d670741c82527f0709",
+    "src/bin/gpui_demo_text.rs": "911b5548145eba7e9d4aaf9bf23f81e8249a3d0bd95abb09001eea5e78ae41d8",
+    "src/systems/macintosh/quickdraw/text.rs": "13d48af835cb1f3a45162c877caf0e98439a355d672d4a88b861cacfa1be6ab3",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "bd3440b855f9521e2d36505cc52be974e825bf2f6fc71127428ad111d2759999"
+  },
+  "binary": "target/ci-test/deps/macintosh_styled_halos-ca79a2e430234df8",
+  "binary_sha256": "b5f710d2a086116e24287cc6d49466c35d30003a08233ebe83a731a9aba888d2",
+  "runtime_seconds": 20.38,
+  "mode_style_scenarios": 16,
+  "scope": "Ordinary guest-session keyboard/pointer editing, all four halo controls on four runtime CPU/depth modes. Retains guest font/style/colour intent, bounds/owner/text/selection; new native line metrics remain authoritative. Typing/backspace at caret20 restores exact style runs including native height/ascent. No GPUI pointer path, composed editing pixels, physical host input, independent font oracle or performance claim."
+}
