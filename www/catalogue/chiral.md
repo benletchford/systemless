@@ -24,7 +24,9 @@ compatibility:
     tester: Catalogue maintainer
     systemless_version: "0.84.1"
     architecture: 68k
-    environment: Deployed browser WebAssembly benchmark fetching the unchanged Systemless-hosted archive
+    environment: >-
+      Deployed browser WebAssembly benchmark fetching the unchanged Systemless-hosted
+      archive
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4353
 artifacts:
@@ -55,8 +57,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/chiral/browser.png
+    type: sha256
+    sha256: 6e3e3ac484e3a0b9c2dd13bb9b8164aa3e3930eb4206c5e3906c22391e4fbb6c
+    size_bytes: 518182
   provenance:
     redistribution: permitted
     content_only: true
@@ -67,13 +70,13 @@ artifacts:
       request.
     notes: >-
       Exact original hosted archive, 68K route, deployed browser WebAssembly 0.84.1.
-      Level 1 accepts placement of a purple atom. The game fills the entire framebuffer;
-      no desktop, menu bar or emulator framing is present.
+      Level 1 accepts placement of a purple atom. The game fills the entire
+      framebuffer; no desktop, menu bar or emulator framing is present.
 references:
 - https://www.vintageapplemac.com/software/games/c/
 ---
 
-![Chiral gameplay](incoming/chiral/browser.png)
+![Chiral gameplay](https://assets.systemless.org/catalogue/media/sha256/6e/6e3e3ac484e3a0b9c2dd13bb9b8164aa3e3930eb4206c5e3906c22391e4fbb6c.png)
 
 Build molecules by placing coloured atoms on the board. Level 1 asks for two
 molecules containing at least six atoms each.
