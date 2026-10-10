@@ -3259,6 +3259,7 @@ impl FixtureRunner {
     /// application's resume handler (Toolbox Essentials, pp. 2-58--2-61).
     pub fn import_clipboard_text(&mut self, text: Vec<u8>) {
         self.process_context.import_clipboard_text(text);
+        self.wake_pending_wait_next_event_if_input_available();
     }
 
     /// Snapshot global TEXT only after suspend handling and the following

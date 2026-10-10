@@ -1,0 +1,17 @@
+{
+  "base_source_commit": "ac691332e6186bab2cf82f05fb7c66f25344e39c",
+  "outcome": "7 ordinary clipboard tests passed in81.57s; 9 activation scheduler tests passed in0.01s",
+  "source_sha256": {
+    "src/systems/macintosh/process_manager/activation.rs": "9b7ec976ed9378e0d6b27981f2d640273f642ac26c8c00960bb3639bc4df46f3",
+    "src/systems/macintosh/runner/mod.rs": "9cdc4a9993780a235b2ce3f918fb33372b7424465333f081d4928062c1ca74db",
+    "src/systems/macintosh/session.rs": "fc7146b37055a29797afc9e70ab4abc398a58468750ee1c698069dc35a976e42",
+    "tests/macintosh_clipboard.rs": "8689aa2975642cc101ba7a7e84b46980e89f040f0c1508b655f74d4a4a46b94b"
+  },
+  "source_hash_timing": "Pinned before final scheduler/suite completion and verified after execution. Implementation uncommitted during tests.",
+  "test_executables_sha256": {
+    "target/debug/deps/macintosh_clipboard-73a9c3cd980fda4a": "fc984af97796bc4bb9e59ac71f73c70cf56ab20390981a60cbd3c52f3e5d89b7",
+    "target/debug/deps/systemless-05ca615472fa3f01": "3ded563073854abbaf43e724ee3920824ceaf8fb8b57b6d51f054d06d101b15e"
+  },
+  "binary_hash_timing": "After successful final execution, without another rebuild before hashing.",
+  "scope": "Real guest initial already-foreground TEXT import and Copy/suspend/export/import/resume/Paste across mono68k, colour68k, PPC8, PPC16. Guest owns private scrap conversion. Document identity, font/style, bounds, text/selection, alignment and line layout retained. Conversion-only initial resume is Systemless host handoff policy, not native process-switch oracle evidence. Scheduler covers deferral, no extra window activation, SIZE policy and cached resume upgrade/coalescing. Not physical host clipboard/observer or composed font qualification. Pre-fix bounded repro remains running; no terminal failure is claimed."
+}
