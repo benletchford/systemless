@@ -28,17 +28,26 @@ pub struct AccessibleState<E> {
     inner: E,
     disabled: bool,
     hidden: bool,
+    text: Option<(String, bool)>,
 }
 
 impl<E: Element> AccessibleState<E> {
     pub fn new(inner: E, disabled: bool) -> Self {
-        Self { inner, disabled, hidden: false }
+        Self { inner, disabled, hidden: false, text: None }
     }
 
     /// Keep the element painted while excluding its modal-background subtree
     /// from assistive navigation. Keyboard focus must be disabled separately.
     pub fn hidden(mut self, hidden: bool) -> Self {
         self.hidden = hidden;
+        self
+    }
+
+    /// Supply text-field semantics without reshaping glyphs or claiming
+    /// unsupported accessibility editing actions. Guest bytes remain owned
+    /// by the existing Toolbox/event path.
+    pub fn text_value(mut self, value: String, multiline: bool) -> Self {
+        self.text = Some((value.replace('\r', "\n"), multiline));
         self
     }
 }
@@ -62,9 +71,14 @@ impl<E: Element> Element for AccessibleState<E> {
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
         self.inner.source_location()
     }
-    fn a11y_role(&self) -> Option<Role> { self.inner.a11y_role() }
+    fn a11y_role(&self) -> Option<Role> {
+        self.text.as_ref().map(|(_, multiline)| if *multiline {
+            Role::MultilineTextInput
+        } else { Role::TextInput }).or_else(|| self.inner.a11y_role())
+    }
     fn write_a11y_info(&self, node: &mut accesskit::Node) {
         self.inner.write_a11y_info(node);
+        if let Some((value, _)) = &self.text { node.set_value(value.clone()); }
         if self.disabled { node.set_disabled(); }
         if self.hidden { node.set_hidden(); }
     }
@@ -127,6 +141,24 @@ mod tests {
             assert_eq!(node.label(), Some("Save file"));
             assert_eq!(node.is_hidden(), hidden);
             assert!(!node.is_disabled());
+        }
+    }
+
+    #[test]
+    fn guest_text_value_preserves_identity_state_and_roman_content() {
+        let guest = b"Caf\x8e\rSecond";
+        let value = systemless::systems::macintosh::mac_roman::decode_mac_roman(guest);
+        for multiline in [false, true] {
+            let wrapped = AccessibleState::new(div().id("guest-field"), true)
+                .hidden(true).text_value(value.clone(), multiline);
+            let mut node = accesskit::Node::new(wrapped.a11y_role().unwrap());
+            wrapped.write_a11y_info(&mut node);
+            assert_eq!(Element::id(&wrapped), Some("guest-field".into()));
+            assert_eq!(node.role(), if multiline { Role::MultilineTextInput } else { Role::TextInput });
+            assert_eq!(node.value(), Some("Café\nSecond"));
+            assert!(node.is_disabled() && node.is_hidden());
+            assert!(!node.supports_action(accesskit::Action::SetValue));
+            assert!(!node.supports_action(accesskit::Action::SetTextSelection));
         }
     }
 

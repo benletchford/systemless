@@ -1,0 +1,12 @@
+{
+  "base": "15d99ae9f2a282f8fb97fdb6869a7ef86864df4e",
+  "scope": "Text field roles/values for qualified plain/styled TextEdit, standard dialog edits, Save and New Folder fields. Three component semantics regressions pass; actual GPUI modal/Standard File composition passes all modes (30.77s); scrolled styled GPUI pointer/keyboard/typing/deletion/drag-selection passes all four modes at .75/1/1.5/2 scales (438.20s).",
+  "limitations": "GPUI test platform does not initialize native accessibility adapter. No native tree, assistive selection/editing actions, physical host input or full accessibility qualification established. Guest byte/font/paint/event ownership retained. Text value normalization affects accessibility metadata only.",
+  "fixture_sha256": "9576f3efa7b98973d0e48aefb2e017f64a7db878e8d642c2acefe01e9d05b258",
+  "sha256": {
+    "source.patch": "63185d0a998e504eefc1c097d2ea1f6afe1fe51146d36e065952db6b06b55dc0",
+    "text-field-accessibility.log": "2dead1f154cb0ac8d092ce90661a1c9ceef5184abe00c17242006b1a59a71ae0",
+    "text-field-modal-input.log": "7ed0d10435402b469cdca8a1a7b73a604dcdcabecd246abff8b0fac6c541cd09",
+    "styled-scroll-gpui-pointer.log": "88566cb6115e2fb17d147d07cb9db6cc2e56e62e01529ab5ee1be584ec763ab5"
+  }
+}

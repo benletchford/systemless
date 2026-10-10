@@ -1849,16 +1849,17 @@ mod desktop {
                                 )),
                         );
                     }
-                    screen = screen.child(
+                    screen = screen.child(super::a11y::AccessibleState::new(
                         div()
+                            .id(format!("guest-text-field-{}-{}-{}-{}", record.guest_id, record.generation, clip.top, clip.left))
                             .absolute()
                             .overflow_hidden()
                             .left(guest_px(clip.left as f32))
                             .top(guest_px(clip.top as f32))
                             .w(guest_px(clip.width() as f32))
                             .h(guest_px(clip.height() as f32))
-                            .child(overlay),
-                    );
+                            .child(overlay), false,
+                    ).text_value(systemless::systems::macintosh::mac_roman::decode_mac_roman(&record.text), record.line_count > 1));
                 }
                 // Styled fields use the owning CPU's strikes and paint order.
                 // Visibility establishes the standard owner; exact native pixels
@@ -1877,10 +1878,13 @@ mod desktop {
                         plan.clone(), scene_scale, origin,
                     ) else { continue; };
                     let clip = piece.clip;
-                    screen = screen.child(div().absolute().overflow_hidden()
+                    screen = screen.child(super::a11y::AccessibleState::new(
+                        div().id(format!("guest-styled-text-field-{}-{}-{}-{}", record.guest_id, record.generation, clip.top, clip.left))
+                        .absolute().overflow_hidden()
                         .left(guest_px(clip.left as f32)).top(guest_px(clip.top as f32))
                         .w(guest_px(clip.width() as f32)).h(guest_px(clip.height() as f32))
-                        .child(ink));
+                        .child(ink), false,
+                    ).text_value(systemless::systems::macintosh::mac_roman::decode_mac_roman(&record.text), record.line_count > 1));
                 }
                 // CDEF-owned standard controls can use Kit components while their
                 // ControlRecord state and tracking remain guest-owned.
@@ -2239,7 +2243,8 @@ mod desktop {
                                         (selection.0.max(0) as usize, selection.1.max(0) as usize),
                                         focused, item.caret_visible == Some(true), scene_scale,
                                         foreground, cx.theme().selection)));
-                            overlay.child(field)
+                            overlay.child(super::a11y::AccessibleState::new(field, !item.enabled || !semantic_active)
+                                .text_value(item.text.clone(), false))
                         }
                         DialogItemKind::Checkbox => overlay.child(
                             super::a11y::AccessibleComponent::new(super::choices::guest_checkbox(
@@ -2669,7 +2674,8 @@ mod desktop {
                                 panel.name_text_layout.as_ref().unwrap(), scene_scale,
                                 cx.theme().foreground, cx.theme().selection,
                             ));
-                        overlay = overlay.child(name_field);
+                        overlay = overlay.child(super::a11y::AccessibleState::new(name_field, false)
+                            .text_value(name.to_owned(), false));
                         for (label, rect) in [
                             ("Desktop", layout.desktop),
                             ("New", layout.new_folder),
@@ -2733,7 +2739,8 @@ mod desktop {
                             .border_1().border_color(cx.theme().accent).bg(cx.theme().background)
                             .child(super::text::single_line(folder, (panel.guest_id, panel.generation),
                                 self.text_pointer_map.clone(), scene_scale, cx.theme().foreground, cx.theme().selection));
-                        overlay = overlay.child(name);
+                        overlay = overlay.child(super::a11y::AccessibleState::new(name, false)
+                            .text_value(folder.name.clone(), false));
                     }
                     let actions = if is_error {
                         vec![(layout.create, "OK", super::activation::FileAction::DismissFolderError)]
@@ -10183,23 +10190,29 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
         fn styled_document_glyph_clicks_reach_guest_at_centered_scene_scales(cx: &mut gpui_kit::TestAppContext) {
-            check_styled_document_pointer_style(cx, 0, 0);
+            check_styled_document_pointer_style(cx, 0, 0, false);
         }
 
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
         fn spaced_styled_document_glyph_clicks_reach_guest_at_centered_scene_scales(cx: &mut gpui_kit::TestAppContext) {
-            for spacing in [32, 64] { check_styled_document_pointer_style(cx, spacing, 0); }
+            for spacing in [32, 64] { check_styled_document_pointer_style(cx, spacing, 0, false); }
         }
 
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
         fn halo_styled_document_glyph_clicks_and_editing_reach_guest_at_centered_scene_scales(cx: &mut gpui_kit::TestAppContext) {
-            for halo in [12, 20, 28, 31] { check_styled_document_pointer_style(cx, 0, halo); }
+            for halo in [12, 20, 28, 31] { check_styled_document_pointer_style(cx, 0, halo, false); }
         }
 
         #[cfg(feature = "gpui-demo-test")]
-        fn check_styled_document_pointer_style(cx: &mut gpui_kit::TestAppContext, spacing: u8, halo: u8) {
+        #[gpui_kit::test]
+        fn scrolled_styled_document_pointer_and_editing_reach_guest(cx: &mut gpui_kit::TestAppContext) {
+            check_styled_document_pointer_style(cx, 0, 0, true);
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        fn check_styled_document_pointer_style(cx: &mut gpui_kit::TestAppContext, spacing: u8, halo: u8, scrolled: bool) {
             use gpui_kit::{test::TestWindowExt, AppContext, InputEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent};
             cx.update(gpui_kit::init);
             for (powerpc, depth, ppc_depth) in [(false, Some(1), None), (false, Some(8), None), (true, None, Some(16)), (true, None, Some(8))] {
@@ -10257,6 +10270,38 @@ mod desktop {
                         (before.generation, before.owner_port, before.selection));
                     assert_eq!((changed.dest_rect, changed.view_rect), (before.dest_rect, before.view_rect));
                 }
+                if scrolled {
+                    let original = session.runner_mut().text_edit_snapshot().records.into_iter()
+                        .find(|record| record.styled).unwrap();
+                    let geometry = original.guest_styled_line_geometry(0).unwrap().0;
+                    let dest = original.global_dest_rect.unwrap();
+                    let vertical = dest.0 - original.dest_rect.0 + geometry.top + geometry.ascent;
+                    let horizontal = dest.1 - original.dest_rect.1 + geometry.left
+                        + original.guest_styled_range_width(0..26).unwrap();
+                    for input in [MacintoshInput::MouseDown { vertical, horizontal },
+                        MacintoshInput::MouseUp { vertical, horizontal }] {
+                        session.deliver_input(input);
+                        for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
+                    }
+                    for input in [
+                        MacintoshInput::KeyDown { mac_key: 0x24, character: b'\r' },
+                        MacintoshInput::KeyUp { mac_key: 0x24, character: b'\r' },
+                    ] { session.deliver_input(input); }
+                    settle(&mut session);
+                    for input in [
+                        MacintoshInput::KeyDown { mac_key: 0x3a, character: 0 },
+                        MacintoshInput::KeyDown { mac_key: 9, character: b'v' },
+                        MacintoshInput::KeyUp { mac_key: 9, character: b'v' },
+                        MacintoshInput::KeyUp { mac_key: 0x3a, character: 0 },
+                    ] { session.deliver_input(input); }
+                    settle(&mut session);
+                    let next = session.runner_mut().text_edit_snapshot().records.into_iter()
+                        .find(|record| record.guest_id == original.guest_id).unwrap();
+                    assert_eq!(next.line_count, 2);
+                    assert_eq!(next.line_starts.as_ref().unwrap()[1], 27);
+                    assert_eq!(next.dest_rect.0, original.dest_rect.0 - 12);
+                    assert_eq!(next.view_rect, original.view_rect);
+                }
                 for scale in [0.75, 1., 1.5, 2.] {
                     let (sender, receiver) = std::sync::mpsc::channel();
                     let (window, view) = cx.update(|cx| {
@@ -10269,10 +10314,11 @@ mod desktop {
                             ..Default::default()
                         }, cx, |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap()
                     });
-                    for (line_index, offset, drag_end) in [(0, 3, None), (0, 20, None), (0, 9, Some(26))] {
+                    let cases = if scrolled { [(1, 28, None), (1, 29, None), (1, 28, Some(31))] }
+                        else { [(0, 3, None), (0, 20, None), (0, 9, Some(26))] };
+                    for (line_index, offset, drag_end) in cases {
                         let records = session.runner_mut().text_edit_snapshot().records;
                         let record = records.iter().find(|record| record.styled).unwrap();
-                        let starts = record.line_starts.as_ref().unwrap();
                         let (geometry, runs) = record.guest_styled_line_geometry(line_index).unwrap();
                         let dest = record.global_dest_rect.unwrap();
                         let guest_y = i32::from(dest.0) - i32::from(record.dest_rect.0)
@@ -10351,11 +10397,11 @@ mod desktop {
                             assert_eq!(record.text[3], b'i');
                             assert_eq!(record.guest_styled_range_width(3..4), Some(1));
                         }
-                        let expected = starts[line_index] + offset + usize::from(narrow_boundary);
-                        let expected_end = starts[line_index] + drag_end.unwrap_or(offset) + usize::from(narrow_boundary);
+                        let expected = offset + usize::from(narrow_boundary);
+                        let expected_end = drag_end.unwrap_or(offset) + usize::from(narrow_boundary);
                         assert_eq!(clicked.selection, (expected, expected_end),
                             "PPC={powerpc}, depth={depth:?}, scale={scale}, line={line_index}, drag_end={drag_end:?}");
-                        if (spacing != 0 || halo != 0) && offset == 20 && drag_end.is_none() {
+                        if ((scrolled && offset == 29) || ((spacing != 0 || halo != 0) && offset == 20)) && drag_end.is_none() {
                             let before = clicked.clone();
                             let mut inserted = before.text.clone();
                             inserted.insert(expected, b'q');
@@ -10413,7 +10459,7 @@ mod desktop {
                             }
                         }
                     }
-                    eprintln!("PASS styled spacing={spacing} halo={halo} runtime_powerpc={powerpc} depth={actual_depth} scale={scale}");
+                    eprintln!("PASS styled scrolled={scrolled} spacing={spacing} halo={halo} runtime_powerpc={powerpc} depth={actual_depth} scale={scale}");
                 }
             }
         }
