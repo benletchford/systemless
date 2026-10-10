@@ -919,3 +919,5 @@ fn write_u32(bytes: &mut [u8], offset: usize, value: u32) {
 fn write_u16(bytes: &mut [u8], offset: usize, value: u16) {
     bytes[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
 }
+
+mod copy_pixpat;

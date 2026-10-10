@@ -988,6 +988,7 @@ pub enum PpcQuickDrawCompatibilityOperation {
     CopyDeepMask,
     CopyMask,
     CopyPalette,
+    CopyPixPat,
     Ctab2Palette,
     DisposeGDevice,
     DisposePalette,
@@ -1332,6 +1333,216 @@ pub(super) fn ppc_dispatch_quickdraw_compatibility(
                 }
                 let _ = memory.write_bytes(dst_ptr + 16 + destination * 16, &info);
             }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::CopyPixPat => {
+            let source = cpu.gpr[3];
+            let destination = cpu.gpr[4];
+            let mut allocated = Vec::new();
+            let result = (|| -> Result<(), i16> {
+                if source == 0 || destination == 0 {
+                    return Err(PPC_PARAM_ERR);
+                }
+                let source_ptr = memory
+                    .read_u32_be(source)
+                    .filter(|ptr| *ptr != 0)
+                    .ok_or(PPC_PARAM_ERR)?;
+                let destination_ptr = memory
+                    .read_u32_be(destination)
+                    .filter(|ptr| *ptr != 0)
+                    .ok_or(PPC_PARAM_ERR)?;
+                for (handle, ptr) in [(source, source_ptr), (destination, destination_ptr)] {
+                    let size = process_memory_manager
+                        .process_handle_size_from_master_pointer(handle, ptr)
+                        .or_else(|| {
+                            ppc_system_handle_record(memory, handle).map(|record| record.size)
+                        })
+                        .ok_or(PPC_PARAM_ERR)?;
+                    if size < 28 {
+                        return Err(PPC_PARAM_ERR);
+                    }
+                }
+                if !ppc_memory_can_write_bytes(memory, destination_ptr, 28) {
+                    return Err(PPC_PARAM_ERR);
+                }
+                let mut parent = [0; 28];
+                memory
+                    .read_bytes_into(source_ptr, &mut parent)
+                    .ok_or(PPC_PARAM_ERR)?;
+                if source == destination {
+                    return Ok(());
+                }
+                let field = |bytes: &[u8], offset: usize| {
+                    u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap())
+                };
+                let mut source_handles = vec![
+                    field(&parent, 2),
+                    field(&parent, 6),
+                    field(&parent, 10),
+                    field(&parent, 16),
+                ];
+                let source_map = field(&parent, 2);
+                let source_table = if source_map == 0 {
+                    if u16::from_be_bytes(parent[..2].try_into().unwrap()) != 0 {
+                        return Err(PPC_PARAM_ERR);
+                    }
+                    0
+                } else {
+                    let map_ptr = memory
+                        .read_u32_be(source_map)
+                        .filter(|ptr| *ptr != 0)
+                        .ok_or(PPC_PARAM_ERR)?;
+                    let map_size = process_memory_manager
+                        .process_handle_size_from_master_pointer(source_map, map_ptr)
+                        .or_else(|| {
+                            ppc_system_handle_record(memory, source_map).map(|record| record.size)
+                        })
+                        .ok_or(PPC_PARAM_ERR)?;
+                    if map_size < 50 {
+                        return Err(PPC_PARAM_ERR);
+                    }
+                    memory
+                        .read_u32_be(map_ptr.checked_add(42).ok_or(PPC_PARAM_ERR)?)
+                        .ok_or(PPC_PARAM_ERR)?
+                };
+                source_handles.push(source_table);
+                let mut old_parent = [0; 28];
+                memory
+                    .read_bytes_into(destination_ptr, &mut old_parent)
+                    .ok_or(PPC_PARAM_ERR)?;
+                let mut old_handles = vec![
+                    field(&old_parent, 6),
+                    field(&old_parent, 10),
+                    field(&old_parent, 16),
+                ];
+                let old_map = field(&old_parent, 2);
+                if old_map != 0 {
+                    let old_map_ptr = memory
+                        .read_u32_be(old_map)
+                        .filter(|ptr| *ptr != 0)
+                        .ok_or(PPC_PARAM_ERR)?;
+                    let old_map_size = process_memory_manager
+                        .process_handle_size_from_master_pointer(old_map, old_map_ptr)
+                        .or_else(|| {
+                            ppc_system_handle_record(memory, old_map).map(|record| record.size)
+                        })
+                        .ok_or(PPC_PARAM_ERR)?;
+                    if old_map_size < 50 {
+                        return Err(PPC_PARAM_ERR);
+                    }
+                    old_handles.push(
+                        memory
+                            .read_u32_be(old_map_ptr.checked_add(42).ok_or(PPC_PARAM_ERR)?)
+                            .ok_or(PPC_PARAM_ERR)?,
+                    );
+                    old_handles.push(old_map);
+                }
+                source_handles.retain(|handle| *handle != 0);
+                source_handles.sort_unstable();
+                source_handles.dedup();
+                if source_handles.contains(&source) || source_handles.contains(&destination) {
+                    return Err(PPC_PARAM_ERR);
+                }
+                let mut snapshots = Vec::new();
+                let mut total_size = 0u32;
+                for handle in &source_handles {
+                    let ptr = memory.read_u32_be(*handle).ok_or(PPC_PARAM_ERR)?;
+                    let size = process_memory_manager
+                        .process_handle_size_from_master_pointer(*handle, ptr)
+                        .or_else(|| {
+                            ppc_system_handle_record(memory, *handle).map(|record| record.size)
+                        })
+                        .ok_or(PPC_PARAM_ERR)?;
+                    total_size = total_size.checked_add(size).ok_or(PPC_PARAM_ERR)?;
+                    if total_size > 64 * 1024 * 1024 || (size != 0 && ptr == 0) {
+                        return Err(PPC_PARAM_ERR);
+                    }
+                    let mut bytes = vec![0; size as usize];
+                    memory
+                        .read_bytes_into(ptr, &mut bytes)
+                        .ok_or(PPC_PARAM_ERR)?;
+                    if *handle == source_map && size < 50 {
+                        return Err(PPC_PARAM_ERR);
+                    }
+                    snapshots.push((*handle, bytes));
+                }
+                let mut copies = HashMap::new();
+                for (handle, bytes) in snapshots {
+                    let copy = ppc_process_alloc_handle(
+                        process_memory_manager,
+                        memory,
+                        heap_cursor,
+                        last_mem_error,
+                        handles,
+                        bytes.len() as u32,
+                        false,
+                    );
+                    if copy == 0 {
+                        return Err(PPC_MEM_FULL_ERR);
+                    }
+                    allocated.push(copy);
+                    let ptr = memory.read_u32_be(copy).ok_or(PPC_PARAM_ERR)?;
+                    memory.write_bytes(ptr, &bytes).ok_or(PPC_PARAM_ERR)?;
+                    copies.insert(handle, copy);
+                }
+                if source_map != 0 {
+                    let copied_map = *copies.get(&source_map).ok_or(PPC_PARAM_ERR)?;
+                    let copied_map_ptr = memory.read_u32_be(copied_map).ok_or(PPC_PARAM_ERR)?;
+                    memory
+                        .write_u32_be(
+                            copied_map_ptr + 42,
+                            copies.get(&source_table).copied().unwrap_or(0),
+                        )
+                        .ok_or(PPC_PARAM_ERR)?;
+                }
+                for offset in [2, 6, 10, 16] {
+                    let original = field(&parent, offset);
+                    parent[offset..offset + 4].copy_from_slice(
+                        &copies.get(&original).copied().unwrap_or(0).to_be_bytes(),
+                    );
+                }
+                // Publish only after the entire independent graph has been built.
+                memory
+                    .write_bytes(destination_ptr, &parent)
+                    .ok_or(PPC_PARAM_ERR)?;
+                allocated.clear();
+                old_handles.retain(|handle| {
+                    *handle != 0
+                        && *handle != source
+                        && *handle != destination
+                        && !source_handles.contains(handle)
+                });
+                old_handles.sort_unstable();
+                old_handles.dedup();
+                for old in old_handles {
+                    toolbox_startup.indexed_screen_ctables.remove(&old);
+                    toolbox_startup
+                        .indexed_screen_ctables
+                        .retain(|_, table| *table != old);
+                    let _ = ppc_dispose_process_native_handle(
+                        process_memory_manager,
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        old,
+                    );
+                }
+                Ok(())
+            })();
+            for handle in allocated {
+                let _ = ppc_dispose_process_native_handle(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    handle,
+                );
+            }
+            *last_mem_error = result.err().unwrap_or(PPC_NO_ERR);
             PpcImportAction::ReturnPreserve
         }
         PpcQuickDrawCompatibilityOperation::DisposePixPat => {

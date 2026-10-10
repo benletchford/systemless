@@ -5518,6 +5518,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "NewPalette") => PpcImportDispatcherTarget::QuickDrawCompatibility(
             PpcQuickDrawCompatibilityOperation::NewPalette,
         ),
+        ("InterfaceLib" | "CarbonLib", "CopyPixPat") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::CopyPixPat,
+        ),
         ("InterfaceLib", "NewPixPat") => PpcImportDispatcherTarget::QuickDrawCompatibility(
             PpcQuickDrawCompatibilityOperation::NewPixPat,
         ),
