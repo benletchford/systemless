@@ -901,8 +901,8 @@ fn resource_alert_calls_its_filter_with_modal_dialog_arguments() {
     let caller_gprs = loaded.cpu.gpr[1..11].to_vec();
     let mut caller_lr = None;
 
-    // Idle passes call the filter with ModalDialog's arguments and leave the
-    // caller's registers, including Alert's own arguments, intact.
+    // The initial window update and following idle pass call the filter with
+    // ModalDialog's arguments and preserve Alert's caller registers.
     for pass in 1..=2 {
         let probe = loaded.run_with_hle_imports(512);
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
@@ -914,7 +914,10 @@ fn resource_alert_calls_its_filter_with_modal_dialog_arguments() {
             call.item_hit_ptr,
             dialog + crate::dialog_manager::DIALOG_ALERT_HIT_OFFSET
         );
-        assert_eq!(call.event.what, 0);
+        if pass == 1 {
+            assert_eq!(call.event.what, 8, "the newly visible window's update reaches the filter first");
+            assert!(loaded.window_list.contains(&call.event.message), "update event identifies a live guest window");
+        } else { assert_eq!(call.event.what, 0, "the next filter pass is idle"); }
         assert!(call.event_ptr > call.sp && call.event_ptr + 16 <= caller_gprs[0]);
         assert_eq!(loaded.cpu.gpr[1..11], caller_gprs);
         assert_ne!(loaded.cpu.lr, loaded.cpu.pc);

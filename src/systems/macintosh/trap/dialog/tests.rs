@@ -15140,6 +15140,107 @@
     }
 
     #[test]
+    fn modal_dialog_arrows_preserve_text_without_marking_it_modified() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let screen_base = bus.alloc(320 * 240);
+        for offset in 0..320u32 * 240 {
+            bus.write_byte(screen_base + offset, 0xFF);
+        }
+        bus.write_long(0x0824, screen_base);
+        disp.set_screen_mode_for_test(screen_base, 320, 320, 240, 8);
+
+        let dialog_ptr = bus.alloc(256);
+        let item_hit_addr = 0x300000u32;
+        let bounds = (40, 40, 130, 280);
+        disp.front_window = dialog_ptr;
+        disp
+            .current_port
+            .with_mut(|current_port| *current_port = dialog_ptr);
+        disp.window_bounds = bounds;
+        disp.window_proc_id = 2;
+        disp.window_title.clear();
+        disp.window_list.replace(vec![dialog_ptr]);
+        bus.write_word(dialog_ptr + 108, 2);
+        bus.write_word(dialog_ptr + 164, 0);
+        bus.write_word(dialog_ptr + 168, 0);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 16,
+                rect: (24, 24, 42, 190),
+                text: "abc".into(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        fn enter_modal(
+            disp: &mut TrapDispatcher,
+            cpu: &mut MockCpu,
+            bus: &mut MacMemoryBus,
+            item_hit_addr: u32,
+        ) {
+            bus.write_word(item_hit_addr, 0xCAFE);
+            bus.write_long(TEST_SP, item_hit_addr);
+            bus.write_long(TEST_SP + 4, 0);
+            cpu.write_reg(Register::A7, TEST_SP);
+            disp.dispatch_dialog(true, 0x191, cpu, bus)
+                .unwrap()
+                .unwrap();
+            assert!(disp.dialog_tracking.is_some());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        }
+
+        fn key_down(
+            disp: &mut TrapDispatcher,
+            cpu: &mut MockCpu,
+            bus: &mut MacMemoryBus,
+            item_hit_addr: u32,
+            key_code: u8,
+            char_code: u8,
+            modifiers: u16,
+        ) {
+            disp.event_queue
+                .push_back(crate::trap::dispatch::QueuedEvent {
+                    what: 3,
+                    message: (u32::from(key_code) << 8) | u32::from(char_code),
+                    when: 0,
+                    where_v: 0,
+                    where_h: 0,
+                    modifiers,
+                });
+            disp.dispatch_dialog(true, 0x191, cpu, bus)
+                .unwrap()
+                .unwrap();
+            assert!(disp.dialog_tracking.is_none());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+            assert_eq!(bus.read_word(item_hit_addr), 1);
+        }
+
+        for (key, character, expected) in [(0x7d, 0x1f, 3), (0x7b, 0x1c, 2), (0x7e, 0x1e, 0), (0x7c, 0x1d, 1)] {
+            enter_modal(&mut disp, &mut cpu, &mut bus, item_hit_addr);
+            key_down(&mut disp, &mut cpu, &mut bus, item_hit_addr, key, character, 0);
+            let item = &disp.dialog_items[&dialog_ptr][0];
+            assert_eq!(item.text, "abc");
+            assert_eq!((item.sel_start, item.sel_end), (expected, expected));
+            assert!(!disp.dialog_edit_text_modified_items.contains(&(dialog_ptr, 1)),
+                "caret-only navigation must not report a text modification");
+        }
+        enter_modal(&mut disp, &mut cpu, &mut bus, item_hit_addr);
+        key_down(&mut disp, &mut cpu, &mut bus, item_hit_addr, 0x06, b'z', 0);
+        assert_eq!(disp.dialog_items[&dialog_ptr][0].text, "azbc");
+        assert!(disp.dialog_edit_text_modified_items.contains(&(dialog_ptr, 1)));
+        enter_modal(&mut disp, &mut cpu, &mut bus, item_hit_addr);
+        key_down(&mut disp, &mut cpu, &mut bus, item_hit_addr, 0x7b, 0x1c, 0);
+        assert_eq!(disp.dialog_items[&dialog_ptr][0].text, "azbc");
+        assert!(disp.dialog_edit_text_modified_items.contains(&(dialog_ptr, 1)),
+            "navigation must preserve a modification recorded by earlier typing");
+
+    }
+
+    #[test]
     fn modal_dialog_command_printables_preserve_edit_state_before_backspace() {
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         let screen_base = bus.alloc(320 * 240);

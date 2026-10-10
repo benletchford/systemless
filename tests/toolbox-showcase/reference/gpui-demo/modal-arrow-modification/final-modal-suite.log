@@ -1,0 +1,66 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21.43s
+     Running unittests src/lib.rs (target/debug/deps/systemless-fb1873a31fc5e0eb)
+
+running 47 tests
+test systems::macintosh::dialog_manager::tests::modal_dialog_keyboard_navigation_and_filter_evaluation ... ok
+test systems::macintosh::dialog_manager::tests::get_dialog_item_as_control_and_modal_dialog_parameters_evaluation ... ok
+[WINDOW-INIT] init_cgraf_window: window=$00200000 bounds=(100,120,220,360) MBarHeight=0 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00200000 pixmap=$00200108 bounds=(100,120,220,360) goAway=false
+test systems::macintosh::runner::tests::idle::modal_dialog_refire_still_schedules_its_draw_callback ... ok
+test systems::macintosh::runner::tests::dialog::modal_dialog_draw_procs_drain_before_foreground_code_resumes ... ok
+test systems::macintosh::trap::dialog::tests::active_modal_dialog_saved_background_tracks_screen_draws_behind_it ... ok
+test systems::macintosh::runner::tests::idle::modal_dialog_refire_preserves_application_cdef_callback_redirection ... ok
+test systems::macintosh::trap::dialog::tests::app_owned_modal_dialog_mouse_down_is_delivered_to_event_loop ... ok
+[TRAP] DisposDialog($00200000)
+test systems::macintosh::loader::ppc::tests::dialog_manager::modal_dialog_returns_the_item_a_filter_stores_for_a_disabled_button ... ok
+test systems::macintosh::loader::ppc::tests::dialog_manager::modal_dialog_offers_null_events_to_its_filter_on_every_idle_pass ... ok
+test systems::macintosh::loader::ppc::tests::dialog_manager::modal_dialog_offers_each_event_to_its_filter_before_hit_testing ... ok
+test systems::macintosh::trap::dialog::tests::app_owned_modal_dialog_button_mouse_up_dismisses_after_delivery ... ok
+test systems::macintosh::trap::dialog::tests::disposing_modal_dialog_ends_owned_press_before_exposing_parent ... ok
+test systems::macintosh::trap::dialog::tests::dialogdispatch_modal_dialog_first_entry_honors_preserved_default_and_cancel_items ... ok
+test systems::macintosh::trap::dialog::tests::modal_dialog_button_tracking_systemless_theme_routes_pressed_state_through_provider ... ok
+test systems::macintosh::trap::dialog::tests::modal_dialog_filter_handled_mouse_down_consumes_queued_mouse_up ... ok
+test systems::macintosh::trap::dialog::tests::modal_dialog_button_waits_for_late_mouse_up_before_returning ... ok
+test systems::macintosh::trap::dialog::tests::modal_dialog_filter_true_zero_hit_returns_to_app ... ok
+[TRAP] GetNewDialog(1710)
+test systems::macintosh::trap::dialog::tests::modal_dialog_filter_button_hit_releases_visual_before_nested_modal ... ok
+[TRAP] GetNewDialog(1710) bounds=(100,100,180,260) raw_bounds=(100,100,180,260) position=$0000 len=24 procID=2 items=2 title=""
+[TRAP]   item 1: type=userItem(0) rect=(8,8,30,80) text=""
+[TRAP]   item 2: type=button(4) rect=(44,20,64,90) text="OK"
+[WINDOW-INIT] init_cgraf_window: window=$00275400 bounds=(100,100,180test systems::macintosh::trap::dialog::tests::modal_dialog_filter_low_byte_nonzero_result_is_false ... ok
+,260) MBarHeight=0 → visRgn.top=0
+test systems::macintosh::trap::dialog::tests::modal_dialog_first_entry_does_not_preserve_invisible_user_item_background ... ok
+test systems::macintosh::trap::dialog::tests::modal_dialog_first_entry_with_showwindow_snapshot_still_queues_user_item_draw_proc ... ok
+test systems::macintosh::trap::dialog::tests::modal_dialog_ignores_stale_filter_result_before_first_callback ... ok
+[WINDOW] CGrafWindow: window=$00275400 pixmap=$002754AC bounds=(100,100,180,260) goAway=false
+test systems::macintosh::trap::dialog::tests::modal_dialog_mouse_down_return_consumes_queued_mouse_up ... ok
+test systems::macintosh::trap::dialog::tests::modal_dialog_plain_user_item_returns_on_mouse_down ... ok
+test systems::macintosh::trap::dialog::tests::modal_dialog_popup_candidate_user_item_returns_on_mouse_down_in_original_rect ... ok
+test systems::macintosh::trap::dialog::tests::modal_dialog_arrows_preserve_text_without_marking_it_modified ... ok
+test systems::macintosh::trap::dialog::tests::modal_dialog_first_entry_restores_visible_shell_before_user_item_preservation ... ok
+test systems::macintosh::trap::dialog::tests::modal_dialog_resnapshot_blits_dialog_port_after_user_item_draw_procs ... ok
+test systems::macintosh::trap::dialog::tests::modal_dialog_game_managed_dialog_still_queues_user_item_draw_procs ... ok
+[TRAP] DisposDialog($00200000)
+test systems::macintosh::trap::dialog::tests::modal_dialog_popup_resnapshot_preserves_theme_pressed_and_inactive_states ... ok
+test systems::macintosh::trap::dialog::tests::modal_dialog_retained_reentry_reuses_visible_snapshot_without_user_item_redraw ... ok
+test systems::macintosh::trap::dialog::tests::modal_dialog_resource_control_retains_mouse_up_ownership_after_disposal ... ok
+[TRAP] ModalDialog: no items found, returning 1
+test systems::macintosh::trap::dialog::tests::modal_dialog_command_printables_preserve_edit_state_before_backspace ... ok
+test systems::macintosh::trap::dialog::tests::modal_dialog_writes_item_hit_and_pops_8_bytes ... ok
+test systems::macintosh::trap::dialog::tests::modal_dialog_update_event_restores_existing_snapshot_before_resnapshot ... ok
+test systems::macintosh::trap::dialog::tests::premodal_dialog_port_draw_refreshes_visible_snapshot ... ok
+test systems::macintosh::trap::dialog::tests::retained_modal_dialog_capture_does_not_apply_to_modeless_dialogs ... ok
+test systems::macintosh::trap::dialog::tests::modal_dialog_return_key_activates_default_button_after_filter_false ... ok
+test systems::macintosh::trap::dialog::tests::nested_modal_dialog_returns_to_its_own_stack_before_resuming_parent ... ok
+test systems::macintosh::trap::dispatch::tests::active_modal_dialog_is_visible_to_frontends_before_snapshot_retention ... ok
+test systems::macintosh::trap::dialog::tests::retained_modal_dialog_consumes_outside_mouse_down ... ok
+test systems::macintosh::trap::dialog::tests::retained_modal_dialog_saved_background_ignores_same_port_dialog_draws ... ok
+test systems::macintosh::trap::dialog::tests::retained_modal_dialog_button_click_highlights_then_dismisses ... ok
+test systems::macintosh::loader::ppc::tests::dialog_manager::resource_alert_calls_its_filter_with_modal_dialog_arguments ... ok
+test systems::macintosh::trap::dialog::tests::modal_dialog_popup_resctrl_tracks_selection_and_returns_item ... ok
+test systems::macintosh::trap::dialog::tests::modal_dialog_resnapshot_redraws_popup_controls_after_user_item_draw_procs ... ok
+test systems::macintosh::loader::ppc::tests::dialog_manager::modal_dialog_filters_a_held_button_press_only_once ... ok
+
+test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 6653 filtered out; finished in 0.18s
+

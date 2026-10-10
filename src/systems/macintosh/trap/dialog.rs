@@ -13292,15 +13292,17 @@ impl super::TrapDispatcher {
                                                     char_code,
                                                 );
                                                 tracking.edit_text = decode_mac_roman(&updated);
-                                                tracking.edit_text_modified = true;
+                                                let text_changed = tracking.edit_text != text_before;
+                                                tracking.edit_text_modified |= text_changed;
                                                 Self::set_tracking_active_edit_selection(
                                                     tracking, cursor, cursor,
                                                 );
                                                 Self::sync_tracking_active_edit_item(tracking);
                                                 te_update =
                                                     Some((tracking.dialog_ptr, updated, cursor));
-                                                modified_key_to_set =
-                                                    Some((tracking.dialog_ptr, tracking.edit_item));
+                                                if text_changed {
+                                                    modified_key_to_set = Some((tracking.dialog_ptr, tracking.edit_item));
+                                                }
 
                                                 let edit_item = tracking.edit_item;
                                                 let item_type = tracking

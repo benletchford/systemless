@@ -4695,3 +4695,21 @@ text boundaries. Shared event/text-key classification and modal keyboard
 navigation/default/cancel/filter regressions also pass. Both earlier failures
 are retained with logs and provenance in `reference/gpui-demo/modal-arrow-navigation`.
 Physical input and composed modal navigation captures remain unqualified.
+
+
+### Modal caret movement preserves modification state
+
+A classic modal guest-loop regression reproduced arrow navigation marking
+unchanged text modified. The editor now sets its modification flags only when
+text changes; an earlier modification remains set through later navigation.
+Caret selection and redraw continue through the same guest path. The regression
+checks clean navigation, actual typing and preservation of its modified state
+through a later arrow. The existing typing/backspace regression also passes.
+
+All47 `modal_dialog_` library tests now pass (0.18s). The first broad run and
+isolated PPC Alert test exposed a stale two-idle-pass expectation: current visible
+window creation queues an update. The test now requires that initial update to
+identify a live guest window and the following pass to be idle, preserving its
+callback/register checks. Failures, final logs and scope are archived in
+`reference/gpui-demo/modal-arrow-modification`. No physical host or new composed
+rendering qualification is inferred from these library tests.

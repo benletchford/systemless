@@ -1,0 +1,14 @@
+{
+  "base_head": "07b51faea9a5bdb1c41bae8bf2ef47234b0ffdf7",
+  "scope": "classic modal guest loop arrow navigation does not mark unchanged text modified; earlier typing remains modified after arrows; typing/backspace regression and47 modal library tests pass",
+  "test_reconciliation": "PPC Alert test now requires initial update event for a live window and subsequent idle; callback/register assertions retained; earlier combined and isolated failures archived",
+  "physical_host_input_qualified": false,
+  "hashes": {
+    "failure.log": "5c0a5ca280e89e0d5c40552df9fdf7694beee1851856e30e0b9b8dbe42e1ccbf",
+    "final-modal-suite.log": "2ab9ec6cf087ece01188ec13c9cc75fd326f8338825ad7ad1dbf0f1d4d55383e",
+    "editing-regression.log": "03b32f6383fd292a34a6323748aa4362968b10daed00af159f9018713321262f",
+    "initial-fix.log": "c3c0776e82afc5bbc9793086aeafe07eea9368b0fa0e243c1967603f94872077",
+    "alert-isolated-failure.log": "3016ec3eeb7ea89186f5c579c1057735911666b7ae28a3ab3d892cd362e3df20",
+    "suite-failure.log": "e000b71d2b51ad4425e48b6889a11c954ecb65461f6e00380e996e335853a9ba"
+  }
+}

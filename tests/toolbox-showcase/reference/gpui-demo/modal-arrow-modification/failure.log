@@ -1,0 +1,19 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.24s
+     Running unittests src/lib.rs (target/debug/deps/systemless-fb1873a31fc5e0eb)
+
+running 1 test
+
+thread 'systems::macintosh::trap::dialog::tests::modal_dialog_arrows_preserve_text_without_marking_it_modified' (803915) panicked at src/systems/macintosh/trap/dialog/tests.rs:15228:13:
+caret-only navigation must not report a text modification
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test systems::macintosh::trap::dialog::tests::modal_dialog_arrows_preserve_text_without_marking_it_modified ... FAILED
+
+failures:
+
+failures:
+    systems::macintosh::trap::dialog::tests::modal_dialog_arrows_preserve_text_without_marking_it_modified
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6699 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `--lib`

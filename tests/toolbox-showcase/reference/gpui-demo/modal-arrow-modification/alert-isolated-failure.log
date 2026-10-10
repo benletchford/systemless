@@ -1,0 +1,20 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.78s
+     Running unittests src/lib.rs (target/debug/deps/systemless-fb1873a31fc5e0eb)
+
+running 1 test
+
+thread 'systems::macintosh::loader::ppc::tests::dialog_manager::resource_alert_calls_its_filter_with_modal_dialog_arguments' (807202) panicked at src/systems/macintosh/loader/ppc/tests/dialog_manager.rs:917:9:
+assertion `left == right` failed
+  left: 8
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test systems::macintosh::loader::ppc::tests::dialog_manager::resource_alert_calls_its_filter_with_modal_dialog_arguments ... FAILED
+
+failures:
+
+failures:
+    systems::macintosh::loader::ppc::tests::dialog_manager::resource_alert_calls_its_filter_with_modal_dialog_arguments
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6699 filtered out; finished in 0.05s
+
+error: test failed, to rerun pass `--lib`
