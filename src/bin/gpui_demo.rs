@@ -9512,6 +9512,57 @@ mod desktop {
         }
 
         #[test]
+        fn guest_list_mutation_and_resize_refresh_qualified_paint() {
+            for (powerpc, depth) in [(false, 1), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, if powerpc { None } else { Some(depth) });
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 9));
+                wait_for_menu(&mut session, 129, 9, true);
+                settle(&mut session);
+                let initial = session.runner_mut().list_manager_snapshot().remove(0);
+                let global = initial.global_view_rect.unwrap();
+                for input in [MacintoshInput::MouseDown { vertical: global.0 + 9, horizontal: global.1 + 12 },
+                    MacintoshInput::MouseUp { vertical: global.0 + 9, horizontal: global.1 + 12 }] {
+                    session.deliver_input(input);
+                    settle(&mut session);
+                }
+                let selected = session.runner_mut().list_manager_snapshot().remove(0);
+                assert_eq!(selected.selected, [(0, 0)].into());
+                let mut expected = selected.cells[&(0, 0)].clone();
+                expected.extend_from_slice(b"  * updated");
+                for (title, bounds) in [("Update Selected Row", (78, 24, 228, 528)),
+                    ("Resize List", (78, 24, 192, 474)), ("Resize List", (78, 24, 228, 528))] {
+                    let control = session.runner_mut().control_snapshot().into_iter()
+                        .find(|control| control.visible && control.title == title).unwrap();
+                    let point = ((control.bounds.0 + control.bounds.2) / 2,
+                        (control.bounds.1 + control.bounds.3) / 2);
+                    for input in [MacintoshInput::MouseDown { vertical: point.0, horizontal: point.1 },
+                        MacintoshInput::MouseUp { vertical: point.0, horizontal: point.1 }] {
+                        session.deliver_input(input);
+                        settle(&mut session);
+                    }
+                    let current = session.runner_mut().list_manager_snapshot().remove(0);
+                    assert_eq!((current.guest_id, current.generation, current.owner_port),
+                        (selected.guest_id, selected.generation, selected.owner_port));
+                    assert_eq!(current.selected, selected.selected);
+                    assert_eq!(current.view_rect, bounds);
+                    assert_eq!(current.cells[&(0, 0)], expected);
+                    assert_eq!(current.standard_cell_paint[&(0, 0)].bytes, expected);
+                    let frame = session.video_frame().unwrap();
+                    let plans = super::qualify_list_text_fields(std::slice::from_ref(&current),
+                        &frame.pixels, frame.width, frame.height);
+                    assert!(plans[0].contains_key(&(0, 0)),
+                        "updated native row must qualify: {title}, PPC={powerpc}, depth={depth}");
+                }
+            }
+        }
+
+        #[test]
         fn guest_quit_removes_list_presentation_on_all_display_modes() {
             for (powerpc, depth) in [(false, 1), (false, 8), (true, 8), (true, 16)] {
                 let mut session = MacintoshSession::new(true, if powerpc { None } else { Some(depth) });
