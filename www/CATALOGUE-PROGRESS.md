@@ -8,7 +8,7 @@ Stages: **rights** = applicable affirmative archive redistribution terms; **arch
 
 ## Active intake
 
-- **Solitaire House (additional discovery):** exact original fat archive and all six forks independently matched; native 68K legal Klondike moves pass twelve assertions. Original PPC player setup halts at unsupported FillRoundRect [#4460](https://github.com/benletchford/systemless/issues/4460). Registration-picture repair [#4461](https://github.com/benletchford/systemless/pull/4461) is ready for review with original prompt assertions on both slices. Distribution version scope and artwork terms remain pending; unhosted and unapproved. [Source dossier](CATALOGUE-SOURCES.md#solitaire-house-additional-original-intake).
+- **Solitaire House (additional discovery):** exact original fat archive and all six forks independently matched; native 68K legal Klondike moves pass twelve assertions. Original PPC player setup halts at unsupported FillRoundRect [#4460](https://github.com/benletchford/systemless/issues/4460). Registration-picture repair [#4461](https://github.com/benletchford/systemless/pull/4461) has merged with original prompt assertions on both slices. Drawing repair [#4464](https://github.com/benletchford/systemless/pull/4464) passes 118 PPC QuickDraw tests; original-game retest is pending. Distribution version scope and artwork terms remain pending; unhosted and unapproved. [Source dossier](CATALOGUE-SOURCES.md#solitaire-house-additional-original-intake).
 
 - **Swoop (additional discovery):** original 1.0.2 installer has an unchanged complete nonprofit distribution grant and preserved 30-day trial. Native 68K starts an active wave, moves and fires with measured/repeated capture evidence after [loader #4400](https://github.com/benletchford/systemless/pull/4400). The original FAQ excludes a PPC-native slice. CI promotion, production validation and public browser gameplay passed. Live in v0.88.0 with original trial, active wave, movement and firing verified; whole release run, all six native packages and checksums have passed. [Evidence](https://github.com/benletchford/systemless/issues/4398).
 
@@ -37,7 +37,7 @@ Stages: **rights** = applicable affirmative archive redistribution terms; **arch
 | 5 | Monkey Island 2: LeChuck’s Revenge | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 6 | The Secret of Monkey Island | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 7 | The Dig | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 8 | Quake | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 8 | Quake | [Grant not identified; unhosted](CATALOGUE-SOURCES.md#quake-preview-original-intake) | [Exact preview; all fourteen forks matched](CATALOGUE-SOURCES.md#quake-preview-original-intake) | N/A: original PPC PEF/cfrg, no CODE | Menu-driven map entry and input-view changes; twelve assertions | Pending | Pending | Pending |
 | 9 | Unreal Tournament | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 10 | Myth: The Fallen Lords | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 11 | Myth II: Soulblighter | Pending | Pending | Pending | Pending | Pending | Pending | Pending |

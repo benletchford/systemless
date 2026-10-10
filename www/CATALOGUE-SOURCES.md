@@ -1007,6 +1007,44 @@ setup halts at unsupported FillRoundRect after player-name acceptance;
 [focused blocker #4460](https://github.com/benletchford/systemless/issues/4460).
 A separate [PICT metadata fix #4461](https://github.com/benletchford/systemless/pull/4461)
 repairs the original registration text on both slices in rebuilt native v0.95.0;
-three measured prompt assertions pass on each route. That fix is ready for review
-and remains subject to CI/merge. Prompt repair does not qualify PPC card gameplay.
+three measured prompt assertions pass on each route. That fix has merged after
+all CI gates passed. The fresh v0.95.0 PPC name-acceptance failure is recorded
+on [#4460](https://github.com/benletchford/systemless/issues/4460#issuecomment-6103064729);
+[drawing repair #4464](https://github.com/benletchford/systemless/pull/4464) passes
+118 PPC QuickDraw tests and remains draft pending original-game retest.
+Prompt repair does not qualify PPC card gameplay.
 Browser, distribution/screenshot scope, hosting and publication remain pending.
+
+## Quake preview original intake
+
+Primary target 8 uses the original [Quake demo lead](https://classicmacdemos.com/quake)
+and [download](https://classicmacdemos.com/download/quake/). The retrieved StuffIt 5
+archive is 6853937 bytes, SHA-256
+`742f2b2b51e81281e04cc17967480ba85c8cd65f8cfa2570382f899be7466535`.
+All fourteen forks of all seven files independently match production StuffIt
+and unar decoding, including the original 14355095-byte `id1/PREVIEW.PAK`.
+The executable's 472049-byte `Joy!peffpwpc` data fork hashes to
+`34803faf674b88af1de2f4377bf13f5579829979d03748bd5eb21f8b6e5f1eba`;
+its 230966-byte resource fork hashes to
+`66bf333614eebe2e280345ad3c37294e42f5966abd878b275861a7ecae6b9235`.
+It contains cfrg and no CODE resources; this original executable is PPC-only.
+
+Bundled Read Me and Online Manual identify the v1.08.2 preview and contain
+copyright/reserved-rights statements. No affirmative archive redistribution
+grant has yet been identified. Demo availability and historical cover-disc
+appearance do not establish permission for this catalogue. The original archive,
+extracted forks, scripts and captures remain outside Git and unhosted.
+
+Native v0.95.0 with the PICT metadata repair, actual PPC slice, reproduces the
+startup console's file-open error. Ordinary Escape followed by two Return menu
+selections nevertheless enters a rendered first map with weapon and HUD.
+Ordinary arrow/control inputs produce large view changes and changed weapon
+rendering. A fresh replay with twelve measured pixel assertions passes at 771 frontend /
+771 guest ticks, zero exhausted frames. Captures were inspected; repeating the
+assertions establishes determinism rather than an independent Mac OS oracle.
+Forward translation, correct key mapping, firing effects, complete levels and
+audio remain unqualified. Browser, rights, hosting and launch approval are pending.
+[Fresh intake](https://github.com/benletchford/systemless/issues/3213#issuecomment-6103103358)
+and [fork/input evidence](https://github.com/benletchford/systemless/issues/3213#issuecomment-6103120017)
+update the existing startup investigation; map entry does not close that issue
+or count as a qualified live game.
