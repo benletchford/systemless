@@ -318,6 +318,9 @@ mod desktop {
         capture_standard_file_open_composed: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_standard_file_open_scrolled: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_standard_file_save_edited_composed: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -3183,6 +3186,7 @@ mod desktop {
         StandardFileSave,
         StandardFileSaveComposed,
         StandardFileOpenComposed,
+        StandardFileOpenScrolled,
         StandardFileSaveEditedComposed,
         StandardFileSaveCaretHiddenComposed,
         StandardFileReplaceComposed,
@@ -3369,7 +3373,7 @@ mod desktop {
                 | CaptureCase::StandardFileNewFolderSelectedComposed
                 | CaptureCase::StandardFileNewFolderLongComposed | CaptureCase::StandardFileNewFolderCaretHiddenComposed
         );
-        let standard_file_open = matches!(capture, CaptureCase::StandardFileOpenComposed);
+        let standard_file_open = matches!(capture, CaptureCase::StandardFileOpenComposed | CaptureCase::StandardFileOpenScrolled);
         let standard_file_page = standard_file_save || standard_file_open;
         let radio_page = matches!(capture, CaptureCase::RadioHeld | CaptureCase::RadioOutside | CaptureCase::RadioSelected);
         let controls_changed = matches!(capture, CaptureCase::ControlsChanged);
@@ -3904,6 +3908,13 @@ mod desktop {
             }
             dialogs
         } else if standard_file_page {
+            if matches!(capture, CaptureCase::StandardFileOpenScrolled) {
+                for index in 0..30 {
+                    session.runner_mut().import_vfs_directory(&systemless::runner::VfsDirectorySnapshot {
+                        path: format!("Wheel Folder {index:02}"), creator: 0, file_type: 0, finder_flags: 0,
+                    });
+                }
+            }
             for _ in 0..300 {
                 session.runner_mut().run_steps(100_000, None);
                 if session.runner_mut().guest_menu_snapshot().menus.iter().any(|menu| {
@@ -3939,6 +3950,31 @@ mod desktop {
                         && panel.entries.as_ref().is_some_and(|entries| !entries.is_empty())
                 })
             }));
+            if matches!(capture, CaptureCase::StandardFileOpenScrolled) {
+                let before = session.runner().standard_file_snapshot().unwrap();
+                let rows = before.get_layout.as_ref().unwrap().visible_rows;
+                for _ in 0..rows + 1 {
+                    let click = super::activation::ControlActivation::begin_file(&mut session, before.guest_id,
+                        before.generation, super::activation::FileAction::ScrollDown).unwrap();
+                    let step = |session: &mut MacintoshSession| {
+                        let tick = session.runner().guest_tick().saturating_add(1);
+                        session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                    };
+                    step(&mut session);
+                    let click = click.advance(&mut session).unwrap(); step(&mut session);
+                    assert!(click.advance(&mut session).is_none());
+                    for _ in 0..5 { step(&mut session); }
+                }
+                let after = session.runner().standard_file_snapshot().unwrap();
+                assert!(after.get_layout.as_ref().unwrap().first_visible > before.get_layout.as_ref().unwrap().first_visible);
+                assert_eq!(after.entries, before.entries); assert_eq!(after.directory_id, before.directory_id);
+                std::fs::write(output.with_extension("scroll.json"), serde_json::to_vec_pretty(&serde_json::json!({
+                    "first_visible": after.get_layout.as_ref().unwrap().first_visible,
+                    "visible_rows": rows, "selected": after.selected,
+                    "entries": after.entries.as_ref().unwrap().iter().map(|entry| &entry.name).collect::<Vec<_>>(),
+                    "scope": "Actual guest Open list scrolled by ordinary arrow clicks, rendered by shared Demo; no physical wheel qualification."
+                })).unwrap()).unwrap();
+            }
             if matches!(capture, CaptureCase::StandardFileNewFolderComposed | CaptureCase::StandardFileNewFolderErrorComposed | CaptureCase::StandardFileNewFolderSelectedComposed | CaptureCase::StandardFileNewFolderLongComposed | CaptureCase::StandardFileNewFolderCaretHiddenComposed) {
                 let panel = session.runner().standard_file_snapshot().unwrap();
                 let click = super::activation::ControlActivation::begin_file(&mut session, panel.guest_id, panel.generation, super::activation::FileAction::NewFolder).unwrap();
@@ -6287,6 +6323,12 @@ mod desktop {
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_standard_file_open_scrolled.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth,
+                CaptureCase::StandardFileOpenScrolled, args.capture_scale);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_standard_file_open_composed.as_ref() {
             capture_fixture_screen(
                 &args.game,
@@ -6913,6 +6955,7 @@ mod desktop {
                         capture_standard_file_save: None,
                         capture_standard_file_save_composed: None,
                         capture_standard_file_open_composed: None,
+                        capture_standard_file_open_scrolled: None,
                         capture_standard_file_save_edited_composed: None,
                         capture_standard_file_save_caret_hidden_composed: None,
                         capture_standard_file_replace_composed: None,
