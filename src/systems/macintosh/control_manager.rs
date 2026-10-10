@@ -452,6 +452,7 @@ impl ProcessControlManagerState {
             if handle != 0 {
                 record.handle = handle;
             }
+            if record.proc_id != proc_id { record.paint.clear(); }
             record.proc_id = proc_id;
             record.popup_menu_id = popup_menu_id;
             return;
@@ -1055,27 +1056,30 @@ mod tests {
 
     #[test]
     fn control_definition_change_discards_previous_painter_background() {
-        let mut manager = ProcessControlManagerState::default();
-        manager.register(32, 128, 0, 0);
-        let record = manager.iter().next().unwrap();
-        let identity = paint::ControlPaintIdentity {
-            owner: 512, generation: record.generation, surface: 1024,
-            bounds: (0, 0, 1, 2), depth: 8, palette: 0,
-            format: paint::ControlPaintFormat::Rgba, recipe: [0; 268],
-        };
-        let slot = record.paint.clone();
-        let before = vec![238, 238, 238, 255].repeat(2);
-        let completed = vec![0, 0, 0, 255].repeat(2);
-        slot.record(identity, before.clone(), completed.clone());
-        manager.set_proc_id(128, 0);
-        assert_eq!(slot.backdrop(identity, &completed), Some(before));
-        manager.set_proc_id(128, 1);
-        assert!(slot.backdrop(identity, &completed).is_none());
-        // A new definition cannot claim patterned old painter ink as a fresh
-        // background merely because its guest handle and raster are unchanged.
-        let ambiguous = vec![0, 0, 0, 255, 238, 238, 238, 255];
-        slot.record(identity, ambiguous, completed.clone());
-        assert!(slot.backdrop(identity, &completed).is_none());
+        for reregister in [false, true] {
+            let mut manager = ProcessControlManagerState::default();
+            manager.register(32, 128, 0, 0);
+            let record = manager.iter().next().unwrap();
+            let identity = paint::ControlPaintIdentity {
+                owner: 512, generation: record.generation, surface: 1024,
+                bounds: (0, 0, 1, 2), depth: 8, palette: 0,
+                format: paint::ControlPaintFormat::Rgba, recipe: [0; 268],
+            };
+            let slot = record.paint.clone();
+            let before = vec![238, 238, 238, 255].repeat(2);
+            let completed = vec![0, 0, 0, 255].repeat(2);
+            slot.record(identity, before.clone(), completed.clone());
+            if reregister { manager.register(32, 128, 0, 0); } else { manager.set_proc_id(128, 0); }
+            assert_eq!(slot.backdrop(identity, &completed), Some(before));
+            if reregister { manager.register(32, 128, 1, 0); } else { manager.set_proc_id(128, 1); }
+            assert_eq!(manager.iter().next().unwrap().generation, identity.generation);
+            assert!(slot.backdrop(identity, &completed).is_none());
+            // A new definition cannot claim patterned old painter ink as a fresh
+            // background merely because its guest handle and raster are unchanged.
+            let ambiguous = vec![0, 0, 0, 255, 238, 238, 238, 255];
+            slot.record(identity, ambiguous, completed.clone());
+            assert!(slot.backdrop(identity, &completed).is_none());
+        }
     }
 
     #[test]

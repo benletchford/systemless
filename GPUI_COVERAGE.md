@@ -178,14 +178,14 @@ unfinished GPUI components.
 
 ### Current recognition boundary audit (2026-10-11)
 
-Source audit at `4733f2d5`: the following are actual overlay eligibility rules
+Source audit updated at `230ddca7`: the following are actual overlay eligibility rules
 in `gpui_demo_frames.rs`, not claims that every eligible variant is qualified.
 All CPU modes share these rules after their guest snapshots are normalized.
 
 | Surface | Current eligible variants | Guest rendering boundary and remaining evidence |
 | --- | --- | --- |
 | Frames | Recognized WDEF IDs 0, 1, 2, 3, 4, 5, 8, 12, 16; title strips only for 0, 4, 5, 8, 12, 16. Structure must contain content. | Unknown definitions and unavailable/complex presentation geometry retain guest pixels. `hidden_and_custom_frames_keep_guest_presentation` checks model fallback; actual lifecycle coverage for each listed variant remains required. |
-| Controls | CDEF proc IDs 0, 1, 2, 16, plus popup IDs 1008–1023 with a resolvable selected nonseparator item. | Any `ControlFontStyle` override currently declines replacement. This preserves guest font/style/mode/justification/colors but leaves GPUI support for these recognized styled controls unfinished. `overlapping_controls_follow_guest_draw_order_and_custom_fallback` checks model ownership boundaries. |
+| Controls | CDEF proc IDs 0, 1, 2, 16, plus popup IDs 1008–1023 with a resolvable selected nonseparator item. | Buttons/checkboxes/radio buttons accept selected `ControlFontStyle` flags within mask `0x0187` (font/face/size and supported additive/system selectors). Other selected Appearance fields and popup overrides retain guest drawing. Buttons/checkboxes/radio buttons additionally require an exact current retained background for their bounds; raw recipe mutation invalidates that evidence until redraw. `overlapping_controls_follow_guest_draw_order_and_custom_fallback` checks model ownership boundaries. |
 | Dialog items | The listed recognized WDEFs, exact dialog/window identity and generation, and a wholly recognized item set: button, static text, EditText, checkbox/radio with known value. | Other item kinds retain the dialog's guest presentation. `inactive_standard_dialog_items_clip_below_front_window` checks model clipping; mixed custom-content and item lifecycle qualification remain open. |
 | TextEdit | Document WDEFs 0, 4, 8, 12, 16; additionally active WDEF1 dialog fields whose actual TERec text, selection and bounds match the current edit item. Drawing must remain intact and owner port must match. | Plain candidates require face0, left justification, positive line height, supported display lines and matching resolved strike size. Styled candidates require separate whole-field paint qualification. Unsupported records retain guest pixels. `text_edit_clips_to_owner_and_front_window_with_custom_fallback` is model evidence; document and wrapped-dialog worker/compositor evidence retains its recorded scope. |
 | Lists | Document WDEFs 0, 4, 8, 12, 16; LDEF0, drawing enabled, retained text cells and matching owner port. | Overlapping nonstandard controls decline list replacement. `standard_list_clips_beneath_front_window_and_custom_definition_falls_back` checks model fallback; real draw mutation/disposal evidence and complete cell recipes remain separate requirements. |
@@ -5448,3 +5448,18 @@ monochrome New Folder accessibility replacement timed out, retained alongside
 the passing rerun. This remains a timing/performance qualification concern,
 not a closed release gate. The default application check passes in 11.13s.
 Final source hashes and all outcomes are archived in the same evidence folder.
+
+## Control re-registration paint ownership (2026-10-11)
+
+Re-registering an existing control now clears retained painter background when
+its definition ID changes, matching `set_proc_id`. Previously that path retained
+completed paint from the old definition even when the new definition had not
+drawn. The shared manager regression passes both paths: unchanged definitions
+retain their background; changed definitions discard it without changing the
+control generation, and ambiguous patterned old ink cannot regain ownership.
+Evidence is archived in `reference/gpui-demo/control-reregister-paint` (0.01s).
+This is shared manager evidence, not both-CPU guest or composed lifecycle
+qualification. The current full-suite run is pinned to earlier `e0d709d8`
+production source and does not include this change. The eligible control-font
+inventory row was also reconciled against current source flags and background
+guards. No release gate is closed by this checkpoint.
