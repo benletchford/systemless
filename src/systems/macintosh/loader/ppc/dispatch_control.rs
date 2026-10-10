@@ -2042,6 +2042,7 @@ pub(super) fn ppc_new_control_record_values(
         popup_title_width: popup.then_some(max),
         active: true,
         font_style: None,
+        paint: crate::control_manager::paint::ControlPaintSlot::default(),
         is_root: false,
         parent: 0,
         sub_controls: Vec::new(),
@@ -3348,6 +3349,45 @@ pub(super) fn ppc_control_title_style(
     }
 }
 
+/// Capture actual guest CDEF pixels without discarding retained detail.
+/// Indexed values stay native until the runner resolves the physical CLUT.
+pub(crate) fn ppc_capture_standard_control_pixels(
+    memory: &mut PpcSectionMem, gworlds: &[PpcGWorldRecord], owner: u32,
+    generation: u64, local: (i16, i16, i16, i16),
+) -> Option<(crate::control_manager::paint::ControlPaintIdentity, Vec<u8>)> {
+    let surface = ppc_live_quickdraw_surface(memory, gworlds, owner)?;
+    let front = surface.front_buffer;
+    if !matches!(front.depth, 8 | 16) { return None; }
+    let bounds = (local.0.checked_sub(surface.top)?, local.1.checked_sub(surface.left)?,
+        local.2.checked_sub(surface.top)?, local.3.checked_sub(surface.left)?);
+    let mut values = Vec::new();
+    let mut points = Vec::new();
+    for y in i32::from(bounds.0)..i32::from(bounds.2) {
+        for x in i32::from(bounds.1)..i32::from(bounds.3) {
+            values.push(ppc_quickdraw_read_pixel(memory, front, (x, y))?);
+            points.push((x, y));
+        }
+    }
+    let mut pixels: crate::memory::SavedPixels<u16> = values.into();
+    for (index, point) in points.into_iter().enumerate() {
+        super::dispatch_standard_file::ppc_capture_saved_detail(memory, front, point, &mut pixels, index);
+    }
+    if pixels.has_detail_in(0..pixels.len().checked_mul((front.depth / 8) as usize)?) { return None; }
+    let mut rgba = Vec::with_capacity(pixels.len().checked_mul(4)?);
+    for pixel in pixels.iter() {
+        if front.depth == 8 { rgba.extend_from_slice(&[*pixel as u8, 0, 0, 255]); }
+        else {
+            let rgb = ppc_rgb555_to_rgb16(*pixel).map(|channel| (channel >> 8) as u8);
+            rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+        }
+    }
+    Some((crate::control_manager::paint::ControlPaintIdentity {
+        owner, generation, surface: front.base_addr, bounds, depth: front.depth as u16, palette: 0,
+        format: if front.depth == 8 { crate::control_manager::paint::ControlPaintFormat::Indexed8 }
+            else { crate::control_manager::paint::ControlPaintFormat::Rgba },
+    }, rgba))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn ppc_draw_control_inner(
     memory: &mut PpcSectionMem,
@@ -3391,6 +3431,11 @@ pub(super) fn ppc_draw_control_inner(
     };
     let record = controls.iter().find(|record| record.handle == handle);
     let proc_id = record.map_or(0, |record| record.proc_id) & 0x0fff;
+    let paint_slot = record.filter(|_| matches!(proc_id, 0 | 1 | 2))
+        .map(|record| (record.generation, record.paint.clone()));
+    let paint_before = paint_slot.as_ref().and_then(|(generation, _)|
+        ppc_capture_standard_control_pixels(memory, gworlds, owner, *generation,
+            (top, left, bottom, right)));
     let popup_font = ppc_popup_control_font(memory, owner, proc_id);
     // Appearance Manager DeactivateControl dims a control without touching
     // contrlHilite. Draw its frame and title with the same 50% blend the 68K
@@ -3913,6 +3958,14 @@ pub(super) fn ppc_draw_control_inner(
             title_clip,
             &title,
         );
+    }
+    if let Some((generation, slot)) = paint_slot {
+        let after = ppc_capture_standard_control_pixels(memory, gworlds, owner, generation,
+            (top, left, bottom, right));
+        if let (Some((identity, before)), Some((after_identity, completed))) = (paint_before, after) {
+            if identity == after_identity { slot.record(identity, before, completed); }
+            else { slot.clear(); }
+        } else { slot.clear(); }
     }
     framed
 }

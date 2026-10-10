@@ -1,0 +1,11 @@
+{
+  "src/bin/gpui_demo.rs": "74a6e8d9694eebeae2dbbff3fc4648fbb863bb30f2b22437646977bbaa6e1102",
+  "src/bin/gpui_demo_frames.rs": "facc80214b36ec6875fabe389ff9c402a7a941902600c2c7f7dee8c9ff93ccfc",
+  "src/systems/macintosh/control_manager.rs": "ad3d83eb305e1be6473a806dd8818b34bd3d5d7a2e1af8d6fd941a8f129d24fa",
+  "src/systems/macintosh/control_manager/paint.rs": "a590293a350630e48d08cce4c4e983905d175c3fc8ca0c43ff74dcf1c2edccfd",
+  "src/systems/macintosh/trap/control.rs": "4bcd453b86d543bf7ab94c7acdf2cd506a09f49092ae1fb257381b6397dedf87",
+  "src/systems/macintosh/loader/ppc/dispatch_control.rs": "fe379c256da965ed0fe866bd5b02d5df0d8fba35388aca7e1d7c5887817b8a34",
+  "src/systems/macintosh/runner/mod.rs": "dfafcc8125c44904472af8f9624a6e2290419781015d24c8ab5aedade7b34982",
+  "tests/toolbox-showcase/build/toolbox-showcase.sit": "97440125530b880fbb962bfcd36ff5943406a0cc34669ce1e711a2cbbcd8a76a",
+  "target/debug/examples/gpui-menu-demo": "a8597c8f0d255374ae349fc036ea9798eff3f405fe8d0293c975644e63aa480e"
+}

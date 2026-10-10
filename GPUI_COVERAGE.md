@@ -5302,3 +5302,28 @@ Transparent overlays alone would retain the original bitmap labels underneath
 smooth text, so faithful removal/replacement needs a guest background recipe.
 These captures do not establish inactive states, physical hit-testing, full
 font fidelity or production readiness.
+
+## Retained standard-control backdrops (2026-10-11, working candidate)
+
+Standard button, checkbox and radio replacement now requires a validated
+before/after record from the actual guest CDEF draw. The shared compositor
+restores original background pixels beneath transparent GPUI controls, preserving
+custom paint and avoiding white patches and filtering fringes. Indexed pixels
+resolve through the same display palette/gamma conversion as the framebuffer.
+Changed or ambiguous rasters decline replacement; guest drawing remains authoritative.
+
+Selected PPC16, PPC8, colour 68k and monochrome captures, historical candidate
+hashes and limitations are under `reference/gpui-demo/control-backdrop-qualification`.
+The later gamma checkpoint visually resolves the PPC8 shade mismatch and passes
+a selected colour 68k capture plus the no-default public library check. Model
+tests cover clipping and stale paint evidence; these are not complete lifecycle,
+physical input, independent font fidelity or final release qualification. All
+eight production gates remain open.
+
+The working candidate additionally invalidates replacement presentation when
+SetControlFontStyle changes the recipe on either CPU path. It preserves prior
+backdrop evidence solely for recovery at the next genuine CDEF draw. Five
+isolated paint tests pass, including style-change-before-redraw rejection and
+backdrop recovery afterward. Snapshot reads skip invisible controls and controls
+without eligible drawing evidence. Earlier capture hashes predate these changes;
+current full integration and mutation qualification remain pending.

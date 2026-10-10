@@ -2489,6 +2489,8 @@ impl FixtureRunner {
             .map(|frame| (frame.guest_id, (frame.window.bounds, frame.window.visible)))
             .collect::<HashMap<_, _>>();
         if let Some(app) = self.native.application_mut() {
+            let display_palette = crate::display::rgba_palette_from_clut_with_gamma(
+                &app.screen_clut, &app.display_gamma.table());
             let records = app.controls.with_ref(|state| state.iter().cloned().collect::<Vec<_>>());
             records
                 .into_iter()
@@ -2504,6 +2506,15 @@ impl FixtureRunner {
                         |owner| owners.get(&owner).copied(),
                         |address| app.memory.read_u8(address),
                     ).map(|mut snapshot| {
+                        if snapshot.visible && snapshot.owner_visible
+                            && matches!(snapshot.proc_id, 0 | 1 | 2) && record.paint.has_drawing() {
+                            if let Some((identity, current)) = crate::loader::ppc::ppc_capture_standard_control_pixels(
+                                &mut app.memory, &app.gworlds, snapshot.owner_id, record.generation, snapshot.local_bounds) {
+                                if identity.bounds == snapshot.bounds {
+                                    snapshot.background = record.paint.rgba_backdrop(identity, &current, &display_palette);
+                                }
+                            }
+                        }
                         snapshot.popup_text_inset = 5;
                         if snapshot.popup_menu_id.is_some() {
                             snapshot.popup_ink = Some(crate::loader::ppc::ppc_popup_text_ink(&app.gworlds, record.active));
@@ -2520,6 +2531,8 @@ impl FixtureRunner {
                 })
                 .collect()
         } else {
+            let display_palette = crate::display::rgba_palette_from_clut_with_gamma(
+                &self.dispatcher.device_clut, &self.dispatcher.display_gamma.table());
             let records = self
                 .dispatcher
                 .control_manager
@@ -2538,6 +2551,13 @@ impl FixtureRunner {
                         |owner| owners.get(&owner).copied(),
                         |address| Some(self.bus.read_byte(address)),
                     ).map(|mut snapshot| {
+                        if snapshot.visible && snapshot.owner_visible
+                            && matches!(snapshot.proc_id, 0 | 1 | 2) && record.paint.has_drawing() {
+                            if let Some((identity, current)) = self.dispatcher.capture_standard_control_pixels(
+                                &self.bus, snapshot.owner_id, record.generation, snapshot.bounds) {
+                                snapshot.background = record.paint.rgba_backdrop(identity, &current, &display_palette);
+                            }
+                        }
                         if let Some(menu_id) = snapshot.popup_menu_id {
                             snapshot.popup_ink = Some(self.dispatcher.popup_text_ink(snapshot.enabled));
                             let (top, left, bottom, right) = snapshot.bounds;

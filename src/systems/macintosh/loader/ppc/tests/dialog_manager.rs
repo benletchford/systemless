@@ -1318,6 +1318,7 @@ fn get_new_dialog_installs_owned_control_records_in_the_live_ditl() {
             popup_title_width: None,
             active: true,
             font_style: None,
+            paint: crate::control_manager::paint::ControlPaintSlot::default(),
             is_root: false,
             parent: 0,
             sub_controls: Vec::new(),

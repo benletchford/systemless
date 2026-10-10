@@ -162,6 +162,7 @@ mod dispatch_toolbox;
 mod dispatch_window;
 pub(crate) use dispatch_collection::PpcCollectionCallbackState;
 use dispatch_control::*;
+pub(crate) use dispatch_control::ppc_capture_standard_control_pixels;
 pub(crate) use dispatch_dialog::PpcDialogCallbackState;
 use dispatch_dialog::*;
 #[cfg(test)]

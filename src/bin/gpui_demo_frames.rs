@@ -37,6 +37,21 @@ pub fn fill_texture_clips(pixels: &mut [u8], width: u32, height: u32, clips: &[R
     }
 }
 
+/// Copy a validated guest RGBA backdrop into the BGRA base texture, so
+/// filtering cannot blend a white replacement matte outside the control.
+pub fn restore_texture_backdrop(pixels: &mut [u8], width: u32, height: u32,
+    source: Rect, clip: Rect, backdrop: &[u8]) {
+    if !source.valid() || backdrop.len() != source.width() as usize * source.height() as usize * 4 { return; }
+    let viewport = Rect { top: 0, left: 0, bottom: height as i32, right: width as i32 };
+    let Some(clip) = clip.intersection(source).and_then(|clip| clip.intersection(viewport)) else { return; };
+    for y in clip.top..clip.bottom { for x in clip.left..clip.right {
+        let from = ((y - source.top) as usize * source.width() as usize + (x - source.left) as usize) * 4;
+        let to = (y as usize * width as usize + x as usize) * 4;
+        let rgba = &backdrop[from..from + 4];
+        pixels[to..to + 4].copy_from_slice(&[rgba[2], rgba[1], rgba[0], rgba[3]]);
+    } }
+}
+
 impl Rect {
     pub fn width(self) -> i32 {
         self.right - self.left
@@ -137,7 +152,11 @@ fn standard_control(control: &ControlSnapshot, menus: &GuestMenuSnapshot) -> boo
     // fields retain guest CDEF paint until their modes and colors are qualified.
     let supported_font = control.font_style.is_none_or(|style|
         matches!(control.proc_id, 0 | 1 | 2) && (style.flags as u16 & !0x0187) == 0);
-    supported_font && (matches!(control.proc_id, 0 | 1 | 2 | 16)
+    let bounds = Rect::from(control.bounds);
+    let supported_background = !matches!(control.proc_id, 0 | 1 | 2)
+        || (bounds.valid() && control.background.as_ref().is_some_and(|pixels|
+            pixels.len() == bounds.width() as usize * bounds.height() as usize * 4));
+    supported_font && supported_background && (matches!(control.proc_id, 0 | 1 | 2 | 16)
         || popup_control_label(control, menus).is_some())
 }
 
@@ -825,7 +844,25 @@ mod tests {
             popup_box_bounds: None,
             popup_font: None,
             font_style: None,
+            background: Some(vec![255; ((i32::from(bounds.2) - i32::from(bounds.0)).max(0)
+                * (i32::from(bounds.3) - i32::from(bounds.1)).max(0)) as usize * 4].into()),
         }
+    }
+
+    #[test]
+    fn backdrop_texture_uses_guest_colour_and_preserves_clipping() {
+        let original = vec![17; 4 * 3 * 4];
+        let mut pixels = original.clone();
+        let source = Rect { top: -1, left: -1, bottom: 2, right: 2 };
+        let clip = Rect { top: -1, left: -1, bottom: 1, right: 1 };
+        let mut backdrop = vec![255; 3 * 3 * 4];
+        backdrop[4 * 4..5 * 4].copy_from_slice(&[31, 63, 95, 255]);
+        super::restore_texture_backdrop(&mut pixels, 4, 3, source, clip, &backdrop);
+        assert_eq!(&pixels[..4], &[95, 63, 31, 255]);
+        assert_eq!(&pixels[4..], &original[4..]);
+        let before = pixels.clone();
+        super::restore_texture_backdrop(&mut pixels, 4, 3, source, clip, &backdrop[..8]);
+        assert_eq!(pixels, before, "incomplete backdrop must not alter guest texture");
     }
 
     #[test]
@@ -1134,9 +1171,9 @@ mod tests {
         boundary.dest_rect = (0, 0, 20, 100);
         boundary.view_rect = (0, 0, 20, 100);
         boundary.selection = (4, 4);
-        assert_eq!(boundary.caret_line(), Some((0, 4)), "68k measures canonical CR/space bytes on the first matching line");
+        assert_eq!(boundary.caret_line(), Some((1, 0)), "68k caret after a hard break belongs to the following row");
         boundary.clips_line_offsets_to_visible_text = true;
-        assert_eq!(boundary.caret_line(), Some((0, 2)), "PPC measures the trimmed first matching line");
+        assert_eq!(boundary.caret_line(), Some((1, 0)), "PPC caret after a hard break belongs to the following row");
         boundary.selection = (5, 5);
         assert_eq!(boundary.caret_line(), Some((1, 1)));
         boundary.clips_line_offsets_to_visible_text = false;
@@ -1147,9 +1184,9 @@ mod tests {
         boundary.line_starts = Some(vec![0, 3, 4, 5]);
         boundary.line_count = 3;
         boundary.view_rect = (0, 0, 30, 100);
-        assert_eq!(boundary.caret_line(), Some((1, 1)), "empty CR line retains its byte span");
+        assert_eq!(boundary.caret_line(), Some((2, 0)), "caret after an empty hard-break row belongs to the following row");
         boundary.clips_line_offsets_to_visible_text = true;
-        assert_eq!(boundary.caret_line(), Some((1, 0)));
+        assert_eq!(boundary.caret_line(), Some((2, 0)));
         boundary.active = false;
         assert_eq!(boundary.caret_line(), None);
         let viewport = Rect::from((20, 0, 160, 180));

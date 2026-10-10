@@ -1,5 +1,7 @@
 //! Architecture-neutral Control Manager records and list operations.
 
+pub(crate) mod paint;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Fixed popup menus exclude the title and the arrow/end-cap area.
@@ -171,6 +173,8 @@ pub struct ControlSnapshot {
     pub title: String,
     /// Live Appearance font/style intent; no host-font substitution is implied.
     pub font_style: Option<ControlFontStyle>,
+    /// Validated original guest backdrop in row-major RGBA at `bounds`.
+    pub background: Option<std::sync::Arc<[u8]>>,
     /// Standard popup CDEF's associated menu and label width, if applicable.
     pub popup_menu_id: Option<i16>,
     pub popup_title_width: Option<i16>,
@@ -266,6 +270,7 @@ pub(crate) fn snapshot_control_record(
         maximum,
         title: crate::mac_roman::decode_mac_roman(&title),
         font_style,
+        background: None,
         popup_menu_id: popup
             .then(|| private_popup_menu_id.or((popup_menu_id != 0).then_some(popup_menu_id)))
             .flatten(),
@@ -317,6 +322,7 @@ pub(crate) struct ProcessControlRecord {
     pub(crate) popup_title_width: Option<i16>,
     pub(crate) active: bool,
     pub(crate) font_style: Option<ControlFontStyle>,
+    pub(crate) paint: paint::ControlPaintSlot,
     pub(crate) is_root: bool,
     pub(crate) parent: u32,
     pub(crate) sub_controls: Vec<u32>,
@@ -459,6 +465,7 @@ impl ProcessControlManagerState {
             popup_title_width: None,
             active: true,
             font_style: None,
+            paint: paint::ControlPaintSlot::default(),
             is_root: false,
             parent: 0,
             sub_controls: Vec::new(),
@@ -576,6 +583,7 @@ impl ProcessControlManagerState {
 
     pub(crate) fn set_font_style(&mut self, pointer: u32, style: Option<ControlFontStyle>) {
         if let Some(record) = self.records.iter_mut().find(|record| record.pointer == pointer) {
+            if record.font_style != style { record.paint.invalidate_presentation(); }
             record.font_style = style;
         }
     }

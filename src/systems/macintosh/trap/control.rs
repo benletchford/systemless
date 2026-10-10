@@ -1492,6 +1492,13 @@ impl super::TrapDispatcher {
         let abs_left = scr_left + r_left;
         let abs_bottom = scr_top + r_bottom;
         let abs_right = scr_left + r_right;
+        let paint_slot = matches!(proc_id, 0 | 1 | 2).then(||
+            self.control_manager.with_ref(|manager| manager.iter()
+                .find(|record| record.pointer == ctrl_ptr)
+                .map(|record| (record.generation, record.paint.clone())))).flatten();
+        let paint_before = paint_slot.as_ref().and_then(|(generation, _)|
+            self.capture_standard_control_pixels(bus, window_ptr, *generation,
+                (abs_top, abs_left, abs_bottom, abs_right)));
         let occluded_pixels = self.save_control_pixels_outside_owner_visibility(
             bus,
             window_ptr,
@@ -1740,9 +1747,42 @@ impl super::TrapDispatcher {
         for (top, left, width, height, pixels) in occluded_pixels {
             self.restore_screen_rect_pixels(bus, top, left, width, height, &pixels);
         }
+        if let Some((generation, slot)) = paint_slot {
+            let after = self.capture_standard_control_pixels(bus, window_ptr, generation,
+                (abs_top, abs_left, abs_bottom, abs_right));
+            if let (Some((identity, before)), Some((after_identity, completed))) = (paint_before, after) {
+                if identity == after_identity { slot.record(identity, before, completed); }
+                else { slot.clear(); }
+            } else { slot.clear(); }
+        }
         if *self.current_port != saved_port || *self.current_gdevice != saved_gdevice {
             self.set_current_port_state(bus, cpu, saved_port, Some(saved_gdevice));
         }
+    }
+
+    /// Retain actual screen pixels around a standard draw. Subpixel detail
+    /// needs its own lossless adapter; never collapse it to palette indices.
+    pub(crate) fn capture_standard_control_pixels(
+        &self, bus: &MacMemoryBus, owner: u32, generation: u64,
+        bounds: (i16, i16, i16, i16),
+    ) -> Option<(crate::control_manager::paint::ControlPaintIdentity, Vec<u8>)> {
+        let (surface, _, _, _, depth) = self.get_screen_params();
+        if !matches!(depth, 1 | 8) { return None; }
+        let (top, left, width, height, pixels) = self.save_screen_rect_pixels(bus, bounds)?;
+        if (top, left, top + height, left + width) != bounds
+            || pixels.has_detail_in(0..pixels.len()) { return None; }
+        let mut rgba = Vec::with_capacity(pixels.len().checked_mul(4)?);
+        for pixel in pixels.iter() {
+            if depth == 1 {
+                let value = if *pixel == 0 { 255 } else { 0 };
+                rgba.extend_from_slice(&[value, value, value, 255]);
+            } else { rgba.extend_from_slice(&[*pixel, 0, 0, 255]); }
+        }
+        Some((crate::control_manager::paint::ControlPaintIdentity {
+            owner, generation, surface, bounds, depth, palette: 0,
+            format: if depth == 8 { crate::control_manager::paint::ControlPaintFormat::Indexed8 }
+                else { crate::control_manager::paint::ControlPaintFormat::Rgba },
+        }, rgba))
     }
 
     fn draw_picture_title_control(
