@@ -438,6 +438,7 @@ mod desktop {
         standard_file: Option<StandardFileSnapshot>,
         frame: Option<(u32, u32, Vec<u8>)>,
         clipboard_export: Option<(u64, Vec<u8>)>,
+        text_commit_rejection: Option<(u64, super::input::TextInputOwner)>,
         status: String,
     }
 
@@ -511,6 +512,8 @@ mod desktop {
             let mut initial_tick = session.runner().guest_tick();
             let mut previous = epoch;
             let mut queued = std::collections::VecDeque::new();
+            let mut text_commit_wait: Option<Instant> = None;
+            let mut text_commit_rejection: Option<(u64, super::input::TextInputOwner)> = None;
             let mut wheel: Option<super::scroll::WheelClick> = None;
             let mut activation: Option<super::activation::ControlActivation> = None;
             let mut pointer_down = false;
@@ -585,12 +588,33 @@ mod desktop {
                             }
                         }
                         Ok(Command::CommitText(owner, bytes)) => {
-                            if !pointer_down {
-                                if let Some(inputs) = super::input::guest_commit_inputs(&mut session, &owner, &bytes) {
-                                    for pair in inputs.chunks_exact(2).rev() {
-                                        queued.push_front(Command::CommittedInput(pair[0], pair[1]));
-                                    }
+                            let inputs = (!pointer_down).then(||
+                                super::input::guest_commit_inputs(&mut session, &owner, &bytes)).flatten();
+                            if let Some(inputs) = inputs {
+                                text_commit_wait = None;
+                                for pair in inputs.chunks_exact(2).rev() {
+                                    queued.push_front(Command::CommittedInput(pair[0], pair[1]));
                                 }
+                            } else {
+                                // Mouse-up or an earlier committed character can
+                                // still be inside guest Toolbox code. Let that
+                                // event complete before validating the next range.
+                                let events = session.runner().event_manager_snapshot();
+                                let in_event = events.queue_len != 0 || events.last_record.is_some_and(|record| record.what != 0)
+                                    || session.runner().is_ui_tracking_active();
+                                let same_field = session.runner_mut().text_edit_snapshot().records.iter().any(|record|
+                                    record.active && (record.guest_id, record.generation) == owner.identity
+                                        && record.owner_port == owner.port);
+                                let document = session.runner().standard_file_snapshot().is_none()
+                                    && !session.runner_mut().dialog_snapshot().iter().any(|dialog| dialog.visible && dialog.active);
+                                if !pointer_down && same_field && document && in_event
+                                    && text_commit_wait.get_or_insert_with(Instant::now).elapsed() < Duration::from_millis(250) {
+                                    queued.push_front(Command::CommitText(owner, bytes));
+                                    break;
+                                }
+                                text_commit_wait = None;
+                                let revision = text_commit_rejection.as_ref().map_or(1, |(revision, _)| revision + 1);
+                                text_commit_rejection = Some((revision, owner));
                             }
                         }
                         Ok(Command::CommittedInput(down, up)) => {
@@ -690,6 +714,7 @@ mod desktop {
                 *updates.lock().unwrap() = Some(Update {
                     identity: identity.clone(),
                     clipboard_export: clipboard.export.clone(),
+                    text_commit_rejection: text_commit_rejection.clone(),
                     menus,
                     menu_presented,
                     menu_height,
@@ -763,6 +788,7 @@ mod desktop {
         scrollbar_drag: Option<(u32, u64, (i16, i16))>,
         popup_tracking: Option<(u32, u64)>,
         composition: super::input::GuestComposition,
+        text_commit_rejection_revision: u64,
         keyboard: super::input::KeyboardState,
         wheel: super::scroll::WheelAccumulator,
         _window_activation: Option<Subscription>,
@@ -893,6 +919,12 @@ mod desktop {
                             this.controls = update.controls;
                             this.lists = update.lists;
                             this.list_text_plans = update.list_text_plans;
+                            if let Some((revision, owner)) = update.text_commit_rejection {
+                                if revision != this.text_commit_rejection_revision {
+                                    this.composition.reject(&owner);
+                                    this.text_commit_rejection_revision = revision;
+                                }
+                            }
                             this.text_edits = update.text_edits;
                             this.styled_text_plans = update.styled_text_plans;
                             this.standard_file = update.standard_file;
@@ -961,6 +993,7 @@ mod desktop {
                 scrollbar_drag: None,
                 popup_tracking: None,
                 composition: Default::default(),
+                text_commit_rejection_revision: 0,
                 keyboard: super::input::KeyboardState::default(),
                 wheel: super::scroll::WheelAccumulator::default(),
                 _window_activation: None,
@@ -2791,6 +2824,7 @@ mod desktop {
                     this.sync_caps_lock(window.capslock().on);
                     this.sync_host_modifiers(event.keystroke.modifiers);
                     if event.keystroke.modifiers.platform {
+                        this.composition.cancel();
                         if let Some((mac_key, character)) = guest_key(&event.keystroke) {
                             let (mac_key, character) = this.map_arrow(mac_key, character);
                             this.press_host_key(mac_key, character);
@@ -2802,6 +2836,11 @@ mod desktop {
                         this.composition.cancel();
                         cx.notify();
                         cx.stop_propagation();
+                        return;
+                    }
+                    if this.composition.preedit.is_some() {
+                        // Editing/navigation keys belong to the text service
+                        // until it commits or cancels the marked range.
                         return;
                     }
                     if this.focus.is_focused(window) && this.composition.owner().is_some()
@@ -8697,6 +8736,84 @@ mod desktop {
         }
 
         #[cfg(feature = "gpui-demo-test")]
+        #[test]
+        fn worker_preserves_rapid_composed_text_commits() {
+            use clap::Parser;
+            use super::{Args, Command, Update};
+            use std::sync::{mpsc, Arc, Mutex};
+            use std::time::{Duration, Instant};
+            struct Worker(mpsc::Sender<Command>, Option<std::thread::JoinHandle<()>>);
+            impl Drop for Worker {
+                fn drop(&mut self) {
+                    let _ = self.0.send(Command::Shutdown);
+                    if let Some(handle) = self.1.take() { let _ = handle.join(); }
+                }
+            }
+            fn wait(stage: &str, updates: &Mutex<Option<Update>>, ready: impl Fn(&Update) -> bool) -> Update {
+                let start = Instant::now();
+                loop {
+                    if let Some(update) = updates.lock().unwrap().take() {
+                        if ready(&update) { return update; }
+                    }
+                    assert!(start.elapsed() < Duration::from_secs(15), "worker did not complete composed text: {stage}");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            for (powerpc, depth) in [(false, Some(1u16)), (false, Some(8)), (true, Some(8)), (true, None)] {
+                let mut argv = vec!["gpui-menu-demo".to_string(), PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit").to_string_lossy().into_owned()];
+                if powerpc { argv.push("--prefer-powerpc".into()); }
+                if let Some(depth) = depth { argv.extend(["--screen-depth".into(), depth.to_string()]); }
+                let args = Args::try_parse_from(argv).unwrap();
+                let (sender, receiver) = mpsc::channel();
+                let updates = Arc::new(Mutex::new(None));
+                let output = updates.clone();
+                let worker = Worker(sender, Some(std::thread::spawn(move || super::run_guest(args, receiver, output, false))));
+                let initial = wait("menus", &updates, |update| update.menus.menus.iter().any(|menu| menu.id == 129));
+                let menu = initial.menus.menus.iter().find(|menu| menu.id == 129).unwrap();
+                worker.0.send(Command::Menu(129, 11, menu.guest_id, menu.generation)).unwrap();
+                let styled = wait("styled page", &updates, |update| update.text_edits.iter().any(|record| record.styled && record.drawing_intact));
+                let rect = styled.text_edits.iter().find(|record| record.styled).unwrap().global_view_rect.unwrap();
+                for input in [MacintoshInput::MouseDown { vertical: rect.0 + 4, horizontal: rect.1 + 4 },
+                    MacintoshInput::MouseUp { vertical: rect.0 + 4, horizontal: rect.1 + 4 }] {
+                    worker.0.send(Command::Input(input)).unwrap();
+                }
+                let focused = wait("focused field", &updates, |update| update.text_edits.iter().any(|record| record.styled && record.active && record.drawing_intact));
+                let record = focused.text_edits.iter().find(|record| record.styled).unwrap();
+                let actual_depth = record.paint.as_ref().unwrap().depth;
+                assert_eq!(actual_depth, depth.unwrap_or(16));
+                assert_eq!(matches!(record.line_layout_policy, systemless::runner::TextEditLineLayoutPolicy::PpcRunMetrics), powerpc);
+                let mut composition = super::super::input::GuestComposition::default();
+                let owner = super::super::input::TextInputOwner { identity: (record.guest_id, record.generation),
+                    port: record.owner_port, text: record.text.clone(), selection: record.selection.0..record.selection.1 };
+                composition.synchronize(Some(owner.clone()));
+                let mut expected = owner.text.clone(); expected.splice(owner.selection.clone(), [0x8e, b'Z']);
+                for text in ["é", "Z"] {
+                    let (owner, bytes) = composition.commit(text).unwrap();
+                    worker.0.send(Command::CommitText(owner, bytes)).unwrap();
+                }
+                let completed = wait("commits", &updates, |update| update.text_edits.iter().any(|record|
+                    (record.guest_id, record.generation) == owner.identity && record.text == expected));
+                let after = completed.text_edits.iter().find(|record| (record.guest_id, record.generation) == owner.identity).unwrap();
+                assert_eq!(after.selection, (owner.selection.start + 2, owner.selection.start + 2));
+                // A stale request must report rejection persistently, even if
+                // the frontend misses the first worker frame carrying it.
+                worker.0.send(Command::CommitText(owner.clone(), vec![b'x'])).unwrap();
+                let rejected = wait("rejection", &updates, |update| update.text_commit_rejection.is_some());
+                assert_eq!(rejected.text_commit_rejection.as_ref().unwrap().1, owner);
+                let revision = rejected.text_commit_rejection.as_ref().unwrap().0;
+                let repeated = wait("persistent rejection", &updates, |update|
+                    update.text_commit_rejection.as_ref().is_some_and(|(value, _)| *value == revision));
+                assert_eq!(repeated.text_commit_rejection.as_ref().unwrap().1, owner);
+                let actual = repeated.text_edits.iter().find(|record| (record.guest_id, record.generation) == owner.identity).unwrap();
+                assert_eq!(actual.text, expected);
+                eprintln!("PASS worker-commit-rejection powerpc={powerpc} depth={actual_depth}");
+                eprintln!("PASS worker-rapid-composition powerpc={powerpc} depth={actual_depth}");
+                drop(worker);
+            }
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
         fn platform_text_commit_reaches_guest_without_duplicate_character_events(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::{AppContext, test::TestWindowExt};
@@ -8737,20 +8854,42 @@ mod desktop {
                     window.render_frame(cx);
                 }).unwrap();
                 receiver.try_iter().for_each(drop);
-                cx.simulate_input(window.into(), "z");
+                cx.update_window(window.into(), |_, window, cx| {
+                    view.update(cx, |demo, cx| {
+                        use gpui_kit::EntityInputHandler;
+                        demo.replace_and_mark_text_in_range(None, "日😀", Some(1..3), window, cx);
+                        let start = before.selection.0;
+                        assert_eq!(demo.marked_text_range(window, cx), Some(start..start + 3));
+                        assert_eq!(demo.selected_text_range(false, window, cx).unwrap().range, start + 1..start + 3);
+                        let mut adjusted = None;
+                        assert_eq!(demo.text_for_range(start..start + 3, &mut adjusted, window, cx), Some("日😀".into()));
+                        assert!(demo.text_for_range(start + 1..start + 2, &mut adjusted, window, cx).is_none());
+                    });
+                    window.press("backspace", cx);
+                }).unwrap();
+                assert!(!receiver.try_iter().any(|command| matches!(command, super::Command::Input(_) | super::Command::CommitText(..))),
+                    "preedit navigation must not leak guest editing events");
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.press("escape", cx);
+                    assert!(view.read(cx).composition.preedit.is_none());
+                }).unwrap();
+                assert!(!receiver.try_iter().any(|command| matches!(command, super::Command::Input(_) | super::Command::CommitText(..))),
+                    "cancelling host preedit must preserve guest text");
+                cx.simulate_input(window.into(), "zz");
                 let commands: Vec<_> = receiver.try_iter().collect();
                 assert!(!commands.iter().any(|command| matches!(command, super::Command::Input(_))),
                     "platform text input must not duplicate physical character input");
                 let commits: Vec<_> = commands.into_iter().filter_map(|command| match command {
                     super::Command::CommitText(owner, bytes) => Some((owner, bytes)), _ => None,
                 }).collect();
-                assert_eq!(commits.len(), 1, "registered platform handler must commit exactly once");
-                let (owner, bytes) = &commits[0];
-                assert_eq!(bytes, b"z");
-                let inputs = super::super::input::guest_commit_inputs(&mut session, owner, bytes).unwrap();
-                for pair in inputs.chunks_exact(2) { session.deliver_input(pair[0]); session.deliver_input(pair[1]); settle(&mut session); }
+                assert_eq!(commits.len(), 2, "rapid platform characters must each commit exactly once");
+                for (owner, bytes) in &commits {
+                    assert_eq!(bytes, b"z");
+                    let inputs = super::super::input::guest_commit_inputs(&mut session, owner, bytes).unwrap();
+                    for pair in inputs.chunks_exact(2) { session.deliver_input(pair[0]); session.deliver_input(pair[1]); settle(&mut session); }
+                }
                 let after = session.runner_mut().text_edit_snapshot().records.into_iter().find(|record| record.styled).unwrap();
-                let mut expected = before.text.clone(); expected.splice(before.selection.0..before.selection.1, [b'z']);
+                let mut expected = before.text.clone(); expected.splice(before.selection.0..before.selection.1, [b'z', b'z']);
                 assert_eq!(after.text, expected);
                 eprintln!("PASS platform-text-commit powerpc={powerpc} depth={depth}");
                 cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();

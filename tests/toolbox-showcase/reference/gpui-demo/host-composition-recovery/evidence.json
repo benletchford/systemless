@@ -1,0 +1,16 @@
+{
+  "base": "f12be0a3dd489d562988dce9e55c6c47c7715dc9",
+  "sha256": {
+    "src/bin/gpui_demo.rs": "7feff8dafc23289994462d9f7ba30c2c0ab1e4dc151f8b4083eec898a4d01d58",
+    "src/bin/gpui_demo_input.rs": "185dc7af2f9c753d13d79eaa860ef8e87c16f8e2ac7fb5231b0d53c70aa4cda0",
+    "src/bin/gpui_demo_composition.rs": "59a1b64c6d64e4fa55b9413ff5b750f8b86d0404991b6087178065bb8b81532a",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "41cf3aa93f2b41d0ce1d49b2bace8572140e9692d37239a749a471744ca5c09f",
+    "target/ci-test/examples/gpui_menu_demo-957ebf4d71285d8e": "b2d82c049454c7161365b5b7195dd78ea70804f0090d2d7c8957abd8ff449c76"
+  },
+  "logs": [
+    "host-composition-recovery.log",
+    "host-composition-recovery-worker.log"
+  ],
+  "scope": "Three composition model tests; actual worker rapid commits and persistent stale-request rejection across mono68k, colour68k, PPC8 and PPC16. Worker host services disabled.",
+  "limits": "Does not qualify visible preedit, physical IME, native accessibility, modal editing, long commits or live performance. State test ran before adding worker-only assertions; production sources unchanged between builds."
+}
