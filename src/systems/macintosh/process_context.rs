@@ -2865,6 +2865,10 @@ impl SharedProcessCursorState {
         self.0.ptr_eq(&other.0)
     }
 
+    pub(crate) fn installed_image(&self) -> Option<&CursorImage> {
+        self.0.image.as_ref()
+    }
+
     pub(crate) fn visible_image(&self) -> Option<&CursorImage> {
         let state = &*self.0;
         if state.visible() {

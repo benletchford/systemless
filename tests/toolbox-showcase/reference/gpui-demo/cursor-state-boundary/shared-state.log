@@ -1,0 +1,9 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 52.26s
+     Running unittests src/lib.rs (target/debug/deps/systemless-fb1873a31fc5e0eb)
+
+running 1 test
+test systems::macintosh::runner::tests::cursor::cursor_state_is_immediately_shared_between_cpu_adapters ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6699 filtered out; finished in 0.06s
+

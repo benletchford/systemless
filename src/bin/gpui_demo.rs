@@ -482,6 +482,7 @@ mod desktop {
         text_edits: Vec<TextEditSnapshot>,
         styled_text_plans: Vec<Option<super::text::StyledTextEditPaintPlan>>,
         standard_file: Option<StandardFileSnapshot>,
+        cursor: Option<systemless::runner::CursorSnapshot>,
         frame: Option<(u32, u32, Vec<u8>)>,
         clipboard_export: Option<(u64, Vec<u8>)>,
         text_commit_rejection: Option<(u64, super::input::TextInputOwner)>,
@@ -860,6 +861,7 @@ mod desktop {
                     text_edits,
                     styled_text_plans,
                     standard_file,
+                    cursor: Some(session.runner().cursor_snapshot()),
                     frame,
                     status: format!(
                         "{architecture} · {}",
@@ -903,6 +905,7 @@ mod desktop {
         text_edits: Vec<TextEditSnapshot>,
         styled_text_plans: Vec<Option<super::text::StyledTextEditPaintPlan>>,
         standard_file: Option<StandardFileSnapshot>,
+        cursor: Option<systemless::runner::CursorSnapshot>,
         text_pointer_map: std::rc::Rc<std::cell::RefCell<Option<super::text::TextPointerMap>>>,
         text_pointer_capture: Option<(u32, u64)>,
         image: Option<Arc<RenderImage>>,
@@ -1047,6 +1050,7 @@ mod desktop {
                             this.menu_height = update.menu_height;
                             this.guest_menu_tracking = update.guest_menu_tracking;
                             this.guest_popup = update.guest_popup;
+                            this.cursor = update.cursor;
                             this.windows = update.windows;
                             this.dialogs = update.dialogs;
                             this.controls = update.controls;
@@ -1106,6 +1110,7 @@ mod desktop {
                 text_edits: Vec::new(),
                 styled_text_plans: Vec::new(),
                 standard_file: None,
+                cursor: None,
                 image: None,
                 prepared_buttons: None,
                 logo: Arc::new(Image::from_bytes(
@@ -8106,6 +8111,74 @@ mod desktop {
                     print!("{}", String::from_utf8_lossy(&output.stdout));
                     assert!(output.status.success(), "separate-process New Folder restart: PPC={powerpc}, depth={depth:?}");
                 }
+            }
+        }
+
+        #[test]
+        fn worker_publishes_guest_cursor_lifecycle_across_modes() {
+            use clap::Parser;
+            use super::{Args, Command, Update};
+            use std::sync::{mpsc, Arc, Mutex};
+            use std::time::{Duration, Instant};
+            struct Worker(mpsc::Sender<Command>, Option<std::thread::JoinHandle<()>>);
+            impl Drop for Worker {
+                fn drop(&mut self) {
+                    let _ = self.0.send(Command::Shutdown);
+                    if let Some(handle) = self.1.take() { let _ = handle.join(); }
+                }
+            }
+            fn wait(stage: &str, updates: &Mutex<Option<Update>>, ready: impl Fn(&Update) -> bool) -> Update {
+                let start = Instant::now();
+                loop {
+                    if let Some(update) = updates.lock().unwrap().take() { if ready(&update) { return update; } }
+                    assert!(start.elapsed() < Duration::from_secs(20), "cursor worker timeout: {stage}");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
+                let mut argv = vec!["gpui-menu-demo".to_string(), PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit").to_string_lossy().into_owned()];
+                if powerpc { argv.push("--prefer-powerpc".into()); }
+                if depth != 16 { argv.extend(["--screen-depth".into(), depth.to_string()]); }
+                let args = Args::try_parse_from(argv).unwrap();
+                let (sender, receiver) = mpsc::channel();
+                let updates = Arc::new(Mutex::new(None)); let output = updates.clone();
+                let worker = Worker(sender, Some(std::thread::spawn(move || super::run_guest(args, receiver, output, false))));
+                let initial = wait("menus", &updates, |update| update.menus.menus.iter().any(|menu| menu.id == 129));
+                let arrow = initial.cursor.unwrap(); assert!(arrow.visible && arrow.image.is_some());
+                let menu = initial.menus.menus.iter().find(|menu| menu.id == 129).unwrap();
+                worker.0.send(Command::Menu(129, 15, menu.guest_id, menu.generation)).unwrap();
+                let page = wait("cursor page", &updates, |update| update.menus.menus.iter().any(|menu| menu.id == 129
+                    && menu.items.iter().any(|item| item.number == 15 && item.checked)));
+                let frame = page.windows.iter().find(|frame| frame.window.title == "Toolbox Showcase").unwrap();
+                let (top, left, _, _) = frame.window.bounds;
+                let click = |v, h| {
+                    for input in [MacintoshInput::MouseDown { vertical: top + v, horizontal: left + h },
+                        MacintoshInput::MouseUp { vertical: top + v, horizontal: left + h }] {
+                        worker.0.send(Command::Input(input)).unwrap();
+                    }
+                };
+                click(262, 350);
+                let cross = wait("Cross", &updates, |update| update.cursor.as_ref()
+                    .is_some_and(|cursor| cursor.visible && cursor.image != arrow.image)).cursor.unwrap();
+                click(294, 350);
+                let hidden = wait("Hide", &updates, |update| update.cursor.as_ref()
+                    .is_some_and(|cursor| !cursor.visible && cursor.level < 0)).cursor.unwrap();
+                assert_eq!(hidden.image, cross.image);
+                click(294, 420);
+                let shown = wait("Show", &updates, |update| update.cursor.as_ref()
+                    .is_some_and(|cursor| cursor.visible && cursor.level == 0)).cursor.unwrap();
+                assert_eq!(shown.image, cross.image);
+                click(262, 420);
+                let watch = wait("Watch", &updates, |update| update.cursor.as_ref()
+                    .is_some_and(|cursor| cursor.image != cross.image)).cursor.unwrap();
+                assert!(watch.image.is_some());
+                click(262, 490);
+                wait("Arrow", &updates, |update| update.cursor.as_ref().is_some_and(|cursor|
+                    cursor.image == arrow.image && cursor.visible && cursor.level == 0));
+                worker.0.send(Command::Input(MacintoshInput::MouseMove { vertical: 111, horizontal: 123 })).unwrap();
+                wait("position", &updates, |update| update.cursor.as_ref().is_some_and(|cursor| cursor.position == (111, 123)));
+                eprintln!("PASS worker-cursor-lifecycle powerpc={powerpc} depth={depth}");
             }
         }
 

@@ -1,0 +1,17 @@
+{
+  "base_head": "13501e0bc47e3add522db2336881da0c27aeb565",
+  "scope": "Complete installed cursor state extraction and actual worker publication. Guest Cross/Watch/Hide/Show/Arrow and pointer position across four modes. Shared CPU state and retained colour pixels/masks/hotspots under hide/show pass. Frontend check preceded added tests but has same production snapshot wiring. No GPUI cursor painting, native cursor policy, invert/mask compositor fidelity, physical input/warps or notification qualification.",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "ba286e965c3a4a18bcca0e6ff9e92b08acdca82939228975f4a971634c85e51e",
+    "src/systems/macintosh/process_context.rs": "fe88ae40cb1ca52a268e21d022216c50b6ae5f73fb805681f9e4870abcc7dce5",
+    "src/systems/macintosh/runner/mod.rs": "cbf97bae4294f074b23e58f6c5ca1a0ba85a30709fa87ecb337a71edbfa41660",
+    "src/systems/macintosh/runner/cursor.rs": "a9246c548a17787481633ba175a625567a305cc027290acd3d6e8d91a06a627f",
+    "src/systems/macintosh/runner/tests/cursor.rs": "c721f3fe1831d0ea5ff8f87be4b28493b53c5ceb5db2f0a5ce48e32ea442f527"
+  },
+  "sha256": {
+    "worker.log": "75f073b40b6e64df79fb5099e19264eed2dd151c9390be3c17af35b09f7b1653",
+    "colour-state.log": "0befb6e69fd7a2ba2068dd696164682ffc1b9513954a1870cbfe7c422cf86ae0",
+    "shared-state.log": "f2fbc010ad4d0d65ee84f49681aa229af62d43556586626302d2c208b56e660f",
+    "frontend-check.log": "203b82ea52b3268e4402fd606901ea72f6e03c96139f0aa288de0fa4fe2c7bad"
+  }
+}

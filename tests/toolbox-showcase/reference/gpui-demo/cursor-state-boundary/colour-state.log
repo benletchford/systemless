@@ -1,0 +1,10 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 50.06s
+     Running unittests src/lib.rs (target/debug/deps/systemless-fb1873a31fc5e0eb)
+
+running 1 test
+test systems::macintosh::runner::tests::cursor::cursor_snapshot_retains_colour_image_and_mask_when_hidden ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6700 filtered out; finished in 0.06s
+

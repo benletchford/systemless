@@ -217,6 +217,8 @@ mod debug_support_disabled;
 pub(crate) use idle::*;
 pub(crate) use interrupt::*;
 pub(crate) use ppc_exec::*;
+mod cursor;
+pub use cursor::CursorSnapshot;
 pub use vfs::*;
 pub(crate) use virtual_idle::*;
 
@@ -2246,6 +2248,15 @@ impl FixtureRunner {
                 || ppc_state.is_some_and(|state| state.update_event_seen),
             cursor_visible: self.dispatcher.cursor_visible(),
             cursor_level: self.dispatcher.cursor_level(),
+        }
+    }
+
+    pub fn cursor_snapshot(&self) -> CursorSnapshot {
+        CursorSnapshot {
+            image: self.dispatcher.cursor_state.installed_image().cloned(),
+            visible: self.dispatcher.cursor_visible(),
+            level: self.dispatcher.cursor_level(),
+            position: self.dispatcher.mouse_position(),
         }
     }
 
