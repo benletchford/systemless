@@ -210,6 +210,7 @@ pub enum PpcImportDispatcherTarget {
     FillCRect,
     FrameRoundRect,
     PaintRoundRect,
+    EraseRoundRect,
     InvalRect,
     InvalRgn,
     ValidRect,
@@ -3063,6 +3064,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "FillCRect") => PpcImportDispatcherTarget::FillCRect,
         ("InterfaceLib", "FrameRoundRect") => PpcImportDispatcherTarget::FrameRoundRect,
         ("InterfaceLib", "PaintRoundRect") => PpcImportDispatcherTarget::PaintRoundRect,
+        ("InterfaceLib", "EraseRoundRect") => PpcImportDispatcherTarget::EraseRoundRect,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "InvalRect" | "invalrect",
