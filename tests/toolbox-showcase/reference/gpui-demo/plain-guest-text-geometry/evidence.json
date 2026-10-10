@@ -1,0 +1,12 @@
+{
+  "base": "95804f9fdc293f3aa53d0bcc090d7825280eb759",
+  "sha256": {
+    "src/bin/gpui_demo.rs": "7740b1ed47c76b250be5be55d31a401190756569618e743461af13e81b0f7969",
+    "src/bin/gpui_demo_composition.rs": "a36e373618bd1ba0dd1aa67afe53d960c9e4e28bf20846ed409422b7c1b5fddd",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "41cf3aa93f2b41d0ce1d49b2bace8572140e9692d37239a749a471744ca5c09f",
+    "target/ci-test/examples/gpui_menu_demo-957ebf4d71285d8e": "79855d2b079f0e8d0eb3ca017542f6c99981c28fa2cf6f655868a58fb4f14665"
+  },
+  "command": "cargo test --locked --profile ci-test --example gpui-menu-demo --features gpui-demo-test plain_guest_text_service_geometry_uses_actual_field -- --nocapture",
+  "scope": "Actual guest-created plain TextEdit page7, guest mouse activation, eligible native handler ownership, first-line insertion bounds and point query at four scales in mono68k/colour68k/PPC8/PPC16; complete snapshot unchanged.",
+  "limits": "Test-window queries with explicitly set host activation and scene transforms. No visible preedit, marked geometry, physical IME, actual plain alignment switching, scrolling, overlap, screenshots or independent native oracle."
+}

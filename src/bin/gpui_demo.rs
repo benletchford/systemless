@@ -8815,6 +8815,66 @@ mod desktop {
 
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
+        fn plain_guest_text_service_geometry_uses_actual_field(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::{AppContext, EntityInputHandler, Bounds, point, px};
+            cx.update(gpui_kit::init);
+            for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 7));
+                wait_for_menu(&mut session, 129, 7, true);
+                settle(&mut session);
+                let initial = session.runner_mut().text_edit_snapshot().records.into_iter()
+                    .find(|record| !record.styled && record.global_view_rect.is_some()).unwrap();
+                let rect = initial.global_view_rect.unwrap();
+                for input in [MacintoshInput::MouseDown { vertical: rect.0 + 4, horizontal: rect.1 + 4 },
+                    MacintoshInput::MouseUp { vertical: rect.0 + 4, horizontal: rect.1 + 4 }] {
+                    session.deliver_input(input); settle(&mut session);
+                }
+                let records = session.runner_mut().text_edit_snapshot().records;
+                let before = records.iter().find(|record| record.guest_id == initial.guest_id).unwrap().clone();
+                assert!(before.active && before.drawing_intact);
+                let original = before.clone();
+                let (sender, _receiver) = std::sync::mpsc::channel();
+                let (window, view) = cx.update(|cx| gpui_kit::open_window(Default::default(), cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap());
+                cx.update_window(window.into(), |_, window, cx| {
+                    view.update(cx, |demo, cx| {
+                        demo.width = 800; demo.height = 600;
+                        demo.text_edits = records;
+                        demo.windows = session.runner_mut().window_frame_snapshot();
+                        demo.host_active = Some(true);
+                        window.focus(&demo.focus, cx);
+                        demo.synchronize_composition(window, cx);
+                        assert!(demo.composition.owner().is_some());
+                        let geometry = super::composition::text_line_geometry(&before, 0).unwrap();
+                        let start = before.line_starts.as_ref().unwrap()[0];
+                        let offset = start + 1;
+                        let dest = before.global_dest_rect.unwrap();
+                        let x = i32::from(dest.1) - i32::from(before.dest_rect.1) + i32::from(geometry.left)
+                            + i32::from(super::composition::text_range_width(&before, start..offset).unwrap());
+                        let y = i32::from(dest.0) - i32::from(before.dest_rect.0) + i32::from(geometry.top);
+                        for scale in [0.75, 1., 1.5, 2.] {
+                            demo.display_origin = (37., 29.); demo.display_scale = scale;
+                            let bounds = demo.bounds_for_range(offset..offset, Bounds::default(), window, cx).unwrap();
+                            assert_eq!(f32::from(bounds.origin.x), 37. + x as f32 * scale);
+                            assert_eq!(demo.character_index_for_point(point(px(37. + x as f32 * scale), px(29. + (y as f32 + 1.) * scale)), window, cx), Some(offset));
+                        }
+                        assert_eq!(demo.text_edits.iter().find(|record| record.guest_id == original.guest_id).unwrap(), &original);
+                    });
+                }).unwrap();
+                eprintln!("PASS plain-guest-text-geometry powerpc={powerpc} depth={depth}");
+                cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
+            }
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
         fn platform_text_commit_reaches_guest_without_duplicate_character_events(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::{AppContext, test::TestWindowExt};
             cx.update(gpui_kit::init);
