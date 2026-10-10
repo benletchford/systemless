@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.89.0](https://github.com/benletchford/systemless/compare/v0.88.0...v0.89.0) (2026-10-10)
+
+
+### Features
+
+* **catalogue:** add original Angband ports ([96bee04](https://github.com/benletchford/systemless/commit/96bee04905d4e78a9bb2b90563758dfcdc0d0bba))
+* **catalogue:** select original archives by architecture ([cff06e6](https://github.com/benletchford/systemless/commit/cff06e6910ab98a49da78301fe081d56ea5e89a4))
+
+
+### Bug Fixes
+
+* **quickdraw:** clear PPC text cells in srcCopy mode ([df61439](https://github.com/benletchford/systemless/commit/df61439139d340a7ccc4e30df860b4cfe41c728a))
+* **www:** forward shifted punctuation to the guest ([356f6f4](https://github.com/benletchford/systemless/commit/356f6f45699a3b240b10b410dc547d469e4d0966))
+
 ## [0.88.0](https://github.com/benletchford/systemless/compare/v0.87.0...v0.88.0) (2026-10-10)
 
 
