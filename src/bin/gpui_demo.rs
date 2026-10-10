@@ -9049,9 +9049,10 @@ mod desktop {
                 MouseUpEvent,
             };
             cx.update(gpui_kit::init);
-            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
-                let mut session = MacintoshSession::new(true, depth);
+            for (powerpc, depth) in [(false, 1), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, if powerpc { None } else { Some(depth) });
                 session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
                 let app = session
                     .load_path(
                         &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -9063,6 +9064,7 @@ mod desktop {
                 assert!(session.runner_mut().select_guest_menu_item(129, 16));
                 wait_for_menu(&mut session, 129, 16, true);
                 settle(&mut session);
+                assert_eq!(session.runner().presented_screen_depth(), Some(u32::from(depth)));
                 for scale in [0.75, 1., 1.5, 2.] {
                     let (sender, receiver) = std::sync::mpsc::channel();
                     let (window, view) = cx.update(|cx| {
