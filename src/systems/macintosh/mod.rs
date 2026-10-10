@@ -16,6 +16,7 @@ pub(crate) mod cursor_manager;
 pub mod debug_overlay;
 pub(crate) mod desk_manager;
 pub(crate) mod dialog_manager;
+pub(crate) mod disk_init_manager;
 pub mod disk_image;
 pub mod display;
 pub(crate) mod event_queue;

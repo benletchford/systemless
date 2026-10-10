@@ -13128,43 +13128,14 @@ impl super::TrapDispatcher {
                 let selector = bus.read_word(sp);
                 let operation = pack2_operation_route(self.current_trap_word, selector);
                 self.current_selector_operation = operation.map(|route| route.operation_id);
-                let (arg_bytes, has_result) = match selector {
-                    // FUNCTION DIBadMount(where: Point; evtMessage: LongInt): Integer
-                    // IM:Files 5-18..5-19. where=4 (Point by value),
-                    // evtMessage=4 (LongInt by value). Returns 0 = "no
-                    // error / user proceeded" — the only result code that
-                    // never causes a caller to escalate to DoError.
-                    0x0000 => (8u32, true),
-                    // PROCEDURE DILoad / PROCEDURE DIUnload — no args, no
-                    // result. IM:Files 5-15..5-16. The Disk Init Manager
-                    // is always "loaded" in our HLE so both are no-ops.
-                    0x0002 | 0x0004 => (0u32, false),
-                    // FUNCTION DIFormat(drvNum: Integer): OSErr
-                    // FUNCTION DIVerify(drvNum: Integer): OSErr
-                    // IM:Files 5-19..5-20. Both return noErr on the
-                    // single VFS volume.
-                    0x0006 | 0x0008 => (2u32, true),
-                    // FUNCTION DIZero(drvNum: Integer; volName: Str255): OSErr
-                    // IM:Files 5-21. Pascal Str255 is pushed by value
-                    // (256 bytes); MPW C glue marshals from the
-                    // ConstStr255Param pointer into a stack-local
-                    // Str255 before invoking the trap. Total args:
-                    // drvNum(2) + Str255(256) = 258.
-                    0x000A => (258u32, true),
-                    _ => {
-                        // No other selectors in IM:Files 5-24 summary.
-                        // Pop just the selector and return noErr; future
-                        // System additions would land in a new arm here.
-                        cpu.write_reg(Register::A7, sp + 2);
-                        cpu.write_reg(Register::D0, 0);
-                        return Some(Ok(()));
+                if let Some(evaluation) = crate::disk_init_manager::evaluate_pack2(selector) {
+                    if let Some(result) = evaluation.result_word {
+                        bus.write_word(sp + evaluation.pop_bytes_68k, result as u16);
                     }
-                };
-                let pop_total = 2 + arg_bytes;
-                if has_result {
-                    bus.write_word(sp + pop_total, 0);
+                    cpu.write_reg(Register::A7, sp + evaluation.pop_bytes_68k);
+                } else {
+                    cpu.write_reg(Register::A7, sp + 2);
                 }
-                cpu.write_reg(Register::A7, sp + pop_total);
                 cpu.write_reg(Register::D0, 0);
                 Ok(())
             }

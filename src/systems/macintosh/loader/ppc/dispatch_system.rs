@@ -7,8 +7,11 @@ pub enum PpcSystemCompatibilityOperation {
     CallComponentUpp,
     CharByte,
     DiBadMount,
+    DiFormat,
     DiLoad,
     DiUnload,
+    DiVerify,
+    DiZero,
     Debugger,
     Dequeue,
     Enqueue,
@@ -379,7 +382,12 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             let result = if params.handled() { 1 } else { 0 };
             PpcImportAction::Return(result)
         }
-        PpcSystemCompatibilityOperation::DiBadMount => PpcImportAction::Return(0),
+        PpcSystemCompatibilityOperation::DiBadMount
+        | PpcSystemCompatibilityOperation::DiFormat
+        | PpcSystemCompatibilityOperation::DiVerify
+        | PpcSystemCompatibilityOperation::DiZero => {
+            PpcImportAction::Return(ppc_i16_result(crate::disk_init_manager::NO_ERR))
+        }
         PpcSystemCompatibilityOperation::FindNextComponent
         | PpcSystemCompatibilityOperation::OpenDefaultComponent => PpcImportAction::Return(0),
         PpcSystemCompatibilityOperation::CtbGetCtbVersion => PpcImportAction::Return(0x0200),
