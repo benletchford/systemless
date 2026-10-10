@@ -1,5 +1,5 @@
 //! Bounded, read-only UDIF decoding. Publisher archives stay unchanged.
-//! Layout: https://github.com/libyal/libmodi/blob/main/documentation/Mac%20OS%20disk%20image%20types.asciidoc
+//! Layout: <https://github.com/libyal/libmodi/blob/main/documentation/Mac%20OS%20disk%20image%20types.asciidoc>
 use base64::{engine::general_purpose::STANDARD, Engine};
 use std::{io::Read, ops::Range};
 
