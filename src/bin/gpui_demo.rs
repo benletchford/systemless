@@ -5140,6 +5140,8 @@ mod desktop {
                     assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
                     let whole = demo.bounds_for_range(start..start + text.encode_utf16().count(), Bounds::default(), window, cx)
                         .expect("a range spanning scrolled marked text must return its first visible portion");
+                    assert_eq!(demo.bounds_for_range(start..start + text.encode_utf16().count() + 1, Bounds::default(), window, cx), Some(whole),
+                        "a query crossing the stage into guest suffix returns the first visible stage portion");
                     let visible = demo.character_index_for_point(point(whole.origin.x, whole.origin.y + px(1.)), window, cx).unwrap();
                     assert!(visible >= start && visible < start + text.encode_utf16().count());
                     if label == "long-inactive-row" {

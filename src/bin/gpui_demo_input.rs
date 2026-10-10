@@ -294,6 +294,32 @@ impl GuestComposition {
         (mapped.end <= owner.text.len()).then_some(mapped)
     }
 
+    /// Split candidate geometry requests at guest/stage ownership boundaries.
+    /// Return source order so the platform receives the first painted rectangle.
+    pub fn geometry_ranges(&self, range: std::ops::Range<usize>) -> Option<Vec<std::ops::Range<usize>>> {
+        let owner = self.owner.as_ref()?;
+        let preedit = self.preedit.as_ref()?;
+        let units: Vec<_> = preedit.text.encode_utf16().collect();
+        let start = owner.selection.start;
+        let end = start.checked_add(units.len())?;
+        let length = end.checked_add(owner.text.len().checked_sub(owner.selection.end)?)?;
+        if range.start > range.end || range.end > length { return None; }
+        for offset in [range.start, range.end] {
+            if offset >= start && offset <= end {
+                String::from_utf16(&units[..offset - start]).ok()?;
+            }
+        }
+        if range.is_empty() { return Some(vec![range]); }
+        let mut boundaries = vec![range.start];
+        for boundary in [start, end] {
+            if boundary > range.start && boundary < range.end && boundaries.last() != Some(&boundary) {
+                boundaries.push(boundary);
+            }
+        }
+        boundaries.push(range.end);
+        Some(boundaries.windows(2).map(|pair| pair[0]..pair[1]).collect())
+    }
+
     /// Host replacement ranges use document UTF-16 offsets. A range inside
     /// staged Unicode can be edited without changing the pinned guest range.
     /// Return the insertion offset within the resulting stage for its selection.
@@ -363,6 +389,19 @@ mod composition_tests {
             assert!(state.surrounding_guest_range(range).is_none());
         }
     }
+    #[test]
+    fn geometry_queries_split_at_stage_boundaries_and_reject_surrogate_splits() {
+        let mut state = GuestComposition::default();
+        state.synchronize(Some(owner()));
+        assert!(state.mark("日😀", 1..3));
+        assert_eq!(state.geometry_ranges(0..5), Some(vec![0..1, 1..4, 4..5]));
+        assert_eq!(state.geometry_ranges(1..5), Some(vec![1..4, 4..5]));
+        assert_eq!(state.geometry_ranges(4..4), Some(vec![4..4]));
+        for range in [2..3, 3..5, 0..6, 5..4] {
+            assert!(state.geometry_ranges(range).is_none());
+        }
+    }
+
     #[test]
     fn composition_keeps_unicode_preedit_and_commits_mac_roman_atomically() {
         let mut state = GuestComposition::default();
