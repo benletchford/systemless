@@ -43,6 +43,22 @@ compatibility:
       Actual public replay, combat, sustained play, saves and audio remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4441
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: fec43f23c31b130cf7fafbb62b4571df48504320
+    architecture: 68k
+    environment: >-
+      Actual public systemless.org/moria player at v0.93.0, normal Chrome 68K
+      worker/WebGL runtime. File > New and original character creation enter town;
+      ordinary arrow input moves east, south, west and north, including the per-game
+      south mapping. Visible town navigation reaches the staircase, greater-than
+      descends to 50 feet, and Left/Up move west/north inside the dungeon. Captures
+      inspected. Actual public R2 archive response is HTTP 200 and its body matches
+      the pinned SHA-256 and 290684-byte size. No fixture, interception, archive
+      modification or guest-state writes. Combat, sustained play, saves and audio
+      remain unverified. Whole native package publication is tracked separately.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4441
 runtime:
   executable_path: Moria 1.1.1.cpt/Moria
   screen_depth: 8
@@ -125,5 +141,7 @@ nonprofit terms.
 Bounded native 68K testing covers character creation, town movement, descent
 to 50 feet and movement in the dungeon. Browser worker/WebGL testing also covers
 character creation, town movement, descent to 50 feet and dungeon movement.
-Public-route testing, combat, sustained play, saves and audio remain unverified.
+Public v0.93.0 testing confirms character creation, all four town directions,
+descent to 50 feet and west/north dungeon movement from the exact hosted archive.
+Combat, sustained play, saves and audio remain unverified.
 This original package contains no PowerPC version.
