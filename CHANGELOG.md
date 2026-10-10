@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.92.0](https://github.com/benletchford/systemless/compare/v0.91.2...v0.92.0) (2026-10-10)
+
+
+### Features
+
+* add the original Monkey Shines trial with custom control tracking ([029983a](https://github.com/benletchford/systemless/commit/029983a3040074e3b5e2f9ea327217946cdbec29))
+
+
+### Bug Fixes
+
+* track live global mouse points over standard buttons ([08b9143](https://github.com/benletchford/systemless/commit/08b91435e41d3b89a6288e016e172b04c3def181))
+
 ## [0.91.2](https://github.com/benletchford/systemless/compare/v0.91.1...v0.91.2) (2026-10-10)
 
 
