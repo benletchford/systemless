@@ -1,0 +1,286 @@
+{
+  "scope": "All four CPU/display contact sheets were directly viewed at native image pixel resolution. This reviews the first 250 guest pixels of each selected two-line field, including mixed styles and both lines. No full-scene/right-edge, caret/activation, pointer, native font oracle or performance qualification is implied. Original full-scene review remains separately scoped in review.json.",
+  "finding": "Smooth styled glyph coverage, distinct condensed/extended spacing, guest colour differences and two-line selection are visible in all16 field crops. Application-drawn scene content is outside this crop review.",
+  "sheets": [
+    {
+      "file": "ppc16-field-review.png",
+      "sha256": "3361aa4baf60a28f0239c28247c33bd5031758415b8434b484ccb2188a591141",
+      "crops": [
+        {
+          "source": "multiline-ppc16-selected-none-0.75.png",
+          "source_sha256": "126f6b32118a3b87e497d81613daa388d1e857bb2953eb2495ac67991375f0fb",
+          "source_box": [
+            103,
+            181,
+            486,
+            253
+          ],
+          "sheet_box": [
+            0,
+            25,
+            383,
+            97
+          ]
+        },
+        {
+          "source": "multiline-ppc16-selected-none-1.png",
+          "source_sha256": "a6ceefef4205cc05dfe81fd427e29dffb469f795571dc6deb70a3bfabf1270d2",
+          "source_box": [
+            138,
+            242,
+            648,
+            338
+          ],
+          "sheet_box": [
+            0,
+            122,
+            510,
+            218
+          ]
+        },
+        {
+          "source": "multiline-ppc16-selected-none-1.5.png",
+          "source_sha256": "7a429f8d391b07e7cbdbce4c10fbd97d401bc4b361b9db687f310feefde3abe1",
+          "source_box": [
+            207,
+            363,
+            972,
+            507
+          ],
+          "sheet_box": [
+            0,
+            243,
+            765,
+            387
+          ]
+        },
+        {
+          "source": "multiline-ppc16-selected-none-2.png",
+          "source_sha256": "caf3308610ef937695ce7e1940e2c81e3c02be7d6096038805a117ceb9826bb3",
+          "source_box": [
+            276,
+            484,
+            1296,
+            676
+          ],
+          "sheet_box": [
+            0,
+            412,
+            1020,
+            604
+          ]
+        }
+      ]
+    },
+    {
+      "file": "ppc8-field-review.png",
+      "sha256": "02c3a0c4eb7d5252a60e7b10253cb560c9e331708005665c2f6965762f6021d7",
+      "crops": [
+        {
+          "source": "multiline-ppc8-selected-none-0.75.png",
+          "source_sha256": "d2dae06a1f411043889440a977f4d8dbc0eca66b1a5ab4050a773fd5764bbde3",
+          "source_box": [
+            103,
+            181,
+            486,
+            253
+          ],
+          "sheet_box": [
+            0,
+            25,
+            383,
+            97
+          ]
+        },
+        {
+          "source": "multiline-ppc8-selected-none-1.png",
+          "source_sha256": "88603fb54a0a5a75f7308d5eb7b7eccd428c94106ba8716c7f5e9be54b9e98e0",
+          "source_box": [
+            138,
+            242,
+            648,
+            338
+          ],
+          "sheet_box": [
+            0,
+            122,
+            510,
+            218
+          ]
+        },
+        {
+          "source": "multiline-ppc8-selected-none-1.5.png",
+          "source_sha256": "256b162eabb4dc82b28b7e5df417c828ead0d387922dfe70ba75941cc2f79d4b",
+          "source_box": [
+            207,
+            363,
+            972,
+            507
+          ],
+          "sheet_box": [
+            0,
+            243,
+            765,
+            387
+          ]
+        },
+        {
+          "source": "multiline-ppc8-selected-none-2.png",
+          "source_sha256": "bf374293971eeee3d50c9c8b5159b6782a7d11db81a76b12c2cc66f3dae248ce",
+          "source_box": [
+            276,
+            484,
+            1296,
+            676
+          ],
+          "sheet_box": [
+            0,
+            412,
+            1020,
+            604
+          ]
+        }
+      ]
+    },
+    {
+      "file": "mono-field-review.png",
+      "sha256": "d3b86f624a43001b20bad65e61cd8f20d96a8d2db56557fd7f80d2fb2d4b9690",
+      "crops": [
+        {
+          "source": "multiline-mono-selected-none-0.75.png",
+          "source_sha256": "fece3fbbeabc1f91b09f547036494e21d24b5b9a7987144b649f1eafa618b6e0",
+          "source_box": [
+            103,
+            181,
+            486,
+            253
+          ],
+          "sheet_box": [
+            0,
+            25,
+            383,
+            97
+          ]
+        },
+        {
+          "source": "multiline-mono-selected-none-1.png",
+          "source_sha256": "19c648b56f18a37f4568b3edda769ef7e2f200a6763ddf5b7489cf52f197eb8c",
+          "source_box": [
+            138,
+            242,
+            648,
+            338
+          ],
+          "sheet_box": [
+            0,
+            122,
+            510,
+            218
+          ]
+        },
+        {
+          "source": "multiline-mono-selected-none-1.5.png",
+          "source_sha256": "a2a1acb7331b5e650b3ed1079ff0e1f8bb217444d085e5fe377e565f244a8d71",
+          "source_box": [
+            207,
+            363,
+            972,
+            507
+          ],
+          "sheet_box": [
+            0,
+            243,
+            765,
+            387
+          ]
+        },
+        {
+          "source": "multiline-mono-selected-none-2.png",
+          "source_sha256": "be61d5cfd59b4f4153ff3aed3bff51719a37e8b60b6d5e79799a19c5776e02bf",
+          "source_box": [
+            276,
+            484,
+            1296,
+            676
+          ],
+          "sheet_box": [
+            0,
+            412,
+            1020,
+            604
+          ]
+        }
+      ]
+    },
+    {
+      "file": "colour-field-review.png",
+      "sha256": "24db66de603acb271f44f7dfbd983fec2337bec1bcc562975e708e4c9202114b",
+      "crops": [
+        {
+          "source": "multiline-colour-selected-none-0.75.png",
+          "source_sha256": "ad119d562eda95365d4a27badf7c51f144850c565694f2482c2d3b266997aefb",
+          "source_box": [
+            103,
+            181,
+            486,
+            253
+          ],
+          "sheet_box": [
+            0,
+            25,
+            383,
+            97
+          ]
+        },
+        {
+          "source": "multiline-colour-selected-none-1.png",
+          "source_sha256": "d26f21af71366772ef25a12a9b4d1147b4da865b15a7c30edb4894308de6e7a1",
+          "source_box": [
+            138,
+            242,
+            648,
+            338
+          ],
+          "sheet_box": [
+            0,
+            122,
+            510,
+            218
+          ]
+        },
+        {
+          "source": "multiline-colour-selected-none-1.5.png",
+          "source_sha256": "4885d68c09066969fa7bec0ea5c00566cb62601202e1750213c8de487fe23944",
+          "source_box": [
+            207,
+            363,
+            972,
+            507
+          ],
+          "sheet_box": [
+            0,
+            243,
+            765,
+            387
+          ]
+        },
+        {
+          "source": "multiline-colour-selected-none-2.png",
+          "source_sha256": "db5ffca1141abf13eed49eff20f23c979f51852f2eec0b07135ab64b6870a27b",
+          "source_box": [
+            276,
+            484,
+            1296,
+            676
+          ],
+          "sheet_box": [
+            0,
+            412,
+            1020,
+            604
+          ]
+        }
+      ]
+    }
+  ]
+}
