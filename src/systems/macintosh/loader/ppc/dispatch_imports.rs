@@ -1868,7 +1868,9 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::InvertRgn => {
             unreachable!("QuickDraw imports return through dispatch_quickdraw_import")
         }
-        PpcImportDispatcherTarget::FrameRoundRect | PpcImportDispatcherTarget::PaintRoundRect => {
+        PpcImportDispatcherTarget::FrameRoundRect
+        | PpcImportDispatcherTarget::PaintRoundRect
+        | PpcImportDispatcherTarget::EraseRoundRect => {
             unreachable!("QuickDraw imports return through dispatch_quickdraw_import")
         }
         PpcImportDispatcherTarget::InvalRect
