@@ -12192,8 +12192,7 @@ mod desktop {
         }
 
         #[cfg(feature = "gpui-demo-test")]
-        #[gpui_kit::test]
-        fn standard_file_wheel_actions_scroll_actual_guest_lists(cx: &mut gpui_kit::TestAppContext) {
+        fn standard_file_wheel_cases(cx: &mut gpui_kit::TestAppContext, open: bool) {
             use super::super::activation::{ControlActivation, FileAction};
             use gpui_kit::{test::TestWindowExt, AppContext, InputEvent, ScrollDelta, ScrollWheelEvent, TouchPhase};
             cx.update(gpui_kit::init);
@@ -12216,12 +12215,16 @@ mod desktop {
                     session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
                 };
                 step(&mut session);
-                session.deliver_input(MacintoshInput::MouseDown { vertical: 266, horizontal: 400 });
-                session.deliver_input(MacintoshInput::MouseUp { vertical: 266, horizontal: 400 });
+                session.deliver_input(MacintoshInput::MouseDown { vertical: 266, horizontal: if open { 126 } else { 400 } });
+                session.deliver_input(MacintoshInput::MouseUp { vertical: 266, horizontal: if open { 126 } else { 400 } });
                 let before = (0..100).find_map(|_| { step(&mut session); session.runner().standard_file_snapshot() }).unwrap();
-                let layout = before.put_layout.as_ref().unwrap();
-                assert!(before.entries.as_ref().unwrap().len() > layout.visible_rows);
-                let point = (layout.list.0 + 5, layout.list.1 + 5);
+                let (list, visible_rows, first_visible) = if open {
+                    let layout = before.get_layout.as_ref().unwrap(); (layout.list, layout.visible_rows, layout.first_visible)
+                } else {
+                    let layout = before.put_layout.as_ref().unwrap(); (layout.list, layout.visible_rows, layout.first_visible)
+                };
+                assert!(before.entries.as_ref().unwrap().len() > visible_rows);
+                let point = (list.0 + 5, list.1 + 5);
                 let target = super::super::scroll::file_target(&before, point, true).unwrap();
                 assert!(super::super::scroll::file_target(&before, point, false).is_none());
                 assert!(super::super::scroll::file_target(&before, (0, 0), true).is_none());
@@ -12258,21 +12261,35 @@ mod desktop {
                     }
                     for _ in 0..5 { step(session); }
                 };
-                for _ in 0..layout.visible_rows + 1 { click(&mut session, FileAction::ScrollDown); }
+                for _ in 0..visible_rows + 1 { click(&mut session, FileAction::ScrollDown); }
                 let down = session.runner().standard_file_snapshot().unwrap();
-                assert!(down.put_layout.as_ref().unwrap().first_visible > layout.first_visible);
+                assert!((if open { down.get_layout.as_ref().unwrap().first_visible } else { down.put_layout.as_ref().unwrap().first_visible }) > first_visible);
                 assert_eq!(down.entries, before.entries); assert_eq!(down.directory_id, before.directory_id);
                 assert_eq!(down.name, before.name); assert_eq!(down.name_selection, before.name_selection);
-                for _ in 0..layout.visible_rows + 1 { click(&mut session, FileAction::ScrollUp); }
+                for _ in 0..visible_rows + 1 { click(&mut session, FileAction::ScrollUp); }
                 let up = session.runner().standard_file_snapshot().unwrap();
-                assert_eq!(up.put_layout.as_ref().unwrap().first_visible, layout.first_visible);
-                click(&mut session, FileAction::NewFolder);
-                let nested = session.runner().standard_file_snapshot().unwrap();
-                assert!(nested.new_folder.is_some());
-                assert!(super::super::scroll::file_target(&nested, point, true).is_none());
-                assert!(ControlActivation::begin_file(&mut session, target.id, target.generation, FileAction::ScrollDown).is_none());
-                eprintln!("PASS Standard File wheel guest actions powerpc={powerpc} depth={depth}");
+                assert_eq!(if open { up.get_layout.as_ref().unwrap().first_visible } else { up.put_layout.as_ref().unwrap().first_visible }, first_visible);
+                if !open {
+                    click(&mut session, FileAction::NewFolder);
+                    let nested = session.runner().standard_file_snapshot().unwrap();
+                    assert!(nested.new_folder.is_some());
+                    assert!(super::super::scroll::file_target(&nested, point, true).is_none());
+                    assert!(ControlActivation::begin_file(&mut session, target.id, target.generation, FileAction::ScrollDown).is_none());
+                }
+                eprintln!("PASS Standard File wheel guest actions powerpc={powerpc} depth={depth} open={open}");
             }
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn standard_file_wheel_actions_scroll_actual_guest_lists(cx: &mut gpui_kit::TestAppContext) {
+            standard_file_wheel_cases(cx, false);
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn standard_file_open_wheel_scrolls_actual_guest_lists(cx: &mut gpui_kit::TestAppContext) {
+            standard_file_wheel_cases(cx, true);
         }
 
         #[cfg(feature = "gpui-demo-test")]

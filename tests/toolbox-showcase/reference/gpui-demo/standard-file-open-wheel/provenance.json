@@ -1,0 +1,5 @@
+{
+  "base_head": "3ef6f3e4da31a2f4b169832efdf0f25f1fccbe99",
+  "source_sha256": "4c5cbb534f96d6e5dd2f10d8ee2f873e647031ac4413653c9ecb4f2861e78b58",
+  "scope": "Test-only helper extraction and actual Open guest workflow; all four CPU/depth cases exit0. GPUI fractional wheel event ownership, viewport forward/reverse, directory/entry preservation and stale identity rejection. No physical wheel or composed scrolling visual qualification. Whitespace-only indentation correction after compile."
+}
