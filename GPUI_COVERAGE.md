@@ -4928,3 +4928,15 @@ archived in `reference/gpui-demo/post-replacement-builds`. These are cached
 compile checks; final linking, package tests and runtime qualification remain
 open. The release checklist now reflects disjoint worker evidence across all
 editor targets without claiming visual/physical or broad gate completion.
+
+
+### Long marked-text wrapped-dialog captures
+
+The shared Demo wrapped-dialog capture now checks a long marked row, horizontal
+selection reveal, painted range bounds, point mapping and exact cancellation
+restoration. Actual captures pass at PPC8 scale1.5 and PPC16 scale0.75; actual
+depth/scale sidecars and both reviewed long-stage images are archived in
+`reference/gpui-demo/modal-long-stage`. Guest dialog text remains in place while
+the separate Unicode staging surface reveals its selected suffix. Other
+CPU/scale/modal variants, file-panel staging and physical/native qualification
+remain open. These two cases do not establish broad visual readiness.
