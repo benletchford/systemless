@@ -76,6 +76,54 @@ fn appearance_control_data_round_trips_tag_and_actual_size() {
 }
 
 #[test]
+fn appearance_control_font_overrides_change_classic_ink_and_restore_default() {
+    let (mut disp, mut cpu, mut bus) = setup_with_port();
+    let window = bus.read_long(bus.read_long(cpu.read_reg(Register::A5)));
+    let base = bus.read_long(window + 2);
+    let rows = u32::from(bus.read_word(window + 6) & 0x3fff);
+    assert!(base != 0 && rows != 0);
+    disp.set_screen_mode_for_test(base, rows, 512, 342, 1);
+    for proc_id in [0, 1, 2] {
+        let pointer = bus.alloc(296);
+        let handle = bus.alloc(4);
+        bus.write_long(handle, pointer);
+        let bounds = (30, 30, 70, 240);
+        disp.initialize_control_record(&mut bus, pointer, window, bounds,
+            b"Sound", true, 0, 0, 1, proc_id, 0);
+        disp.control_manager.register(handle, pointer, proc_id, 0);
+        let mut captures = Vec::new();
+        for style in [None, Some((18, 0)), Some((18, 1)), Some((72, 1)), None] {
+            disp.control_manager.set_font_style(pointer, style.map(|(size, face)|
+                crate::control_manager::ControlFontStyle {
+                    flags: 7, font: 3, size, style: face, mode: 0,
+                    justification: 0, foreground: [0; 3], background: [0; 3],
+                }));
+            clear_1bpp_screen(&mut bus, base, rows, 342);
+            disp.draw_control(&mut cpu, &mut bus, pointer);
+            captures.push((0..rows * 342).map(|offset| bus.read_byte(base + offset))
+                .collect::<Vec<_>>());
+            assert_eq!((bus.read_word(pointer + 8) as i16, bus.read_word(pointer + 10) as i16,
+                bus.read_word(pointer + 12) as i16, bus.read_word(pointer + 14) as i16), bounds);
+            assert_eq!(bus.read_word(pointer + 18), 0);
+        }
+        assert!(captures[0] != captures[1], "proc {proc_id} ignored font/size override");
+        assert!(captures[1] != captures[2], "proc {proc_id} ignored face override");
+        assert!(captures[0] == captures[4], "proc {proc_id} failed to restore original ink");
+        assert!(captures[3].iter().any(|byte| *byte != 0), "oversized font must still paint");
+        for y in 0..342usize {
+            for x in 0..512usize {
+                if y >= bounds.0 as usize && y < bounds.2 as usize
+                    && x >= bounds.1 as usize && x < bounds.3 as usize { continue; }
+                let offset = y * rows as usize + x / 8;
+                let mask = 0x80 >> (x % 8);
+                assert_eq!(captures[3][offset] & mask, captures[0][offset] & mask,
+                    "proc {proc_id} oversized font escaped control at {x},{y}");
+            }
+        }
+    }
+}
+
+#[test]
 fn appearance_handle_control_click_tracks_button_across_release() {
     let (mut disp, mut cpu, mut bus) = setup_with_port();
     let window = *disp.current_port;

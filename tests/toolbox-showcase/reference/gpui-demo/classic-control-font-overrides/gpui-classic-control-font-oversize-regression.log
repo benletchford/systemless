@@ -1,0 +1,9 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.13s
+     Running unittests src/lib.rs (target/debug/deps/systemless-257ba83b63f6679f)
+
+running 1 test
+test systems::macintosh::trap::control::tests::appearance_control_font_overrides_change_classic_ink_and_restore_default ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6702 filtered out; finished in 0.14s
+

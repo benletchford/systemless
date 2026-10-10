@@ -3893,6 +3893,16 @@ impl SharedProcessControlManager {
         self.with_ref(|manager| manager.contains_pointer(pointer))
     }
 
+    pub(crate) fn control_title_style(&self, pointer: u32) -> crate::control_manager::ControlTitleStyle {
+        self.with_ref(|manager| {
+            let record = manager.iter().find(|record| record.pointer == pointer);
+            crate::control_manager::resolve_control_title_style(
+                record.map_or(0, |record| record.proc_id),
+                record.and_then(|record| record.font_style.as_ref()),
+            )
+        })
+    }
+
     pub(crate) fn set_font_style(
         &self,
         pointer: u32,

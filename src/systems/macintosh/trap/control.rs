@@ -1468,6 +1468,7 @@ impl super::TrapDispatcher {
         let title = decode_mac_roman(&title_bytes);
 
         let proc_id = self.control_manager.proc_id(ctrl_ptr);
+        let title_style = self.control_manager.control_title_style(ctrl_ptr);
 
         // Save pen state, set to defaults (PenNormal)
         let saved_pn_size = self.pn_size;
@@ -1501,7 +1502,7 @@ impl super::TrapDispatcher {
             0 => {
                 // pushButProc — push button
                 self.draw_push_button_control(
-                    cpu, bus, &r, abs_top, abs_left, abs_bottom, abs_right, hilite, &title,
+                    cpu, bus, &r, abs_top, abs_left, abs_bottom, abs_right, hilite, &title, title_style,
                 );
             }
             1 => {
@@ -1543,8 +1544,8 @@ impl super::TrapDispatcher {
                 }
 
                 // Draw label text to the right of the checkbox
-                let font_id = 0i16;
-                let font_size = 12i16;
+                let font_id = title_style.font;
+                let font_size = title_style.size;
                 let metrics = get_font_metrics(font_id, font_size);
                 let text_x = scr_left + layout.label_left;
                 let text_y = scr_top
@@ -1555,7 +1556,7 @@ impl super::TrapDispatcher {
                         metrics.descent,
                     )
                     .1;
-                self.draw_control_label_text(
+                self.draw_control_label_text_with_face(
                     bus,
                     abs_top,
                     scr_left + box_left + box_size + 1,
@@ -1567,6 +1568,7 @@ impl super::TrapDispatcher {
                     font_id,
                     font_size,
                     hilite == 255,
+                    title_style.face,
                 );
 
                 if self.ui_theme_id() == crate::ui_theme::UiThemeId::ClassicSystem7 && matches!(hilite, 1 | 11) {
@@ -1619,8 +1621,8 @@ impl super::TrapDispatcher {
                 }
 
                 // Draw label text to the right of the circle
-                let font_id = 0i16;
-                let font_size = 12i16;
+                let font_id = title_style.font;
+                let font_size = title_style.size;
                 let metrics = get_font_metrics(font_id, font_size);
                 let text_x = scr_left + layout.label_left;
                 let text_y = scr_top
@@ -1631,7 +1633,7 @@ impl super::TrapDispatcher {
                         metrics.descent,
                     )
                     .1;
-                self.draw_control_label_text(
+                self.draw_control_label_text_with_face(
                     bus,
                     abs_top,
                     scr_left + circle_left + circle_size + 1,
@@ -1643,6 +1645,7 @@ impl super::TrapDispatcher {
                     font_id,
                     font_size,
                     hilite == 255,
+                    title_style.face,
                 );
 
                 if self.ui_theme_id() == crate::ui_theme::UiThemeId::ClassicSystem7 && matches!(hilite, 1 | 11) {
@@ -1724,6 +1727,7 @@ impl super::TrapDispatcher {
                 ) {
                     self.draw_push_button_control(
                         cpu, bus, &r, abs_top, abs_left, abs_bottom, abs_right, hilite, &title,
+                        crate::control_manager::resolve_control_title_style(proc_id, None),
                     );
                 }
             }
@@ -1812,6 +1816,7 @@ impl super::TrapDispatcher {
         abs_right: i16,
         hilite: u8,
         title: &str,
+        title_style: crate::control_manager::ControlTitleStyle,
     ) {
         if self.draw_theme_push_button_chrome(
             bus,
@@ -1823,7 +1828,7 @@ impl super::TrapDispatcher {
             matches!(hilite, 1 | 10),
             false,
         ) {
-            self.draw_control_text(bus, abs_top, abs_left, abs_bottom, abs_right, title);
+            self.draw_control_text(bus, abs_top, abs_left, abs_bottom, abs_right, title, title_style);
             if hilite == 255 {
                 self.dim_rect(bus, abs_top, abs_left, abs_bottom, abs_right);
             }
@@ -1898,7 +1903,7 @@ impl super::TrapDispatcher {
         self.draw_round_rect(cpu, bus, r, oval, oval, ShapeOp::Frame);
         slot.finish_rounded_control(detail, |address| bus.read_byte(address));
 
-        self.draw_control_text(bus, abs_top, abs_left, abs_bottom, abs_right, title);
+        self.draw_control_text(bus, abs_top, abs_left, abs_bottom, abs_right, title, title_style);
 
         if matches!(hilite, 1 | 10) {
             // Pressed: invert the interior.
@@ -1925,13 +1930,25 @@ impl super::TrapDispatcher {
         abs_bottom: i16,
         abs_right: i16,
         title: &str,
+        title_style: crate::control_manager::ControlTitleStyle,
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        let font_id = 0i16; // Chicago (system font)
-        let font_size = 12i16;
+        let font_id = title_style.font;
+        let font_size = title_style.size;
+        let clip = (font_id != 0 || !matches!(font_size, 0 | 12) || title_style.face != 0)
+            .then_some((abs_top, abs_left, abs_bottom, abs_right));
         let metrics = get_font_metrics(font_id, font_size);
-        let text_w = Self::fb_measure_string(title, font_id, font_size);
+        let text_style = crate::quickdraw::text::QuickDrawTextStyle::from_bits(title_style.face);
+        let text_w = if title_style.face == 0 {
+            Self::fb_measure_string(title, font_id, font_size)
+        } else {
+            title.chars().map(|ch| {
+                let advance = crate::quickdraw::text::get_glyph(font_id, font_size, ch)
+                    .map_or(6, |(glyph, _)| i32::from(glyph.advance));
+                text_style.glyph_advance(advance)
+            }).sum::<i32>().clamp(0, i32::from(i16::MAX)) as i16
+        };
         let (text_x, text_y) = crate::control_manager::centered_control_label_origin(
             (abs_top, abs_left, abs_bottom, abs_right),
             text_w,
@@ -1953,7 +1970,7 @@ impl super::TrapDispatcher {
             // low-level `cscSetEntries` palette animation does not update.
             // For a screen-backed draw the hardware CLUT is the authority.
             let ink = super::pict::closest_clut_index(0, 0, 0, &self.device_clut);
-            Self::fb_draw_string_styled_index(
+            Self::fb_draw_string_styled_with_index(
                 bus,
                 screen_base,
                 row_bytes,
@@ -1965,13 +1982,15 @@ impl super::TrapDispatcher {
                 title,
                 font_id,
                 font_size,
-                0,
-                ink,
+                title_style.face,
+                Some(ink),
+                true,
+                clip,
             );
             return;
         }
 
-        Self::fb_draw_string(
+        Self::fb_draw_string_styled_with_index(
             bus,
             screen_base,
             row_bytes,
@@ -1983,6 +2002,10 @@ impl super::TrapDispatcher {
             title,
             font_id,
             font_size,
+            title_style.face,
+            None,
+            true,
+            clip,
         );
     }
 
@@ -2000,15 +2023,36 @@ impl super::TrapDispatcher {
         font_size: i16,
         inactive: bool,
     ) {
+        self.draw_control_label_text_with_face(bus, label_top, label_left, label_bottom,
+            label_right, text_x, text_y, title, font_id, font_size, inactive, 0);
+    }
+
+    pub(crate) fn draw_control_label_text_with_face(
+        &self,
+        bus: &mut MacMemoryBus,
+        label_top: i16,
+        label_left: i16,
+        label_bottom: i16,
+        label_right: i16,
+        text_x: i16,
+        text_y: i16,
+        title: &str,
+        font_id: i16,
+        font_size: i16,
+        inactive: bool,
+        face: u8,
+    ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
+        let clip = (font_id != 0 || !matches!(font_size, 0 | 12) || face != 0)
+            .then_some((label_top, label_left, label_bottom, label_right));
         if inactive && pixel_size == 8 {
             // Control drawing writes directly to the screen framebuffer, so
             // resolve against the same live device CLUT used by screenshots
             // instead of TheGDevice, which games may leave on an offscreen
             // palette while redrawing dialogs.
             let ink = self.inactive_control_title_index();
-            Self::fb_draw_string_styled_index(
+            Self::fb_draw_string_styled_with_index(
                 bus,
                 screen_base,
                 row_bytes,
@@ -2020,13 +2064,15 @@ impl super::TrapDispatcher {
                 title,
                 font_id,
                 font_size,
-                0,
-                ink,
+                face,
+                Some(ink),
+                true,
+                clip,
             );
             return;
         }
 
-        Self::fb_draw_string(
+        Self::fb_draw_string_styled_with_index(
             bus,
             screen_base,
             row_bytes,
@@ -2038,6 +2084,10 @@ impl super::TrapDispatcher {
             title,
             font_id,
             font_size,
+            face,
+            None,
+            true,
+            clip,
         );
         if inactive {
             // MTE 1992 p. 5-13 describes inactive controls as dimmed; when
