@@ -681,3 +681,12 @@ Chiral: direct normal-origin browser archive fetch returned HTTP 200, 1,043,239 
 The owned browser was stopped cleanly. Five additions are now independently verified live: iPuzzle, Kalaha, FiveStones, Bubble Trouble and Chiral. The repository has 193 records and 175 launch flags; the old enabled baseline remains unaudited, so these counts do not establish 175 qualified games.
 
 Public evidence: [catalogue issue receipt](https://github.com/benletchford/systemless/issues/4353#issuecomment-6097754203). Publication issues #4391 and #4393 are closed after the public checks; graphics #4361 and historical held-click #4373 remain open.
+
+
+## Swoop original installer intake
+
+[Original archive index](https://www.vintageapplemac.com/software/games/s/) lists Swoop 1.0.2. The intact original installer archive is 2,739,051 bytes, SHA-256 `53dbe824bc2a21c4b6a6b1e2c510a01d6d700f67d3401f66a1ab8cc4d98a70d5`. Running its original Smaller Installer 2.0.1 produced twelve files. Their original Swoop License permits unchanged complete nonprofit distribution, retains a 30-day evaluation and requires permission for profit distribution. Licence, registration application, release notes, FAQs and all media remain intact. The game FAQ explicitly states this release is not PowerPC-native.
+
+[Loader PR #4400](https://github.com/benletchford/systemless/pull/4400), source `4d2c64b90585aed2f08bd193ff4ae6214a769658`, expands the installer payload and selects Swoop through ordinary archive startup. All twelve decoded files / both forks match the actual installer output, with matching original file CRCs. Five codec/metadata tests pass. Native 68K reaches the original trial and menu, starts an active wave, moves with X and fires with period. A finite 1,073-frontend-tick replay passes four measured pixel assertions and six exact screenshot comparisons, with zero instruction-budget exhaustion; the repeat proves determinism rather than independent emulator oracle agreement.
+
+The original gameplay screenshot is cropped to the centred 640-by-480 game surface, excluding the native menu bar and surrounding framebuffer. Browser qualification, promotion and public release remain pending; launch stays disabled. Full waves, scoring, sustained play, saves and audio remain unverified. [Intake and native evidence](https://github.com/benletchford/systemless/issues/4398).
