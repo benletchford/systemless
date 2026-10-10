@@ -4857,6 +4857,13 @@ impl super::TrapDispatcher {
 
     pub(crate) fn select_active_dialog_text_range(&mut self, bus: &mut MacMemoryBus,
         dialog: u32, item_number: i16, range: std::ops::Range<usize>) -> bool {
+        if self.retained_modal_dialog_click.is_some()
+            || self.dialog_tracking.as_ref().is_some_and(|tracking|
+                tracking.dialog_ptr != dialog || tracking.edit_item != item_number
+                    || tracking.active_button.is_some() || tracking.active_popup.is_some()
+                    || tracking.active_user_item.is_some() || tracking.flash_remaining != 0) {
+            return false;
+        }
         if bus.read_word(dialog + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET) as i16 != item_number - 1 {
             return false;
         }

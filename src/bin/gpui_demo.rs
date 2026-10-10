@@ -649,7 +649,12 @@ mod desktop {
                                     panel.as_ref().is_some_and(|panel|
                                         session.runner_mut().select_standard_file_text_range(panel, range.clone()))
                                 }
-                                super::input::TextInputTarget::Dialog { .. } => false,
+                                super::input::TextInputTarget::Dialog { item, .. } => {
+                                    let dialog = session.runner_mut().dialog_snapshot().into_iter()
+                                        .find(|dialog| (dialog.guest_id, dialog.generation) == owner.identity);
+                                    dialog.as_ref().is_some_and(|dialog|
+                                        session.runner_mut().select_dialog_text_range(dialog, item, range.clone()))
+                                }
                             };
                             if selected_range {
                                 text_commit_wait = None;
@@ -671,7 +676,9 @@ mod desktop {
                                     super::input::TextInputTarget::StandardFile { new_folder } => session.runner().standard_file_snapshot()
                                         .and_then(|panel| super::input::standard_file_text_owner(&panel)).is_some_and(|actual|
                                             actual.identity == owner.identity && actual.new_folder == new_folder),
-                                    super::input::TextInputTarget::Dialog { .. } => false,
+                                    super::input::TextInputTarget::Dialog { item, content_revision } => session.runner_mut().dialog_snapshot().iter().any(|dialog|
+                                        dialog.visible && dialog.active && (dialog.guest_id, dialog.generation) == owner.identity
+                                            && dialog.content_revision == content_revision && dialog.edit_field == Some(item)),
                                 };
                                 if !pointer_down && same_field && in_event
                                     && text_commit_wait.get_or_insert_with(Instant::now).elapsed() < Duration::from_millis(250) {
@@ -9882,6 +9889,23 @@ mod desktop {
                         && dialog.items[8].selection == Some(((insertion + 1) as i16, (insertion + 1) as i16))));
                 assert_eq!(corrected.dialogs.iter().find(|dialog| dialog.guest_id == owner.identity.0).unwrap().items[6].text, before.items[6].text);
                 eprintln!("PASS worker-modal-retained-suffix-caret powerpc={powerpc} depth={actual_depth}");
+                let current = super::super::input::dialog_text_owner_with_records(
+                    &corrected.dialogs, &corrected.windows, &corrected.text_edits, &corrected.controls).unwrap();
+                let replacement_owner = super::super::input::TextInputOwner { identity: current.identity,
+                    target: super::super::input::TextInputTarget::Dialog { item: current.item, content_revision: current.content_revision },
+                    text: current.text.clone(), selection: current.selection };
+                let mut expected = current.text.clone(); expected.splice(0..1, *b"KL");
+                let expected = systemless::systems::macintosh::mac_roman::decode_mac_roman(&expected);
+                worker.0.send(Command::ReplaceText(replacement_owner.clone(), 0..1, b"KL".to_vec(), Some(1))).unwrap();
+                let replaced = wait("modal explicit replacement", &updates, |update| update.dialogs.iter().any(|dialog|
+                    dialog.guest_id == owner.identity.0 && dialog.items[8].text == expected && dialog.items[8].selection == Some((1, 1))));
+                assert_eq!(replaced.dialogs.iter().find(|dialog| dialog.guest_id == owner.identity.0).unwrap().items[6].text, before.items[6].text);
+                worker.0.send(Command::ReplaceText(replacement_owner.clone(), 0..1, vec![b'X'], None)).unwrap();
+                let rejected = wait("stale modal replacement", &updates, |update| update.text_commit_rejection.as_ref()
+                    .is_some_and(|(_, rejected)| rejected == &replacement_owner));
+                assert_eq!(rejected.dialogs.iter().find(|dialog| dialog.guest_id == owner.identity.0).unwrap().items[8].text, expected);
+                eprintln!("PASS worker-modal-explicit-replacement powerpc={powerpc} depth={actual_depth} wrapped={wrapped}");
+
                 eprintln!("PASS worker-modal-rapid-composition-and-rejection powerpc={powerpc} depth={actual_depth}");
                 drop(worker);
             }
