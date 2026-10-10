@@ -1,0 +1,109 @@
+{
+  "scope": "All 16 composed selected multiline fixture images visually reviewed across mono68k, colour68k, PPC8/PPC16 and scales 0.75/1/1.5/2. Does not establish all fonts/styles, editing, caret states, physical host integration, or performance.",
+  "images": [
+    {
+      "file": "multiline-ppc16-selected-none-0.75.png",
+      "sha256": "4e9ba532defad12f1a97b28796c146ed42158faedb8061f27d8160316273d186",
+      "observations": "Two-line mixed styled field appears smooth. Selection inverts native physical colours on the first line and the underlined Font run on the second line; view bounds retained. Application-drawn labels remain guest pixels. This sample alone does not establish all CPU/scale states or font fidelity.",
+      "capture_sha256": "edf78e9fcc6a7c8d39f08950fb80fb771c4cb2fdda5bf404c8f623b6da227ee5"
+    },
+    {
+      "file": "multiline-ppc8-selected-none-0.75.png",
+      "sha256": "baa027ef2ff03141aebd6eb6cec249e156c3057e0fbf0fe3c5e4d30f759067c2",
+      "observations": "Two-line field appears smooth with selected text and underlined Font run. Native CPU selection colours and view bounds retained; guest application-drawn panel content stays native, including monochrome black panels. Sampled appearance only.",
+      "capture_sha256": "f941d98f9f4677c281dda72e9de523580b0338f15aa3502f7458bef3deed1be0"
+    },
+    {
+      "file": "multiline-mono-selected-none-0.75.png",
+      "sha256": "961c887e0d995f37167ebff4a72778d7bc5d91781626c7c7e3ef4b95bd67f1ae",
+      "observations": "Two-line field appears smooth with selected text and underlined Font run. Native CPU selection colours and view bounds retained; guest application-drawn panel content stays native, including monochrome black panels. Sampled appearance only.",
+      "capture_sha256": "3cffe3ab7b1c4f071a7c2364f4a6860a759d581d3a1e8ef4169e5bc9f751917c"
+    },
+    {
+      "file": "multiline-ppc16-selected-none-2.png",
+      "sha256": "4a9ce4947ad494443711e3cbcc0ce694122838bf493a7d8c5b8b80381107fe8c",
+      "observations": "At scale2 the two-line mixed field remains smooth, with native selection rectangles and the second-line underline visible; outer field bounds and native application content retained. Monochrome custom black panels remain native. Explicit appearance sample only.",
+      "preview_note": "Image tool resized3200x2400 to1824x1368 for visual inspection; not a per-pixel appearance proof.",
+      "capture_sha256": "ba5ebf9dfc4383ff957c6a7f839b02accca180b33afe86fa31815cb89b0ee57d"
+    },
+    {
+      "file": "multiline-mono-selected-none-2.png",
+      "sha256": "630301896c314c49047236b6f1fedfaa7c26d75a269cf133ca1f53a1b1492ad9",
+      "observations": "At scale2 the two-line mixed field remains smooth, with native selection rectangles and the second-line underline visible; outer field bounds and native application content retained. Monochrome custom black panels remain native. Explicit appearance sample only.",
+      "preview_note": "Image tool resized3200x2400 to1824x1368 for visual inspection; not a per-pixel appearance proof.",
+      "capture_sha256": "bae9687c56a30afb2ee34be70d7391d10eb6b46cfeb81b3c72e810fe22823d4b"
+    },
+    {
+      "file": "multiline-colour-selected-none-0.75.png",
+      "sha256": "2f9e7b3fb626236158035a4ae05a5b8b25335c00c487c74975a0a3506fbdef66",
+      "observations": "Colour68k two-line mixed field appears smooth with native inverted selection colours and underlined Font on the second line. Selection/view bounds and application-owned content retained. Sampled appearance only.",
+      "capture_sha256": "eaec0a1fbc13048938efed667581d0eaa327bf0c0f2ebc46a17f727682039aa5"
+    },
+    {
+      "file": "multiline-colour-selected-none-1.5.png",
+      "sha256": "2a63d1b00ffbf9a2b20c87b3d78236ae07dd7aa0bf0f580b6f8456871cd419fb",
+      "observations": "Reviewed composed two-line mixed field: smooth text, native selection colours, second-line underline, and retained view bounds. Application-drawn panel content remains guest rendering. Appearance evidence for this fixture only.",
+      "preview_note": "Image tool resized the original to 1824x1368 for inspection; not per-pixel appearance proof.",
+      "capture_sha256": "826ebfb22a58a048a66f5ad07562146916091c997952fe23aa6a684bc0e3209d"
+    },
+    {
+      "file": "multiline-colour-selected-none-1.png",
+      "sha256": "d6e58885d9d44af15c52f0d614ba6f883427bc20d2f97ef0e53906876efcfe0f",
+      "observations": "Reviewed composed two-line mixed field: smooth text, native selection colours, second-line underline, and retained view bounds. Application-drawn panel content remains guest rendering. Appearance evidence for this fixture only.",
+      "capture_sha256": "0493682cf49ec6a3e2d180d5e4f837f38560a1b4d5076603a01f2cbbccbd7770"
+    },
+    {
+      "file": "multiline-colour-selected-none-2.png",
+      "sha256": "c1029399f87d7092c22590c8f54a1043a0a5830e601c9f34a527f5f1285ec009",
+      "observations": "Reviewed composed two-line mixed field: smooth text, native selection colours, second-line underline, and retained view bounds. Application-drawn panel content remains guest rendering. Appearance evidence for this fixture only.",
+      "preview_note": "Image tool resized the original to 1824x1368 for inspection; not per-pixel appearance proof.",
+      "capture_sha256": "89774c26cfe11a3d65868384227eb1f90c6dfe6944723b3e954a6a6024f8ac0a"
+    },
+    {
+      "file": "multiline-mono-selected-none-1.5.png",
+      "sha256": "ae7b8715c9da0f4629584c02f99f100bd286c1f957dfbd210b9e30a6bc1d90fc",
+      "observations": "Reviewed composed two-line mixed field: smooth text, native selection colours, second-line underline, and retained view bounds. Application-drawn panel content remains guest rendering. Appearance evidence for this fixture only.",
+      "preview_note": "Image tool resized the original to 1824x1368 for inspection; not per-pixel appearance proof.",
+      "capture_sha256": "079f7e06eef2ad2db874bca64a4c4220d61301aa3e3876733a8b480febbcfa84"
+    },
+    {
+      "file": "multiline-mono-selected-none-1.png",
+      "sha256": "4e2b930cbac0d6a64b029147490615c9e611fcf89d9ded26050950d104e3f36e",
+      "observations": "Reviewed composed two-line mixed field: smooth text, native selection colours, second-line underline, and retained view bounds. Application-drawn panel content remains guest rendering. Appearance evidence for this fixture only.",
+      "capture_sha256": "f317b678a4decd4906037b97c9ec9a1683eaea66476703b8be61423e573b1af4"
+    },
+    {
+      "file": "multiline-ppc16-selected-none-1.5.png",
+      "sha256": "c4e6aea638726b5d83f51de663911d8d4236d594a8892f9c3889ead1572c4068",
+      "observations": "Reviewed composed two-line mixed field: smooth text, native selection colours, second-line underline, and retained view bounds. Application-drawn panel content remains guest rendering. Appearance evidence for this fixture only.",
+      "preview_note": "Image tool resized the original to 1824x1368 for inspection; not per-pixel appearance proof.",
+      "capture_sha256": "abfeeb8d38b6c85e67460961069167ce8c944250d8234a6c3be77d5e3c15649a"
+    },
+    {
+      "file": "multiline-ppc16-selected-none-1.png",
+      "sha256": "bccb98e2a963dd1125a602136b798e40b3b6112ef5302c8546aaa80aee992703",
+      "observations": "Reviewed composed two-line mixed field: smooth text, native selection colours, second-line underline, and retained view bounds. Application-drawn panel content remains guest rendering. Appearance evidence for this fixture only.",
+      "capture_sha256": "22440c70bb2513eba6460de1cb4e0a8e28b436ee3a6e10d784f38a27346c7608"
+    },
+    {
+      "file": "multiline-ppc8-selected-none-1.5.png",
+      "sha256": "c8addc04577453bfd19f53599ea25c50b163b73687b060b85a61c38a4bcab05f",
+      "observations": "Reviewed composed two-line mixed field: smooth text, native selection colours, second-line underline, and retained view bounds. Application-drawn panel content remains guest rendering. Appearance evidence for this fixture only.",
+      "preview_note": "Image tool resized the original to 1824x1368 for inspection; not per-pixel appearance proof.",
+      "capture_sha256": "2271950c37505d8443e9ff30909f1b17c39c1cd2c66fc3dedc45ddb81f66f8d5"
+    },
+    {
+      "file": "multiline-ppc8-selected-none-1.png",
+      "sha256": "7a13c130421bac3a42d182cacce7394b8249c0670d6f639d8e424f37bf33e785",
+      "observations": "Reviewed composed two-line mixed field: smooth text, native selection colours, second-line underline, and retained view bounds. Application-drawn panel content remains guest rendering. Appearance evidence for this fixture only.",
+      "capture_sha256": "2eae9083f97cb9597ef1d07b22ea599ae48a1788af63960044fb81a21b654ea8"
+    },
+    {
+      "file": "multiline-ppc8-selected-none-2.png",
+      "sha256": "ccf79f4b64f2a2c9d9ec8b1432e4ea4ac467a658089bbb8c373180c80c4c6b7d",
+      "observations": "Reviewed composed two-line mixed field: smooth text, native selection colours, second-line underline, and retained view bounds. Application-drawn panel content remains guest rendering. Appearance evidence for this fixture only.",
+      "preview_note": "Image tool resized the original to 1824x1368 for inspection; not per-pixel appearance proof.",
+      "capture_sha256": "a73378291f1c760c09be192c14c4a000ba1d86fe74aa157f1ce1a4b2c133fabb"
+    }
+  ]
+}
