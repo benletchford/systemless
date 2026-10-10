@@ -5088,7 +5088,8 @@ mod desktop {
                 let prefix = "row\r\n".repeat(20);
                 let last = prefix.encode_utf16().count();
                 for (label, text, selection) in [("single", "日😀".to_owned(), 1..3),
-                    ("multiline", format!("{prefix}日😀"), last + 1..last + 3)] {
+                    ("multiline", format!("{prefix}日😀"), last + 1..last + 3),
+                    ("crlf-interior", format!("日😀\r\n{prefix}tail"), 4..4)] {
                 visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
                     demo.host_active = Some(true);
                     window.focus(&demo.focus, cx);
@@ -5112,8 +5113,15 @@ mod desktop {
                         assert!(visible > start, "the original first line has scrolled out of view");
                         assert!(demo.bounds_for_range(start..start, Bounds::default(), window, cx).is_none());
                     }
-                    assert_eq!(demo.character_index_for_point(point(bounds.origin.x, bounds.origin.y + px(1.)), window, cx), Some(start + selection.start));
-                    assert!(demo.bounds_for_range(start + selection.start..start + selection.start + 1, Bounds::default(), window, cx).is_none(), "cannot split emoji surrogate pair");
+                    if label == "crlf-interior" {
+                        let line_end = demo.bounds_for_range(start + 3..start + 3, Bounds::default(), window, cx).unwrap();
+                        assert_eq!(bounds, line_end, "CRLF interior must share the preceding line-end anchor");
+                        assert_eq!(visible, start, "CRLF interior must not scroll the first row away");
+                        assert_eq!(demo.character_index_for_point(point(bounds.origin.x, bounds.origin.y + px(1.)), window, cx), Some(start + 3));
+                    } else {
+                        assert_eq!(demo.character_index_for_point(point(bounds.origin.x, bounds.origin.y + px(1.)), window, cx), Some(start + selection.start));
+                        assert!(demo.bounds_for_range(start + selection.start..start + selection.start + 1, Bounds::default(), window, cx).is_none(), "cannot split emoji surrogate pair");
+                    }
                     assert_eq!(demo.text_edits, records);
                     serde_json::json!({ "runtime_powerpc": powerpc, "actual_depth": actual_depth,
                         "case": label, "requested_scale": requested_scale, "scale": demo.display_scale, "origin": demo.display_origin,

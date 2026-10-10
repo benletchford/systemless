@@ -1,0 +1,25 @@
+{
+  "scope": "shared Demo CRLF-interior candidate bounds, line-end pointer query, unchanged guest state and exact cancellation restoration; single/multiline regressions",
+  "scale": 1.5,
+  "modes": [
+    "mono68k1",
+    "colour68k8",
+    "PPC8",
+    "PPC16"
+  ],
+  "cases_passed": 12,
+  "image_review": "PPC16 CRLF-interior reviewed; other cases assertions only",
+  "physical_ime_qualified": false,
+  "sha256": {
+    "capture.log": "afa4e9c2577b903d2c7653697e7f859d64c628fb0eef414064a0461efe43ffa6",
+    "false-8-crlf-interior.json": "8175c7aa1660bc39668aad9f3b153c9a28475992bcbe5173ed3d103425271167",
+    "false-1-crlf-interior-marked.png": "b13cafbccfeb48d9f173edbd481251c290d8f96d40430fa72ab5819b1c38075b",
+    "false-1-crlf-interior.json": "f4f80a292f7ae276ea28ded766ac57cb3bb38bfb2f25e2f0907b7a4f7efaca1e",
+    "true-16-crlf-interior.json": "4cf167a43465522deb8b3215e3b7db7c59efe45c31ecf1605b5d3c88eee7be7e",
+    "true-16-crlf-interior-marked.png": "5c106b503cb91531c8f05134007bcca6be3762d7c46091a19c48db035c3e5351",
+    "true-8-crlf-interior-marked.png": "c5faa60b9ddf6ac525d62479e62f08f37f5ab54e40c0cbbea18826f127290c3f",
+    "true-8-crlf-interior.json": "e39216aefa6f06f92d8d41a28ad574eb501d65c823198812aa4a6af1ef294e36",
+    "build.log": "8db6697f55eead8f9d416e61b67a7ddbda79c8e3ddcbc41c4fa15c55e4cb89dc",
+    "false-8-crlf-interior-marked.png": "6b51a2368393dead10fb07d1c5b23f0bd70d7e9db0cc2e61b7a3a848751b9f1f"
+  }
+}
