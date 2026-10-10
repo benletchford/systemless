@@ -875,7 +875,9 @@ Chrome worker/WebGL input creates a character, moves in all four town directions
 descends to 50 feet and moves west/north in the dungeon. Actual public R2 HTTP 200
 response bytes match the original archive hash and 290684-byte size, with no
 fixture or interception. [Public evidence](https://github.com/benletchford/systemless/issues/4441#issuecomment-6102008369).
-The website deployment passed. The whole v0.93.0 release still awaits its last
-native platform and final package/checksum publication; that is not claimed
-complete by this public gameplay evidence. Combat, sustained play, saves and
-audio remain unverified.
+The complete [v0.93.0 release run](https://github.com/benletchford/systemless/actions/runs/38084330409)
+passed, including website deployment and all six native platforms. Independent
+release inventory confirms all twelve nonempty platform archives/checksums.
+[Final pipeline evidence](https://github.com/benletchford/systemless/issues/4441#issuecomment-6102041775)
+closes the fulfilled intake issue. Combat, sustained play, saves and audio remain
+unverified.
