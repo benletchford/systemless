@@ -615,3 +615,26 @@ Normal release 68K worker player: Command-B fills six balls per pit; stationary 
 Tracking: [iPuzzle #3944](https://github.com/benletchford/systemless/issues/3944), [Kalaha #3945](https://github.com/benletchford/systemless/issues/3945), [catalogue PR #3946](https://github.com/benletchford/systemless/pull/3946).
 
 Kalaha’s normal PowerPC selector also launched a fresh release worker with `architecture=ppc`; Command-B, the human extra turn and two computer replies were inspected. The PPC board occupies a different content position, so clicks were placed from its actual capture. No guest patching or runtime changes were used.
+
+
+## iPuzzle and Kalaha live release verification
+
+On 10 October 2026, [catalogue PR #3946](https://github.com/benletchford/systemless/pull/3946) merged as `4704f5ca1849e78500eb78866375627162deb5ab` after all final-head website and catalogue checks passed. [Release PR #4386](https://github.com/benletchford/systemless/pull/4386) merged after the full runtime, 68K/PPC showcase, packaging and website checks passed. [The normal release workflow](https://github.com/benletchford/systemless/actions/runs/38047040930) successfully published [v0.85.0](https://github.com/benletchford/systemless/releases/tag/v0.85.0), all six native archives with checksum assets, and the website.
+
+Fresh owned Chrome loaded the real public routes over ordinary HTTPS. No request interception, hostname remapping, local mirror, disabled certificate verification or runtime/guest patch was used in these production tests. Both pages displayed v0.85.0 and revision `20a88ca26533`, using `/systemless-org-bf29dd61f842aac7.js`. Both had launch-enabled normal WebAssembly workers; their page titles begin with Play and their robots metadata permits indexing. Independent production-origin fetches returned HTTP 200 and the exact original hashes and sizes already pinned in their catalogue entries.
+
+- [iPuzzle](https://systemless.org/ipuzzle-10-68k/): 68K worker at 8 MHz. Command-T scrambled; a stationary adjacent-tile click moved a tile; its reverse restored the scrambled content crop with zero differing pixels. Original archive: 89,881 bytes, SHA-256 `a6e049878770fe0c1531159c80ea4b45fd40e808ace8457a472690ef80dc2071`. Full solution and audible sound remain unverified.
+- [Kalaha](https://systemless.org/kalaha-11/): normal 68K and PPC workers at 8 MHz. Begin, human extra-turn moves and computer responses were inspected. The PowerPC selector starts the genuine PPC route; its canvas reports worker=true, architecture=ppc. Original archive: 398,473 bytes, SHA-256 `e30d98a0b2ecc8eeb50886d6ce5ba06335b1877a92746903f70dca45b6dd62bc`. Full match, all levels, saving and audio remain unverified.
+
+These are two new distinct, rights-qualified live catalogue additions, rather than staged entries. Kalaha is an extra intake outside the primary 812 slots. The 192-record total and 172 launch flags still do not independently qualify the whole baseline. The release also delivers the previously merged Pac the Man InputSprocket and missing-sound-source fixes; it does not claim restored Pac music or add Pac to the catalogue without distribution permission.
+
+
+## FiveStones browser retest
+
+The intact original FiveStones 2.4 archive and unchanged README_FIRST have already been reviewed and promoted in [draft PR #3977](https://github.com/benletchford/systemless/pull/3977); the original terms permit non-profit distribution with that documentation attached unmodified. SHA-256 `9fe89beb7b8492a1c87fcb88cacd75bb8c8934c6f012bd8e52de5124bc9eea7b`, 109,973 bytes. Existing [native evidence](https://github.com/benletchford/systemless/issues/3976) covers a complete match.
+
+A release-mode local Chrome preview at runtime source `4704f5ca1849e78500eb78866375627162deb5ab` now verifies normal 68K worker input at 8 MHz: stationary Not Yet dismissal, Game → New Game → 15×15, two legal human moves with computer replies, six stones total, and an occupied click adding no stones. No runtime or guest changes were made; only the preview launch flag was temporarily enabled and restored. Local preview archive requests used independently hash-verified original bytes. A separate actual production browser benchmark fetched/hash-checked the immutable hosted archive and decoded the original trial notice. The direct public FiveStones player remains unapproved and was not tested.
+
+Earlier browser scripts moved the pointer outside the button immediately after mouse-up, before the guest completed tracking; that sequence cancelled the trial action. A fresh stationary down/up with the pointer left inside succeeds without a drag or runtime patch. Native frontend-tick scripted comparison also dismisses the notice and opens the menu. This observation warrants a similarly controlled Chiral retest, not an unverified runtime change or closing #4373.
+
+The PowerPC selector booted the authentic trial notice and dismissed its text/controls, but no PPC match was started. PPC menu/gameplay, full browser match completion, saves and sound remain unverified. The existing catalogue PR is still draft and must be updated and validated before launch approval and publication; this evidence does not add a live qualified game.
