@@ -1,0 +1,6 @@
+{
+  "source_commit": "e591ff473917ec3a50d64b9402a98ce17c5f2dd0",
+  "fixture_sha256": "ec8eed690135f1b4f1244897474dde188b17caba7a29e8f34d129d8a990916b4",
+  "result": "4 text_edit tests PASS 11.42s",
+  "scope": "Existing guest TextEdit snapshot/state checks. Does not qualify active multiline dialog replacement, physical input or all TextEdit interaction."
+}

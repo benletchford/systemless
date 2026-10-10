@@ -3365,8 +3365,19 @@ impl FixtureRunner {
     pub fn text_edit_snapshot(&mut self) -> TextEditManagerSnapshot {
         use crate::window_manager::{snapshot_local_rect_to_global, snapshot_port_bounds_origin};
 
+        let dialog_owners = self.dialog_snapshot();
         let mut snapshot = if let Some(app) = self.native.application_mut() {
-            let handles = app.scrap.text_edit.identities();
+            let mut handles = app.scrap.text_edit.identities();
+            // Dialog Manager creates its internal TERec outside caller TENew
+            // registration. Tie discovery to the live owning dialog lifetime.
+            for dialog in &dialog_owners {
+                if !dialog.visible || !dialog.active || dialog.edit_field.is_none() { continue; }
+                let Some(handle) = app.memory.read_u32_be(dialog.guest_id
+                    + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET) else { continue; };
+                if handle != 0 && !handles.iter().any(|(known, _)| *known == handle) {
+                    handles.push((handle, dialog.generation));
+                }
+            }
             crate::text_edit::snapshot_guest_records(&handles, &mut |addr| app.memory.read_u8(addr))
         } else {
             let handles = self.dispatcher.textedit_states.identities();

@@ -2321,11 +2321,14 @@ pub(super) fn ppc_te_draw(
                 }
                 let line_top = top.saturating_add((line as i16).saturating_mul(line_height));
                 let line_bottom = line_top.saturating_add(line_height);
+                let caret = (line_top.max(view.0), caret_x.max(view.1),
+                    line_bottom.min(view.2), caret_x.saturating_add(1).min(view.3));
+                if caret.0 >= caret.2 || caret.1 >= caret.3 { break; }
                 let _ = ppc_paint_rect_bounds(
                     memory,
                     gworlds,
                     port,
-                    (line_top, caret_x, line_bottom, caret_x.saturating_add(1)),
+                    caret,
                     if ppc_ui_theme(gworlds) != UiThemeId::ClassicSystem7 {
                         ppc_theme_rgb(ppc_ui_theme(gworlds).provider().palette().selection)
                     } else if styled {

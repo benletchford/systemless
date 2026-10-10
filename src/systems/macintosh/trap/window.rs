@@ -2974,7 +2974,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn activate_created_front_window(
+    pub(super) fn activate_created_front_window(
         &mut self,
         bus: &mut MacMemoryBus,
         window_ptr: u32,
