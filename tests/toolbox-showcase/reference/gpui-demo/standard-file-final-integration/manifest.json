@@ -1,0 +1,9 @@
+{
+  "source_commit": "53d49b1eadf95814bbfb04a052e6c9ef9a3ea334",
+  "fixture_sha256": "ec8eed690135f1b4f1244897474dde188b17caba7a29e8f34d129d8a990916b4",
+  "results": [
+    "standard_file filter: 6 passed, 7.89s",
+    "painted_new_folder_pointer_events_reach_guest_selection: PASS, 34.32s"
+  ],
+  "pointer_scope": "Actual guest selection, held drag/scroll and glyph-boundary coordinates in GPUI TestAppContext, four CPU/depth modes and scales 0.75/1/1.5/2; no physical host input claim."
+}
