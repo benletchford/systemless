@@ -485,28 +485,44 @@ impl EntityInputHandler for Demo {
     }
     fn bounds_for_range(&mut self, range: Range<usize>, _: Bounds<Pixels>,
         _: &mut Window, _: &mut Context<Self>) -> Option<Bounds<Pixels>> {
-        if self.composition.preedit.is_some() { return self.marked_bounds(range); }
+        let range = if self.composition.preedit.is_some() {
+            self.painted_composition()?;
+            if let Some(guest) = self.composition.surrounding_guest_range(range.clone()) { guest }
+            else { return self.marked_bounds(range); }
+        } else { range };
         if matches!(self.composition.owner()?.target, super::super::input::TextInputTarget::StandardFile { .. }) { return self.file_bounds(range); }
         if matches!(self.composition.owner()?.target, super::super::input::TextInputTarget::Dialog { .. }) { return self.dialog_bounds(range); }
         let owner = self.composition.owner()?;
         let record = self.text_edits.iter().find(|record| (record.guest_id, record.generation) == owner.identity)?;
         // Geometry is meaningful only for the currently painted guest text.
         // Pending commits and Unicode preedit need their own painted layout.
-        if self.composition.preedit.is_some() || record.text != owner.text
+        if record.text != owner.text
             || range.start > range.end || range.end > owner.text.len()
             || !self.display_scale.is_finite() || self.display_scale <= 0. { return None; }
         self.record_bounds(record, range)
     }
     fn character_index_for_point(&mut self, point: Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
-        if self.composition.preedit.is_some() { return self.marked_index_for_point(point); }
-        if matches!(self.composition.owner()?.target, super::super::input::TextInputTarget::StandardFile { .. }) { return self.file_index_for_point(point); }
-        if matches!(self.composition.owner()?.target, super::super::input::TextInputTarget::Dialog { .. }) { return self.dialog_index_for_point(point); }
+        let staged = self.composition.preedit.is_some();
+        if staged {
+            if let Some(index) = self.marked_index_for_point(point) { return Some(index); }
+            // The stage masks the underlying guest pixels even at its border.
+            let painted = self.painted_composition()?;
+            let (x, y) = (f32::from(point.x), f32::from(point.y));
+            if x >= painted.clip.0 && x < painted.clip.2 && y >= painted.clip.1 && y < painted.clip.3 { return None; }
+        }
         let owner = self.composition.owner()?;
-        let record = self.text_edits.iter().find(|record| (record.guest_id, record.generation) == owner.identity)?;
-        if self.composition.preedit.is_some() || record.text != owner.text
-            || !self.display_scale.is_finite() || self.display_scale <= 0. { return None; }
-        self.record_index_for_point(record, point)
+        let index = match owner.target {
+            super::super::input::TextInputTarget::StandardFile { .. } => self.file_index_for_point(point)?,
+            super::super::input::TextInputTarget::Dialog { .. } => self.dialog_index_for_point(point)?,
+            _ => {
+                let record = self.text_edits.iter().find(|record| (record.guest_id, record.generation) == owner.identity)?;
+                if record.text != owner.text || !self.display_scale.is_finite() || self.display_scale <= 0. { return None; }
+                self.record_index_for_point(record, point)?
+            }
+        };
+        if staged { self.composition.surrounding_virtual_index(index) } else { Some(index) }
     }
+
     fn text_length_utf16(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
         self.composition_text().map(|text| text.encode_utf16().count())
     }

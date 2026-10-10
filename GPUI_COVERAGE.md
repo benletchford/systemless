@@ -4603,3 +4603,23 @@ restore exact composed pixels on cancellation. The PPC16 image was reviewed;
 other modes have assertion evidence. Build/capture logs, case metadata, images
 and hashes are archived under `reference/gpui-demo/crlf-marked-caret`. Physical
 IME and other scales for this new case remain unqualified.
+
+
+### Unchanged surrounding-text geometry during composition
+
+Native text-service queries outside an active Unicode stage now map untouched
+prefix/suffix ranges back to original guest text geometry. Point queries outside
+the stage map the guest glyph offset into the virtual UTF-16 document. Queries
+inside the stage retain its separately painted Unicode geometry; stage borders
+do not expose masked guest hit targets, and stale painted caches are rejected.
+Guest text and selection remain unchanged. This does not implement replacement
+requests outside the pinned selection.
+
+Five composition-state tests pass. All twelve shared Demo single/multiline/CRLF
+cases pass across mono68k, colour68k, PPC8 and PPC16 at scale1.5. Each compares
+an untouched suffix insertion anchor against its exact pre-stage guest bounds,
+checks the shifted virtual hit offset, unchanged guest state and exact restored
+pixels on cancellation. The four CRLF images are byte-identical to the archived
+prior captures. Logs, metadata and hashes are in
+`reference/gpui-demo/surrounding-marked-text`. Broader surrounding selection,
+modal/file geometry, other scales and physical text services remain unqualified.

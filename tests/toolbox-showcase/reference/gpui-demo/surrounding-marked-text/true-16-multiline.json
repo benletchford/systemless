@@ -1,0 +1,37 @@
+{
+  "runtime_powerpc": true,
+  "actual_depth": 16,
+  "surrounding_guest_index": 2,
+  "surrounding_virtual_index": 105,
+  "surrounding_geometry_matches_guest": true,
+  "case": "multiline",
+  "requested_scale": 1.5,
+  "scale": 1.5,
+  "origin": [
+    0.0,
+    0.0
+  ],
+  "guest_selection": {
+    "start": 1,
+    "end": 1
+  },
+  "marked_selection": {
+    "start": 101,
+    "end": 103
+  },
+  "first_visible_index": 61,
+  "visible_range_bounds": [
+    128.0,
+    217.0,
+    23.515625,
+    4.0
+  ],
+  "selected_bounds": [
+    141.89105224609375,
+    361.0,
+    20.0,
+    20.0
+  ],
+  "compositor": "shared Demo renderer",
+  "guest_state_unchanged": true
+}
