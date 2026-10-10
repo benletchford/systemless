@@ -111,3 +111,11 @@ the default application check passes (11.13s). Evidence is archived under
 `reference/gpui-demo/modal-event-progress`. An earlier monochrome New Folder
 accessibility replacement timeout is retained; performance/timing and deferred
 retry shutdown qualification remain open. All eight release gates remain open.
+
+At `e0d709d8`, the complete Save/New Folder worker regression passes a second
+consecutive run across four modes (80.01s). Both failures in the older 183-test
+suite pass individually on current source: owner/front-window clipping (0.08s),
+and named pasteboard hidden-format preservation (1.09s, macOS service access).
+The older full run terminated with 180 passed, two failed and one ignored after
+9449.76s; it is not current-candidate evidence. Rechecks are archived alongside
+the worker correction. The earlier file timeout cause remains unproven.
