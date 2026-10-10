@@ -1102,6 +1102,16 @@ impl super::TrapDispatcher {
         }
     }
 
+    /// Shared TESetSelect operation. Keep the classic gateway's clamping policy.
+    pub(crate) fn te_set_select(bus: &mut MacMemoryBus, te_handle: u32, start: u32, end: u32) -> bool {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr == 0 { return false; }
+        let length = u32::from(bus.read_word(te_ptr + Self::TE_LENGTH_OFFSET));
+        bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, start.min(u32::from(u16::MAX)) as u16);
+        bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, end.min(u32::from(u16::MAX)).min(length) as u16);
+        true
+    }
+
     fn te_record_ptr(bus: &MacMemoryBus, te_handle: u32) -> u32 {
         if te_handle == 0 {
             0
@@ -15927,20 +15937,9 @@ impl super::TrapDispatcher {
             (true, 0x1D1) => {
                 let sp = cpu.read_reg(Register::A7);
                 let te_handle = bus.read_long(sp);
-                let te_ptr = Self::te_record_ptr(bus, te_handle);
-                if te_ptr != 0 {
-                    let te_length = u32::from(bus.read_word(te_ptr + Self::TE_LENGTH_OFFSET));
-                    // IM:I I-385: "SelEnd and selStart can range from 0 to 32767.
-                    // If selEnd is anywhere beyond the last character of the text,
-                    // the position just past the last character is used."
-                    let sel_end = bus
-                        .read_long(sp + 4)
-                        .min(u32::from(u16::MAX))
-                        .min(te_length);
-                    let sel_start = bus.read_long(sp + 8).min(u32::from(u16::MAX));
-                    bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, sel_start as u16);
-                    bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, sel_end as u16);
-                }
+                let start = bus.read_long(sp + 8);
+                let end = bus.read_long(sp + 4);
+                Self::te_set_select(bus, te_handle, start, end);
                 cpu.write_reg(Register::A7, sp + 12);
                 Ok(())
             }
