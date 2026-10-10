@@ -65,9 +65,9 @@ Stages: **rights** = applicable affirmative archive redistribution terms; **arch
 | 49 | Otto Matic | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 50 | Avara | [Conditional nonprofit grant](CATALOGUE-SOURCES.md#avara-expansion-intake); remaining terms pending | [1.0.1 receipt and payload](CATALOGUE-SOURCES.md#avara-expansion-intake) | [Mission/spawn unqualified](https://github.com/benletchford/systemless/issues/4355) | Embedded modules; route unqualified | Pending | Pending | Pending |
 | 51 | Ares | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 52 | Barrack | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 53 | Bubble Trouble | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 54 | Chiral | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 52 | Barrack | [Conditional nonprofit grant; remaining terms pending](CATALOGUE-SOURCES.md#barrack-expansion-intake) | [1.0.4 exact receipt, 18 files](CATALOGUE-SOURCES.md#barrack-expansion-intake) | Black startup; unqualified | PPC startup capture; unqualified | Pending | Pending | Pending |
+| 53 | Bubble Trouble | [Conditional nonprofit grant; remaining terms pending](CATALOGUE-SOURCES.md#bubble-trouble-expansion-intake) | [1.0.0 exact receipt, 22 files](CATALOGUE-SOURCES.md#bubble-trouble-expansion-intake) | [Maze and Right-key movement](CATALOGUE-SOURCES.md#bubble-trouble-expansion-intake) | [PPC movement; black background defect](CATALOGUE-SOURCES.md#bubble-trouble-expansion-intake) | Pending | Pending | Pending |
+| 54 | Chiral | [Conditional nonprofit grant; remaining terms pending](CATALOGUE-SOURCES.md#chiral-expansion-intake) | [1.0.4 receipt; normal installation completed](CATALOGUE-SOURCES.md#chiral-expansion-intake) | [Original 1.0.0: Level 1 and atom placement](CATALOGUE-SOURCES.md#chiral-expansion-intake) | Pending | Pending | Pending | Pending |
 | 55 | Cythera | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 56 | Mars Rising | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 57 | Pillars of Garendall | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
