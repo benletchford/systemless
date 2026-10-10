@@ -788,4 +788,22 @@ After File > New, Human/Male selection, original statistics acceptance, Warrior 
 
 The [extended native evidence](https://github.com/benletchford/systemless/issues/4441#issuecomment-6101515779) adds original staircase descent to 50 feet and west/north movement inside the dungeon. A fresh repeat passes all 12 measured assertions at 4967 frontend / 5542 guest ticks, with zero exhausted budgets. The initial east/south attempts meet room walls and are not counted as movement. The unedited catalogue screenshot is an actual native town-movement frame; no game archive or scenario is added to Git.
 
-The staged entry validates alongside 198 merged records, giving 199 locally validated entries. Launch remains explicitly disabled while ordinary browser gameplay, exact asset promotion, launch approval and public release verification are pending. No PPC port is inferred from the original 68K-only package. Combat, sustained play, saves and audio remain unverified.
+The staged entry validates alongside 198 merged records, giving 199 locally validated entries. At initial intake launch was disabled pending ordinary browser gameplay, exact asset promotion, launch approval and public release verification. The follow-through below records promotion and browser qualification; public release verification remains pending. No PPC port is inferred from the original 68K-only package. Combat, sustained play, saves and audio remain unverified.
+
+### Moria browser follow-through
+
+The v0.92.2 worker/WebGL preview at source `52271b3080b428a9228e10a260313f37ed72eb07`
+reached town through ordinary File > New and character creation. Inspected captures
+show west/east movement, descent to 50 feet, then east and south dungeon movement.
+The local preview origin is excluded by the deployed R2 CORS policy; its existing
+CORS workflow reports a Cloudflare authentication error. Preview intake therefore
+supplied only the exact independently downloaded R2 archive, after verifying
+SHA-256 `f835a419625bcc16ef2c91576562d20af62b33d0bb6c7d728139e9b5c2284725`
+and 290684 bytes. No game bytes or guest state were changed. Production-origin
+archive requests receive the expected CORS header; actual public-route replay
+is still required after release.
+
+Testing exposed the shared Down-arrow preset's keypad-5 mapping, while Moria
+uses keypad 2 for south. The catalogue provides its own Down-arrow mapping;
+the rebuilt preview confirms normal Left and Down input visibly move the player
+west and south.

@@ -9,6 +9,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Role-Playing
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -27,12 +28,29 @@ compatibility:
       audio remain unverified. No PPC slice exists in this original package.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4441
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: 52271b3080b428a9228e10a260313f37ed72eb07
+    architecture: 68k
+    environment: >-
+      v0.92.2 Chrome worker/WebGL preview with cross-origin isolation. Ordinary
+      File > New character creation, town west/east movement, descent to 50 feet
+      and dungeon east/south movement have inspected captures. Local preview CORS
+      requires an exact archive fixture independently downloaded from R2 and checked
+      against the promoted SHA-256 and 290684-byte size; game bytes and guest state
+      are unchanged. An inspected final rebuild confirms the per-game Down-arrow
+      correction moves the player south; Left also moves west.
+      Actual public replay, combat, sustained play, saves and audio remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4441
 runtime:
   executable_path: Moria 1.1.1.cpt/Moria
   screen_depth: 8
   show_menu_bar: true
 controls:
   arrows_as_numpad: true
+  key_mappings:
+    ArrowDown: "2"
 artifacts:
 - id: archive
   role: archive
@@ -105,6 +123,7 @@ Redistribution is recorded under its original educational, research and
 nonprofit terms.
 
 Bounded native 68K testing covers character creation, town movement, descent
-to 50 feet and movement in the dungeon. Browser and public-route testing,
-combat, sustained play, saves and audio remain unverified. This original
-package contains no PowerPC version.
+to 50 feet and movement in the dungeon. Browser worker/WebGL testing also covers
+character creation, town movement, descent to 50 feet and dungeon movement.
+Public-route testing, combat, sustained play, saves and audio remain unverified.
+This original package contains no PowerPC version.
