@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.85.0](https://github.com/benletchford/systemless/compare/v0.84.1...v0.85.0) (2026-10-10)
+
+
+### Features
+
+* **catalogue:** enable iPuzzle and Kalaha browser games ([4704f5c](https://github.com/benletchford/systemless/commit/4704f5ca1849e78500eb78866375627162deb5ab))
+
+
+### Bug Fixes
+
+* reject missing sound file playback sources ([7d5364c](https://github.com/benletchford/systemless/commit/7d5364c6101654d5510137881480e5dd25b7c4fe))
+* resolve the global InputSprocket element list ([b5e724d](https://github.com/benletchford/systemless/commit/b5e724df394ef855b1793f379d590436dad32102))
+
 ## [0.84.1](https://github.com/benletchford/systemless/compare/v0.84.0...v0.84.1) (2026-10-10)
 
 
