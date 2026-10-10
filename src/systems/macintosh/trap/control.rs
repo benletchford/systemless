@@ -1,7 +1,10 @@
 //! Control Manager trap handlers.
 
 use crate::memory::SavedPixels;
-use super::dispatch::{ControlAuxRecordState, ControlTrackingState};
+use super::dispatch::{
+    ControlAuxRecordState, ControlTrackingState, CustomControlTrackingPhase,
+    CustomControlTrackingState,
+};
 use super::types::{decode_mac_roman, Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
 use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
@@ -929,6 +932,96 @@ impl super::TrapDispatcher {
         let (top, left, bottom, right) = tracking.simple_screen_rect;
         let (mouse_v, mouse_h) = self.control_tracking_mouse_pos(bus);
         mouse_v >= top && mouse_v < bottom && mouse_h >= left && mouse_h < right
+    }
+
+    fn arm_custom_control_tracking_message<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        tracking: CustomControlTrackingState,
+        message: i16,
+        param: u32,
+    ) {
+        cpu.write_reg(Register::A7, tracking.stack_ptr);
+        // Return from the CDEF to the retained TrackControl, not its caller.
+        cpu.write_reg(Register::PC, tracking.trap_pc);
+        let handle = tracking.handle;
+        let result = tracking.stack_ptr + 12;
+        bus.write_word(result, 0);
+        self.custom_control_tracking = Some(tracking);
+        if !self.arm_control_def_messages(cpu, bus, handle, &[(message, param, Some(result))]) {
+            let tracking = self.custom_control_tracking.take().unwrap();
+            bus.write_byte(tracking.pointer + 17, tracking.saved_hilite);
+            bus.write_word(result, 0);
+            cpu.write_reg(Register::A7, tracking.stack_ptr + 12);
+            cpu.write_reg(Register::PC, tracking.trap_pc + 2);
+        }
+    }
+
+    fn refire_custom_control_tracking<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
+        use CustomControlTrackingPhase::*;
+        let mut tracking = self.custom_control_tracking.take().unwrap();
+        match tracking.phase {
+            Test { released } => {
+                let hit = bus.read_word(tracking.stack_ptr + 12);
+                let initial = *tracking.initial_part.get_or_insert(hit);
+                if initial == 0 {
+                    bus.write_word(tracking.stack_ptr + 12, 0);
+                    cpu.write_reg(Register::A7, tracking.stack_ptr + 12);
+                    return;
+                }
+                let part = if hit == initial { initial } else { 0 };
+                let hilite = if released {
+                    tracking.saved_hilite
+                } else {
+                    part as u8
+                };
+                let changed = bus.read_byte(tracking.pointer + 17) != hilite;
+                bus.write_byte(tracking.pointer + 17, hilite);
+                tracking.phase = if released { Restore { part } } else { Draw };
+                if changed {
+                    self.arm_custom_control_tracking_message(
+                        cpu,
+                        bus,
+                        tracking,
+                        Self::CDEF_DRAW_CNTL_MSG,
+                        0,
+                    );
+                } else if released {
+                    bus.write_word(tracking.stack_ptr + 12, part);
+                    cpu.write_reg(Register::A7, tracking.stack_ptr + 12);
+                } else {
+                    tracking.phase = Idle;
+                    self.custom_control_tracking = Some(tracking);
+                }
+            }
+            Restore { part } => {
+                bus.write_word(tracking.stack_ptr + 12, part);
+                cpu.write_reg(Register::A7, tracking.stack_ptr + 12);
+            }
+            Draw | Idle => {
+                let mouse = self.control_tracking_mouse_pos(bus);
+                let released = !self.control_tracking_button_down(bus);
+                if !released && mouse == tracking.sampled_mouse {
+                    tracking.phase = Idle;
+                    self.custom_control_tracking = Some(tracking);
+                    return;
+                }
+                let owner = bus.read_long(tracking.pointer + 4);
+                let (top, left, _, _) = Self::dialog_screen_bounds(bus, owner);
+                let point = ((mouse.0.wrapping_sub(top) as u16 as u32) << 16)
+                    | u32::from(mouse.1.wrapping_sub(left) as u16);
+                tracking.sampled_mouse = mouse;
+                tracking.phase = Test { released };
+                self.arm_custom_control_tracking_message(
+                    cpu,
+                    bus,
+                    tracking,
+                    Self::CDEF_TEST_CNTL_MSG,
+                    point,
+                );
+            }
+        }
     }
 
     fn redraw_simple_control_tracking_state<C: CpuOps>(
@@ -3545,6 +3638,10 @@ impl super::TrapDispatcher {
             // simple push/checkbox/radio controls across refires; preserves
             // the old immediate hit-test path when the mouse is already up.
             (true, 0x168) => {
+                if self.custom_control_tracking.is_some() {
+                    self.refire_custom_control_tracking(cpu, bus);
+                    return Some(Ok(()));
+                }
                 if let Some(mut tracking) = self.scrollbar_thumb_tracking.take() {
                     let mouse = self.window_tracking_mouse_pos(bus);
                     let inside_slop = Self::point_in_rect(mouse.0, mouse.1, tracking.slop_rect);
@@ -3786,6 +3883,50 @@ impl super::TrapDispatcher {
                 };
                 let pt_v = bus.read_word(sp + 4) as i16;
                 let pt_h = bus.read_word(sp + 6) as i16;
+
+                let ctrl_ptr = Self::control_record_ptr(bus, ctrl_handle);
+                if action_proc == 0
+                    && ctrl_ptr != 0
+                    && Self::control_vis_is_visible(bus.read_byte(ctrl_ptr + 16))
+                    && bus.read_byte(ctrl_ptr + 17) < 254
+                    && self.control_uses_application_def_proc(bus, ctrl_ptr)
+                {
+                    let rect = (
+                        bus.read_word(ctrl_ptr + 8) as i16,
+                        bus.read_word(ctrl_ptr + 10) as i16,
+                        bus.read_word(ctrl_ptr + 12) as i16,
+                        bus.read_word(ctrl_ptr + 14) as i16,
+                    );
+                    let owner = bus.read_long(ctrl_ptr + 4);
+                    let (top, left, _, _) = Self::dialog_screen_bounds(bus, owner);
+                    let mouse = self.control_tracking_mouse_pos(bus);
+                    let held = self.control_tracking_button_down(bus);
+                    let point = crate::control_manager::live_control_tracking_start_point(
+                        rect,
+                        (pt_v, pt_h),
+                        mouse,
+                        (top, left),
+                        held,
+                    );
+                    let tracking = CustomControlTrackingState {
+                        handle: ctrl_handle,
+                        pointer: ctrl_ptr,
+                        stack_ptr: sp,
+                        trap_pc: cpu.read_reg(Register::PC).wrapping_sub(2),
+                        saved_hilite: bus.read_byte(ctrl_ptr + 17),
+                        initial_part: None,
+                        sampled_mouse: mouse,
+                        phase: CustomControlTrackingPhase::Test { released: !held },
+                    };
+                    self.arm_custom_control_tracking_message(
+                        cpu,
+                        bus,
+                        tracking,
+                        Self::CDEF_TEST_CNTL_MSG,
+                        ((point.0 as u16 as u32) << 16) | u32::from(point.1 as u16),
+                    );
+                    return Some(Ok(()));
+                }
 
                 let mut part: u16 = 0;
                 let mut outcome = "no_control";
