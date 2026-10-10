@@ -2106,13 +2106,13 @@ fn expand_installer_maker_payload(
     data: &[u8],
     executable_priority: u8,
 ) -> Result<Option<Payload>, String> {
-    let Some(container) = crate::game::installer_maker::parse_installer_maker_st46(data) else {
+    let Some(container) = crate::game::installer_maker::parse_installer_maker(data) else {
         return Ok(None);
     };
 
     if crate::runner::trace_load_enabled() {
         eprintln!(
-            "[LOAD] Extracting InstallerMaker ST46 payload from \"{}\": {} files",
+            "[LOAD] Extracting InstallerMaker payload from \"{}\": {} files",
             name,
             container.entries.len()
         );
