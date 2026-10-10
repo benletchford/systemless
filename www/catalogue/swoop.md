@@ -39,7 +39,7 @@ artifacts:
   format: sit
   source:
     type: url
-    url: https://www.vintageapplemac.com/files/games/Swoop%201.0.2.sit
+    url: https://github.com/benletchford/systemless/releases/download/catalogue-intake-20261010/swoop-102.sit
     expected_sha256: 53dbe824bc2a21c4b6a6b1e2c510a01d6d700f67d3401f66a1ab8cc4d98a70d5
     expected_size: 2739051
   provenance:
@@ -48,6 +48,7 @@ artifacts:
     sources:
     - https://www.vintageapplemac.com/software/games/s/
     - https://www.vintageapplemac.com/files/games/Swoop%201.0.2.sit
+    - https://github.com/benletchford/systemless/releases/tag/catalogue-intake-20261010
     license: Ambrosia Software nonprofit distribution licence
     rights_holder: David Wareing and Ambrosia Software, Inc.
     permission: >-
