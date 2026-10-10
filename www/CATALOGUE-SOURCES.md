@@ -370,3 +370,24 @@ with the same volume fix: its bare-name volume lookups succeed, but startup
 ends at frontend tick 2 / guest tick 1. That result does not establish the fatal
 cause or resolve its separate investigation. All exact-archive redistribution
 blockers remain; these runtime changes do not enable catalogue entries.
+
+
+## Avara expansion intake
+
+Tracked under [catalogue expansion #4353](https://github.com/benletchford/systemless/issues/4353). Retrieved 10 October 2026 from the [VintageAppleMac A games index](https://www.vintageapplemac.com/software/games/a/). These are exact download receipts, not a redistribution approval.
+
+| Distribution | Bytes | SHA-256 | Inspection boundary |
+| --- | ---: | --- | --- |
+| [Avara Installer.sit](https://www.vintageapplemac.com/files/games/Avara%20Installer.sit) | 2325085 | `917934ea0c9bc1b004ad7a97943c238634f9d72d7077d801844e31d7c93c1e5e` | StuffIt 5 contains one installer named Avara Installer; data fork 2,294,140 bytes. Installer CODE resources do not establish game architecture. Installed-game licence and complete payload still require inspection. |
+| [Avara 1.0.1.sit](https://www.vintageapplemac.com/files/games/Avara%201.0.1.sit) | 2476740 | `136f1dff7198bbf4e0896223d4af462269610bbefea8547b48d657b6fd33ccfe` | Outer archive contains a VISE installer named Avara 1.0.1. The current public loader expands 132 files, including the game, documentation, licence, mission data and editing materials. See inspection and bounded runtime evidence below. |
+
+Both unchanged downloads are local scratch files; neither has been staged for hosting. The original author's [MIT source release](https://github.com/jmunkki/Avara) establishes a source-code lead, not permission for every component of these historical distributions. Screenshot qualification, CI asset promotion, hosted browser approval and live publication are unverified.
+
+**1.0.1 payload inspection:** `Documentation ƒ/Avara License.text` is 2,469 bytes with SHA-256 `198db82577e60e4df0eef7f6f9376015f8a9270dc65aff2f9b3e3149b0bd34e0`. It permits nonprofit distribution of the complete unmodified software, excludes for-profit distribution without written permission, and retains the 30-day trial/registration requirement. This is a conditional historical distribution grant, not freeware or a licence to remove the shareware notice. Remaining bundled terms and completeness must be checked before promotion. `Avara 1.0.1 Notes.text` is 538 bytes, SHA-256 `77d0e0f0570bef6e7df4b6956556c78404a32c7084e504d7833abe08882df6c4`, and dates the update to 20 October 1999.
+
+**Executable evidence:** the installed game has 17 CODE resources and four `pwpc` PEF acceleration modules in PLUG resources 128, 129, 385 and 641. Both CPU-preference startup probes report actual architecture 68k. Use exact executable selection `Avara 1.0.1/Avara 1.0.1 ƒ/Avara`; the shorter override `Avara` selects the bundled Avara Commuter utility. Do not transfer that utility's startup evidence to the game.
+
+**Bounded runtime:** current runtime at `a6571ed4` reaches the game's shareware notice at frontend tick 180 / guest tick 780. Dismissing Not Yet reaches player setup; typing a player name and starting the server reaches the mission roster. Game → Start produces a blue horizon without an available HECTOR at frontend tick 976 / guest tick 1554. Space and 180 additional ticks leave that state visible. All runs have zero assertions and zero instruction-budget exhaustion, so they establish inspected checkpoints, not qualified gameplay or an indefinite hang. Investigate mission selection/spawn semantics in [#4355](https://github.com/benletchford/systemless/issues/4355); architecture-specific gameplay remains unverified.
+
+
+**Mission parser diagnosis:** the original author's [pinned `ConvertToLevelMap` implementation](https://github.com/jmunkki/Avara/blob/1e64a866c430cc0e44c60c873c0e36d90895e126/src/Avara/GameParser/LevelLoader.c#L406) installs custom QuickDraw arc, round-rect, polygon, text, rectangle, oval, comment and picture-input procedures in a 2×1 offscreen GWorld. These callbacks construct game objects and execute level scripts. The unchanged archive's picture trace reaches a 32-bit 2×1 port with a large mission picture frame, but the current 68K DrawPicture path delegates directly to the host decoder without calling the live guest procedure table; picture comments are skipped. This explains the empty-world checkpoint structurally, without claiming a complete callback-entry execution trace. Track the general callback fix in [#4355](https://github.com/benletchford/systemless/issues/4355); [#4339](https://github.com/benletchford/systemless/issues/4339) concerns related PPC picture bit-transfer callbacks. Do not replace Avara's guest parser with host-generated objects.
