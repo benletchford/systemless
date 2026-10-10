@@ -4976,3 +4976,23 @@ reviewed. The New Folder selection defect discovered during image review is
 retained alongside the corrected image, logs, provenance and successful build
 in `reference/gpui-demo/file-focus-loss`. These simulated host-state transitions
 do not qualify the physical window observer or all CPU/scale combinations.
+
+
+### Empty New Folder restart persistence
+
+A guest New Folder regression reproduced an empty folder disappearing after
+restart on monochrome68k. The production save store previously serialized files
+only. It now writes new/modified directory paths and Finder creator/type/flags
+through a temporary manifest and restores directories before guest initialization
+in both desktop and headless startup. Guest directory IDs are rebuilt rather than
+persisted across sessions. Unchanged archive directories are skipped.
+
+The existing create/cancel/stale-action workflow now creates an empty folder,
+flushes the production store, drops the session and reopens Save in a fresh
+initialized session. The folder appears in all four CPU/depth modes, including
+both duplicate-file/directory variants. All eight store tests pass, including
+metadata restoration and removal from the saved directory set; default application
+and no-default-features library checks pass. Failure, success and build logs with
+source provenance are archived in `reference/gpui-demo/new-folder-restart`. This
+does not establish separate-process New Folder restart, physical shutdown/input,
+crash durability or complete filesystem/lifecycle qualification.

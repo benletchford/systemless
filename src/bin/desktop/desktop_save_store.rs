@@ -5,7 +5,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use systemless::runner::{FixtureRunner, VfsFileSnapshot, VfsFileStat, VfsFileSummary};
+use systemless::runner::{FixtureRunner, VfsDirectorySnapshot, VfsFileSnapshot, VfsFileStat, VfsFileSummary};
 
 const SAVE_SCAN_FRAME_INTERVAL: u8 = 30;
 const METADATA_FILE: &str = "metadata.json";
@@ -16,6 +16,8 @@ const RESOURCE_FORK_FILE: &str = "resource.fork";
 pub struct DesktopSaveStore {
     root: PathBuf,
     archive_vfs_stats: HashMap<String, VfsFileStat>,
+    archive_directories: Vec<VfsDirectorySnapshot>,
+    persisted_directories: Vec<VfsDirectorySnapshot>,
     last_vfs_fingerprints: HashMap<String, SaveFingerprint>,
     persisted_save_paths: HashSet<String>,
     save_scan_frame: u8,
@@ -83,6 +85,8 @@ impl DesktopSaveStore {
         Self {
             root: Self::root_for_game_path(game_path),
             archive_vfs_stats: vfs_stats(runner),
+            archive_directories: runner.vfs_directory_snapshots(),
+            persisted_directories: Vec::new(),
             last_vfs_fingerprints: HashMap::new(),
             persisted_save_paths: HashSet::new(),
             save_scan_frame: 0,
@@ -105,6 +109,40 @@ impl DesktopSaveStore {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn restore_saved_state(&mut self, runner: &mut FixtureRunner) {
+        let path = self.root.join("directories.json");
+        match fs::read(&path).and_then(|bytes| serde_json::from_slice::<Vec<VfsDirectorySnapshot>>(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))) {
+            Ok(directories) => {
+                self.persisted_directories = directories;
+                for directory in &self.persisted_directories { runner.import_vfs_directory(directory); }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => eprintln!("[SYSTEMLESS] Could not restore directories {}: {error}", path.display()),
+        }
+        for file in self.load_saved_files() { runner.import_vfs_file(&file); }
+    }
+
+    fn sync_directories(&mut self, runner: &FixtureRunner) {
+        let mut directories: Vec<_> = runner.vfs_directory_snapshots().into_iter()
+            .filter(|directory| is_user_save_path(&directory.path)
+                && !self.archive_directories.contains(directory)).collect();
+        directories.sort_by(|left, right| left.path.cmp(&right.path));
+        if directories == self.persisted_directories { return; }
+        let result = (|| -> io::Result<()> {
+            fs::create_dir_all(&self.root)?;
+            let bytes = serde_json::to_vec_pretty(&directories)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            let temporary = self.root.join("directories.json.tmp");
+            fs::write(&temporary, bytes)?;
+            fs::rename(temporary, self.root.join("directories.json"))
+        })();
+        match result {
+            Ok(()) => self.persisted_directories = directories,
+            Err(error) => eprintln!("[SYSTEMLESS] Could not persist directories: {error}"),
+        }
     }
 
     pub fn load_saved_files(&mut self) -> Vec<VfsFileSnapshot> {
@@ -136,6 +174,7 @@ impl DesktopSaveStore {
     }
 
     pub fn sync_save_files_now(&mut self, runner: &mut FixtureRunner) {
+        self.sync_directories(runner);
         let stats = runner.vfs_file_stats_where(is_user_save_path);
         let mut next_fingerprints = HashMap::new();
         let mut next_persisted_paths = HashSet::new();
@@ -497,6 +536,39 @@ mod tests {
     }
 
     #[test]
+    fn empty_directories_restore_metadata_and_removed_paths_do_not_return() {
+        let temp = tempfile::tempdir().unwrap();
+        let game = temp.path().join("Showcase.sit");
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let packaged = VfsDirectorySnapshot { path: "Packaged".into(), creator: 1,
+            file_type: 2, finder_flags: 3 };
+        runner.import_vfs_directory(&packaged);
+        let mut store = DesktopSaveStore::for_loaded_archive(&game, &mut runner);
+        store.sync_save_files_now(&mut runner);
+        assert!(!store.root().exists());
+        let created = VfsDirectorySnapshot { path: "Packaged/Emptyé".into(),
+            creator: 4, file_type: 5, finder_flags: 6 };
+        runner.import_vfs_directory(&created);
+        store.sync_save_files_now(&mut runner);
+        let mut restored = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        restored.import_vfs_directory(&packaged);
+        let mut reloaded = DesktopSaveStore::for_loaded_archive(&game, &mut restored);
+        reloaded.restore_saved_state(&mut restored);
+        assert!(restored.vfs_directory_snapshots().contains(&created));
+        assert!(restored.vfs_directory_snapshots().contains(&packaged));
+        assert!(reloaded.load_saved_files().is_empty());
+        // A fresh guest state without the created directory represents its deletion.
+        let mut deleted = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        deleted.import_vfs_directory(&packaged);
+        reloaded.sync_save_files_now(&mut deleted);
+        let mut reopened = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        reopened.import_vfs_directory(&packaged);
+        let mut store = DesktopSaveStore::for_loaded_archive(&game, &mut reopened);
+        store.restore_saved_state(&mut reopened);
+        assert!(!reopened.vfs_directory_snapshots().contains(&created));
+    }
+
+    #[test]
     fn save_root_sits_next_to_archive() {
         assert_eq!(
             save_root_for_game_path(Path::new("/Games/EV Override 1.0.1.sit")),
@@ -523,6 +595,8 @@ mod tests {
         let store = DesktopSaveStore {
             root: root.clone(),
             archive_vfs_stats: HashMap::new(),
+            archive_directories: Vec::new(),
+            persisted_directories: Vec::new(),
             last_vfs_fingerprints: HashMap::new(),
             persisted_save_paths: HashSet::new(),
             save_scan_frame: 0,
@@ -602,6 +676,8 @@ mod tests {
         let store = DesktopSaveStore {
             root: root.clone(),
             archive_vfs_stats: HashMap::new(),
+            archive_directories: Vec::new(),
+            persisted_directories: Vec::new(),
             last_vfs_fingerprints: HashMap::new(),
             persisted_save_paths: HashSet::new(),
             save_scan_frame: 0,

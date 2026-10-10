@@ -528,9 +528,7 @@ mod desktop {
                 let mut store = super::desktop_save_store::DesktopSaveStore::for_loaded_archive(
                     &args.game, session.runner_mut(),
                 );
-                for file in store.load_saved_files() {
-                    session.runner_mut().import_vfs_file(&file);
-                }
+                store.restore_saved_state(session.runner_mut());
                 store
             });
             session.initialize(&app);
@@ -7949,6 +7947,10 @@ mod desktop {
                 session.runner_mut().set_prefer_powerpc_executables(powerpc);
                 if powerpc { session.runner_mut().set_powerpc_screen_depth(depth.unwrap()).unwrap(); }
                 let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                let save_temp = tempfile::tempdir().unwrap();
+                let save_path = save_temp.path().join("Showcase.sit");
+                let mut save_store = super::super::desktop_save_store::DesktopSaveStore::for_loaded_archive(
+                    &save_path, session.runner_mut());
                 session.initialize(&app);
                 wait_for_menu(&mut session, 129, 1, true);
                 assert!(session.runner_mut().select_guest_menu_item(129, 12));
@@ -8090,6 +8092,25 @@ mod desktop {
                 assert!(parent.entries.unwrap().is_empty());
                 activate(&mut session, FileAction::Cancel);
                 assert!((0..100).any(|_| { step(&mut session); session.runner().standard_file_snapshot().is_none() }));
+                save_store.sync_save_files_now(session.runner_mut());
+                drop(session);
+                let mut restored = MacintoshSession::new(true, if powerpc { None } else { depth });
+                restored.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { restored.runner_mut().set_powerpc_screen_depth(depth.unwrap()).unwrap(); }
+                let app = restored.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                let mut store = super::super::desktop_save_store::DesktopSaveStore::for_loaded_archive(
+                    &save_path, restored.runner_mut());
+                store.restore_saved_state(restored.runner_mut());
+                restored.initialize(&app);
+                wait_for_menu(&mut restored, 129, 1, true);
+                assert!(restored.runner_mut().select_guest_menu_item(129, 12));
+                wait_for_menu(&mut restored, 129, 12, true); settle(&mut restored);
+                for input in [MacintoshInput::MouseDown { vertical: 266, horizontal: 400 },
+                    MacintoshInput::MouseUp { vertical: 266, horizontal: 400 }] { restored.deliver_input(input); }
+                let panel = (0..100).find_map(|_| { step(&mut restored); restored.runner().standard_file_snapshot() }).unwrap();
+                assert!(panel.entries.as_ref().unwrap().iter().any(|entry| entry.name == "gpui folder"),
+                    "empty New Folder must survive restart: PPC={powerpc}, depth={depth:?}; entries={:?}", panel.entries);
             }
         }
 

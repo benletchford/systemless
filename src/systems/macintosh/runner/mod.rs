@@ -4180,6 +4180,25 @@ impl FixtureRunner {
         materialized_count
     }
 
+    pub fn vfs_directory_snapshots(&self) -> Vec<VfsDirectorySnapshot> {
+        self.dispatcher.vfs_directories.iter().filter(|directory| !directory.path.is_empty())
+            .map(|directory| VfsDirectorySnapshot { path: directory.path.clone(),
+                creator: directory.creator, file_type: directory.file_type,
+                finder_flags: directory.finder_flags }).collect()
+    }
+
+    pub fn import_vfs_directory(&mut self, directory: &VfsDirectorySnapshot) {
+        let path = TrapDispatcher::normalize_vfs_path(&directory.path);
+        if path.is_empty() || path.starts_with("__rsrc__") { return; }
+        let id = self.dispatcher.ensure_vfs_directory(&path);
+        self.dispatcher.vfs_directories.with_mut(|directories| {
+            if let Some(entry) = directories.iter_mut().find(|entry| entry.dir_id == id) {
+                entry.creator = directory.creator; entry.file_type = directory.file_type;
+                entry.finder_flags = directory.finder_flags; entry.dirty = true;
+            }
+        });
+    }
+
     pub fn import_vfs_file(&mut self, file: &VfsFileSnapshot) {
         let normalized = TrapDispatcher::normalize_vfs_path(&file.path);
         if normalized.is_empty() || normalized.starts_with("__rsrc__") {
