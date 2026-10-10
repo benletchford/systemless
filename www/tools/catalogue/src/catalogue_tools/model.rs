@@ -361,6 +361,7 @@ pub enum FileType {
     Bin,
     Hqx,
     Img,
+    Dmg,
     Gz,
     Opaque,
 }
@@ -378,6 +379,7 @@ impl FileType {
             Self::Bin => "bin",
             Self::Hqx => "hqx",
             Self::Img => "img",
+            Self::Dmg => "dmg",
             Self::Gz => "gz",
             Self::Opaque => "dat",
         }
