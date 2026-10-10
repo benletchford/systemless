@@ -8603,6 +8603,91 @@ mod desktop {
 
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
+        fn qualified_list_clicks_reach_guest_at_centered_scene_scales(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::{test::TestWindowExt, AppContext, InputEvent, MouseButton, MouseDownEvent, MouseUpEvent};
+            cx.update(gpui_kit::init);
+            for (powerpc, depth) in [(false, 1), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 9));
+                wait_for_menu(&mut session, 129, 9, true);
+                settle(&mut session);
+                for scale in [0.75, 1., 1.5, 2.] {
+                    let (sender, receiver) = std::sync::mpsc::channel();
+                    let (window, view) = cx.update(|cx| {
+                        gpui_kit::open_window(gpui_kit::WindowOptions {
+                            window_bounds: Some(gpui_kit::WindowBounds::Windowed(gpui_kit::Bounds::new(
+                                gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)),
+                                gpui_kit::size(gpui_kit::px(880. * scale), gpui_kit::px(600. * scale))))),
+                            ..Default::default()
+                        }, cx, |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap()
+                    });
+                    for row in [0, 7] {
+                        let initial = session.runner_mut().list_manager_snapshot().into_iter()
+                            .find(|list| list.draw_enabled && list.definition_id == 0).unwrap();
+                        let global = initial.global_view_rect.unwrap();
+                        let paint = initial.standard_cell_paint.get(&(row, 0)).expect("retained row paint");
+                        assert_eq!(paint.depth, depth);
+                        let guest_x = i32::from(global.1) - i32::from(initial.view_rect.1) + i32::from(paint.left) + 12;
+                        let guest_y = i32::from(global.0) - i32::from(initial.view_rect.0) + i32::from(paint.baseline) - 3;
+                        for down in [true, false] {
+                            let lists = session.runner_mut().list_manager_snapshot();
+                            let frame = session.video_frame().unwrap();
+                            let plans = super::qualify_list_text_fields(&lists, &frame.pixels, frame.width, frame.height);
+                            if down { assert!(plans.iter().any(|plans| plans.contains_key(&(row, 0))), "displayed row must qualify: PPC={powerpc}, depth={depth}, row={row}, scale={scale}"); }
+                            cx.update_window(window.into(), |_, window, cx| {
+                                view.update(cx, |demo, cx| {
+                                    demo.width = frame.width;
+                                    demo.height = frame.height;
+                                    demo.windows = session.runner_mut().window_frame_snapshot();
+                                    demo.controls = session.runner_mut().control_snapshot();
+                                    demo.lists = lists.clone();
+                                    demo.list_text_plans = plans.clone();
+                                    assert!(!super::super::frames::list_pieces(&demo.lists, &demo.controls,
+                                        &demo.windows, super::super::frames::Rect { top: 0, left: 0, bottom: 600, right: 800 }).is_empty());
+                                    demo.image = Some(std::sync::Arc::new(gpui_kit::RenderImage::new(vec![
+                                        image::Frame::new(image::RgbaImage::from_raw(frame.width, frame.height,
+                                            super::gpui_pixels(frame.pixels.clone())).unwrap())
+                                    ])));
+                                    cx.notify();
+                                });
+                                window.render_frame(cx);
+                                let position = view.update(cx, |demo, _| {
+                                    assert!((demo.display_scale - scale).abs() < 0.01);
+                                    assert!(demo.display_origin.0 > 0., "exercise centered scene origin");
+                                    gpui_kit::point(gpui_kit::px(demo.display_origin.0 + (guest_x as f32 + 0.25) * scale),
+                                        gpui_kit::px(demo.display_origin.1 + (guest_y as f32 + 0.25) * scale))
+                                });
+                                let event = if down {
+                                    MouseDownEvent { position, button: MouseButton::Left, click_count: 1, ..Default::default() }.to_platform_input()
+                                } else {
+                                    MouseUpEvent { position, button: MouseButton::Left, click_count: 1, ..Default::default() }.to_platform_input()
+                                };
+                                window.dispatch_event(event, cx);
+                            }).unwrap();
+                            let mut delivered = 0;
+                            for command in receiver.try_iter() {
+                                if let super::Command::Input(input) = command { session.deliver_input(input); delivered += 1; }
+                            }
+                            assert_eq!(delivered, 1, "one guest event per GPUI pointer event");
+                            for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
+                        }
+                        settle(&mut session);
+                        let clicked = session.runner_mut().list_manager_snapshot().into_iter()
+                            .find(|list| list.guest_id == initial.guest_id && list.generation == initial.generation).unwrap();
+                        assert_eq!(clicked.selected, [(row, 0)].into(), "PPC={powerpc}, depth={depth}, row={row}, scale={scale}");
+                    }
+                }
+            }
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
         fn styled_document_glyph_clicks_reach_guest_at_centered_scene_scales(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::{test::TestWindowExt, AppContext, InputEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent};
             cx.update(gpui_kit::init);
