@@ -1,0 +1,73 @@
+{
+  "base": "661cd9ed9114fa5b89c67ab10368a8fa9b856008",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "b2d77f454304c8f17861ad27d9b2980c7ce8100ec63866c78ab2a8d925269b51",
+    "src/bin/gpui_demo_frames.rs": "62ae70077f86457235111e109f7328519e00af882182f2d689650f050e802d0a",
+    "src/bin/gpui_demo_input.rs": "4066844499c99b3d367d3176d6de73bc547c691a5abd660ca64140782004f7b3",
+    "src/systems/macintosh/dialog_manager.rs": "14e712933ee829063609155e0ddb0de5a74622e303c8d5c2a1c65812aa52bdf8",
+    "src/systems/macintosh/loader/ppc/dispatch_dialog.rs": "697078040dca43952048e429e4969407dea6a09d68eeb7c79b44a6f8fe0897fc",
+    "src/systems/macintosh/process_context.rs": "8372fbb0ac6a836c2bbf4ae886c6498e38abbb469349ef6f00d5a0c46b01c3f3",
+    "src/systems/macintosh/runner/mod.rs": "d9d9222b66800774395984fd7e960d112a717a02c1f614f38011faecfbca657c",
+    "src/systems/macintosh/trap/dialog.rs": "f9cb02d6612843ea65bf026fac6be4c85d411661e788855a6d687543fc197ee8",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "41cf3aa93f2b41d0ce1d49b2bace8572140e9692d37239a749a471744ca5c09f"
+  },
+  "commands": [
+    {
+      "log": "dialog-content-revision-final.log",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--profile",
+        "ci-test",
+        "--lib",
+        "dialog_content_revisions_share_across_gateways_and_reset_on_window_reuse",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0
+    },
+    {
+      "log": "modal-composition-revision-final.log",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--profile",
+        "ci-test",
+        "--example",
+        "gpui-menu-demo",
+        "--features",
+        "gpui-demo-test",
+        "modal_composed_commit_pins_active_dialog_item_and_rejects_stale_input",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0
+    },
+    {
+      "log": "modal-composition-revision-editing-final.log",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--profile",
+        "ci-test",
+        "--example",
+        "gpui-menu-demo",
+        "--features",
+        "gpui-demo-test",
+        "modal_dialog_edit_fields_switch_and_keep_independent_text_across_modes",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "binary_sha256": {
+    "target/ci-test/deps/systemless-ab8d3978307603c0": "ba2b432ae5bffe30f2c02a5c3832b46bdad4ad5b1f31fd07622ffda558220073",
+    "target/ci-test/examples/gpui_menu_demo-957ebf4d71285d8e": "2f3a308b0db2fd454ea6f8e90b6dbfaefaee7fe10a1065378a7fbd4c6abe68fd"
+  },
+  "scope": "Shared gateway revision propagation, detached clone isolation, unchanged window lifetime, disposal/reuse cleanup; four CPU/depth modal commit negative revision guard; existing three-mode modal editing regression.",
+  "limits": "No actual guest SetDialogItem/DITL mutation-to-rejection end-to-end test, direct guest RAM mutation retirement, GPUI modal handler/worker integration, modal preedit or physical IME."
+}

@@ -2644,6 +2644,7 @@ impl FixtureRunner {
                     .filter(|index| *index >= 0 && (*index as usize) < items.len())
                     .map(|index| index + 1);
                 Some(DialogSnapshot {
+                    content_revision: self.dispatcher.window_list.dialog_content_revision(guest_id),
                     guest_id,
                     generation: frame.generation,
                     bounds,

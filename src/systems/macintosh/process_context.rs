@@ -1928,6 +1928,7 @@ pub(crate) struct SharedProcessWindowList(
     SharedProcessValue<Vec<u32>>,
     SharedProcessValue<HashMap<u32, u64>>,
     SharedProcessValue<HashMap<u32, (u64, crate::window_manager::WindowRect)>>,
+    SharedProcessValue<HashMap<u32, u64>>,
 );
 pub(crate) struct SharedProcessInputState(SharedProcessValue<ProcessInputState>);
 /// Detached-by-default attachment handle for Time Manager tasks.
@@ -4529,6 +4530,7 @@ impl SharedProcessWindowList {
             SharedProcessValue::from_value(windows),
             Default::default(),
             Default::default(),
+            Default::default(),
         )
     }
 
@@ -4537,17 +4539,19 @@ impl SharedProcessWindowList {
             self.0.shared_handle(),
             self.1.shared_handle(),
             self.2.shared_handle(),
+            self.3.shared_handle(),
         )
     }
 
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
-        self.0.ptr_eq(&other.0) && self.1.ptr_eq(&other.1) && self.2.ptr_eq(&other.2)
+        self.0.ptr_eq(&other.0) && self.1.ptr_eq(&other.1) && self.2.ptr_eq(&other.2) && self.3.ptr_eq(&other.3)
     }
 
     pub(crate) fn attach_to(&mut self, process_state: &Self) {
         self.0.attach_to(&process_state.0, Vec::is_empty);
         self.1.attach_to(&process_state.1, HashMap::is_empty);
         self.2.attach_to(&process_state.2, HashMap::is_empty);
+        self.3.attach_to(&process_state.3, HashMap::is_empty);
     }
 
     /// Register a newly created WindowRecord, including caller-supplied
@@ -4557,6 +4561,7 @@ impl SharedProcessWindowList {
         let generation = new_window_generation();
         self.1.with_mut(|lifetimes| lifetimes.insert(window, generation));
         self.2.with_mut(|icons| icons.remove(&window));
+        self.3.with_mut(|revisions| revisions.remove(&window));
         generation
     }
 
@@ -4598,12 +4603,21 @@ impl SharedProcessWindowList {
         })
     }
 
+    pub(crate) fn dialog_content_revision(&self, window: u32) -> u64 {
+        self.3.with_ref(|revisions| revisions.get(&window).copied().unwrap_or(0))
+    }
+
+    pub(crate) fn invalidate_dialog_content(&self, window: u32) {
+        self.3.with_mut(|revisions| { revisions.insert(window, new_window_generation()); });
+    }
+
     fn prune_window_generations(&self) {
         let windows = self.windows();
         self.1
             .with_mut(|lifetimes| lifetimes.retain(|window, _| windows.contains(window)));
         self.2
             .with_mut(|icons| icons.retain(|window, _| windows.contains(window)));
+        self.3.with_mut(|revisions| revisions.retain(|window, _| windows.contains(window)));
     }
 
     pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&[u32]) -> R) -> R {
@@ -4702,6 +4716,7 @@ impl SharedProcessWindowList {
         if removed {
             self.1.with_mut(|lifetimes| lifetimes.remove(&window));
             self.2.with_mut(|icons| icons.remove(&window));
+            self.3.with_mut(|revisions| revisions.remove(&window));
         }
         removed
     }
@@ -14213,6 +14228,34 @@ mod tests {
         assert_eq!(native.take_menu_state().unwrap().menu_handle, 0x1234);
         assert!(classic.menu().is_none());
         assert_eq!(detached.menu().as_ref().unwrap().menu_handle, 0x1234);
+    }
+
+    #[test]
+    fn dialog_content_revisions_share_across_gateways_and_reset_on_window_reuse() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessWindowList::from_value(vec![0x1000]);
+        let mut native = SharedProcessWindowList::default();
+        context.attach_window_list(&mut classic);
+        context.attach_window_list(&mut native);
+        let lifetime = classic.generation_for_window(0x1000);
+        classic.invalidate_dialog_content(0x1000);
+        let revision = native.dialog_content_revision(0x1000);
+        assert_ne!(revision, 0);
+        assert_eq!(native.generation_for_window(0x1000), lifetime);
+        let detached = native.clone();
+        native.invalidate_dialog_content(0x1000);
+        assert_ne!(classic.dialog_content_revision(0x1000), revision);
+        assert_eq!(detached.dialog_content_revision(0x1000), revision);
+        native.register_new_window(0x1000);
+        assert_eq!(classic.dialog_content_revision(0x1000), 0);
+        assert_ne!(classic.generation_for_window(0x1000), lifetime);
+        classic.invalidate_dialog_content(0x1000);
+        assert!(native.remove_window(0x1000));
+        assert_eq!(classic.dialog_content_revision(0x1000), 0);
+        classic.push(0x1000);
+        let fresh = classic.generation_for_window(0x1000);
+        assert_ne!(fresh, lifetime);
+        assert_eq!(native.dialog_content_revision(0x1000), 0);
     }
 
     #[test]

@@ -411,6 +411,7 @@ pub(crate) fn guest_commit_inputs(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DialogTextOwner {
     pub identity: (u32, u64),
+    pub content_revision: u64,
     pub item: i16,
     pub text: Vec<u8>,
     pub selection: std::ops::Range<usize>,
@@ -433,7 +434,7 @@ pub(crate) fn dialog_text_owner(
     let (start, end) = item.selection?;
     let selection = usize::try_from(start).ok()?..usize::try_from(end).ok()?;
     if selection.start > selection.end || selection.end > text.len() { return None; }
-    Some(DialogTextOwner { identity: (dialog.guest_id, dialog.generation), item: item.number, text, selection })
+    Some(DialogTextOwner { content_revision: dialog.content_revision, identity: (dialog.guest_id, dialog.generation), item: item.number, text, selection })
 }
 
 pub(crate) fn guest_dialog_commit_inputs(
