@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.91.0](https://github.com/benletchford/systemless/compare/v0.90.0...v0.91.0) (2026-10-10)
+
+
+### Features
+
+* **catalogue:** add verified Sigma Chess Lite play ([516db9c](https://github.com/benletchford/systemless/commit/516db9c30df50a49404e4876b7cce3125c30d290))
+
 ## [0.90.0](https://github.com/benletchford/systemless/compare/v0.89.0...v0.90.0) (2026-10-10)
 
 
