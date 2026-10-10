@@ -83,7 +83,9 @@ def main():
                 save()
     manifest['complete'] = True
     save()
-    if not args.smooth_review:
+    if args.smooth_review:
+        subprocess.run(['python3', str(root / 'tests/toolbox-showcase/verify-gpui-smooth-list-provenance.py'), str(progress)], check=True)
+    else:
         subprocess.run(['python3', str(root / 'tests/toolbox-showcase/verify-gpui-list-matrix.py'), str(progress)], check=True)
 
 
