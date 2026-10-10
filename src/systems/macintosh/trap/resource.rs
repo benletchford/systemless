@@ -2,9 +2,11 @@
 
 use crate::cpu::{CpuOps, Register};
 use crate::loader::CodeSegmentHeader;
-use crate::machine_profile::{
-    KEYBOARD_ENVIRON_TYPE, QUICKTIME_NUM_VERSION, REFERENCE_M68K_EXECUTION_CAPABILITIES,
-    REFERENCE_MACHINE_PROFILE,
+use crate::gestalt_manager::{
+    evaluate_gestalt_query, evaluate_new_gestalt, evaluate_replace_gestalt,
+    is_builtin_gestalt_selector, GestaltEvaluationContext, NewGestaltAction,
+    ReplaceGestaltAction, GESTALT_DUP_SELECTOR_ERR_U32 as GESTALT_DUP_SELECTOR_ERR,
+    GESTALT_UNDEF_SELECTOR_ERR_U32 as GESTALT_UNDEF_SELECTOR_ERR,
 };
 use crate::managers::resource::ResourceFork;
 use crate::memory::globals::addr;
@@ -214,76 +216,6 @@ fn format_ostype(res_type: [u8; 4]) -> String {
             }
         })
         .collect()
-}
-
-/// `gestaltUndefSelectorErr` (-5551). Returned by `Gestalt` /
-/// `ReplaceGestalt` when the selector code is not recognised.
-/// Inside Macintosh: Operating System Utilities 1994, 1-32 / 1-35.
-const GESTALT_UNDEF_SELECTOR_ERR: u32 = 0xFFFF_EA51;
-
-/// `gestaltDupSelectorErr` (-5552). Returned by `NewGestalt` when the
-/// caller tries to register a selector that is already known to the
-/// Gestalt Manager (built-in or previously installed).
-/// Inside Macintosh: Operating System Utilities 1994, 1-34.
-const GESTALT_DUP_SELECTOR_ERR: u32 = 0xFFFF_EA50;
-const GESTALT_68040_LOGICAL_PAGE_SIZE_BYTES: u32 = 4096;
-
-/// Closed list of `Gestalt` selectors recognised by Systemless's built-in
-/// query handler. Kept in sync with the match arms in the `(false,
-/// 0xAD)` dispatch — `_NewGestalt` and `_ReplaceGestalt` consult this
-/// to decide between `gestaltDupSelectorErr` and noErr / between noErr
-/// and `gestaltUndefSelectorErr`. See the Gestalt arm in
-/// `dispatch_resource` for the response values and IM citations.
-fn is_builtin_gestalt_selector(sel: &[u8; 4]) -> bool {
-    matches!(
-        sel,
-        b"vers"
-            | b"sysv"
-            | b"sysa"
-            | b"ostt"
-            | b"tbtt"
-            | b"evnt"
-            | b"edtn"
-            | b"ppc "
-            | b"cput"
-            | b"proc"
-            | b"mach"
-            | b"kbd "
-            | b"qd  "
-            | b"qdrw"
-            | b"ram "
-            | b"lram"
-            | b"pgsz"
-            | b"fpu "
-            | b"mmu "
-            | b"snd "
-            | b"ttsc"
-            | b"te  "
-            | b"teat"
-            | b"cltn"
-            | b"tmgr"
-            | b"thds"
-            | b"dplv"
-            | b"dply"
-            | b"alis"
-            | b"fs  "
-            | b"fold"
-            | b"rsrc"
-            | b"scr#"
-            | b"qtim"
-            | b"qtrs"
-            | b"drag"
-            | b"os  "
-            | b"powr"
-            | b"appr"
-            | b"apvr"
-            | b"addr"
-            | b"hdwr"
-            | b"sdev"
-            | b"stdf"
-            | b"help"
-            | b"vm  "
-    )
 }
 
 impl super::TrapDispatcher {
@@ -3646,6 +3578,8 @@ impl super::TrapDispatcher {
             (false, 0xAD) => {
                 let selector = cpu.read_reg(Register::D0);
                 let sel = selector.to_be_bytes();
+                let eval_context =
+                    GestaltEvaluationContext::for_m68k(bus.ram_size(), self.mmu_mode != 0);
                 match raw_trap_route(self.current_trap_word).os_routine_variant {
                     // _NewGestalt ($A3AD)
                     //
@@ -3672,41 +3606,22 @@ impl super::TrapDispatcher {
                     //   memFullErr           (-108)  Ran out of memory
                     //   gestaltDupSelectorErr (-5552) Selector already exists
                     //   gestaltLocationErr   (-5553) Function not in system heap
-                    //
-                    // MPW Universal Headers Gestalt.h:
-                    //   #pragma parameter __D0 NewGestalt(__D0, __A0)
-                    //   EXTERN_API(OSErr) NewGestalt(OSType selector,
-                    //       SelectorFunctionUPP gestaltFunction)
-                    //         ONEWORDINLINE(0xA3AD);
-                    //
-                    // Systemless HLE compromise: records the (selector → guest
-                    // fn) tuple in `gestalt_registry`; rejects duplicates of
-                    // any built-in or already-registered selector with
-                    // `gestaltDupSelectorErr` (-5552). Does NOT validate
-                    // system-heap residency, so stack-local function pointers
-                    // that BasiliskII would reject with `gestaltLocationErr`
-                    // (-5553) are accepted. Subsequent Gestalt queries of
-                    // registry-only selectors still return
-                    // `gestaltUndefSelectorErr` because guest function
-                    // pointers are not invokable from a trap handler.
-                    //
-                    // BII-vs-Systemless divergence: the absolute OSErr
-                    // differs (BII enforces system-heap residency
-                    // with gestaltLocationErr; Systemless HLE accepts any
-                    // address). Both obey the documented register-
-                    // only OS-bit FUNCTION calling convention.
-                    //
-                    // Regression coverage:
-                    //   newgestalt_register_only_calling_convention_preserves_stack
                     OsRoutineVariant::GestaltRegister => {
-                        let already_known = is_builtin_gestalt_selector(&sel)
+                        let already_known = is_builtin_gestalt_selector(selector, &eval_context)
                             || self.gestalt_registry.contains_key(&selector);
-                        if already_known {
-                            cpu.write_reg(Register::D0, GESTALT_DUP_SELECTOR_ERR);
-                        } else {
-                            let fn_ptr = cpu.read_reg(Register::A0);
-                            self.gestalt_registry.insert(selector, fn_ptr);
-                            cpu.write_reg(Register::D0, 0);
+                        let action = evaluate_new_gestalt(
+                            selector,
+                            cpu.read_reg(Register::A0),
+                            already_known,
+                        );
+                        match action {
+                            NewGestaltAction::DuplicateSelector => {
+                                cpu.write_reg(Register::D0, GESTALT_DUP_SELECTOR_ERR);
+                            }
+                            NewGestaltAction::Register { selector, value } => {
+                                self.gestalt_registry.insert(selector, value);
+                                cpu.write_reg(Register::D0, 0);
+                            }
                         }
                         return Some(Ok(()));
                     }
@@ -3739,46 +3654,31 @@ impl super::TrapDispatcher {
                     //   gestaltUndefSelectorErr (-5551) Undefined selector
                     //   gestaltLocationErr      (-5553) Function not in
                     //                                   system heap
-                    //
-                    // Per IM:OSUtils 1994 p. 1-35: "If ReplaceGestalt
-                    // returns an error of any type, then the value of
-                    // oldGestaltFunction is undefined" — so on
-                    // gestaltUndefSelectorErr we leave A0 unchanged.
-                    //
-                    // MPW Universal Headers Gestalt.h:
-                    //   #pragma parameter __D0 ReplaceGestalt(__D0, __A0, __A1)
-                    //   EXTERN_API(OSErr) ReplaceGestalt(OSType selector,
-                    //       SelectorFunctionUPP gestaltFunction,
-                    //       SelectorFunctionUPP *oldGestaltFunction)
-                    //         FOURWORDINLINE(0x2F09, 0xA5AD, 0x225F, 0x2288);
-                    //
-                    // The four-word glue saves A1 around the trap and writes
-                    // the post-trap A0 register through *oldGestaltFunction;
-                    // the bare trap word itself is still register-only.
-                    //
-                    // Systemless HLE compromise: swaps a previously-registered
-                    // guest selector fn and returns the old pointer in A0;
-                    // for built-in selectors there is no original guest fn
-                    // to return so A0=0; unknown selectors yield
-                    // gestaltUndefSelectorErr (-5551) with A0 preserved.
-                    //
-                    // Regression coverage:
-                    //   replacegestalt_register_only_calling_convention_preserves_stack
                     OsRoutineVariant::GestaltReplace => {
                         let new_fn = cpu.read_reg(Register::A0);
-                        if let Some(old_fn) = self.gestalt_registry.insert(selector, new_fn) {
-                            cpu.write_reg(Register::A0, old_fn);
-                            cpu.write_reg(Register::D0, 0);
-                        } else if is_builtin_gestalt_selector(&sel) {
-                            cpu.write_reg(Register::A0, 0);
-                            cpu.write_reg(Register::D0, 0);
-                        } else {
-                            // Selector is genuinely unknown. Per IM the swap
-                            // does not happen — unwind the speculative insert
-                            // before returning the error so subsequent
-                            // ReplaceGestalt/NewGestalt see a clean registry.
-                            self.gestalt_registry.remove(&selector);
-                            cpu.write_reg(Register::D0, GESTALT_UNDEF_SELECTOR_ERR);
+                        let action = evaluate_replace_gestalt(
+                            selector,
+                            new_fn,
+                            self.gestalt_registry.get(&selector).copied(),
+                            is_builtin_gestalt_selector(selector, &eval_context),
+                        );
+                        match action {
+                            ReplaceGestaltAction::ReplaceCustom {
+                                old_handler,
+                                new_handler,
+                            } => {
+                                self.gestalt_registry.insert(selector, new_handler);
+                                cpu.write_reg(Register::A0, old_handler);
+                                cpu.write_reg(Register::D0, 0);
+                            }
+                            ReplaceGestaltAction::ReplaceBuiltin { new_handler } => {
+                                self.gestalt_registry.insert(selector, new_handler);
+                                cpu.write_reg(Register::A0, 0);
+                                cpu.write_reg(Register::D0, 0);
+                            }
+                            ReplaceGestaltAction::UndefinedSelector => {
+                                cpu.write_reg(Register::D0, GESTALT_UNDEF_SELECTOR_ERR);
+                            }
                         }
                         return Some(Ok(()));
                     }
@@ -3786,472 +3686,19 @@ impl super::TrapDispatcher {
                     // through to the query handler below.
                     _ => {}
                 }
-                match &sel {
-                    // gestaltVersion ('vers') -> Gestalt Manager version.
-                    // Inside Macintosh: Operating System Utilities 1994,
-                    // p. 1-25: current version is 1, returned as $0001 in
-                    // the low-order word.
-                    b"vers" => {
-                        cpu.write_reg(Register::A0, 0x0001);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltCollectionMgrVersion ('cltn') returns a
-                    // NumVersion-style 1.0 value. The Collection Manager
-                    // chapter requires callers to gate use of `_CollectionMgr`
-                    // with this selector.
-                    b"cltn" => {
-                        cpu.write_reg(Register::A0, 0x0100_0000);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltSystemVersion ('sysv') -> the canonical profile version.
-                    b"sysv" => {
-                        cpu.write_reg(
-                            Register::A0,
-                            REFERENCE_MACHINE_PROFILE.system_version_bcd as u32,
-                        );
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltSysArchitecture ('sysa') -> native system
-                    // architecture. Systemless is a 68k runtime, so report
-                    // gestalt68k.
-                    // Inside Macintosh: Operating System Utilities 1994,
-                    // p. 1-24: gestalt68k = 1, gestaltPowerPC = 2.
-                    b"sysa" => {
-                        cpu.write_reg(
-                            Register::A0,
-                            REFERENCE_M68K_EXECUTION_CAPABILITIES
-                                .system_architecture
-                                .expect("68K Gestalt supports gestaltSysArchitecture"),
-                        );
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltOSTable / gestaltToolboxTable return the bases
-                    // of the two writable raw dispatch tables. Inside
-                    // Macintosh Volume VI (1991), Gestalt Manager constants;
-                    // OSUtils 1994, pp. 8-4--8-6.
-                    b"ostt" => {
-                        cpu.write_reg(Register::A0, super::dispatch::OS_TRAP_TABLE_BASE);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    b"tbtt" => {
-                        cpu.write_reg(Register::A0, super::dispatch::TOOLBOX_TRAP_TABLE_BASE);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltAppleEventsAttr ('evnt') -> AppleEvents present
-                    b"evnt" => {
-                        cpu.write_reg(Register::A0, 0x0001);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltEditionMgrAttr ('edtn') -> Edition Manager attrs.
-                    // Inside Macintosh: Operating System Utilities 1994,
-                    // p. 1-16 / p. 1-24: bit 0 is
-                    // gestaltEditionMgrPresent, bit 1 is
-                    // gestaltEditionMgrTranslationAware. Pack11 provides
-                    // the Edition Manager package bootstrap, so advertise
-                    // the manager as present but not Translation Manager
-                    // aware.
-                    b"edtn" => {
-                        cpu.write_reg(Register::A0, 1);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltPPCToolboxAttr ('ppc ') -> PPC Toolbox present.
-                    // Inside Macintosh: Interapplication Communication 1993,
-                    // p. 11-80 defines gestaltPPCToolboxAttr='ppc ' and
-                    // gestaltPPCToolboxPresent as bit 0; Macintosh Toolbox
-                    // Essentials 1992, p. 2-7 directs high-level-event apps
-                    // to use this selector before relying on PPC services.
-                    // Systemless implements the local/init PPC dispatch
-                    // paths generically, so report present but no incoming,
-                    // outgoing, or realtime networking capability bits.
-                    b"ppc " => {
-                        cpu.write_reg(Register::A0, 0x0001);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltNativeCPUtype ('cput') -> 68040
-                    b"cput" => {
-                        cpu.write_reg(
-                            Register::A0,
-                            REFERENCE_M68K_EXECUTION_CAPABILITIES.native_cpu_type,
-                        );
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltProcessorType ('proc') -> 68040
-                    b"proc" => {
-                        cpu.write_reg(
-                            Register::A0,
-                            REFERENCE_M68K_EXECUTION_CAPABILITIES.processor_type,
-                        );
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltMachineType ('mach') -> Quadra 900
-                    // Inside Macintosh: Operating System Utilities 1994, 1-58
-                    b"mach" => {
-                        cpu.write_reg(
-                            Register::A0,
-                            REFERENCE_MACHINE_PROFILE.gestalt_machine_type as u32,
-                        );
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltKeyboardType ('kbd ') -> Extended ADB Keyboard.
-                    // Inside Macintosh: Operating System Utilities 1994,
-                    // 1-8 / 1-18 defines this selector as the keyboard type
-                    // code for the keyboard that produced the last keystroke;
-                    // MPW Universal Headers Gestalt.h defines
-                    // gestaltExtADBKbd = 4. Systemless exposes a desktop
-                    // extended-keyboard virtual input profile, including
-                    // keypad aliases used by Marathon-class games.
-                    b"kbd " => {
-                        cpu.write_reg(Register::A0, u32::from(KEYBOARD_ENVIRON_TYPE));
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltQuickdrawVersion ('qd  ') -> System 7
-                    // 32-bit Color QuickDraw v1.3 (0x0230).
-                    // IM:Operating System Utilities 1994, pp. 1-22 and
-                    // 1-24 define gestalt32BitQD13 = $230; IM:Imaging
-                    // With QuickDraw 1994, p. 4-18 says System 7 Color
-                    // QuickDraw reports that value. Blade requires at
-                    // least 32-Bit QuickDraw v1.2 during startup.
-                    b"qd  " => {
-                        cpu.write_reg(Register::A0, 0x0230);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltQuickdrawFeatures ('qdrw') -> hasColor | hasDeepGWorlds
-                    b"qdrw" => {
-                        cpu.write_reg(Register::A0, 0x000F);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltPhysicalRAMSize ('ram ') -> emulated physical RAM
-                    b"ram " => {
-                        cpu.write_reg(Register::A0, bus.ram_size());
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltLogicalRAMSize ('lram') -> logical memory.
-                    // Inside Macintosh: Operating System Utilities 1994,
-                    // p. 1-19: when virtual memory is not installed, this is
-                    // the same value as gestaltPhysicalRAMSize.
-                    b"lram" => {
-                        cpu.write_reg(Register::A0, bus.ram_size());
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltLogicalPageSize ('pgsz') -> logical page size.
-                    // Inside Macintosh: Operating System Utilities 1994,
-                    // p. 1-19: defined for MC68010/020/030/040 systems and
-                    // undefined for MC68000-only machines. Systemless exposes
-                    // a 68040 profile, so report the page granularity used by
-                    // the profile's flat logical address space.
-                    b"pgsz" => {
-                        cpu.write_reg(Register::A0, GESTALT_68040_LOGICAL_PAGE_SIZE_BYTES);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltFPUType ('fpu ') -> 68040 FPU
-                    b"fpu " => {
-                        cpu.write_reg(Register::A0, REFERENCE_M68K_EXECUTION_CAPABILITIES.fpu_type);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltMMUType ('mmu ') -> 68040 MMU
-                    b"mmu " => {
-                        cpu.write_reg(Register::A0, REFERENCE_M68K_EXECUTION_CAPABILITIES.mmu_type);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltSoundAttr ('snd ') -> advertise a full late-68k
-                    // color Mac sound profile:
-                    //   Bit 0:  gestaltStereoCapability
-                    //   Bit 1:  gestaltStereoMixing
-                    //   Bit 3:  gestaltSoundIOMgrPresent
-                    //   Bit 4:  gestaltBuiltInSoundInput
-                    //   Bit 5:  gestaltHasSoundInputDevice
-                    //   Bit 6:  gestaltPlayAndRecord
-                    //   Bit 7:  gestalt16BitSoundIO
-                    //   Bit 10: gestaltSndPlayDoubleBuffer
-                    //   Bit 11: gestaltMultiChannels
-                    //   Bit 12: gestalt16BitAudioSupport
-                    // Sound 1994, 2-91; OS Utilities 1994, 1-23.
-                    //
-                    // Earlier 0x0C83 subset omitted bits 3..6 and bit 12.
-                    // Some Sound-Manager-3-aware titles refuse to start when
-                    // those capability bits are missing.
-                    b"snd " => {
-                        cpu.write_reg(Register::A0, 0x1CFB);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltScreenSaverAttr ('SAVR') -> After Dark absent.
-                    // AfterDarkGestalt.h (Berkeley Systems, 1993) defines
-                    // this selector for its optional extension. Operating
-                    // System Utilities 1994, pp. 1-31 to 1-32 specifies that
-                    // undefined selectors return gestaltUndefSelectorErr.
-                    // Clear A0 so callers cannot mistake a stale response for
-                    // the extension's enabled or asleep attribute bits.
-                    b"SAVR" => {
+
+                let evaluation = evaluate_gestalt_query(selector, &eval_context, None);
+                if evaluation.error_code == 0 {
+                    cpu.write_reg(Register::A0, evaluation.response);
+                    cpu.write_reg(Register::D0, 0);
+                } else {
+                    if sel == *b"SAVR" || sel == *b"a/ux" {
                         cpu.write_reg(Register::A0, 0);
-                        cpu.write_reg(Register::D0, GESTALT_UNDEF_SELECTOR_ERR);
-                    }
-                    // gestaltSpeechAttr ('ttsc') -> Speech Manager absent.
-                    // Sound 1994, 1-11..1-12 defines bit 0 as
-                    // gestaltSpeechMgrPresent and says callers test it
-                    // before using speech services. Systemless does not
-                    // implement Speech Manager traps, so report the selector
-                    // as known with no capability bits rather than leaving a
-                    // stale A0 after gestaltUndefSelectorErr.
-                    b"ttsc" => {
-                        cpu.write_reg(Register::A0, 0);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltTextEditVersion ('te  ') -> TextEdit 5.
-                    // Text 1993, 2-22 lists gestaltTE5 as the System 7.0
-                    // value; p. 2-97 says TE5-or-greater gates the inline
-                    // input-era TextEdit features. Systemless implements the
-                    // corresponding TextEdit feature-flag path through
-                    // TEDispatch, so expose the System 7 version gate.
-                    b"te  " => {
-                        cpu.write_reg(Register::A0, 5);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltTEAttr ('teat') -> TextEdit attributes.
-                    // Operating System Utilities 1994, 1-30 defines bit 0 as
-                    // gestaltTEHasGetHiliteRgn. Systemless does not implement
-                    // TEGetHiliteRgn, so keep the selector known but return no
-                    // advertised attribute bits.
-                    b"teat" => {
-                        cpu.write_reg(Register::A0, 0);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltTimeMgrVersion ('tmgr') -> revised Timer Manager
-                    b"tmgr" => {
-                        cpu.write_reg(Register::A0, 2);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltThreadMgrAttr ('thds') -> Thread Manager
-                    // present. Inside Macintosh: Operating System Utilities
-                    // 1994, p. 1-25 defines bit 0 as
-                    // gestaltThreadMgrPresent and bit 1 as
-                    // gestaltSpecificMatchSupport. Systemless implements the
-                    // public critical-section dispatch contract through
-                    // _ThreadDispatch ($ABF2), so report bit 0. Leave bit 1
-                    // clear because exact-match thread creation is not
-                    // implemented.
-                    b"thds" => {
-                        cpu.write_reg(Register::A0, 1);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltDisplayMgrVers ('dplv') -> Display Manager
-                    // 2.0.6, matching the BasiliskII System 7.5.3 reference.
-                    // Operating System Utilities 1994 lists 'dplv' as the
-                    // Display Manager version selector. Abuse probes it before
-                    // walking screen devices through DisplayDispatch.
-                    b"dplv" => {
-                        cpu.write_reg(Register::A0, 0x0002_0006);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltDisplayMgrAttr ('dply') -> Display Manager attrs.
-                    // Bit 0 is gestaltDisplayMgrPresent; BasiliskII's System
-                    // 7.5.3 reference returns bits 0..2 set for this profile.
-                    b"dply" => {
-                        cpu.write_reg(Register::A0, 0x0000_0007);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltAliasMgrAttr ('alis') -> alias manager present
-                    b"alis" => {
-                        cpu.write_reg(Register::A0, 1);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltFSAttr ('fs  ') -> has FSSpec calls and extended dispatch
-                    b"fs  " => {
-                        cpu.write_reg(Register::A0, (1 << 0) | (1 << 1));
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltFindFolderAttr ('fold') -> FindFolder present
-                    // Inside Macintosh Volume VI, 9-28
-                    b"fold" => {
-                        cpu.write_reg(Register::A0, 1);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltResourceMgrAttr ('rsrc')
-                    // Returns information about Resource Manager
-                    // capabilities; bit 0, gestaltPartialRsrcs, indicates
-                    // that the partial-resource routines exist.
-                    // Inside Macintosh: Operating System Utilities 1994,
-                    // p. 1-23. More Macintosh Toolbox 1993, p. 1-13.
-                    b"rsrc" => {
-                        cpu.write_reg(Register::A0, 1);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltScriptCount ('scr#') -> number of active script systems.
-                    // Inside Macintosh: Operating System Utilities 1994,
-                    // p. 1-12 defines the selector and p. 1-30 defines the
-                    // response as the number of currently active script
-                    // systems. Systemless exposes the Roman script system.
-                    b"scr#" => {
-                        cpu.write_reg(Register::A0, 1);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltQuickTime ('qtim') -> QuickTime version.
-                    // Inside Macintosh: QuickTime 1993, p. 2-33. The
-                    // response field (A0) is the QuickTime version
-                    // formatted like the numeric version part of a 'vers'
-                    // resource; Inside Macintosh Volume VI, 9-23 defines
-                    // the release byte as 0x80 for a final release.
-                    b"qtim" => {
-                        cpu.write_reg(Register::A0, QUICKTIME_NUM_VERSION);
-                        cpu.write_reg(Register::D0, 0); // noErr
-                    }
-                    // Apple TN1083: bit 0 of 'qtrs' indicates a registered
-                    // PowerPC QuickTimeLib; the 68K guest has no PPC library.
-                    b"qtrs" => {
-                        cpu.write_reg(Register::A0, 0);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltDragMgrAttr ('drag') -> Drag Manager attrs.
-                    // Inside Macintosh: Operating System Utilities 1994,
-                    // p. 1-17. Bit 0 is gestaltDragMgrPresent. Systemless
-                    // does not host Drag Manager traps, so report "known but
-                    // absent" instead of gestaltUndefSelectorErr; Marathon 1
-                    // probes this immediately after QuickDraw features and
-                    // otherwise can interpret stale A0 feature bits.
-                    b"drag" => {
-                        cpu.write_reg(Register::A0, 0);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltOSAttr ('os  ') -> Mac OS attributes.
-                    // Inside Macintosh: Operating System Utilities 1994,
-                    // page 1-22. Bit assignments:
-                    //   0: gestaltSysZoneGrowable
-                    //   1: gestaltLaunchCanReturn
-                    //   2: gestaltLaunchFullFileSpec
-                    //   3: gestaltLaunchControl
-                    //   4: gestaltTempMemSupport
-                    //   5: gestaltRealTempMemory
-                    //   6: gestaltTempMemTracked
-                    //   7: gestaltIPCSupport
-                    //   8: gestaltSysDebuggerSupport
-                    //
-                    // Steel Fighters and similar titles probe 'os  '
-                    // during init and ExitToShell via _Debugger if the
-                    // selector returns gestaltUndefSelectorErr. Reporting
-                    // a System 7-class capability set (bits 0-7) keeps
-                    // them on the standard launch path. Bit 8
-                    // (debuggerSupport) is left clear since Systemless does
-                    // not host a guest-side debugger.
-                    b"os  " => {
-                        cpu.write_reg(Register::A0, 0xFF);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltPowerMgrAttr ('powr') -> no Power Manager.
-                    // Inside Macintosh Volume VI, 31-9. Bit 0 = present.
-                    // Returning 0 with noErr signals "selector recognized,
-                    // not a portable Mac" — desktop-class titles probe
-                    // this on launch and fall through to the desktop
-                    // power path (no battery polling, no sleep hooks).
-                    b"powr" => {
-                        cpu.write_reg(Register::A0, 0);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltAppearanceAttr ('appr') -> Appearance Manager
-                    // present. Mac Toolbox: Appearance Manager (Apple, 1997),
-                    // Gestalt selectors:
-                    //   Bit 0 = gestaltAppearanceExists
-                    //   Bit 1 = gestaltAppearanceCompatMode
-                    // Some mid-90s titles (e.g. Meteor Storm) treat absence
-                    // of the Appearance Manager as a hard failure and emit a
-                    // misleading "Couldn't get the sound manager version"
-                    // alert before exiting. Reporting bit 0 set says
-                    // "Appearance Mgr is here"; the title's NewFeaturesDialog
-                    // glue path then proceeds normally even though our
-                    // DialogDispatch routes back through the standard
-                    // Dialog Manager (no theming).
-                    b"appr" => {
-                        cpu.write_reg(Register::A0, 0x0001);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // Gestalt Appearance Manager version ('apvr'). Apple
-                    // Gestalt Manager, gestaltAppearanceVersion: the low word
-                    // is BCD (version 1.0.1 = $0101).
-                    b"apvr" => {
-                        cpu.write_reg(
-                            Register::A0,
-                            u32::from(crate::machine_profile::APPEARANCE_MANAGER_VERSION_BCD),
-                        );
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltAddressingModeAttr ('addr') -> 32-bit clean.
-                    // Inside Macintosh Volume VI, 28-9. Bit 0: 32-bit
-                    // addressing currently active. Bit 1: 32-bit-clean
-                    // system zone. Bit 2: machine is 32-bit capable.
-                    // Apps like Bonkheads that hard-require 32-bit
-                    // addressing read this and ExitToShell with a
-                    // "needs 32-bit addressing" alert if bit 0 is clear.
-                    b"addr" => {
-                        cpu.write_reg(Register::A0, 0b110 | u32::from(self.mmu_mode != 0));
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltHardwareAttr ('hdwr') -> low-level hardware attrs.
-                    // Inside Macintosh: Operating System Utilities 1994,
-                    // p. 1-31: bits include gestaltHasVIA1(0),
-                    // gestaltHasVIA2(1), gestaltHasASC(3), gestaltHasSCC(4),
-                    // and gestaltHasSCSI(7). Report a desktop color 68k
-                    // hardware set consistent with the Quadra-class profile.
-                    b"hdwr" => {
-                        cpu.write_reg(
-                            Register::A0,
-                            (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 7),
-                        );
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltSoundDeviceAttr ('sdev') -> not present.
-                    // Inside Macintosh Sound 1994, 1-15. Reports the
-                    // attributes of a specific sound output device. With
-                    // no device selected the spec-correct response is
-                    // gestaltUndefSelectorErr, but several apps (e.g.
-                    // Bonkheads) probe this without first selecting a
-                    // device and crash on the error. Returning 0 (no
-                    // attributes set, no error) lets them proceed.
-                    b"sdev" => {
-                        cpu.write_reg(Register::A0, 0);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltStandardFileAttr ('stdf') -> Standard File Mgr 5.8 present.
-                    // Inside Macintosh: More Macintosh Toolbox 1993, 1-86.
-                    // Bit 0: gestaltStandardFile58 (StandardFile Mgr ≥5.8 features
-                    // — CustomGetFile / CustomPutFile / StandardFileReply).
-                    // Steel Fighters probes this and ExitToShells if D0 returns
-                    // gestaltUndefSelectorErr. Reporting bit 0 set keeps the
-                    // game on the standard launch path.
-                    b"stdf" => {
-                        cpu.write_reg(Register::A0, 1);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltHelpMgrAttr ('help') -> Help Manager present.
-                    // Inside Macintosh: More Macintosh Toolbox 1993, 11-22.
-                    // Bit 0: gestaltHelpMgrPresent.
-                    // Steel Fighters and similar mid-90s titles probe this in
-                    // the same gestalt sweep that gates ExitToShell.
-                    b"help" => {
-                        cpu.write_reg(Register::A0, 1);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltVMAttr ('vm  ') -> Virtual Memory not present.
-                    // Inside Macintosh: Memory 1992, 3-29. Bit 0:
-                    // gestaltVMPresent (1 = VM in use). Systemless does not
-                    // emulate VM (the entire heap is real RAM), so report
-                    // 0 — but with noErr in D0 so probes don't ExitToShell.
-                    b"vm  " => {
-                        cpu.write_reg(Register::A0, 0);
-                        cpu.write_reg(Register::D0, 0);
-                    }
-                    // gestaltAUXVersion ('a/ux') -> not running under A/UX.
-                    // A/UX-aware installers sometimes use MPW-style Gestalt
-                    // glue that writes A0 into the response variable even
-                    // when D0 reports gestaltUndefSelectorErr. Clear A0 so
-                    // those probes cannot mistake a stale prior response for
-                    // an A/UX version number.
-                    b"a/ux" => {
-                        cpu.write_reg(Register::A0, 0);
-                        cpu.write_reg(Register::D0, GESTALT_UNDEF_SELECTOR_ERR);
-                    }
-                    _ => {
+                    } else {
                         let s = std::str::from_utf8(&sel).unwrap_or("????");
                         eprintln!("[GESTALT] Unknown selector '{}' (${:08X})", s, selector);
-                        cpu.write_reg(Register::D0, 0xFFFFEA51u32); // gestaltUndefSelectorErr
                     }
+                    cpu.write_reg(Register::D0, GESTALT_UNDEF_SELECTOR_ERR);
                 }
                 Ok(())
             }

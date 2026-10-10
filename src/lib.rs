@@ -102,6 +102,7 @@ pub(crate) use systems::macintosh::execution_native;
 pub mod game {
     pub use crate::systems::macintosh::game::*;
 }
+pub(crate) use systems::macintosh::gestalt_manager;
 pub(crate) use systems::macintosh::guest_call;
 pub(crate) use systems::macintosh::guest_procedure;
 pub(crate) use systems::macintosh::list_manager;

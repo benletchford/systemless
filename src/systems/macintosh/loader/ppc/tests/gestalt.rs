@@ -1,4 +1,5 @@
 use super::*;
+use crate::machine_profile::{POWERPC_CARBON_VERSION_BCD, REFERENCE_POWERPC_CPU_CLOCK_HZ};
 
 #[test]
 fn new_gestalt_value_registers_selector_and_rejects_duplicates() {
@@ -27,11 +28,17 @@ fn new_gestalt_value_registers_selector_and_rejects_duplicates() {
     loaded.cpu.gpr[3] = selector;
     loaded.cpu.gpr[4] = 1;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::NewGestaltValue);
-    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_GESTALT_DUP_SELECTOR_ERR));
+    assert_eq!(
+        loaded.cpu.gpr[3],
+        ppc_i16_result(PPC_GESTALT_DUP_SELECTOR_ERR)
+    );
 
     loaded.cpu.gpr[3] = u32::from_be_bytes(*b"sysv");
     run_test_import(&mut loaded, PpcImportDispatcherTarget::NewGestaltValue);
-    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_GESTALT_DUP_SELECTOR_ERR));
+    assert_eq!(
+        loaded.cpu.gpr[3],
+        ppc_i16_result(PPC_GESTALT_DUP_SELECTOR_ERR)
+    );
 
     loaded.cpu.gpr[3] = selector;
     loaded.cpu.gpr[4] = response_ptr;
@@ -55,7 +62,10 @@ fn gestalt_keyboard_type_is_builtin_extended_adb_keyboard() {
     loaded.cpu.gpr[3] = selector;
     loaded.cpu.gpr[4] = 9;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::NewGestaltValue);
-    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_GESTALT_DUP_SELECTOR_ERR));
+    assert_eq!(
+        loaded.cpu.gpr[3],
+        ppc_i16_result(PPC_GESTALT_DUP_SELECTOR_ERR)
+    );
 
     loaded.cpu.gpr[3] = selector;
     loaded.cpu.gpr[4] = response_ptr;
@@ -88,7 +98,10 @@ fn gestalt_logical_ram_matches_physical_ram_without_virtual_memory() {
         let probe = loaded.run_with_hle_imports(64);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
-        assert_eq!(loaded.memory.read_u32_be(response_ptr), Some(256 * 1024 * 1024));
+        assert_eq!(
+            loaded.memory.read_u32_be(response_ptr),
+            Some(256 * 1024 * 1024)
+        );
     }
 }
 
@@ -130,10 +143,7 @@ fn gestalt_quicktime_matches_reference_extension_version() {
 
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
-    assert_eq!(
-        loaded.memory.read_u32_be(response_ptr),
-        Some(0x0403_8000)
-    );
+    assert_eq!(loaded.memory.read_u32_be(response_ptr), Some(0x0403_8000));
 }
 
 #[test]
