@@ -54,6 +54,31 @@ mod tests {
     }
 
     #[test]
+    fn smooth_basic_menu_faces_keep_native_pens_and_continuous_underline() {
+        for (font, size) in [(0, 12), (3, 12), (4, 10)] { for face in 0..=7 {
+            let bytes = b"g W\x8e";
+            let line = super::ClassicLine::styled(bytes, font, size, face);
+            let mut pen = 0;
+            for (index, byte) in bytes.iter().enumerate() {
+                assert_eq!(line.positions[index], pen);
+                assert_eq!(line.smooth_sources[index].0, pen);
+                pen += systemless::quickdraw::text::classic_styled_glyph(font, size, *byte, face).0;
+            }
+            assert_eq!(line.positions.last(), Some(&pen));
+            if face & 4 != 0 {
+                let thickness = systemless::quickdraw::text::get_underline_thickness(font, size).max(1);
+                assert_eq!(line.smooth_strokes.len(), pen as usize * thickness as usize);
+            } else { assert!(line.smooth_strokes.is_empty()); }
+            for raster in 1..=8 {
+                assert!(super::resolve_smooth_run(&line, raster).is_some());
+            }
+        } }
+        for face in 8..=127 {
+            assert!(super::resolve_smooth_run(&super::ClassicLine::styled(b"Menu", 0, 12, face), 2).is_none());
+        }
+    }
+
+    #[test]
     fn smooth_halos_match_native_binary_silhouettes_and_keep_fractional_edges() {
         use std::collections::BTreeSet;
         for ppc in [false, true] { for face in [8, 9, 10, 11, 16, 17, 18, 19, 24, 25, 26, 27] {
@@ -281,7 +306,7 @@ mod tests {
             assert!(matches!(resolved[1], Resolved::Invert((0, 0, 30, 40))));
             assert!(matches!(&resolved[2], Resolved::Caret((1, 2, 3, 4), paint) if paint.rgb == ink.rgb));
         }
-        let unsupported = Op::Run { glyphs: ClassicLine::styled(b"bold", 3, 12, 1),
+        let unsupported = Op::Run { glyphs: ClassicLine::styled(b"outline", 3, 12, 8),
             left: 0, baseline: 12, ink };
         assert!(Op::resolve_all(&[run, unsupported], 2).is_none());
         assert!(Op::resolve_all(&ops, 0).is_none());
@@ -681,6 +706,12 @@ impl ClassicLine {
         let mut result = Self { positions: vec![0], ink: Vec::new(), smooth_sources: Vec::new(), smooth_bold: false, smooth_italic: None, smooth_strokes: Vec::new(), smooth_halo: None };
         let mut pen = 0;
         for &byte in bytes {
+            if face <= 7 && (face & 2 == 0
+                || systemless::quickdraw::text::get_glyph_italic(font, point_size, byte as char).is_none()) {
+                if let Some((glyph, data)) = systemless::quickdraw::text::get_glyph(font, point_size, byte as char) {
+                    result.smooth_sources.push((pen, glyph, data));
+                }
+            }
             let (advance, pixels) = systemless::quickdraw::text::classic_styled_glyph(
                 font, point_size, byte, face,
             );
@@ -697,12 +728,12 @@ impl ClassicLine {
             pen += advance;
             result.positions.push(pen);
         }
-        if face == 0 {
-            result.smooth_sources = Self::plain(bytes, font, point_size).smooth_sources;
-        }
+        result.smooth_bold = face & 1 != 0;
+        result.smooth_italic = (face & 2 != 0).then_some((font, point_size));
         if face & 4 != 0 && pen > 0 {
             for y in 1..=systemless::quickdraw::text::get_underline_thickness(font, point_size).max(1) {
                 result.ink.push((0, i32::from(y), pen));
+                if face <= 7 { result.smooth_strokes.extend((0..pen).map(|x| (x, i32::from(y)))); }
             }
         }
         result
@@ -1627,6 +1658,7 @@ pub(crate) fn classic_menu_label(
         .max(line.positions.last().copied().unwrap_or(0));
     for ink in &mut line.ink { ink.0 -= left; }
     for source in &mut line.smooth_sources { source.0 -= left; }
+    for stroke in &mut line.smooth_strokes { stroke.0 -= left; }
     let width = (right - left).max(1);
     div().w(px(width as f32 * scale)).h(px(18. * scale)).flex_shrink_0()
         .overflow_hidden().child(classic_label_canvas(line, false, scale, foreground))
