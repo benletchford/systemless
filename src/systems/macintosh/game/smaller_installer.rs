@@ -1,5 +1,5 @@
-//! Cyclos Smaller Installer payloads use a Compact Pro directory and fork streams.
-//! Recognition comes from the installer resource fork, never an application name.
+//! Compact Pro containers and Cyclos Smaller Installer payloads share fork streams.
+//! Recognition uses directory checksums or installer resources, never a filename.
 
 const MAX_EXPANDED: usize = 256 * 1024 * 1024;
 
@@ -94,6 +94,55 @@ pub(crate) fn expand(bytes: &[u8], resources: &[u8]) -> Result<Option<Vec<File>>
     }
     let mut entries = Vec::new();
     directory(bytes, &mut position, count, "", 0, &mut entries)?;
+    expand_entries(bytes, entries, position, 0..position).map(Some)
+}
+
+/// Recognize a normal Compact Pro container by its header and directory CRC.
+/// Check metadata before interpreting names, so arbitrary data forks are untouched.
+pub(crate) fn expand_compact_pro(bytes: &[u8]) -> Result<Option<Vec<File>>, String> {
+    if bytes.len() < 15 || bytes[0] != 1 || bytes[1] != 1 {
+        return Ok(None);
+    }
+    let index = long(&bytes[4..8]);
+    if index < 8 || index.checked_add(7).is_none_or(|end| end > bytes.len()) {
+        return Ok(None);
+    }
+    let count = word(&bytes[index + 4..index + 6]);
+    let mut end = index + 7;
+    // The comment precedes the flattened directory records.
+    if take(bytes, &mut end, bytes[index + 6] as usize).is_err() {
+        return Ok(None);
+    }
+    let records_start = end;
+    for _ in 0..count {
+        let Ok(size) = take(bytes, &mut end, 1) else {
+            return Ok(None);
+        };
+        let size = size[0];
+        if take(bytes, &mut end, (size & 127) as usize).is_err()
+            || take(bytes, &mut end, if size & 128 != 0 { 2 } else { 45 }).is_err()
+        {
+            return Ok(None);
+        }
+    }
+    if crc(bytes[index + 4..end].iter().copied()) != long(&bytes[index..]) as u32 {
+        return Ok(None);
+    }
+    if count == 0 {
+        return Err("empty Compact Pro directory".into());
+    }
+    let mut entries = Vec::new();
+    let mut position = records_start;
+    directory(bytes, &mut position, count, "", 0, &mut entries)?;
+    expand_entries(bytes, entries, 8, index..end).map(Some)
+}
+
+fn expand_entries(
+    bytes: &[u8],
+    entries: Vec<Entry>,
+    minimum_fork_offset: usize,
+    directory_range: std::ops::Range<usize>,
+) -> Result<Vec<File>, String> {
     let mut expanded = 0usize;
     let mut files = Vec::new();
     let mut names = std::collections::BTreeSet::new();
@@ -116,8 +165,16 @@ pub(crate) fn expand(bytes: &[u8], resources: &[u8]) -> Result<Option<Vec<File>>
             return Err("Smaller Installer expanded size exceeds limit".into());
         }
         let mut offset = long(&m[1..]);
-        if offset < position {
-            return Err("Smaller Installer fork overlaps directory".into());
+        let fork_end = offset
+            .checked_add(long(&m[37..]))
+            .and_then(|end| end.checked_add(long(&m[41..])))
+            .ok_or("Compact Pro fork offset overflow")?;
+        // Installer payloads have a leading directory; normal containers may
+        // store forks on either side of their trailing directory.
+        if offset < minimum_fork_offset
+            || (offset < directory_range.end && fork_end > directory_range.start)
+        {
+            return Err("Compact Pro fork overlaps header or directory".into());
         }
         let rp = take(bytes, &mut offset, long(&m[37..]))?;
         let dp = take(bytes, &mut offset, long(&m[41..]))?;
@@ -138,7 +195,7 @@ pub(crate) fn expand(bytes: &[u8], resources: &[u8]) -> Result<Option<Vec<File>>
             rsrc,
         });
     }
-    Ok(Some(files))
+    Ok(files)
 }
 
 fn crc(bytes: impl Iterator<Item = u8>) -> u32 {
@@ -428,6 +485,78 @@ mod tests {
         bytes.extend_from_slice(&m);
         bytes.push(b'A');
         bytes
+    }
+    fn compact_fixture() -> Vec<u8> {
+        let installer = fixture();
+        let mut bytes = vec![1, 1, 0, 0, 0, 0, 0, 9, b'A'];
+        bytes.extend_from_slice(&[0, 0, 0, 0, 0, 1, 0]);
+        bytes.extend_from_slice(&installer[10..60]);
+        bytes[22..26].copy_from_slice(&8u32.to_be_bytes());
+        seal_directory(&mut bytes);
+        bytes
+    }
+    fn seal_directory(bytes: &mut [u8]) {
+        let index = long(&bytes[4..8]);
+        let checksum = crc(bytes[index + 4..].iter().copied());
+        bytes[index..index + 4].copy_from_slice(&checksum.to_be_bytes());
+    }
+    #[test]
+    fn compact_pro_recognizes_checked_container_and_preserves_metadata() {
+        let bytes = compact_fixture();
+        let files = expand_compact_pro(&bytes).unwrap().unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].name, "Test");
+        assert_eq!(files[0].data, b"A");
+        assert!(files[0].rsrc.is_empty());
+        assert_eq!(files[0].file_type, *b"TEXT");
+        assert_eq!(files[0].creator, *b"ttxt");
+        for length in 0..bytes.len() {
+            assert!(expand_compact_pro(&bytes[..length]).unwrap().is_none());
+        }
+        let mut corrupt = bytes.clone();
+        corrupt[17] ^= 1;
+        assert!(expand_compact_pro(&corrupt).unwrap().is_none());
+        let mut corrupt = bytes;
+        corrupt[8] = b'B';
+        assert!(expand_compact_pro(&corrupt).is_err());
+    }
+    #[test]
+    fn compact_pro_keeps_folder_paths_and_resource_only_applications() {
+        let mut bytes = compact_fixture();
+        bytes[26..30].copy_from_slice(b"APPL");
+        bytes[42..44].copy_from_slice(&0x4000u16.to_be_bytes());
+        bytes[50..54].copy_from_slice(&1u32.to_be_bytes());
+        bytes[54..58].copy_from_slice(&0u32.to_be_bytes());
+        bytes[58..62].copy_from_slice(&1u32.to_be_bytes());
+        bytes[62..66].copy_from_slice(&0u32.to_be_bytes());
+        bytes[13..15].copy_from_slice(&2u16.to_be_bytes());
+        bytes.splice(16..16, [0x84, b'D', b'o', b'c', b's', 0, 1]);
+        seal_directory(&mut bytes);
+        let files = expand_compact_pro(&bytes).unwrap().unwrap();
+        assert_eq!(files[0].name, "Docs/Test");
+        assert!(files[0].data.is_empty());
+        assert_eq!(files[0].rsrc, b"A");
+        assert_eq!(files[0].file_type, *b"APPL");
+        assert_eq!(files[0].finder_flags, 0x4000);
+    }
+    #[test]
+    fn compact_pro_rejects_authenticated_invalid_paths_flags_and_ranges() {
+        for (offset, replacement) in [
+            (17, b'/'), // Path traversal component.
+            (21, 2),    // Unsupported volume.
+            (49, 1),    // Encrypted fork.
+        ] {
+            let mut bytes = compact_fixture();
+            bytes[offset] = replacement;
+            seal_directory(&mut bytes);
+            assert!(expand_compact_pro(&bytes).is_err(), "offset {offset}");
+        }
+        for offset in [0u32, 7, 9, 16, u32::MAX] {
+            let mut bytes = compact_fixture();
+            bytes[22..26].copy_from_slice(&offset.to_be_bytes());
+            seal_directory(&mut bytes);
+            assert!(expand_compact_pro(&bytes).is_err(), "fork offset {offset}");
+        }
     }
     #[test]
     fn installer_checks_metadata_and_crc() {
