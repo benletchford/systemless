@@ -176,6 +176,20 @@ impl Demo {
         Some((dialog, field))
     }
 
+    pub(super) fn accessible_record_owner(&self, record: &systemless::runner::TextEditSnapshot)
+        -> Option<super::super::input::TextInputOwner> {
+        let owner = self.composition.owner()?;
+        if owner.text != record.text || owner.selection != (record.selection.0..record.selection.1) { return None; }
+        let matches = match owner.target {
+            super::super::input::TextInputTarget::Document { port } =>
+                owner.identity == (record.guest_id, record.generation) && port == record.owner_port,
+            super::super::input::TextInputTarget::Dialog { .. } => self.dialog_record(owner).is_some_and(|actual|
+                (actual.guest_id, actual.generation) == (record.guest_id, record.generation)),
+            _ => false,
+        };
+        matches.then(|| owner.clone())
+    }
+
     fn dialog_record(&self, owner: &super::super::input::TextInputOwner)
         -> Option<&systemless::runner::TextEditSnapshot> {
         let (dialog, field) = self.dialog_field(owner)?;
