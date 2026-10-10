@@ -1681,6 +1681,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::HGetFInfo
         | PpcImportDispatcherTarget::FSpSetFInfo
         | PpcImportDispatcherTarget::HSetFInfo
+        | PpcImportDispatcherTarget::PBResolveFileIDRef
         | PpcImportDispatcherTarget::PBGetCatInfo
         | PpcImportDispatcherTarget::PBSetCatInfo
         | PpcImportDispatcherTarget::DirCreate

@@ -632,6 +632,17 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 default_dir_id,
             ))))
         }
+        PpcImportDispatcherTarget::PBResolveFileIDRef => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_pb_resolve_file_id_ref(
+                cpu,
+                memory,
+                vfs_volumes,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                working_directories,
+            ),
+        ))),
         PpcImportDispatcherTarget::PBGetCatInfo => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_pb_get_cat_info(
                 cpu,
