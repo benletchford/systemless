@@ -31,6 +31,21 @@ compatibility:
       in issue 4434.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4431
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: 53faf2c5dff8d9db77136a301767d61b1f83ed48
+    architecture: 68k
+    environment: >-
+      Optimized local release preview in ordinary Chrome with the normal catalogue
+      worker, WebGL, default 25 MHz pacing, 800-by-600 display and crossOriginIsolated
+      true. Original Not Yet, New Game icon and Spooked selection work through mouse
+      events; ordinary ArrowRight moves Bonzo and ArrowUp produces an airborne jump.
+      Per-step captures inspected. Local upstream archive request receives independently
+      hash-verified original bytes; the separately downloaded Systemless-managed object
+      has the same pinned SHA-256 and size. Public route, room completion, key collection,
+      sustained play, saves, audio and editor remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4431
 runtime:
   executable_path: Monkey Shines 1.1.2/Monkey Shines
   screen_depth: 8
@@ -94,6 +109,7 @@ This complete, unchanged distribution retains the original 30-day trial and
 unregistered first-world restriction. The other worlds and third-party levels
 require registration and remain locked. No registration code is supplied.
 
-Bounded native 68K testing covers entering the first room, walking and jumping.
+Bounded native and browser 68K testing covers entering the first room, walking
+and jumping.
 Room completion, key collection, sustained play, saves, audio and the editor
 remain unverified. The original PPC slice is not yet qualified.
