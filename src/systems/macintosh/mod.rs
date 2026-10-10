@@ -37,6 +37,7 @@ pub mod menu_model;
 pub(crate) mod mixed_mode;
 pub(crate) mod process_context;
 pub(crate) mod process_manager;
+pub(crate) mod printing_manager;
 pub mod quickdraw;
 pub mod runner;
 pub(crate) mod scrap_manager;

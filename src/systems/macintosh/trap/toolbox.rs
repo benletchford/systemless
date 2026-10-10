@@ -15787,137 +15787,46 @@ impl super::TrapDispatcher {
                 let selector = bus.read_long(sp);
                 let operation = pr_glue_operation_route(self.current_trap_word, selector);
                 self.current_selector_operation = operation.map(|route| route.operation_id);
-                let routine = (selector >> 24) & 0xFF;
 
-                // Extract the parameter size encoded in bits 15-8.
-                let param_bytes = (selector >> 8) & 0xFF;
+                let set_error_arg = if (selector >> 24) == 0xC0 {
+                    bus.read_word(sp + 4) as i16
+                } else {
+                    0
+                };
 
-                let total_pop = 4 + param_bytes; // selector + params
+                let eval = crate::printing_manager::evaluate_pr_glue(
+                    selector,
+                    self.printing_error,
+                    set_error_arg,
+                );
 
-                match routine {
-                    0x04 => {
-                        // PrOpenDoc: returns TPPrPort (4 bytes) — return NIL
-                        // Even when the selector's result-size bits are 0
-                        // ($04000C00), callers reserve a TPPrPort result
-                        // slot per routine signature. Mirror the nil return
-                        // in D0 as well so inline shims can observe it.
+                match eval.error_action {
+                    crate::printing_manager::PrGlueErrorAction::Preserve => {}
+                    crate::printing_manager::PrGlueErrorAction::Reset => {
                         self.printing_error = 0;
-                        bus.write_long(sp + total_pop, 0);
-                        cpu.write_reg(Register::D0, 0);
-                        cpu.write_reg(Register::A7, sp + total_pop);
                     }
-                    0x08 => {
-                        // PrCloseDoc: consumes one TPPrPort argument and
-                        // returns no function result.
-                        self.printing_error = 0;
-                        cpu.write_reg(Register::A7, sp + total_pop);
-                    }
-                    0x10 | 0x18 => {
-                        // PrOpenPage / PrClosePage: procedures.
-                        self.printing_error = 0;
-                        cpu.write_reg(Register::A7, sp + total_pop);
-                    }
-                    0x20 => {
-                        // PrintDefault: PROCEDURE PrintDefault(hPrint).
-                        // Selector $20040480 has a non-zero second byte, but
-                        // that byte is not a result size; writing a stack
-                        // result here corrupts MPW compatibility shims whose
-                        // LINK frame sits immediately above the selector and
-                        // THPrint argument.
-                        self.printing_error = 0;
-                        cpu.write_reg(Register::D0, 0);
-                        cpu.write_reg(Register::A7, sp + total_pop);
-                    }
-                    0xC8 | 0xD0 => {
-                        // PrOpen / PrClose: procedures with no stack
-                        // arguments. They consume only the selector long
-                        // and do not perturb the shared PrintErr state.
-                        cpu.write_reg(Register::A7, sp + total_pop);
-                    }
-                    0x2A | 0x32 => {
-                        // PrStlDialog / PrJobDialog: returns BOOLEAN (2 bytes)
-                        // Return TRUE (user clicked OK) so games proceed past print dialogs
-                        self.printing_error = 0;
-                        bus.write_word(sp + total_pop, 1); // TRUE
-                        cpu.write_reg(Register::D0, 1);
-                        cpu.write_reg(Register::A7, sp + total_pop);
-                    }
-                    0x3C | 0x44 => {
-                        // PrStlInit / PrJobInit: return TPPrDlg. No native
-                        // printer UI is available, so return NIL.
-                        self.printing_error = 0;
-                        bus.write_long(sp + total_pop, 0);
-                        cpu.write_reg(Register::D0, 0);
-                        cpu.write_reg(Register::A7, sp + total_pop);
-                    }
-                    0x4A => {
-                        // PrDlgMain: return TRUE so callers take the
-                        // confirmed path if they invoked a customized print
-                        // dialog.
-                        self.printing_error = 0;
-                        bus.write_word(sp + total_pop, 1);
-                        cpu.write_reg(Register::D0, 1);
-                        cpu.write_reg(Register::A7, sp + total_pop);
-                    }
-                    0x52 => {
-                        // PrValidate: returns BOOLEAN (2 bytes)
-                        // Return FALSE (record is valid, no changes needed)
-                        self.printing_error = 0;
-                        bus.write_word(sp + total_pop, 0); // FALSE
-                        cpu.write_reg(Register::D0, 0);
-                        cpu.write_reg(Register::A7, sp + total_pop);
-                    }
-                    0x58 | 0x60 | 0x70 | 0x80 | 0x88 | 0xA0 => {
-                        // PrJobMerge, PrPicFile, PrGeneral, PrDrvrOpen,
-                        // PrDrvrClose, PrCtlCall: procedures.
-                        self.printing_error = 0;
-                        cpu.write_reg(Register::D0, 0);
-                        cpu.write_reg(Register::A7, sp + total_pop);
-                    }
-                    0x94 => {
-                        // PrDrvrDCE: return a DCE Handle. Printing is not
-                        // supported, so return NIL.
-                        self.printing_error = 0;
-                        bus.write_long(sp + total_pop, 0);
-                        cpu.write_reg(Register::D0, 0);
-                        cpu.write_reg(Register::A7, sp + total_pop);
-                    }
-                    0x9A => {
-                        // PrDrvrVers: return driver version. No printer
-                        // driver is present.
-                        self.printing_error = 0;
-                        bus.write_word(sp + total_pop, 0);
-                        cpu.write_reg(Register::D0, 0);
-                        cpu.write_reg(Register::A7, sp + total_pop);
-                    }
-                    0xBA => {
-                        // PrError: returns INTEGER (2 bytes). MPW encodes
-                        // the selector as 0xBA00_0000 — the per-routine
-                        // return-size bits are zero for PrError, but real
-                        // ROM returns a 2-byte result regardless because
-                        // the dispatcher knows the routine signature by
-                        // trap table. Return the stored PrintErr word so
-                        // PrSetError can affect later queries.
-                        bus.write_word(sp + total_pop, self.printing_error as u16);
-                        cpu.write_reg(Register::D0, self.printing_error as u32);
-                        cpu.write_reg(Register::A7, sp + total_pop);
-                    }
-                    0xC0 => {
-                        // PrSetError: stores the new printing error code in
-                        // the shared PrintErr global and returns no result.
-                        self.printing_error = bus.read_word(sp + 4) as i16;
-                        cpu.write_reg(Register::D0, 0);
-                        cpu.write_reg(Register::A7, sp + total_pop);
-                    }
-                    _ => {
-                        // Unknown printing routines: pop the documented
-                        // selector and parameter bytes, but do not infer a
-                        // result slot from the second selector byte.
-                        self.printing_error = 0;
-                        cpu.write_reg(Register::D0, 0);
-                        cpu.write_reg(Register::A7, sp + total_pop);
+                    crate::printing_manager::PrGlueErrorAction::Set(err) => {
+                        self.printing_error = err;
                     }
                 }
+
+                match eval.stack_result {
+                    crate::printing_manager::PrGlueStackResult::None => {}
+                    crate::printing_manager::PrGlueStackResult::Word(val) => {
+                        bus.write_word(sp + eval.total_pop, val);
+                    }
+                    crate::printing_manager::PrGlueStackResult::Long(val) => {
+                        bus.write_long(sp + eval.total_pop, val);
+                    }
+                }
+
+                if let crate::printing_manager::PrGlueRegisterResult::Set(reg_val) =
+                    eval.register_result
+                {
+                    cpu.write_reg(Register::D0, reg_val);
+                }
+
+                cpu.write_reg(Register::A7, sp + eval.total_pop);
                 Ok(())
             }
 
