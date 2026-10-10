@@ -4840,3 +4840,17 @@ the emitted explicit request and prior composition regressions. Logs and hashes
 are archived in `reference/gpui-demo/explicit-file-replacement`. Arbitrary dialog
 selection, disjoint stage replacement, physical IME and composed visual/native
 qualification remain open.
+
+
+### Guarded active dialog selection operation
+
+The runner exposes selection of the current dialog edit field, pinning dialog
+lifetime/content revision, current field text/selection/bounds and modal
+ownership. It rejects queued/held input and invalid ranges. Classic selection
+updates the retained dialog item and internal TERec before the existing redraw;
+PPC uses shared TESetSelect on the dialog TERec. The library check passes
+(11.74s). Four-mode platform regression passes (9.59s), including stale/invalid
+rejection, unchanged text/sibling/content revision and restoration before the
+existing composition checks. Evidence is archived in
+`reference/gpui-demo/guarded-dialog-selection`. Frontend replacement wiring,
+pointer/callback boundaries and visual/physical/native qualification remain open.

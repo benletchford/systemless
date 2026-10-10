@@ -4855,6 +4855,26 @@ impl super::TrapDispatcher {
         }
     }
 
+    pub(crate) fn select_active_dialog_text_range(&mut self, bus: &mut MacMemoryBus,
+        dialog: u32, item_number: i16, range: std::ops::Range<usize>) -> bool {
+        if bus.read_word(dialog + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET) as i16 != item_number - 1 {
+            return false;
+        }
+        let Some(item) = self.dialog_items.get_mut(&dialog)
+            .and_then(|items| items.get_mut((item_number - 1) as usize)) else { return false; };
+        if !item.is_edit_text() || range.start > range.end
+            || range.end > encode_mac_roman_lossy(&item.text).len() || range.end > i16::MAX as usize { return false; }
+        item.select_text(range.start as u16, range.end as u16);
+        if let Some(tracking) = self.dialog_tracking.as_mut().filter(|tracking|
+            tracking.dialog_ptr == dialog && tracking.edit_item == item_number) {
+            Self::set_tracking_active_edit_selection(tracking, range.start, range.end);
+        }
+        let handle = bus.read_long(dialog + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+        if handle != 0 { Self::te_set_select(bus, handle, range.start as u32, range.end as u32); }
+        self.redraw_dialog_text_item(bus, dialog, item_number);
+        true
+    }
+
     fn te_vertical_key_target(&self, bus: &MacMemoryBus, te_handle: u32,
         selection: std::ops::Range<usize>, key: u8) -> usize {
         let offset = if key == 0x1e { selection.start } else { selection.end };

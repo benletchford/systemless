@@ -1,0 +1,8 @@
+{
+  "base_head": "76494c43",
+  "scope": "Backend active dialog range selection across mono68k, colour68k, PPC8, PPC16; stale lifetime and invalid-range rejection, text/sibling preservation and selection restoration. Frontend explicit replacement wiring, pointer/callback boundary qualification, visual captures, physical IME and native reference qualification remain open.",
+  "sha256": {
+    "library-check.log": "71cfae17f84b0551f195a92a2e482013205344f8fdfa93fd5f6a5254d8e668eb",
+    "platform.log": "9254c4af81cc0bc20d5120037d21958fff967dca09398bb2517174df1fd6e25a"
+  }
+}

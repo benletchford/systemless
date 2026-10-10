@@ -3461,6 +3461,38 @@ impl FixtureRunner {
         }
     }
 
+    /// Select the current dialog edit field without changing focus or text.
+    #[doc(hidden)]
+    pub fn select_dialog_text_range(&mut self, expected: &DialogSnapshot, item_number: i16,
+        range: std::ops::Range<usize>) -> bool {
+        if item_number <= 0 || self.is_non_dialog_ui_tracking_active()
+            || self.standard_file_snapshot().is_some() { return false; }
+        let events = self.event_manager_snapshot();
+        if events.queue_len != 0 || events.mouse_button
+            || [0u8, 0x37, 0x3a, 0x3b].iter().any(|key|
+                events.key_map[usize::from(*key / 8)] & (1 << (*key % 8)) != 0) { return false; }
+        let dialogs = self.dialog_snapshot();
+        if dialogs.iter().filter(|dialog| dialog.visible && dialog.active).count() != 1 { return false; }
+        let Some(actual) = dialogs.iter().find(|dialog| dialog.visible && dialog.active
+            && (dialog.guest_id, dialog.generation, dialog.content_revision)
+                == (expected.guest_id, expected.generation, expected.content_revision)
+            && dialog.edit_field == Some(item_number) && expected.edit_field == Some(item_number)) else { return false; };
+        let Some(item) = actual.items.iter().find(|item| item.number == item_number) else { return false; };
+        let Some(previous) = expected.items.iter().find(|item| item.number == item_number) else { return false; };
+        if item.kind != DialogItemKind::EditText || !item.visible || !item.enabled
+            || item.text != previous.text || item.selection != previous.selection || item.bounds != previous.bounds {
+            return false;
+        }
+        let length = item.text.chars().count();
+        if range.start > range.end || range.end > length || range.end > i16::MAX as usize { return false; }
+        if let Some(app) = self.native.application_mut() {
+            let handle = app.memory.read_u32_be(actual.guest_id + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET).unwrap_or(0);
+            handle != 0 && crate::loader::ppc::ppc_te_set_select(&mut app.memory, handle, range.start as u32, range.end as u32)
+        } else {
+            self.dispatcher.select_active_dialog_text_range(&mut self.bus, actual.guest_id, item_number, range)
+        }
+    }
+
     /// Select a live standard filename editor without touching text or replies.
     #[doc(hidden)]
     pub fn select_standard_file_text_range(&mut self, expected: &StandardFileSnapshot, range: std::ops::Range<usize>) -> bool {
