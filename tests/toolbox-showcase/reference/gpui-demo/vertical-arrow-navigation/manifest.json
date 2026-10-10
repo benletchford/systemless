@@ -4,7 +4,7 @@
   "reference": "Inside Macintosh Text (1993), TextEdit pp.2-12--2-13 https://dev.os9.ca/techpubs/mac/pdf/Text/TextEdit.pdf",
   "limitations": [
     "No physical host input claim",
-    "Styled vertical navigation and modal end-to-end/captures remain unqualified",
+    "Modal end-to-end and vertical-navigation composed captures remain unqualified",
     "No independent native oracle for new cases"
   ],
   "hashes": {
@@ -13,6 +13,9 @@
     "guest-events.log": "b5ba8658ae34572ddf5913ff6316d938be7bdf93f7395bd929bc07f33f3efb04",
     "tekey-regression.log": "ca4e8d68294da31a6b23827fae272f3a4b65c47e5c4e9fafceedbbd2dbf05563",
     "shared-key-test.log": "bd0d67f951a443875872c0b70b3223fdc7373a28d2319db23e62bba771304e8a",
-    "textedit-regression.log": "f26b14e43ce3075efc05b153a180cb5a8c8d88078b18f4154dcd831a1c1c9a06"
-  }
+    "textedit-regression.log": "f26b14e43ce3075efc05b153a180cb5a8c8d88078b18f4154dcd831a1c1c9a06",
+    "styled-guest-events.log": "ab09b9fa5fbca66c97110bfc24586743c88c092d616e35765453e6b9d2c69e6f"
+  },
+  "styled_regression_base_head": "cb27859adfe30538e1edca969e6a257210126791",
+  "styled_regression": "public fixture creates two mixed-height styled lines through Return; GPUI-translated Up/Down guest events preserve text/style runs/line starts/identity and drawing qualification across four CPU/depth modes; existing selection/editing native paint-order checks continue; parent test PASS56.53s"
 }
