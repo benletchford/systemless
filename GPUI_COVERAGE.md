@@ -4631,3 +4631,19 @@ composition across four modes (27.39s for the two parent tests). These check gue
 text/selection, corrected staging, cancellation and commits through existing guest
 paths. Logs and pinned source head are in the surrounding-text evidence archive.
 They do not establish physical host IME or surrounding modal/file painted geometry.
+
+
+### Horizontal reveal only follows the marked-text caret row
+
+A shared-compositor regression reproduced unintended horizontal scrolling of a
+long row before the caret row: its first visible virtual offset was84 instead
+of1. The staging painter previously treated each prior row's clamped selection
+end as a caret. Horizontal reveal now applies only to the actual caret row;
+other rows retain their beginnings. Guest text, selection and glyph advances
+remain unchanged. All twenty single/multiline/CRLF/long-noncaret/long-caret-row cases pass
+across mono68k, colour68k, PPC8 and PPC16 at scale1.5, including candidate bounds,
+point queries, unchanged suffix geometry and exact cancellation restoration.
+Long caret-row assertions also verify selected glyph reveal and absence of
+bounds for its horizontally offscreen beginning. Both PPC16 long-row
+compositions were reviewed. Logs, images, metadata and hashes
+are in `reference/gpui-demo/marked-row-horizontal-scroll`. Other scales, modal/file staging and physical IME remain unqualified.

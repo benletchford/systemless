@@ -335,7 +335,11 @@ impl Demo {
                         background_color: None, underline: None, strikethrough: None,
                     }], None);
                     let caret = line.x_for_index(byte_at(selected_end));
-                    let scroll = (f32::from(caret) - (width - 12.)).max(0.);
+                    // Only the caret row needs horizontal reveal. Earlier rows
+                    // clamp selected_end to their length, which is not a caret.
+                    let scroll = if index == caret_line {
+                        (f32::from(caret) - (width - 12.)).max(0.)
+                    } else { 0. };
                     let origin = point(bounds.origin.x + px(4. - scroll), bounds.origin.y + px(row_top));
                     if selected_start < selected_end {
                         let a = line.x_for_index(byte_at(selected_start));

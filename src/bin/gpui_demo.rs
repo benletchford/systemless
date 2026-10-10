@@ -5089,7 +5089,9 @@ mod desktop {
                 let last = prefix.encode_utf16().count();
                 for (label, text, selection) in [("single", "日😀".to_owned(), 1..3),
                     ("multiline", format!("{prefix}日😀"), last + 1..last + 3),
-                    ("crlf-interior", format!("日😀\r\n{prefix}tail"), 4..4)] {
+                    ("crlf-interior", format!("日😀\r\n{prefix}tail"), 4..4),
+                    ("long-inactive-row", format!("{}\r\n日😀", "W".repeat(100)), 103..105),
+                    ("long-caret-row", format!("{}日😀", "W".repeat(100)), 101..103)] {
                 let surrounding = visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
                     use gpui_kit::EntityInputHandler;
                     demo.host_active = Some(true);
@@ -5114,6 +5116,13 @@ mod desktop {
                         .expect("a range spanning scrolled marked text must return its first visible portion");
                     let visible = demo.character_index_for_point(point(whole.origin.x, whole.origin.y + px(1.)), window, cx).unwrap();
                     assert!(visible >= start && visible < start + text.encode_utf16().count());
+                    if label == "long-inactive-row" {
+                        assert_eq!(visible, start, "a long row without the caret must retain its beginning");
+                    }
+                    if label == "long-caret-row" {
+                        assert!(visible > start, "long caret row must reveal its selected end");
+                        assert!(demo.bounds_for_range(start..start, Bounds::default(), window, cx).is_none(), "horizontally offscreen insertion point has no candidate bounds");
+                    }
                     if label == "multiline" {
                         assert!(visible > start, "the original first line has scrolled out of view");
                         assert!(demo.bounds_for_range(start..start, Bounds::default(), window, cx).is_none());
