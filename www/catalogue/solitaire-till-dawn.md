@@ -12,6 +12,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -28,6 +29,21 @@ compatibility:
       assertions at 1578 frontend ticks with zero budget exhaustion. Browser, full games,
       other variants, sustained play, saves and audio unverified.
     status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4415
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: 4ca15a7b72e5ac649ca90e4391e2ccfc608dc723
+    architecture: 68k
+    status: playable
+    environment: >-
+      Optimized local release preview in ordinary Chrome with isolated worker,
+      WebGL and 25 MHz pacing. Original 100-game notice, Not Yet, Games selects
+      Klondike (Easy), welcome tip dismissal, legal seven-hearts drag onto eight-clubs
+      increments move count, and stock draw reveals six spades and reduces count
+      from 24 to 23. Per-step captures inspected. Preview supplied complete original
+      archive bytes with independent SHA-256 and size verification. The CI-promoted
+      public archive separately matches the same hash and size. Public route/release,
+      full games, other variants, sustained play, saves and audio remain unverified.
     evidence: https://github.com/benletchford/systemless/issues/4415
 runtime:
   executable_path: Solitaire Till Dawn 4.0.1/Solitaire Till Dawn™
@@ -86,8 +102,8 @@ from **Games**. Dismiss the ordinary welcome tip. Drag cards onto legal destinat
 and click the stock to draw. The **Edit** menu offers undo and redo.
 
 Bounded native verification covers **Klondike (Easy)**, a legal card move, the
-revealed covered card and a stock draw. Browser qualification and publication are
-pending. Full games, the other variants, sustained play, saves and audio remain
+revealed covered card and a stock draw. Optimized browser checks also verify a legal move and stock draw.
+Public release verification is pending. Full games, the other variants, sustained play, saves and audio remain
 unverified. This original executable is **68K only**.
 
 The complete unchanged publisher archive retains both illustrated guides, all
