@@ -596,3 +596,22 @@ On 10 October 2026 the actual production page at `https://systemless.org/chiral/
 A separate temporary player preview is built from runtime revision `49dfb08ce812837bf855f47de08eadd6af31a3d4` (the code subsequently merged in #4387). Only its temporary catalogue enables Chiral. Page and worker assets are served by an isolated local HTTPS preview at the production origin, using a test certificate and an owned browser DNS override; this is **preview evidence, not a deployed enabled route**. Requests to `assets.systemless.org` remain real and unmodified. The browser independently confirms HTTP 200 and the exact archive hash/size above. The player reports actual **68K** and **runtime worker=true**. Ordinary browser pointer input reaches Level 1 via small in-button drags; a subsequent board click places a purple atom and changes the dispenser to blue. The inspected final capture still contains that atom at guest tick **5580**, with tracking inactive.
 
 Stationary clicks remain defective in #4373. Observational worker diagnostics confirm release was applied: at guest tick **4224**, `ranGuest=true`, `uiTracking=true`, and `canRelease=true`; the notice remains open. An eight-pixel drag inside Not Yet reaches the menu and ends tracking. This rules out merely withholding mouse-up in that reproduction, without identifying the root cause. A mixed-assets preview reload fell back to the main-thread runtime and is excluded from worker qualification. Tracked launch remains disabled; no registration code or archive modification is used. Sustained play, level completion, save/restart and final launch approval remain pending.
+
+
+## Browser qualification — 10 October 2026
+
+Tested release-mode browser runtime source `97ec1e637d085b447685cc055e4f0e9e8a862b65` (v0.84.1 plus the merged Pac input/sound fixes), compiled with `trunk build --release --locked`. Only the two catalogue launch flags were temporarily enabled for this preview; both source files were restored after the build. No runtime changes or guest patches.
+
+The available local Chrome successfully opens localhost; this does not use the earlier extension-blocked cloud browser, alternate hostname, tunnel or disabled browser security. Normal DOM keyboard and pointer events reach the regular WebAssembly worker player. The canvas explicitly reports worker=true, architecture=68k, CPU pacing=8 MHz, max ticks per paint=2. For the local preview, CDP supplies independently fetched, hash-verified original archive bytes to the archive request, with local-preview CORS. This proves player interaction with exact bytes; it does not establish production CDN loading by itself.
+
+Separately, ordinary HTTPS Chrome loaded the actual public systemless.org page and deployed `/systemless-org-b01da995bf849fb2.js`. The exported browser benchmark fetched the immutable Systemless-hosted archives from the real production origin without interception, alternate host mapping or security changes. Independent browser SHA-256 and byte counts match the catalogue. Inspected frames show iPuzzle scrambling and a tile move, and Kalaha Begin, a human extra turn and two AI replies. Both bounded scripts completed at guest tick 1520, with zero assertions; their passed flag is action completion, supplemented by inspected images, not a full-game compatibility verdict.
+
+### iPuzzle
+Normal release worker player: Command-T scrambles, two stationary legal tile clicks move adjacent tiles, and a nonadjacent click leaves the content unchanged pixel-for-pixel. Full puzzle solution and audible sound remain unverified. The original freeware distribution and ReadMe are unchanged.
+
+### Kalaha
+Normal release 68K worker player: Command-B fills six balls per pit; stationary clicks yield the human extra turn and AI replies. All captures are inspected. Original 30-day shareware state is preserved. Full match, all difficulties, saving and audio remain unverified.
+
+Tracking: [iPuzzle #3944](https://github.com/benletchford/systemless/issues/3944), [Kalaha #3945](https://github.com/benletchford/systemless/issues/3945), [catalogue PR #3946](https://github.com/benletchford/systemless/pull/3946).
+
+Kalaha’s normal PowerPC selector also launched a fresh release worker with `architecture=ppc`; Command-B, the human extra turn and two computer replies were inspected. The PPC board occupies a different content position, so clicks were placed from its actual capture. No guest patching or runtime changes were used.
