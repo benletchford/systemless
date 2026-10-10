@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.87.0](https://github.com/benletchford/systemless/compare/v0.86.0...v0.87.0) (2026-10-10)
+
+
+### Features
+
+* **catalogue:** enable Bubble Trouble browser gameplay ([314f1dc](https://github.com/benletchford/systemless/commit/314f1dc1c14c1f7e820e3fdfc91b2934b89b82ff))
+* **catalogue:** enable Chiral browser gameplay ([fc34288](https://github.com/benletchford/systemless/commit/fc3428887491d01b4215b95e16db2aa1a9bf4ba5))
+
 ## [0.86.0](https://github.com/benletchford/systemless/compare/v0.85.0...v0.86.0) (2026-10-10)
 
 
