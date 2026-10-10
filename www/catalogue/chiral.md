@@ -20,6 +20,15 @@ compatibility:
     environment: Native headless replay of the unchanged Chiral 1.0.0 StuffIt archive
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4353
+  - date: "2026-10-10"
+    tester: Catalogue maintainer
+    systemless_version: "0.84.1"
+    architecture: 68k
+    environment: >-
+      Deployed browser WebAssembly benchmark fetching the unchanged Systemless-hosted
+      archive
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4353
 artifacts:
 - id: archive
   role: archive
@@ -49,8 +58,8 @@ artifacts:
   format: png
   source:
     type: sha256
-    sha256: 295f518e696a85939fa444519d899bfe3b86a545c29063858412240dba687f96
-    size_bytes: 486851
+    sha256: 6e3e3ac484e3a0b9c2dd13bb9b8164aa3e3930eb4206c5e3906c22391e4fbb6c
+    size_bytes: 518182
   provenance:
     redistribution: permitted
     content_only: true
@@ -60,22 +69,26 @@ artifacts:
       Original gameplay screenshot captured for this catalogue at the maintainer's
       request.
     notes: >-
-      Exact original archive, 68K route. Level 1 accepts placement of a purple atom
-      and advances the dispenser to a red atom. The game fills the entire framebuffer;
-      no desktop, menu bar or emulator framing is present.
+      Exact original hosted archive, 68K route, deployed browser WebAssembly 0.84.1.
+      Level 1 accepts placement of a purple atom. The game fills the entire
+      framebuffer; no desktop, menu bar or emulator framing is present.
 references:
 - https://www.vintageapplemac.com/software/games/c/
 ---
 
-![Chiral gameplay](https://assets.systemless.org/catalogue/media/sha256/29/295f518e696a85939fa444519d899bfe3b86a545c29063858412240dba687f96.png)
+![Chiral gameplay](https://assets.systemless.org/catalogue/media/sha256/6e/6e3e3ac484e3a0b9c2dd13bb9b8164aa3e3930eb4206c5e3906c22391e4fbb6c.png)
 
 Build molecules by placing coloured atoms on the board. Level 1 asks for two
 molecules containing at least six atoms each.
 
 Choose **Not Yet** at the original registration notice, then **Play Chiral**.
+The current browser player requires a small drag inside these buttons before
+releasing; the stationary-click defect remains under investigation.
 Click the playfield to place the atom currently shown in the dispenser.
 
-This entry uses the complete original **1.0.0** archive. Bounded native testing
-covers starting Level 1 and placing one atom; level completion, sustained play,
-save persistence and browser behaviour remain unverified. Launch stays disabled
-until the Systemless-hosted archive passes browser approval.
+This entry uses the complete original **1.0.0** archive. Bounded native and
+browser testing covers starting Level 1 and placing an atom. The deployed
+browser benchmark fetches the exact Systemless-hosted archive; a separate
+player preview verifies board input with the button-drag workaround. Level
+completion, sustained play and save persistence remain unverified. Launch stays
+disabled while the stationary-click defect awaits a fix and final approval.
