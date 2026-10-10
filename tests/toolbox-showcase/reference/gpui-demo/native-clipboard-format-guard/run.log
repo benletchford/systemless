@@ -1,0 +1,243 @@
+warning: method `instrument` is never used
+   --> src/systems/macintosh/sound.rs:609:19
+    |
+403 | impl SndChannel {
+    | --------------- method in this implementation
+...
+609 |     pub(crate) fn instrument(&self) -> Option<&SampledInstrument> {
+    |                   ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `dispatch_toolbox` is never used
+    --> src/systems/macintosh/trap/toolbox.rs:6187:19
+     |
+1169 | impl super::TrapDispatcher {
+     | -------------------------- method in this implementation
+...
+6187 |     pub(crate) fn dispatch_toolbox<C: CpuOps>(
+     |                   ^^^^^^^^^^^^^^^^
+
+warning: `systemless` (lib) generated 2 warnings
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+warning: field `debug_socket` is never read
+  --> src/bin/gpui_demo.rs:12:9
+   |
+ 3 | pub(crate) struct LaunchOptions {
+   |                   ------------- field in this struct
+...
+12 |     pub debug_socket: Option<std::path::PathBuf>,
+   |         ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `main` is never used
+  --> src/bin/gpui_demo.rs:22:4
+   |
+22 | fn main() {
+   |    ^^^^
+
+warning: associated functions `classic_textedit_run` and `ppc_styled_run` are never used
+   --> src/bin/gpui_demo_text.rs:797:12
+    |
+740 | impl ClassicLine {
+    | ---------------- associated functions in this implementation
+...
+797 |     pub fn classic_textedit_run(
+    |            ^^^^^^^^^^^^^^^^^^^^
+...
+853 |     pub fn ppc_styled_run(
+    |            ^^^^^^^^^^^^^^
+
+warning: field `geometry` is never read
+    --> src/bin/gpui_demo_text.rs:1092:9
+     |
+1091 | pub(crate) struct StyledTextEditLine {
+     |                   ------------------ field in this struct
+1092 |     pub geometry: systemless::runner::TextEditLineGeometry,
+     |         ^^^^^^^^
+     |
+     = note: `StyledTextEditLine` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: fields `bytes` and `measured_positions` are never read
+    --> src/bin/gpui_demo_text.rs:1100:9
+     |
+1099 | pub(crate) struct StyledTextEditRun {
+     |                   ----------------- fields in this struct
+1100 |     pub bytes: std::ops::Range<usize>,
+     |         ^^^^^
+1101 |     pub left: i16,
+1102 |     pub measured_positions: Vec<i16>,
+     |         ^^^^^^^^^^^^^^^^^^
+     |
+     = note: `StyledTextEditRun` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: associated function `qualify` is never used
+    --> src/bin/gpui_demo_text.rs:1190:12
+     |
+1128 | impl ClassicListCellPaintPlan {
+     | ----------------------------- associated function in this implementation
+...
+1190 |     pub fn qualify(
+     |            ^^^^^^^
+
+warning: methods `pixels_with_selection`, `pixels_with_solid_caret`, and `pixels` are never used
+    --> src/bin/gpui_demo_text.rs:1484:12
+     |
+1446 | impl StyledTextEditLine {
+     | ----------------------- methods in this implementation
+...
+1484 |     pub fn pixels_with_selection(
+     |            ^^^^^^^^^^^^^^^^^^^^^
+...
+1510 |     pub fn pixels_with_solid_caret(
+     |            ^^^^^^^^^^^^^^^^^^^^^^^
+...
+1529 |     pub fn pixels(&self) -> Option<std::collections::BTreeMap<(i16, i16), [u8; 3]>> {
+     |            ^^^^^^
+
+warning: function `classic_styled_text_edit_ink` is never used
+    --> src/bin/gpui_demo_text.rs:1547:15
+     |
+1547 | pub(crate) fn classic_styled_text_edit_ink(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_selection` is never used
+    --> src/bin/gpui_demo_text.rs:1553:15
+     |
+1553 | pub(crate) fn classic_styled_text_edit_selection(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_solid_caret` is never used
+    --> src/bin/gpui_demo_text.rs:1562:15
+     |
+1562 | pub(crate) fn classic_styled_text_edit_solid_caret(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_pixels` is never used
+    --> src/bin/gpui_demo_text.rs:1580:4
+     |
+1580 | fn classic_styled_text_pixels(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_pixels_with_background` is never used
+    --> src/bin/gpui_demo_text.rs:1587:4
+     |
+1587 | fn classic_styled_text_pixels_with_background(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `native_formats_are_text_only` is never used
+  --> src/bin/gpui_demo_clipboard.rs:19:15
+   |
+19 | pub(crate) fn native_formats_are_text_only<I, S>(formats: I) -> bool
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `native_stamp` is never used
+  --> src/bin/gpui_demo_clipboard.rs:35:15
+   |
+35 | pub(crate) fn native_stamp(board: &objc2_app_kit::NSPasteboard) -> (isize, bool) {
+   |               ^^^^^^^^^^^^
+
+warning: associated items `reset_preferences` and `root` are never used
+   --> src/bin/desktop/desktop_save_store.rs:94:12
+    |
+ 77 | impl DesktopSaveStore {
+    | --------------------- associated items in this implementation
+...
+ 94 |     pub fn reset_preferences(game_path: &Path) -> io::Result<usize> {
+    |            ^^^^^^^^^^^^^^^^^
+...
+106 |     pub fn root(&self) -> &Path {
+    |            ^^^^
+
+warning: function `matching_child_dirs` is never used
+   --> src/bin/desktop/desktop_save_store.rs:426:4
+    |
+426 | fn matching_child_dirs(dir: &Path, lower_name: &str) -> io::Result<Vec<PathBuf>> {
+    |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `main` is never used
+    --> src/bin/gpui_demo.rs:4610:19
+     |
+4610 |     pub(super) fn main() {
+     |                   ^^^^
+
+warning: constant `SAVE_SCAN_FRAME_INTERVAL` is never used
+  --> src/bin/desktop/desktop_save_store.rs:10:7
+   |
+10 | const SAVE_SCAN_FRAME_INTERVAL: u8 = 30;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `save_scan_frame` is never read
+  --> src/bin/desktop/desktop_save_store.rs:21:5
+   |
+16 | pub struct DesktopSaveStore {
+   |            ---------------- field in this struct
+...
+21 |     save_scan_frame: u8,
+   |     ^^^^^^^^^^^^^^^
+   |
+   = note: `DesktopSaveStore` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: method `sync_save_files` is never used
+   --> src/bin/desktop/desktop_save_store.rs:130:12
+    |
+ 77 | impl DesktopSaveStore {
+    | --------------------- method in this implementation
+...
+130 |     pub fn sync_save_files(&mut self, runner: &mut FixtureRunner) {
+    |            ^^^^^^^^^^^^^^^
+
+warning: `systemless` (bin "systemless") generated 20 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.88s
+     Running tests/macintosh_clipboard.rs (target/debug/deps/macintosh_clipboard-b7c93cb2b02775c3)
+
+running 7 tests
+test clipboard::tests::clipboard_text_is_exact_and_uses_guest_line_endings ... ok
+test clipboard::tests::export_rejects_stale_cycles_new_host_copies_and_unknown_formats ... ok
+test clipboard::tests::named_native_pasteboard_preserves_hidden_formats_on_rejected_export ... PASS named pasteboard preserves hidden format public.rtf
+PASS named pasteboard preserves hidden format public.html
+PASS named pasteboard preserves hidden format public.png
+PASS named pasteboard preserves hidden format public.file-url
+PASS named pasteboard preserves hidden format zed-metadata
+PASS named pasteboard preserves hidden format org.systemless.unknown
+ok
+test clipboard::tests::native_inventory_rejects_rich_and_unknown_formats_hidden_by_string_reads ... ok
+test clipboard::tests::native_revision_preserves_identical_new_host_copies_and_prevents_echo ... ok
+test clipboard::tests::unchanged_host_text_preserves_newer_guest_scrap ... ok
+test guest_copy_resume_conversion_and_paste_across_cpu_depths ... [INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1A0 bkLim=$0044A1A0 zcbFree=2400608 (2.3MB)
+[INIT] Set MainDevice=$0022603C, TheGDevice=$0022603C (ptr=$00226008)
+[INIT] GDevice chain: $8A4→$0022603C→$00226008 gdPMap→$00226004→$00225FD0
+[INIT]   PixMap: rowBytes=$8070 bounds=(0,0,600,800) pixelSize=1
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAF0A randSeed_addr=$003FAE8C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=112 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$00226098 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00226994 bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00226994 pixmap=$002056A0 bounds=(50,40,420,600) goAway=true
+PASS clipboard Copy/export/import/resume/Paste: powerpc=false depth=1
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1A0 bkLim=$0044A1A0 zcbFree=2400608 (2.3MB)
+[INIT] Set MainDevice=$0022682C, TheGDevice=$0022682C (ptr=$002267F8)
+[INIT] GDevice chain: $8A4→$0022682C→$002267F8 gdPMap→$002267F4→$002267C0
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAF0A randSeed_addr=$003FAE8C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=816 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$00226888 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00227184 bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00227184 pixmap=$002056A0 bounds=(50,40,420,600) goAway=true
+PASS clipboard Copy/export/import/resume/Paste: powerpc=false depth=8
+PASS clipboard Copy/export/import/resume/Paste: powerpc=true depth=8
+PASS clipboard Copy/export/import/resume/Paste: powerpc=true depth=16
+ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 25.79s
+
