@@ -1813,11 +1813,7 @@ impl StyledTextEditLine {
                 ink: paint.style_ink.get(style_index)?.clone() });
             left = next;
         }
-        let baseline = match record.line_layout_policy {
-            TextEditLineLayoutPolicy::CumulativeGuestMetrics => geometry.top.saturating_add(geometry.ascent),
-            TextEditLineLayoutPolicy::PpcRunMetrics => record.dest_rect.0.saturating_add(geometry.ascent)
-                .saturating_add(i16::try_from(index).ok()?.saturating_mul(geometry.height)),
-        };
+        let baseline = geometry.top.saturating_add(geometry.ascent);
         Some(Self { geometry, baseline, selection: record.guest_styled_selection_rect(index)?, runs })
     }
 

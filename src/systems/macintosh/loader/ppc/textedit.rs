@@ -2167,6 +2167,16 @@ pub(super) fn ppc_te_draw(
     // the text, so drawing is clipped to it.
     let view_clip = ppc_read_rect(memory, te_ptr + PPC_TE_VIEW_RECT_OFFSET);
     let view = view_clip.unwrap_or((0, 0, 0, 0));
+    // Share TEClick/TEGetPoint's cumulative origins. Resolve once so painting
+    // a long styled document does not repeatedly walk preceding lines.
+    let styled_line_tops = if styled {
+        let mut origin = top;
+        (0..line_count).map(|line| {
+            let current = origin;
+            origin = origin.saturating_add(ppc_te_line_height(memory, te_ptr, line).max(1));
+            current
+        }).collect::<Vec<_>>()
+    } else { Vec::new() };
     for line in 0..line_count {
         let start = usize::from(
             memory
@@ -2205,9 +2215,9 @@ pub(super) fn ppc_te_draw(
         } else {
             (fallback_line_height, fallback_ascent)
         };
-        let baseline = top
-            .saturating_add(ascent)
-            .saturating_add((line as i16).saturating_mul(line_height));
+        let line_top = if styled { styled_line_tops[line] }
+            else { top.saturating_add((line as i16).saturating_mul(line_height)) };
+        let baseline = line_top.saturating_add(ascent);
         if styled {
             let mut offset = start;
             let mut pen = line_left;
@@ -2352,7 +2362,8 @@ pub(super) fn ppc_te_draw(
                 if caret_offset > start {
                     caret_x = caret_x.saturating_sub(1);
                 }
-                let line_top = top.saturating_add((line as i16).saturating_mul(line_height));
+                let line_top = if styled { styled_line_tops[line] }
+                    else { top.saturating_add((line as i16).saturating_mul(line_height)) };
                 let line_bottom = line_top.saturating_add(line_height);
                 let caret = (line_top.max(view.0), caret_x.max(view.1),
                     line_bottom.min(view.2), caret_x.saturating_add(1).min(view.3));

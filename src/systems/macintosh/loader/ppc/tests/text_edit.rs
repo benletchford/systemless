@@ -1341,3 +1341,56 @@ fn te_sel_view_respects_auto_scroll_and_reveals_selection() {
     assert_eq!(ppc_read_rect(&mut loaded.memory, ptr + PPC_TE_DEST_RECT_OFFSET), Some(before),
         "revealing the first line must restore the original scroll origin");
 }
+
+#[test]
+fn styled_mixed_line_heights_match_guest_points_and_shared_geometry() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TEStyleNew")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    ppc_write_rect(&mut loaded.memory, scratch, 10, 20, 160, 220).unwrap();
+    ppc_write_rect(&mut loaded.memory, scratch + 8, 10, 20, 160, 220).unwrap();
+    loaded.cpu.gpr[3] = scratch; loaded.cpu.gpr[4] = scratch + 8;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEStyleNew);
+    let handle = loaded.cpu.gpr[3];
+    loaded.memory.write_bytes(scratch + 0x20, b"A\rB\rC").unwrap();
+    loaded.cpu.gpr[3] = scratch + 0x20; loaded.cpu.gpr[4] = 5; loaded.cpu.gpr[5] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetText);
+    let style = scratch + 0x40;
+    for (start, end, size) in [(0, 2, 9), (2, 4, 24), (4, 5, 12)] {
+        loaded.memory.write_u16_be(style, 3).unwrap();
+        loaded.memory.write_u8(style + 2, 0).unwrap();
+        loaded.memory.write_u16_be(style + 4, size).unwrap();
+        loaded.cpu.gpr[3] = start; loaded.cpu.gpr[4] = end; loaded.cpu.gpr[5] = handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetSelect);
+        loaded.cpu.gpr[3] = 0x000f; loaded.cpu.gpr[4] = style;
+        loaded.cpu.gpr[5] = 0; loaded.cpu.gpr[6] = handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetStyle);
+    }
+    // Batch style updates deliberately skipped redraw; finish guest layout
+    // before comparing the point table with painting and shared geometry.
+    loaded.cpu.gpr[3] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TECalText);
+    let mut records = crate::text_edit::snapshot_guest_records(&[(handle, 1)],
+        &mut |address| loaded.memory.read_u8(address)).records;
+    let record = &mut records[0];
+    record.line_layout_policy = crate::text_edit::TextEditLineLayoutPolicy::PpcRunMetrics;
+    assert_eq!(record.line_count, 3);
+    for (line, offset) in [(0, 0), (1, 2), (2, 4)] {
+        let point = ppc_te_get_point(&mut loaded.memory, test_handles!(loaded), handle, offset);
+        let geometry = record.guest_styled_line_geometry(line).unwrap().0;
+        assert_eq!(geometry.top, (point >> 16) as i16,
+            "mixed-size displayed line must match the guest point/click origin: line {line}");
+    }
+    loaded.cpu.gpr[3] = 3; loaded.cpu.gpr[4] = 3; loaded.cpu.gpr[5] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetSelect);
+    loaded.cpu.gpr[3] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEActivate { active: true });
+    let point = ppc_te_get_point(&mut loaded.memory, test_handles!(loaded), handle, 3);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    ppc_paint_rect_bounds(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD,
+        (150, 200, 151, 201), loaded.quickdraw_fore_color, None);
+    let black = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (200, 150));
+    assert_eq!(ppc_quickdraw_read_pixel(&mut loaded.memory, front,
+        (i32::from(point as u16 as i16) - 1, i32::from((point >> 16) as i16) + 1)), black,
+        "native caret ink must use the same cumulative line origin");
+}

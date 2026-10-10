@@ -1,0 +1,177 @@
+diff --git a/src/bin/gpui_demo.rs b/src/bin/gpui_demo.rs
+index 4a566ef1..59be72dc 100644
+--- a/src/bin/gpui_demo.rs
++++ b/src/bin/gpui_demo.rs
+@@ -4767,7 +4767,7 @@ mod desktop {
+             if prefer_powerpc {
+                 let first = selected.guest_styled_selection_rect(0).unwrap().unwrap();
+                 let second = selected.guest_styled_selection_rect(1).unwrap().unwrap();
+-                assert!(first.0 < second.2 && second.0 < first.2, "overlapping PPC highlights");
++                assert_eq!(first.2, second.0, "PPC highlights follow cumulative styled line heights");
+             }
+             record = selected;
+         }
+diff --git a/src/bin/gpui_demo_text.rs b/src/bin/gpui_demo_text.rs
+index 6572d42a..7f2df49e 100644
+--- a/src/bin/gpui_demo_text.rs
++++ b/src/bin/gpui_demo_text.rs
+@@ -1813,11 +1813,7 @@ impl StyledTextEditLine {
+                 ink: paint.style_ink.get(style_index)?.clone() });
+             left = next;
+         }
+-        let baseline = match record.line_layout_policy {
+-            TextEditLineLayoutPolicy::CumulativeGuestMetrics => geometry.top.saturating_add(geometry.ascent),
+-            TextEditLineLayoutPolicy::PpcRunMetrics => record.dest_rect.0.saturating_add(geometry.ascent)
+-                .saturating_add(i16::try_from(index).ok()?.saturating_mul(geometry.height)),
+-        };
++        let baseline = geometry.top.saturating_add(geometry.ascent);
+         Some(Self { geometry, baseline, selection: record.guest_styled_selection_rect(index)?, runs })
+     }
+ 
+diff --git a/src/systems/macintosh/loader/ppc/tests/text_edit.rs b/src/systems/macintosh/loader/ppc/tests/text_edit.rs
+index 71702b3e..a3cd181c 100644
+--- a/src/systems/macintosh/loader/ppc/tests/text_edit.rs
++++ b/src/systems/macintosh/loader/ppc/tests/text_edit.rs
+@@ -1341,3 +1341,56 @@ fn te_sel_view_respects_auto_scroll_and_reveals_selection() {
+     assert_eq!(ppc_read_rect(&mut loaded.memory, ptr + PPC_TE_DEST_RECT_OFFSET), Some(before),
+         "revealing the first line must restore the original scroll origin");
+ }
++
++#[test]
++fn styled_mixed_line_heights_match_guest_points_and_shared_geometry() {
++    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TEStyleNew")).unwrap();
++    let scratch = PPC_DATA_BASE + 0x1000;
++    loaded.memory.add_region(scratch, vec![0; 0x100]);
++    ppc_write_rect(&mut loaded.memory, scratch, 10, 20, 160, 220).unwrap();
++    ppc_write_rect(&mut loaded.memory, scratch + 8, 10, 20, 160, 220).unwrap();
++    loaded.cpu.gpr[3] = scratch; loaded.cpu.gpr[4] = scratch + 8;
++    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEStyleNew);
++    let handle = loaded.cpu.gpr[3];
++    loaded.memory.write_bytes(scratch + 0x20, b"A\rB\rC").unwrap();
++    loaded.cpu.gpr[3] = scratch + 0x20; loaded.cpu.gpr[4] = 5; loaded.cpu.gpr[5] = handle;
++    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetText);
++    let style = scratch + 0x40;
++    for (start, end, size) in [(0, 2, 9), (2, 4, 24), (4, 5, 12)] {
++        loaded.memory.write_u16_be(style, 3).unwrap();
++        loaded.memory.write_u8(style + 2, 0).unwrap();
++        loaded.memory.write_u16_be(style + 4, size).unwrap();
++        loaded.cpu.gpr[3] = start; loaded.cpu.gpr[4] = end; loaded.cpu.gpr[5] = handle;
++        run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetSelect);
++        loaded.cpu.gpr[3] = 0x000f; loaded.cpu.gpr[4] = style;
++        loaded.cpu.gpr[5] = 0; loaded.cpu.gpr[6] = handle;
++        run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetStyle);
++    }
++    // Batch style updates deliberately skipped redraw; finish guest layout
++    // before comparing the point table with painting and shared geometry.
++    loaded.cpu.gpr[3] = handle;
++    run_test_import(&mut loaded, PpcImportDispatcherTarget::TECalText);
++    let mut records = crate::text_edit::snapshot_guest_records(&[(handle, 1)],
++        &mut |address| loaded.memory.read_u8(address)).records;
++    let record = &mut records[0];
++    record.line_layout_policy = crate::text_edit::TextEditLineLayoutPolicy::PpcRunMetrics;
++    assert_eq!(record.line_count, 3);
++    for (line, offset) in [(0, 0), (1, 2), (2, 4)] {
++        let point = ppc_te_get_point(&mut loaded.memory, test_handles!(loaded), handle, offset);
++        let geometry = record.guest_styled_line_geometry(line).unwrap().0;
++        assert_eq!(geometry.top, (point >> 16) as i16,
++            "mixed-size displayed line must match the guest point/click origin: line {line}");
++    }
++    loaded.cpu.gpr[3] = 3; loaded.cpu.gpr[4] = 3; loaded.cpu.gpr[5] = handle;
++    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetSelect);
++    loaded.cpu.gpr[3] = handle;
++    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEActivate { active: true });
++    let point = ppc_te_get_point(&mut loaded.memory, test_handles!(loaded), handle, 3);
++    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
++    ppc_paint_rect_bounds(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD,
++        (150, 200, 151, 201), loaded.quickdraw_fore_color, None);
++    let black = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (200, 150));
++    assert_eq!(ppc_quickdraw_read_pixel(&mut loaded.memory, front,
++        (i32::from(point as u16 as i16) - 1, i32::from((point >> 16) as i16) + 1)), black,
++        "native caret ink must use the same cumulative line origin");
++}
+diff --git a/src/systems/macintosh/loader/ppc/textedit.rs b/src/systems/macintosh/loader/ppc/textedit.rs
+index 077211c6..17a6cad1 100644
+--- a/src/systems/macintosh/loader/ppc/textedit.rs
++++ b/src/systems/macintosh/loader/ppc/textedit.rs
+@@ -2167,6 +2167,16 @@ pub(super) fn ppc_te_draw(
+     // the text, so drawing is clipped to it.
+     let view_clip = ppc_read_rect(memory, te_ptr + PPC_TE_VIEW_RECT_OFFSET);
+     let view = view_clip.unwrap_or((0, 0, 0, 0));
++    // Share TEClick/TEGetPoint's cumulative origins. Resolve once so painting
++    // a long styled document does not repeatedly walk preceding lines.
++    let styled_line_tops = if styled {
++        let mut origin = top;
++        (0..line_count).map(|line| {
++            let current = origin;
++            origin = origin.saturating_add(ppc_te_line_height(memory, te_ptr, line).max(1));
++            current
++        }).collect::<Vec<_>>()
++    } else { Vec::new() };
+     for line in 0..line_count {
+         let start = usize::from(
+             memory
+@@ -2205,9 +2215,9 @@ pub(super) fn ppc_te_draw(
+         } else {
+             (fallback_line_height, fallback_ascent)
+         };
+-        let baseline = top
+-            .saturating_add(ascent)
+-            .saturating_add((line as i16).saturating_mul(line_height));
++        let line_top = if styled { styled_line_tops[line] }
++            else { top.saturating_add((line as i16).saturating_mul(line_height)) };
++        let baseline = line_top.saturating_add(ascent);
+         if styled {
+             let mut offset = start;
+             let mut pen = line_left;
+@@ -2352,7 +2362,8 @@ pub(super) fn ppc_te_draw(
+                 if caret_offset > start {
+                     caret_x = caret_x.saturating_sub(1);
+                 }
+-                let line_top = top.saturating_add((line as i16).saturating_mul(line_height));
++                let line_top = if styled { styled_line_tops[line] }
++                    else { top.saturating_add((line as i16).saturating_mul(line_height)) };
+                 let line_bottom = line_top.saturating_add(line_height);
+                 let caret = (line_top.max(view.0), caret_x.max(view.1),
+                     line_bottom.min(view.2), caret_x.saturating_add(1).min(view.3));
+diff --git a/src/systems/macintosh/text_edit.rs b/src/systems/macintosh/text_edit.rs
+index 1eff1105..2cb0170e 100644
+--- a/src/systems/macintosh/text_edit.rs
++++ b/src/systems/macintosh/text_edit.rs
+@@ -481,12 +481,16 @@ mod tests {
+         layout.justification = -1;
+         assert_eq!(layout.line_geometry(1, 80).unwrap().left, 120);
+         layout.line_layout_policy = super::TextEditLineLayoutPolicy::PpcRunMetrics;
+-        // Native drawing resolves its run metrics instead of reading LHTable.
++        // Native drawing stacks resolved run metrics instead of reading LHTable.
+         layout.line_metrics = Some(vec![(42, 40), (60, 59)]);
+         assert_eq!(layout.line_geometry(1, 80), Some(super::TextEditLineGeometry {
+-            top: 28, left: 120, height: 18, ascent: 13,
++            top: 24, left: 120, height: 18, ascent: 13,
+         }));
+         layout.active = true;
++        layout.selection = (0, 4);
++        let first = layout.guest_styled_selection_rect(0).unwrap().unwrap();
++        let second = layout.guest_styled_selection_rect(1).unwrap().unwrap();
++        assert_eq!(first.2, second.0, "mixed-height PPC selection follows glyph origins");
+         layout.selection = (2, 2);
+         layout.clips_line_offsets_to_visible_text = true;
+         assert_eq!(layout.caret_line(), Some((0, 1)), "styled native wrap caret trims CR");
+@@ -798,8 +802,7 @@ impl TextEditSnapshot {
+             TextEditLineLayoutPolicy::CumulativeGuestMetrics =>
+                 (geometry.left.checked_add(left_width)?, geometry.left.checked_add(right_width)?, geometry.top),
+             TextEditLineLayoutPolicy::PpcRunMetrics => {
+-                let baseline = self.dest_rect.0.saturating_add(geometry.ascent)
+-                    .saturating_add(i16::try_from(index).ok()?.saturating_mul(geometry.height));
++                let baseline = geometry.top.saturating_add(geometry.ascent);
+                 (geometry.left.saturating_add(left_width), geometry.left.saturating_add(right_width),
+                     baseline.saturating_sub(geometry.ascent))
+             }
+@@ -877,7 +880,7 @@ impl TextEditSnapshot {
+         let (height, ascent) = self.metrics_for_line(index)?;
+         let mut top = self.dest_rect.0;
+         match self.line_layout_policy {
+-            TextEditLineLayoutPolicy::CumulativeGuestMetrics if self.styled => {
++            _ if self.styled => {
+                 for previous in 0..index {
+                     top = top.saturating_add(self.metrics_for_line(previous)?.0);
+                 }
