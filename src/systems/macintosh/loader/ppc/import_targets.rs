@@ -1155,6 +1155,7 @@ pub enum PpcImportDispatcherTarget {
     ISpDevicesExtractByClass,
     ISpDeviceGetDefinition,
     ISpDeviceGetElementList,
+    ISpGetGlobalElementList,
     ISpElementListExtract,
     ISpElementGetInfo,
     ISpElementGetConfigurationInfo,
@@ -2534,6 +2535,9 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InputSprocketLib", "ISpDevice_GetElementList") => {
             PpcImportDispatcherTarget::ISpDeviceGetElementList
+        }
+        ("InputSprocketLib", "ISpGetGlobalElementList") => {
+            PpcImportDispatcherTarget::ISpGetGlobalElementList
         }
         ("InputSprocketLib", "ISpElementList_Extract") => {
             PpcImportDispatcherTarget::ISpElementListExtract
