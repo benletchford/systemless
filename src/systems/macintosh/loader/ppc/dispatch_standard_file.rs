@@ -2277,6 +2277,13 @@ fn ppc_dispatch_standard_file(
                         {
                             tracking.sel_start = 0;
                             tracking.sel_end = tracking.name.len();
+                        } else if event.modifiers & 0x0100 == 0 && matches!(character, 0x1c | 0x1d) {
+                            let mut edit = crate::text_edit::TextEditBuffer::new(
+                                tracking.name.clone(), tracking.sel_start, tracking.sel_end);
+                            edit.apply_key(character);
+                            let selection = edit.selection();
+                            tracking.sel_start = selection.start;
+                            tracking.sel_end = selection.end;
                         } else if character == 0x08 || key_code == 0x33 {
                             ppc_standard_file_backspace_name(&mut tracking);
                         } else if event.modifiers & 0x0100 == 0

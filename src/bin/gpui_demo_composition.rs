@@ -494,20 +494,15 @@ impl EntityInputHandler for Demo {
                 return;
             }
         }
-        let Some((text, _)) = self.composition.replacement_text(range.as_ref(), text) else {
-            if let Some(range) = range {
-                if let Some((expected, request, bytes, caret)) = self.composition.commit_overlapping_range(range, text) {
-                    let _ = self.commands.send(Command::ReplaceText(expected, request.selection, bytes, Some(caret)));
-                    cx.notify();
-                }
-            }
-            return;
-        };
-        if let Some((owner, bytes)) = self.composition.commit(&text) {
-            let _ = self.commands.send(Command::CommitText(owner, bytes));
+        if let Some((owner, bytes, caret)) = self.composition.commit_replacement(range.as_ref(), text) {
+            let command = if caret == owner.selection.start + bytes.len() {
+                Command::CommitText(owner, bytes)
+            } else { Command::CommitTextCaret(owner, bytes, caret) };
+            let _ = self.commands.send(command);
             cx.notify();
         }
     }
+
     fn replace_and_mark_text_in_range(&mut self, range: Option<Range<usize>>, text: &str,
         selected: Option<Range<usize>>, _: &mut Window, cx: &mut Context<Self>) {
         let end = text.encode_utf16().count();

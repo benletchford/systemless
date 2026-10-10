@@ -4790,3 +4790,22 @@ and the initial caret failure are archived in
 Disjoint outside-stage replacement, explicit modal/file replacement and modal
 retained-suffix caret behavior remain unfinished. Composed visual, physical IME
 and independent native qualification remain open.
+
+
+### Modal retained-suffix composition caret
+
+Dialog, Save and New Folder staged corrections now retain the insertion
+endpoint before any preserved suffix. The shared worker queues guest Left
+events after validated typing, retaining modal ownership and rejection rules.
+A new Save regression exposed both filename gateways ignoring horizontal
+arrows; both now use shared TextEditBuffer movement without changing the name.
+
+Nine state tests, three worker parents (24.41s) and three platform-handler
+parents (40.73s) pass. Worker evidence covers four CPU/depth modes, wrapped
+PPC dialogs, Save/New Folder caret restoration, sibling/parent preservation and
+subsidiary return/disposal. The modal input handler emits the pinned caret
+request. Initial Save failure is retained in
+`tests/toolbox-showcase/reference/gpui-demo/modal-retained-suffix-caret`.
+Arbitrary modal selection and disjoint document-stage replacement remain
+unimplemented; composed visual, physical IME and independent native evidence
+remain unqualified.

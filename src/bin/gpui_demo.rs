@@ -438,6 +438,7 @@ mod desktop {
 
     enum Command {
         CommitText(super::input::TextInputOwner, Vec<u8>),
+        CommitTextCaret(super::input::TextInputOwner, Vec<u8>, usize),
         ReplaceText(super::input::TextInputOwner, std::ops::Range<usize>, Vec<u8>, Option<usize>),
         CommittedInput(MacintoshInput, MacintoshInput),
         ImportClipboard(Vec<u8>),
@@ -664,10 +665,26 @@ mod desktop {
                                 text_commit_rejection = Some((revision, owner));
                             }
                         }
-                        Ok(Command::CommitText(owner, bytes)) => {
-                            let inputs = (!pointer_down).then(||
+                        Ok(command @ Command::CommitText(..)) | Ok(command @ Command::CommitTextCaret(..)) => {
+                            let (owner, bytes, caret) = match command {
+                                Command::CommitText(owner, bytes) => (owner, bytes, None),
+                                Command::CommitTextCaret(owner, bytes, caret) => (owner, bytes, Some(caret)),
+                                _ => unreachable!(),
+                            };
+                            let safe_caret = caret.is_none_or(|caret| caret >= owner.selection.start
+                                && caret <= owner.selection.start.saturating_add(bytes.len())
+                                && session.runner().event_manager_snapshot().key_map[0x7b / 8] & (1 << (0x7b % 8)) == 0);
+                            let inputs = (!pointer_down && safe_caret).then(||
                                 super::input::guest_commit_inputs(&mut session, &owner, &bytes)).flatten();
-                            if let Some(inputs) = inputs {
+                            if let Some(mut inputs) = inputs {
+                                if let Some(caret) = caret {
+                                    for _ in caret..owner.selection.start + bytes.len() {
+                                        inputs.extend([
+                                            MacintoshInput::KeyDown { mac_key: 0x7b, character: 0x1c },
+                                            MacintoshInput::KeyUp { mac_key: 0x7b, character: 0x1c },
+                                        ]);
+                                    }
+                                }
                                 text_commit_wait = None;
                                 for pair in inputs.chunks_exact(2).rev() {
                                     queued.push_front(Command::CommittedInput(pair[0], pair[1]));
@@ -700,7 +717,9 @@ mod desktop {
                                         || !session.runner_mut().dialog_snapshot().iter().any(|dialog| dialog.visible && dialog.active)));
                                 if !pointer_down && same_field && document && in_event
                                     && text_commit_wait.get_or_insert_with(Instant::now).elapsed() < Duration::from_millis(250) {
-                                    queued.push_front(Command::CommitText(owner, bytes));
+                                    queued.push_front(if let Some(caret) = caret {
+                                        Command::CommitTextCaret(owner, bytes, caret)
+                                    } else { Command::CommitText(owner, bytes) });
                                     break;
                                 }
                                 text_commit_wait = None;
@@ -9832,6 +9851,20 @@ mod desktop {
                 let actual = repeated.dialogs.iter().find(|dialog| (dialog.guest_id, dialog.generation) == owner.identity).unwrap();
                 assert_eq!(actual.items[8].text, expected_text);
                 assert_eq!(actual.items[6].text, before.items[6].text);
+                let current = super::super::input::dialog_text_owner_with_records(
+                    &repeated.dialogs, &repeated.windows, &repeated.text_edits, &repeated.controls).unwrap();
+                let insertion = current.selection.start;
+                let current = super::super::input::TextInputOwner { identity: current.identity,
+                    target: super::super::input::TextInputTarget::Dialog { item: current.item, content_revision: current.content_revision },
+                    text: current.text, selection: current.selection };
+                let mut expected_correction = current.text.clone(); expected_correction.splice(current.selection.clone(), *b"RZ");
+                let expected_correction = systemless::systems::macintosh::mac_roman::decode_mac_roman(&expected_correction);
+                worker.0.send(Command::CommitTextCaret(current, b"RZ".to_vec(), insertion + 1)).unwrap();
+                let corrected = wait("modal suffix caret", &updates, |update| update.dialogs.iter().any(|dialog|
+                    dialog.guest_id == owner.identity.0 && dialog.items[8].text == expected_correction
+                        && dialog.items[8].selection == Some(((insertion + 1) as i16, (insertion + 1) as i16))));
+                assert_eq!(corrected.dialogs.iter().find(|dialog| dialog.guest_id == owner.identity.0).unwrap().items[6].text, before.items[6].text);
+                eprintln!("PASS worker-modal-retained-suffix-caret powerpc={powerpc} depth={actual_depth}");
                 eprintln!("PASS worker-modal-rapid-composition-and-rejection powerpc={powerpc} depth={actual_depth}");
                 drop(worker);
             }
@@ -9911,6 +9944,18 @@ mod desktop {
                 let actual = repeated.standard_file.unwrap();
                 assert_eq!(actual.name.as_deref(), Some(expected_text.as_str()));
                 assert_eq!(actual.entries, before.entries);
+                let current = super::super::input::standard_file_text_owner(&actual).unwrap();
+                let insertion = current.selection.start;
+                expected.splice(current.selection.clone(), *b"RZ");
+                let corrected_name = systemless::systems::macintosh::mac_roman::decode_mac_roman(&expected);
+                let current = super::super::input::TextInputOwner { identity: current.identity,
+                    target: super::super::input::TextInputTarget::StandardFile { new_folder: false },
+                    text: current.text, selection: current.selection };
+                worker.0.send(Command::CommitTextCaret(current, b"RZ".to_vec(), insertion + 1)).unwrap();
+                let actual = wait("Save suffix caret", &updates, |update| update.standard_file.as_ref().is_some_and(|panel|
+                    panel.name.as_deref() == Some(corrected_name.as_str()) && panel.name_selection == Some((insertion + 1, insertion + 1))))
+                    .standard_file.unwrap();
+                eprintln!("PASS worker-save-retained-suffix-caret powerpc={powerpc} depth={actual_depth}");
                 eprintln!("PASS worker-standard-file-rapid-composition-and-rejection powerpc={powerpc} depth={actual_depth}");
                 worker.0.send(Command::ActivateFile(actual.guest_id, actual.generation,
                     super::super::activation::FileAction::NewFolder)).unwrap();
@@ -9935,6 +9980,19 @@ mod desktop {
                 assert_eq!(edited.name, actual.name, "subsidiary editor must preserve Save filename");
                 assert_eq!(edited.new_folder.as_ref().unwrap().selection,
                     (folder_owner.selection.start + 2, folder_owner.selection.start + 2));
+                let current = super::super::input::standard_file_text_owner(&edited).unwrap();
+                let insertion = current.selection.start;
+                let mut expected_correction = current.text.clone(); expected_correction.splice(current.selection.clone(), *b"RZ");
+                let expected_correction = systemless::systems::macintosh::mac_roman::decode_mac_roman(&expected_correction);
+                let current = super::super::input::TextInputOwner { identity: current.identity,
+                    target: super::super::input::TextInputTarget::StandardFile { new_folder: true },
+                    text: current.text, selection: current.selection };
+                worker.0.send(Command::CommitTextCaret(current, b"RZ".to_vec(), insertion + 1)).unwrap();
+                let edited = wait("New Folder suffix caret", &updates, |update| update.standard_file.as_ref().is_some_and(|panel|
+                    panel.new_folder.as_ref().is_some_and(|folder| folder.name == expected_correction
+                        && folder.selection == (insertion + 1, insertion + 1)))).standard_file.unwrap();
+                assert_eq!(edited.name, actual.name);
+                eprintln!("PASS worker-new-folder-retained-suffix-caret powerpc={powerpc} depth={actual_depth}");
                 worker.0.send(Command::ActivateFile(edited.guest_id, edited.generation,
                     super::super::activation::FileAction::CancelNewFolder)).unwrap();
                 let returned = wait("return to Save", &updates, |update| update.standard_file.as_ref().is_some_and(|panel|
@@ -12363,6 +12421,22 @@ mod desktop {
                 assert_eq!(after.items[8].text, format!("éZQ{}", before.items[8].text));
                 assert_eq!(after.items[8].selection, Some((3, 3)));
                 assert_eq!(after.items[6].text, before.items[6].text);
+                cx.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                    demo.dialogs = session.runner_mut().dialog_snapshot();
+                    demo.text_edits = session.runner_mut().text_edit_snapshot().records;
+                    demo.synchronize_composition(window, cx);
+                    let start = demo.composition.owner().unwrap().selection.start;
+                    demo.replace_and_mark_text_in_range(None, "RZ", Some(0..1), window, cx);
+                    demo.replace_text_in_range(Some(start..start + 1), "Q", window, cx);
+                })).unwrap();
+                let requests: Vec<_> = receiver.try_iter().collect(); assert_eq!(requests.len(), 1);
+                let super::Command::CommitTextCaret(owner, bytes, caret) = requests.into_iter().next().unwrap() else {
+                    panic!("modal retained suffix must request its insertion caret");
+                };
+                assert_eq!(owner.identity, (after.guest_id, after.generation));
+                assert_eq!(bytes, b"QZ"); assert_eq!(caret, owner.selection.start + 1);
+                assert_eq!(systemless::systems::macintosh::mac_roman::decode_mac_roman(&owner.text), after.items[8].text);
+                eprintln!("PASS modal-platform-retained-suffix-request powerpc={powerpc} depth={depth}");
                 eprintln!("PASS modal-platform-composition powerpc={powerpc} depth={depth}");
                 cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
             }
