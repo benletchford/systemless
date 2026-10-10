@@ -1807,6 +1807,12 @@ fn control_title_style_resolves_appearance_meta_fonts() {
     assert_eq!(resolve(0x0001, -2, 0), (3, 10, 0));
     assert_eq!(resolve(0x0001, -3, 0), (3, 10, 1));
     assert_eq!(resolve(0x0001, -4, 0), (3, 10, 0));
+    // Unknown guest meta-font IDs retain the default, including the signed
+    // minimum whose negation cannot be represented by an i16.
+    assert_eq!(resolve(0x0001, i16::MIN, 0),
+        (PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0));
+    assert_eq!(resolve(0x0001, -5, 0),
+        (PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0));
     // Theme font IDs under kControlUseThemeFontIDMask.
     assert_eq!(resolve(0x0081, 2, 0), (3, 10, 1));
     // A plain family ID with an absolute size, and a delta on a meta font.

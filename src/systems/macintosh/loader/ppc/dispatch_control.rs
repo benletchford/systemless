@@ -3372,9 +3372,9 @@ pub(super) fn ppc_control_title_style(
         // Meta font IDs are -1..-4 in the font field, or theme font IDs
         // 0..3 when kControlUseThemeFontIDMask is set.
         let meta = if flags & USE_THEME_FONT_ID != 0 {
-            Some(style.font)
+            Some(i32::from(style.font))
         } else {
-            (style.font < 0).then(|| -style.font - 1)
+            (style.font < 0).then(|| -i32::from(style.font) - 1)
         };
         match meta {
             Some(0) => {}
