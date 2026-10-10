@@ -843,11 +843,22 @@ it does not name MacSokoban. Applicability of the conflicting retained notices t
 this intact 3.0.3 package remains unresolved; no hosting grant is inferred solely
 from the freeware label. Keep the archive unhosted while clarifying this evidence.
 
-The original main has four CODE resources and no PPC cfrg. Native source
-`1f9b99bc8afa3013ccbe7e99c84b460346bb58dc` starts the original board at 600 frontend
-ticks with zero exhausted budgets and zero assertions; its actual capture was
-inspected. No player creation, movement, puzzle completion or browser qualification
-is claimed. Archives, extracted forks and scenarios remain outside Git.
+The original main has four CODE resources and no PPC cfrg/PEF. All thirty-four
+forks of seventeen original files match production BinHex/Compact Pro decoding
+and independent unar, retaining all modules/utilities and the original folder-icon
+filename. The exact production selector is
+`MacSokoban 3.0.3.cpt/MacSokoban ƒ/MacSokoban 3.0.3`.
+
+Fresh native v0.95.0, actual 68K slice, creates a player, enters level 1, follows
+legal up/left movement, pushes a bag and undoes the push. Sixteen measured pixel
+assertions pass at 1342 frontend / 1918 guest ticks, zero exhausted frames.
+Actual initial, pre-push, push and undo captures were inspected before the fresh
+asserted replay. The About dialog renders overlapping text and incompletely
+cleared background; that display discrepancy remains under review. Solved levels,
+audio, browser qualification and distribution scope remain pending; no archive
+or screenshot is hosted or launch-approved. Archives, forks and scenarios stay
+outside Git. [Intake #4467](https://github.com/benletchford/systemless/issues/4467)
+and [native evidence](https://github.com/benletchford/systemless/issues/4467#issuecomment-6103286376).
 
 The first skiing browser preview exposed a missing outer Compact Pro path prefix
 in the preferred-executable setting. Production decoding identifies all four
@@ -1010,9 +1021,19 @@ repairs the original registration text on both slices in rebuilt native v0.95.0;
 three measured prompt assertions pass on each route. That fix has merged after
 all CI gates passed. The fresh v0.95.0 PPC name-acceptance failure is recorded
 on [#4460](https://github.com/benletchford/systemless/issues/4460#issuecomment-6103064729);
-[drawing repair #4464](https://github.com/benletchford/systemless/pull/4464) passes
-118 PPC QuickDraw tests and remains draft pending original-game retest.
-Prompt repair does not qualify PPC card gameplay.
+[drawing repair #4464](https://github.com/benletchford/systemless/pull/4464) has
+merged after all exact-head CI checks and 118 PPC QuickDraw tests passed.
+The original native v0.95.0 with both repairs passes twelve existing 68K legal
+card-move assertions at 1881 frontend / 2460 guest ticks, zero exhausted frames.
+Its actual PPC setup/board replay now completes at 1881 frontend / 1861 guest
+ticks, zero exhausted frames, and Return moves an ace to a foundation, score 0→1.
+A fresh eight-assertion actual-PPC ace replay also passes at 1778 frontend /
+1758 guest ticks, zero exhausted frames; its captures are inspected again.
+The fixed 68K tableau drag is not qualified on the different PPC deal.
+Missing PPC instruction text and card suits remain open in
+[#4466](https://github.com/benletchford/systemless/issues/4466).
+[Drawing repair native evidence](https://github.com/benletchford/systemless/issues/4460#issuecomment-6103240824).
+These repairs do not establish full PPC game fidelity.
 Browser, distribution/screenshot scope, hosting and publication remain pending.
 
 ## Quake preview original intake
@@ -1048,3 +1069,17 @@ audio remain unqualified. Browser, rights, hosting and launch approval are pendi
 and [fork/input evidence](https://github.com/benletchford/systemless/issues/3213#issuecomment-6103120017)
 update the existing startup investigation; map entry does not close that issue
 or count as a qualified live game.
+
+## v0.95.1 compatibility publication acceptance
+
+[Release #4463](https://github.com/benletchford/systemless/pull/4463) merged as
+`4212fa5a83f80a2584f4b117deb551626b8a80d6`. Its
+[complete normal release run](https://github.com/benletchford/systemless/actions/runs/38094113471)
+passed website deployment, all six native platform builds and final upload.
+The published, non-draft v0.95.1 release contains all twelve nonempty uploaded
+package/checksum assets for macOS, Linux and Windows on aarch64 and x86_64.
+This publishes the PICT metadata repair; it adds no new qualified game and does
+not resolve Solitaire House's distribution scope or remaining PPC rendering.
+The separately merged FillRoundRect repair is queued in normal
+[release #4468](https://github.com/benletchford/systemless/pull/4468), v0.95.2;
+its release/publication gates remain pending.
