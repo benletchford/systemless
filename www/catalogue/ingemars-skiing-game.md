@@ -9,6 +9,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Simulation
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -25,6 +26,22 @@ compatibility:
       ticks with zero exhausted budgets. Full courses, cups, editor, saves and audio
       remain unverified. Main and optional launcher contain CODE resources and no PPC cfrg;
       this original package is 68K-only.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4444
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: 9bbeb477e4ff244c4370be5d40fe816fd979eeb2
+    architecture: 68k
+    environment: >-
+      v0.92.2 ordinary Chrome worker/WebGL preview with cross-origin isolation,
+      complete production-decoded nested executable path and 800-by-600/8-bit display.
+      Game > Practice 1 and an ordinary click start the race. A fresh normal mouse
+      replay visibly moves the skier right then left while the timer and course
+      advance; captures inspected. Local-origin CORS requires only an unchanged R2
+      archive fixture independently verified against the promoted SHA-256 and size.
+      All four original files and both forks match independent unar extraction
+      byte-for-byte. Public replay, full courses, cups, editor, saves and audio
+      remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4444
 runtime:
@@ -92,5 +109,6 @@ charges beyond distribution costs. This package contains a 68K game; no PowerPC
 slice is present.
 
 Bounded native testing covers starting a practice race, visible left/right
-steering and advancing course/timer. Browser and public-route gameplay, full
-courses, cups, editing, saves and audio remain unverified.
+steering and advancing course/timer. Ordinary worker/WebGL browser testing also
+covers practice start and right/left steering with the original archive.
+Public-route gameplay, full courses, cups, editing, saves and audio remain unverified.

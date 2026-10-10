@@ -856,5 +856,26 @@ The entry now uses that complete path. The earlier native environment override
 could fall back to normal application selection; its visible race remains valid,
 but browser launch is not qualified by that run. The complete-path native replay again passes
 all six measured assertions at 1138 frontend ticks, with the actual left/right
-race captures inspected. A rebuilt ordinary browser replay is still required
-before enabling launch.
+race captures inspected. The rebuilt v0.92.2 ordinary Chrome worker/WebGL preview at source
+`9bbeb477e4ff244c4370be5d40fe816fd979eeb2` also passes original practice
+start and a fresh right-then-left mouse steering replay, with timer and course
+advancement visible in inspected captures. All four original files and both
+forks match independent unar extraction byte-for-byte. Local preview CORS
+requires an exact unchanged, independently hash-verified R2 archive fixture;
+no archive or guest state is patched. Launch is enabled after this qualification;
+actual public-route gameplay remains pending after the normal release.
+
+### Moria released public follow-through
+
+The [actual public route](https://systemless.org/moria/) is independently verified
+at v0.93.0, source `fec43f23c31b130cf7fafbb62b4571df48504320`, after merged
+[catalogue #4442](https://github.com/benletchford/systemless/pull/4442) and
+[release #4443](https://github.com/benletchford/systemless/pull/4443). Ordinary
+Chrome worker/WebGL input creates a character, moves in all four town directions,
+descends to 50 feet and moves west/north in the dungeon. Actual public R2 HTTP 200
+response bytes match the original archive hash and 290684-byte size, with no
+fixture or interception. [Public evidence](https://github.com/benletchford/systemless/issues/4441#issuecomment-6102008369).
+The website deployment passed. The whole v0.93.0 release still awaits its last
+native platform and final package/checksum publication; that is not claimed
+complete by this public gameplay evidence. Combat, sustained play, saves and
+audio remain unverified.
