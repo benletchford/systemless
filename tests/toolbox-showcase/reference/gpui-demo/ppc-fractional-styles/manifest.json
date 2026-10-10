@@ -1,0 +1,13 @@
+{
+  "base": "6272b4a642290892da125d422447e968ba567c0a",
+  "sha256": {
+    "src/bin/gpui_demo_text.rs": "32e80700c0ac68edf1b4a1fe1aa62d0a6e2327ef5d28754c698f6790c4c02084",
+    "src/systems/macintosh/quickdraw/text.rs": "02ec10943157ecc921e7e2f110605ee66c4ba0e2b6b7ebf12ff2e71ed4734537",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "41cf3aa93f2b41d0ce1d49b2bace8572140e9692d37239a749a471744ca5c09f"
+  },
+  "scope": "Constructed Geneva145/96 style-helper checks at raster1/2: 13 style faces, exact PPC binary ink/run advance, supplied insertion positions, transformed paint pens/advances and guest underline strokes. Independent synthetic rectangle-area check includes negative bearing and fractional pen phase. No actual guest scene, composed pixels/hit-tests, independent native font fidelity or performance claim.",
+  "test_binaries": {
+    "target/ci-test/examples/gpui_menu_demo-957ebf4d71285d8e": "3deb650cf8484871359eed12328c1fcca8c65bbe5e0899919b7b59c7e56a695b",
+    "target/ci-test/examples/gpui_menu_demo-9e8a8abfde68f05d": "8535ad66a3f45cc8618fb355b5d92e7e3b27cd05058fe11a49c814ad88843335"
+  }
+}

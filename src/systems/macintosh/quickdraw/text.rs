@@ -167,6 +167,15 @@ pub fn smooth_resolved_scaled_glyph(glyph: &Glyph, data: &[u8], strike_scale: u3
         raster_scale })
 }
 
+/// Source-resolution outline for style synthesis before a PPC rational transform.
+#[doc(hidden)]
+pub fn smooth_resolved_glyph_at_density(glyph: &Glyph, data: &[u8], density: u32) -> Option<SmoothGlyphSnapshot> {
+    if !(1..=64).contains(&density) { return None; }
+    let mask = crate::quickdraw::fonts::outline::presentation_glyph(glyph, data, density)?;
+    Some(SmoothGlyphSnapshot { pixels: mask.pixels, width: mask.width, height: mask.height,
+        left: mask.left, top: mask.top, guest_advance: i32::from(glyph.advance), raster_scale: density })
+}
+
 /// PPC outline placement preserves the fractional source pen before rasterization.
 /// The returned integer pen and mask phase together locate the original glyph.
 #[doc(hidden)]

@@ -1,0 +1,217 @@
+diff --git a/src/bin/gpui_demo_text.rs b/src/bin/gpui_demo_text.rs
+index 62431075..f8c7eeab 100644
+--- a/src/bin/gpui_demo_text.rs
++++ b/src/bin/gpui_demo_text.rs
+@@ -716,6 +716,58 @@ mod tests {
+         assert!(ClassicLine::classic_textedit_run(bytes, 3, 12, 0, vec![0, 1]).is_none());
+     }
+ 
++    #[test]
++    fn rational_style_mask_area_preserves_negative_bearings_phase_and_coverage() {
++        let make = || systemless::quickdraw::text::SmoothGlyphSnapshot {
++            pixels: vec![255,128].into(), width: 2, height: 1, left: -1, top: 0,
++            guest_advance: 2, raster_scale: 1,
++        };
++        let (pen, transformed) = transform_source_mask(make(),3,2,1,1).unwrap();
++        assert_eq!((pen,transformed.left,transformed.top,transformed.width,transformed.height), (1,-1,0,3,2));
++        // Exact rectangle-overlap areas, independently calculated for 3/2:
++        // the first row blends the half-pixel boundary, the second is half-height.
++        assert_eq!(&*transformed.pixels, &[255,192,128,128,96,64]);
++        assert_eq!(transformed.guest_advance, 3);
++        let (_, identity) = transform_source_mask(make(),1,1,7,1).unwrap();
++        assert_eq!((identity.left,identity.top,identity.width,identity.height), (-1,0,2,1));
++        assert_eq!(&*identity.pixels, &[255,128]);
++        assert!(transform_source_mask(make(),0,2,1,1).is_none());
++        assert!(transform_source_mask(make(),3,0,1,1).is_none());
++    }
++
++    #[test]
++    fn fractional_ppc_styles_synthesize_before_scaling_and_keep_native_strokes() {
++        let bytes = b"Ag";
++        let positions = vec![0,3,8];
++        for face in [1,2,3,4,5,6,7,8,16,31,32,64,127] {
++            let (line, advance) = ClassicLine::ppc_styled_run_with_paint_advance(bytes,3,145,face,positions.clone()).unwrap();
++            assert_eq!(line.positions, positions);
++            let (native_advance,native_ink) = systemless::quickdraw::text::ppc_styled_run_ink(3,145,face,bytes);
++            assert_eq!(advance,i32::from(native_advance));
++            assert_eq!(line.ink.iter().flat_map(|&(x,y,width)| (x..x+width).map(move |x| (x,y))).collect::<std::collections::BTreeSet<_>>(), native_ink.into_iter().collect());
++            for raster in [1,2] {
++                let masks = resolve_smooth_run(&line,raster).unwrap();
++                let mut source_pen = 0;
++                for ((pen,mask), &byte) in masks.iter().zip(bytes) {
++                    assert_eq!(*pen,source_pen*145/96);
++                    assert_eq!(mask.raster_scale,raster);
++                    assert_eq!(mask.guest_advance,i32::from(systemless::quickdraw::text::ppc_styled_run_ink(3,145,face,&[byte]).0));
++                    source_pen += i32::from(systemless::quickdraw::text::ppc_styled_run_ink(3,96,face,&[byte]).0);
++                }
++                if face & 4 != 0 && face & 24 == 0 {
++                    let (pen,stroke) = masks.last().unwrap(); assert_eq!(*pen,0);
++                    let actual = (0..stroke.height).flat_map(|y| (0..stroke.width).filter_map(move |x|
++                        (stroke.pixels[(y*stroke.width+x) as usize] != 0).then_some((stroke.left+x,stroke.top+y))))
++                        .collect::<std::collections::BTreeSet<_>>();
++                    let r = raster as i32;
++                    let expected = line.smooth_strokes.iter().flat_map(|&(x,y)| (0..r).flat_map(move |dy| (0..r).map(move |dx| (x*r+dx,y*r+dy))))
++                        .collect::<std::collections::BTreeSet<_>>();
++                    assert_eq!(actual,expected);
++                }
++            }
++        }
++    }
++
+     #[test]
+     fn fractional_ppc_outline_preserves_guest_metrics_and_subpixel_pen_phase() {
+         let bytes = b"AA i";
+@@ -744,10 +796,8 @@ mod tests {
+             let (_, fractional) = systemless::quickdraw::text::smooth_resolved_ratio_glyph(glyph,data,145,96,1,raster).unwrap();
+             assert_ne!((fractional.left,fractional.pixels), (zero.left,zero.pixels), "fractional pen phase must survive rasterization");
+         }
+-        // Styled fractional source recipes remain on guest paint until their
+-        // synthesis before scaling is implemented and qualified.
+         let styled = ClassicLine::ppc_styled_run(bytes,3,145,1,positions).unwrap();
+-        assert!(resolve_smooth_run(&styled,2).is_none());
++        assert!(resolve_smooth_run(&styled,2).is_some());
+     }
+ 
+     #[test]
+@@ -1118,9 +1168,12 @@ impl ClassicLine {
+         let mut smooth_halo_underlines = Vec::new();
+ 
+         let (strike, numerator, denominator) = systemless::quickdraw::fonts::get_font_face_scale_ratio(font, point_size);
++        let source_advance = bytes.iter().map(|byte| systemless::quickdraw::text::get_glyph(font, strike.size, *byte as char)
++            .map_or(6, |(glyph, _)| (i32::from(glyph.advance) + i32::from(face & 1 != 0)
++                + i32::from(face & 8 != 0) + 2*i32::from(face & 16 != 0) + smooth_spacing_adjustment(face)).max(1))).sum();
+         let halo_ribbon = systemless::quickdraw::text::ppc_styled_run_halo_underline_ink(
+-            font, strike.size, face, i32::from(paint_advance));
+-        if smooth_basic_style_supported(face) && (numerator == denominator || face == 0) {
++            font, strike.size, face, source_advance);
++        if smooth_basic_style_supported(face) {
+             let mut pen = 0;
+             for &byte in bytes {
+                 if let Some((glyph, data)) = systemless::quickdraw::text::get_glyph(font, strike.size, byte as char) {
+@@ -1141,6 +1194,12 @@ impl ClassicLine {
+                 }
+             }
+         }
++        if numerator != denominator {
++            smooth_strokes = smooth_strokes.into_iter().flat_map(|(x,y)| {
++                systemless::quickdraw::text::ppc_font_source_pixel_bounds(x,y,numerator,denominator)
++                    .into_iter().flat_map(|(left,top,right,bottom)| (top..bottom).flat_map(move |y| (left..right).map(move |x| (x,y))))
++            }).collect();
++        }
+         pixels.sort_unstable_by_key(|&(x, y)| (y, x));
+         let mut result = Self { positions, ink: Vec::new(), smooth_sources, smooth_strike_scale: 1, smooth_ratio: (numerator != denominator).then_some((u32::try_from(numerator).ok()?, u32::try_from(denominator).ok()?)), smooth_bold: face & 1 != 0,
+             smooth_italic: (face & 2 != 0).then_some((font, strike.size)), smooth_strokes,
+@@ -2077,24 +2136,30 @@ fn resolve_smooth_run(
+     if !line.smooth_halo_underlines.is_empty() && line.smooth_halo_underlines.len() != line.smooth_sources.len() {
+         return None;
+     }
+-    let mut glyphs = line.smooth_sources.iter().enumerate().map(|(index, &(pen, glyph, data))| {
+-        let (pen, mut mask) = if let Some((numerator, denominator)) = line.smooth_ratio {
+-            systemless::quickdraw::text::smooth_resolved_ratio_glyph(glyph, data, numerator, denominator, pen, raster)?
++    let mut glyphs = line.smooth_sources.iter().enumerate().map(|(index, &(source_pen, glyph, data))| {
++        let styled_ratio = line.smooth_ratio.filter(|_| line.smooth_bold || line.smooth_italic.is_some()
++            || line.smooth_halo.is_some() || !line.smooth_halo_underlines.is_empty() || line.smooth_spacing_adjustment != 0);
++        let source_density = if let Some((numerator,denominator)) = styled_ratio {
++            let required = numerator.checked_mul(raster)?.div_ceil(denominator);
++            required.max(8).div_ceil(8).checked_mul(8)?
++        } else { raster };
++        let (pen, mut mask) = if styled_ratio.is_some() {
++            (source_pen, systemless::quickdraw::text::smooth_resolved_glyph_at_density(glyph,data,source_density)?)
++        } else if let Some((numerator, denominator)) = line.smooth_ratio {
++            systemless::quickdraw::text::smooth_resolved_ratio_glyph(glyph, data, numerator, denominator, source_pen, raster)?
+         } else {
+-            (pen, systemless::quickdraw::text::smooth_resolved_scaled_glyph(glyph, data, line.smooth_strike_scale, raster)?)
++            (source_pen, systemless::quickdraw::text::smooth_resolved_scaled_glyph(glyph, data, line.smooth_strike_scale, raster)?)
+         };
+         if let Some((font, size)) = line.smooth_italic { mask = smooth_italic_mask(mask, font, size)?; }
+         if line.smooth_bold { mask = smooth_bold_mask(mask)?; }
+-        mask.top = mask.top.checked_add(line.smooth_y_offset.checked_mul(i32::try_from(raster).ok()?)?)?;
+-        if let Some(strokes) = line.smooth_halo_underlines.get(index) {
+-            mask = smooth_union_strokes(mask, strokes)?;
+-        }
+-        if let Some(radius) = line.smooth_halo {
+-            mask = smooth_halo_mask_with_policy(mask, radius, line.smooth_halo_classic_everything)?;
+-        }
++        mask.top = mask.top.checked_add(line.smooth_y_offset.checked_mul(i32::try_from(source_density).ok()?)?)?;
++        if let Some(strokes) = line.smooth_halo_underlines.get(index) { mask = smooth_union_strokes(mask, strokes)?; }
++        if let Some(radius) = line.smooth_halo { mask = smooth_halo_mask_with_policy(mask, radius, line.smooth_halo_classic_everything)?; }
+         mask.guest_advance = mask.guest_advance.checked_add(line.smooth_spacing_adjustment)?;
+         if line.smooth_clamp_advance { mask.guest_advance = mask.guest_advance.max(1); }
+-        Some((pen, mask))
++        if let Some((numerator,denominator)) = styled_ratio {
++            transform_source_mask(mask,numerator,denominator,source_pen,raster)
++        } else { Some((pen,mask)) }
+     }).collect::<Option<Vec<_>>>()?;
+     if !line.smooth_strokes.is_empty() {
+         let r = i32::try_from(raster).ok()?;
+@@ -2117,6 +2182,50 @@ fn resolve_smooth_run(
+     Some(glyphs)
+ }
+ 
++/// Area coverage transforms the original outlined/style mask after synthesis.
++/// Source pen phase is part of the transform; guest insertion widths never enter it.
++fn transform_source_mask(mask: systemless::quickdraw::text::SmoothGlyphSnapshot,
++    numerator: u32, denominator: u32, source_pen: i32, raster: u32)
++    -> Option<(i32, systemless::quickdraw::text::SmoothGlyphSnapshot)> {
++    if numerator == 0 || denominator == 0 || !(1..=8).contains(&raster) || mask.raster_scale == 0 { return None; }
++    let density = i64::from(mask.raster_scale);
++    let quantum = i64::from(denominator).checked_mul(density)?;
++    let factor = i64::from(numerator).checked_mul(i64::from(raster))?;
++    let pen = i64::from(source_pen).checked_mul(i64::from(numerator))?.div_euclid(i64::from(denominator));
++    let origin_x = i64::from(mask.left).checked_add(i64::from(source_pen).checked_mul(density)?)?
++        .checked_mul(factor)?.checked_sub(pen.checked_mul(i64::from(raster))?.checked_mul(quantum)?)?;
++    let origin_y = i64::from(mask.top).checked_mul(factor)?;
++    let end_x = origin_x.checked_add(i64::from(mask.width).checked_mul(factor)?)?;
++    let end_y = origin_y.checked_add(i64::from(mask.height).checked_mul(factor)?)?;
++    let left = origin_x.div_euclid(quantum); let top = origin_y.div_euclid(quantum);
++    let right = end_x.checked_add(quantum-1)?.div_euclid(quantum);
++    let bottom = end_y.checked_add(quantum-1)?.div_euclid(quantum);
++    let width = right.checked_sub(left)?; let height = bottom.checked_sub(top)?;
++    let count = usize::try_from(width.checked_mul(height)?).ok()?;
++    if count > 16_777_216 || mask.width < 0 || mask.height < 0 { return None; }
++    let mut coverage = vec![0u64; count];
++    for y in 0..i64::from(mask.height) { for x in 0..i64::from(mask.width) {
++        let alpha = u64::from(*mask.pixels.get(usize::try_from(y*i64::from(mask.width)+x).ok()?)?);
++        if alpha == 0 { continue; }
++        let x0 = origin_x + x*factor; let x1 = x0+factor;
++        let y0 = origin_y + y*factor; let y1 = y0+factor;
++        for dy in y0.div_euclid(quantum)..(y1+quantum-1).div_euclid(quantum) {
++            let wy = u64::try_from(y1.min((dy+1)*quantum)-y0.max(dy*quantum)).ok()?;
++            for dx in x0.div_euclid(quantum)..(x1+quantum-1).div_euclid(quantum) {
++                let wx = u64::try_from(x1.min((dx+1)*quantum)-x0.max(dx*quantum)).ok()?;
++                let index = usize::try_from((dy-top)*width+dx-left).ok()?;
++                coverage[index] = coverage[index].checked_add(alpha.checked_mul(wx)?.checked_mul(wy)?)?;
++            }
++        }
++    } }
++    let area = u64::try_from(quantum.checked_mul(quantum)?).ok()?;
++    let pixels: Vec<u8> = coverage.into_iter().map(|value| ((value+area/2)/area).min(255) as u8).collect();
++    let advance = (i64::from(mask.guest_advance)*i64::from(numerator)+i64::from(denominator)/2)/i64::from(denominator);
++    Some((i32::try_from(pen).ok()?, systemless::quickdraw::text::SmoothGlyphSnapshot { pixels: pixels.into(),
++        width: i32::try_from(width).ok()?, height: i32::try_from(height).ok()?, left: i32::try_from(left).ok()?,
++        top: i32::try_from(top).ok()?, guest_advance: i32::try_from(advance).ok()?, raster_scale: raster }))
++}
++
+ fn smooth_label_style_supported(face: u8) -> bool {
+     face < 128
+ }
+diff --git a/src/systems/macintosh/quickdraw/text.rs b/src/systems/macintosh/quickdraw/text.rs
+index 0c5e0379..87f037ec 100644
+--- a/src/systems/macintosh/quickdraw/text.rs
++++ b/src/systems/macintosh/quickdraw/text.rs
+@@ -167,6 +167,15 @@ pub fn smooth_resolved_scaled_glyph(glyph: &Glyph, data: &[u8], strike_scale: u3
+         raster_scale })
+ }
+ 
++/// Source-resolution outline for style synthesis before a PPC rational transform.
++#[doc(hidden)]
++pub fn smooth_resolved_glyph_at_density(glyph: &Glyph, data: &[u8], density: u32) -> Option<SmoothGlyphSnapshot> {
++    if !(1..=64).contains(&density) { return None; }
++    let mask = crate::quickdraw::fonts::outline::presentation_glyph(glyph, data, density)?;
++    Some(SmoothGlyphSnapshot { pixels: mask.pixels, width: mask.width, height: mask.height,
++        left: mask.left, top: mask.top, guest_advance: i32::from(glyph.advance), raster_scale: density })
++}
++
+ /// PPC outline placement preserves the fractional source pen before rasterization.
+ /// The returned integer pen and mask phase together locate the original glyph.
+ #[doc(hidden)]
