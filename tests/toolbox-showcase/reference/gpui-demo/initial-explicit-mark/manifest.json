@@ -1,0 +1,17 @@
+{
+  "base_head": "fbb47f41860873d7c1e632761769ba2606463661",
+  "source_sha256": {
+    "src/bin/gpui_demo_input.rs": "58df5bb5296e0507f2d00eb3f60bf33535586bddafb60e47f4a80895a53f7fbd",
+    "src/bin/gpui_demo_composition.rs": "73566fab582ebebdaa55a4cf7014600332a1153ebb5666013f823bb1555b6104",
+    "src/bin/gpui_demo.rs": "6a597d55c4da507b4bcb7a5c5d07ccea4ce4f5476a7ad91e4306912c51749912"
+  },
+  "scope": "Initial explicit marked ranges pin the actual guest owner/selection, stage transient Unicode, cancel without guest mutation and commit through guarded ReplaceText. Twelve state tests pass; three initial explicit mark state/platform cases pass across shared document/dialog/Save/New Folder handler target types. Actual styled document worker passes mono68k/colour68k/PPC8/PPC16 (11.44s), exact committed text/caret/style runs. Existing actual modal/file platform regressions pass (28.99s); they do not exercise new initial range commits through those guest workers. Production default compile check passes (2.50s), before a test-only document-worker extension. No composed visual or physical IME qualification. Ranges expanding beyond an existing stage remain unsupported: widened replacement was discarded to avoid rewriting untouched style runs. Full outside-stage support requires separate guarded edits. No broad production gate closed.",
+  "sha256": {
+    "state-tests.log": "d5e8ad0c0c9c936c1f299ccc567aa0169bc4794e60816a2b0cbdeb4fe2236827",
+    "platform-and-state-tests.log": "403be9e94202595c84998e8353f2831560e4a906d0c320727107e4fc4dc6b0e2",
+    "modal-file-regressions.log": "f4ff883be189b300b9728bd7f71270f99011bcd795e8a014041bec9f7f554b6e",
+    "document-worker.log": "5d302a5574fd75817e4020359958bd9e1731f8ff97d843799fdce4adaa4f42c6",
+    "platform-compile-before-import-fix.log": "c3ded916d537409a89794fb87361870ab75e2627ed4bbc7039e89a8421d40993",
+    "production-check.log": "a97f0d068f2ba03e2f398fa1dbc51fd42f3c5df3ef34dfa9bfa701fa8b17a9e8"
+  }
+}

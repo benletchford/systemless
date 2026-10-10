@@ -10206,6 +10206,27 @@ mod desktop {
                 assert_eq!(final_record.style_runs.as_ref(), Some(&shifted_styles));
                 eprintln!("PASS worker-disjoint-replacement powerpc={powerpc} depth={actual_depth}");
 
+                let initial_mark = super::super::input::TextInputOwner {
+                    identity: pinned.identity, target: pinned.target,
+                    text: final_record.text.clone(), selection: final_record.selection.0..final_record.selection.1,
+                };
+                let mut marked = super::super::input::GuestComposition::default();
+                marked.synchronize(Some(initial_mark.clone()));
+                assert!(marked.mark_range(Some(&(2..3)), "日", 1..1));
+                marked.cancel(); assert_eq!(marked.owner(), Some(&initial_mark));
+                assert!(marked.mark_range(Some(&(2..3)), "R", 1..1));
+                let expected = marked.marked_base().unwrap().clone();
+                let (request, bytes, caret) = marked.commit_replacement(None, "R").unwrap();
+                let mut marked_text = initial_mark.text.clone(); marked_text.splice(2..3, [b'R']);
+                worker.0.send(Command::ReplaceText(expected, request.selection, bytes, Some(caret))).unwrap();
+                let completed = wait("initial explicit marked range", &updates, |update|
+                    update.text_edits.iter().any(|record| (record.guest_id, record.generation) == pinned.identity
+                        && record.text == marked_text && record.selection == (3, 3)));
+                let completed = completed.text_edits.iter().find(|record|
+                    (record.guest_id, record.generation) == pinned.identity).unwrap();
+                assert_eq!(completed.style_runs, final_record.style_runs);
+                eprintln!("PASS worker-initial-explicit-mark powerpc={powerpc} depth={actual_depth}");
+
                 drop(worker);
             }
         }
@@ -12911,6 +12932,48 @@ mod desktop {
                 assert_eq!(after.entries, panel.entries); assert_eq!(after.directory_id, panel.directory_id);
                 assert_eq!(after.generation, panel.generation);
                 eprintln!("PASS standard-file-composed-commit powerpc={powerpc} depth={depth}");
+            }
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn explicit_mark_platform_requests_pin_original_guest_selection(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::{AppContext, EntityInputHandler};
+            use super::super::input::{TextInputOwner, TextInputTarget};
+            cx.update(gpui_kit::init);
+            for target in [TextInputTarget::Document { port: 100 },
+                TextInputTarget::Dialog { item: 9, content_revision: 1 },
+                TextInputTarget::StandardFile { new_folder: false },
+                TextInputTarget::StandardFile { new_folder: true }] {
+                let initial = TextInputOwner { identity: (42, 3), target, text: b"abcdef".to_vec(), selection: 3..3 };
+                let (sender, receiver) = std::sync::mpsc::channel();
+                let (window, view) = cx.update(|cx| gpui_kit::open_window(Default::default(), cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap());
+                cx.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                    demo.composition.synchronize(Some(initial.clone()));
+                    demo.replace_and_mark_text_in_range(Some(0..2), "日😀", Some(1..3), window, cx);
+                    assert_eq!(demo.marked_text_range(window, cx), Some(0..3));
+                    assert_eq!(demo.selected_text_range(false, window, cx).unwrap().range, 1..3);
+                    demo.composition.synchronize(Some(initial.clone()));
+                    assert_eq!(demo.composition.marked_base(), Some(&initial));
+                    demo.composition.cancel(); assert_eq!(demo.composition.owner(), Some(&initial));
+                    demo.replace_and_mark_text_in_range(Some(0..2), "é", Some(1..1), window, cx);
+                    demo.replace_text_in_range(None, "é", window, cx);
+                    let predicted = demo.composition.owner().unwrap().clone();
+                    assert_eq!(predicted.text, b"\x8ecdef");
+                    demo.composition.synchronize(Some(initial.clone()));
+                    assert_eq!(demo.composition.owner(), Some(&predicted));
+                    demo.replace_and_mark_text_in_range(Some(1..3), "Q", Some(1..1), window, cx);
+                    demo.replace_text_in_range(None, "Q", window, cx);
+                })).unwrap();
+                let requests: Vec<_> = receiver.try_iter().filter(|request| matches!(request, super::Command::ReplaceText(..))).collect();
+                assert_eq!(requests.len(), 2);
+                let super::Command::ReplaceText(expected, range, bytes, caret) = &requests[0] else { unreachable!() };
+                assert_eq!(expected, &initial); assert_eq!(*range, 0..2); assert_eq!(bytes, &[0x8e]); assert_eq!(*caret, Some(1));
+                let super::Command::ReplaceText(expected, range, bytes, caret) = &requests[1] else { unreachable!() };
+                assert_eq!(expected.text, b"\x8ecdef"); assert_eq!(expected.selection, 1..1);
+                assert_eq!(*range, 1..3); assert_eq!(bytes, b"Q"); assert_eq!(*caret, Some(2));
+                cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
             }
         }
 

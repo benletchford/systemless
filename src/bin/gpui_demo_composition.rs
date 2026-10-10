@@ -472,8 +472,12 @@ impl EntityInputHandler for Demo {
         _: &mut Window, cx: &mut Context<Self>) {
         if self.composition.preedit.is_some() && self.composition.owner().is_some() {
             if let Some(range) = range.clone() {
+                let marked_base = self.composition.marked_base().cloned();
                 if let Some((first, (expected, request, bytes))) = self.composition.commit_disjoint_range(range.clone(), text) {
-                    let _ = self.commands.send(Command::CommitText(first.0, first.1));
+                    let command = if let Some(base) = marked_base {
+                        Command::ReplaceText(base, first.0.selection, first.1, None)
+                    } else { Command::CommitText(first.0, first.1) };
+                    let _ = self.commands.send(command);
                     let _ = self.commands.send(Command::ReplaceText(expected, request.selection, bytes, None));
                     cx.notify();
                     return;
@@ -502,8 +506,11 @@ impl EntityInputHandler for Demo {
                 return;
             }
         }
+        let marked_base = self.composition.marked_base().cloned();
         if let Some((owner, bytes, caret)) = self.composition.commit_replacement(range.as_ref(), text) {
-            let command = if caret == owner.selection.start + bytes.len() {
+            let command = if let Some(base) = marked_base {
+                Command::ReplaceText(base, owner.selection, bytes, Some(caret))
+            } else if caret == owner.selection.start + bytes.len() {
                 Command::CommitText(owner, bytes)
             } else { Command::CommitTextCaret(owner, bytes, caret) };
             let _ = self.commands.send(command);
@@ -517,10 +524,7 @@ impl EntityInputHandler for Demo {
         let selected = selected.unwrap_or(end..end);
         // Selection is relative to the inserted text, not the retained prefix.
         if selected.start > selected.end || selected.end > end { return; }
-        let Some((text, offset)) = self.composition.replacement_text(range.as_ref(), text) else { return; };
-        let Some(start) = selected.start.checked_add(offset) else { return; };
-        let Some(end) = selected.end.checked_add(offset) else { return; };
-        if self.composition.mark(&text, start..end) { cx.notify(); }
+        if self.composition.mark_range(range.as_ref(), text, selected) { cx.notify(); }
     }
     fn bounds_for_range(&mut self, range: Range<usize>, _: Bounds<Pixels>,
         window: &mut Window, cx: &mut Context<Self>) -> Option<Bounds<Pixels>> {
