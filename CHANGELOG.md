@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.90.0](https://github.com/benletchford/systemless/compare/v0.89.0...v0.90.0) (2026-10-10)
+
+
+### Features
+
+* **catalogue:** add original Solitaire Till Dawn ([24321cf](https://github.com/benletchford/systemless/commit/24321cfcbb71bac0371288d8cee22d9dd97c831f))
+
 ## [0.89.0](https://github.com/benletchford/systemless/compare/v0.88.0...v0.89.0) (2026-10-10)
 
 
