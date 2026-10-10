@@ -642,6 +642,11 @@ fn load_pef_application_with_optional_disk_fragment(
         crate::memory::globals::addr::KEY_REP_THRESH,
         crate::memory::globals::DEFAULT_AUTO_KEY_RATE_TICKS,
     );
+    let (red, green, blue) = crate::process_context::DEFAULT_QUICKDRAW_HILITE_COLOR;
+    let address = crate::memory::globals::addr::HILITE_RGB;
+    let _ = memory.write_u16_be(address, red);
+    let _ = memory.write_u16_be(address + 2, green);
+    let _ = memory.write_u16_be(address + 4, blue);
     let _ = memory.write_u16_be(crate::memory::globals::addr::RES_LOAD, 0x0100);
     let _ = memory.write_u32_be(
         crate::memory::globals::addr::DEFLT_STACK,

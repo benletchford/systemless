@@ -51,6 +51,31 @@ pub(super) fn dispatch_low_memory_import(
                     .map_or(PpcImportAction::Halt, |_| PpcImportAction::ReturnPreserve),
             )
         }
+        PpcImportDispatcherTarget::LMGetHiliteRGB
+        | PpcImportDispatcherTarget::LMSetHiliteRGB => {
+            // Apple QuickDraw.h: void accessors copy an RGBColor through r3.
+            // HiliteRGB is the six-byte system preference at $0DA0, distinct
+            // from the per-port override installed by HiliteColor.
+            let global = crate::memory::globals::addr::HILITE_RGB;
+            let (source, destination) = if *target == PpcImportDispatcherTarget::LMGetHiliteRGB {
+                (global, cpu.gpr[3])
+            } else {
+                (cpu.gpr[3], global)
+            };
+            if !ppc_memory_can_read_bytes(memory, source, 6)
+                || !ppc_memory_can_write_bytes(memory, destination, 6)
+            {
+                return Some(PpcImportAction::Halt);
+            }
+            let mut color = [0; 6];
+            let copied = memory.read_bytes_into(source, &mut color).is_some()
+                && memory.write_bytes(destination, &color).is_some();
+            Some(if copied {
+                PpcImportAction::ReturnPreserve
+            } else {
+                PpcImportAction::Halt
+            })
+        }
         PpcImportDispatcherTarget::LMGetGhostWindow => Some(PpcImportAction::Return(
             memory.read_u32_be(crate::memory::globals::addr::GHOST_WINDOW).unwrap_or(0),
         )),

@@ -921,3 +921,5 @@ fn write_u16(bytes: &mut [u8], offset: usize, value: u16) {
 }
 
 mod copy_pixpat;
+
+mod highlight_preferences;
