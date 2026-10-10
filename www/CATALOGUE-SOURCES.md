@@ -446,3 +446,43 @@ The existing [R2 CORS workflow run](https://github.com/benletchford/systemless/a
 The intact [Ares 1.1.1 archive](https://www.vintageapplemac.com/files/games/Ares%201.1.1.sit), linked from the [A index](https://www.vintageapplemac.com/software/games/a/), is 10,556,523 bytes, SHA-256 `c09e78e7b191f2eba551136ca588e5935b14997b1297648d4331869757601044`. It expands 56 files including game, scenarios, sound/sprites, documentation, registration application, GameRanger Beta, CFM-68K Runtime Enabler, NetSprocketLib, ObjectSupportLib and OpenTransportLib. The bundled 2,457-byte Ares licence permits unchanged complete nonprofit distribution, excludes for-profit distribution without written permission and retains the 30-day trial. Auxiliary component terms remain pending; the game licence alone does not establish the whole bundle's eligibility.
 
 Explicit `Ares 1.1.1/Ares 1.1.1 ƒ/Ares` selection with native diagnostic 0.83.0 and PPC preference fails at frontend tick 1 / guest tick 0 on unsupported `InterfaceLib:AEInstallSpecialHandler`, PC 01F009CC, SP 07F6FF10, LR 0302201C. The requested 780-tick run stops before a checkpoint; no gameplay is claimed. Existing classic Pack8 support is a lead for a shared-state PPC adapter, not evidence that this import is already implemented.
+
+## Cythera expansion intake
+
+The unchanged [Cythera 1.0.2 archive](https://www.vintageapplemac.com/files/games/Cythera%201.0.2.sit), linked from the [C index](https://www.vintageapplemac.com/software/games/c/), is 7,040,568 bytes, SHA-256 `1e5ce940bb352f21b5fb8a2c8a4b43034239fce28c81a8dbb03b862674b9e626`. The loader expands 44 files, including game/data, documentation, AI scripts and numerous Apple InputSprocket libraries. The 2,445-byte Cythera licence permits complete unchanged nonprofit distribution, excludes for-profit distribution without written permission and retains the 30-day trial. Auxiliary component terms and original package completeness remain pending.
+
+Explicit executable selection `Cythera 1.0.2/Cythera 1.0.2 ƒ/Cythera` on the native diagnostic 0.83.0 PPC route reaches a 256-colour startup prompt at frontend tick 180. Choosing Switch to 256 Colors (v216/h490) then running causes a guest halt at PC 00000000, frontend tick 301 / guest tick 300, LR 0101C990. The run fails before the requested post-prompt screenshot; no gameplay or catalogue readiness is claimed. This intake used the earlier diagnostic binary, before the Ares import adapter.
+
+**68K comparison:** The same original archive, explicitly selected game and colour-prompt script on classic 68K preference completes the requested actions at frontend tick 782 / guest tick 1382. Its inspected screenshot displays an illustrated scene with strongly patterned colours. No independent rendering oracle or gameplay interaction is established; the zero-assertion script's passed status is not a playable claim. This separates the native route's PC-zero halt from classic startup progress.
+
+**68K player-setup follow-up:** Allowing another 900 frontend ticks reaches the main menu at tick 1682. New Game (v256/h320) opens a Create Player file dialog at tick 1864, default name Bellerophon. Save (v401/h515) opens the Character Archetype dialog at tick 2046, default Explorer. OK (v475/h493), followed by 600 ticks, reaches a dark illustrated intro at tick 2648. Each screenshot was inspected; these are bounded setup transitions, not interactive world gameplay, save/reload persistence or graphics fidelity proof.
+
+**Intro follow-up:** Another 600 ticks and a click at v300/h400 followed by 180 ticks leave the same dark illustration at frontend tick 3430. World gameplay remains unqualified.
+
+## Mars Rising expansion intake
+
+Three unchanged distributions from the [M index](https://www.vintageapplemac.com/software/games/m/) were inspected:
+
+| Original file | Bytes | SHA-256 | Loader contents |
+| --- | ---: | --- | --- |
+| [Mars Rising 1.0.1.sit](https://www.vintageapplemac.com/files/games/Mars%20Rising%201.0.1.sit) | 5173766 | `1b7c269640ce5975af7964e0b4f8fdbeb96721a01741acdcb1f4b27792aed70a` | One 68K installer; data 5133893, resource 82422 bytes |
+| [Mars Rising 1.0.0.sit](https://www.vintageapplemac.com/files/games/Mars%20Rising%201.0.0.sit) | 4902622 | `40cd6fa0fd9b7c51ea05afd27393487ea2a502d9d6d4a1546ddef20afe5e8a32` | One installer; data 4863197, resource 82422 bytes |
+| [Mars Rising Installer.sit](https://www.vintageapplemac.com/files/games/Mars%20Rising%20Installer.sit) | 5173772 | `f3422532b42451ffa2925549faf2e20f497e02d9902d9d766dc4823c238277d3` | Download receipt only; contents pending |
+
+Explicit `Mars Rising 1.0.1` selection with PPC preference actually executes the 68K installer. The native diagnostic 0.83.0 route displays its splash at frontend tick 180 and installation dialog at 780. Install (v378/h565), then 1800 ticks, displays successful installation at frontend tick 2582. The inspected screenshot names the installed `Mars Rising 1.0.1 ƒ` folder. This is installation success, not original-archive game launch or gameplay.
+
+A scratch diagnostic runner separately exported 42 VFS files after replaying installation. The installed game has 435800-byte data and 408928-byte resource forks; the READ ME requires PowerPC, MacOS 7.5.5 and Sound Manager 3.1. The 2357-byte installed licence permits complete unchanged nonprofit distribution, excludes distribution for profit without written permission, and retains the 30-day trial. Original installer bytes are retained; no derived package is proposed for hosting. Apple InputSprocket component terms, package completeness and supported installer-to-game launch remain pending.
+
+## Monkey Shines expansion intake
+
+The unchanged [Monkey Shines 1.1.2 archive](https://www.vintageapplemac.com/files/games/Monkey%20Shines%201.1.2.sit), linked from the [M index](https://www.vintageapplemac.com/software/games/m/), is 3684474 bytes, SHA-256 `e41df59a63aed3127f344435c4cc65b48f5212b227c727f427c4d19157dac045`. The loader expands 13 files, including five original world files, game, optional editor, README, editor manual and order form. The original README expressly allows free web/FTP distribution of the unregistered version with all original files unchanged; it retains the 30-day trial and limits unregistered play to the first world. The archive's registration state and remaining document terms require confirmation before hosting.
+
+Explicit `Monkey Shines 1.1.2/Monkey Shines` selection on the actual PPC route stops at unsupported `InterfaceLib:PBResolveFileIDRefSync`, frontend tick 1 / guest tick 0, PC `01F002F8`, LR `010116BC`; tracked in [#4366](https://github.com/benletchford/systemless/issues/4366). The separate actual 68K route loads pictures and reaches an inspected trial notice over the menu at frontend tick 1980. Attempts to dismiss Not Yet at v443/h250 produce black intermediate captures; a later Return displays an Enter Code dialog. These actions do not establish dismissal, world selection or gameplay. No registration code is entered and no playable claim is made.
+
+## MacSki expansion intake
+
+The unchanged [MacSki v1.7 archive](https://www.vintageapplemac.com/files/games/MacSki%20v1.7.sit) is 896089 bytes, SHA-256 `57b0b5b079c9fa9c7e1b236809511a5e0a680a1bd3447a1e87617bc1f2e95791`. The loader expands 43 files: game, colour art, sounds and courses. No standalone distribution licence appears in that listing; rights remain unverified. The native 68K startup displays “MacSki is damaged” at ticks 180 and 780. This is the application's diagnostic, not proof of an infected or damaged source archive. Gameplay is unqualified; resource validation needs diagnosis.
+
+## Ares special-handler compatibility attempt
+
+[PR #4367](https://github.com/benletchford/systemless/pull/4367), commit `d67e9733`, resolves native `AEInstallSpecialHandler` and retains application/system registrations separately. The new regression and all 36 Apple Event tests pass; native `ci-test` build completes. Replaying the exact original Ares 1.1.1 archive passes that import and stops at the next unsupported `AEInstallCoercionHandler`, PC `01F00A08`, LR `030220B0`, frontend tick 1. This partial startup fix does not establish gameplay or guest callback invocation; [#4364](https://github.com/benletchford/systemless/issues/4364) stays open.

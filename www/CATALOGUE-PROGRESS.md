@@ -64,19 +64,19 @@ Stages: **rights** = applicable affirmative archive redistribution terms; **arch
 | 48 | Cro-Mag Rally | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 49 | Otto Matic | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 50 | Avara | [Conditional nonprofit grant](CATALOGUE-SOURCES.md#avara-expansion-intake); remaining terms pending | [1.0.1 receipt and payload](CATALOGUE-SOURCES.md#avara-expansion-intake) | [Mission/spawn unqualified](https://github.com/benletchford/systemless/issues/4355) | Embedded modules; route unqualified | Pending | Pending | Pending |
-| 51 | Ares | [Conditional game grant; auxiliary terms pending](CATALOGUE-SOURCES.md#ares-expansion-intake) | [1.1.1 receipt; 56 files](CATALOGUE-SOURCES.md#ares-expansion-intake) | Pending | Unsupported AEInstallSpecialHandler; no gameplay | Pending | Pending | Pending |
+| 51 | Ares | [Conditional game grant; auxiliary terms pending](CATALOGUE-SOURCES.md#ares-expansion-intake) | [1.1.1 receipt; 56 files](CATALOGUE-SOURCES.md#ares-expansion-intake) | Pending | [Special-handler fix attempted; coercion import halt](https://github.com/benletchford/systemless/pull/4367) | Pending | Pending | Pending |
 | 52 | Barrack | [Conditional nonprofit grant; remaining terms pending](CATALOGUE-SOURCES.md#barrack-expansion-intake) | [1.0.4 exact receipt, 18 files](CATALOGUE-SOURCES.md#barrack-expansion-intake) | Black startup; unqualified | PPC startup capture; unqualified | Pending | Pending | Pending |
 | 53 | Bubble Trouble | [Conditional nonprofit grant; remaining terms pending](CATALOGUE-SOURCES.md#bubble-trouble-expansion-intake) | [1.0.0 exact receipt, 22 files](CATALOGUE-SOURCES.md#bubble-trouble-expansion-intake) | [Maze and Right-key movement](CATALOGUE-SOURCES.md#bubble-trouble-expansion-intake) | [PPC movement; black background defect](CATALOGUE-SOURCES.md#bubble-trouble-expansion-intake) | Pending | Pending | Pending |
 | 54 | Chiral | [Conditional nonprofit grant; remaining terms pending](CATALOGUE-SOURCES.md#chiral-expansion-intake) | [1.0.4 receipt; normal installation completed](CATALOGUE-SOURCES.md#chiral-expansion-intake) | [Original 1.0.0: Level 1 and atom placement](CATALOGUE-SOURCES.md#chiral-expansion-intake) | Pending | Hosted fetch blocked by missing CORS | [Promoted and CI passed](https://github.com/benletchford/systemless/pull/4359) | Pending |
-| 55 | Cythera | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 56 | Mars Rising | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 55 | Cythera | [Conditional game grant; auxiliary terms pending](CATALOGUE-SOURCES.md#cythera-expansion-intake) | [1.0.2 receipt; 44 files](CATALOGUE-SOURCES.md#cythera-expansion-intake) | Player creation and archetype; gameplay unqualified | Colour prompt, then PC-zero halt; unqualified | Pending | Pending | Pending |
+| 56 | Mars Rising | [Conditional game grant; auxiliary terms pending](CATALOGUE-SOURCES.md#mars-rising-expansion-intake) | [Three exact receipts; installer inspected](CATALOGUE-SOURCES.md#mars-rising-expansion-intake) | Installer succeeds; game PPC-only per README | Original installer-to-game launch pending | Pending | Pending | Pending |
 | 57 | Pillars of Garendall | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 58 | Gubble | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 59 | MacSki | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 59 | MacSki | Unverified | [v1.7 receipt; 43 files](CATALOGUE-SOURCES.md#macski-expansion-intake) | Application damage warning; unqualified | Pending | Pending | Pending | Pending |
 | 60 | Pararena | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 61 | Bonkheads | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 62 | Bonkheads Deluxe | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 63 | Monkey Shines | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 63 | Monkey Shines | [Explicit free web trial grant; full review pending](CATALOGUE-SOURCES.md#monkey-shines-expansion-intake) | [1.1.2 receipt; 13 files](CATALOGUE-SOURCES.md#monkey-shines-expansion-intake) | Trial notice; world gameplay unqualified | [File-ID import halt](https://github.com/benletchford/systemless/issues/4366) | Pending | Pending | Pending |
 | 64 | Space Cab | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 65 | King of Dragon Pass | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 66 | Afterlife | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
