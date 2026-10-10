@@ -10,9 +10,23 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
+launch_enabled: true
 compatibility:
   status: playable
   verified:
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: c831c0abaa0a84e50bc3212b139cdcf102247876
+    architecture: 68k
+    environment: >-
+      Optimized local release preview in ordinary Chrome, isolated worker, WebGL and
+      configured 8 MHz pacing. Original Not Yet, N starts an active wave, X moves
+      the ship and period produces a visible yellow shot. Screenshots inspected.
+      Preview fixture supplied independently hash-verified original archive bytes;
+      the promoted public R2 archive was separately downloaded and its SHA-256 matched.
+      Full waves, sustained play, saves and audio unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4398
   - date: "2026-10-11"
     tester: Catalogue maintainer
     systemless_version: 4d2c64b90585aed2f08bd193ff4ae6214a769658
@@ -23,7 +37,7 @@ compatibility:
       to start, X for movement and period for firing. Inspected active wave and shot; a
       repeat passes four measured pixel assertions and six exact screenshot
       comparisons, with no instruction-budget exhaustion. Original installed forks independently
-      verified by running the bundled installer. Browser gameplay, full waves, scoring,
+      verified by running the bundled installer. Full waves, scoring,
       sustained play, saves and audio unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4398
@@ -87,8 +101,7 @@ and **slash** to select a weapon. Press **C** at the menu to inspect or change
 controls. **Escape** aborts a game; **Caps Lock** pauses it.
 
 The complete original installer archive retains its licence, registration
-application, documentation and media. Bounded native testing covers starting an
-active wave, moving the ship and firing. This version uses 68K code; its original
-FAQ describes Power Mac support through emulation. Browser approval and public
-launch remain pending. Full waves, scoring, sustained play, saves and audio
+application, documentation and media. Bounded native and browser testing covers
+starting an active wave, moving the ship and firing. This version uses 68K code; its original
+FAQ describes Power Mac support through emulation. Full waves, scoring, sustained play, saves and audio
 remain unverified.

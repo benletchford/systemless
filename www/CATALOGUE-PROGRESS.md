@@ -8,7 +8,7 @@ Stages: **rights** = applicable affirmative archive redistribution terms; **arch
 
 ## Active intake
 
-- **Swoop (additional discovery):** original 1.0.2 installer has an unchanged complete nonprofit distribution grant and preserved 30-day trial. Native 68K starts an active wave, moves and fires with measured/repeated capture evidence after [loader #4400](https://github.com/benletchford/systemless/pull/4400). The original FAQ excludes a PPC-native slice. Catalogue preparation passes preview validation with 194 entries; hosting, browser approval and public delivery remain pending. This is not another qualified live game yet. [Evidence](https://github.com/benletchford/systemless/issues/4398).
+- **Swoop (additional discovery):** original 1.0.2 installer has an unchanged complete nonprofit distribution grant and preserved 30-day trial. Native 68K starts an active wave, moves and fires with measured/repeated capture evidence after [loader #4400](https://github.com/benletchford/systemless/pull/4400). The original FAQ excludes a PPC-native slice. Catalogue preparation passes preview validation with 194 entries; CI promotion and bounded browser gameplay have passed; launch is enabled for the next release. Production delivery remains pending. This is not another qualified live game yet. [Evidence](https://github.com/benletchford/systemless/issues/4398).
 
 [Delivery goal](CATALOGUE-GOAL.md): 1,000 distinct qualified games live, with publication and compatibility work advancing together.
 
