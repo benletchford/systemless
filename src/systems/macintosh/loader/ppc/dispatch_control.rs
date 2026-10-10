@@ -3334,77 +3334,18 @@ pub(super) struct PpcControlTitleStyle {
     pub(super) foreground: Option<PpcRgbColor>,
 }
 
-/// Resolve a ControlFontStyleRec against the system font the painter uses by
-/// default. Negative font values (and theme font IDs under
-/// kControlUseThemeFontIDMask) select the Appearance meta fonts; the small
-/// and view fonts are Geneva 10, the Mac OS 8 small system font metric
-/// (Mac OS 8 Human Interface Guidelines (1997), p. 69).
-/// kControlAddFontSizeMask adds `size` to the resolved size, and
-/// kControlUseForeColorMask applies only to static text controls (Mac OS 8
-/// Control Manager Reference, Control Font Style Flag Constants). Mode,
-/// justification and the back colour are retained but not drawn.
+/// Use the shared guest recipe while retaining PPC's native colour adapter.
 pub(super) fn ppc_control_title_style(
     proc_id: i16,
     style: Option<&crate::control_manager::ControlFontStyle>,
 ) -> PpcControlTitleStyle {
-    const USE_FONT: u16 = 0x0001;
-    const USE_FACE: u16 = 0x0002;
-    const USE_SIZE: u16 = 0x0004;
-    const USE_FORE_COLOR: u16 = 0x0008;
-    const USE_THEME_FONT_ID: u16 = 0x0080;
-    const ADD_FONT_SIZE: u16 = 0x0100;
-    const STATIC_TEXT_PROC: i16 = 288;
-    const SYSTEM_SIZE: i16 = 12;
-    const GENEVA: i16 = 3;
-    const BOLD: u8 = 0x01;
-
-    let mut resolved = PpcControlTitleStyle {
-        font: PPC_QD_TEXT_FONT_DEFAULT,
-        size: PPC_QD_TEXT_SIZE_SYSTEM,
-        face: 0,
-        foreground: None,
-    };
-    let Some(style) = style else {
-        return resolved;
-    };
-    let flags = style.flags as u16;
-    if flags & USE_FONT != 0 {
-        // Meta font IDs are -1..-4 in the font field, or theme font IDs
-        // 0..3 when kControlUseThemeFontIDMask is set.
-        let meta = if flags & USE_THEME_FONT_ID != 0 {
-            Some(i32::from(style.font))
-        } else {
-            (style.font < 0).then(|| -i32::from(style.font) - 1)
-        };
-        match meta {
-            Some(0) => {}
-            Some(1 | 3) => (resolved.font, resolved.size) = (GENEVA, 10),
-            Some(2) => (resolved.font, resolved.size, resolved.face) = (GENEVA, 10, BOLD),
-            Some(_) => {}
-            None => resolved.font = style.font,
-        }
+    let resolved = crate::control_manager::resolve_control_title_style(proc_id, style);
+    PpcControlTitleStyle {
+        font: resolved.font,
+        size: resolved.size,
+        face: resolved.face,
+        foreground: resolved.foreground.map(|[red, green, blue]| PpcRgbColor { red, green, blue }),
     }
-    if flags & USE_FACE != 0 {
-        resolved.face = style.style as u8;
-    }
-    if flags & ADD_FONT_SIZE != 0 {
-        let base = if resolved.size == PPC_QD_TEXT_SIZE_SYSTEM {
-            SYSTEM_SIZE
-        } else {
-            resolved.size
-        };
-        resolved.size = base.saturating_add(style.size).max(1);
-    } else if flags & USE_SIZE != 0 && style.size > 0 {
-        resolved.size = style.size;
-    }
-    if flags & USE_FORE_COLOR != 0 && proc_id == STATIC_TEXT_PROC {
-        resolved.foreground = Some(PpcRgbColor {
-            red: style.foreground[0],
-            green: style.foreground[1],
-            blue: style.foreground[2],
-        });
-    }
-    resolved
 }
 
 #[allow(clippy::too_many_arguments)]

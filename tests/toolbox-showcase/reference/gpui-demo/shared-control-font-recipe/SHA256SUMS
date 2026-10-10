@@ -1,0 +1,3 @@
+f20ae8b8787d895b3bc79e787957149d0ad01b97e88a132f5f0d2868523cc955  src/systems/macintosh/control_manager.rs
+a7bff34188529ae00656d5a4cd6057c63544c1d92de7482f343aebb87ba3fa1c  src/systems/macintosh/loader/ppc/dispatch_control.rs
+72277e4557b23335634168019563b316b5830567d4a9fe3e5096bd3080da4a06  src/systems/macintosh/runner/mod.rs

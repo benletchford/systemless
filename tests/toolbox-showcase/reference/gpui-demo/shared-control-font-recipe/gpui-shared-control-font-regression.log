@@ -1,0 +1,9 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 20s
+     Running unittests src/lib.rs (target/debug/deps/systemless-257ba83b63f6679f)
+
+running 1 test
+test systems::macintosh::loader::ppc::tests::control_manager::control_title_style_resolves_appearance_meta_fonts ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6701 filtered out; finished in 0.00s
+

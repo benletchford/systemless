@@ -344,6 +344,86 @@ pub struct ControlFontStyle {
     pub background: [u16; 3],
 }
 
+/// Resolved guest font recipe for a standard control title.
+/// Drawing mode, background and justification still require paint qualification.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ControlTitleStyle {
+    pub font: i16,
+    pub size: i16,
+    pub face: u8,
+    pub foreground: Option<[u16; 3]>,
+}
+
+/// Resolve a ControlFontStyleRec against the system font the painter uses by
+/// default. Negative font values (and theme font IDs under
+/// kControlUseThemeFontIDMask) select the Appearance meta fonts; the small
+/// and view fonts are Geneva 10, the Mac OS 8 small system font metric
+/// (Mac OS 8 Human Interface Guidelines (1997), p. 69).
+/// kControlAddFontSizeMask adds `size` to the resolved size, and
+/// kControlUseForeColorMask applies only to static text controls (Mac OS 8
+/// Control Manager Reference, Control Font Style Flag Constants). Mode,
+/// justification and the back colour are retained but not drawn.
+pub fn resolve_control_title_style(
+    proc_id: i16,
+    style: Option<&ControlFontStyle>,
+) -> ControlTitleStyle {
+    const USE_FONT: u16 = 0x0001;
+    const USE_FACE: u16 = 0x0002;
+    const USE_SIZE: u16 = 0x0004;
+    const USE_FORE_COLOR: u16 = 0x0008;
+    const USE_THEME_FONT_ID: u16 = 0x0080;
+    const ADD_FONT_SIZE: u16 = 0x0100;
+    const STATIC_TEXT_PROC: i16 = 288;
+    const SYSTEM_SIZE: i16 = 12;
+    const GENEVA: i16 = 3;
+    const BOLD: u8 = 0x01;
+
+    let mut resolved = ControlTitleStyle {
+        font: 0,
+        size: 0,
+        face: 0,
+        foreground: None,
+    };
+    let Some(style) = style else {
+        return resolved;
+    };
+    let flags = style.flags as u16;
+    if flags & USE_FONT != 0 {
+        // Meta font IDs are -1..-4 in the font field, or theme font IDs
+        // 0..3 when kControlUseThemeFontIDMask is set.
+        let meta = if flags & USE_THEME_FONT_ID != 0 {
+            Some(i32::from(style.font))
+        } else {
+            (style.font < 0).then(|| -i32::from(style.font) - 1)
+        };
+        match meta {
+            Some(0) => {}
+            Some(1 | 3) => (resolved.font, resolved.size) = (GENEVA, 10),
+            Some(2) => (resolved.font, resolved.size, resolved.face) = (GENEVA, 10, BOLD),
+            Some(_) => {}
+            None => resolved.font = style.font,
+        }
+    }
+    if flags & USE_FACE != 0 {
+        resolved.face = style.style as u8;
+    }
+    if flags & ADD_FONT_SIZE != 0 {
+        let base = if resolved.size == 0 {
+            SYSTEM_SIZE
+        } else {
+            resolved.size
+        };
+        resolved.size = base.saturating_add(style.size).max(1);
+    } else if flags & USE_SIZE != 0 && style.size > 0 {
+        resolved.size = style.size;
+    }
+    if flags & USE_FORE_COLOR != 0 && proc_id == STATIC_TEXT_PROC {
+        resolved.foreground = Some(style.foreground);
+    }
+    resolved
+}
+
 /// Canonical Control Manager metadata for one Macintosh process.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ProcessControlManagerState {
