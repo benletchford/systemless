@@ -8537,6 +8537,56 @@ mod desktop {
         }
 
         #[test]
+        fn frontend_selection_request_preserves_styles_and_rejects_stale_records() {
+            for (powerpc, depth) in [(false, 1), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app); wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 11));
+                wait_for_menu(&mut session, 129, 11, true); settle(&mut session);
+                let original = session.runner_mut().text_edit_snapshot().records.into_iter().find(|record| record.styled).unwrap();
+                let rect = original.global_view_rect.unwrap();
+                for input in [MacintoshInput::MouseDown { vertical: rect.0 + 4, horizontal: rect.1 + 4 },
+                    MacintoshInput::MouseUp { vertical: rect.0 + 4, horizontal: rect.1 + 4 }] {
+                    session.deliver_input(input); settle(&mut session);
+                }
+                let before = (0..300).find_map(|_| {
+                    session.runner_mut().run_steps(10_000, None);
+                    let idle = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
+                    session.runner_mut().text_edit_snapshot().records.into_iter().find(|record|
+                        idle && record.guest_id == original.guest_id && record.active && record.drawing_intact)
+                }).unwrap();
+                let mut stale = before.clone(); stale.generation += 1;
+                assert!(!session.runner_mut().select_text_edit_range(&stale, 2..4));
+                assert!(!session.runner_mut().select_text_edit_range(&before, 0..before.text.len() + 1));
+                assert!(session.runner_mut().select_text_edit_range(&before, 2..4));
+                assert!(!session.runner_mut().select_text_edit_range(&before, 0..0), "old selection cannot authorize another request");
+                let selected = session.runner_mut().text_edit_snapshot().records.into_iter().find(|record| record.guest_id == before.guest_id).unwrap();
+                assert_eq!(selected.selection, (2, 4));
+                assert_eq!(selected.text, before.text); assert_eq!(selected.style_runs, before.style_runs);
+                assert_eq!(selected.line_starts, before.line_starts);
+                let mut expected = before.text.clone(); expected.splice(2..4, [b'Z']);
+                session.deliver_input(MacintoshInput::KeyDown { mac_key: 0, character: b'Z' });
+                session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character: b'Z' });
+                let after = (0..300).find_map(|_| {
+                    session.runner_mut().run_steps(10_000, None);
+                    let idle = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
+                    session.runner_mut().text_edit_snapshot().records.into_iter().find(|record|
+                        idle && record.guest_id == before.guest_id && record.text == expected && record.drawing_intact)
+                }).expect("ordinary guest key replaces the requested selection");
+                assert_eq!(after.selection, (3, 3));
+                let mut expected_styles = before.style_runs.clone().unwrap();
+                for run in &mut expected_styles { if run.start >= 4 { run.start -= 1; } }
+                assert_eq!(after.style_runs.as_ref(), Some(&expected_styles));
+                assert_eq!(after.generation, before.generation);
+                eprintln!("PASS frontend-selection powerpc={powerpc} depth={depth}");
+            }
+        }
+
+        #[test]
         fn multiline_styled_selection_plan_matches_native_paint_order() {
             for (powerpc, depth) in [(false, 1), (false, 8), (true, 8), (true, 16)] {
                 let mut session = MacintoshSession::new(true, if powerpc { None } else { Some(depth) });

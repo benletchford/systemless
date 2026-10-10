@@ -3432,6 +3432,35 @@ impl FixtureRunner {
         snapshot
     }
 
+    /// Select a qualified document field through its existing TESetSelect operation.
+    /// The expected record pins the owner and prior editing state; modal fields
+    /// must enter their separate DialogSelect/Standard File paths.
+    #[doc(hidden)]
+    pub fn select_text_edit_range(&mut self, expected: &TextEditSnapshot, range: std::ops::Range<usize>) -> bool {
+        if range.start > range.end || range.end > expected.text.len() || range.end > i16::MAX as usize
+            || self.is_ui_tracking_active() || self.standard_file_snapshot().is_some()
+            || self.dialog_snapshot().iter().any(|dialog| dialog.visible && dialog.active) {
+            return false;
+        }
+        let events = self.event_manager_snapshot();
+        if events.queue_len != 0 || events.mouse_button
+            || !events.last_record.is_some_and(|event| event.what == 0)
+            || [0u8, 0x37, 0x3a, 0x3b].iter().any(|key|
+                events.key_map[usize::from(*key / 8)] & (1 << (*key % 8)) != 0) { return false; }
+        let records = self.text_edit_snapshot().records;
+        if records.iter().filter(|record| record.active && record.drawing_intact).count() != 1 { return false; }
+        let Some(record) = records.iter().find(|record| record.active && record.drawing_intact
+            && (record.guest_id, record.generation, record.owner_port) == (expected.guest_id, expected.generation, expected.owner_port)
+            && record.text == expected.text && record.selection == expected.selection
+            && record.style_runs == expected.style_runs && record.global_view_rect.is_some()) else { return false; };
+        let handle = record.guest_id;
+        if let Some(app) = self.native.application_mut() {
+            crate::loader::ppc::ppc_te_set_select(&mut app.memory, handle, range.start as u32, range.end as u32)
+        } else {
+            crate::trap::dispatch::TrapDispatcher::te_set_select(&mut self.bus, handle, range.start as u32, range.end as u32)
+        }
+    }
+
     /// Observe a retained Standard File Open/Save session without advancing
     /// its modal event loop or changing the caller's reply record.
     /// Inside Macintosh: Files (1992), pp. 3-3--3-13, 3-44--3-47.

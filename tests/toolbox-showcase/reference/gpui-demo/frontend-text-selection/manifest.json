@@ -1,0 +1,12 @@
+{
+  "base_head": "728eed98c7eb31d288c33a48e3707417eb39f70d",
+  "scope": "Guarded document TextEdit selection through existing 68k/PPC TESetSelect operations; stale lifetime/prior selection and invalid range rejection; ordinary guest key replacement preserves style runs across mono68k, colour68k, PPC8/PPC16",
+  "limitations": [
+    "Native text-service replacement command wiring remains unfinished",
+    "Modal/dialog/Standard File selection uses separate ownership paths and is not implemented by this API",
+    "No composed capture, physical input or independent native oracle claimed"
+  ],
+  "hashes": {
+    "guest-selection.log": "92fb6026293ed1c7efdc3d083c3abdab960975a83d7fb85a29ae87b2115c99ea"
+  }
+}
