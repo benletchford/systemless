@@ -14,12 +14,13 @@ parser.add_argument('output',type=pathlib.Path)
 parser.add_argument('--multiline', action='store_true', help='capture the 16-case selected two-line matrix')
 parser.add_argument('--smooth-review', action='store_true', help='record smooth coverage/state evidence without the binary ink oracle')
 parser.add_argument('--spacing', choices=['normal','condensed','extended','both'], default='normal', help='guest Option-key spacing style before capture')
+parser.add_argument('--binary', type=pathlib.Path, help='explicit gpui-menu-demo build artifact; defaults to target/debug/examples/gpui-menu-demo')
 args=parser.parse_args()
 if args.spacing != 'normal' and not args.smooth_review:parser.error('spacing style capture requires --smooth-review; the binary ink oracle is not qualified for these styles')
 root=pathlib.Path(__file__).resolve().parents[2];out=args.output.resolve()
 if out.exists() and any(out.iterdir()):parser.error('use a fresh output directory; do not restart a live capture job')
 out.mkdir(parents=True,exist_ok=True)
-binary=root/'target/debug/examples/gpui-menu-demo'
+binary=args.binary.resolve() if args.binary is not None else root/'target/debug/examples/gpui-menu-demo'
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 source=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip()
 assert not subprocess.check_output(['git','status','--porcelain'],cwd=root,text=True).strip(), 'capture from committed clean source'
