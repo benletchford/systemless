@@ -411,3 +411,69 @@ fn font_swap_selects_real_fond_bitmap_strikes_in_documented_size_order() {
     assert_eq!(loaded.memory.read_u8(0x99e), Some(1)); // synthesize missing bold
     assert_eq!(loaded.memory.read_u8(0x99f), Some(0)); // italic is already intrinsic
 }
+
+#[test]
+fn ppc_src_copy_space_clears_cell_with_clip_and_scale() {
+    for size in [9, 18] {
+        for style in [0, 1] {
+            for mode in [0, 1] {
+                let mut loaded =
+                    load_pef_application(&synthetic_pef_with_import(b"DrawText")).unwrap();
+                let port = *loaded.current_gworld;
+                let surface =
+                    ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, port).unwrap();
+                let background = PpcRgbColor {
+                    red: 0,
+                    green: 0,
+                    blue: 0,
+                };
+                ppc_write_rgb_color(
+                    &mut loaded.memory,
+                    port + PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET,
+                    background,
+                )
+                .unwrap();
+                let expected =
+                    ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, background)
+                        .unwrap();
+                for y in 0..40 {
+                    for x in 10..40 {
+                        assert!(ppc_quickdraw_write_raw_pixel(
+                            &mut loaded.memory,
+                            surface.front_buffer,
+                            (x, y),
+                            0x55
+                        ));
+                    }
+                }
+                ppc_draw_text_bytes_styled_clipped(
+                    &mut loaded.memory,
+                    &loaded.gworlds,
+                    port,
+                    (20, 25),
+                    4,
+                    size,
+                    mode,
+                    PPC_RGB_WHITE,
+                    None,
+                    style,
+                    Some((0, 20, 40, 22)),
+                    b" ",
+                );
+                assert_eq!(
+                    ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (20, 24)),
+                    Some(if mode == 0 { expected } else { 0x55 }),
+                    "size={size} style={style} mode={mode}"
+                );
+                assert_eq!(
+                    ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (22, 24)),
+                    Some(0x55)
+                );
+                assert_eq!(
+                    ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (19, 24)),
+                    Some(0x55)
+                );
+            }
+        }
+    }
+}
