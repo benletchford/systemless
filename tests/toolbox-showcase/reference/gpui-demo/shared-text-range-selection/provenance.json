@@ -1,0 +1,8 @@
+{
+  "sources": {
+    "src/bin/gpui_demo.rs": "bbb46bacce310e94379dcc732afa7afdaa225746d2a640006b173aa2bac3d425",
+    "src/bin/gpui_demo_input.rs": "21a6e1334c78da5b10175a691a63e4469851822b1c63cfc843083eb1d8a7f530"
+  },
+  "result": "3 passed 143.56s",
+  "scope": "Replacement workflow regression document4/dialog6/file8 through extracted guarded selection; accessibility text-run selection not implemented"
+}
