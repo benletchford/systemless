@@ -1,0 +1,9 @@
+{
+  "sources": {
+    "src/bin/gpui_demo.rs": "c9ae0f9b2329dc043cf4b7689090f0901a22b76d4a2dc9a32500e315ebe98df1",
+    "src/bin/gpui_demo_a11y.rs": "68085aac1cb46ace101437a80c9f1e27465a092022d11c00dd3c35af57f2cc0f",
+    "src/bin/gpui_demo_input.rs": "21a6e1334c78da5b10175a691a63e4469851822b1c63cfc843083eb1d8a7f530"
+  },
+  "scope": "Save/New Folder SetTextSelection handler and guarded guest worker selection8; node validation unit test; not native AX dispatch",
+  "worker_result": "1 passed 74.12s"
+}

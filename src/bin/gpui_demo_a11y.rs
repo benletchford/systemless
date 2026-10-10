@@ -30,13 +30,14 @@ pub struct AccessibleState<E> {
     hidden: bool,
     text: Option<(String, bool)>,
     selection: Option<std::ops::Range<usize>>,
+    run_id: Option<std::rc::Rc<std::cell::Cell<Option<accesskit::NodeId>>>>,
     positions: Option<Vec<f32>>,
     painted_positions: Option<Box<dyn Fn(Bounds<Pixels>) -> Option<Vec<f32>>>>,
 }
 
 impl<E: Element> AccessibleState<E> {
     pub fn new(inner: E, disabled: bool) -> Self {
-        Self { inner, disabled, hidden: false, text: None, selection: None, positions: None, painted_positions: None }
+        Self { inner, disabled, hidden: false, text: None, selection: None, run_id: None, positions: None, painted_positions: None }
     }
 
     /// Keep the element painted while excluding its modal-background subtree
@@ -50,6 +51,11 @@ impl<E: Element> AccessibleState<E> {
     /// Geometry remains optional until exact per-character guest bounds exist.
     pub fn single_line_selection(mut self, range: std::ops::Range<usize>) -> Self {
         self.selection = Some(range);
+        self
+    }
+
+    pub fn single_line_run_id(mut self, id: std::rc::Rc<std::cell::Cell<Option<accesskit::NodeId>>>) -> Self {
+        self.run_id = Some(id);
         self
     }
 
@@ -107,6 +113,7 @@ impl<E: Element> Element for AccessibleState<E> {
         &mut self, prepaint: &mut Self::PrepaintState, builder: &mut A11ySubtreeBuilder,
     ) {
         self.inner.a11y_synthetic_children(prepaint, builder);
+        if let Some(id) = &self.run_id { id.set(None); }
         if self.hidden { return; }
         if let (Some((value, false)), Some(range)) = (&self.text, &self.selection) {
             let id = builder.synthetic_node_id("guest-single-line-text");
@@ -116,7 +123,10 @@ impl<E: Element> Element for AccessibleState<E> {
                     apply_guest_character_positions(&mut run, positions);
                 }
 
-                if builder.push_child(id, run) { builder.parent_node().set_text_selection(selection); }
+                if builder.push_child(id, run) {
+                    builder.parent_node().set_text_selection(selection);
+                    if let Some(shared) = &self.run_id { shared.set(Some(id)); }
+                }
             }
         }
 
@@ -143,6 +153,15 @@ impl<E: Element> Element for AccessibleState<E> {
     ) {
         self.inner.paint(id, inspector, bounds, layout, prepaint, window, cx);
     }
+}
+
+pub(crate) fn guest_selection_range(selection: &accesskit::TextSelection, id: Option<accesskit::NodeId>, length: usize)
+    -> Option<std::ops::Range<usize>> {
+    let id = id?;
+    if selection.anchor.node != id || selection.focus.node != id { return None; }
+    let start = selection.anchor.character_index.min(selection.focus.character_index);
+    let end = selection.anchor.character_index.max(selection.focus.character_index);
+    (end <= length).then_some(start..end)
 }
 
 fn apply_guest_character_positions(node: &mut accesskit::Node, positions: &[f32]) -> bool {
@@ -179,6 +198,11 @@ mod tests {
         assert_eq!(node.character_lengths(), &[1, 1, 1, 2]);
         assert_eq!(selection.anchor.character_index, 3);
         assert_eq!(selection.focus.character_index, 4);
+        assert_eq!(super::guest_selection_range(&selection, Some(accesskit::NodeId(1)), 4), Some(3..4));
+        assert!(super::guest_selection_range(&selection, Some(accesskit::NodeId(2)), 4).is_none());
+        assert!(super::guest_selection_range(&selection, None, 4).is_none());
+        assert!(super::guest_selection_range(&selection, Some(accesskit::NodeId(1)), 3).is_none());
+
         let mut node = node;
         assert!(super::apply_guest_character_positions(&mut node, &[-3., 5., 12., 18., 24.]));
         assert_eq!(node.character_positions().unwrap(), &[-3., 5., 12., 18.]);
