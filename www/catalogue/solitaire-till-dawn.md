@@ -45,6 +45,21 @@ compatibility:
       public archive separately matches the same hash and size. Public route/release,
       full games, other variants, sustained play, saves and audio remain unverified.
     evidence: https://github.com/benletchford/systemless/issues/4415
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: 7b0bfb249fb66a03575fdc018a2920a44cc9a679
+    architecture: 68k
+    status: playable
+    environment: >-
+      Ordinary public Chrome on systemless.org at v0.90.0, worker/WebGL;
+      crossOriginIsolated was false. Original managed archive response HTTP 200,
+      SHA-256 and byte size match the publisher distribution. Original 100-game
+      notice, Not Yet, Games selects Klondike (Easy), tip dismissal, legal
+      two-diamonds drag onto three clubs reveals seven spades and increments move
+      count, then stock draw reveals five clubs and reduces count from 24 to 23.
+      Actual captures inspected. Full games, other variants, sustained play,
+      saves and audio remain unverified.
+    evidence: https://github.com/benletchford/systemless/issues/4415
 runtime:
   executable_path: Solitaire Till Dawn 4.0.1/Solitaire Till Dawn™
   show_menu_bar: true
@@ -103,7 +118,8 @@ and click the stock to draw. The **Edit** menu offers undo and redo.
 
 Bounded native verification covers **Klondike (Easy)**, a legal card move, the
 revealed covered card and a stock draw. Optimized browser checks also verify a legal move and stock draw.
-Public release verification is pending. Full games, the other variants, sustained play, saves and audio remain
+The public v0.90.0 player also passes a legal move and stock draw from the exact hosted archive.
+Full games, the other variants, sustained play, saves and audio remain
 unverified. This original executable is **68K only**.
 
 The complete unchanged publisher archive retains both illustrated guides, all
