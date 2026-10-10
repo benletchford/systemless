@@ -43,6 +43,19 @@ compatibility:
       wins, settings, saves and audio remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4454
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: 0.95.0
+    architecture: 68k
+    environment: >-
+      Public systemless.org at bf46037bda4d, actual 68k worker/WebGL,
+      800 by 600, 25 MHz and max two ticks per paint. Ordinary Return accepts
+      the original mine-count dialog, and board/adjacent clicks reveal several
+      numbered hexes.
+      Actual HTTP 200 archive bytes match the original hash and size without
+      interception. Captures inspected; full playthroughs and audio unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4454
 runtime:
   executable_path: Hexmines 2.0.4.cpt/Hexmines 2.0.4
   screen_depth: 8
