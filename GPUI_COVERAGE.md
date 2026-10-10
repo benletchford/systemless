@@ -5115,3 +5115,20 @@ reports, images, exact commands/scope and source/binary hashes are archived in
 `tests/toolbox-showcase/reference/gpui-demo/release-executable-smoke`. Warnings
 remain. Final packaged runtime, live GPUI, sustained game performance/audio and
 the complete release gates remain open.
+
+
+### Current extracted package compile checks
+
+At d44b335f the crate packages offline (446 files, 33.7MiB uncompressed).
+All packaged Rust source files match the checkout byte for byte, including the
+production GPUI frontend, cursor module and save store. Outside the checkout,
+the extracted package passes `--locked --offline --no-default-features --lib`
+(39.97s) and default `--bin systemless` (48.71s) checks using cached dependencies
+and artifacts. Evidence, exact package hash, source comparisons and commands
+are archived in `tests/toolbox-showcase/reference/gpui-demo/current-packaged-source`.
+
+The network-enabled attempt was interrupted after repeated crates.io DNS
+failures. These checks do not prove fresh-download builds, packaged linking or
+runtime, packaged tests, publication or physical GUI qualification. Existing
+warnings and a cached yanked yoke-derive lock entry are recorded; dependencies
+are unchanged. All broad release gates remain open.
