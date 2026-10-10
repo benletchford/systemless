@@ -4951,3 +4951,15 @@ scale0.75 pass; both marked images were reviewed. Actual depth/scale sidecars,
 images and logs are archived in `reference/gpui-demo/file-long-stage`. Other
 CPU/scale/editor variants, physical IME and native reference qualification remain
 open. These two captures do not close a broad production gate.
+
+
+### Additional CPU/depth filename staging captures
+
+At `685f2fef`, mono/colour68k New Folder scale0.75 and PPC8/PPC16 Save
+scale1.5 pass shared Demo long marked-text bounds, point mapping, pinned
+ownership and exact cancellation checks. All four marked images were reviewed;
+actual depth/scale sidecars and images are archived in
+`reference/gpui-demo/file-long-stage-expanded`. Together with the preceding two
+cases, selected filename staging has evidence in every CPU/depth mode, but not
+every editor/scale combination. Physical/native and broad release gates remain
+open.

@@ -1,0 +1,22 @@
+{
+  "tested_head": "685f2fefb47fe8eeb7599f3803b507d3a2063eec",
+  "scope": "Shared Demo long filename staging: mono/colour68k New Folder scale0.75, PPC8/PPC16 Save scale1.5. Four marked images reviewed; all bounds, hit, ownership and exact cancellation checks pass. Not every editor/scale combination; no physical IME/native oracle/performance qualification.",
+  "sha256": {
+    "ppc8-save.capture.json": "51a34a81d032240742866e3570b8f58988bc3fb1f907d3db904491b657257b2c",
+    "ppc8-save.png": "4f448035d4fa5d0f762600b1300365a5f12f7ebd4e1b87de8c10429cadf1d19e",
+    "colour68k-new-folder.log": "413c48ce261c5fcf544ff0f4a5a322bf357affcadc258ceb02a29843effff353",
+    "colour68k-new-folder.long-marked.png": "93fcc2de14a97c3f85b732c9829b903166f592e01b57c68d0c20a15416e6cff2",
+    "ppc16-save.capture.json": "e3fa8ef5749e6143965f5f7ed59ace856f5714a9e5ea9bb26421846a63a06957",
+    "mono68k-new-folder.png": "7ad4bc98fb36b5850288bcabd4910df36abdb1c1845f19dd9e064fe452b310d9",
+    "ppc16-save.png": "83b252ebe218df10313eae2779de748c3043d6d029493ac532d82487e5134fdd",
+    "colour68k-new-folder.capture.json": "cc81fa9c3184f51860a7b85650bd8caec181f643dfe5ba0f1d8a5e75f54a38cc",
+    "mono68k-new-folder.capture.json": "1a8eafe5be8a388dea9a72f8322dd24b6a253893349edf1d26fedf206d066e5d",
+    "ppc8-save.long-marked.png": "5997e60116ce50bad1c3f85d1bd3f1b8327faa4833320654c0d00a7639c756c8",
+    "ppc16-save.log": "c0d690e6733a9b603794b67eba345f916000ddf2fbc4f8f80db4d8a6c05ab2d6",
+    "ppc16-save.long-marked.png": "6dca94c6bfaf4f61cc479fb9823329d2114e76da546b51609788eb8f4b721fe2",
+    "mono68k-new-folder.long-marked.png": "6b860d7b105082656a13bbf2421e0f83dd4ff83c9566e105f05a14e26f45c9f6",
+    "ppc8-save.log": "a334d94711dd40afffe04e226de3a03da30d8950b0c2bb60e74943e86eba6ec1",
+    "colour68k-new-folder.png": "1f5daadaaaa10f8f3d563edf3d0657b71d90de6e65518612f2d2e9f1faf555a3",
+    "mono68k-new-folder.log": "a486988d6fbd952a59f33106a99646de240cfa6f4deaf65c429a64f0e31d7903"
+  }
+}
