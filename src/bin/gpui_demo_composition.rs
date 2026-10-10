@@ -20,6 +20,37 @@ pub(super) fn text_line_geometry(record: &systemless::runner::TextEditSnapshot, 
     record.line_geometry(index, text_range_width(record, start..end)?)
 }
 
+pub(super) fn accessible_line_geometry(record: &systemless::runner::TextEditSnapshot,
+    clip: super::super::frames::Rect, scale: f32) -> Vec<Option<super::super::a11y::TextRunGeometry>> {
+    let Some(starts) = record.line_starts.as_ref() else { return Vec::new(); };
+    let Some(dest) = record.global_dest_rect else { return Vec::new(); };
+    if !scale.is_finite() || scale <= 0. { return Vec::new(); }
+    let dx = i32::from(dest.1) - i32::from(record.dest_rect.1);
+    let dy = i32::from(dest.0) - i32::from(record.dest_rect.0);
+    starts.windows(2).enumerate().map(|(index, span)| {
+        let geometry = text_line_geometry(record, index)?;
+        let bytes = record.text.get(span[0]..span[1])?;
+        let visible = bytes.iter().rposition(|byte| !matches!(byte, b' ' | b'\r' | b'\n')).map_or(0, |index| index + 1);
+        let mut pens = vec![0i32];
+        for (offset, _) in bytes.iter().enumerate() {
+            let previous = *pens.last()?;
+            let width = if record.clips_line_offsets_to_visible_text && offset >= visible { 0 } else {
+                i32::from(text_range_width(record, span[0] + offset..span[0] + offset + 1)?)
+            };
+            pens.push(previous.checked_add(width)?);
+        }
+        let x = dx + i32::from(geometry.left); let y = dy + i32::from(geometry.top);
+        let left = x.max(clip.left); let right = (x + pens.last()?.max(&1)).min(clip.right);
+        let top = y.max(clip.top); let bottom = (y + i32::from(geometry.height)).min(clip.bottom);
+        if left >= right || top >= bottom { return None; }
+        Some(super::super::a11y::TextRunGeometry {
+            bounds: ((left - clip.left) as f32 * scale, (top - clip.top) as f32 * scale,
+                (right - clip.left) as f32 * scale, (bottom - clip.top) as f32 * scale),
+            positions: pens.into_iter().map(|pen| (x + pen - left) as f32 * scale).collect(),
+        })
+    }).collect()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct MarkedLine { text: String, start: usize, end: usize }
 

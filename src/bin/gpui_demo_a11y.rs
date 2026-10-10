@@ -24,6 +24,11 @@ impl<C: gpui_kit::RenderOnce + 'static> gpui_kit::RenderOnce for AccessibleCompo
     }
 }
 
+pub(crate) struct TextRunGeometry {
+    pub bounds: (f32, f32, f32, f32),
+    pub positions: Vec<f32>,
+}
+
 pub struct AccessibleState<E> {
     inner: E,
     disabled: bool,
@@ -31,6 +36,7 @@ pub struct AccessibleState<E> {
     text: Option<(String, bool)>,
     selection: Option<std::ops::Range<usize>>,
     lines: Option<Vec<(usize, String)>>,
+    line_geometry: Vec<Option<TextRunGeometry>>,
     line_ids: Option<std::rc::Rc<std::cell::RefCell<Vec<(usize, usize, accesskit::NodeId)>>>>,
     run_id: Option<std::rc::Rc<std::cell::Cell<Option<accesskit::NodeId>>>>,
     positions: Option<Vec<f32>>,
@@ -39,7 +45,7 @@ pub struct AccessibleState<E> {
 
 impl<E: Element> AccessibleState<E> {
     pub fn new(inner: E, disabled: bool) -> Self {
-        Self { inner, disabled, hidden: false, text: None, selection: None, lines: None, line_ids: None, run_id: None, positions: None, painted_positions: None }
+        Self { inner, disabled, hidden: false, text: None, selection: None, lines: None, line_geometry: Vec::new(), line_ids: None, run_id: None, positions: None, painted_positions: None }
     }
 
     /// Keep the element painted while excluding its modal-background subtree
@@ -72,6 +78,11 @@ impl<E: Element> AccessibleState<E> {
             }
             self.selection = Some(selection);
         }
+        self
+    }
+
+    pub fn guest_line_geometry(mut self, geometry: Vec<Option<TextRunGeometry>>) -> Self {
+        self.line_geometry = geometry;
         self
     }
 
@@ -150,6 +161,14 @@ impl<E: Element> Element for AccessibleState<E> {
                 node.set_value(value.clone());
                 node.set_character_lengths(value.chars().map(|ch| ch.len_utf8() as u8).collect::<Vec<_>>());
                 node.set_text_direction(accesskit::TextDirection::LeftToRight);
+                if let Some(Some(geometry)) = self.line_geometry.get(index) {
+                    if let Some(parent) = builder.parent_node().bounds() {
+                        let (left, top, right, bottom) = geometry.bounds;
+                        node.set_bounds(accesskit::Rect::new(parent.x0 + f64::from(left), parent.y0 + f64::from(top),
+                            parent.x0 + f64::from(right), parent.y0 + f64::from(bottom)));
+                        apply_guest_character_positions(&mut node, &geometry.positions);
+                    }
+                }
                 if builder.push_child(id, node) { positions.push((*start, value.chars().count(), id)); }
             }
             if let Some(ids) = &self.line_ids { *ids.borrow_mut() = positions.clone(); }

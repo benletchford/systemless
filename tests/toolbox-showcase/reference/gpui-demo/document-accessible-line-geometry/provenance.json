@@ -1,0 +1,9 @@
+{
+  "sources": {
+    "src/bin/gpui_demo.rs": "5205ec3af6eb9649ef172e5e400bc4d19ce57e5ac6e0dcea1609837bcbc233de",
+    "src/bin/gpui_demo_a11y.rs": "2b9aaa800c9e3104917fae6ffb6e52f3494ce228c0f0a9187fd2cdc2cef09fc0",
+    "src/bin/gpui_demo_composition.rs": "a569d98577fba0d8d7909e05792e63e18ca93c66cf6cc8f80398f1ae24a0b817"
+  },
+  "scope": "Guest document4 geometry model at4 scales, clipping/position validity and offscreen omission; production compile before test-only assertion addition; no native AX or painted text-node comparison",
+  "result": "1 passed19.80s"
+}
