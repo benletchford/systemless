@@ -1658,6 +1658,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::CurResFile
         | PpcImportDispatcherTarget::UseResFile
         | PpcImportDispatcherTarget::OpenResFile
+        | PpcImportDispatcherTarget::OpenRFPerm
         | PpcImportDispatcherTarget::HOpenResFile
         | PpcImportDispatcherTarget::ResError
         | PpcImportDispatcherTarget::GetVol

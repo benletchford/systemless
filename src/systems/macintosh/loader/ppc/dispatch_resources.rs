@@ -37,6 +37,28 @@ pub(super) fn dispatch_resource_import(
         last_resource_error,
     } = context;
 
+    // Read-only resource access may load and inspect resources, but cannot
+    // mutate their map/data. Resolve handle-based calls to their owning file.
+    let mutation_ref = match binding.dispatcher_target {
+        PpcImportDispatcherTarget::AddResource => Some(*current_resource_refnum),
+        PpcImportDispatcherTarget::ChangedResource
+        | PpcImportDispatcherTarget::WriteResource
+        | PpcImportDispatcherTarget::RemoveResource
+        | PpcImportDispatcherTarget::SetResInfo => vfs_resources
+            .iter()
+            .find(|resource| resource.handle == cpu.gpr[3])
+            .map(|resource| resource.ref_num),
+        _ => None,
+    };
+    if mutation_ref.is_some_and(|reference| {
+        resource_files
+            .iter()
+            .any(|file| file.ref_num == reference && file.writable == Some(false))
+    }) {
+        *last_resource_error = PPC_RES_ATTR_ERR;
+        return Some(PpcImportAction::ReturnPreserve);
+    }
+
     match binding.dispatcher_target {
         PpcImportDispatcherTarget::SetResLoad => {
             // Inside Macintosh Volume I (1985), I-118: SetResLoad controls
