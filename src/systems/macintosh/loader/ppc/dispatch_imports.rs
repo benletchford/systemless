@@ -1540,6 +1540,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::ISpDevicesExtractByClass
         | PpcImportDispatcherTarget::ISpDeviceGetDefinition
         | PpcImportDispatcherTarget::ISpDeviceGetElementList
+        | PpcImportDispatcherTarget::ISpGetGlobalElementList
         | PpcImportDispatcherTarget::ISpElementListExtract
         | PpcImportDispatcherTarget::ISpElementGetInfo
         | PpcImportDispatcherTarget::ISpElementGetConfigurationInfo
