@@ -1,5 +1,73 @@
 # Changelog
 
+## [0.84.0](https://github.com/benletchford/systemless/compare/v0.83.0...v0.84.0) (2026-10-10)
+
+
+### Features
+
+* **catalogue:** stage Bubble Trouble with dual-architecture evidence ([#4360](https://github.com/benletchford/systemless/issues/4360)) ([e9cbf25](https://github.com/benletchford/systemless/commit/e9cbf25b5b07fb5550d1d96fc76eb51fa421f1d3))
+* **catalogue:** stage original Chiral with gameplay evidence ([#4359](https://github.com/benletchford/systemless/issues/4359)) ([5dfc89d](https://github.com/benletchford/systemless/commit/5dfc89dd152b18763895be39dc9fa3cf8d24e545))
+* **catalogue:** stage the original Gridz demo installer ([296cd82](https://github.com/benletchford/systemless/commit/296cd82d6f82205d6ed572e7459a04e17e9027b3))
+
+
+### Bug Fixes
+
+* **apple-events:** retain native special handler registrations ([#4367](https://github.com/benletchford/systemless/issues/4367)) ([c80e45e](https://github.com/benletchford/systemless/commit/c80e45ee5321abc7ea9db1deddfe1e50a01231e8))
+* bind nondebugging DrawSprocket debug mode ([0827ea4](https://github.com/benletchford/systemless/commit/0827ea4d46b5f0a25753d103072fbac49311a46c))
+* bind PowerPC uncached block move imports ([1cc8a18](https://github.com/benletchford/systemless/commit/1cc8a180a27fe87e3d9e9cac7c14772bf7ca9ef0))
+* **file-manager:** resolve native file IDs against mounted files ([#4370](https://github.com/benletchford/systemless/issues/4370)) ([fef3885](https://github.com/benletchford/systemless/commit/fef38855f7545c1cb00b676d75b92da1770b7104))
+* **files:** resolve absolute boot-volume resource paths ([6e3f61a](https://github.com/benletchford/systemless/commit/6e3f61ab638c9b2ef14d1c3a944ad96cecd0bf96))
+* implement PowerPC menu item command identifiers ([c10fedd](https://github.com/benletchford/systemless/commit/c10fedd2f700eb577f0fefe8f5cc18c4b4e0a753))
+* implement PowerPC menu item reference constants ([87568e3](https://github.com/benletchford/systemless/commit/87568e35f2bc652090af900a5bb1d1b35d0e3d03))
+* implement PowerPC temporary handle locking ([8765f20](https://github.com/benletchford/systemless/commit/8765f207286cf50648f43202902f3fa43578f969))
+* **ppc:** copy pixel patterns with independent owned storage ([#4352](https://github.com/benletchford/systemless/issues/4352)) ([a6571ed](https://github.com/benletchford/systemless/commit/a6571ed4fe8ff358e6e3825f4b40877899b1ab7f))
+* **ppc:** discard updates for removed windows ([#4323](https://github.com/benletchford/systemless/issues/4323)) ([0a0696a](https://github.com/benletchford/systemless/commit/0a0696a95cbb7a7d428221790447c3a9f2ad1890))
+* **ppc:** handle basic file rename requests ([#4335](https://github.com/benletchford/systemless/issues/4335)) ([229115a](https://github.com/benletchford/systemless/commit/229115a142f10744c91e761514a3ca3d3b5f0dc7))
+* **ppc:** honor shared keyboard repeat preferences ([#4344](https://github.com/benletchford/systemless/issues/4344)) ([9f7a14a](https://github.com/benletchford/systemless/commit/9f7a14a434a96b4da9b6417be07e097228fa38bc))
+* **ppc:** implement font resource swapping ([#4318](https://github.com/benletchford/systemless/issues/4318)) ([154665c](https://github.com/benletchford/systemless/commit/154665c5ef427fe8add0089b70f03de30183f830))
+* **ppc:** implement MathLib hypotenuse calculation ([88456ed](https://github.com/benletchford/systemless/commit/88456ed6ac06b56c2195073e099d79003bf593f9))
+* **ppc:** implement MathLib inverse cosine ([ad8bad5](https://github.com/benletchford/systemless/commit/ad8bad5c7b2981cea4ef543c683c34f2295494a5))
+* **ppc:** implement PtrAndHand ([#4329](https://github.com/benletchford/systemless/issues/4329)) ([ac8067f](https://github.com/benletchford/systemless/commit/ac8067ff052367fbcc751bfd8d10c5da0a99029e))
+* **ppc:** implement synchronous parameter-block rename ([3b63c05](https://github.com/benletchford/systemless/commit/3b63c05d7ae129f8bebf0aa523821c5ff16de534))
+* **ppc:** keep offscreen graphics ports out of the window list ([#4343](https://github.com/benletchford/systemless/issues/4343)) ([517c09d](https://github.com/benletchford/systemless/commit/517c09dcedd016f14b9361f0872e42134061cf31))
+* **ppc:** parse AIFF file headers for sound metadata ([85ae548](https://github.com/benletchford/systemless/commit/85ae5480774099f417baadf565e01d64d63fabd6))
+* **ppc:** preserve backing dimensions when moving guest windows ([fdf25d6](https://github.com/benletchford/systemless/commit/fdf25d69f6e190aa14d122791f21f1bb50e6672a))
+* **ppc:** query allocatable temporary handle memory ([f185771](https://github.com/benletchford/systemless/commit/f18577136a62c342763ed0e823fafdb707a6a75f))
+* **ppc:** truncate RGB components for direct RGB555 pixels ([#4350](https://github.com/benletchford/systemless/issues/4350)) ([b963358](https://github.com/benletchford/systemless/commit/b963358931a28c79f8ce23d56bcc0b1b4cf4566d))
+* **qd3d:** honor triangle normals when deciding face direction ([e56c852](https://github.com/benletchford/systemless/commit/e56c852e53fe6555f04ddf0bf8a3335dee1778e1))
+* **qd3d:** match native perspective camera matrix scale ([478a6ae](https://github.com/benletchford/systemless/commit/478a6aec7d5987e668017a43162fcd919279de6f))
+* **qd3d:** preserve completed frame camera state ([8b4ea02](https://github.com/benletchford/systemless/commit/8b4ea0212406ef0b465d2e3f1d183255fc50156e))
+* **qd3d:** preserve subpixel coverage across mesh boundaries ([87059c5](https://github.com/benletchford/systemless/commit/87059c54dd2bd85d46c9e14a628711167f4f9d60))
+* **qd3d:** retain geometry owned by reconstructed file groups ([0a37d26](https://github.com/benletchford/systemless/commit/0a37d263833a729cf465d6921e0413398797ffcd))
+* **quickdraw:** preserve picture depth for alpha texture creation ([6ae0a99](https://github.com/benletchford/systemless/commit/6ae0a99d29f4b5eff1d3bc0c77b1a4690c25b89f))
+* **runtime:** initialize the classic Lo3Bytes pointer mask ([417c100](https://github.com/benletchford/systemless/commit/417c100bccf93bcf20869cd0657b4eb4e07be23d))
+* use volume references for unqualified PowerPC filenames ([9f9c306](https://github.com/benletchford/systemless/commit/9f9c306f4c3bd82b4efc91d0bf62663187b0fe8b))
+
+
+### Code Refactoring
+
+* **cursor:** centralize Cursor and Icon Manager operations evaluation ([#4327](https://github.com/benletchford/systemless/issues/4327)) ([9b9d813](https://github.com/benletchford/systemless/commit/9b9d813c3848cc41343e3c9dfd9d18809c6aebe7))
+* **desk:** centralize Desk Manager operations evaluation ([#4315](https://github.com/benletchford/systemless/issues/4315)) ([bdac23a](https://github.com/benletchford/systemless/commit/bdac23a540209bd5016a9e9344852ad410695187))
+* **macintosh:** centralize Gestalt Manager evaluation ([#4340](https://github.com/benletchford/systemless/issues/4340)) ([68fb153](https://github.com/benletchford/systemless/commit/68fb153cceaaca6e41fa776edc13705684e3702b))
+* **macintosh:** centralize Notification Manager operations evaluation ([b131c35](https://github.com/benletchford/systemless/commit/b131c35554ade5e03f00398e10915a7f849ecf82))
+* **macintosh:** centralize Printing Manager operations evaluation ([#4358](https://github.com/benletchford/systemless/issues/4358)) ([402b12f](https://github.com/benletchford/systemless/commit/402b12f6218e261538d0f8c5a8fc6f9d1c1f6f49))
+* **menu:** centralize Menu Bar lifecycle, height, and highlighting evaluation ([#4280](https://github.com/benletchford/systemless/issues/4280)) ([acc4058](https://github.com/benletchford/systemless/commit/acc40588e78b6f792cb1a5bdeeafc0218110bb82))
+* **menu:** centralize Menu creation, disposal, template loading, and sizing evaluation ([#4287](https://github.com/benletchford/systemless/issues/4287)) ([3e8452d](https://github.com/benletchford/systemless/commit/3e8452d2c8d7b766eed0c0ff03167c301b963def))
+* **menu:** centralize Menu insertion, deletion, and enable/disable evaluation ([#4300](https://github.com/benletchford/systemless/issues/4300)) ([06461b4](https://github.com/benletchford/systemless/commit/06461b42210f4410696153bd10bf5ad0b7c05d4d))
+* **menu:** centralize Menu Item text, mark, command, refcon, and count evaluation ([#4293](https://github.com/benletchford/systemless/issues/4293)) ([608535b](https://github.com/benletchford/systemless/commit/608535bb6f94bdb2d4b9b7657a7124705da5cb5f))
+* **menu:** centralize Menu key equivalent, event, choice, and Help Manager evaluation ([#4306](https://github.com/benletchford/systemless/issues/4306)) ([1072f8e](https://github.com/benletchford/systemless/commit/1072f8e5835d61c881687f6bb8ee77afff719c97))
+* **menu:** centralize Menu tracking and popup selection evaluation ([#4310](https://github.com/benletchford/systemless/issues/4310)) ([d852f0f](https://github.com/benletchford/systemless/commit/d852f0f83ae4b9c7276df09b291969c6597b6f97))
+* **scrap:** centralize Scrap Manager operations evaluation ([#4320](https://github.com/benletchford/systemless/issues/4320)) ([d2596ff](https://github.com/benletchford/systemless/commit/d2596ffac73a4b3c1307fc64f9029dd07c8c284c))
+* **time:** centralize Time and Vertical Retrace Manager operations evaluation ([#4334](https://github.com/benletchford/systemless/issues/4334)) ([5ef13ba](https://github.com/benletchford/systemless/commit/5ef13baec6b402f48fbb59ef2231d82a3d6a84b0))
+* **window:** centralize Window bounds, region, and invalidation evaluation ([6a9924b](https://github.com/benletchford/systemless/commit/6a9924bbafe5e3e24842aca335af896780b51a40))
+* **window:** centralize Window creation, template instantiation, and destruction evaluation ([#4251](https://github.com/benletchford/systemless/issues/4251)) ([817e4eb](https://github.com/benletchford/systemless/commit/817e4eb5a4e2643f85c76a037c4de03528250d01))
+* **window:** centralize Window frame redrawing, gray region dragging, and front window evaluation ([#4273](https://github.com/benletchford/systemless/issues/4273)) ([52fe0e3](https://github.com/benletchford/systemless/commit/52fe0e373e7da907526971fc36fffdc9ac40d512))
+* **window:** centralize Window invalidation, update cycle, port clipping, and chrome painting evaluation ([68fb1aa](https://github.com/benletchford/systemless/commit/68fb1aa85e1f6b196c2a6667bad7e9d4dc94cc05))
+* **window:** centralize Window positioning, visibility, selection, and update evaluation ([#4245](https://github.com/benletchford/systemless/issues/4245)) ([1a7c8f4](https://github.com/benletchford/systemless/commit/1a7c8f4901d233802a5eecbff2b6a0b9e04cee03))
+* **window:** centralize Window sizing, movement, hit testing, and coordinate pinning evaluation ([a80d578](https://github.com/benletchford/systemless/commit/a80d5782829d4c27e03591c439288ca9e2a2c175))
+* **window:** centralize Window state, title, greatest area, and port bounds evaluation ([6e6a239](https://github.com/benletchford/systemless/commit/6e6a23933a370e892c05b878481888f7ad250617))
+* **window:** centralize Window tracking, sizing, and hierarchy evaluation ([#4237](https://github.com/benletchford/systemless/issues/4237)) ([80d31f2](https://github.com/benletchford/systemless/commit/80d31f2c0d908436f6973bb569610ae17bfd9613))
+
 ## [0.83.0](https://github.com/benletchford/systemless/compare/v0.82.1...v0.83.0) (2026-10-08)
 
 
