@@ -1,0 +1,72 @@
+{
+  "base_commit": "794942163c795ae118d2f212ff7d851fce262963",
+  "fixture_sha256": "28433983ced239f85c319718528a19c558adb0b355c5e28e0daf9b1a1e824aa8",
+  "fixture_size": 269682,
+  "scope": "New-name Standard File Save through guest event paths and production DesktopSaveStore explicit flush; independent writer/reader OS processes across mono68k, colour68k, PPC8 and PPC16. Exact disk-restored data/resource forks and metadata before initialization/read; real guest FSpOpenDF/GetEOF/FSRead/FSClose publishes exact read bytes, and forks/metadata stay unchanged afterward.",
+  "phases": [
+    {
+      "phase": "write",
+      "powerpc": false,
+      "depth": 1,
+      "pid": 86086
+    },
+    {
+      "phase": "read",
+      "powerpc": false,
+      "depth": 1,
+      "pid": 86091
+    },
+    {
+      "phase": "write",
+      "powerpc": false,
+      "depth": 8,
+      "pid": 86094
+    },
+    {
+      "phase": "read",
+      "powerpc": false,
+      "depth": 8,
+      "pid": 86095
+    },
+    {
+      "phase": "write",
+      "powerpc": true,
+      "depth": 8,
+      "pid": 86096
+    },
+    {
+      "phase": "read",
+      "powerpc": true,
+      "depth": 8,
+      "pid": 86097
+    },
+    {
+      "phase": "write",
+      "powerpc": true,
+      "depth": 16,
+      "pid": 86098
+    },
+    {
+      "phase": "read",
+      "powerpc": true,
+      "depth": 16,
+      "pid": 86099
+    }
+  ],
+  "results": {
+    "save_and_process_tests": "2 parents pass, eight child phases plus existing16 Save/replacement combinations,89.20s",
+    "panel_regression": "1 test pass, six CPU/semantic cases,7.75s",
+    "fixture_update": "pass",
+    "fixture_verify": "pass, byte-for-byte rebuild"
+  },
+  "earlier_failure": "Initial test compile referenced an incorrect panel.top_row field; repaired to the actual layout.first_visible. Failure log retained.",
+  "limitations": "Nonempty TEXT data fork, empty resource fork, new-name save only. Uses guest session/production store APIs, not physical GPUI input or normal desktop shutdown. Replacement/New Folder restart, nonempty resource-fork restart, power-loss/crash recovery, real-game saves and native host integration remain unqualified. No new rendering screenshot or independent Macintosh oracle. Mac native automation remains locked.",
+  "files": {
+    "gpui-process-save-missing-field.log": "3a986ec31ee70b7f0a70936095c47544dc0695c47620cd656dba6e1d6b30b4c0",
+    "gpui-process-save-panel-regression.log": "74c6b593d74de45f384d8ac7a1af4376d4282eba3359c9417b251dd8a73217b6",
+    "source.patch": "c29a9080df3561b151732896115c0dd9b6a37fe4681fea7c5ae6a9199f351f34",
+    "gpui-process-save-fixture-update.log": "a7fdecb5840a82a8cc6adc774e59009401409bd6b0454ca4c759f785225f9ea4",
+    "gpui-process-save-final-tests.log": "7bb5889c7ad8c60b737d4486f8fb8bd11e495b3a8162adb6953a13e7af7bceda",
+    "gpui-process-save-fixture-verify.log": "e3486d3dfd2b8406e6360457116b67b739bbd153b37eb457b61f6d978b36477f"
+  }
+}
