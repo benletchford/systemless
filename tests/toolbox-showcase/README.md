@@ -68,7 +68,9 @@ test protocol. Its Pages menu selects sixteen interactive views:
     Save writes a known data-fork payload, closes and reopens it, checks every
     byte, then deletes it. The main window’s app-owned refCon publishes the
     completion status for tests. This does not test persistence across a host
-    restart; replacement scenarios currently check the returned reply only.
+    restart. Confirmed replacement truncates the existing data fork and checks
+    the reopened length and bytes too, leaving the replaced file in that guest
+    session. Tests load independent sessions from the immutable source archive.
 13. Resource Browser enumerates named `DATA` records with
     `Count1Resources`, `Get1IndResource`, `GetResInfo`, `GetResAttrs`, and
     `GetResourceSizeOnDisk`, then demonstrates deferred `GetNamedResource`/
