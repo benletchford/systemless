@@ -370,3 +370,15 @@ with the same volume fix: its bare-name volume lookups succeed, but startup
 ends at frontend tick 2 / guest tick 1. That result does not establish the fatal
 cause or resolve its separate investigation. All exact-archive redistribution
 blockers remain; these runtime changes do not enable catalogue entries.
+
+
+## Avara expansion intake
+
+Tracked under [catalogue expansion #4353](https://github.com/benletchford/systemless/issues/4353). Retrieved 10 October 2026 from the [VintageAppleMac A games index](https://www.vintageapplemac.com/software/games/a/). These are exact download receipts, not a redistribution approval.
+
+| Distribution | Bytes | SHA-256 | Inspection boundary |
+| --- | ---: | --- | --- |
+| [Avara Installer.sit](https://www.vintageapplemac.com/files/games/Avara%20Installer.sit) | 2325085 | `917934ea0c9bc1b004ad7a97943c238634f9d72d7077d801844e31d7c93c1e5e` | StuffIt 5 contains one installer named Avara Installer; data fork 2,294,140 bytes. Installer CODE resources do not establish game architecture. Installed-game licence and complete payload still require inspection. |
+| [Avara 1.0.1.sit](https://www.vintageapplemac.com/files/games/Avara%201.0.1.sit) | 2476740 | `136f1dff7198bbf4e0896223d4af462269610bbefea8547b48d657b6fd33ccfe` | Outer archive contains an application/installer named Avara 1.0.1 with a VIS3 resource. Extract the payload and inspect all accompanying terms before granting archive permission or asserting game architecture. |
+
+Both unchanged downloads are local scratch files; neither has been staged for hosting. The original author's [MIT source release](https://github.com/jmunkki/Avara) establishes a source-code lead, not permission for every component of these historical distributions. Bounded native gameplay, screenshot qualification, CI asset promotion, hosted browser approval and live publication are unverified.
