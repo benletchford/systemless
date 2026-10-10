@@ -1,6 +1,7 @@
 //! Native text-service adapter. Guest bytes and selection remain authoritative.
 use super::{Command, Demo};
 use gpui_kit::*;
+use gpui_kit::component::ActiveTheme;
 use std::ops::Range;
 
 pub(super) fn text_range_width(record: &systemless::runner::TextEditSnapshot, range: Range<usize>) -> Option<i16> {
@@ -19,6 +20,19 @@ pub(super) fn text_line_geometry(record: &systemless::runner::TextEditSnapshot, 
     record.line_geometry(index, text_range_width(record, start..end)?)
 }
 
+#[derive(Clone)]
+struct MarkedRow { start: usize, positions: Vec<(usize, f32)>, origin: (f32, f32) }
+
+#[derive(Clone)]
+pub(super) struct PaintedComposition {
+    owner: super::super::input::TextInputOwner,
+    preedit: super::super::input::Preedit,
+    record: systemless::runner::TextEditSnapshot,
+    transform: ((f32, f32), f32),
+    clip: (f32, f32, f32, f32),
+    rows: Vec<MarkedRow>,
+}
+
 impl Demo {
     pub(super) fn synchronize_composition(&mut self, window: &Window, _: &mut Context<Self>) {
         let eligible = self.focus.is_focused(window) && self.host_active != Some(false)
@@ -32,6 +46,129 @@ impl Demo {
                     port: record.owner_port, text: record.text.clone(), selection: record.selection.0..record.selection.1 })
         } else { None };
         self.composition.synchronize(owner);
+    }
+
+    /// Unicode staging belongs to the host text service. It uses host typography
+    /// in a separate surface, never as a replacement for committed guest glyphs.
+    pub(super) fn composition_surface(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let owner = self.composition.owner()?;
+        let preedit = self.composition.preedit.clone()?;
+        let record = self.text_edits.iter().find(|record| (record.guest_id, record.generation) == owner.identity)?;
+        if record.text != owner.text || self.display_scale <= 0. { return None; }
+        let starts = record.line_starts.as_ref()?;
+        let index = starts.partition_point(|start| *start <= owner.selection.start).saturating_sub(1)
+            .min(starts.len().checked_sub(2)?);
+        let geometry = text_line_geometry(record, index)?;
+        let dest = record.global_dest_rect?;
+        let view = record.global_view_rect?;
+        let x = i32::from(dest.1) - i32::from(record.dest_rect.1) + i32::from(geometry.left)
+            + i32::from(text_range_width(record, starts[index]..owner.selection.start)?);
+        let y = i32::from(dest.0) - i32::from(record.dest_rect.0) + i32::from(geometry.top);
+        if x < i32::from(view.1) || x >= i32::from(view.3) || y < i32::from(view.0) || y >= i32::from(view.2) { return None; }
+        let width = 240f32.min(self.width as f32 * self.display_scale).max(1.);
+        let lines: Vec<String> = preedit.text.split('\n').map(str::to_owned).collect();
+        let height = (lines.len().max(1) as f32 * 20. + 8.).min(self.height as f32 * self.display_scale);
+        let left = (self.display_origin.0 + x as f32 * self.display_scale)
+            .min(self.display_origin.0 + self.width as f32 * self.display_scale - width);
+        let top = (self.display_origin.1 + (y + i32::from(geometry.height)) as f32 * self.display_scale)
+            .min(self.display_origin.1 + self.height as f32 * self.display_scale - height);
+        let cache = self.composition_geometry.clone();
+        let cache_owner = owner.clone();
+        let cache_record = record.clone();
+        let transform = (self.display_origin, self.display_scale);
+        let foreground = cx.theme().foreground;
+        let selection = cx.theme().selection;
+        Some(div().id("guest-composition-surface").absolute().left(px(left)).top(px(top))
+            .w(px(width)).h(px(height)).bg(cx.theme().background).border_1().border_color(foreground)
+            .overflow_hidden().child(canvas(move |bounds, _, _| bounds, move |_, bounds, window, cx| {
+                let mut utf16_start = 0usize;
+                let mut rows = Vec::new();
+                for (index, text) in lines.iter().enumerate() {
+                    let length = text.encode_utf16().count();
+                    let byte_at = |unit: usize| {
+                        let mut count = 0;
+                        for (byte, ch) in text.char_indices() {
+                            if count >= unit { return byte; }
+                            count += ch.len_utf16();
+                        }
+                        text.len()
+                    };
+                    let selected_start = preedit.selection_utf16.start.saturating_sub(utf16_start).min(length);
+                    let selected_end = preedit.selection_utf16.end.saturating_sub(utf16_start).min(length);
+                    let line = window.text_system().shape_line(text.clone().into(), px(14.), &[TextRun {
+                        len: text.len(), font: font(".SystemUIFont"), color: foreground,
+                        background_color: None, underline: None, strikethrough: None,
+                    }], None);
+                    let caret = line.x_for_index(byte_at(selected_end));
+                    let scroll = (f32::from(caret) - (width - 12.)).max(0.);
+                    let origin = point(bounds.origin.x + px(4. - scroll), bounds.origin.y + px(4. + index as f32 * 20.));
+                    if selected_start < selected_end {
+                        let a = line.x_for_index(byte_at(selected_start));
+                        let b = line.x_for_index(byte_at(selected_end));
+                        window.paint_quad(fill(Bounds::new(point(origin.x + a, origin.y), size(b - a, px(20.))), selection));
+                    }
+                    let _ = line.paint(origin, px(20.), TextAlign::Left, None, window, cx);
+                    window.paint_quad(fill(Bounds::new(point(origin.x, origin.y + px(19.)), size(line.width(), px(1.))), foreground));
+                    if preedit.selection_utf16.end >= utf16_start && preedit.selection_utf16.end <= utf16_start + length {
+                        window.paint_quad(fill(Bounds::new(point(origin.x + caret, origin.y), size(px(1.), px(20.))), foreground));
+                    }
+                    let mut positions = Vec::new();
+                    let mut unit = 0;
+                    for (byte, ch) in text.char_indices() {
+                        positions.push((unit, f32::from(line.x_for_index(byte))));
+                        unit += ch.len_utf16();
+                    }
+                    positions.push((length, f32::from(line.x_for_index(text.len()))));
+                    rows.push(MarkedRow { start: utf16_start, positions,
+                        origin: (f32::from(origin.x), f32::from(origin.y)) });
+                    utf16_start += length + 1;
+                }
+                *cache.borrow_mut() = Some(PaintedComposition {
+                    owner: cache_owner.clone(), preedit: preedit.clone(), record: cache_record.clone(), transform,
+                    clip: (f32::from(bounds.origin.x), f32::from(bounds.origin.y),
+                        f32::from(bounds.origin.x + bounds.size.width), f32::from(bounds.origin.y + bounds.size.height)), rows,
+                });
+            }).size_full()).into_any_element())
+    }
+
+    fn painted_composition(&self) -> Option<PaintedComposition> {
+        let painted = self.composition_geometry.borrow().clone()?;
+        (self.composition.owner() == Some(&painted.owner)
+            && self.composition.preedit.as_ref() == Some(&painted.preedit)
+            && painted.transform == (self.display_origin, self.display_scale)
+            && self.text_edits.iter().any(|record| record == &painted.record)).then_some(painted)
+    }
+
+    fn marked_bounds(&self, range: Range<usize>) -> Option<Bounds<Pixels>> {
+        let painted = self.painted_composition()?;
+        let start = range.start.checked_sub(painted.owner.selection.start)?;
+        let end = range.end.checked_sub(painted.owner.selection.start)?;
+        if start > end || end > painted.preedit.text.encode_utf16().count() { return None; }
+        for row in &painted.rows {
+            let Some(local) = start.checked_sub(row.start) else { continue; };
+            if local > row.positions.last()?.0 { continue; }
+            let x = row.positions.iter().find(|(unit, _)| *unit == local)?.1;
+            let last = row.positions.last()?.0;
+            let local_end = end.saturating_sub(row.start).min(last);
+            let right = row.positions.iter().find(|(unit, _)| *unit == local_end)?.1;
+            let left = (row.origin.0 + x.min(right)).max(painted.clip.0);
+            let right = (row.origin.0 + x.max(right) + if range.is_empty() { 1. } else { 0. }).min(painted.clip.2);
+            let top = row.origin.1.max(painted.clip.1);
+            let bottom = (row.origin.1 + 20.).min(painted.clip.3);
+            if left < right && top < bottom { return Some(Bounds::new(point(px(left), px(top)), size(px(right - left), px(bottom - top)))); }
+        }
+        None
+    }
+
+    fn marked_index_for_point(&self, point: Point<Pixels>) -> Option<usize> {
+        let painted = self.painted_composition()?;
+        let x = f32::from(point.x); let y = f32::from(point.y);
+        if !x.is_finite() || !y.is_finite() || x < painted.clip.0 || x >= painted.clip.2
+            || y < painted.clip.1 || y >= painted.clip.3 { return None; }
+        let row = painted.rows.iter().find(|row| y >= row.origin.1 && y < row.origin.1 + 20.)?;
+        let (unit, _) = row.positions.iter().min_by(|a, b|
+            (row.origin.0 + a.1 - x).abs().total_cmp(&(row.origin.0 + b.1 - x).abs()))?;
+        Some(painted.owner.selection.start + row.start + unit)
     }
 
     fn composition_text(&self) -> Option<String> {
@@ -94,6 +231,7 @@ impl EntityInputHandler for Demo {
     }
     fn bounds_for_range(&mut self, range: Range<usize>, _: Bounds<Pixels>,
         _: &mut Window, _: &mut Context<Self>) -> Option<Bounds<Pixels>> {
+        if self.composition.preedit.is_some() { return self.marked_bounds(range); }
         let owner = self.composition.owner()?;
         let record = self.text_edits.iter().find(|record| (record.guest_id, record.generation) == owner.identity)?;
         // Geometry is meaningful only for the currently painted guest text.
@@ -124,6 +262,7 @@ impl EntityInputHandler for Demo {
             size(px((right - left) as f32 * self.display_scale), px((bottom - top) as f32 * self.display_scale))))
     }
     fn character_index_for_point(&mut self, point: Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
+        if self.composition.preedit.is_some() { return self.marked_index_for_point(point); }
         let owner = self.composition.owner()?;
         let record = self.text_edits.iter().find(|record| (record.guest_id, record.generation) == owner.identity)?;
         if self.composition.preedit.is_some() || record.text != owner.text

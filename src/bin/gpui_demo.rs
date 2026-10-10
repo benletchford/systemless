@@ -343,6 +343,9 @@ mod desktop {
         capture_windows: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_composition_surface: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_windows_moved: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -789,6 +792,7 @@ mod desktop {
         popup_tracking: Option<(u32, u64)>,
         composition: super::input::GuestComposition,
         text_commit_rejection_revision: u64,
+        composition_geometry: std::rc::Rc<std::cell::RefCell<Option<composition::PaintedComposition>>>,
         keyboard: super::input::KeyboardState,
         wheel: super::scroll::WheelAccumulator,
         _window_activation: Option<Subscription>,
@@ -994,6 +998,7 @@ mod desktop {
                 popup_tracking: None,
                 composition: Default::default(),
                 text_commit_rejection_revision: 0,
+                composition_geometry: Default::default(),
                 keyboard: super::input::KeyboardState::default(),
                 wheel: super::scroll::WheelAccumulator::default(),
                 _window_activation: None,
@@ -2884,6 +2889,7 @@ mod desktop {
                     }
                 }).absolute().size_full())
                 .child(super::metrics::SceneMetrics::new(screen, window.rem_size() * scene_scale))
+                .children(self.composition_surface(cx))
                 .when(!guest_menu_fallback && self.guest_popup.is_none() && (self.menu_presented || menu_hovered), |root| {
                     root.child(bar.unwrap().absolute().top_0().left_0().when(self.menu_presented, |bar| {
                         bar.top(px(self.display_origin.1)).left(px(self.display_origin.0))
@@ -4776,6 +4782,118 @@ mod desktop {
         eprintln!("saved GPUI styled ink capture to {}", output.display());
     }
 
+        #[cfg(feature = "gpui-demo-test")]
+        fn capture_composition_surface(output: &std::path::Path) {
+            use gpui_kit::*;
+            use std::sync::Arc;
+        fn settle(session: &mut MacintoshSession) {
+            let start = session.runner().guest_tick();
+            for _ in 0..100 {
+                session.runner_mut().run_steps(10_000, None);
+                if session.runner().guest_tick().wrapping_sub(start) >= 2 {
+                    return;
+                }
+            }
+            panic!("guest did not advance while tracking input");
+        }
+        fn wait_for_menu(
+            session: &mut MacintoshSession,
+            menu_id: i16,
+            item_number: i16,
+            checked: bool,
+        ) {
+            for _ in 0..300 {
+                session.runner_mut().run_steps(100_000, None);
+                let snapshot = session.runner_mut().guest_menu_snapshot();
+                if snapshot.menus.iter().any(|menu| {
+                    menu.id == menu_id
+                        && menu
+                            .items
+                            .iter()
+                            .any(|item| item.number == item_number && item.checked == checked)
+                }) {
+                    return;
+                }
+                assert!(
+                    session.status().running,
+                    "guest halted before updating menu"
+                );
+            }
+            panic!("menu {menu_id} item {item_number} did not reach checked={checked}");
+        }
+            std::fs::create_dir_all(&output).unwrap();
+            for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 11));
+                wait_for_menu(&mut session, 129, 11, true); settle(&mut session);
+                let initial = session.runner_mut().text_edit_snapshot().records.into_iter().find(|record| record.styled).unwrap();
+                let rect = initial.global_view_rect.unwrap();
+                for input in [MacintoshInput::MouseDown { vertical: rect.0 + 4, horizontal: rect.1 + 4 },
+                    MacintoshInput::MouseUp { vertical: rect.0 + 4, horizontal: rect.1 + 4 }] {
+                    session.deliver_input(input); settle(&mut session);
+                }
+                let records = session.runner_mut().text_edit_snapshot().records;
+                let frame = session.video_frame().unwrap();
+                let plans = qualify_styled_text_fields(&records, &frame.pixels, frame.width, frame.height);
+                let windows = session.runner_mut().window_frame_snapshot();
+                let menus = session.runner_mut().guest_menu_snapshot();
+                let mut visual = HeadlessAppContext::with_platform(platform::current_platform(true).text_system(),
+                    Arc::new(gpui_kit::assets::Assets), platform::current_headless_renderer);
+                visual.update(gpui_kit::init);
+                let (sender, _receiver) = std::sync::mpsc::channel();
+                let mut view = None;
+                let window = visual.open_window(size(px(800.), px(600.)), |window, cx| {
+                    let entity = cx.new(|cx| {
+                        let mut demo = Demo::new(sender, Default::default(), cx);
+                        demo.width = frame.width; demo.height = frame.height;
+                        demo.text_edits = records.clone(); demo.styled_text_plans = plans;
+                        demo.windows = windows; demo.menus = menus; demo.host_active = Some(true);
+                        demo.image = Some(Arc::new(RenderImage::new(vec![image::Frame::new(
+                            image::RgbaImage::from_raw(frame.width, frame.height, gpui_pixels(frame.pixels)).unwrap())])));
+                        window.focus(&demo.focus, cx);
+                        demo
+                    });
+                    view = Some(entity.clone()); entity
+                }).unwrap();
+                let view = view.unwrap(); visual.run_until_parked();
+                let baseline = visual.capture_screenshot(window.into()).unwrap();
+                visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                    demo.host_active = Some(true);
+                    window.focus(&demo.focus, cx);
+                    demo.synchronize_composition(window, cx);
+                    assert!(demo.composition.mark("日😀", 1..3)); cx.notify();
+                })).unwrap();
+                visual.run_until_parked();
+                let marked = visual.capture_screenshot(window.into()).unwrap();
+                assert_ne!(baseline, marked, "marked text must change composed pixels");
+                visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                    use gpui_kit::EntityInputHandler;
+                    let start = demo.composition.owner().unwrap().selection.start;
+                    let bounds = demo.bounds_for_range(start + 1..start + 3, Bounds::default(), window, cx).unwrap();
+                    assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+                    assert_eq!(demo.character_index_for_point(point(bounds.origin.x, bounds.origin.y + px(1.)), window, cx), Some(start + 1));
+                    assert!(demo.bounds_for_range(start + 1..start + 2, Bounds::default(), window, cx).is_none(), "cannot split emoji surrogate pair");
+                    assert_eq!(demo.text_edits, records);
+                })).unwrap();
+                marked.save(output.join(format!("{powerpc}-{depth}-marked.png"))).unwrap();
+                visual.update(|cx| view.update(cx, |demo, cx| {
+                    assert_eq!(demo.text_edits, records);
+                    demo.composition.cancel(); cx.notify();
+                }));
+                visual.run_until_parked();
+                let restored = visual.capture_screenshot(window.into()).unwrap();
+                assert_eq!(baseline, restored, "cancellation must restore exact composed pixels");
+                baseline.save(output.join(format!("{powerpc}-{depth}-baseline.png"))).unwrap();
+                eprintln!("PASS composition-surface-restoration powerpc={powerpc} depth={depth}");
+            }
+        }
+
     pub(super) fn main() {
         run(Args::parse());
     }
@@ -4789,6 +4907,11 @@ mod desktop {
     }
 
     fn run(args: Args) {
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_composition_surface.as_ref() {
+            capture_composition_surface(output);
+            return;
+        }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_custom_menu_fallback.as_ref() {
             capture_custom_menu_fallback(output);
@@ -8974,7 +9097,10 @@ mod desktop {
                         let mut adjusted = None;
                         assert_eq!(demo.text_for_range(start..start + 3, &mut adjusted, window, cx), Some("日😀".into()));
                         assert!(demo.text_for_range(start + 1..start + 2, &mut adjusted, window, cx).is_none());
+                        assert!(demo.composition_surface(cx).is_some());
+                        assert_eq!(demo.text_edits.iter().find(|record| record.guest_id == before.guest_id).unwrap(), &before);
                     });
+                    window.render_frame(cx);
                     window.press("backspace", cx);
                 }).unwrap();
                 assert!(!receiver.try_iter().any(|command| matches!(command, super::Command::Input(_) | super::Command::CommitText(..))),
