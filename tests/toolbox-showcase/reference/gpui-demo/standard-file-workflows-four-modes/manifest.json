@@ -1,0 +1,17 @@
+{
+  "source_base": "24de452504b2d083ce7a09592215567b869465a2",
+  "source_patch_sha256": "657874b414a28e9f9441dda4994c8fc2e491607d245383f56dba4dc05d2a0e3a",
+  "source_sha256": "35d139455e5f3497ca63ced5acab9e7a4b584455959923901901237581b9ef2f",
+  "fixture_sha256": "41cf3aa93f2b41d0ce1d49b2bace8572140e9692d37239a749a471744ca5c09f",
+  "modes": [
+    "mono68k",
+    "colour68k",
+    "PPC8",
+    "PPC16"
+  ],
+  "tests": {
+    "semantic_standard_file_save_returns_guest_reply_across_modes": "PASS, 7.11s",
+    "semantic_new_folder_create_cancel_and_stale_actions_across_modes": "PASS, 14.55s"
+  },
+  "scope": "Guest semantic activation and Toolbox replies, creation/error/cancellation and stale action guards. Actual framebuffer depth asserted. Does not establish composed pointer interaction, durable disk persistence, physical host integration or production readiness."
+}

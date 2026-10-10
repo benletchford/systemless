@@ -7436,15 +7436,17 @@ mod desktop {
         fn semantic_new_folder_create_cancel_and_stale_actions_across_modes() {
             use super::super::activation::{ControlActivation, FileAction};
             use systemless::memory::{globals::addr::CARET_TIME, MemoryBus};
-            for (powerpc, depth, duplicate_directory) in [(false, Some(1)), (false, Some(8)), (true, None)].into_iter().flat_map(|(cpu, depth)| [false, true].map(move |directory| (cpu, depth, directory))) {
-                let mut session = MacintoshSession::new(true, depth);
+            for (powerpc, depth, duplicate_directory) in [(false, Some(1)), (false, Some(8)), (true, Some(8)), (true, Some(16))].into_iter().flat_map(|(cpu, depth)| [false, true].map(move |directory| (cpu, depth, directory))) {
+                let mut session = MacintoshSession::new(true, if powerpc { None } else { depth });
                 session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth.unwrap()).unwrap(); }
                 let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
                 session.initialize(&app);
                 wait_for_menu(&mut session, 129, 1, true);
                 assert!(session.runner_mut().select_guest_menu_item(129, 12));
                 wait_for_menu(&mut session, 129, 12, true);
                 settle(&mut session);
+                assert_eq!(session.runner().presented_screen_depth(), Some(u32::from(depth.unwrap())));
                 let step = |session: &mut MacintoshSession| {
                     let tick = session.runner().guest_tick().saturating_add(1);
                     session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
@@ -7588,10 +7590,11 @@ mod desktop {
             use super::super::activation::{ControlActivation, FileAction};
             use systemless::systems::macintosh::debug::{handle_debug_request, DebugReply, DebugRequest, M68K_SPACE, PPC_SPACE};
 
-            for (powerpc, depth, replacing, keyboard) in [(false, Some(1)), (false, Some(8)), (true, None)].into_iter()
+            for (powerpc, depth, replacing, keyboard) in [(false, Some(1)), (false, Some(8)), (true, Some(8)), (true, Some(16))].into_iter()
                 .flat_map(|(cpu, depth)| [(false, 0), (true, 0), (true, 1), (true, 2)].map(move |(replacing, keyboard)| (cpu, depth, replacing, keyboard))) {
-                let mut session = MacintoshSession::new(true, depth);
+                let mut session = MacintoshSession::new(true, if powerpc { None } else { depth });
                 session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth.unwrap()).unwrap(); }
                 let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
                 session.initialize(&app);
@@ -7599,6 +7602,7 @@ mod desktop {
                 assert!(session.runner_mut().select_guest_menu_item(129, 12));
                 wait_for_menu(&mut session, 129, 12, true);
                 settle(&mut session);
+                assert_eq!(session.runner().presented_screen_depth(), Some(u32::from(depth.unwrap())));
                 let step = |session: &mut MacintoshSession| {
                     let tick = session.runner().guest_tick().saturating_add(1);
                     session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);

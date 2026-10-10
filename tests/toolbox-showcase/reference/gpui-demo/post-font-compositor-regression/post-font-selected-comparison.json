@@ -1,0 +1,16 @@
+{
+  "guest": {
+    "dimensions": [
+      800,
+      600
+    ],
+    "different_pixels": 0
+  },
+  "composed": {
+    "dimensions": [
+      2400,
+      1800
+    ],
+    "different_pixels": 0
+  }
+}
