@@ -204,11 +204,59 @@ mod tests {
                             let alpha = mask.pixels[(y * mask.width + x) as usize];
                             (alpha != 0).then_some(((mask.left + x, mask.top + y), alpha))
                         })).collect();
-                    assert_eq!(actual, expected);
+                    if raster == 1 { assert_eq!(actual, expected); }
+                    assert_eq!(mask.top, plain.top);
+                    assert_eq!(mask.height, plain.height);
+                    let native_left = expected.keys().map(|p| p.0).min().unwrap();
+                    let native_right = expected.keys().map(|p| p.0).max().unwrap();
+                    assert!(actual.keys().all(|p| p.0 >= mask.left && p.0 < mask.left + mask.width));
+                    assert!(native_left >= mask.left && native_right < mask.left + mask.width);
+                    if face == 2 {
+                        for y in 0..plain.height {
+                            let source_sum: u32 = plain.pixels[(y * plain.width) as usize..((y + 1) * plain.width) as usize]
+                                .iter().map(|alpha| u32::from(*alpha)).sum();
+                            let painted_sum: u32 = mask.pixels[(y * mask.width) as usize..((y + 1) * mask.width) as usize]
+                                .iter().map(|alpha| u32::from(*alpha)).sum();
+                            assert_eq!(painted_sum, source_sum, "shear preserves row coverage");
+                        }
+                    }
                     assert_eq!(mask.guest_advance, plain.guest_advance + i32::from(face == 3));
                 }
             }
         } }
+    }
+
+    #[test]
+    fn continuous_italic_edges_preserve_coverage_and_native_envelope() {
+        for raster in 2..=8 {
+            let width = 2 * raster;
+            let height = 12 * raster;
+            let top = -8 * raster;
+            let source = systemless::quickdraw::text::SmoothGlyphSnapshot {
+                pixels: vec![255u8; (width * height) as usize].into(),
+                width, height, left: -raster, top, guest_advance: 7,
+                raster_scale: raster as u32,
+            };
+            let metrics = systemless::quickdraw::text::get_font_metrics(3, 12);
+            let shifts: Vec<_> = (0..height).map(|y| i32::from(
+                systemless::quickdraw::fonts::style::get_italic_slant(3, 12, &metrics,
+                    0, ((top + y).div_euclid(raster)) as i16)) * raster).collect();
+            let min = *shifts.iter().min().unwrap();
+            let max = *shifts.iter().max().unwrap();
+            let painted = super::smooth_italic_mask(source, 3, 12).unwrap();
+            assert_eq!(painted.left, -raster + min);
+            assert_eq!(painted.width, width + max - min);
+            assert_eq!((painted.top, painted.height, painted.guest_advance), (top, height, 7));
+            assert!(painted.pixels.iter().any(|alpha| *alpha > 0 && *alpha < 255),
+                "device-resolution shear must antialias the opaque bar's boundaries");
+            let mut previous: Option<usize> = None;
+            for row in painted.pixels.chunks(painted.width as usize) {
+                assert_eq!(row.iter().map(|a| u32::from(*a)).sum::<u32>(), width as u32 * 255);
+                let left = row.iter().position(|a| *a != 0).unwrap();
+                if let Some(before) = previous { assert!(left.abs_diff(before) <= 1); }
+                previous = Some(left);
+            }
+        }
     }
 
     #[test]
@@ -1834,8 +1882,9 @@ fn smooth_halo_mask(
     Some(glyph)
 }
 
-/// Keep the native row-based shear and baseline/descent pivot. The source
-/// outline stays unchanged; no host italic face or host layout is introduced.
+/// Preserve native shear at raster1. At higher resolution, use its underlying
+/// half-pixel slope with coverage interpolation inside the same native envelope.
+/// The original outline, baseline/descent pivot and guest advance stay intact.
 fn smooth_italic_mask(
     mut glyph: systemless::quickdraw::text::SmoothGlyphSnapshot, font: i16, size: i16,
 ) -> Option<systemless::quickdraw::text::SmoothGlyphSnapshot> {
@@ -1851,11 +1900,21 @@ fn smooth_italic_mask(
     let min = shifts.iter().copied().min().unwrap_or(0);
     let max = shifts.iter().copied().max().unwrap_or(0);
     let width = glyph.width.checked_add(max.checked_sub(min)?)?;
-    let mut pixels = vec![0; usize::try_from(width.checked_mul(glyph.height)?).ok()?];
+    let mut pixels = vec![0u8; usize::try_from(width.checked_mul(glyph.height)?).ok()?];
     for (y, shift) in shifts.into_iter().enumerate() {
+        let twice = if raster == 1 { shift.checked_mul(2)? } else {
+            let pivot = i32::from(metrics.descent).checked_sub(1)?.checked_mul(raster)?;
+            pivot.checked_sub(glyph.top.checked_add(i32::try_from(y).ok()?)?)?.max(0)
+                .clamp(min.checked_mul(2)?, max.checked_mul(2)?)
+        };
+        let shift = twice.div_euclid(2);
+        let half = twice.rem_euclid(2) != 0;
         for x in 0..glyph.width {
-            pixels[y * width as usize + (x + shift - min) as usize] =
-                glyph.pixels[y * glyph.width as usize + x as usize];
+            let alpha = glyph.pixels[y * glyph.width as usize + x as usize];
+            let at = y * width as usize + (x + shift - min) as usize;
+            let first = if half { alpha / 2 } else { alpha };
+            pixels[at] = pixels[at].saturating_add(first);
+            if half { pixels[at + 1] = pixels[at + 1].saturating_add(alpha - first); }
         }
     }
     glyph.left = glyph.left.checked_add(min)?;
