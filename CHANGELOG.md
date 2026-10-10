@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.93.0](https://github.com/benletchford/systemless/compare/v0.92.2...v0.93.0) (2026-10-10)
+
+
+### Features
+
+* add the original Moria Macintosh port ([#4442](https://github.com/benletchford/systemless/issues/4442)) ([5554543](https://github.com/benletchford/systemless/commit/5554543dfee9421a36c721c55b77c823a526b99d))
+
 ## [0.92.2](https://github.com/benletchford/systemless/compare/v0.92.1...v0.92.2) (2026-10-10)
 
 
