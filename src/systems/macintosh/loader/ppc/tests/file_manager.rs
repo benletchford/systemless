@@ -10486,3 +10486,119 @@ fn pb_rename_sync_validates_pathnames_and_result_before_mutation() {
     assert_eq!(loaded.vfs_files[0].path, "System Folder/Preferences/New");
     assert!(loaded.take_deleted_vfs_file_paths().is_empty());
 }
+
+#[test]
+fn pb_resolve_file_id_ref_sync_round_trips_catalogue_id_and_preserves_inputs_on_error() {
+    let pef = synthetic_pef_with_import(b"PBResolveFileIDRefSync");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let pb = PPC_DATA_BASE + 0x1000;
+    let name = pb + 128;
+    let path = "System Folder/Preferences/File ID Test";
+    loaded.memory.add_region(pb, vec![0; 512]);
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: path.to_string(),
+        data: b"data".to_vec().into(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        dirty: false,
+    });
+    write_ppc_pstring(&mut loaded.memory, name, b"File ID Test");
+    loaded.memory.write_u32_be(pb + 18, name).unwrap();
+    loaded
+        .memory
+        .write_u32_be(pb + 48, PPC_PREFERENCES_DIR_ID)
+        .unwrap();
+    loaded.cpu.gpr[3] = pb;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PBGetCatInfo);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let id = loaded.memory.read_u32_be(pb + 48).unwrap();
+    loaded.memory.write_u32_be(pb + 54, id).unwrap();
+    loaded.memory.write_u32_be(pb + 48, 0x1234).unwrap();
+    write_ppc_pstring(&mut loaded.memory, name, b"");
+    loaded.cpu.gpr[3] = pb;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PBResolveFileIDRef);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        ppc_read_pstring_bytes(&mut loaded.memory, name),
+        Some(b"File ID Test".to_vec())
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(pb + 48),
+        Some(PPC_PREFERENCES_DIR_ID)
+    );
+
+    loaded.memory.write_u32_be(pb + 54, 0xdead_beef).unwrap();
+    loaded.memory.write_u32_be(pb + 48, 0x1234).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PBResolveFileIDRef);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_FNF_ERR));
+    assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(PPC_FNF_ERR as u16));
+    assert_eq!(loaded.memory.read_u32_be(pb + 48), Some(0x1234));
+    assert_eq!(
+        ppc_read_pstring_bytes(&mut loaded.memory, name),
+        Some(b"File ID Test".to_vec())
+    );
+
+    loaded.memory.write_u32_be(pb + 54, id).unwrap();
+    loaded.memory.write_u32_be(pb + 18, 0).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PBResolveFileIDRef);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded.memory.read_u32_be(pb + 48),
+        Some(PPC_PREFERENCES_DIR_ID)
+    );
+}
+
+#[test]
+fn pb_resolve_file_id_ref_sync_handles_resource_only_files_and_rejects_short_output() {
+    let pef = synthetic_pef_with_import(b"PBResolveFileIDRefSync");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let pb = PPC_DATA_BASE + 0x1000;
+    let short_name = PPC_DATA_BASE + 0x3000;
+    let path = "System Folder/Preferences/Resource Only";
+    loaded.memory.add_region(pb, vec![0; 128]);
+    loaded.memory.add_region(short_name, vec![0]);
+    loaded.push_vfs_resource_file(PpcVfsResourceFileRecord {
+        path: path.to_string(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        resource_len: 0,
+        raw_data: None,
+        map_attrs: 0,
+        dirty: false,
+    });
+    loaded
+        .memory
+        .write_u32_be(pb + 54, ppc_synthetic_file_id(path))
+        .unwrap();
+    loaded.memory.write_u32_be(pb + 18, short_name).unwrap();
+    loaded.memory.write_u32_be(pb + 48, 0x1234).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PBResolveFileIDRef);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    assert_eq!(loaded.memory.read_u32_be(pb + 48), Some(0x1234));
+    assert_eq!(loaded.memory.read_u8(short_name), Some(0));
+
+    loaded.memory.write_u32_be(pb + 18, 0).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PBResolveFileIDRef);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded.memory.read_u32_be(pb + 48),
+        Some(PPC_PREFERENCES_DIR_ID)
+    );
+
+    loaded
+        .memory
+        .write_u16_be(pb + 22, (-99i16) as u16)
+        .unwrap();
+    loaded.memory.write_u32_be(pb + 48, 0x1234).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PBResolveFileIDRef);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NSV_ERR));
+    assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(PPC_NSV_ERR as u16));
+    assert_eq!(loaded.memory.read_u32_be(pb + 48), Some(0x1234));
+}

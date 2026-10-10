@@ -1327,6 +1327,93 @@ pub(super) fn ppc_finder_info_for_path(
     (0, 0, 0)
 }
 
+pub(super) fn ppc_pb_resolve_file_id_ref(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_volumes: &[PpcVfsVolumeRecord],
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &[PpcVfsFileRecord],
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
+    working_directories: &HashMap<i16, ProcessWorkingDirectory>,
+) -> i16 {
+    // Inside Macintosh: Files, pp. 2-229--2-230 and FIDParam, p. 2-294.
+    // Resolve the same catalogue IDs exposed by PBGetCatInfo/PBGetFCBInfo.
+    let pb = cpu.gpr[3];
+    if pb == 0 || pb.checked_add(58).is_none() {
+        return PPC_PARAM_ERR;
+    }
+    let (Some(name_ptr), Some(vref), Some(file_id)) = (
+        memory.read_u32_be(pb + 18),
+        memory.read_u16_be(pb + 22),
+        memory.read_u32_be(pb + 54),
+    ) else {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    };
+    let requested_ref = vref as i16;
+    let mut volume_ref = working_directories.get(&requested_ref).map_or_else(
+        || ppc_resolve_volume_ref_num(requested_ref),
+        |wd| wd.volume_ref_num,
+    );
+    if name_ptr != 0 {
+        let Some(name) = ppc_read_pstring_bytes(memory, name_ptr) else {
+            return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+        };
+        let name = decode_mac_roman(&name);
+        if let Some(volume_name) = name.strip_suffix(':').filter(|name| !name.contains(':')) {
+            volume_ref = if volume_name
+                .eq_ignore_ascii_case(crate::trap::TrapDispatcher::boot_volume_name())
+            {
+                PPC_BOOT_VOLUME_REF_NUM
+            } else if let Some(volume) = vfs_volumes
+                .iter()
+                .find(|volume| volume.name.eq_ignore_ascii_case(volume_name))
+            {
+                volume.ref_num
+            } else {
+                return ppc_complete_pb(memory, pb, PPC_NSV_ERR);
+            };
+        }
+    }
+    if volume_ref != PPC_BOOT_VOLUME_REF_NUM
+        && !vfs_volumes
+            .iter()
+            .any(|volume| volume.ref_num == volume_ref)
+    {
+        return ppc_complete_pb(memory, pb, PPC_NSV_ERR);
+    }
+    let mounted_volume_for_path = |path: &str| {
+        vfs_volumes
+            .iter()
+            .find(|volume| {
+                ppc_directory_path_for_id(vfs_directories, volume.root_dir_id)
+                    .is_some_and(|root| path.starts_with(&format!("{root}/")))
+            })
+            .map_or(PPC_BOOT_VOLUME_REF_NUM, |volume| volume.ref_num)
+    };
+    let path = vfs_files
+        .iter()
+        .map(|file| file.path.as_str())
+        .chain(vfs_resource_files.iter().map(|file| file.path.as_str()))
+        .find(|path| {
+            ppc_synthetic_file_id(path) == file_id && mounted_volume_for_path(path) == volume_ref
+        });
+    let Some(path) = path else {
+        return ppc_complete_pb(memory, pb, PPC_FNF_ERR);
+    };
+    let name = ppc_vfs_basename_bytes(path);
+    if !ppc_memory_can_write_bytes(memory, pb + 16, 2)
+        || !ppc_memory_can_write_bytes(memory, pb + 48, 4)
+        || !ppc_optional_pstring_output_can_write(memory, name_ptr, &name)
+    {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    }
+    if name_ptr != 0 {
+        let _ = ppc_write_pstring_bytes(memory, name_ptr, &name);
+    }
+    let _ = memory.write_u32_be(pb + 48, ppc_parent_dir_id_for_path(vfs_directories, path));
+    ppc_complete_pb(memory, pb, PPC_NO_ERR)
+}
+
 pub(super) fn ppc_synthetic_file_id(path: &str) -> u32 {
     let mut hash = 0x811c_9dc5u32;
     for byte in path.bytes().map(|byte| byte.to_ascii_lowercase()) {

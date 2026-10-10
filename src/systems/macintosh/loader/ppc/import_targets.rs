@@ -475,6 +475,7 @@ pub enum PpcImportDispatcherTarget {
     PBSetFInfo,
     PBHSetFInfo,
     PBGetCatInfo,
+    PBResolveFileIDRef,
     PBSetCatInfo,
     PBHGetVInfo,
     GetVInfo,
@@ -3426,6 +3427,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "PBHSetFInfo")
         | ("InterfaceLib", "PBHSetFInfoSync")
         | ("InterfaceLib", "PBHSetFInfoAsync") => PpcImportDispatcherTarget::PBHSetFInfo,
+        ("InterfaceLib", "PBResolveFileIDRefSync") => PpcImportDispatcherTarget::PBResolveFileIDRef,
         ("InterfaceLib", "PBGetCatInfo")
         | ("InterfaceLib", "PBGetCatInfoSync")
         | ("InterfaceLib", "PBGetCatInfoAsync") => PpcImportDispatcherTarget::PBGetCatInfo,
