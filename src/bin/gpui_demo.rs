@@ -367,7 +367,7 @@ mod desktop {
         #[arg(long, hide = true, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=60))]
         capture_application_timeout_seconds: u64,
         #[cfg(feature = "gpui-demo-test")]
-        #[arg(long, hide = true, requires_all = ["capture_application", "capture_application_mouse_h"], conflicts_with = "capture_application_key")]
+        #[arg(long, hide = true, requires_all = ["capture_application", "capture_application_mouse_h"])]
         capture_application_mouse_v: Option<i16>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true, requires = "capture_application_mouse_v")]
@@ -378,6 +378,9 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true, default_value_t = 60, value_parser = clap::value_parser!(u32).range(1..=1000))]
         capture_application_hold_updates: u32,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, requires = "capture_application_key", value_parser = clap::value_parser!(u32).range(1..=10000))]
+        capture_application_key_after: Option<u32>,
 
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -5141,8 +5144,13 @@ mod desktop {
         let pointer = args.capture_application_mouse_v.zip(args.capture_application_mouse_h);
         let input_after = args.capture_application_input_after;
         let release_after = input_after + args.capture_application_hold_updates;
+        let key_after = args.capture_application_key_after.unwrap_or(input_after);
+        let key_release_after = key_after + args.capture_application_hold_updates;
         let target_observations = args.capture_application_updates.max(
-            if input.is_some() || pointer.is_some() { release_after + 60 } else { 1 });
+            if input.is_some() || pointer.is_some() {
+                (if input.is_some() { key_release_after } else { 0 })
+                    .max(if pointer.is_some() { release_after } else { 0 }) + 60
+            } else { 1 });
         let observation_timeout = Duration::from_secs(args.capture_application_timeout_seconds);
         let (sender, receiver) = mpsc::channel();
         let updates = Arc::new(Mutex::new(None));
@@ -5162,26 +5170,25 @@ mod desktop {
             if let Some(update) = updates.lock().unwrap().take() {
                 assert!(update.frame.is_some(), "application worker failed: {}", update.status);
                 observations += 1;
-                if input.is_some() || pointer.is_some() {
+                if let Some((vertical, horizontal)) = pointer {
                     if observations == input_after {
                         let (width, height, pixels) = update.frame.as_ref().unwrap();
                         image::save_buffer(output.with_extension("before.guest.png"), pixels, *width, *height,
                             image::ColorType::Rgba8).unwrap();
-                        let event = if let Some((mac_key, character)) = input {
-                            MacintoshInput::KeyDown { mac_key, character }
-                        } else {
-                            let (vertical, horizontal) = pointer.unwrap();
-                            MacintoshInput::MouseDown { vertical, horizontal }
-                        };
-                        worker.0.send(Command::Input(event)).unwrap();
+                        worker.0.send(Command::Input(MacintoshInput::MouseDown { vertical, horizontal })).unwrap();
                     } else if observations == release_after {
-                        let event = if let Some((mac_key, character)) = input {
-                            MacintoshInput::KeyUp { mac_key, character }
-                        } else {
-                            let (vertical, horizontal) = pointer.unwrap();
-                            MacintoshInput::MouseUp { vertical, horizontal }
-                        };
-                        worker.0.send(Command::Input(event)).unwrap();
+                        worker.0.send(Command::Input(MacintoshInput::MouseUp { vertical, horizontal })).unwrap();
+                    }
+                }
+                if let Some((mac_key, character)) = input {
+                    if observations == key_after {
+                        let (width, height, pixels) = update.frame.as_ref().unwrap();
+                        image::save_buffer(output.with_extension(if pointer.is_some() {
+                            "before-key.guest.png"
+                        } else { "before.guest.png" }), pixels, *width, *height, image::ColorType::Rgba8).unwrap();
+                        worker.0.send(Command::Input(MacintoshInput::KeyDown { mac_key, character })).unwrap();
+                    } else if observations == key_release_after {
+                        worker.0.send(Command::Input(MacintoshInput::KeyUp { mac_key, character })).unwrap();
                     }
                 }
                 if observations == target_observations { break update; }
@@ -5198,6 +5205,7 @@ mod desktop {
                         "observed_worker_updates": observations, "requested_worker_updates": target_observations,
                         "guest_key_input": input, "guest_mouse_input_v_h": pointer,
                         "input_after_updates": input_after, "release_after_updates": release_after,
+                        "key_after_updates": key_after, "key_release_after_updates": key_release_after,
                         "observation_timeout_seconds": observation_timeout.as_secs(),
                         "reason": "observation deadline exceeded",
                     })).unwrap()).unwrap();
@@ -5243,6 +5251,7 @@ mod desktop {
             "observed_worker_updates": observations, "observation_elapsed_ms": observed_ms,
             "guest_key_input": input, "guest_mouse_input_v_h": pointer,
             "input_after_updates": input_after, "release_after_updates": release_after,
+            "key_after_updates": key_after, "key_release_after_updates": key_release_after,
             "observation_timeout_seconds": observation_timeout.as_secs(),
             "status": status, "guest_dimensions": [width,height], "scene_scale": scene_scale,
             "scene_origin": scene_origin, "menu_presented": menu_presented, "menu_height": menu_height,
@@ -6468,6 +6477,7 @@ mod desktop {
                         capture_application_mouse_h: None,
                         capture_application_input_after: 120,
                         capture_application_hold_updates: 60,
+                        capture_application_key_after: None,
                         capture_windows_moved: None,
                         capture_windows_activated: None,
                         capture_windows_grown: None,
