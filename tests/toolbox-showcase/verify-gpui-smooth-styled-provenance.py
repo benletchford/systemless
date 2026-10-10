@@ -30,6 +30,7 @@ def verify(directory,partial=False):
   seen.add(key)
   for name,digest in [('rendered','rendered_sha256'),('guest','guest_sha256'),('evidence','evidence_sha256')]:assert sha(path(case[name]))==case[digest],(key,name)
   evidence=json.loads(path(case['evidence']).read_text())
+  assert ('runtime_cpu_evidence' in manifest)==('runtime_powerpc' in evidence), 'runtime CPU evidence policy and sidecar must agree'
   if 'runtime_cpu_evidence' in manifest:
    assert manifest['runtime_cpu_evidence']=='active application runtime'
    assert type(evidence.get('runtime_powerpc')) is bool

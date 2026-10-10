@@ -41,6 +41,7 @@ if 'runtime_cpu_evidence' in base:
   'runtime-cpu-type':lambda m,c,e:e.update(runtime_powerpc=int(e['runtime_powerpc'])),
   'runtime-cpu-missing':lambda m,c,e:e.pop('runtime_powerpc'),
   'runtime-cpu-evidence':lambda m,c,e:m.update(runtime_cpu_evidence='requested only'),
+  'runtime-cpu-policy-missing':lambda m,c,e:m.pop('runtime_cpu_evidence'),
  })
 with tempfile.TemporaryDirectory(prefix='systemless-styled-verifier-') as temporary:
  out=pathlib.Path(temporary)
