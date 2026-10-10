@@ -1967,6 +1967,29 @@ fn payload_from_forks(
         return payload_from_stuffit_bytes(name, &rsrc, executable_priority);
     }
 
+    if let Some(files) = crate::game::smaller_installer::expand_compact_pro(&data)? {
+        let mut payload = Payload {
+            dirs: vec![name.to_string()],
+            files: Vec::new(),
+            volumes: Vec::new(),
+            installer_roots: Vec::new(),
+            skipped_disk_image_errors: Vec::new(),
+        };
+        for file in files {
+            let embedded = payload_from_forks(
+                &format!("{name}/{}", file.name),
+                file.data,
+                file.rsrc,
+                file.file_type,
+                file.creator,
+                file.finder_flags,
+                executable_priority,
+            )?;
+            merge_payload(&mut payload, embedded);
+        }
+        return Ok(payload);
+    }
+
     if let Some(payload) = expand_installer_maker_payload(name, &data, executable_priority)? {
         return Ok(payload);
     }
