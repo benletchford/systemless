@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.95.2](https://github.com/benletchford/systemless/compare/v0.95.1...v0.95.2) (2026-10-10)
+
+
+### Bug Fixes
+
+* support PowerPC FillRoundRect pattern drawing ([f98c1b8](https://github.com/benletchford/systemless/commit/f98c1b8974e53b2921aee97af2021a82fbfc4a46))
+
 ## [0.95.1](https://github.com/benletchford/systemless/compare/v0.95.0...v0.95.1) (2026-10-10)
 
 
