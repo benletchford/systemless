@@ -929,6 +929,7 @@ pub(crate) fn single_line(
     folder: &systemless::runner::StandardFileNewFolderSnapshot,
     identity: (u32, u64),
     output: std::rc::Rc<std::cell::RefCell<Option<TextPointerMap>>>,
+    active: bool,
     scale: f32,
     foreground: gpui_kit::Hsla,
     selection_color: gpui_kit::Hsla,
@@ -986,7 +987,7 @@ pub(crate) fn single_line(
         move |_, (line, origin, height, caret_width), window, _| {
             let left = origin.x + px(line.positions[start] as f32 * scale);
             let right = origin.x + px(line.positions[end] as f32 * scale);
-            if start != end {
+            if active && start != end {
                 window.paint_quad(fill(
                     Bounds::new(point(left, origin.y), size(right - left, height)),
                     selection_color,
@@ -1007,7 +1008,7 @@ pub(crate) fn single_line(
                     ));
                 }
             }
-            if start == end && caret_visible {
+            if active && start == end && caret_visible {
                 window.paint_quad(fill(
                     Bounds::new(point(left, origin.y), size(caret_width, height)),
                     foreground,

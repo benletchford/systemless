@@ -4963,3 +4963,16 @@ actual depth/scale sidecars and images are archived in
 cases, selected filename staging has evidence in every CPU/depth mode, but not
 every editor/scale combination. Physical/native and broad release gates remain
 open.
+
+
+### Filename focus-loss rendering and marked-text cancellation
+
+Save and New Folder now hide filename selection/caret when the host is inactive
+while retaining guest text and selection state. Shared Demo captures pass for
+colour68k Save scale1 and PPC16 New Folder scale1.5: focus loss cancels staged
+Unicode and releases ownership; foreground restores the pinned owner and exact
+original pixels without resurrecting marked text. Both inactive images were
+reviewed. The New Folder selection defect discovered during image review is
+retained alongside the corrected image, logs, provenance and successful build
+in `reference/gpui-demo/file-focus-loss`. These simulated host-state transitions
+do not qualify the physical window observer or all CPU/scale combinations.

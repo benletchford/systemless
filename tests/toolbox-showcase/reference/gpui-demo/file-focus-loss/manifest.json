@@ -1,0 +1,20 @@
+{
+  "base_head": "d206b1980c46024b915a6edafb6bc02fae964783",
+  "scope": "Uncommitted source atop base head. Shared Demo colour68k Save scale1 and PPC16 New Folder scale1.5: inactive selections hidden, marked text cancelled, guest owner restored and foreground pixels restored exactly. Both inactive images reviewed. Before-selection-fix PNG retains observed New Folder defect. Not physical host observer, native reference, all CPU/scale or performance qualification.",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "95350639e9f6ff4132a0141c53bfebad408a06001033296a28cee819a9d751e9",
+    "src/bin/gpui_demo_text.rs": "7a011307171f87ff9b3d410753300fd830131ecfbec7e42070fb3a9da576b285"
+  },
+  "sha256": {
+    "build.log": "bf56cf7340e8a80cee500326c79762c4229fcadbb07a66b7ddfb917afcc19147",
+    "colour-save.capture.json": "fe61fda5012796debf8708662f309f1f69105440d2a5fa6734b41768e56bad8a",
+    "colour-save.inactive.png": "879572f97245cf5eef7021bdd5eba007b95aff5789e492623af8d3472554a444",
+    "colour-save.log": "f4cec1d908d479b4c35351ba5d80d1ed5c6e48d725dd74faffcb56ebdbe46586",
+    "colour-save.png": "655ffab1611c1360dd4b9a8e5bc530c341f81e9352f38854390411a9536e9e13",
+    "ppc16-folder-before-selection-fix.png": "29f93e4d87a1215bad373e957df01e8ee4882cdeb9ff3bdad2882b4442ce6188",
+    "ppc16-folder-fixed.capture.json": "ddba3ff78c54f667da18b39842ef14b93392b04eec0db3c8d91b5d313d37ac5f",
+    "ppc16-folder-fixed.inactive.png": "c47fc448a45722d434c4f3961bc223033911ea0a1e1f2d8ebaac97f5e47c33a9",
+    "ppc16-folder-fixed.log": "a85ddabe7d1ebc57e05df98b0ce9e6da0558d4fb35aa5c8e7dda346f35d348fd",
+    "ppc16-folder-fixed.png": "29f93e4d87a1215bad373e957df01e8ee4882cdeb9ff3bdad2882b4442ce6188"
+  }
+}
