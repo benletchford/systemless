@@ -47,6 +47,22 @@ compatibility:
       sustained play, saves, audio and editor remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4431
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: 70f1b124e92fff0ba4b8a6ced5111e28a1391995
+    architecture: 68k
+    environment: >-
+      Actual public systemless.org route on v0.92.1 in fresh Chrome, normal worker,
+      WebGL, default 25 MHz, 800-by-600 canvas and crossOriginIsolated false. Public
+      game request returns HTTP 200 from the promoted object; an independent fetch
+      in the same browser verifies its exact original SHA-256 and 3684474-byte body.
+      Ordinary mouse and arrow-key events dismiss Not Yet, open New Game and the
+      unlocked Spooked world, walk and produce an airborne jump. Registered worlds
+      remain locked. Per-step captures inspected; no archive substitution or guest
+      memory writes. Room completion, key collection, sustained play, saves, audio,
+      editor and the original PPC slice remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4435
 runtime:
   executable_path: Monkey Shines 1.1.2/Monkey Shines
   screen_depth: 8
