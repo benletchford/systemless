@@ -7783,6 +7783,15 @@ mod desktop {
                 assert_eq!(reply.bytes[1], u8::from(replacing), "replacement result");
                 assert_eq!(usize::from(reply.bytes[12]), name_bytes.len());
                 assert_eq!(&reply.bytes[13..13 + name_bytes.len()], name_bytes.as_slice(), "guest-edited FSSpec name");
+                if !replacing {
+                    use systemless::memory::MemoryBus;
+                    let main = session.runner_mut().window_frame_snapshot().into_iter()
+                        .find(|frame| frame.window.title == "Toolbox Showcase").unwrap().guest_id;
+                    assert!((0..100).any(|_| {
+                        step(&mut session);
+                        session.runner_mut().bus_mut().read_long(main + 152) == 0x53460001
+                    }), "guest write/close/reopen/read/byte comparison failed: PPC={powerpc}, depth={depth:?}");
+                }
             }
         }
 

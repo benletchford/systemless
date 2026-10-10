@@ -2980,7 +2980,11 @@ void DoLegacyFileOpen(void)
 
 void DoStandardFileSave(void)
 {
-    OSErr err;
+    OSErr err, closeErr;
+    short refNum, i;
+    long count;
+    static const char payload[] = "Systemless Standard File round trip\r";
+    char restored[sizeof(payload)];
 
     StandardPutFile("\pSave a named fixture", "\pUntitled", &gFileSaveReply);
     if (!gFileSaveReply.sfGood) {
@@ -2988,13 +2992,41 @@ void DoStandardFileSave(void)
         return;
     }
 
-    /* The returned FSSpec is consumed by File Manager, then removed so the
-     * next Open dialog sees only the immutable fixture entries. */
+    /* Exercise the returned specification through guest File Manager calls.
+     * Close and reopen before checking bytes; cleanup retains the immutable
+     * directory used by the other showcase scenarios. This is not a host
+     * process restart or durable-save qualification. */
     err = FSpCreate(&gFileSaveReply.sfFile, 'SHWC', 'TEXT', smSystemScript);
     if (err == noErr) {
-        err = FSpDelete(&gFileSaveReply.sfFile);
+        err = FSpOpenDF(&gFileSaveReply.sfFile, fsWrPerm, &refNum);
+        if (err == noErr) {
+            count = sizeof(payload) - 1;
+            err = FSWrite(refNum, &count, payload);
+            if (err == noErr && count != sizeof(payload) - 1) err = ioErr;
+            closeErr = FSClose(refNum);
+            if (err == noErr) err = closeErr;
+        }
+        if (err == noErr) {
+            err = FSpOpenDF(&gFileSaveReply.sfFile, fsRdPerm, &refNum);
+            if (err == noErr) {
+                count = sizeof(payload) - 1;
+                err = FSRead(refNum, &count, restored);
+                if (err == noErr && count != sizeof(payload) - 1) err = ioErr;
+                if (err == noErr) {
+                    for (i = 0; i < sizeof(payload) - 1; i++) {
+                        if (restored[i] != payload[i]) { err = ioErr; break; }
+                    }
+                }
+                closeErr = FSClose(refNum);
+                if (err == noErr) err = closeErr;
+            }
+        }
+        closeErr = FSpDelete(&gFileSaveReply.sfFile);
+        if (err == noErr) err = closeErr;
     }
     gFileSaveStatus = err == noErr ? fileStatusAccepted : fileStatusError;
+    /* App-owned test checkpoint: status is published only after close/read/cleanup. */
+    SetWRefCon(gMainWindow, 0x53460000L | gFileSaveStatus);
 }
 
 void DoLegacyFileSave(void)

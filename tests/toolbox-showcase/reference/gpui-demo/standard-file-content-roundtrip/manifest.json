@@ -1,0 +1,15 @@
+{
+  "source_base": "99a603b9ea3f8492021f4c02ddd8df1d970be54a",
+  "fixture_sha256": "6906f69fc93c1154d34c0232723a6f9e4e27f2a8b0373598a6bc978b4692b99f",
+  "source_patch_sha256": "dda3d1ea4eab73bdf49b3cd5ca33d847536bc7b4dec1d40ecf423f5299efaace",
+  "test": "semantic_standard_file_save_returns_guest_reply_across_modes",
+  "result": "PASS, 7.15s",
+  "modes": [
+    "mono68k",
+    "colour68k",
+    "PPC8",
+    "PPC16"
+  ],
+  "scope": "New filename: guest FSpCreate, FSpOpenDF, FSWrite, FSClose, reopen, FSRead, exact byte comparison, close and delete. App-owned WRefCon checkpoint asserted only after success. Replacement cases assert reply only. No durable host restart or composed pointer qualification.",
+  "adjacent_regression": "semantic_new_folder_create_cancel_and_stale_actions_across_modes PASS, 14.58s"
+}
