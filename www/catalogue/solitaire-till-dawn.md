@@ -36,7 +36,7 @@ artifacts:
   format: hqx
   source:
     type: url
-    url: https://www.semicolon.com/Downloads/SolitaireTillDawn401.sit.hqx
+    url: https://github.com/benletchford/systemless/releases/download/catalogue-intake-20261010/solitaire-till-dawn-401.sit.hqx
     expected_sha256: 89ed4855970a6b84ed01967fc13fb83a802a2aa17d38977bacee4d8a608545fa
     expected_size: 1736853
   provenance:
