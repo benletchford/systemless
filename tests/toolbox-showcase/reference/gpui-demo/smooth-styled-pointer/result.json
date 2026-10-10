@@ -1,0 +1,34 @@
+{
+  "source_commit": "b4d1f7c5e0a9c6d905357653f8dffd3ad232c4ea",
+  "command": "cargo test --locked --example gpui-menu-demo --features gpui-demo-test styled_document_glyph_clicks_reach_guest_at_centered_scene_scales -- --test-threads=1",
+  "result": "passed",
+  "tests_passed": 1,
+  "elapsed_seconds": 583.93,
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "2c8497c5c92dd75fe03a986157cc96db8bbc339a93b1365da333dbb7735290dc",
+    "src/bin/gpui_demo_text.rs": "58cdc47d3a28e07f16493ebd60caa4afc3a05de6a9e31eb0a9cccf108b3778c2",
+    "src/bin/gpui_demo_frames.rs": "b293ad66102ebdbc69a697b2bdc8d1ba01349a36a20c6a994b7e280eb14d814b",
+    "src/systems/macintosh/quickdraw/text.rs": "ea9da39c50261b463329d17ec45b3faac49b7fd4a57fef75812d9c6f0fc8d242",
+    "src/systems/macintosh/quickdraw/fonts/outline.rs": "2f57a2783f586f4279984bda73b3e189d1ac399ec96e8bc21927c0124a787e7b",
+    "src/systems/macintosh/quickdraw/fonts/style.rs": "1be20f2155e9dfa4ed2cbc0669f49898dc3a336e50e972d08534170826b60c1c",
+    "src/systems/macintosh/quickdraw/fonts/mod.rs": "0923253b002fe35ada585281d8d4115679c7ad393dabac7288f4941ed248846f",
+    "tests/toolbox-showcase/capture-gpui-styled-text-matrix.py": "e412e2348e7254d4a2b2327fb2ac0200d5160a4992961d02d80311ec8cc53943",
+    "tests/toolbox-showcase/verify-gpui-styled-text-ink.py": "8d4c4551b7316935539e48e6ef9764d6d6c32e25dd72ef1294bc47a9d90f0b6e"
+  },
+  "test_binary_sha256": "670395c4e7408fc9741c6f64e54462b309a7447f35a02262f54c0cc8ece322ca",
+  "fixture_sha256": "17e3cd4dd1a2510627b55487db166773759319f93454bb9141ad8a80bc40d4b8",
+  "log_sha256": "d5dd8f933018ac931a6c8e6f9d0cfdd18ff19fdb11609694dc05b39e6bb53d03",
+  "modes": [
+    "mono68k",
+    "colour68k",
+    "ppc16",
+    "ppc8"
+  ],
+  "scene_scales": [
+    0.75,
+    1,
+    1.5,
+    2
+  ],
+  "scope": "Shared GPUI window click offsets 3/20 and held drag 9..26 through existing guest events, with native guest selection assertions. Visible owned-field candidates required. Does not independently assert smooth replacement for every event, prove pixel appearance, multiline editing, native host integration, lifecycle, or performance. Capture matrix ran concurrently; elapsed time is test duration, not a benchmark."
+}
