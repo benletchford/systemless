@@ -594,6 +594,7 @@ impl ProcessControlManagerState {
             .iter_mut()
             .find(|record| record.pointer == pointer)
         {
+            if record.proc_id != proc_id { record.paint.clear(); }
             record.proc_id = proc_id;
         } else {
             self.register(0, pointer, proc_id, 0);
@@ -1051,6 +1052,31 @@ where
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn control_definition_change_discards_previous_painter_background() {
+        let mut manager = ProcessControlManagerState::default();
+        manager.register(32, 128, 0, 0);
+        let record = manager.iter().next().unwrap();
+        let identity = paint::ControlPaintIdentity {
+            owner: 512, generation: record.generation, surface: 1024,
+            bounds: (0, 0, 1, 2), depth: 8, palette: 0,
+            format: paint::ControlPaintFormat::Rgba,
+        };
+        let slot = record.paint.clone();
+        let before = vec![238, 238, 238, 255].repeat(2);
+        let completed = vec![0, 0, 0, 255].repeat(2);
+        slot.record(identity, before.clone(), completed.clone());
+        manager.set_proc_id(128, 0);
+        assert_eq!(slot.backdrop(identity, &completed), Some(before));
+        manager.set_proc_id(128, 1);
+        assert!(slot.backdrop(identity, &completed).is_none());
+        // A new definition cannot claim patterned old painter ink as a fresh
+        // background merely because its guest handle and raster are unchanged.
+        let ambiguous = vec![0, 0, 0, 255, 238, 238, 238, 255];
+        slot.record(identity, ambiguous, completed.clone());
+        assert!(slot.backdrop(identity, &completed).is_none());
+    }
 
     #[test]
     fn popup_snapshot_tracks_owner_font_changes_and_rejects_replaced_records() {

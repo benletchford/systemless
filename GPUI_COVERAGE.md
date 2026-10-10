@@ -5327,3 +5327,12 @@ isolated paint tests pass, including style-change-before-redraw rejection and
 backdrop recovery afterward. Snapshot reads skip invisible controls and controls
 without eligible drawing evidence. Earlier capture hashes predate these changes;
 current full integration and mutation qualification remain pending.
+
+## Control painter lifecycle safeguards (2026-10-11)
+
+Control-definition changes discard old backdrop evidence. PPC activation changes
+invalidate replacement presentation before requesting the existing guest redraw.
+The registry definition-change regression and actual PPC activation/hit-testing
+regression pass, with scoped logs and hashes in
+`reference/gpui-demo/control-definition-freshness`. Inactive composed appearance
+and full cross-CPU mutation/disposal qualification remain open.

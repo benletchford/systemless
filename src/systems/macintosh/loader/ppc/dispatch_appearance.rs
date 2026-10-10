@@ -74,6 +74,7 @@ pub(super) fn dispatch_appearance_import(
             }
             let active = binding.dispatcher_target == PpcImportDispatcherTarget::ActivateControl;
             if let Some(record) = controls.iter_mut().find(|record| record.handle == handle) {
+                if record.active != active { record.paint.invalidate_presentation(); }
                 record.active = active;
                 let _ = ppc_draw_control(
                     memory,
