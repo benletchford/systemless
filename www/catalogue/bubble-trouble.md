@@ -35,7 +35,7 @@ artifacts:
   format: sit
   source:
     type: url
-    url: https://www.vintageapplemac.com/files/games/Bubble%20Trouble%201.0.0%20%C6%92.sit
+    url: https://github.com/benletchford/systemless/releases/download/catalogue-intake-20261010/bubble-trouble-100.sit
     expected_sha256: 18066941cad15d94bc99c482ed0ded2308dc83e327366a36bf5bd4fc1e037f4e
     expected_size: 1670970
   provenance:
@@ -43,6 +43,7 @@ artifacts:
     original: true
     sources:
     - https://www.vintageapplemac.com/software/games/b/
+    - https://www.vintageapplemac.com/files/games/Bubble%20Trouble%201.0.0%20%C6%92.sit
     license: Ambrosia Software nonprofit distribution licence
     rights_holder: Ambrosia Software, Inc.
     permission: >-
