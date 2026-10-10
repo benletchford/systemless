@@ -12,7 +12,9 @@ sidecars. The corrected 192-case isolated styled compositor matrix is archived
 in `styled-text-qualified`; it establishes true PPC16 fixture raster evidence,
 but does not qualify the live Demo. The shared Demo multiline matrix is archived
 in `styled-text-multiline-shared`. The separate 192-case shared Demo single-line
-capture run remains in progress, pinned to f565b695; it is not yet qualified.
+capture run is archived in `styled-text-single-line-shared`, pinned to f565b695.
+All 192 fixture raster/state cases pass; this earlier bitmap evidence does not
+qualify the newer smooth typography or production readiness.
 
 ### Standard File filename abbreviation
 
@@ -4266,3 +4268,7 @@ Smooth Mac Roman regression passes (0.18 s): font 0/12, font 1/9 and font 3/12, 
 Composed fixture capture provenance: generic shared Demo captures now also write `.capture.json` with actual guest depth, requested and rendered scene scales, scene origin, guest/composed dimensions, capture case and the current smooth/binary policy. Existing specialized `.json` evidence remains intact. Example check passes; producing and reviewing smooth composed captures is pending the pinned older-binary run. Metadata alone establishes no visual, font-fidelity or performance qualification.
 
 Expanded interaction depth correction: both document and New Folder runs terminated at PPC16 construction because the classic constructor accepts only indexed depths. The tests now explicitly configure native PPC depth through `set_powerpc_screen_depth`, use the indexed-compatible constructor, and assert actual presented depth after guest settling. These failed runs do not qualify PPC16; corrected runs are pending.
+
+Smooth candidate visual review: colour 68k Save edited at scale 1 and PPC16 New Folder selected at scale 0.75 were rendered and inspected through the shared Demo compositor. Plain system labels, titles, buttons and editable text appear smooth; colour Standard File bitmap-source rows retain binary rendering. PPC16 metadata confirms actual depth16 and rendered scale0.75. These two samples do not qualify the full CPU/scale/state matrix, exact selection/clipping, font fidelity or performance.
+
+Reviewed smooth samples are archived with native frames, geometry/depth sidecars, source commit, executable hash and unchanged RGBA pixels in `smooth-plain-text-samples/review.json`. The third sample covers mono 68k New Folder selected at scale2. These three samples remain partial visual evidence; the binary bitmap-source rows and styled/list recipes are explicit remaining work.

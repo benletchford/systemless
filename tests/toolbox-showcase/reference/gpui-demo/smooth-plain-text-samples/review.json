@@ -1,0 +1,58 @@
+{
+  "source_commit": "914beceb13a99f26f44aee812e02592889cac739",
+  "binary_sha256": "2a97d7f6d679457ecbc98954e464c278c09ffa696e2c9de40b11b79dc4555622",
+  "scope": "Three reviewed plain system text candidate samples only; no full matrix, arbitrary font/style, native oracle or performance qualification",
+  "cases": [
+    {
+      "observations": "Viewed colour 68k Save edited composed scene at scale 1, device density 2. Menus, title, buttons, prompt, filename S and caret are visible and crisp. First two file rows retain pixelated bitmap source rendering; Toolbox Showcase row is smooth. Background application-owned text remains binary guest pixels. No broad layout, edit or performance qualification claimed.",
+      "files": {
+        "save-edited-colour-1.png": {
+          "original_sha256": "648411fa73c06d47b3e3fb77c7e46f43f51cc76debab9d4f4c9922ef35b6f56b",
+          "archive_sha256": "85c6273bf5c32a6e808aa619172da5abbdf9f929b59869fca11c0df111e74c8c"
+        },
+        "save-edited-colour-1.guest.png": {
+          "original_sha256": "6addead8b4146bb336bfdeb29ab230b50cf309af5c16081a78c7a3c075c333d2",
+          "archive_sha256": "35276c31e30d1895d336cf3a9c59a780bcd218c8d57ae5558d1411b28cb4b99c"
+        },
+        "save-edited-colour-1.capture.json": {
+          "original_sha256": "5a48429b96154b6353f3bff1499abdc29a603970064ff13cbeb5bbf3988f3aa4",
+          "archive_sha256": "5a48429b96154b6353f3bff1499abdc29a603970064ff13cbeb5bbf3988f3aa4"
+        }
+      }
+    },
+    {
+      "observations": "Viewed PPC16 shared Demo scene at scale 0.75, density 2. Smooth menu, title, Standard File rows, buttons, prompt and New Folder name are legible. Partial name selection is visible and Create uses inverted light label ink. Guest application text remains binary. Metadata confirms actual depth16 and scale0.75. Exact selection geometry, clipping, interaction and performance remain independently pending.",
+      "files": {
+        "new-folder-selected-ppc16-0.75.png": {
+          "original_sha256": "3d5a7a813bd04f4b8b05c6af79f35d877452450481b1b744f2e5b2e479a29d4e",
+          "archive_sha256": "8924170f69022b9d64a38a77dcbfbba68a94eb1252e2b440eec15d8e08b41543"
+        },
+        "new-folder-selected-ppc16-0.75.guest.png": {
+          "original_sha256": "04e597565f67c73d4bb894c83d17a06add22b6bf64c18d99c504f0eec217bb9d",
+          "archive_sha256": "c56cecd17d7984c1caa14ce4e2614a89dfd541fa1c7588ed9fa3b4115b653b38"
+        },
+        "new-folder-selected-ppc16-0.75.capture.json": {
+          "original_sha256": "6a9ec9ab9c0b4b31cb6cffd85bce651998c21b320d9236e93e977773db363d1c",
+          "archive_sha256": "6a9ec9ab9c0b4b31cb6cffd85bce651998c21b320d9236e93e977773db363d1c"
+        }
+      }
+    },
+    {
+      "observations": "Viewed mono 68k at scene scale2, density2: smooth system menus/title/buttons/prompt and selected New Folder name visible; first two file rows retain bitmap glyphs, guest application drawing and native black monochrome custom panel retained. Metadata confirms depth1 and scale2. This visual sample does not qualify exact selection geometry, all scales/states or performance.",
+      "files": {
+        "new-folder-selected-mono-2.png": {
+          "original_sha256": "60da2139a1bbf51a6415b6474a6cf458570b0af5472a5328cd30550cd5e363b0",
+          "archive_sha256": "9b409582615c9ef1f59dd559abff13b38182bc8723df40882cb452fd98bf1115"
+        },
+        "new-folder-selected-mono-2.guest.png": {
+          "original_sha256": "469eea9a6f249062646578a6c0a2851221e3e52ca1cdcf6c4e6eaa87884be741",
+          "archive_sha256": "ada0461ef4de9c14afdf1cd3d3b9c00307ea9937fed29724bdd484de6b8b4e2d"
+        },
+        "new-folder-selected-mono-2.capture.json": {
+          "original_sha256": "9a2c2960faa50faad8ded1f027289294cef39e0fccb778db6951c9c469f20ff9",
+          "archive_sha256": "9a2c2960faa50faad8ded1f027289294cef39e0fccb778db6951c9c469f20ff9"
+        }
+      }
+    }
+  ]
+}
