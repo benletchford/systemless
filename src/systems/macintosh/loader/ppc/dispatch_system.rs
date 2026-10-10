@@ -36,6 +36,7 @@ pub enum PpcSystemCompatibilityOperation {
     MidiSignOut,
     MidiWritePacket,
     Munger,
+    NmInstall,
     NmRemove,
     ObscureCursor,
     OpenDefaultComponent,
@@ -458,11 +459,52 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             let _ = memory.write_u16_be(crate::memory::globals::addr::ALERT_STAGE, stage);
             PpcImportAction::ReturnPreserve
         }
+        PpcSystemCompatibilityOperation::NmInstall => {
+            let nm_rec = cpu.gpr[3];
+            let q_type = if nm_rec != 0 {
+                memory
+                    .read_u16_be(nm_rec + crate::notification_manager::Q_TYPE_OFFSET)
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let result = match crate::notification_manager::validate_nm_rec(nm_rec, q_type) {
+                Ok(()) => {
+                    let _ = memory.write_u32_be(
+                        nm_rec + crate::notification_manager::Q_LINK_OFFSET,
+                        0,
+                    );
+                    crate::notification_manager::NO_ERR
+                }
+                Err(err) => err,
+            };
+            PpcImportAction::Return(ppc_i16_result(result))
+        }
+        PpcSystemCompatibilityOperation::NmRemove => {
+            let nm_rec = cpu.gpr[3];
+            let q_type = if nm_rec != 0 {
+                memory
+                    .read_u16_be(nm_rec + crate::notification_manager::Q_TYPE_OFFSET)
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let result = match crate::notification_manager::validate_nm_rec(nm_rec, q_type) {
+                Ok(()) => {
+                    let _ = memory.write_u32_be(
+                        nm_rec + crate::notification_manager::Q_LINK_OFFSET,
+                        0,
+                    );
+                    crate::notification_manager::NO_ERR
+                }
+                Err(err) => err,
+            };
+            PpcImportAction::Return(ppc_i16_result(result))
+        }
         PpcSystemCompatibilityOperation::DiLoad
         | PpcSystemCompatibilityOperation::DiUnload
         | PpcSystemCompatibilityOperation::Debugger
         | PpcSystemCompatibilityOperation::InitCrm
-        | PpcSystemCompatibilityOperation::InitCtbUtilities
-        | PpcSystemCompatibilityOperation::NmRemove => PpcImportAction::ReturnPreserve,
+        | PpcSystemCompatibilityOperation::InitCtbUtilities => PpcImportAction::ReturnPreserve,
     }
 }

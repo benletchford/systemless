@@ -35,6 +35,7 @@ pub mod memory;
 pub(crate) mod menu_manager;
 pub mod menu_model;
 pub(crate) mod mixed_mode;
+pub(crate) mod notification_manager;
 pub(crate) mod process_context;
 pub(crate) mod process_manager;
 pub(crate) mod printing_manager;

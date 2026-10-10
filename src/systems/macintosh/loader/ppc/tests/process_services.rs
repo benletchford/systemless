@@ -1887,6 +1887,7 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
         ("MIDISignOut", PpcSystemCompatibilityOperation::MidiSignOut),
         ("MIDIWritePacket", PpcSystemCompatibilityOperation::MidiWritePacket),
         ("Munger", PpcSystemCompatibilityOperation::Munger),
+        ("NMInstall", PpcSystemCompatibilityOperation::NmInstall),
         ("NMRemove", PpcSystemCompatibilityOperation::NmRemove),
         ("ObscureCursor", PpcSystemCompatibilityOperation::ObscureCursor),
         ("OpenDefaultComponent", PpcSystemCompatibilityOperation::OpenDefaultComponent),
@@ -1933,4 +1934,55 @@ fn iu_equal_string_uses_primary_mac_roman_ordering() {
         ),
     );
     assert_eq!(loaded.cpu.gpr[3], 1);
+}
+
+#[test]
+fn ppc_nminstall_and_nmremove_validate_record() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NMInstall")).unwrap();
+    let nm_rec = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(nm_rec, vec![0; 64]);
+
+    // Invalid qType returns nmTypErr (-299)
+    loaded.memory.write_u16_be(nm_rec + 4, 7).unwrap();
+    loaded.cpu.gpr[3] = nm_rec;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::NmInstall,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i32 as i16, -299);
+
+    // Valid qType (8) returns noErr (0) and clears qLink
+    loaded.memory.write_u16_be(nm_rec + 4, 8).unwrap();
+    loaded.memory.write_u32_be(nm_rec, 0x1234_5678).unwrap();
+    loaded.cpu.gpr[3] = nm_rec;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::NmInstall,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(nm_rec).unwrap(), 0);
+
+    // NMRemove with valid record returns noErr (0)
+    loaded.cpu.gpr[3] = nm_rec;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::NmRemove,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // NMRemove with null pointer returns nmTypErr (-299)
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::NmRemove,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i32 as i16, -299);
 }
