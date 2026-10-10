@@ -666,3 +666,5 @@ states. They do not establish general font replacement, GPUI pointer routing,
 native host activation observation, complete lifecycle behavior, performance,
 or release readiness. Review rendered and guest images before describing
 visible behavior; retain the evidence's original scope when archiving it.
+
+List mutation and resize captures use `--capture-lists-transition PATH --capture-list-transition mutated|resized`. They select guest row seven and click the existing guest button; they assert retained ListHandle/generation/owner, preserved selection, and exact changed bytes or bounds. After building and committing the capture source, `python3 tests/toolbox-showcase/capture-gpui-list-matrix.py /tmp/list-lifecycle --lifecycle` requests 32 cases across the four display/CPU modes and four scales. These new cases are not yet qualified. Row seven may move outside the resized viewport; the verifier compares only qualified visible paint, while guest selection remains retained. Disposal and handle reuse require separate checks.

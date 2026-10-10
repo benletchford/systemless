@@ -4221,3 +4221,5 @@ generation survive each click. This establishes mock-GPUI pointer translation
 for the loaded standard-list fixture; it does not establish physical host
 capture, complex clipping, inactive clicks, scrolling gestures or full lifecycle
 behavior. Pixel rendering is separately supported by the source-masked matrices.
+
+List lifecycle capture work in progress: `--capture-list-transition mutated|resized` now routes through the fixture guest buttons and records cell bytes and view bounds. `capture-gpui-list-matrix.py --lifecycle` requests 32 CPU/depth/scale cases. Compilation and Python syntax are checked; these new cases have not yet been captured or qualified. The ongoing styled-field matrix remains pinned to f565b695 and its original binary. Disposal and identity reuse remain separate unfinished lifecycle requirements.

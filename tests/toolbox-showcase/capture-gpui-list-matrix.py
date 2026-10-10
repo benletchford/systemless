@@ -19,7 +19,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', type=Path)
     parser.add_argument('--selected', action='store_true', help='capture selected state instead of transitions')
+    parser.add_argument('--lifecycle', action='store_true', help='capture guest row mutation and resizing')
     args = parser.parse_args()
+    assert not (args.selected and args.lifecycle), 'choose one matrix'
     root = Path(__file__).resolve().parents[2]
     assert not subprocess.check_output(['git', 'status', '--porcelain'], cwd=root), 'commit source before capturing'
     output = args.output.resolve()
@@ -44,7 +46,8 @@ def main():
     def save():
         progress.write_text(json.dumps(manifest, indent=2) + '\n')
     save()
-    states = ['selected'] if args.selected else ['scrolled', 'inactive', 'reactivated']
+    states = ['mutated', 'resized'] if args.lifecycle else ['selected'] if args.selected else ['scrolled', 'inactive', 'reactivated']
+    manifest['states'] = states
     for mode, depth, ppc in [('mono', 1, False), ('colour', 8, False), ('ppc8', 8, True), ('ppc16', 16, True)]:
         for state in states:
             for scale in [0.75, 1, 1.5, 2]:
