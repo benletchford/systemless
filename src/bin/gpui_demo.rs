@@ -192,6 +192,9 @@ mod desktop {
         capture_control_fonts: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_control_fonts_inactive: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_radio_fonts: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -3335,6 +3338,7 @@ mod desktop {
         NestedModalDialog,
         Controls,
         ControlFonts,
+        ControlFontsInactive,
         ControlFontsChanged,
         RadioFonts,
         ControlsChanged,
@@ -3523,6 +3527,7 @@ mod desktop {
             capture,
             CaptureCase::Controls
                 | CaptureCase::ControlFonts
+                | CaptureCase::ControlFontsInactive
                 | CaptureCase::ControlFontsChanged
                 | CaptureCase::ControlsChanged
                 | CaptureCase::ControlsDragged
@@ -4628,7 +4633,7 @@ mod desktop {
         if matches!(capture, CaptureCase::PopupControlsDisabled) {
             set_showcase_popups_enabled(&mut session, false);
         }
-        if matches!(capture, CaptureCase::ControlFonts | CaptureCase::ControlFontsChanged | CaptureCase::RadioFonts) {
+        if matches!(capture, CaptureCase::ControlFonts | CaptureCase::ControlFontsInactive | CaptureCase::ControlFontsChanged | CaptureCase::RadioFonts) {
             // Let the guest call SetControlFontStyle; never inject host font state.
             let before = session.runner_mut().control_snapshot();
             for input in [
@@ -4788,7 +4793,30 @@ mod desktop {
                 && control.popup_menu_id == Some(143) && control.value == 4));
             assert!(session.runner_mut().guest_popup_snapshot().is_none());
         }
-        let activation_capture = activation_capture || host_activation_capture || popup_host_suspended;
+        let controls_host_suspended = matches!(capture, CaptureCase::ControlFontsInactive);
+        if controls_host_suspended {
+            let owner = controls.iter().find(|control| control.visible && control.title == "Checkbox")
+                .expect("styled checkbox must have a guest owner").owner_id;
+            session.request_foreground(false);
+            assert!((0..300).any(|_| {
+                session.runner_mut().run_steps(10_000, None);
+                session.runner_mut().window_frame_snapshot().iter().any(|frame|
+                    frame.guest_id == owner && frame.window.visible && !frame.window.active)
+            }), "styled control owner must become inactive through guest suspend events");
+            assert!((0..300).any(|_| {
+                session.runner_mut().run_steps(10_000, None);
+                session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0)
+            }), "guest must finish drawing the inactive control scene");
+            let current = session.runner_mut().control_snapshot();
+            for original in controls.iter().filter(|control| control.visible) {
+                let control = current.iter().find(|control| control.guest_id == original.guest_id).unwrap();
+                assert_eq!((control.generation, control.bounds, control.value, control.font_style),
+                    (original.generation, original.bounds, original.value, original.font_style));
+            }
+            eprintln!("styled control owner suspended with font, bounds, value and identity preserved");
+        }
+        let controls = if controls_host_suspended { session.runner_mut().control_snapshot() } else { controls };
+        let activation_capture = activation_capture || host_activation_capture || popup_host_suspended || controls_host_suspended;
         let windows = if activation_capture { session.runner_mut().window_frame_snapshot() } else { windows };
         let dialogs = if activation_capture { session.runner_mut().dialog_snapshot() } else { dialogs };
         if popup_host_suspended {
@@ -4948,6 +4976,7 @@ mod desktop {
         let view = view.unwrap();
         visual.update(|cx| {
             view.update(cx, |demo, cx| {
+                if controls_host_suspended { demo.host_active = Some(false); }
                 demo.menus = menus;
                 demo.guest_menu_tracking = guest_menu_tracking;
                 demo.guest_popup = guest_popup;
@@ -6273,6 +6302,7 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         for (output, capture) in [
             (args.capture_control_fonts.as_ref(), CaptureCase::ControlFonts),
+            (args.capture_control_fonts_inactive.as_ref(), CaptureCase::ControlFontsInactive),
             (args.capture_control_fonts_changed.as_ref(), CaptureCase::ControlFontsChanged),
             (args.capture_radio_fonts.as_ref(), CaptureCase::RadioFonts),
         ] {
@@ -7165,6 +7195,7 @@ mod desktop {
                         capture_nested_modal_dialog: None,
                         capture_controls: None,
                         capture_control_fonts: None,
+                        capture_control_fonts_inactive: None,
                         capture_control_fonts_changed: None,
                         capture_radio_fonts: None,
                         capture_controls_changed: None,
