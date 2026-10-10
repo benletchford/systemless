@@ -10095,6 +10095,20 @@ mod desktop {
         }
 
         #[cfg(feature = "gpui-demo-test")]
+        fn initial_mark_request(owner: super::super::input::TextInputOwner) -> super::Command {
+            let mut stage = super::super::input::GuestComposition::default();
+            stage.synchronize(Some(owner.clone()));
+            assert_ne!(owner.selection, 0..1);
+            assert!(stage.mark_range(Some(&(0..1)), "日", 1..1));
+            stage.cancel(); assert_eq!(stage.owner(), Some(&owner));
+            assert!(stage.mark_range(Some(&(0..1)), "R", 1..1));
+            let expected = stage.marked_base().unwrap().clone();
+            assert_eq!(expected, owner);
+            let (request, bytes, caret) = stage.commit_replacement(None, "R").unwrap();
+            super::Command::ReplaceText(expected, request.selection, bytes, Some(caret))
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
         #[test]
         fn worker_preserves_rapid_composed_text_commits() {
             use clap::Parser;
@@ -10386,6 +10400,20 @@ mod desktop {
                         && dialog.items[8].selection == Some((4, 4))));
                 assert_eq!(completed.dialogs.iter().find(|dialog| dialog.guest_id == pinned.identity.0).unwrap().items[6].text, before.items[6].text);
                 eprintln!("PASS worker-modal-disjoint-replacement powerpc={powerpc} depth={actual_depth} wrapped={wrapped}");
+                let current = super::super::input::dialog_text_owner_with_records(
+                    &completed.dialogs, &completed.windows, &completed.text_edits, &completed.controls).unwrap();
+                let initial = super::super::input::TextInputOwner { identity: current.identity,
+                    target: super::super::input::TextInputTarget::Dialog { item: current.item, content_revision: current.content_revision },
+                    text: current.text.clone(), selection: current.selection };
+                let mut expected_mark = current.text; expected_mark.splice(0..1, [b'R']);
+                let expected_mark = systemless::systems::macintosh::mac_roman::decode_mac_roman(&expected_mark);
+                worker.0.send(initial_mark_request(initial)).unwrap();
+                let marked = wait("modal initial explicit mark", &updates, |update| update.dialogs.iter().any(|dialog|
+                    (dialog.guest_id, dialog.generation) == pinned.identity && dialog.items[8].text == expected_mark
+                        && dialog.items[8].selection == Some((1, 1))));
+                assert_eq!(marked.dialogs.iter().find(|dialog| dialog.guest_id == pinned.identity.0).unwrap().items[6].text,
+                    before.items[6].text);
+                eprintln!("PASS worker-modal-initial-mark powerpc={powerpc} depth={actual_depth} wrapped={wrapped}");
 
 
                 eprintln!("PASS worker-modal-rapid-composition-and-rejection powerpc={powerpc} depth={actual_depth}");
@@ -10507,6 +10535,18 @@ mod desktop {
                     panel.name.as_deref() == Some(disjoint_name.as_str()) && panel.name_selection == Some((4, 4)))).standard_file.unwrap();
                 eprintln!("PASS worker-file-disjoint-replacement powerpc={powerpc} depth={actual_depth} new_folder=false");
                 expected = disjoint_text;
+                let current = super::super::input::standard_file_text_owner(&actual).unwrap();
+                let initial = super::super::input::TextInputOwner { identity: current.identity,
+                    target: super::super::input::TextInputTarget::StandardFile { new_folder: false },
+                    text: current.text, selection: current.selection };
+                expected.splice(0..1, [b'R']);
+                let expected_name = systemless::systems::macintosh::mac_roman::decode_mac_roman(&expected);
+                worker.0.send(initial_mark_request(initial)).unwrap();
+                let marked = wait("Save initial explicit mark", &updates, |update| update.standard_file.as_ref().is_some_and(|panel|
+                    panel.name.as_deref() == Some(expected_name.as_str()) && panel.name_selection == Some((1, 1)))).standard_file.unwrap();
+                assert_eq!(marked.entries, actual.entries); assert_eq!(marked.directory_id, actual.directory_id);
+                let actual = marked;
+                eprintln!("PASS worker-file-initial-mark powerpc={powerpc} depth={actual_depth} new_folder=false");
 
 
                 eprintln!("PASS worker-standard-file-rapid-composition-and-rejection powerpc={powerpc} depth={actual_depth}");
@@ -10578,6 +10618,18 @@ mod desktop {
                     panel.new_folder.as_ref().is_some_and(|folder| folder.name == disjoint_name && folder.selection == (4, 4)))).standard_file.unwrap();
                 eprintln!("PASS worker-file-disjoint-replacement powerpc={powerpc} depth={actual_depth} new_folder=true");
                 assert_eq!(edited.name, actual.name); assert_eq!(edited.entries, actual.entries);
+                let current = super::super::input::standard_file_text_owner(&edited).unwrap();
+                let initial = super::super::input::TextInputOwner { identity: current.identity,
+                    target: super::super::input::TextInputTarget::StandardFile { new_folder: true },
+                    text: current.text.clone(), selection: current.selection };
+                let mut expected_mark = current.text; expected_mark.splice(0..1, [b'R']);
+                let expected_mark = systemless::systems::macintosh::mac_roman::decode_mac_roman(&expected_mark);
+                worker.0.send(initial_mark_request(initial)).unwrap();
+                let marked = wait("New Folder initial explicit mark", &updates, |update| update.standard_file.as_ref().is_some_and(|panel|
+                    panel.new_folder.as_ref().is_some_and(|folder| folder.name == expected_mark && folder.selection == (1, 1)))).standard_file.unwrap();
+                assert_eq!(marked.name, actual.name); assert_eq!(marked.entries, actual.entries);
+                let edited = marked;
+                eprintln!("PASS worker-file-initial-mark powerpc={powerpc} depth={actual_depth} new_folder=true");
 
 
                 worker.0.send(Command::ActivateFile(edited.guest_id, edited.generation,

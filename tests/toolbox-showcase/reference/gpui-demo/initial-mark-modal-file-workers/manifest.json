@@ -1,0 +1,10 @@
+{
+  "base_head": "2a1dc78a9e738163d46c984e70d78468660e4c09",
+  "source_sha256": "745f9ee85e5bb22fae9b61f0f01fde374d5d141b3c55925887c9739d6f2f632c",
+  "command": "cargo test --locked --example gpui-menu-demo --features gpui-demo-test worker_preserves_rapid_ -- --nocapture",
+  "exit_code": 0,
+  "scope": "Three actual worker regressions pass (37.76s), including 18 initial explicit marked-range commits: document4, modal6 (simple all modes plus wrapped PPC8/PPC16), Save4 and New Folder4. Shared composition state pins original selection, cancels Unicode staging, and emits guarded ReplaceText; actual guest text/caret checked. Document style runs, neighboring modal item, filename directory state, parent filename preservation and return/disposal/rejection remain checked. Test-only source extension; production code unchanged from 2a1dc78a. No actual GPUI rendering, physical IME, initial-range composed cancellation/geometry or expansion beyond an existing stage qualification. No broad production gate closed.",
+  "sha256": {
+    "workers.log": "010c1e1483037dff8095099729829bf1465d717963d0797dc331f320ea7d1bb2"
+  }
+}
