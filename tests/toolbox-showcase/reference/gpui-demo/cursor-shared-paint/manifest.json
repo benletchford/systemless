@@ -1,0 +1,41 @@
+{
+  "base_head": "a666e6899cb492147456972859f1a5c3ee6f5849",
+  "scope": "Opaque guest cursor pixels in shared Demo, actual arrow snapshot across mono68k .75, colour68k 1, PPC8 1.5, PPC16 2. Simulated pointer/focus/hide states restore exact pixels. Mono active/clipped, colour active, PPC8 active and PPC16 clipped visually reviewed. Physical NSCursor hiding, inversion, warps, pointer latency and complete lifecycle remain open. Inversion deliberately declines the complete paint plan with a diagnostic. No broad production gate closed.",
+  "source_sha256": {
+    "Cargo.toml": "00d125ba30b454d914051b0cabca25f931dd811c04ae0225a1ea774bec7827c2",
+    "src/bin/gpui_demo.rs": "f7a93f0def199a963f0f87f8087cef6f92bb7347b06922c7250bbed586212fa3",
+    "src/bin/gpui_demo_cursor.rs": "6d6c7d13aff562a64bbfd2ca289c3c1812663cce521e0608d60f93cb2b7c6f78"
+  },
+  "sha256": {
+    "ppc16.hidden.png": "95e9f0ecd48bf276f29f63e002fd661238ae9e54eb89d33a9c18e801c828ce52",
+    "ppc16.log": "b863ca7c6d0724db91f0ea1b9159d614f8620043a61197c208476eeb58d1bc0c",
+    "colour.clipped.png": "1521980f79fcd0b65f06a5cdd391fd3d95414bbf6b827503215da2967832d48a",
+    "component-tests.log": "9c562f7be761451d2a6613c24991dcc230b6cf013af71c3e16903653583e45c3",
+    "ppc8.hidden.png": "e1a450f0f73c9df07aef82cc23d50a074a394f0c3910aa495051abd7449f1797",
+    "ppc16.inactive.png": "95e9f0ecd48bf276f29f63e002fd661238ae9e54eb89d33a9c18e801c828ce52",
+    "mono.clipped.png": "b41e008592acb2f23887dd2f4e7a3ea27147ad7f5c23a9baf478a2544a4fcd38",
+    "ppc16.outside.png": "95e9f0ecd48bf276f29f63e002fd661238ae9e54eb89d33a9c18e801c828ce52",
+    "ppc8.png": "e916fffae8926873917a8b3323ba878fc21000a2ef451d0cd9747e786aa94b7d",
+    "colour.capture.json": "53ab12b7aa2f63112936107b9dc69e0da964fa5bb01e35331297819058705917",
+    "ppc8.outside.png": "e1a450f0f73c9df07aef82cc23d50a074a394f0c3910aa495051abd7449f1797",
+    "ppc8.capture.json": "a69f834a39b50ec2daae55e191f28846b1d7dd1b95514f42310b329eaaf69174",
+    "mono.log": "6fe9a895f22a2b44eb71f9330c0c30d673c4ec5cf3bf06fc38132d175e8085e0",
+    "colour.png": "8efe8c5921fa7b6676153aa06320ba3842fc730ad321258319ede9eb9cd0818c",
+    "mono.inactive.png": "dce276aee66006f6579f0f11c223fe9d8be61d96f50abdeb4915b2e755d93397",
+    "colour.outside.png": "b80ea5798fb54c1feef3c605ef254ba77846072cee50dd7ed627a8aae738d683",
+    "colour.hidden.png": "b80ea5798fb54c1feef3c605ef254ba77846072cee50dd7ed627a8aae738d683",
+    "ppc16.capture.json": "fda7306e3c840215a42eb58e6fd36835038fe447cf2ded7a258dc50c1f7782ef",
+    "mono.hidden.png": "dce276aee66006f6579f0f11c223fe9d8be61d96f50abdeb4915b2e755d93397",
+    "ppc8.log": "f1bb885b83230528be15b6a2b6ae4bb890ac9cc4735ce5d8c53195ac78b677a7",
+    "mono.png": "319c898981e6e0540151b32707e8fb82dc4f98d3c02924b331ff02a980234893",
+    "colour.log": "480e454b0f7fa5149d33d3442f2c71b5ad3cb1d321725efe63b9b39e577d1e52",
+    "ppc8.clipped.png": "b5559186f129c664a20222fa407f1aae148aed448de8f4b97d0be1f836ac606b",
+    "mono.capture.json": "bb9ad00fb96af5bb9a66a348ec4f20ff4f13b60dd6f32ebafa9058909203ee08",
+    "ppc8.inactive.png": "e1a450f0f73c9df07aef82cc23d50a074a394f0c3910aa495051abd7449f1797",
+    "capture-build.log": "970c784a2689cd87ca1919976fa1a5692e0f7f08a8720733be882dc9424249df",
+    "ppc16.clipped.png": "c74ebf84d68bedb5dbb3f9286c379347e2b06e59d4e75efb3fd701864f12d1fc",
+    "ppc16.png": "70e78b1914f01626acd1bab1e7a5d0e3b9298437fcc40b6c43e5118155fcb034",
+    "mono.outside.png": "dce276aee66006f6579f0f11c223fe9d8be61d96f50abdeb4915b2e755d93397",
+    "colour.inactive.png": "b80ea5798fb54c1feef3c605ef254ba77846072cee50dd7ed627a8aae738d683"
+  }
+}
