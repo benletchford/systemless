@@ -1,0 +1,10 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 34s
+     Running unittests src/lib.rs (target/debug/deps/systemless-05ca615472fa3f01)
+
+running 1 test
+test systems::macintosh::loader::ppc::tests::text_edit::native_styled_textedit_styles_runs_and_reports_real_measurements ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6680 filtered out; finished in 0.14s
+

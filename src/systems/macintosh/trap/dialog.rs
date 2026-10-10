@@ -14902,12 +14902,18 @@ impl super::TrapDispatcher {
                         let font_ascent_ptr = bus.read_long(sp + 6);
                         let line_height_ptr = bus.read_long(sp + 10);
                         let attrs_ptr = bus.read_long(sp + 14);
-                        let _sel = bus.read_word(sp + 18) as i16;
-                        let (font, face, size, color, line_height, font_ascent) =
-                            self.te_primary_style(bus, te_handle);
+                        let sel = bus.read_word(sp + 18) as i16;
+                        let (font, face, size, color, line_height, font_ascent) = if sel >= 0 {
+                            let length = Self::te_text_length(bus, te_handle);
+                            let runs = self.te_style_runs(bus, te_handle, length);
+                            let style = Self::te_style_at_offset(&runs, (sel as usize).min(length));
+                            (style.font, style.face, style.size, style.color, style.line_height, style.ascent)
+                        } else {
+                            self.te_primary_style(bus, te_handle)
+                        };
                         if attrs_ptr != 0 {
                             bus.write_word(attrs_ptr, font as u16);
-                            bus.write_word(attrs_ptr + 2, face as u16);
+                            bus.write_byte(attrs_ptr + 2, face as u8);
                             bus.write_word(attrs_ptr + 4, size as u16);
                             bus.write_word(attrs_ptr + 6, color.0);
                             bus.write_word(attrs_ptr + 8, color.1);

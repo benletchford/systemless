@@ -1,0 +1,81 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+warning: method `instrument` is never used
+   --> src/systems/macintosh/sound.rs:609:19
+    |
+403 | impl SndChannel {
+    | --------------- method in this implementation
+...
+609 |     pub(crate) fn instrument(&self) -> Option<&SampledInstrument> {
+    |                   ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `dispatch_toolbox` is never used
+    --> src/systems/macintosh/trap/toolbox.rs:6187:19
+     |
+1169 | impl super::TrapDispatcher {
+     | -------------------------- method in this implementation
+...
+6187 |     pub(crate) fn dispatch_toolbox<C: CpuOps>(
+     |                   ^^^^^^^^^^^^^^^^
+
+warning: `systemless` (lib) generated 2 warnings
+warning: value assigned to `record` is never read
+  --> tests/macintosh_styled_spacing.rs:80:26
+   |
+80 |         let mut record = original.clone();
+   |                          ^^^^^^^^^^^^^^^^
+   |
+   = help: maybe it is overwritten before being read?
+   = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: `systemless` (test "macintosh_styled_spacing") generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.41s
+     Running tests/macintosh_styled_spacing.rs (target/debug/deps/macintosh_styled_spacing-b51d1581e96d504f)
+
+running 1 test
+test guest_spacing_styles_keep_font_intent_selection_and_editing_across_modes ... [INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1A8 bkLim=$0044A1A8 zcbFree=2400616 (2.3MB)
+[INIT] Set MainDevice=$002260A8, TheGDevice=$002260A8 (ptr=$00226074)
+[INIT] GDevice chain: $8A4→$002260A8→$00226074 gdPMap→$00226070→$0022603C
+[INIT]   PixMap: rowBytes=$8070 bounds=(0,0,600,800) pixelSize=1
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAF0A randSeed_addr=$003FAE8C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=112 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$00226104 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00226A00 bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00226A00 pixmap=$0020570C bounds=(50,40,420,600) goAway=true
+PASS guest spacing style and editing: powerpc=false depth=1
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1A8 bkLim=$0044A1A8 zcbFree=2400616 (2.3MB)
+[INIT] Set MainDevice=$00226898, TheGDevice=$00226898 (ptr=$00226864)
+[INIT] GDevice chain: $8A4→$00226898→$00226864 gdPMap→$00226860→$0022682C
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAF0A randSeed_addr=$003FAE8C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=816 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$002268F4 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$002271F0 bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$002271F0 pixmap=$0020570C bounds=(50,40,420,600) goAway=true
+PASS guest spacing style and editing: powerpc=false depth=8
+[PPC] stopped at unsupported import InterfaceLib:TEGetStyle pc=$01F00358 sp=$07F6FE50 lr=$0100269C
+
+thread 'guest_spacing_styles_keep_font_intent_selection_and_editing_across_modes' (113121544) panicked at tests/macintosh_styled_spacing.rs:27:9:
+assertion failed: session.status().running
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    guest_spacing_styles_keep_font_intent_selection_and_editing_across_modes
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 55.21s
+
+error: test failed, to rerun pass `--test macintosh_styled_spacing`

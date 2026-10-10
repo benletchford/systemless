@@ -341,6 +341,29 @@ fn native_styled_textedit_styles_runs_and_reports_real_measurements() {
     assert_eq!(runs[1].style.size, 10);
     assert_eq!(runs[1].style.color.blue, 0xffff);
 
+    // Query both sides of the run boundary using native PPC argument registers.
+    for offset in [0u32, 2, 3, 5] {
+        let expected = ppc_te_style_at_offset(&runs, offset as usize);
+        loaded.memory.write_u8(result_style_ptr + 3, 0x56).unwrap();
+        loaded.cpu.gpr[3] = offset;
+        loaded.cpu.gpr[4] = result_style_ptr;
+        loaded.cpu.gpr[5] = mode_ptr;
+        loaded.cpu.gpr[6] = mode_ptr + 2;
+        loaded.cpu.gpr[7] = te_handle;
+        let registers = loaded.cpu.gpr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TEGetStyle);
+        assert_eq!(loaded.cpu.gpr, registers);
+        assert_eq!(loaded.memory.read_u16_be(result_style_ptr), Some(expected.font as u16));
+        assert_eq!(loaded.memory.read_u8(result_style_ptr + 2), Some(expected.face));
+        assert_eq!(loaded.memory.read_u8(result_style_ptr + 3), Some(0x56));
+        assert_eq!(loaded.memory.read_u16_be(result_style_ptr + 4), Some(expected.size as u16));
+        assert_eq!(loaded.memory.read_u16_be(result_style_ptr + 6), Some(expected.color.red));
+        assert_eq!(loaded.memory.read_u16_be(result_style_ptr + 8), Some(expected.color.green));
+        assert_eq!(loaded.memory.read_u16_be(result_style_ptr + 10), Some(expected.color.blue));
+        assert_eq!(loaded.memory.read_u16_be(mode_ptr), Some(expected.line_height as u16));
+        assert_eq!(loaded.memory.read_u16_be(mode_ptr + 2), Some(expected.ascent as u16));
+    }
+
     loaded.cpu.gpr[3] = te_handle;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::TECalText);
     let te_ptr = loaded.memory.read_u32_be(te_handle).unwrap();

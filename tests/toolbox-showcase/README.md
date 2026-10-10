@@ -686,3 +686,15 @@ Archive a completed smooth list matrix with `python3 tests/toolbox-showcase/arch
 The completed48-case smooth scrolling/activation matrix is archived in `reference/gpui-demo/smooth-list-transitions-shared`; `review.json` names only the12 visually reviewed cases. `archive-verification.json` pins the checker and archiver hashes separately from the captured renderer source. Run the smooth provenance checker on its `progress.json` to validate depth/geometry/guest state and hashes, not glyph parity.
 
 Completed32-case smooth mutation/resize evidence is in `reference/gpui-demo/smooth-list-lifecycle-shared`. It verifies native state/geometry and hashes, with eight explicitly reviewed samples. The review records a partial-row resize difference explained by the CPU-specific guest baseline recipes; full rows0..5 preserve exact pixels in the sampled colour68k comparison. This is fixture mutation/resize evidence, not disposal/identity reuse or full raster qualification.
+
+### Styled TextEdit spacing controls
+
+On page11 (Styled Text & Fonts), Option-C applies condensed spacing, Option-E
+extended spacing, Option-B both flags and Option-N removes both flags. The guest
+reads each character with TEGetStyle and applies only face changes with
+TESetStyle, preserving font, size, colour, other face bits and selection. Normal
+typing and the default sample remain unchanged. The ordinary
+`macintosh_styled_spacing` regression exercises these keys, verifies runtime
+CPU/depth and retained style intent, then clicks and types in condensed and
+extended fields on mono68k, colour68k, PPC8 and PPC16. Current qualification
+status and composed rendering gaps are recorded in GPUI_COVERAGE.md.

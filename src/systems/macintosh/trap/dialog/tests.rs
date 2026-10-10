@@ -22403,3 +22403,38 @@
         let result = disp.dispatch_dialog(true, 0xFFFF, &mut cpu, &mut bus);
         assert!(result.is_none());
     }
+
+
+    #[test]
+    fn tegetstyle_uses_character_offset_and_writes_style_byte_without_padding() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te = TrapDispatcher::allocate_te_handle(&mut bus);
+        disp.initialize_styled_te_record(&mut bus, te, (0, 0, 80, 200), (0, 0, 80, 200));
+        disp.te_set_text_contents(&mut bus, te, b"ABCD");
+        let first = TrapDispatcher::te_resolved_style_from_parts(3, 1, 12, (1, 2, 3), 17, 12);
+        let second = TrapDispatcher::te_resolved_style_from_parts(4, 0x42, 14, (4, 5, 6), 18, 12);
+        assert!(TrapDispatcher::te_write_style_runs(&mut bus, te, &[(0, first), (2, second)], 4));
+        let attrs = bus.alloc(12);
+        let height = bus.alloc(2);
+        let ascent = bus.alloc(2);
+        // Selection stays at zero; the explicit offset chooses the second run.
+        for (offset, style) in [(0, first), (1, first), (2, second), (3, second)] {
+            bus.write_byte(attrs + 3, 0x56);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(TEST_SP, 0x0003);
+            bus.write_long(TEST_SP + 2, te);
+            bus.write_long(TEST_SP + 6, ascent);
+            bus.write_long(TEST_SP + 10, height);
+            bus.write_long(TEST_SP + 14, attrs);
+            bus.write_word(TEST_SP + 18, offset);
+            assert!(disp.dispatch_dialog(true, 0x03D, &mut cpu, &mut bus).unwrap().is_ok());
+            assert_eq!(bus.read_word(attrs), style.font as u16);
+            assert_eq!(bus.read_byte(attrs + 2), style.face as u8);
+            assert_eq!(bus.read_byte(attrs + 3), 0x56);
+            assert_eq!(bus.read_word(attrs + 4), style.size as u16);
+            assert_eq!((bus.read_word(attrs + 6), bus.read_word(attrs + 8), bus.read_word(attrs + 10)), style.color);
+            assert_eq!(bus.read_word(height), style.line_height as u16);
+            assert_eq!(bus.read_word(ascent), style.ascent as u16);
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 20);
+        }
+    }
