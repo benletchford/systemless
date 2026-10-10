@@ -807,3 +807,44 @@ Testing exposed the shared Down-arrow preset's keypad-5 mapping, while Moria
 uses keypad 2 for south. The catalogue provides its own Down-arrow mapping;
 the rebuilt preview confirms normal Left and Down input visibly move the player
 west and south.
+
+## Ingemar's Skiing Game original freeware intake
+
+Target slot 579 uses the [original author's ISG-103.hqx](https://ftp.lysator.liu.se/pub/mac/games/ISG-103.hqx),
+309448 bytes, SHA-256 `baefe3381b5dc05b929c70b59b2189959213dbea07310560b3feb193750d495c`.
+The complete original includes game, optional launcher, Read me first and Easy courses.
+Original main TEXT 128 explicitly permits free distribution when charges do not
+exceed distribution costs; the [author's news](https://www.lysator.liu.se/~ingemar/games/news.html)
+also lifts distribution restrictions on ISG. The original application and Read me
+first dates are August 2000; the optional launcher notice is copyright 2000.
+This identifies the complete 1.0.3 freeware release, rather than the earlier
+restricted shareware builds. All original forks and notices remain in the untouched
+BinHex/StuffIt package. The independent intake download matches hash and size.
+
+Main executable `Ingemar's Skiing Game 1.0.3 ƒ/Ingemar's skiing game 1.0.3` has
+eight CODE resources and no PPC cfrg. The optional launcher also has only CODE.
+Native source `1f9b99bc8afa3013ccbe7e99c84b460346bb58dc`, actual binary v0.92.0,
+starts Practice 1 through the original Game menu and ordinary mouse click. Inspected
+captures show left/right mouse steering, an advancing course and timer. A fresh
+repeat passes six measured pixel assertions at 1138 frontend / 1714 guest ticks
+with zero exhausted budgets. The unedited native gameplay screenshot contains
+only the guest game and desktop. Browser/public qualification, complete courses,
+cups, editor, saves and audio remain pending. [Tracking issue #4444](https://github.com/benletchford/systemless/issues/4444).
+
+## MacSokoban original-author intake
+
+Target slot 81's [original-author MacSokoban-303.hqx](https://ftp.lysator.liu.se/pub/mac/games/MacSokoban-303.hqx)
+is 175992 bytes, SHA-256 `52eb209006f22e4ecc81fe2cb6acaec37b6b9890eec1900e5facff1c39a246c8`.
+Original TEXT 0 grants personal use and noncommercial distribution, while an
+older retained about-screen graphic says Shareware Authors Inc. has exclusive
+CD-ROM and other high-capacity-media distribution rights. The author news's
+explicit unrestricted-distribution announcement applies to Bachman, Bert and ISG;
+it does not name MacSokoban. Applicability of the conflicting retained notices to
+this intact 3.0.3 package remains unresolved; no hosting grant is inferred solely
+from the freeware label. Keep the archive unhosted while clarifying this evidence.
+
+The original main has four CODE resources and no PPC cfrg. Native source
+`1f9b99bc8afa3013ccbe7e99c84b460346bb58dc` starts the original board at 600 frontend
+ticks with zero exhausted budgets and zero assertions; its actual capture was
+inspected. No player creation, movement, puzzle completion or browser qualification
+is claimed. Archives, extracted forks and scenarios remain outside Git.
