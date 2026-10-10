@@ -22,6 +22,7 @@ include = [
     "/Cargo.toml",
     "/Cargo.lock",
     "/src/**",
+    "/examples/gpui-coverage-check.rs",
     "/*.md",
     "/LICENSE",
     "/.github/assets/**",
@@ -87,6 +88,11 @@ objc2-foundation = { version = "0.2.2", optional = true, features = ["NSGeometry
 [[bin]]
 name = "systemless"
 required-features = ["gui"]
+
+[[example]]
+name = "gpui-coverage-check"
+path = "examples/gpui-coverage-check.rs"
+required-features = ["gpui-demo-test"]
 
 [[example]]
 name = "gpui-menu-demo"
