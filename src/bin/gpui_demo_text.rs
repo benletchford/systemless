@@ -1384,6 +1384,10 @@ pub(crate) fn classic_popup_row(
             }
         }
         for (x, line) in &lines {
+            if paint_smooth_label(line, bounds.left() + px(f32::from(*x) * scale),
+                bounds.top() + px(f32::from(baseline) * scale), scale, foreground, window) {
+                continue;
+            }
             for &(ink_x, ink_y, width) in &line.ink {
                 window.paint_quad(fill(Bounds::new(
                     point(bounds.left() + px((i32::from(*x) + ink_x) as f32 * scale),
