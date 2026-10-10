@@ -1,0 +1,6 @@
+{
+  "src/systems/macintosh/control_manager/paint.rs": "fca6160fdeae7d685b2da42824097ad4373cd6901156f898886eac76a29b69e6",
+  "src/systems/macintosh/trap/control.rs": "8103b6f01cd5979eddbfe1715480e7480f3df947b3e281074365fa1534d90090",
+  "src/systems/macintosh/loader/ppc/dispatch_control.rs": "cfc699fb51bd4c4d4b2b9522866559e1e1da7c5be4d159912f8961c94bbf9db8",
+  "src/systems/macintosh/runner/mod.rs": "46fbbcaecdd85c803dc02414baf0066097c395bf544586c9227b02d69bbd38cf"
+}

@@ -3353,7 +3353,7 @@ pub(super) fn ppc_control_title_style(
 /// Indexed values stay native until the runner resolves the physical CLUT.
 pub(crate) fn ppc_capture_standard_control_pixels(
     memory: &mut PpcSectionMem, gworlds: &[PpcGWorldRecord], owner: u32,
-    generation: u64, local: (i16, i16, i16, i16),
+    generation: u64, pointer: u32, local: (i16, i16, i16, i16),
 ) -> Option<(crate::control_manager::paint::ControlPaintIdentity, Vec<u8>)> {
     let surface = ppc_live_quickdraw_surface(memory, gworlds, owner)?;
     let front = surface.front_buffer;
@@ -3383,6 +3383,7 @@ pub(crate) fn ppc_capture_standard_control_pixels(
     }
     Some((crate::control_manager::paint::ControlPaintIdentity {
         owner, generation, surface: front.base_addr, bounds, depth: front.depth as u16, palette: 0,
+        recipe: crate::control_manager::paint::control_recipe(pointer, |address| memory.read_u8(address))?,
         format: if front.depth == 8 { crate::control_manager::paint::ControlPaintFormat::Indexed8 }
             else { crate::control_manager::paint::ControlPaintFormat::Rgba },
     }, rgba))
@@ -3434,7 +3435,7 @@ pub(super) fn ppc_draw_control_inner(
     let paint_slot = record.filter(|_| matches!(proc_id, 0 | 1 | 2))
         .map(|record| (record.generation, record.paint.clone()));
     let paint_before = paint_slot.as_ref().and_then(|(generation, _)|
-        ppc_capture_standard_control_pixels(memory, gworlds, owner, *generation,
+        ppc_capture_standard_control_pixels(memory, gworlds, owner, *generation, control,
             (top, left, bottom, right)));
     let popup_font = ppc_popup_control_font(memory, owner, proc_id);
     // Appearance Manager DeactivateControl dims a control without touching
@@ -3960,7 +3961,7 @@ pub(super) fn ppc_draw_control_inner(
         );
     }
     if let Some((generation, slot)) = paint_slot {
-        let after = ppc_capture_standard_control_pixels(memory, gworlds, owner, generation,
+        let after = ppc_capture_standard_control_pixels(memory, gworlds, owner, generation, control,
             (top, left, bottom, right));
         if let (Some((identity, before)), Some((after_identity, completed))) = (paint_before, after) {
             if identity == after_identity { slot.record(identity, before, completed); }

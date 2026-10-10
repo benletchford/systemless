@@ -1061,7 +1061,7 @@ mod tests {
         let identity = paint::ControlPaintIdentity {
             owner: 512, generation: record.generation, surface: 1024,
             bounds: (0, 0, 1, 2), depth: 8, palette: 0,
-            format: paint::ControlPaintFormat::Rgba,
+            format: paint::ControlPaintFormat::Rgba, recipe: [0; 268],
         };
         let slot = record.paint.clone();
         let before = vec![238, 238, 238, 255].repeat(2);

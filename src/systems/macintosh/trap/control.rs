@@ -1497,7 +1497,7 @@ impl super::TrapDispatcher {
                 .find(|record| record.pointer == ctrl_ptr)
                 .map(|record| (record.generation, record.paint.clone())))).flatten();
         let paint_before = paint_slot.as_ref().and_then(|(generation, _)|
-            self.capture_standard_control_pixels(bus, window_ptr, *generation,
+            self.capture_standard_control_pixels(bus, window_ptr, *generation, ctrl_ptr,
                 (abs_top, abs_left, abs_bottom, abs_right)));
         let occluded_pixels = self.save_control_pixels_outside_owner_visibility(
             bus,
@@ -1748,7 +1748,7 @@ impl super::TrapDispatcher {
             self.restore_screen_rect_pixels(bus, top, left, width, height, &pixels);
         }
         if let Some((generation, slot)) = paint_slot {
-            let after = self.capture_standard_control_pixels(bus, window_ptr, generation,
+            let after = self.capture_standard_control_pixels(bus, window_ptr, generation, ctrl_ptr,
                 (abs_top, abs_left, abs_bottom, abs_right));
             if let (Some((identity, before)), Some((after_identity, completed))) = (paint_before, after) {
                 if identity == after_identity { slot.record(identity, before, completed); }
@@ -1763,7 +1763,7 @@ impl super::TrapDispatcher {
     /// Retain actual screen pixels around a standard draw. Subpixel detail
     /// needs its own lossless adapter; never collapse it to palette indices.
     pub(crate) fn capture_standard_control_pixels(
-        &self, bus: &MacMemoryBus, owner: u32, generation: u64,
+        &self, bus: &MacMemoryBus, owner: u32, generation: u64, pointer: u32,
         bounds: (i16, i16, i16, i16),
     ) -> Option<(crate::control_manager::paint::ControlPaintIdentity, Vec<u8>)> {
         let (surface, _, _, _, depth) = self.get_screen_params();
@@ -1780,6 +1780,7 @@ impl super::TrapDispatcher {
         }
         Some((crate::control_manager::paint::ControlPaintIdentity {
             owner, generation, surface, bounds, depth, palette: 0,
+            recipe: crate::control_manager::paint::control_recipe(pointer, |address| Some(bus.read_byte(address)))?,
             format: if depth == 8 { crate::control_manager::paint::ControlPaintFormat::Indexed8 }
                 else { crate::control_manager::paint::ControlPaintFormat::Rgba },
         }, rgba))

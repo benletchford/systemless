@@ -1590,6 +1590,32 @@ fn appearance_client_and_collapse_imports_report_their_results() {
 }
 
 #[test]
+fn raw_control_value_mutation_declines_old_painter_evidence() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"Draw1Control")).unwrap();
+    let handle = appearance_push_button(&mut loaded, 1);
+    run_appearance_import(&mut loaded,
+        &PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawOneControl), &[handle]);
+    let record = loaded.controls.records().into_iter().find(|record| record.handle == handle).unwrap();
+    let pointer = loaded.memory.read_u32_be(handle).unwrap();
+    let owner = loaded.memory.read_u32_be(pointer + 4).unwrap();
+    let local = ppc_read_rect(&mut loaded.memory, pointer + PPC_CONTROL_RECT_OFFSET).unwrap();
+    let (identity, pixels) = ppc_capture_standard_control_pixels(&mut loaded.memory, &loaded.gworlds,
+        owner, record.generation, pointer, local).unwrap();
+    let backdrop = record.paint.backdrop(identity, &pixels).expect("actual draw establishes ownership");
+    loaded.memory.write_u16_be(pointer + PPC_CONTROL_VALUE_OFFSET, 1).unwrap();
+    let (changed, unchanged) = ppc_capture_standard_control_pixels(&mut loaded.memory, &loaded.gworlds,
+        owner, record.generation, pointer, local).unwrap();
+    assert_eq!(unchanged, pixels);
+    assert!(record.paint.backdrop(changed, &unchanged).is_none());
+    run_appearance_import(&mut loaded,
+        &PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawOneControl), &[handle]);
+    let (redrawn, pixels) = ppc_capture_standard_control_pixels(&mut loaded.memory, &loaded.gworlds,
+        owner, record.generation, pointer, local).unwrap();
+    assert_eq!(record.paint.backdrop(redrawn, &pixels), Some(backdrop),
+        "genuine redraw recovers the original background with the new value");
+}
+
+#[test]
 fn deactivated_controls_report_inactive_and_cannot_be_hit() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TestControl")).unwrap();
     let handle = appearance_push_button(&mut loaded, 0);

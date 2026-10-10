@@ -2509,7 +2509,7 @@ impl FixtureRunner {
                         if snapshot.visible && snapshot.owner_visible
                             && matches!(snapshot.proc_id, 0 | 1 | 2) && record.paint.has_drawing() {
                             if let Some((identity, current)) = crate::loader::ppc::ppc_capture_standard_control_pixels(
-                                &mut app.memory, &app.gworlds, snapshot.owner_id, record.generation, snapshot.local_bounds) {
+                                &mut app.memory, &app.gworlds, snapshot.owner_id, record.generation, record.pointer, snapshot.local_bounds) {
                                 if identity.bounds == snapshot.bounds {
                                     snapshot.background = record.paint.rgba_backdrop(identity, &current, &display_palette);
                                 }
@@ -2554,7 +2554,7 @@ impl FixtureRunner {
                         if snapshot.visible && snapshot.owner_visible
                             && matches!(snapshot.proc_id, 0 | 1 | 2) && record.paint.has_drawing() {
                             if let Some((identity, current)) = self.dispatcher.capture_standard_control_pixels(
-                                &self.bus, snapshot.owner_id, record.generation, snapshot.bounds) {
+                                &self.bus, snapshot.owner_id, record.generation, record.pointer, snapshot.bounds) {
                                 snapshot.background = record.paint.rgba_backdrop(identity, &current, &display_palette);
                             }
                         }
