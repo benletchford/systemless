@@ -664,3 +664,20 @@ Local requests supplied independently hash-verified original complete 1.0.0 byte
 Fresh real-origin Chrome tests use the normal worker at 8 MHz, without archive interception, host remapping, security changes, diagnostic worker additions or guest patch. Browser fetch returned HTTP 200 and the original archive's exact 109,973 bytes and SHA-256 `9fe89beb7b8492a1c87fcb88cacd75bb8c8934c6f012bd8e52de5124bc9eea7b`. Both 68K and the normal PowerPC selector dismiss the original trial notice, create a 15×15 game and accept two human moves with computer replies, leaving six inspected stones. Occupied-center clicks leave consistently cropped boards pixel-identical on both slices.
 
 This is a third newly qualified live game in this delivery effort, alongside iPuzzle and Kalaha. Full browser matches, saves, audio and higher levels remain unverified. Trial dismissal can leave menu titles cleared and an empty PPC outline; opening Game redraws the menu. A clean 68K production retest confirmed the missing titles persisted for over ten seconds without further input, tracked in [#4395](https://github.com/benletchford/systemless/issues/4395). Bubble Trouble and Chiral launch PRs have merged but their released normal players remain pending. Current merged stock is 193 records / 175 launch flags, distinct from independent live qualification.
+
+
+## Bubble Trouble and Chiral production delivery
+
+Production verification completed on 10 October 2026 for v0.87.0, release merge `40e4139998a3cd07eda836d88386ba031ea3c451`, runtime module `systemless-org-5065caa0483e5092.js`.
+
+Release pipeline https://github.com/benletchford/systemless/actions/runs/38053155563 succeeded: website deployment, all six native platforms, and package/checksum upload. Release PR #4396 merged after all exact-head required checks succeeded.
+
+Actual public Chrome verification used https://systemless.org/bubble-trouble/ and https://systemless.org/chiral/, ordinary site workers and inputs. No archive interception, host remapping, certificate/security bypass, worker diagnostic patches, registration code or guest executable patch was used.
+
+Bubble Trouble: direct normal-origin browser archive fetch returned HTTP 200, 1,670,970 bytes, SHA-256 `18066941cad15d94bc99c482ed0ded2308dc83e327366a36bf5bd4fc1e037f4e`. The default 68K player passed Don't Change, original Not Yet, New Game; inspected maze captures show Right-key movement from near the centre to the right. The normal PowerPC selector restarted into the PPC slice; original Sound Manager warning OK, Don't Change, Not Yet and New Game likewise led to a maze with verified Right-key movement. PPC background remains black (#4361); 68K shows the texture. Original trial retained. Full levels, scoring, sustained play, audio and saves are unverified.
+
+Chiral: direct normal-origin browser archive fetch returned HTTP 200, 1,043,239 bytes, SHA-256 `b4c289ac4e8ee67836281d94ce54a9a724a49802106adb49a57741c5570b81d3`. Actual 68K player: stationary back-to-back press/release dismissed original Not Yet, Play Chiral started Level 1, stationary press/release placed a red atom at the selected board position. All key screenshots inspected. No drag was required. This establishes ordinary brief clicks on this public release; the historical 500 ms held-click reproduction in #4373 is not retested here, and no input root-cause fix is claimed. Score/molecule completion, full levels, saves and audio remain unverified. Original 68K-only package.
+
+The owned browser was stopped cleanly. Five additions are now independently verified live: iPuzzle, Kalaha, FiveStones, Bubble Trouble and Chiral. The repository has 193 records and 175 launch flags; the old enabled baseline remains unaudited, so these counts do not establish 175 qualified games.
+
+Public evidence: [catalogue issue receipt](https://github.com/benletchford/systemless/issues/4353#issuecomment-6097754203). Publication issues #4391 and #4393 are closed after the public checks; graphics #4361 and historical held-click #4373 remain open.
