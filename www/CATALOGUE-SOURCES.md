@@ -515,3 +515,12 @@ The original v1.6 executable's compressed `TEXT` 9000 resource declares 7240 dec
 ## Chiral local browser fetch isolation
 
 The public R2 response still lacks the required CORS header. A temporary local preview redirected only the exact Chiral and Bubble Trouble archive URLs in its compiled WASM to same-length localhost URLs serving SHA-256-verified original bytes. Guest code and archives were unchanged; this is a local diagnostic, not production approval. Chiral then fetched successfully and displayed its original trial notice. A Not Yet click remained visibly pressed; dismissal and browser gameplay remain unqualified. Investigate input delivery independently of the public CORS fix. No tracked launch flag was enabled.
+
+
+## Chiral browser gameplay and input isolation
+
+The local mirror test subsequently reached the original unregistered menu, started Level 1 and accepted a green atom on the board; the dispenser advanced to a red atom. The full browser-context capture has SHA-256 `62911cdae278c9cc8f0133c40d90bcef80b418cbc4d96cf34b670f07484a5209`. The tested WASM runtime remains revision `399e0c95d8f9`, version 0.83.0. The mirror served the already-recorded exact original archive; observational worker diagnostics changed no guest executable or trial state. This proves bounded local browser input response, not sustained play, level completion, production fetching or launch approval.
+
+Stationary Not Yet clicks, including a 500 ms hold, leave the button pressed. The host posts both down and up at v425/h400; observational diagnostics subsequently show no pressed worker input and no pending releases while guest UI tracking remains active. A short pointer drag entirely within the button closes the notice. [Issue #4373](https://github.com/benletchford/systemless/issues/4373) records this behavior independently of a fix. Native GUI-slice comparisons dismiss the notice with a one-frame hold, including a 64-instruction-slice variant and a separately exercised audio-mixing variant. These comparisons do not establish the root cause or verify a current-master WASM build.
+
+The captured stationary-click failure has SHA-256 `a31ab39c5c0a48cddb538636158b79f520cecfc15efbecf91a0cc77b7465e19d`. Captures and scratch scripts remain outside tracked source. A production-host test after the CORS correction, a current-runtime input retest, and the repository launch-approval process are still required. The original archive's 30-day trial notice was retained; no registration code was entered.
