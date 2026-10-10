@@ -1,0 +1,18 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "--no-default-features",
+    "--test",
+    "gpui_coverage"
+  ],
+  "outcome": "4 passed",
+  "sha256": {
+    "src/bin/gpui_demo_coverage.rs": "93443fef96612b1665402ed78398f6391861dfaa1c1bc68e9f68609d542fca57",
+    "tests/gpui_coverage.rs": "8b11c9f8ac19282812915a259dceba99319aa3bcd468be96c27e851aca0c5142",
+    "target/debug/deps/gpui_coverage-bf9228f139f7cb3e": "5a13c8c6a8638e85dffe53f398e3a1ca45eb1ba1d3013faf881ce689cfdba7d9"
+  },
+  "hash_timing": "After successful execution; no source edits or rebuild between execution and hashing.",
+  "scope": "Coverage helper preparation only. Not linked into live compositor while state capture source remains pinned. No rendering speedup or GPUI screenshot equivalence claim."
+}
