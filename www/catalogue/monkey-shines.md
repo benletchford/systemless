@@ -26,7 +26,8 @@ compatibility:
       inspected captures. Repeat passes seven measured pixel assertions at 5906
       frontend ticks with zero exhausted budgets. Browser, room completion, key
       collection, sustained play, saves, audio and editor remain unverified. Original
-      PPC slice has unqualified trial input and missing menu artwork.
+      PPC slice faults after trial mouse-down and has missing menu artwork,
+      tracked independently in issue 4434.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4431
 runtime:
@@ -39,7 +40,7 @@ artifacts:
   format: sit
   source:
     type: url
-    url: https://www.vintageapplemac.com/files/games/Monkey%20Shines%201.1.2.sit
+    url: https://github.com/benletchford/systemless/releases/download/catalogue-intake-20261010/monkey-shines-112.sit
     expected_sha256: e41df59a63aed3127f344435c4cc65b48f5212b227c727f427c4d19157dac045
     expected_size: 3684474
   provenance:
@@ -49,6 +50,7 @@ artifacts:
     - https://www.vintageapplemac.com/software/games/m/
     - https://www.vintageapplemac.com/files/games/Monkey%20Shines%201.1.2.sit
     - https://github.com/benletchford/systemless/issues/4427
+    - https://github.com/benletchford/systemless/releases/tag/catalogue-intake-20261010
     license: Original Monkey Shines unregistered shareware distribution notice
     rights_holder: Fantasoft LLC and Bonzo Enterprises
     permission: >-
