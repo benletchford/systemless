@@ -9,7 +9,6 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
-launch_enabled: false
 compatibility:
   status: playable
   verified:
@@ -19,14 +18,13 @@ compatibility:
     architecture: 68k
     environment: >-
       Bounded native v0.93.0 replay of the complete original 2.0.4 BinHex/Compact Pro
-      archive, exact nested executable, explicit 68K slice and 800-by-600/8-bit display.
-      Return accepts the original mine-count dialog. Ordinary clicks reveal two
-      distinct numbered hexes. Inspected captures and a fresh six-pixel assertion
-      replay pass at 926 frontend / 1526 guest ticks with zero exhausted frames.
-      Both forks of both original files independently match unar extraction.
-      This original application has four CODE resources and no PPC cfrg or PEF.
-      Browser/public input, marking, completed paths, wins, settings, saves and
-      audio remain unverified.
+      archive, exact nested executable, explicit 68K slice and 800-by-600/8-bit
+      display. Return accepts the original mine-count dialog. Ordinary clicks reveal two
+      distinct numbered hexes. Inspected captures and a fresh six-pixel assertion replay
+      pass at 926 frontend / 1526 guest ticks with zero exhausted frames. Both forks of
+      both original files independently match unar extraction. This original application
+      has four CODE resources and no PPC cfrg or PEF. Browser/public input, marking,
+      completed paths, wins, settings, saves and audio remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4454
 runtime:
@@ -38,10 +36,9 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://ftp.lysator.liu.se/pub/mac/games/Hexmines-204.hqx
-    expected_sha256: 5bad2fac69ad0e3b2006853bc3cf3bdb9f45010088e38f63e99ee4a29f8058cd
-    expected_size: 79058
+    type: sha256
+    sha256: 5bad2fac69ad0e3b2006853bc3cf3bdb9f45010088e38f63e99ee4a29f8058cd
+    size_bytes: 79058
   provenance:
     redistribution: permitted
     original: true
@@ -54,23 +51,24 @@ artifacts:
     permission: >-
       The original Hexmines 2.0.4 docs explicitly permit free use and redistribution.
       Sale and commercial distribution require the author's written permission;
-      inclusion on shareware CDs requires sending him a complimentary copy.
-      This free preservation distribution retains the complete unchanged original
-      package, documentation and copyright notices. No commercial-distribution
-      or modern source-code licence is inferred.
+      inclusion on shareware CDs requires sending him a complimentary copy. This free
+      preservation distribution retains the complete unchanged original package, documentation
+      and copyright notices. No commercial-distribution or modern source-code licence
+      is inferred.
     notes: >-
       Original 79058-byte Hexmines-204.hqx, not repacked or converted. Production
-      decoding yields the original application (empty data fork, 99013-byte resource
-      fork) and docs (7546-byte data fork, 612-byte resource fork). Independent unar
-      extraction matches all four forks. The version 2.0.4 docs identify its 2000
-      copyright and five-year update; the game originated in 1991. Original 68K-only
-      application; a native PPC version is not present in this package.
+      decoding yields the original application (empty data fork, 99013-byte resource fork)
+      and docs (7546-byte data fork, 612-byte resource fork). Independent unar
+      extraction matches all four forks. The version 2.0.4 docs identify its 2000 copyright
+      and five-year update; the game originated in 1991. Original 68K-only application; a
+      native PPC version is not present in this package.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/hexmines/gameplay.png
+    type: sha256
+    sha256: f7953232022248c0d0d2eda0c1d9f705070e5cb25e1788a8cadc4253d41db559
+    size_bytes: 2006
   provenance:
     redistribution: permitted
     original: true
@@ -86,7 +84,7 @@ references:
 - https://www.lysator.liu.se/~ingemar/games.html
 ---
 
-![Hexmines minefield after revealing two numbered hexes](incoming/hexmines/gameplay.png)
+![Hexmines minefield after revealing two numbered hexes](https://assets.systemless.org/catalogue/media/sha256/f7/f7953232022248c0d0d2eda0c1d9f705070e5cb25e1788a8cadc4253d41db559.png)
 
 Accept the mine count to start. Click a hex to step on it; its number tells you
 how many neighboring hexes contain mines. Find a safe path through the minefield.
