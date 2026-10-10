@@ -1182,17 +1182,20 @@ fn render_mono_cursor(
 
         for col in 0..16i32 {
             let bit = 15 - col;
-            if (mask_word >> bit) & 1 == 0 {
-                continue;
-            }
+            let data_bit = (data_word >> bit) & 1;
+            let masked = (mask_word >> bit) & 1 != 0;
+            if !masked && data_bit == 0 { continue; }
             let gx = cx + col;
             let gy = cy + row;
             if gx < 0 || gy < 0 || gx >= width as i32 || gy >= height as i32 {
                 continue;
             }
-            let data_bit = (data_word >> bit) & 1;
             let idx = ((gy as u32 * width + gx as u32) * 4) as usize;
-            if data_bit == 1 {
+            if !masked {
+                pixels[idx] = !pixels[idx];
+                pixels[idx + 1] = !pixels[idx + 1];
+                pixels[idx + 2] = !pixels[idx + 2];
+            } else if data_bit == 1 {
                 pixels[idx] = 0;
                 pixels[idx + 1] = 0;
                 pixels[idx + 2] = 0;
@@ -1266,17 +1269,18 @@ fn render_mono_cursor_argb(
 
         for col in 0..16i32 {
             let bit = 15 - col;
-            if (mask_word >> bit) & 1 == 0 {
-                continue;
-            }
+            let data_bit = (data_word >> bit) & 1;
+            let masked = (mask_word >> bit) & 1 != 0;
+            if !masked && data_bit == 0 { continue; }
             let gx = cx + col;
             let gy = cy + row;
             if gx < 0 || gy < 0 || gx >= width as i32 || gy >= height as i32 {
                 continue;
             }
-            let data_bit = (data_word >> bit) & 1;
             let idx = gy as usize * width as usize + gx as usize;
-            pixels[idx] = if data_bit == 1 {
+            pixels[idx] = if !masked {
+                pixels[idx] ^ 0x00FF_FFFF
+            } else if data_bit == 1 {
                 BLACK_ARGB
             } else {
                 WHITE_ARGB
@@ -2330,6 +2334,29 @@ mod tests {
             screen_pixel_rgb(&bus, (base, 1, 4, 1, 1), &clut, 1, 0),
             Some([0, 0, 0])
         );
+    }
+
+    #[test]
+    fn monochrome_cursor_preserves_all_four_mask_data_cases_and_clips_hotspot() {
+        // Apple QuickDraw Reference (2007), Cursor, p. 115: data/mask truth table.
+        let mut data = [0; 32]; data[0] = 0x50;
+        let mut mask = [0; 32]; mask[0] = 0x30;
+        let cursor = CursorImage::mono(data, mask, 0, 0);
+        let mut rgba = vec![0x40, 0x50, 0x60, 0xff].repeat(4);
+        render_cursor(&mut rgba, 4, 1, &cursor, (0, 0));
+        assert_eq!(rgba, vec![0x40, 0x50, 0x60, 0xff, 0xbf, 0xaf, 0x9f, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0xff]);
+        let mut argb = vec![0xff405060; 4];
+        render_cursor_argb(&mut argb, 4, 1, &cursor, (0, 0));
+        assert_eq!(argb, vec![0xff405060, 0xffbfaf9f, 0xffffffff, 0xff000000]);
+        let clipped = CursorImage::mono(data, mask, 0, 2);
+        let mut rgba = vec![0x40, 0x50, 0x60, 0xff].repeat(4);
+        render_cursor(&mut rgba, 4, 1, &clipped, (0, 1));
+        assert_eq!(rgba, vec![0xbf, 0xaf, 0x9f, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0, 0, 0, 0xff, 0x40, 0x50, 0x60, 0xff]);
+        let mut argb = vec![0xff405060; 4];
+        render_cursor_argb(&mut argb, 4, 1, &clipped, (0, 1));
+        assert_eq!(argb, vec![0xffbfaf9f, 0xffffffff, 0xff000000, 0xff405060]);
     }
 
     #[test]

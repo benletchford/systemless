@@ -5059,3 +5059,19 @@ The installed GPUI cursor API exposes named host shapes without arbitrary bitmap
 or hide support. Shared compositor cursor painting, masked/inverted pixels,
 host pointer policy, warps, scales, physical interaction and notifications remain
 open. A generic host arrow must not be claimed as faithful guest cursor support.
+
+
+### Shared monochrome cursor inversion correction
+
+The cursor presentation audit exposed a shared renderer defect: mono data=1,
+mask=0 pixels were skipped instead of inverted. Apple's
+[QuickDraw Reference](https://leopard-adc.pepas.com/documentation/Carbon/Reference/QuickDraw_Ref/QuickDraw_Ref.pdf),
+Cursor discussion on printed p.115, defines all four data/mask cases. The failing
+regression is retained. Both shared RGBA and ARGB cursor paths now implement
+transparent, inverse, white and black pixels, including hotspot clipping. All
+72 cursor-filtered library tests pass (6.42s); before/after logs and source
+provenance are archived in `reference/gpui-demo/cursor-inversion`. Colour cursor
+inversion already existed and its regression remains passing. This corrects
+shared cursor raster behavior; GPUI cursor painting, inversion over themed
+content, indexed-colour native reference comparisons and physical interaction
+remain open.

@@ -1,0 +1,11 @@
+{
+  "base_head": "40911b5ce78120436f5993abb6470f332fa02b1b",
+  "source_sha256": "3ac9e733cc20ff4531bba9310d9566d14158d8ff581c1e3a6e4d548bd5d5f879",
+  "reference": "https://leopard-adc.pepas.com/documentation/Carbon/Reference/QuickDraw_Ref/QuickDraw_Ref.pdf",
+  "reference_pages": "Cursor discussion, printed p.115; CCrsr pp.107-108",
+  "scope": "Reproduced mono data=1/mask=0 omission; shared RGBA/ARGB fix covers transparent/invert/white/black and hotspot clipping. All 72 cursor-filtered library tests pass. No GPUI cursor painting, compositor inversion over themed UI, indexed colour native reference or physical interaction qualification.",
+  "sha256": {
+    "before.log": "44e18a8113b3a13a015da1e4de7d82817ba4721751133b6f622ccc18057e54ef",
+    "after.log": "6d91f0d8e1b2f5be7c10973d2dc69d60b7b3d9a102f82f4b0389474558527fb6"
+  }
+}
