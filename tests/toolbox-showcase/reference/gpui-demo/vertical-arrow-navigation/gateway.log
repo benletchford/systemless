@@ -1,0 +1,10 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.95s
+     Running unittests src/lib.rs (target/debug/deps/systemless-fb1873a31fc5e0eb)
+
+running 2 tests
+test systems::macintosh::trap::dialog::tests::tekey_vertical_arrows_preserve_text_and_follow_guest_lines ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::native_textedit_vertical_arrows_preserve_text_and_follow_guest_lines ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 6697 filtered out; finished in 0.06s
+

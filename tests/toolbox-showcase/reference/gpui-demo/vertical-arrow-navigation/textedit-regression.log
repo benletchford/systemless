@@ -1,0 +1,31 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.75s
+     Running unittests src/lib.rs (target/debug/deps/systemless-fb1873a31fc5e0eb)
+
+running 24 tests
+test systems::macintosh::dialog_manager::tests::dialog_event_classification_and_textedit_key_processing ... ok
+test systems::macintosh::dialog_manager::tests::dialog_keyboard_focus_textedit_paramtext_and_timeout_evaluation ... ok
+test systems::macintosh::loader::ppc::tests::scrap_manager::attached_textedit_features_cross_isa_immediately ... ok
+test systems::macintosh::loader::ppc::tests::scrap_manager::attached_textedit_scrap_uses_canonical_low_memory_globals ... ok
+test systems::macintosh::loader::ppc::tests::scrap_manager::cloned_native_adapter_detaches_textedit_feature_state ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::hle_import_runner_sets_textedit_click_loop_procedure ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::hle_import_runner_creates_and_disposes_native_styled_textedit_records ... ok
+test systems::macintosh::loader::ppc::tests::scrap_manager::native_textedit_and_scrap_manager_share_the_text_flavor ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::native_textedit_line_starts_follow_shared_word_boundaries ... ok
+test systems::macintosh::quickdraw::text::classic_textedit_ink_tests::shared_classic_coverage_honors_continuous_underline_breaks ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::textedit_and_te_text_box_use_explicit_foreground_index ... ok
+test systems::macintosh::runner::tests::idle::window_and_textedit_mutators_still_cancel_an_idle_probe ... ok
+test systems::macintosh::trap::dialog::tests::systemless_theme_does_not_change_textedit_private_scrap_editing ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::native_styled_textedit_styles_runs_and_reports_real_measurements ... ok
+test systems::macintosh::trap::dialog::tests::tecopy_nonempty_selection_updates_textedit_scrap_globals ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::native_textedit_key_and_click_update_the_public_edit_record ... ok
+test systems::macintosh::trap::resource::tests::gestalt_textedit_selectors_are_known_classic_system7_values ... ok
+test systems::macintosh::trap::dialog::tests::systemless_theme_does_not_change_textedit_selection_offsets ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::native_textedit_vertical_arrows_preserve_text_and_follow_guest_lines ... ok
+test systems::macintosh::trap::dialog::tests::textedit_caret_movement_and_blinking_stay_inside_short_view_rectangle ... ok
+test systems::macintosh::quickdraw::text::classic_textedit_ink_tests::classic_halo_underline_recipe_preserves_descenders_and_everything_style ... ok
+test systems::macintosh::loader::ppc::tests::dialog_manager::dialog_keyboard_focus_textedit_paramtext_and_timeout_dispatch_with_canonical_evaluation ... ok
+test systems::macintosh::quickdraw::text::classic_textedit_ink_tests::ppc_halo_underline_recipe_preserves_run_extent_and_per_glyph_exclusion ... ok
+test systems::macintosh::trap::quickdraw::tests::shared_classic_textedit_ink_matches_mono_and_colour_guest_glyphs ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 6675 filtered out; finished in 3.88s
+

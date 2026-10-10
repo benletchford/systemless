@@ -1,0 +1,21 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 34.27s
+     Running unittests src/lib.rs (target/debug/deps/systemless-fb1873a31fc5e0eb)
+
+running 1 test
+
+thread 'systems::macintosh::text_edit::tests::vertical_arrow_keys_do_not_insert_control_bytes' (779100) panicked at src/systems/macintosh/text_edit.rs:352:13:
+assertion `left == right` failed: navigation must preserve guest text
+  left: [97, 98, 30, 99, 13, 100, 101, 102]
+ right: [97, 98, 99, 13, 100, 101, 102]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test systems::macintosh::text_edit::tests::vertical_arrow_keys_do_not_insert_control_bytes ... FAILED
+
+failures:
+
+failures:
+    systems::macintosh::text_edit::tests::vertical_arrow_keys_do_not_insert_control_bytes
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6696 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

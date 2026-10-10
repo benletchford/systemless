@@ -1,0 +1,12 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
+     Running unittests src/lib.rs (target/debug/deps/systemless-fb1873a31fc5e0eb)
+
+running 5 tests
+test systems::macintosh::trap::dialog::tests::tekey_backspace_deletes_selection_or_previous_character ... ok
+test systems::macintosh::trap::dialog::tests::tekey_arrows_move_the_caret_without_inserting_text ... ok
+test systems::macintosh::trap::dialog::tests::tekey_inserts_character_at_caret_and_advances_selection ... ok
+test systems::macintosh::trap::dialog::tests::tekey_vertical_arrows_preserve_text_and_follow_guest_lines ... ok
+test systems::macintosh::trap::dialog::tests::tekey_redraws_the_edited_text_before_returning ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 6694 filtered out; finished in 0.01s
+

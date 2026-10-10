@@ -8744,6 +8744,49 @@ mod desktop {
         }
 
         #[test]
+        fn vertical_arrow_guest_events_preserve_multiline_text_across_cpu_modes() {
+            for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app); wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 7));
+                wait_for_menu(&mut session, 129, 7, true); settle(&mut session);
+                let original = session.runner_mut().text_edit_snapshot().records.into_iter()
+                    .find(|record| record.view_rect == (76, 34, 211, 326)).unwrap();
+                let starts = original.line_starts.as_ref().unwrap();
+                assert!(starts.len() >= 3);
+                let dest = original.global_dest_rect.unwrap();
+                let geometry = original.line_geometry(0, 0).unwrap();
+                let vertical = dest.0 - original.dest_rect.0 + geometry.top + geometry.ascent;
+                let horizontal = dest.1 - original.dest_rect.1 + geometry.left;
+                for input in [MacintoshInput::MouseDown { vertical, horizontal }, MacintoshInput::MouseUp { vertical, horizontal }] {
+                    session.deliver_input(input); settle(&mut session);
+                }
+                for (key, expected) in [("right", 1), ("up", 0), ("down", starts[1]), ("up", 0)] {
+                    let stroke = gpui_kit::Keystroke { key: key.into(), key_char: None, modifiers: Default::default() };
+                    let (mac_key, character) = super::super::input::guest_key(&stroke).unwrap();
+                    session.deliver_input(MacintoshInput::KeyDown { mac_key, character });
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key, character });
+                    for _ in 0..100 {
+                        settle(&mut session);
+                        if session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0) { break; }
+                    }
+                    let actual = session.runner_mut().text_edit_snapshot().records.into_iter()
+                        .find(|record| record.guest_id == original.guest_id).unwrap();
+                    assert_eq!(actual.text, original.text, "arrow cannot become text: {key}, PPC={powerpc}, depth={depth}");
+                    assert_eq!(actual.selection, (expected, expected), "guest navigation: {key}, PPC={powerpc}, depth={depth}");
+                    assert_eq!(actual.style_runs, original.style_runs);
+                    assert_eq!(actual.generation, original.generation);
+                    assert!(actual.drawing_intact);
+                }
+                eprintln!("PASS vertical-arrow-guest-events powerpc={powerpc} depth={depth}");
+            }
+        }
+
+        #[test]
         fn text_edit_snapshots_resolve_guest_port_geometry_on_both_cpus() {
             for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
                 let mut session = MacintoshSession::new(true, depth);

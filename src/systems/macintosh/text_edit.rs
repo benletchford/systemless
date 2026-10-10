@@ -220,6 +220,11 @@ impl TextEditBuffer {
         true
     }
 
+    pub(crate) fn move_caret_to(&mut self, offset: usize) {
+        let caret = offset.min(self.text.len());
+        self.selection = caret..caret;
+    }
+
     /// Apply the byte accepted by `TEKey`.
     ///
     /// Backspace deletes the selection or the preceding character. Left and
@@ -249,6 +254,9 @@ impl TextEditBuffer {
                 };
                 self.selection = caret..caret;
             }
+            // Vertical navigation needs the guest's wrapped line metrics;
+            // both Toolbox gateways resolve its target before applying keys.
+            0x1e | 0x1f => {}
             _ => self.replace_selection(&[key]),
         }
     }
@@ -342,6 +350,15 @@ mod tests {
         assert_eq!(buffer.text(), b"one three");
         assert_eq!(buffer.selection(), 4..4);
         assert!(!buffer.delete_selection());
+    }
+
+    #[test]
+    fn vertical_arrow_keys_do_not_insert_control_bytes() {
+        for key in [0x1e, 0x1f] {
+            let mut buffer = TextEditBuffer::new(b"abc\rdef".to_vec(), 2, 2);
+            buffer.apply_key(key);
+            assert_eq!(buffer.text(), b"abc\rdef", "navigation must preserve guest text");
+        }
     }
 
     #[test]

@@ -21243,6 +21243,24 @@
     }
 
     #[test]
+    fn tekey_vertical_arrows_preserve_text_and_follow_guest_lines() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let text = b"MMM\rMMM";
+        let handle = make_te_with_text(&mut disp, &mut bus, text);
+        let ptr = bus.read_long(handle);
+        bus.write_word(ptr + TrapDispatcher::TE_SEL_START_OFFSET, 2);
+        bus.write_word(ptr + TrapDispatcher::TE_SEL_END_OFFSET, 2);
+        for (key, expected) in [(0x1f, 6), (0x1e, 2), (0x1e, 0), (0x1f, 4), (0x1f, 7)] {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, handle); bus.write_word(TEST_SP + 4, key);
+            assert!(disp.dispatch_dialog(true, 0x1DC, &mut cpu, &mut bus).unwrap().is_ok());
+            assert_eq!(TrapDispatcher::te_text_bytes(&bus, handle), text);
+            assert_eq!(bus.read_word(ptr + TrapDispatcher::TE_SEL_START_OFFSET), expected);
+            assert_eq!(bus.read_word(ptr + TrapDispatcher::TE_SEL_END_OFFSET), expected);
+        }
+    }
+
+    #[test]
     fn tekey_inserts_character_at_caret_and_advances_selection() {
         // Inside Macintosh Volume I (1985), p. I-385 and Text 1993, p. 2-81:
         // TEKey inserts typed characters at the insertion point.

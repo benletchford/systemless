@@ -583,6 +583,63 @@ fn native_styled_textedit_styles_runs_and_reports_real_measurements() {
 }
 
 #[test]
+fn native_textedit_vertical_arrows_preserve_text_and_follow_guest_lines() {
+    let pef = synthetic_pef_with_import(b"TEKey");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let rects = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(rects, vec![0; 16]);
+    ppc_write_rect(&mut loaded.memory, rects, 10, 20, 80, 220).unwrap();
+    ppc_write_rect(&mut loaded.memory, rects + 8, 10, 20, 80, 220).unwrap();
+    let mut last_mem_error = PPC_NO_ERR;
+    let te_handle = ppc_te_initialize_record(
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+        rects,
+        rects + 8,
+        PPC_MAIN_GWORLD,
+        1,
+        PPC_QD_TEXT_MODE_SRC_OR,
+        12,
+        PpcRgbColor {
+            red: 0,
+            green: 0,
+            blue: 0,
+        },
+        false,
+    );
+    assert_eq!(
+        ppc_te_set_text(
+            None,
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            &mut last_mem_error,
+            test_handles!(loaded),
+            te_handle,
+            b"MMM\rMMM",
+        ),
+        PPC_NO_ERR
+    );
+
+    let ptr = loaded.memory.read_u32_be(te_handle).unwrap();
+    loaded.memory.write_u16_be(ptr + PPC_TE_SEL_START_OFFSET, 2).unwrap();
+    loaded.memory.write_u16_be(ptr + PPC_TE_SEL_END_OFFSET, 2).unwrap();
+    for (key, expected) in [(0x1f, 6), (0x1e, 2), (0x1e, 0), (0x1f, 4), (0x1f, 7)] {
+        loaded.cpu.pc = loaded.entry_pc; loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = key; loaded.cpu.gpr[4] = te_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(ppc_te_text_bytes(&mut loaded.memory, &test_handle_records!(loaded), te_handle), Some(b"MMM\rMMM".to_vec()));
+        assert_eq!(loaded.memory.read_u16_be(ptr + PPC_TE_SEL_START_OFFSET), Some(expected));
+        assert_eq!(loaded.memory.read_u16_be(ptr + PPC_TE_SEL_END_OFFSET), Some(expected));
+    }
+}
+
+#[test]
 fn native_textedit_key_and_click_update_the_public_edit_record() {
     let pef = synthetic_pef_with_import(b"TEKey");
     let mut loaded = load_pef_application(&pef).unwrap();

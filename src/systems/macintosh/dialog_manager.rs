@@ -7905,6 +7905,14 @@ pub fn textedit_key_result(
     let e = sel_end.min(text_len);
     let (s, e) = if s > e { (e, s) } else { (s, e) };
 
+    match key {
+        0x1c => return (existing.to_vec(), if s != e { s } else { s.saturating_sub(1) }),
+        0x1d => return (existing.to_vec(), if s != e { e } else { e.saturating_add(1).min(text_len) }),
+        // Multiline vertical movement is resolved by the owning TERec gateway.
+        0x1e | 0x1f => return (existing.to_vec(), s),
+        _ => {}
+    }
+
     if key == 0x08 {
         if s != e {
             let mut merged = Vec::with_capacity(text_len - (e - s));

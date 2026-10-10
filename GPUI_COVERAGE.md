@@ -4647,3 +4647,24 @@ Long caret-row assertions also verify selected glyph reveal and absence of
 bounds for its horizontally offscreen beginning. Both PPC16 long-row
 compositions were reviewed. Logs, images, metadata and hashes
 are in `reference/gpui-demo/marked-row-horizontal-scroll`. Other scales, modal/file staging and physical IME remain unqualified.
+
+
+### Guest vertical-arrow navigation
+
+A shared `TEKey` regression reproduced insertion of Up Arrow byte0x1e into
+text. Both CPU Toolbox gateways now resolve vertical movement using guest line
+starts and existing guest point-to-offset/font geometry before redrawing. Up on
+the first line goes to offset0; Down on the last line goes to the text end, as
+specified in Inside Macintosh: Text (1993), pp.2-12--2-13. The classic modal
+DialogSelect path shares the same vertical target calculation; its separate
+text-edit helper also now treats horizontal arrows as navigation.
+
+The shared non-insertion regression and both actual gateway two-line tests pass.
+A public-fixture wrapped document test passes GPUI key translation followed by
+ordinary guest key events across mono68k, colour68k, PPC8 and PPC16 (6.88s),
+checking selection offsets, unchanged text/styles/generation and valid repaint
+ownership. The24 `textedit` library regressions pass (3.88s); the `tekey` library
+regressions also pass. Logs, failure and provenance are archived in
+`reference/gpui-demo/vertical-arrow-navigation`. Styled vertical movement,
+modal end-to-end navigation, composed captures and physical host input remain
+unqualified; this does not close the complete editing gate.

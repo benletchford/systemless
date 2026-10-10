@@ -4842,6 +4842,22 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn te_vertical_key_target(&self, bus: &MacMemoryBus, te_handle: u32,
+        selection: std::ops::Range<usize>, key: u8) -> usize {
+        let offset = if key == 0x1e { selection.start } else { selection.end };
+        let starts = Self::te_line_starts(bus, te_handle);
+        let line = Self::te_char_to_line_index(bus, te_handle, offset);
+        let target = if key == 0x1e && line == 0 { 0 }
+            else if key == 0x1f && line + 1 >= starts.len().saturating_sub(1) { Self::te_text_bytes(bus, te_handle).len() }
+            else {
+                let adjacent = if key == 0x1e { line - 1 } else { line + 1 };
+                let (_, x) = self.te_char_to_point(bus, te_handle, offset);
+                let (y, _) = self.te_char_to_point(bus, te_handle, starts[adjacent]);
+                self.te_point_to_char(bus, te_handle, (y.saturating_add(1), x)).max(0) as usize
+            };
+        target
+    }
+
     fn textedit_key_result(
         existing: &[u8],
         sel_start: usize,
@@ -4886,8 +4902,10 @@ impl super::TrapDispatcher {
             (item.sel_start.max(0) as usize, item.sel_end.max(0) as usize)
         };
 
-        let (updated, insertion_point) =
-            Self::textedit_key_result(&existing, sel_start, sel_end, key);
+        let (updated, insertion_point) = if matches!(key, 0x1e | 0x1f) && te_ptr != 0 {
+            (existing.clone(), self.te_vertical_key_target(bus, text_handle,
+                sel_start.min(sel_end)..sel_start.max(sel_end), key))
+        } else { Self::textedit_key_result(&existing, sel_start, sel_end, key) };
         let clamped_insertion = insertion_point.min(u16::MAX as usize) as u16;
         item.text = decode_mac_roman(&updated);
         item.sel_start = clamped_insertion as i16;
@@ -16198,7 +16216,10 @@ impl super::TrapDispatcher {
                     );
                 }
                 if let Some(mut buffer) = Self::te_edit_buffer(bus, te_handle) {
-                    buffer.apply_key(key);
+                    if matches!(key, 0x1e | 0x1f) {
+                        let target = self.te_vertical_key_target(bus, te_handle, buffer.selection(), key);
+                        buffer.move_caret_to(target);
+                    } else { buffer.apply_key(key); }
                     self.te_commit_edit_buffer(bus, te_handle, &buffer);
 
                     // TEKey is a drawing operation as well as an editing
