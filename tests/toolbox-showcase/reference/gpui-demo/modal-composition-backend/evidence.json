@@ -1,0 +1,15 @@
+{
+  "base": "6d1125925c2355e141050be0ba5cf6bbb3db76a1",
+  "sha256": {
+    "src/bin/gpui_demo.rs": "e328dfe447311370acea6e74d0e9710be9fefe650de9cb72853a9a2dffb24b5b",
+    "src/bin/gpui_demo_input.rs": "bb26155dedbb6357aed325c5f50ce179272d4828b7a644726dfbd0c0b4b80f69",
+    "src/systems/macintosh/dialog_manager.rs": "caa02b07f0e1a6f98ff6b205f4c444803f2f29f7be7024a2f8aff41ee9a6852c",
+    "src/systems/macintosh/trap/dialog.rs": "a5cf3fb4b23f81c41ccdb7529a6bc7bb0142531a823b6f382ad4068cb2798c13",
+    "src/systems/macintosh/loader/ppc/dispatch_dialog.rs": "f2b9e815e95079eab94f533edce311792a4d673d114d41e70c66d6e4ec791966",
+    "src/systems/macintosh/runner/mod.rs": "2f22648a7217ef6c5a077a7c4013b3fa925434a658d67eaedd7df7c10552ad99",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "41cf3aa93f2b41d0ce1d49b2bace8572140e9692d37239a749a471744ca5c09f",
+    "target/ci-test/examples/gpui_menu_demo-957ebf4d71285d8e": "75a2c076240f3b30f196ce6d56046636e365b29d43eb52be529482ae6135addb"
+  },
+  "scope": "Four actual CPU/depth modal guest sessions: accented Mac Roman commit through paired guest events, stale identity/item/text/selection rejection, control exclusion, unchanged other field/bounds. Existing three-mode modal field switching/selection/editing regression passes.",
+  "limits": "Backend helper manually applied events, not GPUI modal handler/worker integration. Dialog item replacement revisions not exposed; identical replacement safety unproven. No modal preedit rendering, physical IME or independent oracle."
+}

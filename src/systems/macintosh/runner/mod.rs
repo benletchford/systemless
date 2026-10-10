@@ -3956,9 +3956,14 @@ impl FixtureRunner {
     }
 
     pub fn is_ui_tracking_active(&self) -> bool {
+        self.dispatcher.is_dialog_tracking() || self.is_non_dialog_ui_tracking_active()
+    }
+
+    /// Modal text input may enter the retained DialogSelect loop, but must not
+    /// interrupt another pointer/menu tracking operation or frozen execution.
+    pub fn is_non_dialog_ui_tracking_active(&self) -> bool {
         self.frozen_ticks.is_some()
             || self.process_context.menu_tracking().is_some()
-            || self.dispatcher.is_dialog_tracking()
             || self.dispatcher.is_control_tracking()
             || self.dispatcher.is_window_tracking()
             || self.dispatcher.is_grow_window_tracking()

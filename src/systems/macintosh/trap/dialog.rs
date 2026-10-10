@@ -13239,11 +13239,11 @@ impl super::TrapDispatcher {
                                         let char_code = (e.message & 0xFF) as u8;
                                         let key_code = ((e.message >> 8) & 0xFF) as u8;
                                         let command_printable =
-                                            (e.modifiers & 0x0100) != 0 && matches!(char_code, 0x20..=0x7E);
+                                            (e.modifiers & 0x0100) != 0 && matches!(char_code, 0x20..=0x7E | 0x80..=0xFF);
                                         if !command_printable {
                                             match char_code {
-                                                // Backspace/Delete or printable ASCII.
-                                                0x08 | 0x20..=0x7E => {
+                                                // Backspace or printable Macintosh Roman.
+                                                character if crate::dialog_manager::is_dialog_edit_text_character(character) => {
                                         let mut text_trace = None;
                                         let mut modified_key_to_set = None;
                                         let mut te_update = None;

@@ -7618,9 +7618,10 @@ pub fn is_dialog_event(
 /// Validates whether a character is an editable character accepted by dialog edit fields.
 ///
 /// Macintosh Toolbox Essentials (1992), p. 6-139:
-/// Accepts backspace (0x08) and printable ASCII / Mac Roman characters (0x20..=0x7E).
+/// Accepts backspace (0x08), printable ASCII and extended Mac Roman bytes.
+/// Return, Escape, Tab and ASCII DEL remain modal/control actions.
 pub fn is_dialog_edit_text_character(character: u8) -> bool {
-    matches!(character, 0x08 | 0x20..=0x7E)
+    matches!(character, 0x08 | 0x20..=0x7E | 0x80..=0xFF)
 }
 
 /// Describes the action that the host environment must take in response to a `DialogSelect` event.
@@ -9220,7 +9221,9 @@ mod tests {
         assert!(!is_dialog_edit_text_character(0x0D)); // CR
         assert!(!is_dialog_edit_text_character(0x1B)); // ESC
         assert!(!is_dialog_edit_text_character(0x7F)); // DEL
-        assert!(!is_dialog_edit_text_character(0x80));
+        assert!(is_dialog_edit_text_character(0x80));
+        assert!(is_dialog_edit_text_character(0x8E)); // Mac Roman é
+        assert!(is_dialog_edit_text_character(0xFF));
 
         // textedit_key_result tests
         let initial = b"Hello World";
