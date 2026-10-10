@@ -1,0 +1,17 @@
+{
+  "build_command": "cargo build --locked --profile ci-test --example gpui-menu-demo --features gpui-demo-test",
+  "build_exit_code": 0,
+  "capture_command": "target/ci-test/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit --prefer-powerpc --capture-scale 1 --capture-styled-text-edit-multiline /tmp/systemless-ci-condensed-multiline-probe.png --capture-styled-spacing condensed",
+  "capture_exit_code": 0,
+  "comparison": "Full guest/composed RGBA equal one archived debug case; actual PPC16 runtime/depth checked in sidecar",
+  "scope": "One condensed selected multiline case at scale1. No general profile equivalence, direct additional appearance review, full state qualification or performance claim. Both full192-case state matrices remain in progress.",
+  "artifacts": {
+    "source-pins.json": "52dff9f6fe7c0aa830e2c10589d09571a7ad0dc30fd480a332f297d5623db500",
+    "probe.log": "1ea1591e3aff8b4b4895c17f797f329c9f0620da8605e74e91712c9cedeed725",
+    "comparison.json": "b98855d35e45f3d55d462d0287d921033d32baca4d984fb1454584b03f5bed50",
+    "probe.guest.png": "63fc108b1f33247fa657fc86be92288e6ab2243948213a592f4c7d997f2c118a",
+    "probe.png": "d8f011ce1c88ba228a39790d5c0a986b497f4945ba307f58118f62e388022a0d",
+    "probe.json": "d0bdb33f31dd69ab064b60d86adb02033e7cbc6640c21ab330690b0f4f48e5cf",
+    "build.log": "1d6057f380355ba029f8d099396f6fe667c14ff5b7fba15b38d50f6b256ec930"
+  }
+}

@@ -8909,6 +8909,9 @@ mod desktop {
                 assert!(session.runner_mut().select_guest_menu_item(129, 11));
                 wait_for_menu(&mut session, 129, 11, true);
                 settle(&mut session);
+                assert_eq!(session.runner().is_powerpc_app(), powerpc, "pointer test must execute the requested CPU");
+                let actual_depth = session.runner().presented_screen_depth().expect("presented guest screen");
+                assert_eq!(actual_depth, u32::from(ppc_depth.or(depth).unwrap()));
                 if spacing != 0 {
                     let before = session.runner_mut().text_edit_snapshot().records.into_iter()
                         .find(|record| record.styled).unwrap();
@@ -9034,7 +9037,64 @@ mod desktop {
                         let expected_end = starts[line_index] + drag_end.unwrap_or(offset) + usize::from(narrow_boundary);
                         assert_eq!(clicked.selection, (expected, expected_end),
                             "PPC={powerpc}, depth={depth:?}, scale={scale}, line={line_index}, drag_end={drag_end:?}");
+                        if spacing != 0 && offset == 20 && drag_end.is_none() {
+                            let before = clicked.clone();
+                            let mut inserted = before.text.clone();
+                            inserted.insert(expected, b'q');
+                            for (key, key_char, character, selection, text) in [
+                                ("q", Some("q"), b'q', expected + 1, &inserted),
+                                ("backspace", None, 8, expected, &before.text),
+                            ] {
+                                cx.update_window(window.into(), |_, window, cx| {
+                                    assert!(view.update(cx, |demo, _| demo.focus.is_focused(window)),
+                                        "guest glyph click must give the scene keyboard focus");
+                                    let key = gpui_kit::Keystroke {
+                                        key: key.into(), key_char: key_char.map(Into::into), ..Default::default()
+                                    };
+                                    window.dispatch_event(gpui_kit::KeyDownEvent {
+                                        keystroke: key.clone(), is_held: false, prefer_character_input: false,
+                                    }.to_platform_input(), cx);
+                                    window.dispatch_event(gpui_kit::KeyUpEvent { keystroke: key }.to_platform_input(), cx);
+                                }).unwrap();
+                                let inputs: Vec<_> = receiver.try_iter().filter_map(|command| match command {
+                                    super::Command::Input(input) => Some(input), _ => None,
+                                }).collect();
+                                assert!(matches!(inputs.as_slice(), [
+                                    MacintoshInput::KeyDown { character: down, .. },
+                                    MacintoshInput::KeyUp { character: up, .. },
+                                ] if *down == character && *up == character));
+                                for input in inputs { session.deliver_input(input); }
+                                for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
+                                settle(&mut session);
+                                let records = session.runner_mut().text_edit_snapshot().records;
+                                let edited = records.iter().find(|next| next.guest_id == before.guest_id).unwrap();
+                                assert_eq!(&edited.text, text, "GPUI key must reach guest styled editing");
+                                assert_eq!(edited.selection, (selection, selection));
+                                assert_eq!((edited.generation, edited.owner_port, edited.dest_rect, edited.view_rect),
+                                    (before.generation, before.owner_port, before.dest_rect, before.view_rect));
+                                assert!(edited.style_runs.as_ref().unwrap().iter().all(|run| run.face & 96 == spacing));
+                                if key == "backspace" { assert_eq!(edited.style_runs, before.style_runs); }
+                                let frame = session.video_frame().unwrap();
+                                let plans = super::qualify_styled_text_fields(&records, &frame.pixels, frame.width, frame.height);
+                                assert!(records.iter().zip(&plans).find(|(record, _)| record.guest_id == before.guest_id)
+                                    .and_then(|(_, plan)| plan.as_ref()).unwrap()
+                                    .smooth_raster_support().into_iter().all(|supported| supported));
+                                cx.update_window(window.into(), |_, window, cx| {
+                                    view.update(cx, |demo, cx| {
+                                        demo.text_edits = records;
+                                        demo.styled_text_plans = plans;
+                                        demo.image = Some(std::sync::Arc::new(gpui_kit::RenderImage::new(vec![
+                                            image::Frame::new(image::RgbaImage::from_raw(frame.width, frame.height,
+                                                super::gpui_pixels(frame.pixels.clone())).unwrap())
+                                        ])));
+                                        cx.notify();
+                                    });
+                                    window.render_frame(cx);
+                                }).unwrap();
+                            }
+                        }
                     }
+                    eprintln!("PASS styled spacing={spacing} runtime_powerpc={powerpc} depth={actual_depth} scale={scale}");
                 }
             }
         }
