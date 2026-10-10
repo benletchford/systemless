@@ -31,6 +31,14 @@ def verify(directory,partial=False):
   for name,digest in [('rendered','rendered_sha256'),('guest','guest_sha256'),('evidence','evidence_sha256')]:assert sha(path(case[name]))==case[digest],(key,name)
   evidence=json.loads(path(case['evidence']).read_text())
   depth={'mono':1,'colour':8,'ppc8':8,'ppc16':16}[case['mode']]
+  command=case['command']
+  assert type(command) is list and all(type(arg) is str for arg in command)
+  assert command.count('--prefer-powerpc')==int(case['mode'].startswith('ppc'))
+  requested_depth=None if case['mode']=='ppc16' else str(depth)
+  assert command.count('--screen-depth')==int(requested_depth is not None)
+  if requested_depth is not None:assert command[command.index('--screen-depth')+1]==requested_depth
+  assert command.count('--capture-scale')==1
+  assert float(command[command.index('--capture-scale')+1])==case['scale']
   assert type(case['actual_depth']) is int and type(evidence['depth']) is int
   assert case['actual_depth']==evidence['depth']==depth
   assert evidence['scale']==case['scale']

@@ -7,7 +7,18 @@ spec=importlib.util.spec_from_file_location('provenance',checker);module=importl
 parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('source',type=pathlib.Path);parser.add_argument('--report',type=pathlib.Path);args=parser.parse_args()
 base=json.loads((args.source/'progress.json').read_text());cases=base['cases'];base['cases']=cases[:1];base['complete']=False
 case=base['cases'][0];original=json.loads((args.source/case['evidence']).read_text())
+def wrong_cpu_request(m,c,e):
+ command=c['command']
+ if '--prefer-powerpc' in command:command.remove('--prefer-powerpc')
+ else:command.append('--prefer-powerpc')
+def wrong_depth_request(m,c,e):
+ command=c['command']
+ if '--screen-depth' in command:command[command.index('--screen-depth')+1]='16'
+ else:command.extend(['--screen-depth','8'])
 checks={
+ 'requested-cpu':wrong_cpu_request,
+ 'requested-depth':wrong_depth_request,
+ 'requested-scale':lambda m,c,e:c['command'].__setitem__(c['command'].index('--capture-scale')+1,'3'),
  'font-identity':lambda m,c,e:e['style_runs'][0].update(font=4),
  'font-size':lambda m,c,e:e['style_runs'][0].update(size=12),
  'style-face':lambda m,c,e:e['style_runs'][1].update(face=0),
