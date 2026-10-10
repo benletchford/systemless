@@ -3555,6 +3555,20 @@ impl super::TrapDispatcher {
         }
     }
 
+    pub(crate) fn select_standard_file_text_range(&mut self, new_folder: bool, range: std::ops::Range<usize>) -> bool {
+        let Some(tracking) = self.standard_file_put_tracking.as_mut() else { return false; };
+        if !tracking.standard_entry_point || tracking.confirming_replace || tracking.pointer_anchor.is_some() { return false; }
+        if new_folder {
+            return tracking.new_folder.as_mut().is_some_and(|folder| folder.select_range(range));
+        }
+        if tracking.new_folder.is_some() { return false; }
+        let length = encode_mac_roman_lossy(&tracking.name).len();
+        if range.start > range.end || range.end > length { return false; }
+        tracking.sel_start = range.start as i16;
+        tracking.sel_end = range.end as i16;
+        true
+    }
+
     fn standard_file_put_key_action(
         tracking: &mut StandardFilePutTrackingState,
         message: u32,

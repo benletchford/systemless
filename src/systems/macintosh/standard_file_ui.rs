@@ -392,6 +392,15 @@ impl StandardFileNewFolderState {
         self.track_selection(offset, true);
     }
 
+    pub(crate) fn select_range(&mut self, range: std::ops::Range<usize>) -> bool {
+        if self.error.is_some() || self.is_selecting() || range.start > range.end || range.end > self.edit.text().len() {
+            return false;
+        }
+        self.begin_selection(range.start, false);
+        self.track_selection(range.end, false);
+        true
+    }
+
     /// Returns whether selection changed; release preserves the final range.
     pub(crate) fn track_selection(&mut self, offset: usize, button_down: bool) -> bool {
         let Some(anchor) = self.pointer_anchor else { return false; };

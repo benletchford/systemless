@@ -227,6 +227,19 @@ impl Default for PpcToolboxStartupState {
 }
 
 impl PpcToolboxStartupState {
+    pub(crate) fn select_standard_file_text_range(&mut self, new_folder: bool, range: std::ops::Range<usize>) -> bool {
+        let Some(tracking) = self.standard_file_put_tracking.as_mut() else { return false; };
+        if !tracking.standard_entry_point || tracking.confirming_replace || tracking.pointer_anchor.is_some() { return false; }
+        if new_folder {
+            return tracking.new_folder.as_mut().is_some_and(|folder| folder.select_range(range));
+        }
+        if tracking.new_folder.is_some() || tracking.list_has_focus { return false; }
+        if range.start > range.end || range.end > tracking.name.len() { return false; }
+        tracking.sel_start = range.start;
+        tracking.sel_end = range.end;
+        true
+    }
+
     pub(crate) fn standard_file_snapshot(
         &self,
     ) -> Option<crate::standard_file_ui::StandardFileSnapshot> {

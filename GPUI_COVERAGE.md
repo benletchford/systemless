@@ -4809,3 +4809,19 @@ request. Initial Save failure is retained in
 Arbitrary modal selection and disjoint document-stage replacement remain
 unimplemented; composed visual, physical IME and independent native evidence
 remain unqualified.
+
+
+### Guarded Standard File selection operation
+
+The runner exposes a guarded selection request for live standard Save/New
+Folder editors. It pins panel lifetime, directory, field text and prior
+selection; rejects confirmation/error, pointer tracking, queued or held input,
+invalid ranges and unqualified panels; and changes only the retained guest
+selection. New Folder uses its existing selection tracker. Both CPU adapters
+retain name and parent state. The production library check passes (11.25s).
+Eight CPU/depth/editor cases pass within the platform regression (26.95s),
+checking stale/invalid rejection and unchanged text, names, entries, directory
+and bounds, then restoring selection before modality checks. Evidence is in
+`tests/toolbox-showcase/reference/gpui-demo/guarded-file-selection`. Frontend
+explicit file replacement wiring remains unfinished; composed visual, physical
+input and independent native qualification remain open.

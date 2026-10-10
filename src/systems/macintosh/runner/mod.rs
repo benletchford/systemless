@@ -3461,6 +3461,37 @@ impl FixtureRunner {
         }
     }
 
+    /// Select a live standard filename editor without touching text or replies.
+    #[doc(hidden)]
+    pub fn select_standard_file_text_range(&mut self, expected: &StandardFileSnapshot, range: std::ops::Range<usize>) -> bool {
+        if self.is_non_dialog_ui_tracking_active() { return false; }
+        let events = self.event_manager_snapshot();
+        if events.queue_len != 0 || events.mouse_button
+            || [0u8, 0x37, 0x3a, 0x3b].iter().any(|key|
+                events.key_map[usize::from(*key / 8)] & (1 << (*key % 8)) != 0) { return false; }
+        let Some(actual) = self.standard_file_snapshot() else { return false; };
+        if actual.kind != StandardFileKind::Put || !actual.standard_entry_point || actual.confirming_replace
+            || (actual.guest_id, actual.generation, actual.directory_id) != (expected.guest_id, expected.generation, expected.directory_id) {
+            return false;
+        }
+        let length = if let Some(folder) = &actual.new_folder {
+            let Some(previous) = &expected.new_folder else { return false; };
+            if folder.error.is_some() || folder.name != previous.name || folder.selection != previous.selection { return false; }
+            folder.name.chars().count()
+        } else {
+            if expected.new_folder.is_some() || actual.name_has_focus != Some(true)
+                || actual.name != expected.name || actual.name_selection != expected.name_selection { return false; }
+            let Some(name) = &actual.name else { return false; }; name.chars().count()
+        };
+        if range.start > range.end || range.end > length || range.end > i16::MAX as usize { return false; }
+        let new_folder = actual.new_folder.is_some();
+        if let Some(app) = self.native.application_mut() {
+            app.toolbox_startup.select_standard_file_text_range(new_folder, range)
+        } else {
+            self.dispatcher.select_standard_file_text_range(new_folder, range)
+        }
+    }
+
     /// Observe a retained Standard File Open/Save session without advancing
     /// its modal event loop or changing the caller's reply record.
     /// Inside Macintosh: Files (1992), pp. 3-3--3-13, 3-44--3-47.

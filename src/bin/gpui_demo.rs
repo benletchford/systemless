@@ -12532,6 +12532,19 @@ mod desktop {
                 assert_eq!(actual.selection, original_owner.selection.start+3..original_owner.selection.start+3);
                 assert_eq!(after.directory_id, before.directory_id); assert_eq!(after.entries, before.entries);
                 if new_folder { assert_eq!(after.name, parent.name); }
+                let mut stale_panel = after.clone(); stale_panel.generation += 1;
+                assert!(!session.runner_mut().select_standard_file_text_range(&stale_panel, 0..1));
+                assert!(!session.runner_mut().select_standard_file_text_range(&after, 0..actual.text.len() + 1));
+                assert!(session.runner_mut().select_standard_file_text_range(&after, 0..1));
+                assert!(!session.runner_mut().select_standard_file_text_range(&after, 0..0), "prior selection cannot authorize another request");
+                let selected = session.runner().standard_file_snapshot().unwrap();
+                let selected_owner = super::super::input::standard_file_text_owner(&selected).unwrap();
+                assert_eq!(selected_owner.selection, 0..1); assert_eq!(selected_owner.text, actual.text);
+                assert_eq!(selected.name, after.name); assert_eq!(selected.directory_id, after.directory_id);
+                assert_eq!(selected.entries, after.entries); assert_eq!(selected.bounds, after.bounds);
+                if new_folder { assert_eq!(selected.new_folder.as_ref().unwrap().name, after.new_folder.as_ref().unwrap().name); }
+                assert!(session.runner_mut().select_standard_file_text_range(&selected, actual.selection.clone()));
+                eprintln!("PASS guarded-file-selection powerpc={powerpc} depth={depth} new_folder={new_folder}");
                 // A modal transition must cancel pending marked text and replace ownership.
                 cx.update_window(window.into(), |_, window, cx| {
                     view.update(cx, |demo, cx| {
