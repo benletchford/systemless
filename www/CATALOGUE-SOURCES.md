@@ -952,7 +952,7 @@ match. Full levels, saves, audio and actual public follow-through remain unverif
 ## Slime Invaders provisional original intake
 
 [slime-invaders-207.hqx](https://ftp.lysator.liu.se/pub/mac/games/slime-invaders-207.hqx)
-SHA-256 is `d963f0e72eec104cfb1066d4f1a225624dc28c8ad3f283296a2818b3f9f3c168`.
+is 286997 bytes, SHA-256 `d963f0e72eec104cfb1066d4f1a225624dc28c8ad3f283296a2818b3f9f3c168`.
 Original docs grant unchanged distribution by nonprofit organizations and
 condition commercial distribution on sending the author a copy of the final
 product. Applicability of these conditions remains pending; this intake is

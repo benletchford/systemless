@@ -10,7 +10,7 @@ architectures:
 - ppc
 default_architecture: 68k
 category: Arcade
-launch_enabled: false
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -57,8 +57,25 @@ compatibility:
       collect hearts, raising score from 0 through 10 to 30. Actual captures
       inspected. Fresh 16-pixel assertion replay passes at 1476 frontend / 1429
       guest ticks with zero exhausted frames. OpenRFPerm #4449 and rounded erase
-      #4450 supply the required runtime support and are now merged. PPC browser
-      qualification, public replay, complete levels, saves and audio remain pending.
+      #4450 supply the required runtime support and are now merged. Public replay,
+      complete levels, saves and audio remain pending.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4452
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: 4bc89d3c4407fbeb23878008bfd4c02ca71302e6
+    architecture: ppc
+    environment: >-
+      Ordinary Chrome worker/WebGL preview v0.94.0. PowerPC is chosen through the
+      visible architecture selector; canvas runtime attributes independently
+      confirm the PPC route. 800-by-600/8-bit display, 25 MHz/max two ticks per paint,
+      crossOriginIsolated true. Ordinary click dismisses the level-1 start prompt;
+      longer bounded mouse inputs move down, left, up and right. Inspected actual
+      captures across the input sequences show heart/bonus collection and score
+      advancement from 0 to 100, including a visible 50-point bonus. Local-origin
+      archive delivery uses only unchanged integrity-checked hosted original bytes.
+      No guest state or archive is patched. Public replay, completed levels,
+      menu/settings coverage, saves and audio remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4452
 runtime:
@@ -91,9 +108,9 @@ artifacts:
       Original 213248-byte MacBinary/Compact Pro package, not repacked or converted.
       The game has four nonzero CODE segments plus CODE 0 and a native pwpc cfrg/PEF
       slice. The original docs identify the Valentine 1997 version 1.1 release. This
-      native 68K and PPC gameplay are qualified; the 68K browser route is qualified and
-      the PPC browser route remains pending. Launch stays disabled until both browser
-      routes are checked.
+      native and browser 68K/PPC gameplay are qualified from this exact original package.
+      Default launch uses 68K; the ordinary selector offers its native PPC slice.
+      Both supporting PPC runtime fixes are merged.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -120,13 +137,14 @@ references:
 
 Choose **New game** from **Game**, then click to start a level. Move the mouse to
 steer the butterfly, collect the floating hearts and avoid the flypaper. The
-original game includes normal levels, bonus levels and a harder mode.
+original game includes normal levels, bonus levels and a harder mode. For gentler
+play, turn off **Macho mode** before starting a new game. The butterfly retains
+momentum; allow time to reverse direction and avoid the sticky flypaper.
 
 This is the complete original **HeartQuest 1.1** freeware distribution, including
 its documentation and copyright notices. The original package includes both 68K and PowerPC versions.
 
 Bounded native testing verifies starting play, steering and heart collection on
-both original versions. Ordinary 68K browser testing also verifies movement and
-score advancement in normal mode. PowerPC browser qualification and launch
-approval remain pending. Public gameplay, complete levels, saves and audio remain
-unverified.
+both original versions. Ordinary browser testing also verifies movement and
+score advancement on both routes. Public gameplay, completed levels, full
+menu/settings coverage, saves and audio remain unverified.
