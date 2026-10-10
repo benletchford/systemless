@@ -27,7 +27,7 @@ fixture_hash=sha(fixture)
 v=None
 if not args.smooth_review:
  s=importlib.util.spec_from_file_location('verify',root/'tests/toolbox-showcase/verify-gpui-styled-text-ink.py');v=importlib.util.module_from_spec(s);s.loader.exec_module(v)
-pinned_files=['src/bin/gpui_demo.rs','src/bin/gpui_demo_text.rs','src/bin/gpui_demo_frames.rs','src/systems/macintosh/quickdraw/text.rs','src/systems/macintosh/quickdraw/fonts/outline.rs','src/systems/macintosh/quickdraw/fonts/style.rs','src/systems/macintosh/quickdraw/fonts/mod.rs','tests/toolbox-showcase/capture-gpui-styled-text-matrix.py','tests/toolbox-showcase/verify-gpui-styled-text-ink.py']
+pinned_files=['src/bin/gpui_demo.rs','src/bin/gpui_demo_coverage.rs','src/bin/gpui_demo_text.rs','src/bin/gpui_demo_frames.rs','src/systems/macintosh/quickdraw/text.rs','src/systems/macintosh/quickdraw/fonts/outline.rs','src/systems/macintosh/quickdraw/fonts/style.rs','src/systems/macintosh/quickdraw/fonts/mod.rs','tests/toolbox-showcase/capture-gpui-styled-text-matrix.py','tests/toolbox-showcase/verify-gpui-styled-text-ink.py']
 source_hashes={name:sha(root/name) for name in pinned_files}
 def check_pins():
  assert sha(binary)==binary_hash,'capture executable changed during qualification'

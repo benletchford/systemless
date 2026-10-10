@@ -38,6 +38,10 @@ mod cpu_frame;
 mod text;
 
 #[cfg(target_os = "macos")]
+#[path = "gpui_demo_coverage.rs"]
+mod coverage;
+
+#[cfg(target_os = "macos")]
 #[path = "gpui_demo_input.rs"]
 mod input;
 
