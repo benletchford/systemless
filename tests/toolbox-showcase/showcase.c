@@ -928,6 +928,31 @@ static void DrawGraphicsPage(void)
     DrawString("\pThe same source and resources drive both CPU slices.");
 }
 
+/* Exercise Appearance overrides through the guest Toolbox on both slices.
+ * Flags select family, size and face; other stored fields remain unselected. */
+static void SetShowcaseControlFonts(Boolean styled)
+{
+    ControlFontStyleRec style;
+    ControlHandle controls[5];
+    short index;
+    style.mode = 0;
+    style.just = 0;
+    style.foreColor.red = style.foreColor.green = style.foreColor.blue = 0;
+    style.backColor.red = style.backColor.green = style.backColor.blue = 0;
+    style.flags = styled ? 7 : 0;
+    style.font = 3;
+    style.size = 18;
+    style.style = bold;
+    controls[0] = gButton;
+    controls[1] = gCheckbox;
+    controls[2] = gPrefDiffEasy;
+    controls[3] = gPrefDiffNormal;
+    controls[4] = gPrefDiffHard;
+    for (index = 0; index < 5; ++index) {
+        if (controls[index] != nil) SetControlFontStyle(controls[index], &style);
+    }
+}
+
 static void DrawControlsPage(void)
 {
     DrawHeading("\pControls and scroll bars");
@@ -5165,6 +5190,10 @@ static void DoEvent(EventRecord *event)
             key = (char)(event->message & charCodeMask);
             if ((event->modifiers & cmdKey) != 0) {
                 DoMenuChoice(MenuKey(key));
+            } else if ((gPage == pageControls || gPage == pagePreferences) &&
+                       (event->modifiers & optionKey) != 0 && (key == 'f' || key == 'n')) {
+                SetShowcaseControlFonts(key == 'f');
+                DrawMainWindow();
             } else if (gPage == pageStyledText &&
                        (event->modifiers & optionKey) != 0 && key == 'm') {
                 MenuHandle styledMenu;

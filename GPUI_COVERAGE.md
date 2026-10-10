@@ -5283,3 +5283,22 @@ Document accessibility geometry: retained plain/styled line runs now receive gue
 Wrapped dialog accessibility ownership: recognized plain/styled TE record wrappers can now register multiline accessibility selection/value actions for a verified owning dialog item instead of requiring document identity. Mapping checks original text/selection and exact retained record identity through the established dialog record resolver. Dialog value commits retain the existing control-character policy. The actual wrapped PPC8/PPC16 test passes ownership/stale-generation checks and existing four-scale candidate geometry/composition behavior; classic direct-editor discovery remains covered (20.88s). Production checking passes. Evidence: `reference/gpui-demo/wrapped-dialog-accessible-owner`. This qualifies ownership mapping and prior text-service paths, not native AX request delivery, composed accessibility nodes or full assistive navigation.
 
 Accessibility inactive-work correction: multiline TextRun construction and per-character line geometry are now gated by GPUI `Window::is_a11y_active`, avoiding new per-frame geometry measurement when no accessibility tree is built. Active boundary tests and an inactive no-run/no-selection construction check pass; production checking passes (5.25s). Evidence: `reference/gpui-demo/inactive-accessibility-work`. This removes identified work, not a measured performance qualification. GPUI exposes `debug_a11y_tree_json`, but its test platform lacks activation callbacks; native Mac discovery remains blocked by the locked session. Native activation/tree/action delivery remains unqualified.
+
+### Guest control font compositor checkpoint (2026-10-11)
+
+The rebuilt public fat fixture exercises SetControlFontStyle through real guest
+Option-F input. Shared Demo captures pass on mono68k scale0.75, colour68k
+scale1.5, PPC8 scale1 and PPC16 scale2, preserving control bounds and values.
+Two control targets or three difficulty radios select Geneva18 bold. A later
+PPC16 scale1.5 guest title click toggles the checkbox while preserving its font,
+generation and bounds. Evidence and explicit provenance are in
+`tests/toolbox-showcase/reference/gpui-demo/guest-control-font-captures`.
+The current committed fixture archive remains unchanged during the older full
+regression; these captures use the rebuilt ignored archive.
+
+Guest/composed image review confirms an outstanding standard-control backdrop
+defect: theme.background paints white rectangles over custom grey panel paint.
+Transparent overlays alone would retain the original bitmap labels underneath
+smooth text, so faithful removal/replacement needs a guest background recipe.
+These captures do not establish inactive states, physical hit-testing, full
+font fidelity or production readiness.

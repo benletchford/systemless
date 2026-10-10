@@ -189,6 +189,15 @@ mod desktop {
         capture_controls: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_control_fonts: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_radio_fonts: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_control_fonts_changed: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_controls_changed: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -3318,6 +3327,9 @@ mod desktop {
         ModelessDialog,
         NestedModalDialog,
         Controls,
+        ControlFonts,
+        ControlFontsChanged,
+        RadioFonts,
         ControlsChanged,
         ControlsDragged,
         ControlsHeld,
@@ -3503,6 +3515,8 @@ mod desktop {
         let controls_page = matches!(
             capture,
             CaptureCase::Controls
+                | CaptureCase::ControlFonts
+                | CaptureCase::ControlFontsChanged
                 | CaptureCase::ControlsChanged
                 | CaptureCase::ControlsDragged
                 | CaptureCase::ControlsHeld
@@ -3544,7 +3558,7 @@ mod desktop {
         );
         let standard_file_open = matches!(capture, CaptureCase::StandardFileOpenComposed | CaptureCase::StandardFileOpenScrolled);
         let standard_file_page = standard_file_save || standard_file_open;
-        let radio_page = matches!(capture, CaptureCase::RadioHeld | CaptureCase::RadioOutside | CaptureCase::RadioSelected);
+        let radio_page = matches!(capture, CaptureCase::RadioFonts | CaptureCase::RadioHeld | CaptureCase::RadioOutside | CaptureCase::RadioSelected);
         let controls_changed = matches!(capture, CaptureCase::ControlsChanged);
         let controls_dragged = matches!(capture, CaptureCase::ControlsDragged);
         let controls_held = matches!(capture, CaptureCase::ControlsHeld);
@@ -4584,7 +4598,7 @@ mod desktop {
                 assert!(value >= 8);
             }
         }
-        if radio_page {
+        if radio_page && !matches!(capture, CaptureCase::RadioFonts) {
             let target = session.runner_mut().control_snapshot().into_iter()
                 .find(|c| c.visible && c.title == "Recruit (Easy)").unwrap();
             let rect = target.bounds;
@@ -4606,6 +4620,55 @@ mod desktop {
         }
         if matches!(capture, CaptureCase::PopupControlsDisabled) {
             set_showcase_popups_enabled(&mut session, false);
+        }
+        if matches!(capture, CaptureCase::ControlFonts | CaptureCase::ControlFontsChanged | CaptureCase::RadioFonts) {
+            // Let the guest call SetControlFontStyle; never inject host font state.
+            let before = session.runner_mut().control_snapshot();
+            for input in [
+                MacintoshInput::KeyDown { mac_key: 0x3a, character: 0 },
+                MacintoshInput::KeyDown { mac_key: 0x03, character: b'f' },
+                MacintoshInput::KeyUp { mac_key: 0x03, character: b'f' },
+                MacintoshInput::KeyUp { mac_key: 0x3a, character: 0 },
+            ] {
+                session.deliver_input(input);
+                session.runner_mut().run_steps(100_000, None);
+            }
+            assert!((0..300).any(|_| {
+                session.runner_mut().run_steps(100_000, None);
+                let current = session.runner_mut().control_snapshot();
+                let targets: Vec<_> = current.iter().filter(|c| c.visible && matches!(c.title.as_str(),
+                    "Activate" | "Checkbox" | "Recruit (Easy)" | "Veteran (Normal)" | "Nightmare (Hard)")).collect();
+                targets.len() == (if radio_page { 3 } else { 2 }) && targets.iter().all(|c| c.font_style.as_ref().is_some_and(|style|
+                    style.flags == 7 && style.font == 3 && style.size == 18 && style.style == 1))
+            }), "guest must apply Geneva 18 bold to visible standard controls");
+            for control in session.runner_mut().control_snapshot().iter().filter(|c| c.visible) {
+                let original = before.iter().find(|c| c.guest_id == control.guest_id).unwrap();
+                assert_eq!(control.bounds, original.bounds);
+                assert_eq!(control.value, original.value);
+                eprintln!("guest control font: id={} proc={} style={:?}", control.guest_id, control.proc_id, control.font_style);
+            }
+            for _ in 0..30 { session.runner_mut().run_steps(100_000, None); }
+            if matches!(capture, CaptureCase::ControlFontsChanged) {
+                let checkbox = session.runner_mut().control_snapshot().into_iter()
+                    .find(|c| c.visible && c.title == "Checkbox").unwrap();
+                let (top, left, bottom, right) = checkbox.bounds;
+                // Click within the displayed title, rather than only the indicator.
+                let point = ((top + bottom) / 2, (left + 30).min(right - 1));
+                for input in [
+                    MacintoshInput::MouseDown { vertical: point.0, horizontal: point.1 },
+                    MacintoshInput::MouseUp { vertical: point.0, horizontal: point.1 },
+                ] {
+                    session.deliver_input(input);
+                    for _ in 0..30 { session.runner_mut().run_steps(10_000, None); }
+                }
+                let changed = session.runner_mut().control_snapshot().into_iter()
+                    .find(|c| c.guest_id == checkbox.guest_id).unwrap();
+                assert_eq!(changed.generation, checkbox.generation);
+                assert_eq!(changed.bounds, checkbox.bounds);
+                assert_eq!(changed.font_style, checkbox.font_style);
+                assert_eq!(changed.value, 1 - checkbox.value);
+                eprintln!("styled title click toggled guest checkbox: id={} value={}", changed.guest_id, changed.value);
+            }
         }
         let controls = session.runner_mut().control_snapshot();
         if matches!(capture, CaptureCase::PopupControlsDisabled) {
@@ -6201,6 +6264,18 @@ mod desktop {
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
+        for (output, capture) in [
+            (args.capture_control_fonts.as_ref(), CaptureCase::ControlFonts),
+            (args.capture_control_fonts_changed.as_ref(), CaptureCase::ControlFontsChanged),
+            (args.capture_radio_fonts.as_ref(), CaptureCase::RadioFonts),
+        ] {
+            if let Some(output) = output {
+                capture_fixture_screen(&args.game, output, args.prefer_powerpc,
+                    args.screen_depth, capture, args.capture_scale);
+                return;
+            }
+        }
+        #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_controls.as_ref() {
             capture_fixture_screen(
                 &args.game,
@@ -7082,6 +7157,9 @@ mod desktop {
                         capture_modeless_dialog: None,
                         capture_nested_modal_dialog: None,
                         capture_controls: None,
+                        capture_control_fonts: None,
+                        capture_control_fonts_changed: None,
+                        capture_radio_fonts: None,
                         capture_controls_changed: None,
                         capture_controls_dragged: None,
                         capture_controls_held: None,
