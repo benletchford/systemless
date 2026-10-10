@@ -622,7 +622,7 @@ Stages: **rights** = applicable affirmative archive redistribution terms; **arch
 | 598 | Captain Magneto | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 599 | Dart Board | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 600 | Elfin Clash | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 601 | FiveStones | [Non-profit unchanged grant](https://github.com/benletchford/systemless/issues/3976) | SHA-256 / 109,973 bytes | Native full match + browser moves | Browser trial only | [68K release player checked; launch pending](CATALOGUE-SOURCES.md#fivestones-browser-retest) | [Draft #3977 needs update](https://github.com/benletchford/systemless/pull/3977) | Pending |
+| 601 | FiveStones | [Non-profit unchanged grant](https://github.com/benletchford/systemless/issues/3976) | SHA-256 / 109,973 bytes | Native full match + browser moves | Browser moves + AI replies | [Both release-player slices checked](CATALOGUE-SOURCES.md#fivestones-launch-qualification) | [Launch PR #3977](https://github.com/benletchford/systemless/pull/3977) | Pending release |
 | 602 | Galactic Frontiers | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 603 | Hardwood Solitaire II | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 604 | IntelliBots | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
