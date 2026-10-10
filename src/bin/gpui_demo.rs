@@ -620,6 +620,14 @@ mod desktop {
                         }
                     }
                 }
+                // A deferred text request must not prevent closing the worker.
+                // Shutdown cancels the pending request and flushes completed guest writes.
+                if text_commit_wait.is_some() && queued.iter().any(|command| matches!(command, Command::Shutdown)) {
+                    if let Some(store) = save_store.as_mut() {
+                        store.sync_save_files_now(session.runner_mut());
+                    }
+                    return Ok::<(), String>(());
+                }
                 if let Some(mut click) = wheel.take() {
                     if !queued.is_empty() { click.stop_repeating(); }
                     wheel = click.advance(&mut session);
@@ -697,10 +705,16 @@ mod desktop {
                                     super::input::TextInputTarget::StandardFile { new_folder } => session.runner().standard_file_snapshot()
                                         .and_then(|panel| super::input::standard_file_text_owner(&panel)).is_some_and(|actual|
                                             actual.identity == owner.identity && actual.new_folder == new_folder),
-                                    super::input::TextInputTarget::Dialog { item, content_revision } => session.runner_mut().dialog_snapshot().iter().any(|dialog|
-                                        dialog.visible && dialog.active && (dialog.guest_id, dialog.generation) == owner.identity
-                                            && dialog.content_revision == content_revision && dialog.edit_field == Some(item)),
+                                    super::input::TextInputTarget::Dialog { .. } => {
+                                        let dialogs = session.runner_mut().dialog_snapshot();
+                                        let windows = session.runner_mut().window_frame_snapshot();
+                                        super::input::dialog_field_is_current(&owner, &dialogs, &windows)
+                                    },
                                 };
+                                // Time spent waiting for an unconsumed guest event is
+                                // not evidence that the predicted text owner is stale.
+                                // Start the bounded settling window after the queue drains.
+                                if events.queue_len != 0 { text_commit_wait = None; }
                                 if !pointer_down && same_field && in_event
                                     && text_commit_wait.get_or_insert_with(Instant::now).elapsed() < Duration::from_millis(250) {
                                     queued.push_front(Command::ReplaceText(owner, range, bytes, caret)); break;
@@ -739,7 +753,7 @@ mod desktop {
                                 // still be inside guest Toolbox code. Let that
                                 // event complete before validating the next range.
                                 let events = session.runner().event_manager_snapshot();
-                                let in_event = events.queue_len != 0 || events.last_record.is_some_and(|record| record.what != 0)
+                                let in_event = events.queue_len != 0 || events.last_record.as_ref().is_some_and(|record| record.what != 0)
                                     || session.runner().is_ui_tracking_active();
                                 let same_field = match owner.target {
                                     super::input::TextInputTarget::StandardFile { new_folder } => session.runner().standard_file_snapshot()
@@ -747,19 +761,20 @@ mod desktop {
                                             actual.identity == owner.identity && actual.new_folder == new_folder),
                                     super::input::TextInputTarget::Document { port } => session.runner_mut().text_edit_snapshot().records.iter().any(|record|
                                         record.active && (record.guest_id, record.generation) == owner.identity && record.owner_port == port),
-                                    super::input::TextInputTarget::Dialog { item, content_revision } => {
+                                    super::input::TextInputTarget::Dialog { .. } => {
                                         let dialogs = session.runner_mut().dialog_snapshot();
                                         let windows = session.runner_mut().window_frame_snapshot();
-                                        let records = session.runner_mut().text_edit_snapshot().records;
-                                        let controls = session.runner_mut().control_snapshot();
-                                        super::input::dialog_text_owner_with_records(&dialogs, &windows, &records, &controls).is_some_and(|actual|
-                                            actual.identity == owner.identity && actual.item == item && actual.content_revision == content_revision)
+                                        super::input::dialog_field_is_current(&owner, &dialogs, &windows)
                                     }
                                 };
                                 let document = matches!(owner.target, super::input::TextInputTarget::StandardFile { .. })
                                     || (session.runner().standard_file_snapshot().is_none()
                                     && (matches!(owner.target, super::input::TextInputTarget::Dialog { .. })
                                         || !session.runner_mut().dialog_snapshot().iter().any(|dialog| dialog.visible && dialog.active)));
+                                // Time spent waiting for an unconsumed guest event is
+                                // not evidence that the predicted text owner is stale.
+                                // Start the bounded settling window after the queue drains.
+                                if events.queue_len != 0 { text_commit_wait = None; }
                                 if !pointer_down && same_field && document && in_event
                                     && text_commit_wait.get_or_insert_with(Instant::now).elapsed() < Duration::from_millis(250) {
                                     queued.push_front(if let Some(caret) = caret {
@@ -833,7 +848,10 @@ mod desktop {
                 } else {
                     10_000
                 };
-                let cpu_deadline = start + Duration::from_millis(12);
+                // Snapshot validation and command handling can exceed a frame's
+                // budget at higher guest depths. Always reserve execution time
+                // afterward so queued Toolbox events cannot be starved by UI work.
+                let cpu_deadline = Instant::now() + Duration::from_millis(12);
                 super::cpu_frame::advance(session.runner_mut(), batch, deadline, cpu_deadline);
                 session.runner_mut().mix_gui_audio_slice(367);
                 if session.runner().has_pending_sound_work()
@@ -10516,6 +10534,22 @@ mod desktop {
         }
 
         #[cfg(feature = "gpui-demo-test")]
+        fn merged_mark_request(owner: super::super::input::TextInputOwner) -> (super::Command, Vec<u8>) {
+            let mut stage = super::super::input::GuestComposition::default();
+            stage.synchronize(Some(owner.clone()));
+            assert!(stage.mark_range(Some(&(1..2)), "XY", 2..2));
+            assert!(stage.mark_range(Some(&(5..6)), "KL", 2..2));
+            let mut requests = stage.commit_marked_replacement(Some(&(2..6)), "Q").unwrap();
+            assert_eq!(requests.len(), 1);
+            let request = requests.remove(0);
+            assert_eq!(request.expected, owner);
+            assert_eq!(request.range, 1..5);
+            assert_eq!(request.bytes, b"XQL");
+            assert_eq!(request.caret, Some(3));
+            (super::Command::ReplaceText(request.expected, request.range, request.bytes, request.caret),
+                stage.owner().unwrap().text.clone())
+        }
+
         fn initial_mark_request(owner: super::super::input::TextInputOwner) -> super::Command {
             let mut stage = super::super::input::GuestComposition::default();
             stage.synchronize(Some(owner.clone()));
@@ -10812,11 +10846,16 @@ mod desktop {
             }
             fn wait(stage: &str, updates: &Mutex<Option<Update>>, ready: impl Fn(&Update) -> bool) -> Update {
                 let start = Instant::now();
+                let mut last = String::new();
                 loop {
                     if let Some(update) = updates.lock().unwrap().take() {
                         if ready(&update) { return update; }
+                        last = format!("rejection={:?}, fields={:?}", update.text_commit_rejection,
+                            update.dialogs.iter().filter_map(|dialog| dialog.items.get(8).map(|field|
+                                (dialog.guest_id, dialog.generation, dialog.content_revision, dialog.edit_field, field.text.clone(), field.selection)))
+                                .collect::<Vec<_>>());
                     }
-                    assert!(start.elapsed() < Duration::from_secs(15), "worker did not complete composed text: {stage}");
+                    assert!(start.elapsed() < Duration::from_secs(15), "worker did not complete composed text: {stage}; {last}");
                     std::thread::sleep(Duration::from_millis(10));
                 }
             }
@@ -10953,6 +10992,19 @@ mod desktop {
                 eprintln!("PASS worker-modal-disjoint-replacement powerpc={powerpc} depth={actual_depth} wrapped={wrapped}");
                 let current = super::super::input::dialog_text_owner_with_records(
                     &completed.dialogs, &completed.windows, &completed.text_edits, &completed.controls).unwrap();
+                let owner = super::super::input::TextInputOwner { identity: current.identity,
+                    target: super::super::input::TextInputTarget::Dialog { item: current.item, content_revision: current.content_revision },
+                    text: current.text, selection: current.selection };
+                let (request, bytes) = merged_mark_request(owner);
+                let text = systemless::systems::macintosh::mac_roman::decode_mac_roman(&bytes);
+                worker.0.send(request).unwrap();
+                let completed = wait("modal merged staged replacement", &updates, |update| update.dialogs.iter().any(|dialog|
+                    (dialog.guest_id, dialog.generation) == pinned.identity && dialog.items[8].text == text
+                        && dialog.items[8].selection == Some((3, 3))));
+                assert_eq!(completed.dialogs.iter().find(|dialog| dialog.guest_id == pinned.identity.0).unwrap().items[6].text, before.items[6].text);
+                eprintln!("PASS worker-modal-merged-replacement powerpc={powerpc} depth={actual_depth} wrapped={wrapped}");
+                let current = super::super::input::dialog_text_owner_with_records(
+                    &completed.dialogs, &completed.windows, &completed.text_edits, &completed.controls).unwrap();
                 let initial = super::super::input::TextInputOwner { identity: current.identity,
                     target: super::super::input::TextInputTarget::Dialog { item: current.item, content_revision: current.content_revision },
                     text: current.text.clone(), selection: current.selection };
@@ -11022,11 +11074,14 @@ mod desktop {
             }
             fn wait(stage: &str, updates: &Mutex<Option<Update>>, ready: impl Fn(&Update) -> bool) -> Update {
                 let start = Instant::now();
+                let mut last = String::new();
                 loop {
                     if let Some(update) = updates.lock().unwrap().take() {
                         if ready(&update) { return update; }
+                        last = format!("rejection={:?}, panel={:?}", update.text_commit_rejection,
+                            update.standard_file.as_ref().map(|panel| (&panel.name, panel.name_selection, &panel.new_folder)));
                     }
-                    assert!(start.elapsed() < Duration::from_secs(15), "worker did not complete composed text: {stage}");
+                    assert!(start.elapsed() < Duration::from_secs(15), "worker did not complete composed text: {stage}; {last}");
                     std::thread::sleep(Duration::from_millis(10));
                 }
             }
@@ -11119,7 +11174,19 @@ mod desktop {
                 let actual = wait("Save disjoint staged replacement", &updates, |update| update.standard_file.as_ref().is_some_and(|panel|
                     panel.name.as_deref() == Some(disjoint_name.as_str()) && panel.name_selection == Some((4, 4)))).standard_file.unwrap();
                 eprintln!("PASS worker-file-disjoint-replacement powerpc={powerpc} depth={actual_depth} new_folder=false");
-                expected = disjoint_text;
+                let current = super::super::input::standard_file_text_owner(&actual).unwrap();
+                let owner = super::super::input::TextInputOwner { identity: current.identity,
+                    target: super::super::input::TextInputTarget::StandardFile { new_folder: false },
+                    text: current.text, selection: current.selection };
+                let (request, merged_bytes) = merged_mark_request(owner);
+                let text = systemless::systems::macintosh::mac_roman::decode_mac_roman(&merged_bytes);
+                worker.0.send(request).unwrap();
+                let merged = wait("Save merged staged replacement", &updates, |update| update.standard_file.as_ref().is_some_and(|panel|
+                    panel.name.as_deref() == Some(text.as_str()) && panel.name_selection == Some((3, 3)))).standard_file.unwrap();
+                assert_eq!(merged.entries, actual.entries); assert_eq!(merged.directory_id, actual.directory_id);
+                let actual = merged;
+                eprintln!("PASS worker-file-merged-replacement powerpc={powerpc} depth={actual_depth} new_folder=false");
+                expected = merged_bytes;
                 let current = super::super::input::standard_file_text_owner(&actual).unwrap();
                 let initial = super::super::input::TextInputOwner { identity: current.identity,
                     target: super::super::input::TextInputTarget::StandardFile { new_folder: false },
@@ -11241,6 +11308,19 @@ mod desktop {
                     panel.new_folder.as_ref().is_some_and(|folder| folder.name == disjoint_name && folder.selection == (4, 4)))).standard_file.unwrap();
                 eprintln!("PASS worker-file-disjoint-replacement powerpc={powerpc} depth={actual_depth} new_folder=true");
                 assert_eq!(edited.name, actual.name); assert_eq!(edited.entries, actual.entries);
+                let current = super::super::input::standard_file_text_owner(&edited).unwrap();
+                let owner = super::super::input::TextInputOwner { identity: current.identity,
+                    target: super::super::input::TextInputTarget::StandardFile { new_folder: true },
+                    text: current.text, selection: current.selection };
+                let (request, bytes) = merged_mark_request(owner);
+                let text = systemless::systems::macintosh::mac_roman::decode_mac_roman(&bytes);
+                worker.0.send(request).unwrap();
+                let merged = wait("New Folder merged staged replacement", &updates, |update| update.standard_file.as_ref().is_some_and(|panel|
+                    panel.new_folder.as_ref().is_some_and(|folder| folder.name == text && folder.selection == (3, 3)))).standard_file.unwrap();
+                assert_eq!(merged.name, edited.name); assert_eq!(merged.entries, edited.entries);
+                assert_eq!(merged.directory_id, edited.directory_id);
+                let edited = merged;
+                eprintln!("PASS worker-file-merged-replacement powerpc={powerpc} depth={actual_depth} new_folder=true");
                 let current = super::super::input::standard_file_text_owner(&edited).unwrap();
                 let initial = super::super::input::TextInputOwner { identity: current.identity,
                     target: super::super::input::TextInputTarget::StandardFile { new_folder: true },

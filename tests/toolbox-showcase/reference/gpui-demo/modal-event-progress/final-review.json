@@ -1,0 +1,14 @@
+{
+  "modal": "PASS six cases 52.45s after diagnostic removal",
+  "standard_file": "PASS four modes, Save and New Folder, 107.46s",
+  "default_application": "cargo check --locked --bin systemless PASS 11.13s",
+  "remaining": [
+    "One earlier mono New Folder accessibility replacement timed out; diagnostic rerun passed. Timing/performance qualification remains open.",
+    "Shutdown preemption during a deferred text request requires dedicated behavioral qualification.",
+    "Physical IME/live frame delivery and full release gates remain open."
+  ],
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "f63ecb3ad2915921765984d3ae5fe49e4ebcdb8addb35ba8c761efbc357e1e5a",
+    "src/bin/gpui_demo_input.rs": "194b2b3eeb9dca54588c01288706c42a1c21cd8759319ea48765090ca62077a8"
+  }
+}
