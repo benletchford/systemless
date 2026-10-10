@@ -17,6 +17,38 @@ compatibility:
   verified:
   - date: "2026-10-10"
     tester: Catalogue maintainer
+    systemless_version: 569c49777edbbc639a3b56816ec1ccd539814005
+    architecture: 68k
+    environment: >-
+      Actual public v0.86.0 player, normal Chrome WebAssembly worker at 8 MHz,
+      guest menus enabled. Direct hosted archive fetch returned HTTP 200,
+      exact 109,973 bytes and matching SHA-256, without request interception.
+      Original Not Yet, Game -> New Game -> 15-by-15, two human moves and
+      computer replies produced six inspected stones. Occupied-center click
+      left the consistently cropped board pixel-identical. No runtime or guest
+      patch. Trial dismissal can clear menu titles until opening Game redraws
+      them; issue 4395 remains open. Full browser match, saves, sound and
+      higher levels remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4353
+  - date: "2026-10-10"
+    tester: Catalogue maintainer
+    systemless_version: 569c49777edbbc639a3b56816ec1ccd539814005
+    architecture: ppc
+    environment: >-
+      Actual public v0.86.0 player, normal Chrome WebAssembly worker at 8 MHz,
+      guest menus enabled. Direct hosted archive fetch returned HTTP 200,
+      exact 109,973 bytes and matching SHA-256, without request interception.
+      Original Not Yet, Game -> New Game -> 15-by-15, two human moves and
+      computer replies produced six inspected stones. Occupied-center click
+      left the consistently cropped board pixel-identical. No runtime or guest
+      patch. Trial dismissal can clear menu titles until opening Game redraws
+      them; issue 4395 remains open. Full browser match, saves, sound and
+      higher levels remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4353
+  - date: "2026-10-10"
+    tester: Catalogue maintainer
     systemless_version: e3ba0f1c8d9a57f1bae9a6a7008c4e4d66598653
     architecture: 68k
     environment: >-
@@ -170,8 +202,10 @@ game accepted a move and computer reply. Two clean processes reproduced all
 Release-mode browser checks on both 68K and PowerPC cover the original trial
 notice, a new 15-by-15 board, two human moves with computer replies, and an
 occupied click that leaves the board unchanged. The guest menu bar is enabled
-so **Game → New Game** remains available. On PowerPC, dismissing the trial
-notice can leave an empty outline until opening the Game menu redraws it.
+so **Game → New Game** remains available. Trial dismissal can clear the menu
+titles; click beside the small application icon at the upper left to open
+**Game** and redraw the menu. PowerPC can also retain an empty trial-window
+outline until a game starts. These redraw issues remain tracked separately.
 
 The full-match checks above used an optimized portable native release-library
 harness, not the complete GUI executable. Full browser matches, cross-process
