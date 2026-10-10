@@ -26,14 +26,19 @@ mod compositor {
                 let pixels: BTreeMap<_, _> = (0..32).flat_map(|y| (0..160)
                     .filter(move |x| (x + y) % 17 != 0)
                     .map(move |x| ((x, y), if y < 12 && x < 100 { [0, 0, 0, 255] }
-                        else { [(x % 16 * 16) as u8, (y % 16 * 16) as u8, 127,
-                            if alpha { ((x + y) % 254 + 1) as u8 } else { 255 }] })))
+                        else { [(x / 8 % 16 * 16) as u8, (y / 4 % 16 * 16) as u8, 127,
+                            if alpha { ((x / 8 + y / 4) % 254 + 1) as u8 } else { 255 }] })))
                     .collect();
                 let spans = if merged { coverage::row_spans(pixels) } else {
                     pixels.into_iter().map(|((x, y), color)| coverage::CoverageSpan {
                         left: x, right: i64::from(x) + 1, y, color,
                     }).collect()
                 };
+                if merged && alpha {
+                    assert!(spans.iter().any(|span| span.color[3] < 255
+                        && span.right > i64::from(span.left) + 1),
+                        "fractional alpha must exercise actual multi-pixel spans");
+                }
                 let mut paths = BTreeMap::new();
                 for span in spans {
                     let left = snap(origin + span.left as f32 * unit);
