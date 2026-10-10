@@ -43,6 +43,15 @@ if 'runtime_cpu_evidence' in base:
   'runtime-cpu-evidence':lambda m,c,e:m.update(runtime_cpu_evidence='requested only'),
   'runtime-cpu-policy-missing':lambda m,c,e:m.pop('runtime_cpu_evidence'),
  })
+if 'spacing_style' in base:
+ checks.update({
+  'spacing-policy':lambda m,c,e:m.update(spacing_style='invalid'),
+  'spacing-evidence':lambda m,c,e:e.update(spacing_style='extended' if m['spacing_style']!='extended' else 'condensed'),
+  'spacing-policy-missing':lambda m,c,e:m.pop('spacing_style'),
+  'spacing-evidence-missing':lambda m,c,e:e.pop('spacing_style'),
+  'spacing-request':lambda m,c,e:c['command'].__setitem__(c['command'].index('--capture-styled-spacing')+1,'extended' if m['spacing_style']!='extended' else 'condensed'),
+  'spacing-face':lambda m,c,e:e['style_runs'][0].update(face=e['style_runs'][0]['face'] ^ 32),
+ })
 with tempfile.TemporaryDirectory(prefix='systemless-styled-verifier-') as temporary:
  out=pathlib.Path(temporary)
  for key in ['rendered','guest']:(out/case[key]).symlink_to((args.source/case[key]).resolve())

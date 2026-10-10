@@ -1,0 +1,12 @@
+{
+  "scope": "One directly viewed manual composed probe, not complete matrix or independent native-font fidelity.",
+  "images": [
+    {
+      "file": "systemless-extended-native-probe.png",
+      "capture_sha256": "e8b29513ea32b0f3d84a45538103952e7682cfdff5df12f0c092673b78de5118",
+      "sha256": "19c648b56f18a37f4568b3edda769ef7e2f200a6763ddf5b7489cf52f197eb8c",
+      "observations": "Mono68k two-line smooth mixed styles retain wider guest spacing, clipping and selected bounds; native black custom panels retained.",
+      "preview_note": "Full-scene1600x1200 tool preview."
+    }
+  ]
+}
