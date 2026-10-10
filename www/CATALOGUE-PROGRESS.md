@@ -8,7 +8,7 @@ Stages: **rights** = applicable affirmative archive redistribution terms; **arch
 
 ## Active intake
 
-- **Avara (slot 50):** Avara 1.0.1 expands to 132 files. Its bundled licence permits complete unmodified nonprofit distribution and retains the 30-day trial. The game contains 17 CODE resources and four PPC acceleration modules; PPC preference still starts the 68K route. Player setup and the mission roster are visible, but Game → Start reaches a blue horizon and “no HECTOR available”; gameplay remains unqualified. Track mission/spawn investigation in [#4355](https://github.com/benletchford/systemless/issues/4355). Modern MIT source-code permission is not being applied to historical archive contents. See [archive receipts](CATALOGUE-SOURCES.md#avara-expansion-intake). Gameplay, hosting, browser approval and publication remain pending.
+- **Avara (slot 50):** Avara 1.0.1 expands to 132 files. Its bundled licence permits complete unmodified nonprofit distribution and retains the 30-day trial. The game contains 17 CODE resources and four PPC acceleration modules; PPC preference still starts the 68K route. Player setup and the mission roster are visible, but Game → Start reaches a blue horizon and “no HECTOR available”; gameplay remains unqualified. Original source and a matching 2×1 offscreen picture trace identify missing guest picture bottleneck dispatch as the structural blocker. Track the callback fix and mission/spawn retest in [#4355](https://github.com/benletchford/systemless/issues/4355). Modern MIT source-code permission is not being applied to historical archive contents. See [archive receipts](CATALOGUE-SOURCES.md#avara-expansion-intake). Gameplay, hosting, browser approval and publication remain pending.
 
 ## Primary intake ledger
 
