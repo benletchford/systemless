@@ -1858,8 +1858,11 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
         ("CallComponentUPP", PpcSystemCompatibilityOperation::CallComponentUpp),
         ("CharByte", PpcSystemCompatibilityOperation::CharByte),
         ("DIBadMount", PpcSystemCompatibilityOperation::DiBadMount),
+        ("DIFormat", PpcSystemCompatibilityOperation::DiFormat),
         ("DILoad", PpcSystemCompatibilityOperation::DiLoad),
         ("DIUnload", PpcSystemCompatibilityOperation::DiUnload),
+        ("DIVerify", PpcSystemCompatibilityOperation::DiVerify),
+        ("DIZero", PpcSystemCompatibilityOperation::DiZero),
         ("Debugger", PpcSystemCompatibilityOperation::Debugger),
         ("Dequeue", PpcSystemCompatibilityOperation::Dequeue),
         ("Enqueue", PpcSystemCompatibilityOperation::Enqueue),
@@ -1985,4 +1988,69 @@ fn ppc_nminstall_and_nmremove_validate_record() {
         ),
     );
     assert_eq!(loaded.cpu.gpr[3] as i32 as i16, -299);
+}
+
+#[test]
+fn ppc_disk_init_operations_return_expected_results() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DIBadMount")).unwrap();
+
+    // DIBadMount returns 0
+    loaded.cpu.gpr[3] = 0x0010_0020;
+    loaded.cpu.gpr[4] = 0x1234_5678;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::DiBadMount,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // DIFormat returns noErr (0)
+    loaded.cpu.gpr[3] = 1;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::DiFormat,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // DIVerify returns noErr (0)
+    loaded.cpu.gpr[3] = 1;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::DiVerify,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // DIZero returns noErr (0)
+    loaded.cpu.gpr[3] = 1;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::DiZero,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // DILoad and DIUnload preserve registers
+    loaded.cpu.gpr[3] = 0xDEAD_BEEF;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::DiLoad,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0xDEAD_BEEF);
+
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::DiUnload,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0xDEAD_BEEF);
 }

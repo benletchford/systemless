@@ -5578,12 +5578,21 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "DIBadMount") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::DiBadMount,
         ),
+        ("InterfaceLib", "DIFormat") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::DiFormat,
+        ),
         ("InterfaceLib", "DILoad") => {
             PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::DiLoad)
         }
         ("InterfaceLib", "DIUnload") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::DiUnload,
         ),
+        ("InterfaceLib", "DIVerify") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::DiVerify,
+        ),
+        ("InterfaceLib", "DIZero") => {
+            PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::DiZero)
+        }
         ("InterfaceLib", "Debugger") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::Debugger,
         ),

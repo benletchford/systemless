@@ -86,6 +86,7 @@ pub mod debug_overlay {
 pub(crate) use systems::macintosh::cursor_manager;
 pub(crate) use systems::macintosh::desk_manager;
 pub(crate) use systems::macintosh::dialog_manager;
+pub(crate) use systems::macintosh::disk_init_manager;
 #[deprecated(note = "use `systemless::systems::macintosh::disk_image`")]
 pub mod disk_image {
     pub use crate::systems::macintosh::disk_image::*;
