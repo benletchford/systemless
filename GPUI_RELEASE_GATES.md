@@ -42,6 +42,25 @@ gaps do not justify changing font metrics; unsupported paint retains guest
 rendering. Broader font resources, scaled appearance and independent native
 font fidelity remain open.
 
+## Current source font-path audit (2026-10-11)
+
+Inspected `src/bin/gpui_demo_text.rs` at production head `31ad029a`.
+This is source-path evidence, not a composed appearance or Macintosh oracle.
+
+| Recognized surface | Current path | Remaining qualification |
+| --- | --- | --- |
+| Dialog static text and Standard File prompts/directory labels | `classic_wrapped_text` lays out guest advances and calls `paint_smooth_label`, then retains strike ink on failure. | Supported font/face variants, wrap boundaries and CPU-specific scene fidelity. |
+| Dialog single-line editor and file rows/Save filename | Original-source `ClassicLine` and `paint_smooth_label`; guest caret/selection geometry remains separate. | Original outline availability per resource and actual composed fallback coverage. |
+| Styled TextEdit | Retained paint plan feeds `classic_text_pixels_with_smooth`; source styles and integer/rational scaling resolve before compositing. | Large-font and non-unit-ratio guest scenes, full styled editing and performance. |
+| Labels with an explicit italic strike | `ClassicLine::styled` retains the actual italic strike instead of synthesizing a different outline. | Establish a matching original italic outline before changing this fallback. |
+
+The inspected paths already attempt smoothing; adding another host-font label
+would not establish fidelity. `resolve_smooth_run` can decline unsupported
+sources/recipes, after which bitmap ink remains. Next font work should capture
+a concrete failing font/size/style scene and identify its source resolution,
+rather than treating every pixelated glyph as a missing GPUI call. Original
+Macintosh advances and original resource identity remain mandatory.
+
 ## Next work in release-risk order
 
 1. Implement faithful cursor inversion over the final GPUI scene and qualify

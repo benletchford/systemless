@@ -1,0 +1,10 @@
+{
+  "production_head": "31ad029a",
+  "source_sha256": "7a011307171f87ff9b3d410753300fd830131ecfbec7e42070fb3a9da576b285",
+  "executable_sha256": "b05e1e305b9bd83552d96ed9731091b5a07c236ae212f32c2ddc5e7bc8e2fc57",
+  "capture_sha256": "c7735ed20b30ecc6f25f9810244ac4eacc457997b4cfaf5691ae5bc91ee5b5fe",
+  "mode": "colour68k depth8",
+  "scale": 1.5,
+  "review": "Menu labels and window title visibly smooth; app-drawn graphics heading and body remain bitmap. Inspection preview resized from 2400x1800 to 1824x1368.",
+  "limitations": "One scene, no independent Macintosh glyph oracle, physical integration or broad font qualification"
+}
