@@ -10,6 +10,14 @@ pub(crate) struct TextPointerMap {
 }
 
 impl TextPointerMap {
+    pub fn accessible_positions(&self, identity: (u32, u64), text: &str, left: f32) -> Option<Vec<f32>> {
+        if self.identity != identity || self.text != text || !left.is_finite()
+            || self.positions.len() != text.chars().count() + 1 { return None; }
+        let positions = self.positions.iter().map(|(x, _)| *x - left).collect::<Vec<_>>();
+        if positions.iter().any(|x| !x.is_finite()) || positions.windows(2).any(|pair| pair[1] < pair[0]) { return None; }
+        Some(positions)
+    }
+
     pub fn horizontal(&self, host_x: f32) -> Option<i16> {
         for pair in self.positions.windows(2) {
             if host_x < (pair[0].0 + pair[1].0) / 2. {
@@ -907,6 +915,10 @@ mod tests {
                     .map(|(x, guest)| (100. + x * scale, guest))
                     .collect(),
             };
+            assert_eq!(map.accessible_positions((1, 2), "iéW", 100.).unwrap(), vec![0., 3. * scale, 12. * scale, 25. * scale]);
+            assert!(map.accessible_positions((1, 3), "iéW", 100.).is_none());
+            assert!(map.accessible_positions((1, 2), "changed", 100.).is_none());
+
             for (x, expected) in [
                 (-20., 21),
                 (1., 21),
