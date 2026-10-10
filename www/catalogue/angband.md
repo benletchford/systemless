@@ -156,7 +156,8 @@ and **2** move west, east, north and south.
 
 Native and browser verification covers character creation, town movement, descent
 to 50 feet and dungeon movement. Browser checks also cover ascent back to town.
-Public release verification is pending.
+Both original ports are verified on the public v0.89.0 release: character creation,
+descent to 50 feet, movement and ascent back to town.
 Combat, full levels, sustained play, saves and audio remain unverified.
 
 The historical educational, research and nonprofit distribution terms apply;
