@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.95.0](https://github.com/benletchford/systemless/compare/v0.94.0...v0.95.0) (2026-10-10)
+
+
+### Features
+
+* catalogue HeartQuest for 68K and PowerPC ([2ffdfa9](https://github.com/benletchford/systemless/commit/2ffdfa987c129a8b1db01a351d43a053da85722c))
+* catalogue the original Hexmines freeware release ([#4455](https://github.com/benletchford/systemless/issues/4455)) ([eca058b](https://github.com/benletchford/systemless/commit/eca058b96862b27ff09b0d9f6bcf8ff62ef3ccd8))
+
+
+### Bug Fixes
+
+* support PowerPC OpenRFPerm resource access ([#4449](https://github.com/benletchford/systemless/issues/4449)) ([e7d4f22](https://github.com/benletchford/systemless/commit/e7d4f2214ddbd55d2f1f4ea91521f1dddad241ff))
+* support PowerPC rounded rectangle erasure ([#4450](https://github.com/benletchford/systemless/issues/4450)) ([551346e](https://github.com/benletchford/systemless/commit/551346e21a23992106948a8e93ce7a49a0658c7a))
+
 ## [0.94.0](https://github.com/benletchford/systemless/compare/v0.93.0...v0.94.0) (2026-10-10)
 
 
