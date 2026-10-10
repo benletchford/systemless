@@ -438,7 +438,7 @@ mod desktop {
 
     enum Command {
         CommitText(super::input::TextInputOwner, Vec<u8>),
-        ReplaceText(super::input::TextInputOwner, std::ops::Range<usize>, Vec<u8>),
+        ReplaceText(super::input::TextInputOwner, std::ops::Range<usize>, Vec<u8>, Option<usize>),
         CommittedInput(MacintoshInput, MacintoshInput),
         ImportClipboard(Vec<u8>),
         Foreground(bool, u64),
@@ -632,13 +632,22 @@ mod desktop {
                                 activation = super::activation::ControlActivation::begin_file(&mut session, id, generation, action);
                             }
                         }
-                        Ok(Command::ReplaceText(owner, range, bytes)) => {
-                            let valid = !pointer_down && super::input::guest_commit_inputs(&mut session, &owner, &bytes).is_some();
+                        Ok(Command::ReplaceText(owner, range, bytes, caret)) => {
+                            let valid = caret.is_none_or(|caret| caret >= range.start && caret <= range.start.saturating_add(bytes.len()))
+                                && caret.is_none_or(|_| session.runner().event_manager_snapshot().key_map[0x7b / 8] & (1 << (0x7b % 8)) == 0)
+                                && !pointer_down && super::input::guest_commit_inputs(&mut session, &owner, &bytes).is_some();
                             let record = valid.then(|| session.runner_mut().text_edit_snapshot().records.into_iter()
                                 .find(|record| (record.guest_id, record.generation) == owner.identity)).flatten();
                             if record.as_ref().is_some_and(|record| session.runner_mut().select_text_edit_range(record, range.clone())) {
                                 text_commit_wait = None;
                                 let mut selected = owner; selected.selection = range;
+                                if let Some(caret) = caret {
+                                    for _ in caret..selected.selection.start + bytes.len() {
+                                        queued.push_front(Command::CommittedInput(
+                                            MacintoshInput::KeyDown { mac_key: 0x7b, character: 0x1c },
+                                            MacintoshInput::KeyUp { mac_key: 0x7b, character: 0x1c }));
+                                    }
+                                }
                                 queued.push_front(Command::CommitText(selected, bytes));
                             } else {
                                 let events = session.runner().event_manager_snapshot();
@@ -648,7 +657,7 @@ mod desktop {
                                         record.active && (record.guest_id, record.generation) == owner.identity && record.owner_port == port));
                                 if !pointer_down && same_field && in_event
                                     && text_commit_wait.get_or_insert_with(Instant::now).elapsed() < Duration::from_millis(250) {
-                                    queued.push_front(Command::ReplaceText(owner, range, bytes)); break;
+                                    queued.push_front(Command::ReplaceText(owner, range, bytes, caret)); break;
                                 }
                                 text_commit_wait = None;
                                 let revision = text_commit_rejection.as_ref().map_or(1, |(revision, _)| revision + 1);
@@ -9698,16 +9707,15 @@ mod desktop {
                     target: super::super::input::TextInputTarget::Document { port: actual.owner_port },
                     text: actual.text.clone(), selection: actual.selection.0..actual.selection.1,
                 };
-                let mut expected_replacement = actual.text.clone(); expected_replacement.splice(2..4, [b'Q']);
-                let mut expected_styles = actual.style_runs.clone().unwrap();
-                for run in &mut expected_styles { if run.start >= 4 { run.start -= 1; } }
-                worker.0.send(Command::ReplaceText(replacement_owner.clone(), 2..4, vec![b'Q'])).unwrap();
+                let mut expected_replacement = actual.text.clone(); expected_replacement.splice(2..4, [b'Q', b'Z']);
+                let expected_styles = actual.style_runs.clone().unwrap();
+                worker.0.send(Command::ReplaceText(replacement_owner.clone(), 2..4, vec![b'Q', b'Z'], Some(3))).unwrap();
                 let replaced = wait("explicit replacement", &updates, |update| update.text_edits.iter().any(|record|
-                    (record.guest_id, record.generation) == replacement_owner.identity && record.text == expected_replacement));
+                    (record.guest_id, record.generation) == replacement_owner.identity && record.text == expected_replacement && record.selection == (3, 3)));
                 let actual = replaced.text_edits.iter().find(|record| (record.guest_id, record.generation) == replacement_owner.identity).unwrap();
                 assert_eq!(actual.selection, (3, 3));
                 assert_eq!(actual.style_runs.as_ref(), Some(&expected_styles));
-                worker.0.send(Command::ReplaceText(replacement_owner.clone(), 0..1, vec![b'X'])).unwrap();
+                worker.0.send(Command::ReplaceText(replacement_owner.clone(), 0..1, vec![b'X'], None)).unwrap();
                 let rejected = wait("stale replacement rejection", &updates, |update|
                     update.text_commit_rejection.as_ref().is_some_and(|(value, rejected)| *value > revision && rejected == &replacement_owner));
                 assert_eq!(rejected.text_edits.iter().find(|record| (record.guest_id, record.generation) == replacement_owner.identity).unwrap().text,
@@ -10179,11 +10187,11 @@ mod desktop {
                 })).unwrap();
                 let requests: Vec<_> = receiver.try_iter().collect();
                 assert_eq!(requests.len(), 1, "explicit platform replacement emits exactly one request");
-                let super::Command::ReplaceText(owner, range, bytes) = requests.into_iter().next().unwrap() else {
+                let super::Command::ReplaceText(owner, range, bytes, caret) = requests.into_iter().next().unwrap() else {
                     panic!("explicit range must enter the guarded guest selection path");
                 };
                 assert_eq!(owner.text, after.text); assert_eq!(owner.selection, after.selection.0..after.selection.1);
-                assert_eq!(range, 2..4); assert_eq!(bytes, b"Q");
+                assert_eq!(range, 2..4); assert_eq!(bytes, b"Q"); assert_eq!(caret, None);
                 assert!(session.runner_mut().select_text_edit_range(&after, range.clone()));
                 let mut selected = owner; selected.selection = range;
                 let inputs = super::super::input::guest_commit_inputs(&mut session, &selected, &bytes).unwrap();
@@ -10197,6 +10205,34 @@ mod desktop {
                 let mut expected_styles = after.style_runs.clone().unwrap();
                 for run in &mut expected_styles { if run.start >= 4 { run.start -= 1; } }
                 assert_eq!(actual.style_runs.as_ref(), Some(&expected_styles));
+                cx.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                    demo.text_edits = session.runner_mut().text_edit_snapshot().records;
+                    demo.synchronize_composition(window, cx);
+                    demo.replace_and_mark_text_in_range(None, "éZ", Some(1..2), window, cx);
+                    demo.replace_text_in_range(Some(2..4), "R", window, cx);
+                })).unwrap();
+                let requests: Vec<_> = receiver.try_iter().collect(); assert_eq!(requests.len(), 1);
+                let super::Command::ReplaceText(owner, range, bytes, caret) = requests.into_iter().next().unwrap() else {
+                    panic!("crossing stage replacement must use the guest selection request");
+                };
+                assert_eq!(owner.text, actual.text); assert_eq!(owner.selection, 3..3);
+                assert_eq!(range, 2..3); assert_eq!(bytes, b"RZ"); assert_eq!(caret, Some(3));
+                assert!(session.runner_mut().select_text_edit_range(&actual, range.clone()));
+                let mut selected = owner; selected.selection = range;
+                for pair in super::super::input::guest_commit_inputs(&mut session, &selected, &bytes).unwrap().chunks_exact(2) {
+                    session.deliver_input(pair[0]); session.deliver_input(pair[1]);
+                    for _ in 0..40 { settle(&mut session); }
+                }
+                session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x7b, character: 0x1c });
+                session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x7b, character: 0x1c });
+                for _ in 0..40 { settle(&mut session); }
+                let crossed = session.runner_mut().text_edit_snapshot().records.into_iter().find(|record| record.guest_id == actual.guest_id).unwrap();
+                let mut expected = actual.text.clone(); expected.splice(2..3, *b"RZ");
+                assert_eq!(crossed.text, expected); assert_eq!(crossed.selection, (3, 3));
+                let mut expected_styles = actual.style_runs.clone().unwrap();
+                for run in &mut expected_styles { if run.start >= 3 { run.start += 1; } }
+                assert_eq!(crossed.style_runs.as_ref(), Some(&expected_styles));
+                eprintln!("PASS platform-crossing-replacement powerpc={powerpc} depth={depth}");
                 eprintln!("PASS platform-explicit-replacement powerpc={powerpc} depth={depth}");
                 eprintln!("PASS platform-text-commit powerpc={powerpc} depth={depth}");
                 cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();

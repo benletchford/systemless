@@ -4770,3 +4770,23 @@ places the guest caret after inserted text. Evidence is archived in
 `tests/toolbox-showcase/reference/gpui-demo/explicit-document-replacement`.
 Active-stage crossing/outside replacement, explicit modal/file replacement,
 composed visual and physical IME qualification remain unfinished.
+
+
+### Replacement overlapping active document composition
+
+Document UTF-16 replacement ranges may now stay within or cross an active
+Unicode stage. The adapter maps the affected guest range and retains staged
+fragments, validates surrogate boundaries, and rejects unrepresentable commits
+without mutation. A regression exposed the insertion caret landing after a
+retained suffix. The worker now restores it with ordinary guest Left events
+after typing; predicted state recognizes intermediate caret positions. A held
+physical Left key prevents that request from releasing the real key.
+
+Eight state tests and four-mode worker checks pass. Three platform-handler
+regressions pass, including document boundary replacement with guest text,
+styles and caret assertions, plus dialog/Save/New Folder composition. Evidence
+and the initial caret failure are archived in
+`tests/toolbox-showcase/reference/gpui-demo/overlapping-stage-replacement`.
+Disjoint outside-stage replacement, explicit modal/file replacement and modal
+retained-suffix caret behavior remain unfinished. Composed visual, physical IME
+and independent native qualification remain open.
