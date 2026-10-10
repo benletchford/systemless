@@ -1,0 +1,30 @@
+{
+  "base_head": "a171c3a3344c324e500cf2296982ed1e0094d5b9",
+  "scope": "Shared Demo active multiline styled field; GPUI-translated Up/Down guest events; second-row caret after hard CR; mono68k, colour68k, PPC8, PPC16 at scale1.5; all four after images reviewed",
+  "before": "Pre-fix captures retained as defect evidence, not independent oracle; only mono68k before image was reviewed",
+  "limitations": [
+    "No physical input or independent Macintosh oracle",
+    "No inactive, scrolled or other-scale navigation qualification",
+    "Full production gates remain open"
+  ],
+  "hashes": {
+    "mono68k.png": "ec147ccd43f87fcfb5b9937bc16d538bc222f8946f38f44eaf0735ee9f568897",
+    "ppc16.log": "1ada01346d1a31b503fffb6ede57e1cab513b5d1d1eafd1c5d3d8784b1809928",
+    "mono68k.json": "c2edecd3c09c83cf1a019eb2d4112545a359bdc01a88664080a02ea206844134",
+    "mono68k-before.png": "115f728b6cf27edc6f1c45a34661b14827f4d06e5646f7c637e2405be25b0ff1",
+    "colour68k.png": "a17aaa0b6fbb61aad79ae1746c99d7a18c554ea2afb1de35905bd357be1e0d2b",
+    "ppc8.png": "a17aaa0b6fbb61aad79ae1746c99d7a18c554ea2afb1de35905bd357be1e0d2b",
+    "ppc8.json": "840a4a5561ee607656490a7f98d3baf03519d8386cab2d60be086043bf44afd5",
+    "unit-tests.log": "fa30bf9b469ce58cf43b83eaf3fc35569e5817c750b90c39a517fefd18fa4d02",
+    "ppc16-before.png": "ef5e36d22479d2c1e001d8f27cfe526b72190e99e0e158a78fc0ca805b8b04ef",
+    "ppc8.log": "629a1926d3f82c89b0fab9a9d6b848711dfe908d7ea86b8f503e531bf541fb25",
+    "ppc8-before.png": "6512767f9e328b8aa1a724fabeeb0dd694154b31ba79e188aa6511f22250cb5a",
+    "ppc16.json": "7b5c702a75a9c3f1575abe371502b3dd03466d6997d226bd687c03be5f3a4c47",
+    "colour68k-before.png": "a693157cb1e8e3b158c320b3bc940f8343e7f989979506036fed46fd3515bc21",
+    "mono68k.log": "9b18acb742ebf3b7138bc992492e5c091980be958bd34e314d61295a17fbc351",
+    "ppc16.png": "f7a1b79c90792d7d60734f69d2c41bbf117a7fba33031f20880370f9280a2e91",
+    "colour68k.log": "26b3bfc42e860eca23097c00b20609b2278869464878ce04dae4820ebc56dbe0",
+    "build.log": "1952b16d94ee526e0e910db739a1f871759118ebff71ebfd36ae21f0a962a097",
+    "colour68k.json": "728f295fdfefe3230e526ac11d48d3160487625acfa6e94b612f58994b391cda"
+  }
+}

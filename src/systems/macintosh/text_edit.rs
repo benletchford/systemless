@@ -509,12 +509,18 @@ mod tests {
         let first = layout.guest_styled_selection_rect(0).unwrap().unwrap();
         let second = layout.guest_styled_selection_rect(1).unwrap().unwrap();
         assert_eq!(first.2, second.0, "mixed-height PPC selection follows glyph origins");
-        layout.selection = (2, 2);
+        layout.selection = (1, 1);
         layout.clips_line_offsets_to_visible_text = true;
         assert_eq!(layout.caret_line(), Some((0, 1)), "styled native wrap caret trims CR");
         assert_eq!(layout.guest_styled_caret_rect(0, 4), Some(Some((10, 199, 24, 200))),
             "PPC caret trims CR and retains its native one-pixel width");
         assert_eq!(layout.guest_styled_caret_rect(1, 4), Some(None), "one line owns the caret");
+        layout.selection = (2, 2);
+        assert_eq!(layout.caret_line(), Some((1, 0)), "after CR belongs to the following row");
+        assert_eq!(layout.guest_styled_caret_rect(0, 4), Some(None));
+        let mut soft_wrap = layout.clone();
+        soft_wrap.text[1] = b'a';
+        assert_eq!(soft_wrap.caret_line(), Some((0, 2)), "soft wraps retain preceding-row affinity");
         layout.line_layout_policy = super::TextEditLineLayoutPolicy::CumulativeGuestMetrics;
         layout.line_metrics = Some(vec![(14, 11), (18, 13)]);
         layout.clips_line_offsets_to_visible_text = false;
@@ -925,8 +931,8 @@ impl TextEditSnapshot {
         })
     }
 
-    /// Select exactly one guest caret owner, retaining inclusive byte ends.
-    /// Both draw paths choose the first matching line at a wrap boundary;
+    /// Select exactly one guest caret owner. Hard breaks belong to the next row.
+    /// Both draw paths choose the first matching line at a soft-wrap boundary;
     /// the 68k path considers only lines intersecting viewRect and falls back
     /// to the last visible line. PPC trims spaces and line-break bytes before
     /// measuring, while 68k measures through the canonical line end.
@@ -954,7 +960,9 @@ impl TextEditSnapshot {
             }
             let offset = self.selection.0.min(measured_end).max(start) - start;
             fallback = Some((index, offset));
-            if self.selection.0 >= start && (self.selection.0 <= end
+            let after_hard_break = self.selection.0 == end && index + 2 < starts.len()
+                && end > start && matches!(self.text[end - 1], b'\r' | b'\n');
+            if !after_hard_break && self.selection.0 >= start && (self.selection.0 <= end
                 || self.clips_line_offsets_to_visible_text && index + 2 == starts.len()) {
                 return fallback;
             }

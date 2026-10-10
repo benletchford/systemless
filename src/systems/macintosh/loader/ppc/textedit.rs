@@ -2343,7 +2343,9 @@ pub(super) fn ppc_te_draw(
             } else {
                 text.len()
             };
-            if sel_start >= start && (sel_start <= end || line + 1 == line_count) {
+            let after_hard_break = sel_start == end && line + 1 < line_count
+                && end > start && matches!(text[end - 1], b'\r' | b'\n');
+            if !after_hard_break && sel_start >= start && (sel_start <= end || line + 1 == line_count) {
                 let mut visible_end = end;
                 while visible_end > start && matches!(text[visible_end - 1], b' ' | b'\r' | b'\n') {
                     visible_end -= 1;
