@@ -1,0 +1,26 @@
+{
+  "status": "passed",
+  "selection_cases": 128,
+  "cancellation_cases": 128,
+  "seconds": 133.87,
+  "base_commit": "2b4e57afaae0ccb8b0327e944608f77fe3e57927",
+  "source_state": "base plus source.patch",
+  "command": "cargo test --locked --profile ci-test --example gpui-menu-demo --features gpui-demo-test styled_menu_pointer_and_keyboard_choices_reach_guest -- --nocapture",
+  "executable": "target/ci-test/examples/gpui_menu_demo-957ebf4d71285d8e",
+  "post_execution_executable_sha256": "dd0b11ccd4d3520eb3bdb0890c49f770a231a4ca753a1747ad943e1cf6a8ff95",
+  "checks": [
+    "all4 actual CPU/depth modes; centered scales0.75/1/1.5/2",
+    "all4 styled items: pointer hover or keyboard navigation then Escape",
+    "popup dismissed, open menu state cleared, guest focus restored",
+    "no menu or guest input command leaks on cancellation",
+    "exact guest menu snapshot unchanged after settling",
+    "ordinary z down/up resumes through scene routing",
+    "all128 earlier selection cases repeated successfully"
+  ],
+  "limits": [
+    "GPUI test-platform events, not physical host input",
+    "post-cancel z routing is verified as commands, not guest text editing",
+    "no outside-click cancellation, nested/inactive styled menus or native font oracle",
+    "not production performance evidence"
+  ]
+}

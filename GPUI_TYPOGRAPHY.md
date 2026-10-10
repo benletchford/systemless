@@ -78,7 +78,12 @@ coverage and its bounds remain unchanged. Supported basic label and TextEdit
 styles use this spacing policy. Label outline/shadow synthesis preserves the
 native one-pixel upward shadow baseline and separate continuous underline;
 TextEdit retains its distinct CPU-specific underline recipe. Label recipe and
-raster tests pass, while composed styled-menu/widget qualification remains open.
+raster tests pass. Sixteen shared Demo styled-menu captures cover all four
+CPU/depth modes and scene scales0.75/1/1.5/2, with four full views directly
+inspected and resize limits recorded. All128 pointer/keyboard selection cases
+pass through GPUI test windows and the guest menu path. General styled-widget
+appearance, physical host input and broader menu lifecycle qualification remain
+open.
 
 Underline/halo combinations now combine CPU-specific guest strokes with the
 original outline before smear/exclusion. Classic preserves per-character
