@@ -1,0 +1,22 @@
+{
+  "source_commit": "ed245ca826dfafc4ee226e818a18f653812153ae",
+  "source_dirty": true,
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "6349f7aa8860c02a2d411a01e57046ef2cd359365730ad68efeb3b4a7286ee6c",
+    "src/bin/gpui_demo_text.rs": "58cdc47d3a28e07f16493ebd60caa4afc3a05de6a9e31eb0a9cccf108b3778c2",
+    "src/bin/gpui_demo_frames.rs": "b293ad66102ebdbc69a697b2bdc8d1ba01349a36a20c6a994b7e280eb14d814b",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "17e3cd4dd1a2510627b55487db166773759319f93454bb9141ad8a80bc40d4b8"
+  },
+  "test_binary_sha256": "fdcd779e4aa4b5a174979aaf904485043dc97a2781a0c04116f31c7ea6e13e51",
+  "log_sha256": "1ec45268a77416e0cdcc440e8732fec7b6f5e3b0e92072b70f9b8cf6288cfb69",
+  "test": "multiline_styled_selection_plan_matches_native_paint_order",
+  "passed": true,
+  "duration_seconds": 63.67,
+  "modes": [
+    "mono68k",
+    "colour68k",
+    "ppc8",
+    "ppc16"
+  ],
+  "scope": "Guest-event two-line selection, replacement and deletion; native paint qualification and original-font smooth resolution at raster1..8. Not GPUI pointer dispatch, visual appearance oracle, host integration or performance. Concurrent pointer regression duration is not a benchmark."
+}
