@@ -4869,3 +4869,14 @@ GPUI modal composition checks pass (9.87s). Evidence is archived in
 `reference/gpui-demo/explicit-dialog-replacement`. Disjoint staged replacement,
 physical IME, visual/native fidelity and broader tracking qualification remain
 open; these tests do not close a production gate.
+
+
+### Replacement integration regression checkpoint
+
+At `9f2dc748`, combined dialog/file platform regressions pass (two parents,
+28.38s) and the document platform regression passes (39.65s) across all four
+CPU/depth modes. Document checks preserve styles and exercise explicit and
+crossing-stage replacement. Evidence is archived in
+`reference/gpui-demo/post-dialog-regression`. The release checklist now reflects
+the implemented replacement paths; all eight broad production gates remain
+open, including disjoint staged replacement and physical/visual qualification.

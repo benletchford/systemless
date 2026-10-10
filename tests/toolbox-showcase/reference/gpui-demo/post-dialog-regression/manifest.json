@@ -1,0 +1,8 @@
+{
+  "tested_head": "9f2dc74803aa5b2d1ec019613fe5764d43a20ac4",
+  "scope": "Three existing GPUI platform regressions across four CPU/depth modes: document styles and crossing replacement, dialog composition, Save/New Folder composition and explicit request emission. No physical input, visual capture, native oracle or release-gate closure.",
+  "sha256": {
+    "modal-file.log": "75757f3e96d778759143f0c34955c288301fc8ced26218c3c3acfbe10a02d68c",
+    "document.log": "7fc6fddb8a4fc5ddcf1490720f6282def7d93a9359a0c881b7ddb452f76648e2"
+  }
+}
