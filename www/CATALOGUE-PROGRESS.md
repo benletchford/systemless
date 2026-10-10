@@ -72,7 +72,7 @@ Stages: **rights** = applicable affirmative archive redistribution terms; **arch
 | 56 | Mars Rising | [Conditional game grant; auxiliary terms pending](CATALOGUE-SOURCES.md#mars-rising-expansion-intake) | [Three exact receipts; installer inspected](CATALOGUE-SOURCES.md#mars-rising-expansion-intake) | Installer succeeds; game PPC-only per README | Original installer-to-game launch pending | Pending | Pending | Pending |
 | 57 | Pillars of Garendall | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 58 | Gubble | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 59 | MacSki | Unverified | [v1.7 receipt; 43 files](CATALOGUE-SOURCES.md#macski-expansion-intake) | Application damage warning; unqualified | Pending | Pending | Pending | Pending |
+| 59 | MacSki | Embedded grant not decoded; unverified | [v1.7 and v1.6 receipts](CATALOGUE-SOURCES.md#macski-expansion-intake) | v1.6 slope starts and scrolls; bounded input | v1.6 read MemoryFault; unqualified | Pending | Pending | Pending |
 | 60 | Pararena | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 61 | Bonkheads | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 62 | Bonkheads Deluxe | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
