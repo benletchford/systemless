@@ -383,11 +383,17 @@ impl Demo {
         })).collect();
         if !boundaries.contains(&start) || !boundaries.contains(&end) { return None; }
         for row in &painted.rows {
-            let Some(local) = start.checked_sub(row.start) else { continue; };
-            if local > row.positions.last()?.0 { continue; }
-            let x = row.positions.iter().find(|(unit, _)| *unit == local)?.1;
+            // A range may begin in a row that has scrolled out of the stage.
+            // Intersect each actually painted row and return its first visible
+            // portion, while an offscreen insertion point still has no bounds.
             let last = row.positions.last()?.0;
-            let local_end = end.saturating_sub(row.start).min(last);
+            let row_end = row.start.checked_add(last)?;
+            let visible_start = start.max(row.start);
+            let visible_end = end.min(row_end);
+            if visible_start > visible_end || (!range.is_empty() && visible_start == visible_end) { continue; }
+            let local = visible_start - row.start;
+            let x = row.positions.iter().find(|(unit, _)| *unit == local)?.1;
+            let local_end = visible_end - row.start;
             let right = row.positions.iter().find(|(unit, _)| *unit == local_end)?.1;
             let left = (row.origin.0 + x.min(right)).max(painted.clip.0);
             let right = (row.origin.0 + x.max(right) + if range.is_empty() { 1. } else { 0. }).min(painted.clip.2);

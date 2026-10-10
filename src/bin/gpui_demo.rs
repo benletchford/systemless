@@ -5001,7 +5001,7 @@ mod desktop {
     }
 
         #[cfg(feature = "gpui-demo-test")]
-        fn capture_composition_surface(output: &std::path::Path) {
+        fn capture_composition_surface(output: &std::path::Path, capture_scale: Option<f32>) {
             use gpui_kit::*;
             use std::sync::Arc;
         fn settle(session: &mut MacintoshSession) {
@@ -5057,6 +5057,9 @@ mod desktop {
                     session.deliver_input(input); settle(&mut session);
                 }
                 let records = session.runner_mut().text_edit_snapshot().records;
+                assert_eq!(session.runner().is_powerpc_app(), powerpc);
+                let actual_depth = records.iter().find(|record| record.styled).unwrap().paint.as_ref().unwrap().depth;
+                assert_eq!(actual_depth, depth);
                 let frame = session.video_frame().unwrap();
                 let plans = qualify_styled_text_fields(&records, &frame.pixels, frame.width, frame.height);
                 let windows = session.runner_mut().window_frame_snapshot();
@@ -5066,7 +5069,8 @@ mod desktop {
                 visual.update(gpui_kit::init);
                 let (sender, _receiver) = std::sync::mpsc::channel();
                 let mut view = None;
-                let window = visual.open_window(size(px(800.), px(600.)), |window, cx| {
+                let requested_scale = capture_scale.unwrap_or(1.);
+                let window = visual.open_window(size(px(frame.width as f32 * requested_scale), px(frame.height as f32 * requested_scale)), |window, cx| {
                     let entity = cx.new(|cx| {
                         let mut demo = Demo::new(sender, Default::default(), cx);
                         demo.width = frame.width; demo.height = frame.height;
@@ -5094,15 +5098,35 @@ mod desktop {
                 visual.run_until_parked();
                 let marked = visual.capture_screenshot(window.into()).unwrap();
                 assert_ne!(baseline, marked, "marked text must change composed pixels");
-                visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                let geometry = visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
                     use gpui_kit::EntityInputHandler;
+                    assert!((demo.display_scale - requested_scale).abs() < 0.0001, "capture must apply the requested guest scene scale");
                     let start = demo.composition.owner().unwrap().selection.start;
                     let bounds = demo.bounds_for_range(start + selection.start..start + selection.end, Bounds::default(), window, cx).unwrap();
                     assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+                    let whole = demo.bounds_for_range(start..start + text.encode_utf16().count(), Bounds::default(), window, cx)
+                        .expect("a range spanning scrolled marked text must return its first visible portion");
+                    let visible = demo.character_index_for_point(point(whole.origin.x, whole.origin.y + px(1.)), window, cx).unwrap();
+                    assert!(visible >= start && visible < start + text.encode_utf16().count());
+                    if label == "multiline" {
+                        assert!(visible > start, "the original first line has scrolled out of view");
+                        assert!(demo.bounds_for_range(start..start, Bounds::default(), window, cx).is_none());
+                    }
                     assert_eq!(demo.character_index_for_point(point(bounds.origin.x, bounds.origin.y + px(1.)), window, cx), Some(start + selection.start));
                     assert!(demo.bounds_for_range(start + selection.start..start + selection.start + 1, Bounds::default(), window, cx).is_none(), "cannot split emoji surrogate pair");
                     assert_eq!(demo.text_edits, records);
+                    serde_json::json!({ "runtime_powerpc": powerpc, "actual_depth": actual_depth,
+                        "case": label, "requested_scale": requested_scale, "scale": demo.display_scale, "origin": demo.display_origin,
+                        "guest_selection": demo.composition.owner().unwrap().selection,
+                        "marked_selection": selection, "first_visible_index": visible,
+                        "visible_range_bounds": [f32::from(whole.origin.x), f32::from(whole.origin.y),
+                            f32::from(whole.size.width), f32::from(whole.size.height)],
+                        "selected_bounds": [f32::from(bounds.origin.x), f32::from(bounds.origin.y),
+                            f32::from(bounds.size.width), f32::from(bounds.size.height)],
+                        "compositor": "shared Demo renderer", "guest_state_unchanged": true })
                 })).unwrap();
+                std::fs::write(output.join(format!("{powerpc}-{depth}-{label}.json")),
+                    serde_json::to_vec_pretty(&geometry).unwrap()).unwrap();
                 marked.save(output.join(format!("{powerpc}-{depth}-{label}-marked.png"))).unwrap();
                 visual.update(|cx| view.update(cx, |demo, cx| {
                     assert_eq!(demo.text_edits, records);
@@ -5269,7 +5293,7 @@ mod desktop {
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_composition_surface.as_ref() {
-            capture_composition_surface(output);
+            capture_composition_surface(output, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]

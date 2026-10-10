@@ -1,0 +1,34 @@
+{
+  "runtime_powerpc": false,
+  "actual_depth": 1,
+  "case": "single",
+  "requested_scale": 0.75,
+  "scale": 0.75,
+  "origin": [
+    0.0,
+    0.0
+  ],
+  "guest_selection": {
+    "start": 1,
+    "end": 1
+  },
+  "marked_selection": {
+    "start": 1,
+    "end": 3
+  },
+  "first_visible_index": 1,
+  "visible_range_bounds": [
+    66.5,
+    113.0,
+    33.89105224609375,
+    20.0
+  ],
+  "selected_bounds": [
+    80.39105224609375,
+    113.0,
+    20.0,
+    20.0
+  ],
+  "compositor": "shared Demo renderer",
+  "guest_state_unchanged": true
+}

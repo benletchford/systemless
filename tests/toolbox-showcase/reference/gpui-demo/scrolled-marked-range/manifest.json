@@ -1,0 +1,455 @@
+{
+  "base_commit": "eb7daa231812025067090c5707b4abc6544529f2",
+  "binary_sha256": "0a5a8f030956683c40bf4103d313d5041483b181fae8234ae1964f4be2517479",
+  "fixture_sha256": "9576f3efa7b98973d0e48aefb2e017f64a7db878e8d642c2acefe01e9d05b258",
+  "scope": "32 shared Demo single/multiline Unicode-stage captures across mono68k, colour68k, PPC8, PPC16 and scene scales .75/1/1.5/2. Actual CPU/depth/scale asserted; visible full-range bounds and glyph hit-testing; offscreen original caret rejected; surrogate split rejected; guest records unchanged and cancellation restores exact composed pixels.",
+  "results": {
+    "composition_tests": "7 pass, 27.57s",
+    "frontend_build": "pass, 6.07s",
+    "captures": 32
+  },
+  "reviewed_images": [
+    "scale-1/false-1-multiline-marked.png",
+    "scale-1/false-8-multiline-marked.png",
+    "scale-1/true-8-multiline-marked.png",
+    "scale-1/true-16-multiline-marked.png",
+    "scale-0.75/false-1-multiline-marked.png",
+    "scale-0.75/true-16-multiline-marked.png",
+    "scale-1.5/false-8-multiline-marked.png",
+    "scale-1.5/true-8-multiline-marked.png",
+    "scale-2/false-1-multiline-marked.png",
+    "scale-2/true-16-multiline-marked.png"
+  ],
+  "review_note": "Four scale1 images reviewed before scale-hook extension; final files verified byte-identical. Six additional scaled images directly reviewed. Other captures have assertion/metadata evidence but no separate full-image visual review.",
+  "before_fix": "The added full-range assertion failed on monochrome68k multiline capture. Log retained; the original failure-build source was base eb7daa23 plus that assertion and was not separately archived at execution time.",
+  "limitations": "Active document staging surface only. Host typography is confined to separate uncommitted Unicode UI; guest text/font/layout stay unchanged. No physical IME, horizontal/modal scrolling, independent Macintosh oracle, inactive host observer or complete release qualification.",
+  "files": {
+    "gpui-scrolled-range-before.log": "617035b3f77c741cb419893db173e289f23f83b01c7f240e5967e7cf8dc22eae",
+    "source.patch": "fc7579b30aba88a255d20c9bff8fd675cc5d8c8a0d35638a5e0777ffe91f6c2a",
+    "scale-2.log": "831890f0ee684e2e2da370a6118aed059a21d295f00ff7ea2b95aa69f80a4729",
+    "scale-1.5.log": "831890f0ee684e2e2da370a6118aed059a21d295f00ff7ea2b95aa69f80a4729",
+    "scale-1.log": "831890f0ee684e2e2da370a6118aed059a21d295f00ff7ea2b95aa69f80a4729",
+    "gpui-scrolled-range-final-composition-tests.log": "a9bc9061e3556d80ac7b4b8cd9bb97806fe4e9dfb665b97277e04648a1568d9b",
+    "scale-0.75.log": "831890f0ee684e2e2da370a6118aed059a21d295f00ff7ea2b95aa69f80a4729",
+    "gpui-scrolled-range-before-build.log": "80ba9c4cd7b68e7b663de0854367f51aaabba712101b27cd21f32a4631666c6e",
+    "gpui-scrolled-range-final-build.log": "7b2209322bdbdfde625638392e7dd3bff2db072fff008a82ec52896b9ecc08cc",
+    "scale-1/true-16-baseline.png": "6f9efe2e830c85466ec2bc3972901a33b1f5714279441507c7086a335143ad6a",
+    "scale-1/false-8-multiline-marked.png": "18f2bccba9fc86407ef2b622daf6a85425b1e2587865b013b415a24ef43e5774",
+    "scale-1/true-8-baseline.png": "2d076fd35d18a0094b10d6fc44f8a0f1fec27a86c268c4fd767f6673dcaa8476",
+    "scale-1/false-1-single-marked.png": "b01a50ff2869517e23d729c754b07f2b74018b6e7b2bff5313194fe32d7387f1",
+    "scale-1/true-8-single-marked.png": "27d13d0e78040a4a152618c2cb4a34666ed73eda1f3854c31a661ed92cf6d0db",
+    "scale-1/false-8-baseline.png": "36f9095012b7e89063202e08ea0634fcdcee10fd70bfaf5178777cd5973e8d3d",
+    "scale-1/true-8-multiline-marked.png": "9da83eb8ba23436c6996c506ff60ca6ad22eaed1adec51b37975c6c1a4752661",
+    "scale-1/true-16-single.json": "8643495136208e55bc4eb546bb267f1f194b552436286da8cf346a77e34d2e02",
+    "scale-1/false-1-single.json": "c90bbdfdea0a71905f46209fe88471eebc59ab98c1bf77fd7d861ad130c25da3",
+    "scale-1/false-8-single.json": "5a750dadd6a9be5d5c3cdcefca3e96d34a4450b227ba0118460484e3c6d44cbf",
+    "scale-1/true-8-multiline.json": "a81fcedfcf1f0c34ff31c6ae1e3047643f07282dcca3d0fef4021737855d41bd",
+    "scale-1/true-8-single.json": "ab1289c9d43e0f81dbb7eef8d8ca534ae9390a30429ea34d0ebf4bf11dab4416",
+    "scale-1/false-1-multiline.json": "6d370adadda07fc8a734c88c43f594d51bedddc50e52471e1fb34d4b34246cec",
+    "scale-1/false-8-single-marked.png": "1c45e730871e9fb5424bcfa22f0edf4481e42503b1af20406da0ccc47acd2bfe",
+    "scale-1/false-1-baseline.png": "ff26775c104f904b0bdd80dfb5c702b394d40736dcb638da897ad21c460f05a9",
+    "scale-1/true-16-single-marked.png": "d39ef09720486e0084065fabda9fc3dc78bdf4bf57c47a879a6c1fd10fa0bf38",
+    "scale-1/true-16-multiline.json": "56ce3000e2ede2cd1d70c9e878e8baa0236c9e595c14566fd41b9029662491a0",
+    "scale-1/false-1-multiline-marked.png": "88643eb0f62d9b111146a97acff28be2d6040c71174e6c92e26d650ecc1d711f",
+    "scale-1/false-8-multiline.json": "5b3df3d896f725fae1628d0b0c3880b4c12826adfd8f854f126a52ead086e4f8",
+    "scale-1/true-16-multiline-marked.png": "6891e49923a94dbacd9e6a857002b7ae6e54f087d83275c847dde12099c37138",
+    "scale-1.5/true-16-baseline.png": "dfac402b355593103f40a9e322f78d44cdc3c37463911ce6e17181ae8ba49630",
+    "scale-1.5/false-8-multiline-marked.png": "57dfd7988217735f5458868158281ff137afa54cd11663c5f18ba7ef467ef89f",
+    "scale-1.5/true-8-baseline.png": "c353f6acf69508db45998bc05875e8c0326b31e201beca73ada2b7dcb2be978c",
+    "scale-1.5/false-1-single-marked.png": "b8a88dd99e4401dbe706f0f5a7178a7b0b8327eb8d66ea72bcc06d15d0855ebf",
+    "scale-1.5/true-8-single-marked.png": "e00341d865a725803b2a93fbcfdc7af94956cb22d5bce4abee2d059e63fc16cf",
+    "scale-1.5/false-8-baseline.png": "47c8685a018720de40fd1b55f59d591f780115755ab357949625f5c5fad4f889",
+    "scale-1.5/true-8-multiline-marked.png": "b5281366f1667106806c3cabaafc5ba0117ed2c8ff450cf75be935acf2bc764f",
+    "scale-1.5/true-16-single.json": "0dc3e3f6bc7a9ff924f208010537015d0c8d2b3f7b387ee12333bd5943436fd2",
+    "scale-1.5/false-1-single.json": "5d462655140273c07271efd5c99799135bc9a5b974e2c233a28edd271c6d62b8",
+    "scale-1.5/false-8-single.json": "381f672ed0d416519d63a3d975d2e1eccc6a833d3b2a4d2a6e59966fb4217e6c",
+    "scale-1.5/true-8-multiline.json": "9b76ae00a23271a756ce96f98c86e58f1d9409b84c54312e79e911bb7339ae6b",
+    "scale-1.5/true-8-single.json": "f43ffb9ebc6a7b1db3212aa34d18a40d92c9bceeb575a79e6e230d6fcdf79eff",
+    "scale-1.5/false-1-multiline.json": "95e3927740de2710886e867450181598621646655eb1a9cfb7f0bf97cf7c4a6c",
+    "scale-1.5/false-8-single-marked.png": "149f31310625c5a524a34295f46a315e5188a0a8cf531fab7dbb37f771beed45",
+    "scale-1.5/false-1-baseline.png": "5d3e0885075745b58dd8a8d7aae17e15467fa8d764e445fe3af58e7169827483",
+    "scale-1.5/true-16-single-marked.png": "4d0d7e9aab1edab39379cc6cc51aa97fdb1b664f50ac4a51b68117130621dc72",
+    "scale-1.5/true-16-multiline.json": "a12458b706e6a208ba249f5ee67abf25d48db19827241fce7790c2b2cb6e585d",
+    "scale-1.5/false-1-multiline-marked.png": "7b3cd51abcfc1e7fa8fd54774dbc6c35c2b9b834431f8b90d0a17866b1b1e6b4",
+    "scale-1.5/false-8-multiline.json": "24ec6b558c49a7485f850b2850697ce2f194b663b30b8466453d29bb062ac95c",
+    "scale-1.5/true-16-multiline-marked.png": "0c69600034240a03564c0f1b6206752cba124f72a3df0253ef7780cdc13b89cb",
+    "scale-0.75/true-16-baseline.png": "25bf4b5c098701451a374fc55e3bcdc884f642789408d87de8cffa33109153f4",
+    "scale-0.75/false-8-multiline-marked.png": "632b508937f8aaceecf1d5521325f11603e3145c945141aaf4ecb2490ee3034d",
+    "scale-0.75/true-8-baseline.png": "39329d5064f7c9902f02b88c0cc27e70a6c160d36b0eefd1cb8dc40610e4b808",
+    "scale-0.75/false-1-single-marked.png": "a39626f5e969edcaa538526f1e1a984c5090b7ecd68adb24f74f8328be8591af",
+    "scale-0.75/true-8-single-marked.png": "8f2376a0a831d35e85729e3f402524d6f7f2143fd2d679980b0cee2e2a3466a9",
+    "scale-0.75/false-8-baseline.png": "a874d4ac761d4f8ae1d8cbaf0b1b7301d77c304fb0b77d5cafd20b9d78263fb8",
+    "scale-0.75/true-8-multiline-marked.png": "e9f0781604149d9d38265d3bb0aa45a231aa72ba5db0b3bad39a0434ff885e0a",
+    "scale-0.75/true-16-single.json": "df37bd0febc0c8cc967a3a29ffe574d603c70febe58d59fb443dcb3c504ff143",
+    "scale-0.75/false-1-single.json": "ad41462195c103c0b7f47688718ac8e973ab0cede4041bd3de1884b7be3c6dc3",
+    "scale-0.75/false-8-single.json": "5a875964514233d489639d09ec59f7a3c864a3257373557a27f5aa4c72f3c854",
+    "scale-0.75/true-8-multiline.json": "f8cb1bf85cda2761ea6e59d3c2aab2277c789a97fe95f4297918ce1e28d359a6",
+    "scale-0.75/true-8-single.json": "1c2cc3fdf9e0422c1fb76f0a8c51b3e24a7525e565e855f40bb78f1c4174e05c",
+    "scale-0.75/false-1-multiline.json": "62c0e799557c607f83d8d93a1181e7d3789002d6d057e0eeb1d0d8a91676181b",
+    "scale-0.75/false-8-single-marked.png": "813166ca9059edf12f453464c2c38f0c078d5c56d99df172d8791b2071a03fdb",
+    "scale-0.75/false-1-baseline.png": "df8958c9de2f1e3131cd60941232cc852e8ccde251617b461a4f006a81f73621",
+    "scale-0.75/true-16-single-marked.png": "86205a8d2bc1306efb222a2a1dda4a37b42cd5fb7dc2ccce6b5ac1778229e135",
+    "scale-0.75/true-16-multiline.json": "4565a4383f0894052fb4432e39fa5c7b521900f77f527597bddc1d05a0464efd",
+    "scale-0.75/false-1-multiline-marked.png": "13680951d47c4dd8faccef1a58e50b5ed1a9e4e2645030807b6b53abecb339b1",
+    "scale-0.75/false-8-multiline.json": "cde3d332a9018f7fab10cdb01d3df825235befb1d4a0f14fe07d593822ea8715",
+    "scale-0.75/true-16-multiline-marked.png": "c895db9d4ec3779ab01bbf04d0b0e7bdaeb60a5bf618aabccfbdc33047467882",
+    "scale-2/true-16-baseline.png": "dbe787954d1f984916ba57098a914fc34597f376a31756edf7c9b3ab52834732",
+    "scale-2/false-8-multiline-marked.png": "c0aaca46139790d772d3d5797e2171edbaa778168a24ddb18f521390a58f4f19",
+    "scale-2/true-8-baseline.png": "9ea68ba2ac8498a649f9d622402a86fbd3153ce15b4dea64c870237db742221c",
+    "scale-2/false-1-single-marked.png": "41d39295e026f6a999731cc37f7965cc2bbbcc8e3a8c2e4fcfc2b47e6dde8ffb",
+    "scale-2/true-8-single-marked.png": "d0b9fb909b7ea6dbfb7a11ab38c089b3b0097af1c6feb71cbf0340218a43cf54",
+    "scale-2/false-8-baseline.png": "3c38cfe4c809a2aafb57bae372538e2ad97e1ef1c5cc08e0208697a0f6fe8d86",
+    "scale-2/true-8-multiline-marked.png": "895ecb752fc0e9e65eac0a1a0bad1057cecabf7e61930b716930d4fbb25d5176",
+    "scale-2/true-16-single.json": "e2ac5b9a3195797823bde119b0c737fb04ba6205424ae3691e799bddf7b692dc",
+    "scale-2/false-1-single.json": "d1f0241fe1360acd693090ecc29675c7e54e090a6aa8e179bcab8e055ad01611",
+    "scale-2/false-8-single.json": "52e7de8f9b90e4101d95d871ab5417710206f68720f76f1afe345ab16e1ce134",
+    "scale-2/true-8-multiline.json": "36bd1d0a7219dbb3d91d1b8600ede4ecc879ad0ee9ac308b14e4836626c51f50",
+    "scale-2/true-8-single.json": "39041fa2043fe51d5c0f3612d64bf74e2fea2420583a9a594ca3c61c0e4ca192",
+    "scale-2/false-1-multiline.json": "d4d8add87ebbeaa90342030c8295b9dd5a0d645d5ca4da837cc737cd6badcc56",
+    "scale-2/false-8-single-marked.png": "b1d7341457f70c5777d5bbc3cf249689a255ec707b022dacae354faa99d39aa4",
+    "scale-2/false-1-baseline.png": "2486982ef2e5beab0c55a6c849f27d03f1e5c5ad37aee008ac0dedcbc80fa08a",
+    "scale-2/true-16-single-marked.png": "baf6e82376b8269b2cbdd8323690c92d8bc3350624bc0cbac92c78d401f24f6d",
+    "scale-2/true-16-multiline.json": "97b10332f41183f31eab218cdc24b4d0870f0a1a34fbaf675a9e24e4ede841aa",
+    "scale-2/false-1-multiline-marked.png": "40580328c33103f10a3d3cc0a504b7a0057d3c8637be33381b3adbf5d81bab57",
+    "scale-2/false-8-multiline.json": "1e8f2f7ebb1924ad81393bdd2e8507155e06ee2679c762cd073ceb768ccee47a",
+    "scale-2/true-16-multiline-marked.png": "f1c50c1d0c13cfc7be3a8b58f336c62fb3a9bef20949f2a48cc3ddfd6a63d166"
+  },
+  "lossless_archive_verification": {
+    "scale-1/true-16-baseline.png": {
+      "size": [
+        1600,
+        1200
+      ],
+      "rgba_sha256": "abb176f1a6a234b46e9a85c67e0f6da12334b214bbb0564dd4a0ada215dd7b02"
+    },
+    "scale-1/false-8-multiline-marked.png": {
+      "size": [
+        1600,
+        1200
+      ],
+      "rgba_sha256": "e1f1f597bb11683bae9b06e9f9a5507ab288cecfbd57bce9c4361cb1718c4ee6"
+    },
+    "scale-1/true-8-baseline.png": {
+      "size": [
+        1600,
+        1200
+      ],
+      "rgba_sha256": "24dc22ad1aa0939c7f637570afd725c083ee97849025b15b154ea3732030e452"
+    },
+    "scale-1/false-1-single-marked.png": {
+      "size": [
+        1600,
+        1200
+      ],
+      "rgba_sha256": "9c1b4c9b2cf3e08f5efd3f8270f24920fa4b64b6bed9e0dae50d0770bc3704d2"
+    },
+    "scale-1/true-8-single-marked.png": {
+      "size": [
+        1600,
+        1200
+      ],
+      "rgba_sha256": "750571d002c995e41110512eb8fb5462287a083bb47c9c85e3cbf9d9ff36d44d"
+    },
+    "scale-1/false-8-baseline.png": {
+      "size": [
+        1600,
+        1200
+      ],
+      "rgba_sha256": "bb78e74823bc5eecfea3bc8a94567bc1543cb89b3a8ec18410d099d58a11111e"
+    },
+    "scale-1/true-8-multiline-marked.png": {
+      "size": [
+        1600,
+        1200
+      ],
+      "rgba_sha256": "ada7dda65a11b57199eb023c87c83d19fbea27cee1b2e09963a0901ab22959ec"
+    },
+    "scale-1/false-8-single-marked.png": {
+      "size": [
+        1600,
+        1200
+      ],
+      "rgba_sha256": "68bf38366ed8ea75e693bdd1c6d406015946fee6e2b5503503b58100950a15e8"
+    },
+    "scale-1/false-1-baseline.png": {
+      "size": [
+        1600,
+        1200
+      ],
+      "rgba_sha256": "42015966b900fff2fe466bdfb2198e7a3a19a5a9f29328f2ac0e612a8e4def00"
+    },
+    "scale-1/true-16-single-marked.png": {
+      "size": [
+        1600,
+        1200
+      ],
+      "rgba_sha256": "9894f3108d4235f683854fafd61ee4475b1d3bec44a3abe9a3f67182419ff5c2"
+    },
+    "scale-1/false-1-multiline-marked.png": {
+      "size": [
+        1600,
+        1200
+      ],
+      "rgba_sha256": "348ce75511dbac22f8153a902b7f8123a0a0a0f1a52fcfd3e432d058315fdd58"
+    },
+    "scale-1/true-16-multiline-marked.png": {
+      "size": [
+        1600,
+        1200
+      ],
+      "rgba_sha256": "cd865dd0555b734d1a44253f2b42b3a21c72a52bca0fe1fa6bbcfd4f287bc2c8"
+    },
+    "scale-1.5/true-16-baseline.png": {
+      "size": [
+        2400,
+        1800
+      ],
+      "rgba_sha256": "a36220bf11d71ff5495deb8536d7a99d41c13422f30188987fc33207942f2af4"
+    },
+    "scale-1.5/false-8-multiline-marked.png": {
+      "size": [
+        2400,
+        1800
+      ],
+      "rgba_sha256": "d1c88c61cc95a5f2b10d354539d0f5126f31fbb778a33bcaa0b9b1488b4a94f7"
+    },
+    "scale-1.5/true-8-baseline.png": {
+      "size": [
+        2400,
+        1800
+      ],
+      "rgba_sha256": "58943b4c2ada5a6ef7bd15bd51fd47694c2fbb8700f89517db4f734e7f0e76c8"
+    },
+    "scale-1.5/false-1-single-marked.png": {
+      "size": [
+        2400,
+        1800
+      ],
+      "rgba_sha256": "708797e6db8cca230b57ebbab3960ecd57a9fa6b23be14376c649805cc4c5678"
+    },
+    "scale-1.5/true-8-single-marked.png": {
+      "size": [
+        2400,
+        1800
+      ],
+      "rgba_sha256": "4fd0a03021338bea40be555482b6fa17e5002809929d8304c3e57a84e6bca04f"
+    },
+    "scale-1.5/false-8-baseline.png": {
+      "size": [
+        2400,
+        1800
+      ],
+      "rgba_sha256": "18271cbd6d847567a5ab1aaab398d629bd6bc9b8c7de8f60133d01fc098276ae"
+    },
+    "scale-1.5/true-8-multiline-marked.png": {
+      "size": [
+        2400,
+        1800
+      ],
+      "rgba_sha256": "520c6ef081287f1a22110c1c3fc27eccb4e22ec8c1c2dd3890656da9eef36245"
+    },
+    "scale-1.5/false-8-single-marked.png": {
+      "size": [
+        2400,
+        1800
+      ],
+      "rgba_sha256": "da9e2dedee5945294986d72b84160156acbfbe870be6b41ad8e4e05a8a671424"
+    },
+    "scale-1.5/false-1-baseline.png": {
+      "size": [
+        2400,
+        1800
+      ],
+      "rgba_sha256": "6389a0aca37fbcf5e40580081fd69ff65e300254c9c7cc3c4f9435ffdec02ad5"
+    },
+    "scale-1.5/true-16-single-marked.png": {
+      "size": [
+        2400,
+        1800
+      ],
+      "rgba_sha256": "602abad8a6cc424e7c27b4a8ab615a7eaec738d7d3bc723e545d476d5eeff7c6"
+    },
+    "scale-1.5/false-1-multiline-marked.png": {
+      "size": [
+        2400,
+        1800
+      ],
+      "rgba_sha256": "d6b51203d59d1a0a9908cbf68c79245fb36a036c0324585573ebde231eb0b017"
+    },
+    "scale-1.5/true-16-multiline-marked.png": {
+      "size": [
+        2400,
+        1800
+      ],
+      "rgba_sha256": "9e22c6c06584766e715ebfe80f1a813ca7e75ded4fb8ea8f8d26eab4675664b8"
+    },
+    "scale-0.75/true-16-baseline.png": {
+      "size": [
+        1200,
+        900
+      ],
+      "rgba_sha256": "20c6c7f547e5a88cd119abf7365627d988ef0987241d0117ba0397ecb774ef41"
+    },
+    "scale-0.75/false-8-multiline-marked.png": {
+      "size": [
+        1200,
+        900
+      ],
+      "rgba_sha256": "2baabb83245b8510c308186fe39f3c2a8d5f372b7b09b4d3dd69f96594674a22"
+    },
+    "scale-0.75/true-8-baseline.png": {
+      "size": [
+        1200,
+        900
+      ],
+      "rgba_sha256": "5084770c49399a698f0a7e762b8358961adb8ab80363857241d24f0773b49d06"
+    },
+    "scale-0.75/false-1-single-marked.png": {
+      "size": [
+        1200,
+        900
+      ],
+      "rgba_sha256": "d2202ea0ec26f38ab1e3996241504bfd41779bd35d00d7d9f47e7220d1af98da"
+    },
+    "scale-0.75/true-8-single-marked.png": {
+      "size": [
+        1200,
+        900
+      ],
+      "rgba_sha256": "75fd3f3036967747290568ce89d91d495ff485622d1048ff540e1f185fffa5b2"
+    },
+    "scale-0.75/false-8-baseline.png": {
+      "size": [
+        1200,
+        900
+      ],
+      "rgba_sha256": "e5bf31b37a5b63b2d0d0aa0bcabe6956945d29a516cd3ee80091e76f1e31a700"
+    },
+    "scale-0.75/true-8-multiline-marked.png": {
+      "size": [
+        1200,
+        900
+      ],
+      "rgba_sha256": "968944e7d5f2aef568ee5b1b4824e75ba45ef344829d43fe72c7c5fbe46a5053"
+    },
+    "scale-0.75/false-8-single-marked.png": {
+      "size": [
+        1200,
+        900
+      ],
+      "rgba_sha256": "3b6f878e742b07df268571af51ecb21bfe0551de118cc81a4beee944912ea8be"
+    },
+    "scale-0.75/false-1-baseline.png": {
+      "size": [
+        1200,
+        900
+      ],
+      "rgba_sha256": "0313d4da5ab993965eaed47361ab50b5288005dfcc8faafc843ff85d3ac05519"
+    },
+    "scale-0.75/true-16-single-marked.png": {
+      "size": [
+        1200,
+        900
+      ],
+      "rgba_sha256": "b7d2715ee39ce38130db1bffab446be7c6c00f058d936bae31ee4edaefdc701d"
+    },
+    "scale-0.75/false-1-multiline-marked.png": {
+      "size": [
+        1200,
+        900
+      ],
+      "rgba_sha256": "90743361d6f9b14f8772bd5ccab072353d83a63d478a77737c4158b612898e77"
+    },
+    "scale-0.75/true-16-multiline-marked.png": {
+      "size": [
+        1200,
+        900
+      ],
+      "rgba_sha256": "6ae5c9f32bd53f893fe2bfe8371a482399eb17e1e0587354dca0048425d58bac"
+    },
+    "scale-2/true-16-baseline.png": {
+      "size": [
+        3200,
+        2400
+      ],
+      "rgba_sha256": "9aec0fa08372325918ee7c29fcb8ca9c3b67440600bdc537f713b7e53450f628"
+    },
+    "scale-2/false-8-multiline-marked.png": {
+      "size": [
+        3200,
+        2400
+      ],
+      "rgba_sha256": "35c8e644199cb8b2687d34b66a371c845455a03f6f21c1c7c9aeeff6d11e5106"
+    },
+    "scale-2/true-8-baseline.png": {
+      "size": [
+        3200,
+        2400
+      ],
+      "rgba_sha256": "c070ae2bf04509c1c9566a1fe3e1bd72ef6fba81e13ae8523d299810421e35e1"
+    },
+    "scale-2/false-1-single-marked.png": {
+      "size": [
+        3200,
+        2400
+      ],
+      "rgba_sha256": "1c4cbf2f76904c2058aafbd21a44474ea305974a61d7fee8ef7ddb3261b579f5"
+    },
+    "scale-2/true-8-single-marked.png": {
+      "size": [
+        3200,
+        2400
+      ],
+      "rgba_sha256": "e130e4b20ce7043f89a66e8f0a16de9f4e9b88edd9dec3408287bca1900b756f"
+    },
+    "scale-2/false-8-baseline.png": {
+      "size": [
+        3200,
+        2400
+      ],
+      "rgba_sha256": "d48adbfdd7e4a5e647ef30b87065d849d163bcbcddd98113814b48692351f7e9"
+    },
+    "scale-2/true-8-multiline-marked.png": {
+      "size": [
+        3200,
+        2400
+      ],
+      "rgba_sha256": "f2bfbed1c14af894d4b596cce955e56f54a260fd57c17e28829e1eef9d309d2e"
+    },
+    "scale-2/false-8-single-marked.png": {
+      "size": [
+        3200,
+        2400
+      ],
+      "rgba_sha256": "1bf46e72b9e805f312a354a85f21bbab04f288ba8b542daff40f171628379d53"
+    },
+    "scale-2/false-1-baseline.png": {
+      "size": [
+        3200,
+        2400
+      ],
+      "rgba_sha256": "470ca0f92b779deadb95ab7df31f423deb45ed2c13e0ecca1df623ae0838e155"
+    },
+    "scale-2/true-16-single-marked.png": {
+      "size": [
+        3200,
+        2400
+      ],
+      "rgba_sha256": "e7bb7df8f5b8f2d7392d57e56ad4b3492bfa88e3bcd44712c762b6f2bdd31338"
+    },
+    "scale-2/false-1-multiline-marked.png": {
+      "size": [
+        3200,
+        2400
+      ],
+      "rgba_sha256": "450a2cee7aeb66e242962ac4236d75605dfd4300d90babfcba67ca813632b703"
+    },
+    "scale-2/true-16-multiline-marked.png": {
+      "size": [
+        3200,
+        2400
+      ],
+      "rgba_sha256": "46ff9deeba46640e14c4ba74163311d1fb438b88c723a405844f28b7ff3deeac"
+    }
+  }
+}
