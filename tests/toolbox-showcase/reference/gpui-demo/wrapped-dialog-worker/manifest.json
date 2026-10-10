@@ -1,0 +1,18 @@
+{
+  "base": "41aeb99392b0978d6e2a6cb2d6e27c578e7ff186",
+  "result": "PASS 5.93s",
+  "cases": [
+    "mono68k simple",
+    "colour68k simple",
+    "PPC8 simple",
+    "PPC16 simple",
+    "PPC8 wrapped",
+    "PPC16 wrapped"
+  ],
+  "scope": "Production run_guest worker with host services disabled. Wrapped field is created through a real long dialog commit; actual guest click selects offset20. Rapid e-acute/Z predicted commits retain exact text and selection, preserve other field/bounds, and stale commits yield persistent rejection. Last two repeated PPC PASS lines are wrapped cases; source patch records ordering.",
+  "limits": "No physical IME, actual scrolling, host clipboard or separate-process lifecycle qualification.",
+  "sha256": {
+    "test.log": "1f2e3b3434ca82aa699b25b3fa4ed250b97500daf4125d827149bcaac2f9589a",
+    "source.patch": "2f8455f46d5cc9df024519534db0106e567122399c4d074e0c6682f853fc692a"
+  }
+}
