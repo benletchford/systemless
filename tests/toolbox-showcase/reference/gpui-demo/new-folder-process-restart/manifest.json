@@ -1,0 +1,9 @@
+{
+  "base_head": "81cc27c5ecf9dbfa3d9bd0ed47ec2dc71bf8d374",
+  "source_sha256": "4242a235650cf1ea913bdff497d9433f2683f4aa608b5a4460095832e2902715",
+  "scope": "Four independent reader OS processes verify different PIDs, actual CPU/depth and guest Save directory entries after guest New Folder creation and explicit production-store flush. Initial PPC16 test-reader constructor failure retained. Does not qualify physical shutdown/input, crash durability, replacement restart or broad filesystem behavior.",
+  "sha256": {
+    "reader-init-failure.log": "7d465313cd6ccbf3909e2bc1e8fd64c55d0a0178d3d41b6d3d87e5b26dcc9f15",
+    "passed.log": "c301edf240a570e9eb82e829bc9c47f7485f3e2546e43b91fd14ff991e4f0ab1"
+  }
+}
