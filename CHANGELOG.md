@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.92.2](https://github.com/benletchford/systemless/compare/v0.92.1...v0.92.2) (2026-10-10)
+
+
+### Bug Fixes
+
+* expand nested Compact Pro game archives ([7c2b50c](https://github.com/benletchford/systemless/commit/7c2b50cf965f49c3d592c6a16cf623092b25de47))
+
 ## [0.92.1](https://github.com/benletchford/systemless/compare/v0.92.0...v0.92.1) (2026-10-10)
 
 
