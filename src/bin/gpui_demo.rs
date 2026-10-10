@@ -93,6 +93,9 @@ mod debug_server;
 mod desktop {
     //! GPUI Kit desktop presentation and shared headless capture frontend.
 
+    #[path = "../gpui_demo_composition.rs"]
+    mod composition;
+
     use std::{
         collections::{HashMap, HashSet},
         path::PathBuf,
@@ -759,6 +762,7 @@ mod desktop {
         mouse_position: (i16, i16),
         scrollbar_drag: Option<(u32, u64, (i16, i16))>,
         popup_tracking: Option<(u32, u64)>,
+        composition: super::input::GuestComposition,
         keyboard: super::input::KeyboardState,
         wheel: super::scroll::WheelAccumulator,
         _window_activation: Option<Subscription>,
@@ -956,6 +960,7 @@ mod desktop {
                 mouse_position: (0, 0),
                 scrollbar_drag: None,
                 popup_tracking: None,
+                composition: Default::default(),
                 keyboard: super::input::KeyboardState::default(),
                 wheel: super::scroll::WheelAccumulator::default(),
                 _window_activation: None,
@@ -1034,6 +1039,7 @@ mod desktop {
         }
 
         fn release_host_input(&mut self) {
+            self.composition.synchronize(None);
             self.text_pointer_capture = None;
             self.wheel.reset();
             let _ = self.commands.send(Command::CancelWheel);
@@ -2792,6 +2798,20 @@ mod desktop {
                         }
                         return;
                     }
+                    if this.composition.preedit.is_some() && event.keystroke.key == "escape" {
+                        this.composition.cancel();
+                        cx.notify();
+                        cx.stop_propagation();
+                        return;
+                    }
+                    if this.focus.is_focused(window) && this.composition.owner().is_some()
+                        && !event.keystroke.modifiers.control
+                        && event.keystroke.key_char.as_ref().is_some_and(|text| !text.is_empty()
+                            && text.chars().all(|ch| !ch.is_control())) {
+                        // The platform text service commits these characters.
+                        // Dispatching physical character events too duplicates text.
+                        return;
+                    }
                     // A focused host control owns its ordinary keys. Its semantic
                     // callback queues guest input separately after validation.
                     if this.focus.is_focused(window) {
@@ -2812,6 +2832,18 @@ mod desktop {
                     this.sync_caps_lock(event.capslock.on);
                     this.sync_host_modifiers(event.modifiers);
                 }))
+                .child(canvas({
+                    let entity = cx.entity();
+                    move |_, window, cx| { entity.update(cx, |this, cx| this.synchronize_composition(window, cx)); }
+                }, {
+                    let entity = cx.entity();
+                    let focus = self.focus.clone();
+                    move |bounds, _, window, cx| {
+                        if entity.read(cx).composition.owner().is_some() {
+                            window.handle_input(&focus, ElementInputHandler::new(bounds, entity.clone()), cx);
+                        }
+                    }
+                }).absolute().size_full())
                 .child(super::metrics::SceneMetrics::new(screen, window.rem_size() * scene_scale))
                 .when(!guest_menu_fallback && self.guest_popup.is_none() && (self.menu_presented || menu_hovered), |root| {
                     root.child(bar.unwrap().absolute().top_0().left_0().when(self.menu_presented, |bar| {
@@ -8662,6 +8694,67 @@ mod desktop {
             assert!(
                 !receiver.try_iter().any(|command| matches!(command, super::Command::Menu(..)))
             );
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn platform_text_commit_reaches_guest_without_duplicate_character_events(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::{AppContext, test::TestWindowExt};
+            cx.update(gpui_kit::init);
+            for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 11));
+                wait_for_menu(&mut session, 129, 11, true);
+                settle(&mut session);
+                let initial = session.runner_mut().text_edit_snapshot().records.into_iter().find(|record| record.styled).unwrap();
+                let rect = initial.global_view_rect.unwrap();
+                for input in [MacintoshInput::MouseDown { vertical: rect.0 + 4, horizontal: rect.1 + 4 },
+                    MacintoshInput::MouseUp { vertical: rect.0 + 4, horizontal: rect.1 + 4 }] {
+                    session.deliver_input(input); settle(&mut session);
+                }
+                let records = session.runner_mut().text_edit_snapshot().records;
+                let before = records.iter().find(|record| record.styled).unwrap().clone();
+                let (sender, receiver) = std::sync::mpsc::channel();
+                let (window, view) = cx.update(|cx| gpui_kit::open_window(Default::default(), cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap());
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.render_frame(cx);
+                    view.update(cx, |demo, cx| {
+                        demo.width = 800; demo.height = 600;
+                        demo.text_edits = records;
+                        demo.windows = session.runner_mut().window_frame_snapshot();
+                        demo.menus = session.runner_mut().guest_menu_snapshot();
+                        demo.host_active = Some(true);
+                        window.focus(&demo.focus, cx);
+                        cx.notify();
+                    });
+                    window.render_frame(cx);
+                }).unwrap();
+                receiver.try_iter().for_each(drop);
+                cx.simulate_input(window.into(), "z");
+                let commands: Vec<_> = receiver.try_iter().collect();
+                assert!(!commands.iter().any(|command| matches!(command, super::Command::Input(_))),
+                    "platform text input must not duplicate physical character input");
+                let commits: Vec<_> = commands.into_iter().filter_map(|command| match command {
+                    super::Command::CommitText(owner, bytes) => Some((owner, bytes)), _ => None,
+                }).collect();
+                assert_eq!(commits.len(), 1, "registered platform handler must commit exactly once");
+                let (owner, bytes) = &commits[0];
+                assert_eq!(bytes, b"z");
+                let inputs = super::super::input::guest_commit_inputs(&mut session, owner, bytes).unwrap();
+                for pair in inputs.chunks_exact(2) { session.deliver_input(pair[0]); session.deliver_input(pair[1]); settle(&mut session); }
+                let after = session.runner_mut().text_edit_snapshot().records.into_iter().find(|record| record.styled).unwrap();
+                let mut expected = before.text.clone(); expected.splice(before.selection.0..before.selection.1, [b'z']);
+                assert_eq!(after.text, expected);
+                eprintln!("PASS platform-text-commit powerpc={powerpc} depth={depth}");
+                cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
+            }
         }
 
         #[cfg(feature = "gpui-demo-test")]
