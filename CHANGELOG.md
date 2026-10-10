@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.91.1](https://github.com/benletchford/systemless/compare/v0.91.0...v0.91.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* **loader:** expand original ST65 installer payloads ([dcec775](https://github.com/benletchford/systemless/commit/dcec775966ec51e45faa86a3d4ff14bae7e94702))
+
 ## [0.91.0](https://github.com/benletchford/systemless/compare/v0.90.0...v0.91.0) (2026-10-10)
 
 
