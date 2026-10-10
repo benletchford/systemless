@@ -1,0 +1,8 @@
+{
+  "base_head": "c475a6e7503b6d8dadb8add4105b748ae0ff551b",
+  "scope": "Save and New Folder disjoint composition worker checks across four CPU/depth modes: final text/caret, parent preservation, cancellation return and resumed typing. Eight GPUI editor/mode checks verify separate ordered requests and intermediate text. Physical IME, composed visual and native reference qualification remain open.",
+  "sha256": {
+    "worker.log": "eb002282b032025e96d230a64ea0535e24d23bbe4bc68b3567ade1b3b4fcbcb7",
+    "platform.log": "06f00051446b8a379f916d1ae85d5966aec2443eb92dedfe835b2f837f7c29ef"
+  }
+}
