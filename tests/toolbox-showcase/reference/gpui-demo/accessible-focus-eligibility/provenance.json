@@ -1,0 +1,4 @@
+{
+  "source_sha256": "11224b9d89faa3b76b7b46c235158a9b45b60f006b6107fc62602e7da65df32c",
+  "scope": "Explicit render eligibility guards; production compile passed 11.66s; native action/focus behavior unqualified"
+}

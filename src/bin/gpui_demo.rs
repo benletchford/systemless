@@ -2012,7 +2012,8 @@ mod desktop {
                             .w(guest_px(clip.width() as f32))
                             .h(guest_px(clip.height() as f32))
                             .child(overlay)
-                            .when(self.composition.preedit.is_none(), |field| {
+                            .when(self.composition.preedit.is_none() && self.host_active != Some(false)
+                                && self.focus.is_focused(window) && self.open_menus.is_empty() && !self.guest_menu_tracking && self.guest_popup.is_none(), |field| {
                                 let Some(owner) = self.composition.owner().filter(|owner|
                                     owner.identity == (record.guest_id, record.generation)
                                         && matches!(owner.target, super::input::TextInputTarget::Document { .. })).cloned()
@@ -2051,7 +2052,8 @@ mod desktop {
                         .left(guest_px(clip.left as f32)).top(guest_px(clip.top as f32))
                         .w(guest_px(clip.width() as f32)).h(guest_px(clip.height() as f32))
                         .child(ink)
-                            .when(self.composition.preedit.is_none(), |field| {
+                            .when(self.composition.preedit.is_none() && self.host_active != Some(false)
+                                && self.focus.is_focused(window) && self.open_menus.is_empty() && !self.guest_menu_tracking && self.guest_popup.is_none(), |field| {
                                 let Some(owner) = self.composition.owner().filter(|owner|
                                     owner.identity == (record.guest_id, record.generation)
                                         && matches!(owner.target, super::input::TextInputTarget::Document { .. })).cloned()
@@ -2424,7 +2426,8 @@ mod desktop {
                                         (selection.0.max(0) as usize, selection.1.max(0) as usize),
                                         focused, item.caret_visible == Some(true), scene_scale,
                                         foreground, cx.theme().selection)));
-                            let field = field.when(focused && self.composition.preedit.is_none(), |field| {
+                            let field = field.when(focused && self.composition.preedit.is_none() && self.host_active != Some(false)
+                                && self.focus.is_focused(window) && self.open_menus.is_empty() && !self.guest_menu_tracking && self.guest_popup.is_none(), |field| {
                                 let Some(owner) = self.composition.owner().filter(|owner|
                                     owner.identity == (dialog.guest_id, dialog.generation)
                                         && matches!(owner.target, super::input::TextInputTarget::Dialog { item: number, .. } if number == item.number)).cloned()
@@ -2883,7 +2886,8 @@ mod desktop {
                                 panel.name_text_layout.as_ref().unwrap(), scene_scale,
                                 cx.theme().foreground, cx.theme().selection,
                             ));
-                        let name_field = name_field.when(focused && panel.new_folder.is_none(), |field| {
+                        let name_field = name_field.when(focused && panel.new_folder.is_none() && self.composition.preedit.is_none()
+                            && self.focus.is_focused(window) && self.open_menus.is_empty() && !self.guest_menu_tracking && self.guest_popup.is_none(), |field| {
                             let Some(owner) = super::input::standard_file_text_owner(panel) else { return field; };
                             let owner = super::input::TextInputOwner { identity: owner.identity,
                                 target: super::input::TextInputTarget::StandardFile { new_folder: false },
@@ -2962,7 +2966,8 @@ mod desktop {
                             .border_1().border_color(cx.theme().accent).bg(cx.theme().background)
                             .child(super::text::single_line(folder, (panel.guest_id, panel.generation),
                                 self.text_pointer_map.clone(), self.host_active != Some(false), scene_scale, cx.theme().foreground, cx.theme().selection));
-                        let name = name.when(self.host_active != Some(false), |field| {
+                        let name = name.when(self.host_active != Some(false) && self.composition.preedit.is_none()
+                            && self.focus.is_focused(window) && self.open_menus.is_empty() && !self.guest_menu_tracking && self.guest_popup.is_none(), |field| {
                             let Some(owner) = super::input::standard_file_text_owner(panel) else { return field; };
                             let owner = super::input::TextInputOwner { identity: owner.identity,
                                 target: super::input::TextInputTarget::StandardFile { new_folder: true },
