@@ -1598,3 +1598,30 @@ fn runtime_defaults_to_workers_without_overriding_explicit_compatibility() {
     assert_eq!(omitted.runtime_pacing, RuntimePacing::default());
     assert!(!omitted.show_menu_bar);
 }
+
+#[test]
+fn dmg_inspection_checks_footer_ranges_and_managed_extension() {
+    use std::io::Write;
+    let mut bytes = vec![0; 1024];
+    let f = &mut bytes[512..];
+    f[..4].copy_from_slice(b"koly");
+    f[4..8].copy_from_slice(&4_u32.to_be_bytes());
+    f[8..12].copy_from_slice(&512_u32.to_be_bytes());
+    f[32..40].copy_from_slice(&256_u64.to_be_bytes());
+    f[216..224].copy_from_slice(&256_u64.to_be_bytes());
+    f[224..232].copy_from_slice(&256_u64.to_be_bytes());
+    f[492..500].copy_from_slice(&1_u64.to_be_bytes());
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(&bytes).unwrap();
+    let inspected = assets::inspect(file.path(), FileType::Dmg).unwrap();
+    let key = assets::object_key(&inspected.sha256, FileType::Dmg);
+    assert!(key.ends_with(".dmg") && assets::is_managed_key(&key));
+    assert_eq!(FileType::Dmg.mime(), "application/octet-stream");
+    bytes[512 + 216..512 + 224].copy_from_slice(&u64::MAX.to_be_bytes());
+    std::fs::write(file.path(), &bytes).unwrap();
+    assert!(assets::inspect(file.path(), FileType::Dmg).is_err());
+    bytes[512 + 216..512 + 224].copy_from_slice(&256_u64.to_be_bytes());
+    bytes[512 + 4..512 + 8].copy_from_slice(&3_u32.to_be_bytes());
+    std::fs::write(file.path(), &bytes).unwrap();
+    assert!(assets::inspect(file.path(), FileType::Dmg).is_err());
+}
