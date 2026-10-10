@@ -1,0 +1,4 @@
+{
+  "checker_sha256": "79829636e8cfd311aafaf7cf8912e96c613ed00a4e57176caeffa74fa85e016e",
+  "scope": "Initial integrated019cae5d captures only. All8 PPC8/PPC16 multiline cases and17 PPC16 activation cases compare exact full guest/composed RGBA against complete pre-integration baselines. Remaining cases still running. The partial checker freezes manifest membership during ongoing capture; full baseline always required. Four updated-hash guest/composed mutations rejected in full/partial modes. No complete matrix, font oracle or speedup claim."
+}

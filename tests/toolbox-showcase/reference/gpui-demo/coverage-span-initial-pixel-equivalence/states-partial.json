@@ -1,0 +1,384 @@
+{
+  "outcome": "All 34 guest/composed images match exact decoded RGBA",
+  "after_complete": false,
+  "partial_after_requested": true,
+  "before_source": "39fbd0cfeb5ac2f8d34ba250f828b51a9a8e69cf",
+  "after_source": "019cae5d709f05539a51deb7ce93656b63cf5258",
+  "scope": "Complete baseline and complete or explicitly partial after-matrix provenance/state/geometry verified independently before comparison. Partial comparison qualifies only captured cases. Equivalence between Systemless runs does not establish original Macintosh font appearance, physical host interaction or performance.",
+  "images": [
+    {
+      "case": [
+        "inactive",
+        "ppc16",
+        "inactive",
+        null,
+        0.75
+      ],
+      "kind": "guest",
+      "rgba_sha256": "711b19844728f2c5a1dc31a76ce752801504a6c7a44602fad965387d4f7cb6ab"
+    },
+    {
+      "case": [
+        "inactive",
+        "ppc16",
+        "inactive",
+        null,
+        0.75
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "583db460d3f624ac047becfc002734965b124bbdd535450dbcca5fe16e4166f7"
+    },
+    {
+      "case": [
+        "inactive",
+        "ppc16",
+        "inactive",
+        null,
+        1
+      ],
+      "kind": "guest",
+      "rgba_sha256": "711b19844728f2c5a1dc31a76ce752801504a6c7a44602fad965387d4f7cb6ab"
+    },
+    {
+      "case": [
+        "inactive",
+        "ppc16",
+        "inactive",
+        null,
+        1
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "ea69e146d4518ad31ec5af26d64eb7ef4a568051d02dfd959a3f2693e33c6db3"
+    },
+    {
+      "case": [
+        "inactive",
+        "ppc16",
+        "inactive",
+        null,
+        1.5
+      ],
+      "kind": "guest",
+      "rgba_sha256": "711b19844728f2c5a1dc31a76ce752801504a6c7a44602fad965387d4f7cb6ab"
+    },
+    {
+      "case": [
+        "inactive",
+        "ppc16",
+        "inactive",
+        null,
+        1.5
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "5fc0b144a7b922ea1de193f51fd51383b2e2a2df3a7840dc12512ad94d13a6f6"
+    },
+    {
+      "case": [
+        "inactive",
+        "ppc16",
+        "inactive",
+        null,
+        2
+      ],
+      "kind": "guest",
+      "rgba_sha256": "711b19844728f2c5a1dc31a76ce752801504a6c7a44602fad965387d4f7cb6ab"
+    },
+    {
+      "case": [
+        "inactive",
+        "ppc16",
+        "inactive",
+        null,
+        2
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "85bb10f8678d9c5266aac9321e38b4abc67c20d8b3f013b44acc58756d6d798d"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "selected",
+        null,
+        0.75
+      ],
+      "kind": "guest",
+      "rgba_sha256": "f4e54fc7bc944a0f7e9d12caecfa7e5a54f110adecec5ff9427595affbaec0e7"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "selected",
+        null,
+        0.75
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "71578372ea580710d2546cb0c685c493c40d2c4a3a97f5727d7a08df19bb85c8"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "selected",
+        null,
+        1
+      ],
+      "kind": "guest",
+      "rgba_sha256": "f4e54fc7bc944a0f7e9d12caecfa7e5a54f110adecec5ff9427595affbaec0e7"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "selected",
+        null,
+        1
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "edebd5967b966becc95b80735e2d88b06a07f37f6d74422f9372c05c12970b15"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "selected",
+        null,
+        1.5
+      ],
+      "kind": "guest",
+      "rgba_sha256": "f4e54fc7bc944a0f7e9d12caecfa7e5a54f110adecec5ff9427595affbaec0e7"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "selected",
+        null,
+        1.5
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "b8a295b13adf402e81223ec944ad330a06ff9a3339088071a05c5dc10184e568"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "selected",
+        null,
+        2
+      ],
+      "kind": "guest",
+      "rgba_sha256": "f4e54fc7bc944a0f7e9d12caecfa7e5a54f110adecec5ff9427595affbaec0e7"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "selected",
+        null,
+        2
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "8f0df3328d67f80d68641c4f1358fb44f71591082c9f6804574868b8cd62269e"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "suspended",
+        null,
+        0.75
+      ],
+      "kind": "guest",
+      "rgba_sha256": "fdbc58ec200593d504abccec5f03fa500534efa14d24ad0cf599c72eb3fe4695"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "suspended",
+        null,
+        0.75
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "a7de5ae7fa803971dc3c2c29ceac592402b9fd9ebed79b6d20a5d6e6d3776255"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "suspended",
+        null,
+        1
+      ],
+      "kind": "guest",
+      "rgba_sha256": "fdbc58ec200593d504abccec5f03fa500534efa14d24ad0cf599c72eb3fe4695"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "suspended",
+        null,
+        1
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "79175a5be35173086d73fbf49f9d54bdffa77eb3176c810b58ebaea4a05404ec"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "suspended",
+        null,
+        1.5
+      ],
+      "kind": "guest",
+      "rgba_sha256": "fdbc58ec200593d504abccec5f03fa500534efa14d24ad0cf599c72eb3fe4695"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "suspended",
+        null,
+        1.5
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "85119508d218030b27cce1f29f99f299088efed493e30f86d02e68727dc493f3"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "suspended",
+        null,
+        2
+      ],
+      "kind": "guest",
+      "rgba_sha256": "fdbc58ec200593d504abccec5f03fa500534efa14d24ad0cf599c72eb3fe4695"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "suspended",
+        null,
+        2
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "95f49c6ef63d2b5e5b02df9df12a472c1361a682f0de2c1b6bd91a9fa0ba6ca2"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "resumed",
+        null,
+        0.75
+      ],
+      "kind": "guest",
+      "rgba_sha256": "f4e54fc7bc944a0f7e9d12caecfa7e5a54f110adecec5ff9427595affbaec0e7"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "resumed",
+        null,
+        0.75
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "71578372ea580710d2546cb0c685c493c40d2c4a3a97f5727d7a08df19bb85c8"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "resumed",
+        null,
+        1
+      ],
+      "kind": "guest",
+      "rgba_sha256": "f4e54fc7bc944a0f7e9d12caecfa7e5a54f110adecec5ff9427595affbaec0e7"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "resumed",
+        null,
+        1
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "edebd5967b966becc95b80735e2d88b06a07f37f6d74422f9372c05c12970b15"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "resumed",
+        null,
+        1.5
+      ],
+      "kind": "guest",
+      "rgba_sha256": "f4e54fc7bc944a0f7e9d12caecfa7e5a54f110adecec5ff9427595affbaec0e7"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "resumed",
+        null,
+        1.5
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "b8a295b13adf402e81223ec944ad330a06ff9a3339088071a05c5dc10184e568"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "resumed",
+        null,
+        2
+      ],
+      "kind": "guest",
+      "rgba_sha256": "f4e54fc7bc944a0f7e9d12caecfa7e5a54f110adecec5ff9427595affbaec0e7"
+    },
+    {
+      "case": [
+        "selection",
+        "ppc16",
+        "resumed",
+        null,
+        2
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "8f0df3328d67f80d68641c4f1358fb44f71591082c9f6804574868b8cd62269e"
+    },
+    {
+      "case": [
+        "caret",
+        "ppc16",
+        "visible",
+        0,
+        0.75
+      ],
+      "kind": "guest",
+      "rgba_sha256": "8353d38537eafc13b73ae6996a9eee56085f2bda04e061607876b03534070319"
+    },
+    {
+      "case": [
+        "caret",
+        "ppc16",
+        "visible",
+        0,
+        0.75
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "53ec9cbcfa8bc8d4244e7848ce7910a37d022e87b7f566aacf5daf4bbb1af648"
+    }
+  ]
+}
