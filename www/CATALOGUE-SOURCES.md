@@ -914,3 +914,54 @@ size without interception. The complete release pipeline passed and all twelve
 native package/checksum assets are published.
 [Public evidence](https://github.com/benletchford/systemless/issues/4444#issuecomment-6102259582),
 [whole-pipeline acceptance](https://github.com/benletchford/systemless/issues/4444#issuecomment-6102297326).
+
+## HeartQuest original-author intake and qualification
+
+[HeartQuest-fat-11.cpt.bin](https://ftp.lysator.liu.se/pub/mac/games/HeartQuest-fat-11.cpt.bin)
+is 213248 bytes, SHA-256 `54b2717013f19de20f10c7cc74a005f4f6b3417934f3c14d0e6101fbe4b87fc3`.
+Original 1.1 documentation explicitly grants freeware sharing, BBS uploads and
+CD-ROM compilation distribution. Preserve the complete unchanged package and
+notices; the 1997 version retains both authors' copyright. Production decoding
+and independent unar extraction match both forks of both original files. The
+original fat application contains CODE 0–4 and a pwpc cfrg/PEF slice.
+
+Native v0.93.0 at implementation `0f4ee1ae9fa59ab6d6be0c511aee0c5d920e4142`
+starts 68K gameplay, steers and collects a heart to score 10; six measured
+assertions pass at 929 frontend / 1504 guest ticks, zero exhausted frames.
+PPC normal-mode gameplay now also steers and collects to score 30; a fresh
+16-assertion replay passes at 1476 frontend / 1429 guest ticks, zero exhausted
+frames. The supporting OpenRFPerm #4449 and rounded erase #4450 fixes are merged.
+
+Ordinary v0.94.0 Chrome worker/WebGL 68K preview at
+`1451faa8e2beb7b79e12933603218ecdb7510d83` starts normal mode, moves down/left/up/right
+and collects a heart to score 10. Longer inputs establish vertical reversal;
+short inertia-heavy probes did not establish a runtime control defect. Actual
+PPC worker/WebGL preview at `4bc89d3c4407fbeb23878008bfd4c02ca71302e6` selects
+PowerPC through the ordinary visible selector, starts level 1, moves across the
+playfield and collects hearts/bonus; inspected captures advance score from 0
+to 100 and show the 50-point bonus. Both use 800-by-600/8-bit display and
+cross-origin isolation. Local-origin archive delivery uses only unchanged,
+independently integrity-checked hosted original bytes. No archive or guest state
+is patched. Owned browsers closed.
+
+Both routes are explicitly launch-approved after native and browser qualification.
+Assets were promoted through CI; hosted archive and screenshot hashes independently
+match. Full levels, saves, audio and actual public follow-through remain unverified.
+[Delivery tracking](https://github.com/benletchford/systemless/issues/4452).
+
+## Slime Invaders provisional original intake
+
+[slime-invaders-207.hqx](https://ftp.lysator.liu.se/pub/mac/games/slime-invaders-207.hqx)
+is 286997 bytes, SHA-256 `d963f0e72eec104cfb1066d4f1a225624dc28c8ad3f283296a2818b3f9f3c168`.
+Original docs grant unchanged distribution by nonprofit organizations and
+condition commercial distribution on sending the author a copy of the final
+product. Applicability of these conditions remains pending; this intake is
+unhosted and no new catalogue entry or launch approval is claimed. Production
+decoding matches independent unar extraction in both forks of both original
+files. The original application has five CODE resources and no cfrg/PEF, so this
+package is 68K-only. Bounded native v0.93.0 at implementation
+`0f4ee1ae9fa59ab6d6be0c511aee0c5d920e4142` starts an active level and ordinary
+mouse input moves the cannon while enemies advance; inspected captures and a
+fresh six-assertion replay pass at 929 frontend / 1504 guest ticks with zero
+exhausted frames. Shooting, completed waves, browser and public gameplay remain
+unverified. Original archive, forks and scenarios stay outside Git.
