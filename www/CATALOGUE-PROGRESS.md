@@ -63,8 +63,8 @@ Stages: **rights** = applicable affirmative archive redistribution terms; **arch
 | 43 | Aliens versus Predator | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 44 | Oni | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 45 | Rune | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 46 | Bugdom | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 47 | Nanosaur | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 46 | Bugdom | Original demo identified; full-package grant unverified | [Exact official DMG receipt](CATALOGUE-SOURCES.md#original-udif-loading-compatibility-fix) | Pending | Original DMG reaches trial and textured 3D title; gameplay unqualified | Pending | Pending | Pending |
+| 47 | Nanosaur | Original licence restricts distribution; permission pending | [Exact official DMG receipt](CATALOGUE-SOURCES.md#original-udif-loading-compatibility-fix) | Pending | Original DMG reaches trial/title, then black; gameplay unqualified | Pending | Pending | Pending |
 | 48 | Cro-Mag Rally | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 49 | Otto Matic | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 50 | Avara | [Conditional nonprofit grant](CATALOGUE-SOURCES.md#avara-expansion-intake); remaining terms pending | [1.0.1 receipt and payload](CATALOGUE-SOURCES.md#avara-expansion-intake) | [Mission/spawn unqualified](https://github.com/benletchford/systemless/issues/4355) | Embedded modules; route unqualified | Pending | Pending | Pending |
