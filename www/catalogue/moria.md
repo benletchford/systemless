@@ -9,7 +9,6 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Role-Playing
-launch_enabled: false
 compatibility:
   status: playable
   verified:
@@ -22,28 +21,26 @@ compatibility:
       through the checked Compact Pro loader. Default 800-by-600 display, 8-bit depth.
       Original File > New, Human/Male selection, statistics acceptance, Warrior selection
       and naming enter town; keypad 6, 8 and 4 move east, north and west. Inspected
-      captures show town movement, descent to 50 feet and west/north dungeon movement.
-      A fresh extended repeat passes 12 measured assertions at 4967 frontend ticks
-      with zero exhausted budgets. Browser, public route,
-      combat, sustained play, saves and audio remain unverified. No PPC slice exists
-      in this original package.
+      captures show town movement, descent to 50 feet and west/north dungeon movement. A
+      fresh extended repeat passes 12 measured assertions at 4967 frontend ticks with
+      zero exhausted budgets. Browser, public route, combat, sustained play, saves and
+      audio remain unverified. No PPC slice exists in this original package.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4441
-controls:
-  arrows_as_numpad: true
 runtime:
   executable_path: Moria 1.1.1.cpt/Moria
   screen_depth: 8
   show_menu_bar: true
+controls:
+  arrows_as_numpad: true
 artifacts:
 - id: archive
   role: archive
   format: sit
   source:
-    type: url
-    url: https://github.com/benletchford/systemless/releases/download/catalogue-intake-20261010/moria-111.cpt.sit
-    expected_sha256: f835a419625bcc16ef2c91576562d20af62b33d0bb6c7d728139e9b5c2284725
-    expected_size: 290684
+    type: sha256
+    sha256: f835a419625bcc16ef2c91576562d20af62b33d0bb6c7d728139e9b5c2284725
+    size_bytes: 290684
   provenance:
     redistribution: permitted
     original: true
@@ -52,9 +49,12 @@ artifacts:
     - https://www.vintageapplemac.com/files/games/Moria%201.1.1.cpt.sit
     - https://github.com/benletchford/systemless/issues/4429
     - https://github.com/benletchford/systemless/issues/4441
-    - https://github.com/benletchford/systemless/releases/tag/catalogue-intake-20261010
+    - >-
+      https://github.com/benletchford/systemless/releases/tag/catalogue-intake-20261010
     license: Historical Moria nonprofit distribution notice
-    rights_holder: Moria and UMoria contributors, including James E. Wilson, Robert A. Koeneke and Richard Knuckey
+    rights_holder: >-
+      Moria and UMoria contributors, including James E. Wilson, Robert A. Koeneke and
+      Richard Knuckey
     permission: >-
       The original application's embedded TEXT 129 notice explicitly permits copying
       and distribution for educational, research and nonprofit purposes when its
@@ -62,18 +62,19 @@ artifacts:
       permission for sales or for-profit distribution. All original notices are retained.
     notes: >-
       Complete unchanged six-file distribution with both original forks, including
-      the game, top-level Read Me and four Documentation files. The outer StuffIt
-      and inner Compact Pro are not repacked. Fresh original and intake downloads
-      match the pinned hash and size. Version resources identify Purple X Moria
-      1.1.1 / UMoria 5.5.2; all 12 CODE resources and no PPC cfrg identify this as 68K.
-      The 1994 year is supported by original application creation/modification dates.
-      This records the original historical grant, not an inferred modern GPL licence.
+      the game, top-level Read Me and four Documentation files. The outer StuffIt and
+      inner Compact Pro are not repacked. Fresh original and intake downloads match the
+      pinned hash and size. Version resources identify Purple X Moria 1.1.1 / UMoria
+      5.5.2; all 12 CODE resources and no PPC cfrg identify this as 68K. The 1994 year is
+      supported by original application creation/modification dates. This records the
+      original historical grant, not an inferred modern GPL licence.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/moria/gameplay.png
+    type: sha256
+    sha256: 9c16ec9cb8d71655727985752178ea129c41ba99faa51a55f2e9158490dc43c0
+    size_bytes: 33178
   provenance:
     redistribution: permitted
     content_only: true
@@ -88,7 +89,7 @@ references:
 - https://groups.google.com/g/comp.sys.mac.games/c/U9N7fMkI16w
 ---
 
-![Moria town gameplay](incoming/moria/gameplay.png)
+![Moria town gameplay](https://assets.systemless.org/catalogue/media/sha256/9c/9c16ec9cb8d71655727985752178ea129c41ba99faa51a55f2e9158490dc43c0.png)
 
 Play the complete original **Purple X Moria 1.1.1** Macintosh port, based on
 **UMoria 5.5.2**. Choose **New** from **File**. Pick a race, then **M** or **F**;
