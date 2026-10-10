@@ -8559,7 +8559,7 @@ mod desktop {
         fn classic_document_glyph_clicks_reach_guest_at_scene_scales(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::{test::TestWindowExt, AppContext, InputEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent};
             cx.update(gpui_kit::init);
-            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, Some(8)), (true, Some(16))] {
                 let mut session = MacintoshSession::new(true, depth);
                 session.runner_mut().set_prefer_powerpc_executables(powerpc);
                 let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -8842,7 +8842,7 @@ mod desktop {
             use gpui_kit::{test::TestWindowExt, AppContext, InputEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent};
             use super::super::activation::{ControlActivation, FileAction};
             cx.update(gpui_kit::init);
-            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, Some(8)), (true, Some(16))] {
                 let mut session = MacintoshSession::new(true, depth);
                 session.runner_mut().set_prefer_powerpc_executables(powerpc);
                 let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
@@ -8882,7 +8882,7 @@ mod desktop {
                         assert_eq!(i32::from(*guest) - i32::from(origin), *advance,
                             "displayed glyph advance must equal guest insertion advance");
                     }
-                for scale in [0.75, 1., 1.5] {
+                for scale in [0.75, 1., 1.5, 2.] {
                     // Restore the tail before opening each viewport; the previous
                     // drag intentionally left a different selection endpoint visible.
                     session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x7d, character: 0x1f });
@@ -8891,8 +8891,10 @@ mod desktop {
                     let (sender, receiver) = std::sync::mpsc::channel();
                     let (window, view) = cx.update(|cx| {
                         gpui_kit::open_window(gpui_kit::WindowOptions {
-                            window_bounds: Some(gpui_kit::WindowBounds::Windowed(gpui_kit::Bounds::centered(None,
-                                gpui_kit::size(gpui_kit::px(800. * scale), gpui_kit::px(600. * scale)), cx))),
+                            // Centered bounds clamp to the mock display, reducing 2x.
+                            window_bounds: Some(gpui_kit::WindowBounds::Windowed(gpui_kit::Bounds::new(
+                                gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)),
+                                gpui_kit::size(gpui_kit::px(800. * scale), gpui_kit::px(600. * scale))))),
                             ..Default::default()
                         }, cx, |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap()
                     });

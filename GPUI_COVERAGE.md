@@ -79,8 +79,9 @@ font substitution requires an explicit policy and qualification; it cannot
 silently change layout. Bitmap-only fonts require a separately stated fidelity
 policy. Existing binary-pixel comparisons do not qualify smooth rendering.
 
-The plain-document text component paints binary glyph spans through GPUI,
-using the same resolved guest FONT/NFNT/sfnt, explicit override, or bundled
+The plain-document text component uses smooth resolved outlines through GPUI
+where available, retaining binary glyph spans for unsupported sources. Both
+paths use the same resolved guest FONT/NFNT/sfnt, explicit override, or bundled
 fallback as QuickDraw. Its selection and caret share the glyph advances and
 guest fontAscent. This establishes consistency with Systemless guest drawing;
 it does not assert that bundled outlines reproduce original Apple bitmaps.
@@ -4245,3 +4246,19 @@ Standard File replacement message migration: the Replace existing filename promp
 Smooth typography candidate: the shared plain label, wrapped prompt and Standard File row canvases now request antialiased coverage from the already resolved outline source at scene/device resolution. They retain guest advances, baselines, wrapping and clipping; missing/scaled/bitmap sources and unsupported styles retain the binary path. This candidate is not visually or performance qualified. The pinned f565b695 capture matrix still checks the previous bitmap binary. Exact binary guest-pixel verifiers do not qualify these changed outline edges; smooth rendering requires separate visual and interaction evidence. The depth accessor regression passed all four display modes (13.29 s); replacement capture tooling remains unqualified.
 
 Smooth candidate validation: the example check passes and all 13 `text::tests` pass (8.17 s), including outline fractional coverage and unchanged guest advances for font 0/12, font 1/9 and font 3/12 at raster scales 1–4. These tests do not establish composed smooth glyph appearance, all styles, application-specific resource fonts, pointer parity or acceptable quad cost. Window titles, editable fields and retained whole-field/list paint still need smooth-path integration.
+
+Smooth window-title candidate now preserves the WDEF baseline and title clipping while using resolved outline coverage where available. Coverage spans of equal alpha share GPUI paths, addressing the previous small-quad risk without snapping back to a guest-pixel bitmap. The example check passes; title drag regression and visual/performance qualification remain pending. Plain and styled editable fields still require their own smooth selection/caret integration.
+
+Smooth plain editable text candidate: plain document lines and Save filenames now use the resolved outline painter while retaining guest selection, caret, baseline, wrapping and input geometry. Source pens must match the current guest insertion positions or the binary path remains active. The title-drag GPUI regression passes (0.18 s); the four-scale document click regression is running against this candidate. Composed active/inactive selection/caret appearance, other fields, styles and performance remain unqualified.
+
+Smooth editable-field candidate now also covers the New Folder name and recognized single-line dialog fields, preserving selection/caret paint order and existing scroll/input geometry. The example check passes. Their interaction and composed visual qualification remain pending; the plain document click test is still running. Bitmap-only sources and unsupported styled/list recipes retain the guest-compatible binary fallback.
+
+New Folder smooth interaction qualification now explicitly runs mono 68k, colour 68k, PPC8 and PPC16 at scales 0.75, 1, 1.5 and 2, with short and horizontally scrolled names, clicks, held drags and caret visibility changes. This expanded test is running; no passing result is yet established. The candidate retains the existing guest insertion-position checks.
+
+Expanded New Folder test correction: its initial run failed at the requested-scale assertion because centered mock-display bounds clamped the new 2x viewport. The test now uses explicit bounds, matching the document test, and has been restarted after that terminal failure. No guest selection failure was observed in that run; the corrected run remains pending. Styled whole-field paint still uses binary native run recipes with ordered selection inversion; migrating it requires preserving synthetic styles, CPU-specific paint advances and inverted selection colors.
+
+Plain document interaction matrix correction: source inspection found its existing PPC case used an implicit depth. The test now specifies PPC8 and PPC16 independently, alongside mono/colour 68k and all four scales. The currently running invocation predates this expansion and cannot establish the expanded matrix; rerun after it terminates.
+
+Smooth plain document click regression passed its original three-mode/four-scale invocation (331.96 s), using actual GPUI events and guest selection assertions. The expanded explicit PPC8/PPC16 invocation is now running; it is separate pending evidence. No composed smooth appearance or performance claim follows from this interaction pass.
+
+Smooth Mac Roman regression passes (0.18 s): font 0/12, font 1/9 and font 3/12, raster scales 1–4, now include accented and symbol bytes. Decoded Unicode and original guest bytes retain identical insertion positions and binary reference ink, while resolved masks contain fractional edge coverage. This checks character mapping and metrics, not composed appearance or arbitrary resource-font fidelity.
