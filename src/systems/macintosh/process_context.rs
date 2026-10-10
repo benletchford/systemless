@@ -621,6 +621,8 @@ pub(crate) struct ProcessStdioStreamRecord {
 pub struct ProcessResourceFileRecord {
     pub ref_num: i16,
     pub path: String,
+    /// Native resource access mode; None preserves legacy untracked opens.
+    pub writable: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -3835,6 +3835,7 @@ pub(super) fn ppc_fsp_open_res_file(
         return -1;
     };
     resource_files.push(PpcResourceFileRecord {
+        writable: None,
         ref_num,
         path: path.clone(),
     });
@@ -3929,6 +3930,114 @@ pub(super) fn ppc_open_res_file(
         true,
         "OpenResFile",
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_open_rf_perm(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &mut ProcessVfsFileRecords,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+    resource_files: &mut Vec<PpcResourceFileRecord>,
+    vfs_resources: &mut Vec<PpcVfsResourceRecord>,
+    next_file_ref_num: &mut i16,
+    current_resource_refnum: &mut i16,
+    last_resource_error: &mut i16,
+    default_dir_id: u32,
+    application_working_directory_ref_num: i16,
+    working_directories: &HashMap<i16, ProcessWorkingDirectory>,
+    vfs_volumes: &[PpcVfsVolumeRecord],
+) -> i16 {
+    // Inside Macintosh: More Macintosh Toolbox (1993), pp. 1-64--1-66.
+    // The CFM arguments are name, volume/working-directory refnum, permission.
+    // A first open becomes current; reopening preserves the current file.
+    let permission = cpu.gpr[5] as u8;
+    if permission > 4 {
+        *last_resource_error = PPC_PARAM_ERR;
+        return -1;
+    }
+    let Some(directory) = dispatch_files::ppc_working_directory_info(
+        cpu.gpr[4] as u16 as i16,
+        application_working_directory_ref_num,
+        default_dir_id,
+        working_directories,
+        vfs_volumes,
+    ) else {
+        *last_resource_error = PPC_NSV_ERR;
+        return -1;
+    };
+    let Some(name_bytes) = ppc_read_pstring_bytes(memory, cpu.gpr[3]) else {
+        *last_resource_error = PPC_PARAM_ERR;
+        return -1;
+    };
+    let name = ppc_normalize_vfs_path(&decode_mac_roman(&name_bytes));
+    if name.is_empty() {
+        *last_resource_error = PPC_PARAM_ERR;
+        return -1;
+    }
+    let Some(parent) = ppc_directory_path_for_id(vfs_directories, directory.dir_id) else {
+        *last_resource_error = PPC_DIR_NF_ERR;
+        return -1;
+    };
+    let requested = ppc_join_vfs_path(parent, &name);
+    let path = ppc_vfs_file_or_resource_path(vfs_files, vfs_resource_files, &requested)
+        .unwrap_or(requested);
+    let already_open = resource_files
+        .iter()
+        .any(|file| file.path.eq_ignore_ascii_case(&path));
+    if !already_open {
+        let Some(index) = ppc_vfs_resource_file_index(vfs_resource_files, &path) else {
+            *last_resource_error = if vfs_files
+                .iter()
+                .any(|file| file.path.eq_ignore_ascii_case(&path))
+            {
+                PPC_RES_F_NOT_FOUND_ERR
+            } else {
+                PPC_FNF_ERR
+            };
+            return -1;
+        };
+        if vfs_resource_files[index]
+            .raw_data
+            .as_ref()
+            .is_some_and(|bytes| ResourceFork::parse(bytes).is_none())
+        {
+            *last_resource_error = PPC_MAP_READ_ERR;
+            return -1;
+        }
+    }
+    let volume_read_only = vfs_volumes
+        .iter()
+        .find(|volume| volume.ref_num == directory.volume_ref_num)
+        .is_some_and(|volume| volume.attributes & 0x8080 != 0);
+    let wants_write = permission != 1;
+    if !already_open && volume_read_only && matches!(permission, 2..=4) {
+        *last_resource_error = -44; // wPrErr: a locked volume cannot grant writing.
+        return -1;
+    }
+    let reference = ppc_open_resource_path(
+        memory,
+        vfs_files,
+        vfs_resource_files,
+        resource_files,
+        vfs_resources,
+        next_file_ref_num,
+        current_resource_refnum,
+        last_resource_error,
+        path,
+        false,
+        "OpenRFPerm",
+    );
+    if reference != -1 && !already_open {
+        if let Some(file) = resource_files
+            .iter_mut()
+            .find(|file| file.ref_num == reference)
+        {
+            file.writable = Some(wants_write && !volume_read_only);
+        }
+    }
+    reference
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4069,6 +4178,7 @@ pub(super) fn ppc_open_resource_path(
         return -1;
     };
     resource_files.push(PpcResourceFileRecord {
+        writable: None,
         ref_num,
         path: path.clone(),
     });
@@ -4104,16 +4214,23 @@ pub(super) fn ppc_close_res_file(
     last_resource_error: &mut i16,
 ) {
     let ref_num = cpu.gpr[3] as u16 as i16;
-    ppc_update_res_file(
-        cpu,
-        memory,
-        handles,
-        resource_files,
-        vfs_resource_files,
-        vfs_resources,
-        *current_resource_refnum,
-        last_resource_error,
-    );
+    let read_only = resource_files
+        .iter()
+        .any(|file| file.ref_num == ref_num && file.writable == Some(false));
+    if read_only {
+        *last_resource_error = PPC_NO_ERR;
+    } else {
+        ppc_update_res_file(
+            cpu,
+            memory,
+            handles,
+            resource_files,
+            vfs_resource_files,
+            vfs_resources,
+            *current_resource_refnum,
+            last_resource_error,
+        );
+    }
     if *last_resource_error != PPC_NO_ERR {
         return;
     }
