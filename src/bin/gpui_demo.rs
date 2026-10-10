@@ -390,6 +390,8 @@ mod desktop {
     }
 
     enum Command {
+        CommitText(super::input::TextInputOwner, Vec<u8>),
+        CommittedInput(MacintoshInput, MacintoshInput),
         ImportClipboard(Vec<u8>),
         Foreground(bool, u64),
         Menu(i16, i16, u32, u64),
@@ -578,6 +580,23 @@ mod desktop {
                             if !pointer_down {
                                 activation = super::activation::ControlActivation::begin_file(&mut session, id, generation, action);
                             }
+                        }
+                        Ok(Command::CommitText(owner, bytes)) => {
+                            if !pointer_down {
+                                if let Some(inputs) = super::input::guest_commit_inputs(&mut session, &owner, &bytes) {
+                                    for pair in inputs.chunks_exact(2).rev() {
+                                        queued.push_front(Command::CommittedInput(pair[0], pair[1]));
+                                    }
+                                }
+                            }
+                        }
+                        Ok(Command::CommittedInput(down, up)) => {
+                            // A text service commits characters, not physical held
+                            // keys. Release before execution to avoid autoKey, and
+                            // give the guest a worker cycle between characters.
+                            session.deliver_input(down);
+                            session.deliver_input(up);
+                            break;
                         }
                         Ok(Command::ImportClipboard(text)) => {
                             clipboard.imported(&text);
@@ -8643,6 +8662,66 @@ mod desktop {
             assert!(
                 !receiver.try_iter().any(|command| matches!(command, super::Command::Menu(..)))
             );
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[test]
+        fn composed_text_commit_uses_guest_editing_and_rejects_stale_owners() {
+            for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 11));
+                wait_for_menu(&mut session, 129, 11, true);
+                settle(&mut session);
+                assert_eq!(session.runner().is_powerpc_app(), powerpc);
+                assert_eq!(session.runner().presented_screen_depth(), Some(u32::from(depth)));
+                let initial = session.runner_mut().text_edit_snapshot().records.into_iter().find(|record| record.styled).unwrap();
+                let rect = initial.global_view_rect.unwrap();
+                session.deliver_input(MacintoshInput::MouseDown { vertical: rect.0 + 4, horizontal: rect.1 + 4 });
+                settle(&mut session);
+                session.deliver_input(MacintoshInput::MouseUp { vertical: rect.0 + 4, horizontal: rect.1 + 4 });
+                settle(&mut session);
+                let before = session.runner_mut().text_edit_snapshot().records.into_iter().find(|record| record.styled).unwrap();
+                let owner = super::super::input::TextInputOwner { identity: (before.guest_id, before.generation),
+                    port: before.owner_port, text: before.text.clone(), selection: before.selection.0..before.selection.1 };
+                for invalid in 0..4 {
+                    let mut stale = owner.clone();
+                    match invalid { 0 => stale.identity.1 += 1, 1 => stale.port += 1,
+                        2 => stale.text.push(b'x'), _ => stale.selection = 0..usize::MAX }
+                    assert!(super::super::input::guest_commit_inputs(&mut session, &stale, b"x").is_none());
+                }
+                assert!(super::super::input::guest_commit_inputs(&mut session, &owner, &[27]).is_none());
+                let mut composition = super::super::input::GuestComposition::default();
+                composition.synchronize(Some(owner.clone()));
+                assert!(composition.mark("éZ", 2..2));
+                let (pinned, bytes) = composition.commit("éZ").unwrap();
+                let inputs = super::super::input::guest_commit_inputs(&mut session, &pinned, &bytes).expect("live document commit");
+                for pair in inputs.chunks_exact(2) {
+                    session.deliver_input(pair[0]);
+                    session.deliver_input(pair[1]);
+                    settle(&mut session);
+                }
+                let after = session.runner_mut().text_edit_snapshot().records.into_iter()
+                    .find(|record| (record.guest_id, record.generation) == owner.identity).unwrap();
+                let mut expected = before.text.clone();
+                expected.splice(owner.selection.clone(), bytes.iter().copied());
+                assert_eq!(after.text, expected);
+                assert_eq!(after.selection, (owner.selection.start + 2, owner.selection.start + 2));
+                assert_eq!(after.owner_port, before.owner_port);
+                assert_eq!(after.global_view_rect, before.global_view_rect);
+                let mut expected_styles = before.style_runs.clone().unwrap();
+                assert_eq!(before.selection, (1, 1), "fixture click is an insertion inside the first style run");
+                for run in &mut expected_styles { if run.start > 1 { run.start += 2; } }
+                assert_eq!(after.style_runs.as_ref().unwrap(), &expected_styles);
+                assert!(after.styled);
+                assert!(super::super::input::guest_commit_inputs(&mut session, &owner, b"x").is_none());
+                eprintln!("PASS composed-text-commit powerpc={powerpc} depth={depth}");
+            }
         }
 
         #[cfg(feature = "gpui-demo-test")]
