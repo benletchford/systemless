@@ -43,6 +43,7 @@ def verify(directory,partial=False):
   selection=[0,31] if multiline else [0,26] if case['kind']=='selection' else [case['insertion_offset'] or 0]*2
   assert evidence['selection']==selection
   if case['kind']=='caret':
+   assert type(evidence['insertion_offset']) is int and type(evidence['caret_visible']) is bool
    assert evidence['caret_state']==case['state'] and evidence['insertion_offset']==case['insertion_offset']
    if case['state']!='suspended':assert evidence['caret_visible']==(case['state']!='blink-off')
   assert evidence['smooth_raster_support_1_through_8']==case['smooth_raster_support_1_through_8']==[True]*8
