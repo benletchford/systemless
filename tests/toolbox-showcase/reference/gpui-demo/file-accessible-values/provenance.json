@@ -1,0 +1,8 @@
+{
+  "sources": {
+    "src/bin/gpui_demo.rs": "ce97f236b32e6672cf1e4a5f00406ba25200bef7ef1467d7596714ce1ce26661",
+    "src/bin/gpui_demo_input.rs": "b22e52a38b91c8264e8dfb6d32c065ef19366f6827ba6b08aa2e5ee196440d07"
+  },
+  "scope": "Save and New Folder guarded SetValue conversion/backend across mono68k, colour68k, PPC8, PPC16; not native AccessKit request delivery",
+  "worker_result": "1 passed; 8 accessible value cases; 69.22s"
+}

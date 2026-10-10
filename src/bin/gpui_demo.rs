@@ -2841,6 +2841,20 @@ mod desktop {
                                 panel.name_text_layout.as_ref().unwrap(), scene_scale,
                                 cx.theme().foreground, cx.theme().selection,
                             ));
+                        let name_field = name_field.when(focused && panel.new_folder.is_none(), |field| {
+                            let Some(owner) = super::input::standard_file_text_owner(panel) else { return field; };
+                            let owner = super::input::TextInputOwner { identity: owner.identity,
+                                target: super::input::TextInputTarget::StandardFile { new_folder: false },
+                                text: owner.text, selection: owner.selection };
+                            let sender = self.commands.clone();
+                            field.on_a11y_action(gpui_kit::accesskit::Action::SetValue, move |data, _, _| {
+                                if let Some(gpui_kit::accesskit::ActionData::Value(value)) = data {
+                                    if let Some((expected, range, bytes)) = super::input::accessibility_text_replacement(owner.clone(), value, false) {
+                                        let _ = sender.send(Command::ReplaceText(expected, range, bytes, None));
+                                    }
+                                }
+                            })
+                        });
                         overlay = overlay.child(super::a11y::AccessibleState::new(name_field, false)
                             .text_value(name.to_owned(), false));
                         for (label, rect) in [
@@ -2906,6 +2920,20 @@ mod desktop {
                             .border_1().border_color(cx.theme().accent).bg(cx.theme().background)
                             .child(super::text::single_line(folder, (panel.guest_id, panel.generation),
                                 self.text_pointer_map.clone(), self.host_active != Some(false), scene_scale, cx.theme().foreground, cx.theme().selection));
+                        let name = name.when(self.host_active != Some(false), |field| {
+                            let Some(owner) = super::input::standard_file_text_owner(panel) else { return field; };
+                            let owner = super::input::TextInputOwner { identity: owner.identity,
+                                target: super::input::TextInputTarget::StandardFile { new_folder: true },
+                                text: owner.text, selection: owner.selection };
+                            let sender = self.commands.clone();
+                            field.on_a11y_action(gpui_kit::accesskit::Action::SetValue, move |data, _, _| {
+                                if let Some(gpui_kit::accesskit::ActionData::Value(value)) = data {
+                                    if let Some((expected, range, bytes)) = super::input::accessibility_text_replacement(owner.clone(), value, false) {
+                                        let _ = sender.send(Command::ReplaceText(expected, range, bytes, None));
+                                    }
+                                }
+                            })
+                        });
                         overlay = overlay.child(super::a11y::AccessibleState::new(name, false)
                             .text_value(folder.name.clone(), false));
                     }
@@ -10721,6 +10749,27 @@ mod desktop {
                 let actual = marked;
                 eprintln!("PASS worker-file-initial-mark powerpc={powerpc} depth={actual_depth} new_folder=false");
 
+                let current = super::super::input::standard_file_text_owner(&actual).unwrap();
+                let owner = super::super::input::TextInputOwner { identity: current.identity,
+                    target: super::super::input::TextInputTarget::StandardFile { new_folder: false },
+                    text: current.text, selection: current.selection };
+                assert!(super::super::input::accessibility_text_replacement(owner.clone(), "日", false).is_none());
+                let (owner, range, bytes) = super::super::input::accessibility_text_replacement(owner, "Café Accessible Save", false).unwrap();
+                let accessible_name = systemless::systems::macintosh::mac_roman::decode_mac_roman(&bytes);
+                let accessible_len = bytes.len();
+                expected = bytes.clone();
+                worker.0.send(Command::ReplaceText(owner.clone(), range.clone(), bytes.clone(), None)).unwrap();
+                let accessible = wait("Save accessible value replacement", &updates, |update| update.standard_file.as_ref().is_some_and(|panel|
+                    panel.name.as_deref() == Some(accessible_name.as_str()) && panel.name_selection == Some((accessible_len, accessible_len)))).standard_file.unwrap();
+                assert_eq!(accessible.entries, actual.entries); assert_eq!(accessible.directory_id, actual.directory_id);
+                worker.0.send(Command::ReplaceText(owner.clone(), range, bytes, None)).unwrap();
+                let rejected = wait("stale Save accessible value", &updates, |update| update.text_commit_rejection.as_ref()
+                    .is_some_and(|(_, rejected)| rejected == &owner));
+                assert_eq!(rejected.standard_file.unwrap(), accessible);
+                let actual = accessible;
+                eprintln!("PASS worker-accessible-file-value powerpc={powerpc} depth={actual_depth} new_folder=false");
+
+
 
                 eprintln!("PASS worker-standard-file-rapid-composition-and-rejection powerpc={powerpc} depth={actual_depth}");
                 worker.0.send(Command::ActivateFile(actual.guest_id, actual.generation,
@@ -10803,6 +10852,27 @@ mod desktop {
                 assert_eq!(marked.name, actual.name); assert_eq!(marked.entries, actual.entries);
                 let edited = marked;
                 eprintln!("PASS worker-file-initial-mark powerpc={powerpc} depth={actual_depth} new_folder=true");
+
+                let current = super::super::input::standard_file_text_owner(&edited).unwrap();
+                let owner = super::super::input::TextInputOwner { identity: current.identity,
+                    target: super::super::input::TextInputTarget::StandardFile { new_folder: true },
+                    text: current.text, selection: current.selection };
+                assert!(super::super::input::accessibility_text_replacement(owner.clone(), "日", false).is_none());
+                let (owner, range, bytes) = super::super::input::accessibility_text_replacement(owner, "Café Accessible Folder", false).unwrap();
+                let accessible_name = systemless::systems::macintosh::mac_roman::decode_mac_roman(&bytes);
+                let accessible_len = bytes.len();
+                worker.0.send(Command::ReplaceText(owner.clone(), range.clone(), bytes.clone(), None)).unwrap();
+                let accessible = wait("New Folder accessible value replacement", &updates, |update| update.standard_file.as_ref().is_some_and(|panel|
+                    panel.new_folder.as_ref().is_some_and(|folder| folder.name == accessible_name && folder.selection == (accessible_len, accessible_len)))).standard_file.unwrap();
+                assert_eq!(accessible.entries, edited.entries); assert_eq!(accessible.directory_id, edited.directory_id);
+                assert_eq!(accessible.name, actual.name);
+                worker.0.send(Command::ReplaceText(owner.clone(), range, bytes, None)).unwrap();
+                let rejected = wait("stale New Folder accessible value", &updates, |update| update.text_commit_rejection.as_ref()
+                    .is_some_and(|(_, rejected)| rejected == &owner));
+                assert_eq!(rejected.standard_file.unwrap(), accessible);
+                let edited = accessible;
+                eprintln!("PASS worker-accessible-file-value powerpc={powerpc} depth={actual_depth} new_folder=true");
+
 
 
                 worker.0.send(Command::ActivateFile(edited.guest_id, edited.generation,

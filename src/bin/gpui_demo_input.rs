@@ -506,6 +506,19 @@ impl GuestComposition {
     }
 }
 
+/// Validate an accessibility value replacement before issuing a guarded guest
+/// request. Never translate unsupported Unicode into replacement glyphs.
+pub(crate) fn accessibility_text_replacement(owner: TextInputOwner, value: &str, multiline: bool)
+    -> Option<(TextInputOwner, std::ops::Range<usize>, Vec<u8>)> {
+    if value.encode_utf16().count() > i16::MAX as usize
+        || !multiline && value.chars().any(char::is_control) { return None; }
+    let range = 0..owner.text.len();
+    let mut stage = GuestComposition::default(); stage.synchronize(Some(owner));
+    let (expected, _, bytes) = stage.commit_range(range.clone(), value)?;
+    if bytes.len() > i16::MAX as usize { return None; }
+    Some((expected, range, bytes))
+}
+
 #[cfg(test)]
 mod composition_tests {
     use super::{GuestComposition, TextInputOwner, TextInputTarget};
@@ -578,6 +591,18 @@ mod composition_tests {
         assert!(!state.mark_range(Some(&(1..4)), "😀", 1..1));
         assert_eq!(state.owner(), Some(&original));
         assert_eq!(state.preedit.as_ref().unwrap().text, "😀Z");
+    }
+
+    #[test]
+    fn accessibility_replacement_keeps_original_owner_and_rejects_lossy_values() {
+        let original = owner();
+        let (expected, range, bytes) = super::accessibility_text_replacement(original.clone(), "Café", false).unwrap();
+        assert_eq!(expected, original); assert_eq!(range, 0..3); assert_eq!(bytes, b"Caf\x8e");
+        for value in ["日", "one\ntwo", "one\ttwo", "\0"] {
+            assert!(super::accessibility_text_replacement(original.clone(), value, false).is_none());
+        }
+        let (_, _, bytes) = super::accessibility_text_replacement(original, "one\r\ntwo", true).unwrap();
+        assert_eq!(bytes, b"one\rtwo");
     }
 
     fn owner() -> TextInputOwner {
