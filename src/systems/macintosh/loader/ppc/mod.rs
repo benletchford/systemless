@@ -76,9 +76,6 @@ use crate::process_context::{
 use crate::process_manager::{
     resolve_process_application_metadata, ProcessSerialNumber, SingleProcessEnumeration,
 };
-use crate::quickdraw::fonts::style::{
-    get_italic_end_extend, get_italic_slant, get_italic_underline_extend_left,
-};
 use crate::quickdraw::fonts::{
     font_id_for_name, font_name_for_id, get_font_face, get_font_face_scale_ratio,
     get_font_face_scaled, FONT_APPLICATION,
@@ -349,3 +346,5 @@ pub type PpcHandleStateRecord = ProcessHandleStateRecord;
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+pub(crate) use dispatch_control::{ppc_popup_indicator, ppc_popup_text_ink};

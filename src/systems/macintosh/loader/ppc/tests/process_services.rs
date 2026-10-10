@@ -1,6 +1,36 @@
 use super::*;
 
 #[test]
+fn attached_cpu_adapters_share_pending_process_activation() {
+    use crate::process_manager::activation::ActivationNotification;
+
+    let mut native = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+    let (mut classic, _, _) = setup_with_port();
+    let mut context = ProcessContext::default();
+    classic.attach_unconverted_process_services(&mut context);
+    native.attach_unconverted_process_services(&mut context);
+    let policy = Some(ApplicationSizeResource {
+        flags: 0x4800,
+        preferred_size: 0,
+        minimum_size: 0,
+    });
+    classic.event_queue.with_mut(|queue| {
+        queue.activation.request(false);
+        queue.activation.begin_event_call(policy, true, true);
+    });
+    let suspend = ActivationNotification::OperatingSystem {
+        resume: false,
+        convert_clipboard: false,
+    };
+    assert_eq!(native.event_queue.with_mut(|queue| queue.activation.consume()), Some(suspend));
+    assert_eq!(classic.event_queue.with_ref(|queue| queue.activation.peek()), None);
+    native.event_queue.with_mut(|queue| queue.activation.begin_event_call(policy, true, true));
+    assert!(!classic.event_queue.with_ref(|queue| queue.activation.is_foreground()));
+    context.reset_application_size(None);
+    assert!(native.event_queue.with_ref(|queue| queue.activation.is_foreground()));
+}
+
+#[test]
 fn ppc_script_manager_caches_kchr_for_keytranslate() {
     let pef = synthetic_pef_with_import(b"GetScriptManagerVariable");
     let mut loaded = load_pef_application(&pef).unwrap();

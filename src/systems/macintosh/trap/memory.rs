@@ -1199,6 +1199,7 @@ impl super::TrapDispatcher {
                 self.forget_resource_residency_for_handle(handle);
                 self.forget_resource_handle_index_for_handle(handle);
                 self.with_resource_manager_mut(|resource_manager| {
+                    resource_manager.forget_menu_generation(handle);
                     resource_manager.detached_handles.remove(&handle);
                     resource_manager.loaded_handles.remove(&handle);
                     resource_manager.resource_handle_files.remove(&handle);

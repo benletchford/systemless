@@ -185,6 +185,25 @@ fn standard_alert_preserves_optional_button_ids_for_keyboard_and_mouse() {
             where_h: point.1,
             modifiers: 0,
         }]);
+        if key == 0 {
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: true, mouse_v: point.0, mouse_h: point.1,
+                ..PpcInputSnapshot::default()
+            });
+            loaded.run_with_hle_imports(128);
+            assert!(ppc_window_is_visible(&mut loaded.memory, dialog));
+            assert_eq!(loaded.memory.read_u16_be(base), Some(0));
+            let handles = loaded.handles();
+            let items = ppc_dialog_items_for_dialog(&mut loaded.memory, &handles, dialog).unwrap();
+            let control = ppc_control_ptr(&mut loaded.memory, items[2].handle).unwrap();
+            assert_eq!(loaded.memory.read_u8(control + PPC_CONTROL_HILITE_OFFSET), Some(10));
+            loaded.event_queue.push_back(PpcQueuedEvent {
+                what: 2, message: 0, when: 1,
+                where_v: point.0, where_h: point.1, modifiers: 0,
+            });
+            // The release event, not a later pointer move, determines the hit.
+            loaded.set_input_snapshot(PpcInputSnapshot::default());
+        }
         loaded.run_with_hle_imports(128);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
         assert_eq!(loaded.memory.read_u16_be(base), Some(expected));
@@ -669,7 +688,7 @@ fn modal_dialog_offers_each_event_to_its_filter_before_hit_testing() {
     let caller_sp = loaded.cpu.gpr[1];
     // A click in the OK button (dialog global origin 60, 80).
     let click = modal_filter_mouse_down(60 + 20, 80 + 50);
-    loaded.set_event_queue([click]);
+    loaded.set_event_queue([click, PpcQueuedEvent { what: 2, ..click }]);
 
     let probe = loaded.run_with_hle_imports(512);
 
@@ -693,6 +712,56 @@ fn modal_dialog_offers_each_event_to_its_filter_before_hit_testing() {
     assert_eq!(loaded.cpu.gpr[1], caller_sp);
     assert_eq!(loaded.cpu.gpr[3..5], [filter, item_hit_ptr]);
     assert!(loaded.dialog_callback_stack.is_empty());
+}
+
+#[test]
+fn modal_dialog_filters_a_held_button_press_only_once() {
+    // Toolbox Essentials (1992), pp. 5-33--5-36, 6-79--6-80:
+    // ModalDialog delegates the accepted mouse-down to control tracking.
+    for release_inside in [true, false] {
+        let filter = PPC_CODE_BASE + 0x1000;
+        let record = PPC_DATA_BASE + 0x1800;
+        let (mut loaded, dialog, item_hit_ptr) = modal_dialog_with_filter(filter);
+        install_recording_modal_filter(&mut loaded, filter, record, MODAL_FILTER_FALSE, None);
+        let click = modal_filter_mouse_down(80, 130);
+        loaded.set_event_queue([click]);
+        let handles = loaded.handles();
+        let items = ppc_dialog_items_for_dialog(&mut loaded.memory, &handles, dialog).unwrap();
+        let control = ppc_control_ptr(&mut loaded.memory, items[0].handle).unwrap();
+        for (v, h, expected_highlight) in [(80, 130, 10), (0, 0, 0), (80, 130, 10)] {
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: true, mouse_v: v, mouse_h: h,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(512);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+            assert_eq!(recorded_modal_filter_call(&mut loaded, record).count, 1);
+            assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(0));
+            assert_eq!(loaded.memory.read_u8(control + PPC_CONTROL_HILITE_OFFSET), Some(expected_highlight));
+        }
+        let (v, h) = if release_inside { (80, 130) } else { (0, 0) };
+        loaded.event_queue.push_back(PpcQueuedEvent {
+            what: 2, where_v: v, where_h: h, ..click
+        });
+        loaded.set_input_snapshot(PpcInputSnapshot::default());
+        let probe = loaded.run_with_hle_imports(512);
+        if release_inside {
+            assert!(matches!(probe.result, PpcRunResult::Halted { pc: PPC_HALT_PC, .. }));
+        } else {
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        }
+        assert_eq!(recorded_modal_filter_call(&mut loaded, record).count, 1);
+        assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(u16::from(release_inside)));
+        assert_eq!(loaded.memory.read_u8(control + PPC_CONTROL_HILITE_OFFSET), Some(0));
+        assert!(loaded.dialog_callback_stack.is_empty());
+        assert!(loaded.event_queue.is_empty());
+        if !release_inside {
+            loaded.run_with_hle_imports(512);
+            let call = recorded_modal_filter_call(&mut loaded, record);
+            assert_eq!(call.count, 2);
+            assert_eq!(call.event.what, 0);
+        }
+    }
 }
 
 #[test]
@@ -1234,11 +1303,13 @@ fn get_new_dialog_installs_owned_control_records_in_the_live_ditl() {
         ppc_read_pstring_bytes(&mut loaded.memory, control + PPC_CONTROL_TITLE_OFFSET),
         Some(b"OK".to_vec())
     );
+    assert_ne!(loaded.controls.records()[0].generation, 0);
     assert_eq!(
         loaded.controls.records(),
         vec![PpcControlRecord {
             handle: control_handle,
             pointer: control,
+            generation: loaded.controls.records()[0].generation,
             proc_id: 0,
             popup_menu_id: 0,
             popup_title_width: None,
@@ -1774,6 +1845,124 @@ fn hle_import_runner_handles_dialog_text_and_modal_defaults() {
 }
 
 #[test]
+fn dialog_select_switches_borrowed_text_and_layout_between_edit_fields() {
+    let pef = synthetic_pef_with_import(b"GetNewDialog");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut dlog = vec![0; 22];
+    dlog[4..6].copy_from_slice(&100i16.to_be_bytes());
+    dlog[6..8].copy_from_slice(&260i16.to_be_bytes());
+    dlog[10] = 1;
+    dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+    let mut ditl = vec![0; 42];
+    ditl[0..2].copy_from_slice(&1u16.to_be_bytes());
+    ditl[6..8].copy_from_slice(&12i16.to_be_bytes());
+    ditl[8..10].copy_from_slice(&20i16.to_be_bytes());
+    ditl[10..12].copy_from_slice(&32i16.to_be_bytes());
+    ditl[12..14].copy_from_slice(&220i16.to_be_bytes());
+    ditl[14] = PPC_DIALOG_ITEM_EDIT_TEXT;
+    ditl[15] = 5;
+    ditl[16..21].copy_from_slice(b"Pilot");
+    ditl[26..28].copy_from_slice(&40i16.to_be_bytes());
+    ditl[28..30].copy_from_slice(&20i16.to_be_bytes());
+    ditl[30..32].copy_from_slice(&60i16.to_be_bytes());
+    ditl[32..34].copy_from_slice(&220i16.to_be_bytes());
+    ditl[34] = PPC_DIALOG_ITEM_EDIT_TEXT;
+    ditl[35] = 5;
+    ditl[36..41].copy_from_slice(b"Alias");
+    for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
+        let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: 128,
+                name: Vec::new(),
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    loaded.cpu.gpr[3] = 128;
+    let probe = loaded.run_with_hle_imports(128);
+    assert_eq!(probe.unsupported_import_index, None);
+    let dialog = loaded.cpu.gpr[3];
+    let items_handle = loaded
+        .memory
+        .read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET)
+        .unwrap();
+    let items_ptr = loaded.memory.read_u32_be(items_handle).unwrap();
+    let item_text_handle = loaded.memory.read_u32_be(items_ptr + 2).unwrap();
+    let second_item_text_handle = loaded.memory.read_u32_be(items_ptr + 22).unwrap();
+    let te_handle = loaded
+        .memory
+        .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
+        .unwrap();
+    let te_ptr = loaded.memory.read_u32_be(te_handle).unwrap();
+    assert_ne!(te_handle, 0);
+    assert!(loaded
+        .event_queue()
+        .iter()
+        .any(|event| event.what == 6 && event.message == dialog));
+    assert_eq!(
+        loaded.memory.read_u32_be(te_ptr + PPC_TE_HTEXT_OFFSET),
+        Some(item_text_handle)
+    );
+    assert_eq!(
+        ppc_te_text_bytes(&mut loaded.memory, &test_handle_records!(loaded), te_handle),
+        Some(b"Pilot".to_vec())
+    );
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(dialog + PPC_DIALOG_EDIT_FIELD_OFFSET),
+        Some(0)
+    );
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(dialog + PPC_DIALOG_EDIT_OPEN_OFFSET),
+        Some(1)
+    );
+    assert_eq!(
+        loaded.memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET),
+        Some(0)
+    );
+    assert_eq!(
+        loaded.memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET),
+        Some(0)
+    );
+
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 32]);
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::DialogSelect);
+    for (field, y, text_handle, text, rect) in [
+        (1, 50, second_item_text_handle, b"Alias".as_slice(), (40, 20, 60, 220)),
+        (0, 20, item_text_handle, b"Pilot".as_slice(), (12, 20, 32, 220)),
+        (1, 50, second_item_text_handle, b"Alias".as_slice(), (40, 20, 60, 220)),
+    ] {
+        ppc_write_event_record(&mut loaded.memory, scratch, 1, 0, 10, y, 30, 0);
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = scratch;
+        loaded.cpu.gpr[4] = scratch + 16;
+        loaded.cpu.gpr[5] = scratch + 20;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u16_be(dialog + PPC_DIALOG_EDIT_FIELD_OFFSET), Some(field));
+        let handle = loaded.memory.read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET).unwrap();
+        let ptr = loaded.memory.read_u32_be(handle).unwrap();
+        assert_eq!(loaded.memory.read_u32_be(ptr + PPC_TE_HTEXT_OFFSET), Some(text_handle));
+        assert_eq!(ppc_te_text_bytes(&mut loaded.memory, &test_handle_records!(loaded), handle), Some(text.to_vec()));
+        assert_eq!(ppc_read_rect(&mut loaded.memory, ptr), Some(rect));
+        assert_eq!(ppc_read_rect(&mut loaded.memory, ptr + 8), Some(rect));
+    }
+}
+
+#[test]
 fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
     let pef = synthetic_pef_with_import(b"GetNewDialog");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -1862,7 +2051,7 @@ fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
     );
     assert_eq!(
         loaded.memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET),
-        Some(5)
+        Some(0)
     );
 
     let item_hit_ptr = PPC_DATA_BASE + 0x1000;
@@ -1875,6 +2064,20 @@ fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
     loaded
         .current_gworld
         .with_mut(|current_gworld| *current_gworld = dialog);
+    loaded.set_event_queue([PpcQueuedEvent {
+        what: 3,
+        message: (2 << 8) | u32::from(b'X'),
+        when: 0,
+        where_v: 20,
+        where_h: 30,
+        modifiers: 0,
+    }]);
+    let probe = loaded.run_with_hle_imports(64);
+    assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+    assert_eq!(
+        ppc_te_text_bytes(&mut loaded.memory, &test_handle_records!(loaded), te_handle),
+        Some(b"XPilot".to_vec())
+    );
     loaded.set_event_queue([PpcQueuedEvent {
         what: 1,
         message: 0,
@@ -1923,6 +2126,40 @@ fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
             second_te_handle
         ),
         Some(b"ADlias".to_vec())
+    );
+    // Redrawing the edited second field must leave guest drawing over the
+    // first item intact. A whole-dialog repaint would overwrite this mark.
+    let surface = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+    let marker = ppc_quickdraw_surface_color_pixel(
+        &mut loaded.memory,
+        surface,
+        PpcRgbColor {
+            red: 0xffff,
+            green: 0,
+            blue: 0xffff,
+        },
+    )
+    .unwrap();
+    assert!(ppc_quickdraw_write_raw_pixel(
+        &mut loaded.memory,
+        surface.front_buffer,
+        (40, 20),
+        marker,
+    ));
+    assert!(ppc_draw_dialog_selected(
+        &mut loaded.memory,
+        &test_handle_records!(loaded),
+        &loaded.controls.records(),
+        &loaded.gworlds,
+        &loaded.screen_clut,
+        &loaded.process_file_system.vfs_resources,
+        *loaded.process_file_system.current_resource_file,
+        dialog,
+        Some(2),
+    ));
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (40, 20)),
+        Some(marker),
     );
     assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(0));
 
@@ -4858,6 +5095,51 @@ fn dialog_item_and_text_access_commands_dispatch_with_canonical_evaluation() {
         ppc_read_rect(&mut loaded.memory, rect_out),
         Some((15, 25, 35, 85))
     );
+
+    // SetDialogItem installs even an unregistered handle, but frontend actions
+    // must not acquire a control lifetime from that raw DITL value.
+    // Macintosh Toolbox Essentials (1992), pp. 6-122--6-123.
+    let snapshot = loaded.dialog_items_snapshot(dialog_ptr, (0, 0, 400, 600)).unwrap();
+    assert_eq!(snapshot[0].kind, crate::dialog_manager::DialogItemKind::Button);
+    assert_eq!(snapshot[0].bounds, (15, 25, 35, 85));
+    assert_eq!(snapshot[0].control_identity, None);
+
+    let mut previous_identity = None;
+    for _ in 0..2 {
+        let mut error = loaded.last_mem_error();
+        let handle = with_test_controls!(loaded, |controls| ppc_new_control_record_values(
+            None, &mut loaded.memory, test_heap_cursor!(loaded), test_heap_limit!(loaded),
+            &mut error, test_handles!(loaded), controls, dialog_ptr,
+            (15, 25, 35, 85), b"Replacement", true, 0, 0, 1, 0, 0,
+        ));
+        loaded.cpu.gpr[3] = dialog_ptr;
+        loaded.cpu.gpr[4] = 1;
+        loaded.cpu.gpr[5] = u32::from(PPC_DIALOG_ITEM_BUTTON);
+        loaded.cpu.gpr[6] = handle;
+        loaded.cpu.gpr[7] = new_rect_ptr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogItem);
+        let identity = loaded.dialog_items_snapshot(dialog_ptr, (0, 0, 400, 600))
+            .unwrap()[0].control_identity.expect("installed live control must expose its lifetime");
+        assert_eq!(identity.0, handle);
+        assert_ne!(Some(identity), previous_identity);
+        previous_identity = Some(identity);
+
+        // Reinstalling the same control with changed geometry preserves its lifetime.
+        assert!(ppc_write_rect(&mut loaded.memory, new_rect_ptr, 16, 26, 36, 86).is_some());
+        loaded.cpu.gpr[3] = dialog_ptr;
+        loaded.cpu.gpr[4] = 1;
+        loaded.cpu.gpr[5] = u32::from(PPC_DIALOG_ITEM_BUTTON);
+        loaded.cpu.gpr[6] = handle;
+        loaded.cpu.gpr[7] = new_rect_ptr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogItem);
+        let changed = loaded.dialog_items_snapshot(dialog_ptr, (0, 0, 400, 600)).unwrap();
+        assert_eq!(changed[0].control_identity, Some(identity));
+        assert_eq!(changed[0].bounds, (16, 26, 36, 86));
+        loaded.cpu.gpr[3] = handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DisposeControl));
+        assert_eq!(loaded.dialog_items_snapshot(dialog_ptr, (0, 0, 400, 600))
+            .unwrap()[0].control_identity, None);
+    }
 
     // 5. Test GetDialogItemText:
     // 5a. Safe no-op on NULL text_out_ptr

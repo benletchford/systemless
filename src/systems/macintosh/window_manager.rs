@@ -53,6 +53,89 @@ pub struct WindowSnapshot {
     pub active: bool,
 }
 
+/// Frontend presentation metadata; guest window records remain authoritative.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WindowFrameSnapshot {
+    /// Guest WindowPtr, used only as an opaque identity within this guest run.
+    pub guest_id: u32,
+    /// New lifetime when the guest reuses a disposed WindowPtr.
+    pub generation: u64,
+    pub window: WindowSnapshot,
+    /// Unknown or application-defined WDEFs must retain guest presentation.
+    pub definition_id: Option<i16>,
+    /// False when the guest's structure or content region is nonrectangular.
+    pub rectangular_regions: bool,
+    /// Exact visible content rectangles in global guest coordinates.
+    /// None means the guest region could not be decoded safely.
+    pub visible_content_rects: Option<Vec<WindowRect>>,
+    pub close_box: bool,
+    /// The guest drew the standard grow icon at these current content bounds.
+    pub grow_icon_drawn: bool,
+}
+
+impl WindowFrameSnapshot {
+    /// Standard WDEF title geometry shared with both guest drawing adapters.
+    /// Unknown definitions retain guest pixels rather than assuming this font.
+    pub fn title_layout(&self, menu_bar_height: i16) -> Option<WindowTitleLayout> {
+        let definition = self.presentation_definition_id()?;
+        if !matches!(definition, 0 | 4 | 8 | 12 | 16) {
+            return None;
+        }
+        if crate::quickdraw::fonts::get_font_face_or_default(0, 12).size != 12 {
+            return None;
+        }
+        let content = self.window.bounds;
+        let metrics = crate::quickdraw::text::get_font_metrics(0, 12);
+        let width = self.window.title.chars().fold(0i16, |width, ch| {
+            width.saturating_add(
+                crate::quickdraw::text::get_unicode_glyph(0, 12, ch)
+                    .map_or(6, |(glyph, _)| i16::from(glyph.advance)),
+            )
+        });
+        let chrome = standard_window_chrome(
+            content,
+            menu_bar_height,
+            width,
+            metrics.ascent,
+            metrics.descent,
+            !self.window.title.is_empty(),
+            self.window.active,
+            matches!(definition, 0 | 4 | 8 | 12),
+            self.close_box,
+            matches!(definition, 8 | 12),
+        );
+        Some(WindowTitleLayout {
+            horizontal: chrome.title_h,
+            baseline: chrome.title_baseline,
+            clip: chrome.title_clip,
+            width,
+            ascent: metrics.ascent,
+            descent: metrics.descent,
+        })
+    }
+
+    /// Presentation can use bounding-box clips only for rectangular regions.
+    pub fn presentation_definition_id(&self) -> Option<i16> {
+        if self.rectangular_regions && self.visible_content_rects.is_some() {
+            self.definition_id
+        } else {
+            None
+        }
+    }
+}
+
+/// Standard system-font title placement in global guest coordinates.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WindowTitleLayout {
+    pub horizontal: i16,
+    pub baseline: i16,
+    pub clip: WindowRect,
+    pub width: i16,
+    pub ascent: i16,
+    pub descent: i16,
+}
+
 const WINDOW_VISIBLE_OFFSET: u32 = WINDOW_VISIBLE_FLAG_OFFSET;
 const WINDOW_HILITED_OFFSET: u32 = WINDOW_HILITED_FLAG_OFFSET;
 
@@ -94,7 +177,175 @@ fn snapshot_region_bounds(
     (bounds.2 > bounds.0 && bounds.3 > bounds.1).then_some(bounds)
 }
 
-fn snapshot_port_bounds_origin(read_byte: &mut impl FnMut(u32) -> u8, window: u32) -> (i16, i16) {
+/// A region's bounding box describes its full shape only when rgnSize is 10.
+/// Complex regions can have holes or disconnected areas, so a rectangular
+/// presentation overlay must leave those windows to the guest framebuffer.
+/// Inside Macintosh: Imaging With QuickDraw (1994), Chapter 2, "Regions".
+pub(crate) fn snapshot_window_regions_rectangular(
+    window: u32,
+    mut read_byte: impl FnMut(u32) -> u8,
+) -> bool {
+    [WINDOW_STRUCTURE_RGN_OFFSET, WINDOW_CONTENT_RGN_OFFSET]
+        .into_iter()
+        .all(|offset| {
+            let handle = snapshot_read_long(&mut read_byte, window.wrapping_add(offset));
+            if handle == 0 {
+                return false;
+            }
+            let region = snapshot_read_long(&mut read_byte, handle);
+            region != 0 && snapshot_read_word(&mut read_byte, region) == 10
+        })
+}
+
+/// Decode a QuickDraw visible region into a bounded set of rectangles. The
+/// complex encoding applies XOR deltas to horizontal endpoints at each y band.
+/// Malformed or excessively fragmented regions keep their guest pixels rather
+/// than allowing a bounding-box overlay through a hole.
+/// Inside Macintosh Volume I (1985), pp. I-141--I-142.
+pub(crate) fn snapshot_visible_region_rects(
+    window: u32,
+    read_byte: impl FnMut(u32) -> u8,
+) -> Option<Vec<WindowRect>> {
+    snapshot_port_region_rects(window, 24, true, read_byte)
+}
+
+/// Decode either visRgn (24) or clipRgn (28), optionally in screen coordinates.
+pub(crate) fn snapshot_port_region_rects(
+    window: u32,
+    region_offset: u32,
+    global: bool,
+    mut read_byte: impl FnMut(u32) -> u8,
+) -> Option<Vec<WindowRect>> {
+    const STOP: i16 = i16::MAX;
+    const MAX_ROWS: i32 = 4096;
+    const MAX_RECTS: usize = 512;
+    let handle = snapshot_read_long(&mut read_byte, window.wrapping_add(region_offset));
+    let region = snapshot_read_long(&mut read_byte, handle);
+    if handle == 0 || region == 0 {
+        return None;
+    }
+    let size = u32::from(snapshot_read_word(&mut read_byte, region));
+    if size < 10 || size % 2 != 0 {
+        return None;
+    }
+    let bounds = snapshot_read_rect(&mut read_byte, region.wrapping_add(2));
+    if bounds.2 <= bounds.0 || bounds.3 <= bounds.1 {
+        return Some(Vec::new());
+    }
+    let origin = if global { snapshot_port_bounds_origin(&mut read_byte, window) } else { (0, 0) };
+    if size == 10 {
+        return Some(vec![snapshot_local_rect_to_global(bounds, origin)]);
+    }
+    if i32::from(bounds.2) - i32::from(bounds.0) > MAX_ROWS {
+        return None;
+    }
+    let end = region.checked_add(size)?;
+    let mut cursor = region.checked_add(10)?;
+    let mut read_word = |cursor: &mut u32| {
+        let next = cursor.checked_add(2)?;
+        if next > end {
+            return None;
+        }
+        let value = snapshot_read_word(&mut read_byte, *cursor) as i16;
+        *cursor = next;
+        Some(value)
+    };
+    let mut next_y = read_word(&mut cursor)?;
+    let mut last_change = None;
+    let mut active = Vec::<i16>::new();
+    let mut band_spans = Vec::<(i16, i16)>::new();
+    let mut band_top = bounds.0;
+    let mut rectangles = Vec::new();
+    for y in i32::from(bounds.0)..=i32::from(bounds.2) {
+        let y = y as i16;
+        if y < bounds.2 {
+            while next_y != STOP && next_y <= y {
+                if last_change.is_some_and(|last| next_y <= last) {
+                    return None;
+                }
+                last_change = Some(next_y);
+                let mut delta = Vec::new();
+                loop {
+                    let edge = read_word(&mut cursor)?;
+                    if edge == STOP {
+                        break;
+                    }
+                    if delta.last().is_some_and(|last| *last >= edge) {
+                        return None;
+                    }
+                    delta.push(edge);
+                }
+                if delta.len() % 2 != 0 {
+                    return None;
+                }
+                active = xor_region_endpoints(&active, &delta);
+                next_y = read_word(&mut cursor)?;
+            }
+        }
+        let spans = if y == bounds.2 {
+            Vec::new()
+        } else {
+            active
+                .chunks_exact(2)
+                .filter_map(|pair| {
+                    let left = pair[0].max(bounds.1);
+                    let right = pair[1].min(bounds.3);
+                    (left < right).then_some((left, right))
+                })
+                .collect()
+        };
+        if spans != band_spans {
+            for &(left, right) in &band_spans {
+                rectangles.push(snapshot_local_rect_to_global(
+                    (band_top, left, y, right),
+                    origin,
+                ));
+                if rectangles.len() > MAX_RECTS {
+                    return None;
+                }
+            }
+            band_top = y;
+            band_spans = spans;
+        }
+    }
+    Some(rectangles)
+}
+
+fn xor_region_endpoints(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
+    let mut result = Vec::with_capacity(lhs.len() + rhs.len());
+    let (mut a, mut b) = (0, 0);
+    while a < lhs.len() || b < rhs.len() {
+        match (lhs.get(a), rhs.get(b)) {
+            (Some(&x), Some(&y)) if x < y => {
+                result.push(x);
+                a += 1;
+            }
+            (Some(&x), Some(&y)) if x > y => {
+                result.push(y);
+                b += 1;
+            }
+            (Some(_), Some(_)) => {
+                a += 1;
+                b += 1;
+            }
+            (Some(&x), None) => {
+                result.push(x);
+                a += 1;
+            }
+            (None, Some(&y)) => {
+                result.push(y);
+                b += 1;
+            }
+            (None, None) => break,
+        }
+    }
+    result
+}
+
+pub(crate) fn snapshot_port_bounds_origin(
+    read_byte: &mut impl FnMut(u32) -> u8,
+    window: u32,
+) -> (i16, i16) {
     let port_version = snapshot_read_word(read_byte, window.wrapping_add(6));
     if port_version & 0xC000 == 0 {
         return (
@@ -117,7 +368,10 @@ fn snapshot_port_bounds_origin(read_byte: &mut impl FnMut(u32) -> u8, window: u3
     )
 }
 
-fn snapshot_local_rect_to_global(rect: WindowRect, origin: (i16, i16)) -> WindowRect {
+pub(crate) fn snapshot_local_rect_to_global(
+    rect: WindowRect,
+    origin: (i16, i16),
+) -> WindowRect {
     (
         rect.0.wrapping_sub(origin.0),
         rect.1.wrapping_sub(origin.1),
@@ -3968,6 +4222,46 @@ pub const fn evaluate_front_window(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn visible_region_snapshot_preserves_holes_and_rejects_truncated_data() {
+        const WINDOW: usize = 0x100;
+        const HANDLE: usize = 0x200;
+        const REGION: usize = 0x300;
+        let mut memory = vec![0u8; 0x400];
+        fn write_word(memory: &mut [u8], address: usize, value: u16) {
+            memory[address..address + 2].copy_from_slice(&value.to_be_bytes());
+        }
+        write_word(&mut memory, WINDOW + 24, 0);
+        write_word(&mut memory, WINDOW + 26, HANDLE as u16);
+        write_word(&mut memory, HANDLE, 0);
+        write_word(&mut memory, HANDLE + 2, REGION as u16);
+        for (index, value) in [0, 0, 4, 6].into_iter().enumerate() {
+            write_word(&mut memory, REGION + 2 + index * 2, value);
+        }
+        let scanlines = [
+            0, 0, 6, 0x7fff, 2, 2, 4, 0x7fff, 4, 0, 2, 4, 6, 0x7fff, 0x7fff,
+        ];
+        write_word(&mut memory, REGION, (10 + scanlines.len() * 2) as u16);
+        for (index, value) in scanlines.into_iter().enumerate() {
+            write_word(&mut memory, REGION + 10 + index * 2, value);
+        }
+        let read = |address: u32| memory.get(address as usize).copied().unwrap_or(0);
+        assert_eq!(
+            super::snapshot_visible_region_rects(WINDOW as u32, read),
+            Some(vec![(0, 0, 2, 6), (2, 0, 4, 2), (2, 4, 4, 6)])
+        );
+
+        write_word(&mut memory, REGION, 10);
+        let read = |address: u32| memory.get(address as usize).copied().unwrap_or(0);
+        assert_eq!(
+            super::snapshot_visible_region_rects(WINDOW as u32, read),
+            Some(vec![(0, 0, 4, 6)])
+        );
+        write_word(&mut memory, REGION, 12);
+        let read = |address: u32| memory.get(address as usize).copied().unwrap_or(0);
+        assert_eq!(super::snapshot_visible_region_rects(WINDOW as u32, read), None);
+    }
+
     #[test]
     fn reposition_window_bounds_evaluation_all_methods() {
         let content = (40, 50, 240, 350);

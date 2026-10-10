@@ -37,6 +37,9 @@ pub(super) struct PpcListDispatchContext<'a> {
     pub(super) vfs_resources: &'a [PpcVfsResourceRecord],
     pub(super) current_resource_refnum: i16,
     pub(super) tick_count: u32,
+    pub(super) cycles_per_tick: u32,
+    pub(super) screen_clut: &'a [[u16; 3]; 256],
+    pub(super) input: &'a PpcInputSnapshot,
 }
 
 pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Option<PpcImportAction> {
@@ -55,6 +58,9 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
         vfs_resources,
         current_resource_refnum,
         tick_count,
+        cycles_per_tick,
+        input,
+        screen_clut,
     } = context;
 
     match binding.dispatcher_target {
@@ -97,6 +103,12 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
             Some(PpcImportAction::Return(list))
         }
         PpcImportDispatcherTarget::LDispose => {
+            if list_manager.scroll_tracking.as_ref().is_some_and(|tracking| tracking.list == cpu.gpr[3] && !tracking.classic) {
+                if let Some(outline) = list_manager.scroll_tracking.take().and_then(|tracking| tracking.outline) {
+                    let front = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD);
+                    ppc_restore_list_outline(memory, front, outline);
+                }
+            }
             if let Some(record) = list_manager.remove_record(cpu.gpr[3]) {
                 let mut allocator = PpcProcessAllocatorView {
                     memory_manager: process_memory_manager,
@@ -421,6 +433,139 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
             let h = cpu.gpr[3] as u16 as i16;
             let modifiers = cpu.gpr[4] as u16;
             let mut double_click = false;
+            // LClick retains scrollbar tracking through release and scrolls
+            // without changing selection. More Macintosh Toolbox, pp. 4-84--4-85.
+            use crate::systems::macintosh::list_manager::ListScrollbarTracking;
+            use crate::systems::macintosh::window_manager::{
+                snapshot_local_rect_to_global, snapshot_port_bounds_origin,
+            };
+            let mut existing = list_manager.scroll_tracking.take();
+            let mut retained = None;
+            let mut handled = false;
+            list_manager.with_record_mut(cpu.gpr[5], |record| {
+                if record.definition_id != 0 {
+                    if existing.as_ref().is_some_and(|tracking| !tracking.classic
+                        && tracking.list == record.handle && tracking.frame == (cpu.gpr[1], cpu.lr)) {
+                        if let Some(outline) = existing.take().and_then(|tracking| tracking.outline) {
+                            let front = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD);
+                            ppc_restore_list_outline(memory, front, outline);
+                        }
+                        handled = true;
+                    }
+                    return;
+                }
+                let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) else { return; };
+                let origin = snapshot_port_bounds_origin(&mut |address| memory.read_u8(address).unwrap_or(0), record.port);
+                let initial = existing.is_none();
+                let mut tracking = if let Some(tracking) = existing.take() {
+                    if tracking.classic || tracking.frame != (cpu.gpr[1], cpu.lr) || tracking.list != record.handle {
+                        existing = Some(tracking);
+                        return;
+                    }
+                    tracking
+                } else {
+                    if !record.active { return; }
+                    let mut found = None;
+                    for (offset, vertical) in [(PPC_LIST_VSCROLL_OFFSET, true), (PPC_LIST_HSCROLL_OFFSET, false)] {
+                        let handle = memory.read_u32_be(list_ptr + offset).unwrap_or(0);
+                        let Some(pointer) = ppc_control_ptr(memory, handle) else { continue; };
+                        let Some(control) = controls.iter().find(|control| control.handle == handle
+                            && control.pointer == pointer && control.active && control.proc_id == 16) else { continue; };
+                        if memory.read_u8(pointer + PPC_CONTROL_VISIBLE_OFFSET).unwrap_or(0) == 0
+                            || memory.read_u8(pointer + PPC_CONTROL_HILITE_OFFSET) == Some(255) { continue; }
+                        let Some(bounds) = ppc_read_rect(memory, pointer + PPC_CONTROL_RECT_OFFSET) else { continue; };
+                        let Some(part) = ListScrollbarTracking::part(bounds, (v, h), vertical, record.scrollbar_limits(vertical)) else { continue; };
+                        found = Some(ListScrollbarTracking {
+                            list: record.handle, generation: record.generation, control: handle, pointer,
+                            control_generation: control.generation, vertical, classic: false,
+                            frame: (cpu.gpr[1], cpu.lr), bounds: snapshot_local_rect_to_global(bounds, origin),
+                            start_mouse: (v.wrapping_sub(origin.0), h.wrapping_sub(origin.1)),
+                            start_limits: record.scrollbar_limits(vertical),
+                            outline: None,
+                            part, last_tick: tick_count.wrapping_sub(crate::systems::macintosh::control_manager::SCROLLBAR_ACTION_REPEAT_TICKS),
+                        });
+                        break;
+                    }
+                    let Some(tracking) = found else { return; };
+                    tracking
+                };
+                handled = true;
+                let valid = record.generation == tracking.generation && record.active
+                    && ppc_control_ptr(memory, tracking.control) == Some(tracking.pointer)
+                    && controls.iter().any(|control| control.handle == tracking.control
+                        && control.pointer == tracking.pointer && control.generation == tracking.control_generation && control.active && control.proc_id == 16)
+                    && ppc_read_rect(memory, tracking.pointer + PPC_CONTROL_RECT_OFFSET)
+                        .is_some_and(|bounds| snapshot_local_rect_to_global(bounds, origin) == tracking.bounds)
+                    && memory.read_u8(tracking.pointer + PPC_CONTROL_VISIBLE_OFFSET).unwrap_or(0) != 0
+                    && memory.read_u8(tracking.pointer + PPC_CONTROL_HILITE_OFFSET) != Some(255);
+                let down = valid && input.mouse_button;
+                let mouse = if initial { (v.wrapping_sub(origin.0), h.wrapping_sub(origin.1)) }
+                    else { (input.mouse_v, input.mouse_h) };
+                let next_outline = if valid && down { tracking.outline_rect(mouse, record) } else { None };
+                let front = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD);
+                if tracking.outline.as_ref().is_some_and(|outline| Some(outline.rect) != next_outline
+                    || front.map(|f| (f.base_addr, f.row_bytes, f.width, f.height, f.depth)) != Some(outline.surface)) {
+                    if let Some(outline) = tracking.outline.take() {
+                        ppc_restore_list_outline(memory, front, outline);
+                    }
+                }
+                let before = record.visible;
+                let delta = if valid && !down && !initial && tracking.part == 129 {
+                    tracking.release_delta(mouse, record)
+                } else if valid && (initial || down) {
+                    tracking.step(mouse, tick_count, record).map(i32::from)
+                } else { None };
+                if let Some(delta) = delta {
+                    record.set_visible_origin(
+                        (i32::from(record.visible.0) + if tracking.vertical { delta } else { 0 }).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+                        (i32::from(record.visible.1) + if tracking.vertical { 0 } else { delta }).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+                    );
+                    *last_mem_error = ppc_list_sync_guest_visible(memory, record);
+                }
+                if valid {
+                    let highlighted = down && tracking.hit(mouse, record);
+                    let hilite = if highlighted { tracking.part } else { 0 };
+                    let needs_draw = record.visible != before || memory.read_u8(tracking.pointer + PPC_CONTROL_HILITE_OFFSET) != Some(hilite);
+                    let _ = memory.write_u8(tracking.pointer + PPC_CONTROL_HILITE_OFFSET, hilite);
+                    if record.draw_enabled && needs_draw {
+                        if let Some(outline) = tracking.outline.take() {
+                            ppc_restore_list_outline(memory, front, outline);
+                        }
+                        if record.visible != before {
+                            ppc_list_redraw(memory, handles, controls, gworlds, vfs_resources, current_resource_refnum, record);
+                        } else {
+                            let _ = ppc_draw_control(memory, handles, controls, gworlds, vfs_resources, current_resource_refnum, tracking.control);
+                        }
+                    }
+                }
+                if tracking.outline.is_none() {
+                    if let (Some(rect), Some(front)) = (next_outline, front) {
+                        let mut pixels: crate::memory::SavedPixels<(i32, i32, u16)> = ppc_drag_outline_points(front, rect).into_iter()
+                            .filter_map(|(x, y)| ppc_quickdraw_read_pixel(memory, front, (x, y)).map(|pixel| (x, y, pixel))).collect::<Vec<_>>().into();
+                        for index in 0..pixels.len() {
+                            let (x, y, _) = pixels[index];
+                            ppc_capture_saved_detail(memory, front, (x, y), &mut pixels, index);
+                        }
+                        if let (Some(black), Some(white)) = (ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, screen_clut), ppc_physical_screen_color_pixel(front, PPC_RGB_WHITE, screen_clut)) {
+                            for (x, y, _) in pixels.iter().copied() {
+                                let _ = ppc_quickdraw_write_raw_pixel(memory, front, (x, y), if (x + y).rem_euclid(2) == 0 { black } else { white });
+                            }
+                            tracking.outline = Some(crate::list_manager::ListScrollbarOutline { rect,
+                                surface: (front.base_addr, front.row_bytes, front.width, front.height, front.depth),
+                                pixels: crate::list_manager::ListScrollbarPixels::Samples(pixels) });
+                        }
+                    }
+                }
+                if down { retained = Some(tracking); }
+            });
+            list_manager.scroll_tracking = retained.or(existing);
+            if handled {
+                return Some(if list_manager.scroll_tracking.is_some() {
+                    PpcImportAction::Yield(u64::from(cycles_per_tick.max(1)))
+                } else {
+                    PpcImportAction::Return(0)
+                });
+            }
             list_manager.with_record_mut(cpu.gpr[5], |record| {
                 if let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) {
                     let active = memory
@@ -1117,6 +1262,8 @@ fn ppc_list_new(
     let draw_enabled = cpu.gpr[8] != 0;
     let record = PpcListRecord {
         handle: list_handle,
+        generation: crate::list_manager::new_list_generation(),
+        definition_id: cpu.gpr[6] as u16 as i16,
         cells_handle,
         view_rect: view,
         data_bounds,
@@ -1129,6 +1276,7 @@ fn ppc_list_new(
         selected: std::collections::BTreeSet::new(),
         last_click: (-1, -1),
         last_click_tick: 0,
+        standard_cell_drawings: Default::default(),
     };
     let v_scroll = if scroll_vert {
         ppc_new_control_record_values(
@@ -1266,6 +1414,8 @@ pub(super) fn ppc_list_draw(
     let cell_h = memory
         .read_u16_be(list_ptr + PPC_LIST_CELL_SIZE_OFFSET + 2)
         .unwrap_or(1) as i16;
+    record.standard_cell_drawings.borrow_mut().retain(|&(row, column), _|
+        row >= visible.0 && row < visible.2 && column >= visible.1 && column < visible.3);
     let active = memory
         .read_u8(list_ptr + PPC_LIST_ACTIVE_OFFSET)
         .unwrap_or(1)
@@ -1312,7 +1462,9 @@ pub(super) fn ppc_list_draw(
                 PPC_RGB_BLACK
             };
             let _ = ppc_fill_front_rect(memory, front, rect, background);
-            let _ = ppc_draw_text_bytes(
+            // LDraw clips each LDEF draw to its cell (More Macintosh Toolbox,
+            // 1993, p. 4-88); the final cell is also bounded by rView.
+            let _ = ppc_draw_text_bytes_clipped(
                 memory,
                 gworlds,
                 port,
@@ -1322,12 +1474,48 @@ pub(super) fn ppc_list_draw(
                 PPC_QD_TEXT_MODE_SRC_OR,
                 foreground,
                 None,
+                Some((
+                    top,
+                    left,
+                    top.saturating_add(cell_v).min(view_bottom),
+                    left.saturating_add(cell_h).min(view_right),
+                )),
                 record
                     .cells
                     .get(&(row, column))
                     .map(Vec::as_slice)
                     .unwrap_or(&[]),
             );
+            if record.definition_id == 0 {
+                let clip = (top, left, top.saturating_add(cell_v).min(view_bottom),
+                    left.saturating_add(cell_h).min(view_right));
+                let mut drawings = record.standard_cell_drawings.borrow_mut();
+                if let Some(pixels) = crate::text_edit::TextEditDrawing::capture(
+                    port, clip, |address| memory.read_u8(address),
+                ) {
+                    drawings.insert((row, column), crate::list_manager::StandardListCellDrawing {
+                        generation: record.generation, font, size, left: left.saturating_add(1), baseline: top.saturating_add(ascent),
+                        clip, stop_before: None, char_extra: crate::text_edit::TextEditCharExtraSnapshot::PpcPacked(ppc_port_char_extra_packed(memory, port)),
+                        space_extra: 0,
+                        bytes: record.cells.get(&(row, column)).cloned().unwrap_or_default(),
+                        source_bytes: record.cells.get(&(row, column)).cloned().unwrap_or_default(), selected, pixels,
+                    });
+                } else { drawings.remove(&(row, column)); }
+            }
+        }
+    }
+}
+
+fn ppc_restore_list_outline(
+    memory: &mut PpcSectionMem,
+    front: Option<PpcFrontBuffer>,
+    outline: crate::list_manager::ListScrollbarOutline,
+) {
+    let Some(front) = front.filter(|f| (f.base_addr, f.row_bytes, f.width, f.height, f.depth) == outline.surface) else { return; };
+    if let crate::list_manager::ListScrollbarPixels::Samples(pixels) = outline.pixels {
+        for (index, (x, y, pixel)) in pixels.iter().copied().enumerate() {
+            let _ = ppc_quickdraw_write_raw_pixel(memory, front, (x, y), pixel);
+            ppc_restore_saved_detail(memory, front, (x, y), &pixels, index);
         }
     }
 }

@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="crispEdges">
+  <style>
+    .outline { fill: #15130f; }
+    .detail { fill: #15130f; }
+    @media (prefers-color-scheme: dark) {
+      .outline { fill: #efebe3; }
+    }
+  </style>
+  <rect class="outline" x="4" y="2" width="8" height="1"/>
+  <rect class="outline" x="3" y="3" width="1" height="8"/>
+  <rect class="outline" x="12" y="3" width="1" height="8"/>
+  <rect x="4" y="3" width="8" height="8" fill="#c9b183"/>
+  <rect x="5" y="4" width="6" height="6" fill="#2794c4"/>
+  <rect x="6" y="5" width="1" height="1" fill="#dff6ff"/>
+  <rect class="detail" x="6" y="6" width="1" height="1"/>
+  <rect class="detail" x="9" y="6" width="1" height="1"/>
+  <rect class="detail" x="6" y="8" width="1" height="1"/>
+  <rect class="detail" x="9" y="8" width="1" height="1"/>
+  <rect class="detail" x="7" y="9" width="2" height="1"/>
+  <rect class="outline" x="4" y="11" width="8" height="1"/>
+  <rect class="outline" x="6" y="12" width="4" height="1"/>
+  <rect x="7" y="12" width="2" height="1" fill="#c9b183"/>
+  <rect class="outline" x="5" y="13" width="6" height="1"/>
+</svg>

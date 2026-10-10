@@ -772,6 +772,34 @@ fn showwindow_setorigin_preserves_expanded_near_fullscreen_clip_region() {
 }
 
 #[test]
+fn moving_window_away_and_back_does_not_restore_old_grow_icon() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let window = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus,
+        &mut cpu,
+        window,
+        disp.screen_mode.0,
+        46,
+        42,
+        388,
+        554,
+        "Document",
+        3,
+        false,
+        false,
+        false,
+        0,
+    );
+    let bounds = disp.window_content_rect(&mut bus, window).unwrap();
+    disp.window_list.record_grow_icon(window, bounds);
+    disp.move_window_to_global(&mut bus, window, 100, 100, false);
+    disp.move_window_to_global(&mut bus, window, bounds.1, bounds.0, false);
+    assert_eq!(disp.window_content_rect(&mut bus, window), Some(bounds));
+    assert!(!disp.window_list.grow_icon_drawn_at(window, bounds));
+}
+
+#[test]
 fn hidden_window_setorigin_preserves_global_regions_before_showwindow() {
     let (mut disp, mut cpu, mut bus) = setup();
     let window_addr = bus.alloc(256);
@@ -3301,6 +3329,15 @@ fn showwindow_hidden_first_window_becomes_frontwindow_even_if_cached_front_was_b
             .any(|event| event.what == 8 && event.message == dialog && (event.modifiers & 1) == 1),
         "ShowWindow must queue an activate event for the newly visible frontmost window"
     );
+    assert_eq!(
+        bus.read_byte(document + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET),
+        0,
+        "revealing the hidden front window must unhilite the previous visible front"
+    );
+    let activation: Vec<_> = disp.event_queue.iter().filter(|event| event.what == 8)
+        .map(|event| (event.message, event.modifiers & 1)).collect();
+    assert_eq!(activation, vec![(document, 0), (dialog, 1)],
+        "the document must receive deactivation before the newly visible dialog activates");
 }
 
 // ---------------------------------------------------------------
@@ -7706,8 +7743,8 @@ fn standard_zoom_window_creation_installs_wstate_data() {
             bus.read_word(state + 12) as i16,
             bus.read_word(state + 14) as i16,
         ),
-        (23, 3, screen_height as i16 - 3, screen_width as i16 - 3),
-        "stdState must default to the gray region inset by three pixels"
+        (41, 3, screen_height as i16 - 3, screen_width as i16 - 3),
+        "stdState must leave the title below the menu bar"
     );
     bus.write_byte(
         window + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET,

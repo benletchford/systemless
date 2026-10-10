@@ -1,0 +1,121 @@
+{
+  "evidence": "Actual shared Demo::render GPUI headless compositor, with unmodified guest frames; no external oracle.",
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "command": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit {mode_flags} --capture-windows {output}",
+  "mode_flags": {
+    "mono": "--screen-depth 1",
+    "colour": "--screen-depth 8",
+    "ppc": "--prefer-powerpc"
+  },
+  "visual_review": "Three stacked windows: active/inactive titles use canonical WDEF glyph positions and clipping. Custom monochrome panels remain black.",
+  "font_policy": "Font Manager system font 0, 12 points; resolved QuickDraw strikes. Guest/override resources retain precedence; bundled glyphs are not asserted as authentic Apple bitmaps.",
+  "corrections": [
+    "GPUI border painted separately to avoid a one-logical-pixel glyph inset.",
+    "PPC WDEF title drawing now honors shared title_clip; previously a descender escaped by one guest pixel."
+  ],
+  "colour_68k_ppc_guest_glyph_region": {
+    "bounds": [
+      400,
+      234,
+      504,
+      249
+    ],
+    "identical": true
+  },
+  "colour_68k_ppc_composed_title_region": {
+    "bounds": [
+      900,
+      590,
+      1135,
+      625
+    ],
+    "identical": true
+  },
+  "limitations": [
+    "Showcase standard WDEFs 0 and 8 at one compositor viewport only; not full font/definition/scale qualification.",
+    "Physical input, accessibility and live performance remain unqualified.",
+    "Unknown WDEFs and substituted strikes retain guest presentation."
+  ],
+  "captures": [
+    {
+      "mode": "mono",
+      "files": [
+        {
+          "file": "text-classic-window-titles-mono.png",
+          "sha256": "5333b516ff97fb269b152ccf44d64fdf9f1d5fe296fc88b82ece50b17b2c935a",
+          "dimensions": [
+            1800,
+            1480
+          ]
+        },
+        {
+          "file": "text-classic-window-titles-mono.guest.png",
+          "sha256": "e8366ee20c7b36a5d95fbeebfa39227f3da651624facc602cdd21d7e85942911",
+          "dimensions": [
+            800,
+            600
+          ]
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "files": [
+        {
+          "file": "text-classic-window-titles-colour.png",
+          "sha256": "f9e5a904d381783c03cc1d9e1dc70e5e3eb6fd397dbf851380a41b762b0f0e3e",
+          "dimensions": [
+            1800,
+            1480
+          ]
+        },
+        {
+          "file": "text-classic-window-titles-colour.guest.png",
+          "sha256": "0c6b8526f865f90fc79ee4fe93a649607a90173c0f0ab1697181a293aacd8ada",
+          "dimensions": [
+            800,
+            600
+          ]
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "files": [
+        {
+          "file": "text-classic-window-titles-ppc.png",
+          "sha256": "eb929aa98794e6b61b9957f5868832de984fe859d84c70124fd4eb94fad18a05",
+          "dimensions": [
+            1800,
+            1480
+          ]
+        },
+        {
+          "file": "text-classic-window-titles-ppc.guest.png",
+          "sha256": "10cb5fc8c98173e9443c22611bdbd0c332a4c83b30274c5d43c90a215b96e926",
+          "dimensions": [
+            800,
+            600
+          ]
+        }
+      ]
+    }
+  ],
+  "tests": [
+    {
+      "filter": "live_menu_bridge_updates_pages_and_nested_checks_across_guest_modes",
+      "result": "pass",
+      "seconds": 6.19
+    },
+    {
+      "filter": "themed_window_title_drag_forwards_guest_coordinates",
+      "result": "pass",
+      "seconds": 0.07
+    },
+    {
+      "filter": "standard_window_title_descender_stays_inside_wdef_clip",
+      "result": "pass",
+      "seconds": 0.13
+    }
+  ]
+}

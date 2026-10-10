@@ -1,0 +1,23 @@
+{
+  "caret_state": "not-requested",
+  "insertion_offset": null,
+  "multiline": false,
+  "selection": [
+    0,
+    26
+  ],
+  "compositor": "shared Demo renderer",
+  "active": true,
+  "caret_visible": true,
+  "drawing_intact": true,
+  "generation": 2,
+  "guest_tick": 67,
+  "view": [
+    126,
+    74,
+    164,
+    561
+  ],
+  "scale": 1.5,
+  "depth": 8
+}

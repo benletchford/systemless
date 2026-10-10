@@ -1,0 +1,21 @@
+{
+  "outcome": "7 tests passed in25.79s: five policy tests, one isolated native pasteboard test and four-mode guest Copy/import/resume/Paste scenario",
+  "base_source_commit": "f215936b3b854c01cf850df11855d4016d450d11",
+  "source_sha256": {
+    "src/bin/gpui_demo_clipboard.rs": "eae2ea7f62301935413e7dacc8ea793544d20e78fbd11f95489e9d4c35d03557",
+    "tests/macintosh_clipboard.rs": "c96461ba253da6879ceb671ad60d9fd219e8e740cf0810da769ce55a81703971"
+  },
+  "source_hash_timing": "Pinned before final execution and verified afterward. Clipboard guard additions uncommitted at execution.",
+  "test_executable": "target/debug/deps/macintosh_clipboard-b7c93cb2b02775c3",
+  "test_executable_sha256": "fc2c17f65ab32c27c8a3107bc93dab1e64fd643564d67f6e605c5b7add9a2197",
+  "binary_hash_timing": "After successful execution without a rebuild before hashing.",
+  "inspected_dependency": {
+    "crate": "gpui-pre-macos",
+    "version": "0.3.8",
+    "file": "src/pasteboard.rs",
+    "sha256": "66744f8c74061c999547400dc9e3dccbc40ddd5c4749c60856ee3d5ce2b77a23",
+    "finding": "read returns plain string before examining image/other formats; a string entry does not establish a native text-only pasteboard"
+  },
+  "scope": "Unique named AppKit pasteboard, not general/user clipboard. Real type inventories, readable string and opaque payloads labelled six rich/unknown types exercise rejection; no image/RTF payload decoding or non-text transport qualification. Current production Demo reader still bypasses this helper until pinned rendering captures finish and wiring/tests are completed. Native guard preparation only, not a production fix or native Macintosh font oracle.",
+  "ordinary_no_default_features": "Five clipboard policy tests passed with native helper/tests correctly excluded."
+}

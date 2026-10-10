@@ -1,0 +1,46 @@
+{
+  "scope": "Open/Save file list rows use guest font 0/12 Unicode glyph resolution, CPU-specific inset/baseline and marker. Borders no longer inset row coordinates.",
+  "capture_flag": "--capture-standard-file-save-composed",
+  "modes": [
+    "--screen-depth 1",
+    "--screen-depth 8",
+    "--prefer-powerpc"
+  ],
+  "review": "Three Save captures reviewed: guest glyph rows remain clipped inside list; PPC > is visible; 68k triangle has no ink in the current resolved strike rather than receiving a host-font substitute.",
+  "tests": {
+    "themed_standard_file_actions_forward_guest_clicks": "pass 2.94s",
+    "unicode_labels_resolve_guest_mac_roman_and_symbol_glyphs": "pass 0.12s"
+  },
+  "limitations": [
+    "Save captures at one viewport, unselected file rows; Open visual/scale/state matrix pending.",
+    "Missing glyphs follow current guest font resolution; authentic Apple-font fidelity is not qualified.",
+    "Volume/directory labels, general lists, Save editor, menus and dialog styles remain unfinished.",
+    "Overall panel border and per-CPU exact pixel geometry still need qualification."
+  ],
+  "outputs": [
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-file-list-mono.png",
+      "sha256": "2777bd356f9b5b24ddca2b297d8dafc381f23ea28ab6432bb9923b5fd313377e"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-file-list-mono.guest.png",
+      "sha256": "0c693656f84957b0e76c3a690cc10bb806a31d2f70b2cad0a383349b7117040d"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-file-list-colour.png",
+      "sha256": "0d72533bc62b62065efafe0f9c251e00a6223a6d125ffedd1be69e41d2490415"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-file-list-colour.guest.png",
+      "sha256": "3648409aaf9c8eade573850fa12297873381ec41be1816cc955162e91c625f73"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-file-list-ppc.png",
+      "sha256": "cabb7c30b02219e23b81c6c43846fe0b9be912d7db8eab2352da38e458479f36"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-file-list-ppc.guest.png",
+      "sha256": "0bf2ff04e52ea91fed8253a5f09117329a4742725ca4443e87ad22411b1b96fc"
+    }
+  ]
+}

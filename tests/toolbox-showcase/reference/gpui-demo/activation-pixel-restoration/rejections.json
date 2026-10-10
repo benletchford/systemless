@@ -1,0 +1,10 @@
+{
+  "verifier_sha256": "53c088d0fbfe9014afd890d6ef695127db4223cd2cdb3d04661cce207858e110",
+  "rejected_one_pixel_changes_with_updated_hashes": [
+    "guest-selected",
+    "guest-resumed",
+    "rendered-selected",
+    "rendered-resumed"
+  ],
+  "scope": "Checks activation restoration equality despite valid image hashes; not a native font oracle."
+}

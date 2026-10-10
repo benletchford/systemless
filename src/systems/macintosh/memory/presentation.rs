@@ -40,7 +40,10 @@ fn divide_row(offset: u32, row_bytes: u32, reciprocal: u64) -> (u32, u32) {
 
 /// Shared by both CPU adapters; access is scoped to a single drawing operation.
 #[derive(Clone, Default)]
-pub(crate) struct PresentationSlot(std::rc::Rc<std::cell::RefCell<Option<Presentation>>>);
+pub(crate) struct PresentationSlot(
+    std::rc::Rc<std::cell::RefCell<Option<Presentation>>>,
+    std::rc::Rc<std::cell::RefCell<HashMap<u32, crate::text_edit::TextEditDrawing>>>,
+);
 
 /// Page size of the bus's JIT store filter; equal to `PageIndex`'s.
 pub(crate) const STORE_FILTER_PAGE_SHIFT: u32 = super::page_index::PAGE_SHIFT;
@@ -128,6 +131,30 @@ impl std::fmt::Debug for PresentationSlot {
     }
 }
 impl PresentationSlot {
+    pub(crate) fn text_edit_solid_caret(&self, handle: u32) -> Option<((i16, i16, i16, i16), u16, u16)> {
+        self.1.borrow().get(&handle)?.solid_caret
+    }
+    pub(crate) fn forget_text_edit_drawing(&self, handle: u32) {
+        self.1.borrow_mut().remove(&handle);
+    }
+
+    pub(crate) fn record_text_edit_drawing(&self, handle: u32, drawing: Option<crate::text_edit::TextEditDrawing>) {
+        let mut drawings = self.1.borrow_mut();
+        if let Some(drawing) = drawing { drawings.insert(handle, drawing); }
+        else { drawings.remove(&handle); }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn text_edit_drawing_intact(&self, handle: u32, drawing: Option<crate::text_edit::TextEditDrawing>, screen_base: u32) -> bool {
+        !self.text_edit_drawing_regions(handle, drawing, screen_base).is_empty()
+    }
+
+    pub(crate) fn text_edit_drawing_regions(&self, handle: u32, drawing: Option<crate::text_edit::TextEditDrawing>, screen_base: u32) -> Vec<(i16, i16, i16, i16)> {
+        let Some(drawing) = drawing else { return Vec::new(); };
+        self.1.borrow().get(&handle).filter(|held| drawing.base == screen_base && held.same_pixels(&drawing))
+            .map(|held| held.painted_regions.clone()).unwrap_or_default()
+    }
+
     /// The presentation half of a span copy (see
     /// `MacMemoryBus::copy_detail_spans`): copy `spans` (source,
     /// destination, length), whose source bytes are `pixels` laid end to
@@ -2871,6 +2898,25 @@ fn paint_offscreen_glyph_coverage(
 }
 
 impl MacMemoryBus {
+    pub(crate) fn forget_text_edit_drawing(&self, handle: u32) {
+        self.presentation.forget_text_edit_drawing(handle);
+    }
+    pub(crate) fn record_text_edit_caret_drawing(
+        &self, handle: u32, port: u32, view: (i16, i16, i16, i16),
+        caret: Option<(i16, i16, i16, i16)>,
+    ) {
+        let mut drawing = crate::text_edit::TextEditDrawing::capture(port, view, |addr| Some(self.read_byte(addr)));
+        if let (Some(drawing), Some(rect)) = (&mut drawing, caret) { drawing.qualify_solid_caret(rect); }
+        self.presentation.record_text_edit_drawing(handle, drawing);
+    }
+    pub(crate) fn text_edit_solid_caret(&self, handle: u32) -> Option<((i16, i16, i16, i16), u16, u16)> {
+        self.presentation.text_edit_solid_caret(handle)
+    }
+    pub(crate) fn text_edit_drawing_regions(&self, handle: u32, port: u32, rect: (i16, i16, i16, i16), screen_base: u32) -> Vec<(i16, i16, i16, i16)> {
+        let drawing = crate::text_edit::TextEditDrawing::capture(port, rect, |addr| Some(self.read_byte(addr)));
+        self.presentation.text_edit_drawing_regions(handle, drawing, screen_base)
+    }
+
     pub(crate) fn begin_cpu_drawing(&mut self) {
         if let Some(mut p) = self.presentation.as_mut() {
             p.cpu_drawing = true;

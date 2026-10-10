@@ -661,6 +661,77 @@ pub enum DialogItemKind {
     Unknown(u8),
 }
 
+/// Frontend-neutral, read-only description of a live Dialog Manager item.
+/// The item number is the Toolbox's 1-based identity within its dialog.
+/// Macintosh Toolbox Essentials (1992), pp. 6-13--6-14, 6-120--6-124.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DialogItemSnapshot {
+    /// Live ControlHandle and lifetime, when the item is backed by a known control.
+    /// SetDialogItem may replace this independently of the DialogPtr lifetime.
+    pub control_identity: Option<(u32, u64)>,
+    pub static_text_layout: Option<DialogStaticTextLayout>,
+    /// Geometry of the guest painter for this editText item. Absent when
+    /// faithful replacement needs unsupported TextEdit layout or font scaling.
+    pub edit_text_layout: Option<DialogEditTextLayout>,
+    /// Current guest-owned button tracking highlight.
+    pub pressed: bool,
+    pub number: i16,
+    pub kind: DialogItemKind,
+    pub bounds: (i16, i16, i16, i16),
+    pub text: String,
+    pub enabled: bool,
+    pub visible: bool,
+    /// Only populated when the live control value is known.
+    pub value: Option<i16>,
+    /// Only populated for editable text with a known guest selection.
+    pub selection: Option<(i16, i16)>,
+    /// Blink phase of the dialog-owned active TERec, when available.
+    pub caret_visible: Option<bool>,
+}
+
+/// Resolved guest statText layout, relative to the item display rectangle.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DialogStaticTextLayout {
+    /// Wrapping measures the current port face, independently of item style.
+    pub wrap_advance_extra: i16,
+    pub face: u8,
+    pub font: (i16, i16),
+    pub origin: (i16, i16),
+    pub line_height: i16,
+    pub inclusive_bottom: bool,
+}
+
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DialogEditTextLayout {
+    pub font: (i16, i16),
+    pub baseline: i16,
+    pub line_height: i16,
+    /// PPC inactive fields use the Dialog Manager's wrapped text painter.
+    pub wrap: bool,
+    /// PPC active fields use TERec selection/caret geometry; 68k's dialog
+    /// painter extends an end-of-text selection to the display rectangle edge.
+    pub text_edit_geometry: bool,
+}
+
+/// A live dialog's semantic state, separate from its guest-rendered pixels.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DialogSnapshot {
+    pub guest_id: u32,
+    /// Matches the owning WindowRecord lifetime, even when its pointer is reused.
+    pub generation: u64,
+    pub bounds: (i16, i16, i16, i16),
+    pub visible: bool,
+    pub active: bool,
+    pub default_item: Option<i16>,
+    pub cancel_item: Option<i16>,
+    pub edit_field: Option<i16>,
+    pub items: Vec<DialogItemSnapshot>,
+}
+
 #[allow(dead_code)]
 impl DialogItemKind {
     /// Decode the base item kind, masking out the disabled flag bit (0x80).

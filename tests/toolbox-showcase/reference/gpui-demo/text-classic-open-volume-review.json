@@ -1,0 +1,48 @@
+{
+  "scope": "Open volume label only: guest font 0/12 glyph canvas, 68k popup measured abbreviation and centered baseline/inset; PPC literal Maci... at (0,12).",
+  "capture_flag": "--capture-standard-file-open-composed",
+  "modes": [
+    "--screen-depth 1",
+    "--screen-depth 8",
+    "--prefer-powerpc"
+  ],
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "review": "All three actual shared compositor captures reviewed. CPU-specific volume labels are legible and stay within popup bounds. Application custom pixels remain guest-owned.",
+  "tests": {
+    "standard_file_snapshots_follow_modal_guest_state_on_both_cpus": "pass 7.50s, pointer and semantic routes, volume text and width checks",
+    "cargo check --locked --bin systemless": "pass",
+    "cargo build --locked --example gpui-menu-demo --features gpui-demo-test": "pass"
+  },
+  "limitations": [
+    "One default viewport/scale and modal state; scale/activation and pixel geometry matrices remain open.",
+    "Adjacent directory labels still use host typography. Save volume UI is separate and not covered.",
+    "Current guest font resolution reused; authentic classic Macintosh font fidelity remains unqualified.",
+    "This is repository compositor evidence, not an external native oracle."
+  ],
+  "outputs": [
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-open-volume-mono.png",
+      "sha256": "dc9c427153dfe82b13c54c0a2821c5d04f52f745f17f352f159e5f5ce909db09"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-open-volume-mono.guest.png",
+      "sha256": "98ff2fb915196cfb703c616708c0987080a624ecd38e9b613924e9f231c9ce1e"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-open-volume-colour.png",
+      "sha256": "21043b58ea3a44d5c3f120d02edaef7f7f8a3e60b6790b5d0819c8b410195eb1"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-open-volume-colour.guest.png",
+      "sha256": "a10639a8286b648e0061f4140106d2fb070525546b5cae8b24998ca24eea37d0"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-open-volume-ppc.png",
+      "sha256": "fbbec1bdceefa72d7a5cbc8f1787fa7b648eb127b2e140ee72e4129fb79afed7"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-open-volume-ppc.guest.png",
+      "sha256": "13ff1676f6811c974304851e766a7503ac709dfe57b96cf73601f6a77ee98ef1"
+    }
+  ]
+}

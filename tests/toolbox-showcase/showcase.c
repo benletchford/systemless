@@ -39,6 +39,7 @@
 #include <QDOffscreen.h>
 #include <Quickdraw.h>
 #include <Resources.h>
+#include <Scrap.h>
 #include <Sound.h>
 #include <StandardFile.h>
 #include <TextEdit.h>
@@ -67,6 +68,7 @@
 #define rMainWindow 128
 #define rPrefDialog 129
 #define rAboutAlert 130
+#define rModelessDialog 131
 #define rShowcaseIcon 128
 #define rShowcasePalette 150
 #define rShowcaseSound 151
@@ -115,6 +117,7 @@
 #define iOptRenderer 3
 #define iOptResetPrefs 5
 #define iOptLaunchDialog 6
+#define iOptLaunchModeless 7
 
 /* Difficulty submenu items */
 #define iDiffEasy 1
@@ -502,6 +505,7 @@ void PollShowcaseSound(void)
 
 /* Page 11: Styled TextEdit & Font Manager */
 static TEHandle gStyledTE;
+static Boolean gStyledEditFocused;
 static Rect gStyledTERect;
 static short gStyledGenevaFont;
 static short gStyledMonacoFont;
@@ -789,6 +793,8 @@ cleanup:
 /* State variables */
 static short gPage = pageGraphics;
 static Boolean gQuit = false;
+static Boolean gInBackground = false;
+static Boolean gPrivateScrapDirty = false;
 static Boolean gButtonActivated = false;
 
 /* Preferences state */
@@ -798,6 +804,7 @@ static Boolean gMusic = true;
 static short gVolume = 75;
 static short gRenderer = iRendBevel;
 static Boolean gModalDialogCompleted = false;
+static DialogPtr gModelessDialog = nil;
 
 MenuHandle StateMenu(void)
 {
@@ -2714,6 +2721,27 @@ void ApplyStyledStyle(short start, short end, TextStyle *style)
     TESetStyle(doAll, style, true, gStyledTE);
 }
 
+/* Preserve each character's font, size, colour and non-spacing face bits.
+ * Option-C/E/B/N exercises condensed/extended/both/normal through guest
+ * TEGetStyle and TESetStyle, retaining the existing selection. */
+void SetStyledSpacing(Style spacing)
+{
+    short offset, start, end, length, height, ascent;
+    TextStyle style;
+
+    if (gStyledTE == nil) return;
+    start = (**gStyledTE).selStart;
+    end = (**gStyledTE).selEnd;
+    length = (**gStyledTE).teLength;
+    for (offset = 0; offset < length; ++offset) {
+        TESetSelect(offset, offset + 1, gStyledTE);
+        TEGetStyle(offset, &style, &height, &ascent, gStyledTE);
+        style.tsFace = (style.tsFace & ~(condense | extend)) | spacing;
+        TESetStyle(doFace, &style, true, gStyledTE);
+    }
+    TESetSelect(start, end, gStyledTE);
+}
+
 void InspectStyledText(void)
 {
     short textLength;
@@ -4124,6 +4152,69 @@ static void DoModalPrefsDialog(void)
     DrawMainWindow();
 }
 
+static void CloseModelessDialog(void)
+{
+    if (gModelessDialog == nil) return;
+    DisposeDialog(gModelessDialog);
+    gModelessDialog = nil;
+    SetPort(gMainWindow);
+    DrawMainWindow();
+}
+
+static void OpenModelessDialog(void)
+{
+    if (gModelessDialog != nil) {
+        SelectWindow((WindowPtr)gModelessDialog);
+        return;
+    }
+    gModelessDialog = GetNewDialog(rModelessDialog, nil, (WindowPtr)-1);
+    if (gModelessDialog == nil) return;
+    SetPort(gModelessDialog);
+    ShowWindow((WindowPtr)gModelessDialog);
+    DrawDialog(gModelessDialog);
+}
+
+/* Route modeless content and editing through DialogSelect while the app owns
+ * title-bar dragging and close-box events. Macintosh Toolbox Essentials
+ * (1992), pp. 6-91--6-99. */
+static Boolean HandleModelessDialogEvent(EventRecord *event)
+{
+    DialogPtr dialog;
+    short itemHit;
+    short itemType;
+    Handle itemHandle;
+    Rect itemRect;
+    WindowPtr window;
+
+    if (gModelessDialog == nil) return false;
+    if (event->what == activateEvt) {
+        if ((WindowPtr)event->message != (WindowPtr)gModelessDialog) return false;
+    } else if (FrontWindow() != (WindowPtr)gModelessDialog) {
+        return false;
+    }
+    if (event->what == mouseDown) {
+        if (FindWindow(event->where, &window) != inContent ||
+            window != (WindowPtr)gModelessDialog) return false;
+    } else if (event->what != activateEvt && event->what != nullEvent &&
+               ((event->what != keyDown && event->what != autoKey) ||
+                (event->modifiers & cmdKey) != 0)) {
+        return false;
+    }
+    if (!IsDialogEvent(event)) return false;
+    dialog = nil;
+    itemHit = 0;
+    if (DialogSelect(event, &dialog, &itemHit) && dialog == gModelessDialog) {
+        if (itemHit == 1) {
+            CloseModelessDialog();
+        } else if (itemHit == 2) {
+            GetDialogItem(gModelessDialog, itemHit, &itemType, &itemHandle, &itemRect);
+            SetControlValue((ControlHandle)itemHandle,
+                            GetControlValue((ControlHandle)itemHandle) == 0 ? 1 : 0);
+        }
+    }
+    return true;
+}
+
 static void DoAboutAlert(void)
 {
     Alert(rAboutAlert, nil);
@@ -4143,6 +4234,10 @@ static void SetPage(short page)
     }
     if (gPage == pageTextEdit && page != pageTextEdit) {
         if (gTE != nil) TEDeactivate(gTE);
+    }
+    if (gPage == pageStyledText && page != pageStyledText) {
+        if (gStyledTE != nil) TEDeactivate(gStyledTE);
+        gStyledEditFocused = false;
     }
     if (gPage == pagePalettes && page != pagePalettes) {
         SetPalette(gMainWindow, gOriginalPalette, true);
@@ -4167,7 +4262,7 @@ static void SetPage(short page)
         ActivatePalette(gMainWindow);
     }
     if (page == pageTextEdit) {
-        if (gTE != nil) TEActivate(gTE);
+        if (gTE != nil && !gInBackground && FrontWindow() == gMainWindow) TEActivate(gTE);
     }
     if (page == pageLists && gInventoryList != nil) {
         gListActive = true;
@@ -4204,6 +4299,13 @@ static void SetPage(short page)
         SetRect(&bounds, 330, 250, 575, 495);
         gStackWindow = NewCWindow(nil, &bounds, "\pStacked Inspector", true,
                                   zoomDocProc, (WindowPtr)-1, true, 2);
+        if (gStackWindow != nil) {
+            WStateDataHandle zoomState =
+                (WStateDataHandle)((WindowPeek)gStackWindow)->dataHandle;
+            if (zoomState != nil && *zoomState != nil) {
+                SetRect(&(*zoomState)->stdState, 100, 100, 700, 520);
+            }
+        }
         CheckItem(StateMenu(), iWindowState,
                   gAuxWindow != nil && gStackWindow != nil);
         DrawAuxWindow(gAuxWindow);
@@ -4569,6 +4671,8 @@ static void DoMenuChoice(long choice)
             DrawMainWindow();
         } else if (item == iOptLaunchDialog) {
             DoModalPrefsDialog();
+        } else if (item == iOptLaunchModeless) {
+            OpenModelessDialog();
         }
     } else if (menuID == mFile) {
         if (item == iFilePrefs) {
@@ -4603,6 +4707,14 @@ static void DoContentClick(WindowPtr window, EventRecord *event)
     if (gPage == pageTextEdit && gTE != nil && PtInRect(where, &gTERect)) {
         Boolean shift = (event->modifiers & shiftKey) != 0;
         TEClick(where, shift, gTE);
+        DrawMainWindow();
+        return;
+    }
+    if (gPage == pageStyledText && gStyledTE != nil && PtInRect(where, &gStyledTERect)) {
+        Boolean shift = (event->modifiers & shiftKey) != 0;
+        gStyledEditFocused = true;
+        TEActivate(gStyledTE);
+        TEClick(where, shift, gStyledTE);
         DrawMainWindow();
         return;
     }
@@ -4781,8 +4893,10 @@ static void DoContentClick(WindowPtr window, EventRecord *event)
         SyncMenuState();
     } else if (control == gTEBtnCut) {
         TECut(gTE);
+        gPrivateScrapDirty = true;
     } else if (control == gTEBtnCopy) {
         TECopy(gTE);
+        gPrivateScrapDirty = true;
     } else if (control == gTEBtnPaste) {
         TEPaste(gTE);
     } else if (control == gTEBtnReset) {
@@ -4832,6 +4946,43 @@ static void DoContentClick(WindowPtr window, EventRecord *event)
     DrawMainWindow();
 }
 
+/* The SIZE resource declares responsibility for foreground-switch
+ * activation. Toolbox Essentials (1992), pp. 2-51 and 2-59--2-61; Text
+ * (1993), pp. 2-35--2-37: deactivate the edit record without losing selection. */
+static void ActivateShowcaseWindow(WindowPtr window, Boolean active)
+{
+    GrafPtr savedPort;
+    EventRecord activation;
+
+    if (window == nil) return;
+    GetPort(&savedPort);
+    SetPort(window);
+    if (window == (WindowPtr)gModelessDialog) {
+        activation.what = activateEvt;
+        activation.message = (long)window;
+        activation.when = TickCount();
+        activation.where.h = 0;
+        activation.where.v = 0;
+        activation.modifiers = active ? activeFlag : 0;
+        HandleModelessDialogEvent(&activation);
+    } else if (window == gMainWindow) {
+        if (gPage == pageTextEdit && gTE != nil) {
+            if (active) TEActivate(gTE);
+            else TEDeactivate(gTE);
+        }
+        if (gPage == pageStyledText && gStyledTE != nil && gStyledEditFocused) {
+            if (active) TEActivate(gStyledTE);
+            else TEDeactivate(gStyledTE);
+        }
+        if (gInventoryList != nil) {
+            gListActive = gPage == pageLists && active;
+            LActivate(gListActive, gInventoryList);
+            if (gPage == pageLists) DrawMainWindow();
+        }
+    }
+    SetPort(savedPort);
+}
+
 static void DoEvent(EventRecord *event)
 {
     WindowPtr window;
@@ -4840,6 +4991,7 @@ static void DoEvent(EventRecord *event)
 
     RecordShowcaseEvent(event,
                         gPage == pageEventsCursors && event->what == mouseDown);
+    if (HandleModelessDialogEvent(event)) return;
 
     switch (event->what) {
         case mouseDown:
@@ -4887,7 +5039,9 @@ static void DoEvent(EventRecord *event)
                 SetPort(window);
                 InvalRect(&window->portRect);
             } else if (part == inGoAway && TrackGoAway(window, event->where)) {
-                if (window == gStackWindow) {
+                if (window == (WindowPtr)gModelessDialog) {
+                    CloseModelessDialog();
+                } else if (window == gStackWindow) {
                     DisposeWindow(gStackWindow);
                     gStackWindow = nil;
                     /* The promoted auxiliary window may have been partly
@@ -4915,12 +5069,28 @@ static void DoEvent(EventRecord *event)
             break;
 
         case activateEvt:
-            window = (WindowPtr)event->message;
-            if (window == gMainWindow && gInventoryList != nil) {
-                gListActive = gPage == pageLists &&
-                              (event->modifiers & activeFlag) != 0;
-                LActivate(gListActive, gInventoryList);
-                if (gPage == pageLists) DrawMainWindow();
+            ActivateShowcaseWindow((WindowPtr)event->message,
+                                   (event->modifiers & activeFlag) != 0);
+            break;
+
+        case osEvt:
+            if (((unsigned long)event->message >> 24) == suspendResumeMessage) {
+                gInBackground = (event->message & resumeFlag) == 0;
+                window = FrontWindow();
+                if (window != nil) {
+                    HiliteWindow(window, !gInBackground);
+                    ActivateShowcaseWindow(window, !gInBackground);
+                }
+                /* Text (1993), TEToScrap/TEFromScrap: monostyled TextEdit
+                 * uses a private scrap. Export only a new cut/copy; import
+                 * on resume only when the system requests conversion. */
+                if (gInBackground && gPrivateScrapDirty) {
+                    if (ZeroScrap() == noErr && TEToScrap() == noErr) {
+                        gPrivateScrapDirty = false;
+                    }
+                } else if (!gInBackground && (event->message & convertClipboardFlag) != 0) {
+                    if (TEFromScrap() == noErr) gPrivateScrapDirty = false;
+                }
             }
             break;
 
@@ -4929,8 +5099,22 @@ static void DoEvent(EventRecord *event)
             key = (char)(event->message & charCodeMask);
             if ((event->modifiers & cmdKey) != 0) {
                 DoMenuChoice(MenuKey(key));
+            } else if (gPage == pageStyledText && gStyledTE != nil &&
+                       (event->modifiers & optionKey) != 0 &&
+                       (key == 'c' || key == 'e' || key == 'b' || key == 'n')) {
+                SetStyledSpacing(key == 'c' ? condense : key == 'e' ? extend :
+                                 key == 'b' ? (condense | extend) : 0);
+                DrawMainWindow();
             } else if (gPage == pageTextEdit && gTE != nil) {
                 TEKey(key, gTE);
+                DrawMainWindow();
+            } else if (gPage == pageStyledText && gStyledTE != nil && gStyledEditFocused) {
+                TEKey(key, gStyledTE);
+                DrawMainWindow();
+            } else if (gPage == pagePopupLists && (key == 'd' || key == 'e')) {
+                /* Exercise the guest CDEF's disabled ink and hit testing. */
+                if (gPopupResource != nil) HiliteControl(gPopupResource, key == 'd' ? 255 : 0);
+                if (gPopupProgrammatic != nil) HiliteControl(gPopupProgrammatic, key == 'd' ? 255 : 0);
                 DrawMainWindow();
             } else if (gPage == pageEventsCursors) {
                 DrawMainWindow();
@@ -4946,6 +5130,8 @@ static void DoEvent(EventRecord *event)
                 DrawAuxWindow(gAuxWindow);
             } else if (window == gStackWindow) {
                 DrawAuxWindow(gStackWindow);
+            } else if (window == (WindowPtr)gModelessDialog) {
+                DrawDialog(gModelessDialog);
             }
             EndUpdate(window);
             break;
@@ -4960,12 +5146,17 @@ void main(void)
     while (!gQuit) {
         if (WaitNextEvent(everyEvent, &event, 1, nil)) {
             DoEvent(&event);
-        } else if (gPage == pageTextEdit && gTE != nil) {
+        } else if (gModelessDialog != nil && FrontWindow() == (WindowPtr)gModelessDialog) {
+            HandleModelessDialogEvent(&event);
+        } else if (!gInBackground && gPage == pageTextEdit && gTE != nil) {
             TEIdle(gTE);
+        } else if (!gInBackground && gPage == pageStyledText && gStyledTE != nil && gStyledEditFocused) {
+            TEIdle(gStyledTE);
         } else if (gPage == pageSound) {
             PollShowcaseSound();
         }
     }
+    CloseModelessDialog();
     DisposeShowcaseSoundChannel();
     SetPalette(gMainWindow, nil, true);
     if (gShowcasePalette != nil) DisposePalette(gShowcasePalette);

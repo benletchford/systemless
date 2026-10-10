@@ -1,0 +1,208 @@
+{
+  "scope": "Thirty-two explicitly listed composed images visually reviewed across PPC, mono68k and colour68k at scene scales 0.75, 1, 1.5 and 2. Complete 192-case matrix captured; remaining images not visually reviewed. No all-state appearance, all-font/style, editing, host integration or performance qualification.",
+  "images": [
+    {
+      "file": "selection-ppc16-suspended-none-1.png",
+      "sha256": "a70f9283534d0296837b8538b721c175f0e444db22da8351ecee1f7da7be8dbd",
+      "observations": "Selection hidden; title inactive grey; smooth mixed field and underline remain visible at unchanged bounds.",
+      "capture_sha256": "9db1e5675b1a170f82b1ef13202ebb278efc20e3c4d3a8f4a5e255176d50f1d6"
+    },
+    {
+      "file": "caret-ppc16-visible-0-1.png",
+      "sha256": "87ef67036c15dfed46a49fd6c0b2eaa6cbed2a4ae5d9d9400979961966f6f11c",
+      "observations": "Visible insertion caret at field start alongside smooth mixed text; active window and underline retained.",
+      "capture_sha256": "dfd135019188d1648340ddf72f8fbe5407c616e3a5ab556bf43f86e627cb820d"
+    },
+    {
+      "file": "caret-ppc16-visible-26-1.png",
+      "sha256": "aa60133015f3f2cecf52401e8c05119cbcb29d1e3b92d94188a3788a81e8c0f9",
+      "observations": "Visible insertion caret at native offset 26 before Font run; native distinct run paint/insertion positions retained.",
+      "capture_sha256": "c4916abd364529da144a62b79ac7d32b66156970d1d45bf1943f362c33decd96"
+    },
+    {
+      "file": "selection-ppc8-selected-none-1.png",
+      "sha256": "bafb36f28344311e3bd534c1c0d5b89d4ed870369ee7b709ee088773f3a77261",
+      "observations": "Native partial selection inverts physical palette colours; smooth mixed text and underline remain visible within unchanged bounds.",
+      "capture_sha256": "20db8a0bedab7a24c5c2b3ab87f932b9bd84f0fd4ccff84c6933ed9560d122ab"
+    },
+    {
+      "file": "selection-ppc16-resumed-none-0.75.png",
+      "sha256": "9771a784432fd1fd477e23f89d2df37a9c0f3dc074f15bccd08c8abf4f4122ee",
+      "observations": "After resume, selection visible with native inverted colours; mixed smooth text and underline retained at small scene scale.",
+      "capture_sha256": "32465e12fee25009bf0d47eb9ead57a67e6683ad1c69ac07d333d333f8eb287b"
+    },
+    {
+      "file": "caret-ppc16-blink-off-26-2.png",
+      "sha256": "cfe239dbd188b0bdae61a61c538802cee134487d40152dfe682570866e87096f",
+      "observations": "Blink-off hides insertion caret; smooth mixed text and underline remain within native field bounds.",
+      "preview_note": "Image tool resized 3200x2400 to 1824x1368 for inspection; not per-pixel appearance proof.",
+      "capture_sha256": "ffb62c3f0a76efb629acdd7050746e480a9f273b5fed25a5894aca3d71db2b2b"
+    },
+    {
+      "file": "caret-ppc8-suspended-0-0.75.png",
+      "sha256": "d1d6fc8c2a94692f81abb2620f81cfe4815baf0f97f90274aa60c67c87383735",
+      "observations": "Suspension hides caret and makes title inactive grey; smooth text and underline retained.",
+      "capture_sha256": "b85aa75a7a5925f7295ada4a7170c071c072473145dd462511a409f466fa2bf2"
+    },
+    {
+      "file": "caret-ppc8-visible-0-2.png",
+      "sha256": "6e36ebe488107a06c2e379d4925d89db57614b3ae33794502007df0fe5b65155",
+      "observations": "Visible start caret and smooth mixed text retained at large scene scale.",
+      "preview_note": "Image tool resized 3200x2400 to 1824x1368 for inspection; not per-pixel appearance proof.",
+      "capture_sha256": "d6489dc021ae9623299a7375f2837a497431adbf39f9b7e2d1739dab028426ce"
+    },
+    {
+      "file": "inactive-mono-inactive-none-0.75.png",
+      "sha256": "f2fcfa33842cdcdaa4af967f23ff5fc3de7fb02ca1592138c1c727713ab756f6",
+      "observations": "Inactive monochrome window: selection hidden, smooth mixed text and underline visible inside native view bounds. Native monochrome custom black panels retained.",
+      "capture_sha256": "902f10f778ea63e4dabd77916e4a628e1a5bf3d415793c54649a03d3a90cc2a5"
+    },
+    {
+      "file": "selection-mono-selected-none-0.75.png",
+      "sha256": "bce8e0120dde5a037f7611ad8e3025a4307002f64c94fec38fafe24d334b124a",
+      "observations": "Active monochrome window: partial selection inverts native black/white text; smooth mixed text and underline visible at original layout positions. Native custom black panels retained.",
+      "capture_sha256": "cd98c48809cfc2c1c7b78430bab9004644eb7e4206885dc7c4b453797af34a08"
+    },
+    {
+      "file": "inactive-mono-inactive-none-2.png",
+      "sha256": "db0400eaea936cf744012ab268407e17cf9009029d1e8339dac658eff197db04",
+      "observations": "At scale2, inactive monochrome field keeps smooth mixed text and underline with selection hidden and native bounds retained.",
+      "preview_note": "Image tool resized to 1824x1368 for visual inspection; not per-pixel appearance proof.",
+      "capture_sha256": "3ee1058b6ab7eca028e20341f22bce53183e81fe2de978fe8fbf93111f9b14cf"
+    },
+    {
+      "file": "selection-mono-selected-none-1.5.png",
+      "sha256": "7092acea0d1fe0312f7825ed0bafa4f859f91b9eee86c42f4931dcea8e57b410",
+      "observations": "At scale1.5, active monochrome partial selection and smooth mixed text retain native bounds, underline, and custom black panels.",
+      "preview_note": "Image tool resized to 1824x1368 for visual inspection; not per-pixel appearance proof.",
+      "capture_sha256": "bc89e999b14d70ecf180a0f2677e7cc2ae9006a83f039ae48f2804923992e43a"
+    },
+    {
+      "file": "selection-mono-suspended-none-0.75.png",
+      "sha256": "6817d2c07f0e7b16be3a1bc6dc950cbb5ebe3839a86a0ceb5d5366950c272090",
+      "observations": "Suspension hides monochrome selection and makes title inactive grey; smooth mixed text and underline retained inside native view. Custom black panels remain guest pixels.",
+      "capture_sha256": "0342e3ecc34fd17703d07bb42ae16ace593c1081343cd0d0528f1d6a1622e65a"
+    },
+    {
+      "file": "selection-mono-suspended-none-2.png",
+      "sha256": "fa64a86c094336cc105632db934a06590ddc490d6b693cab3553f9a967da60bb",
+      "observations": "Large-scale suspended field: selection hidden, title inactive grey, smooth text and underline retained at native view bounds.",
+      "preview_note": "Image tool resized 3200x2400 to 1824x1368; not per-pixel appearance proof.",
+      "capture_sha256": "0113e57e4b8fe7a402a1830265eeaf1f89436b726ccad9b9150e02d7810ce9dd"
+    },
+    {
+      "file": "selection-mono-resumed-none-0.75.png",
+      "sha256": "bce8e0120dde5a037f7611ad8e3025a4307002f64c94fec38fafe24d334b124a",
+      "observations": "After resume, partial black/white selection returns; smooth text, underline and view bounds retained.",
+      "capture_sha256": "cd98c48809cfc2c1c7b78430bab9004644eb7e4206885dc7c4b453797af34a08"
+    },
+    {
+      "file": "selection-mono-resumed-none-1.5.png",
+      "sha256": "7092acea0d1fe0312f7825ed0bafa4f859f91b9eee86c42f4931dcea8e57b410",
+      "observations": "After resume at scale1.5, monochrome selection returns with smooth mixed text, native view bounds and underline retained.",
+      "preview_note": "Image tool resized 2400x1800 to 1824x1368; not per-pixel appearance proof.",
+      "capture_sha256": "bc89e999b14d70ecf180a0f2677e7cc2ae9006a83f039ae48f2804923992e43a"
+    },
+    {
+      "file": "caret-mono-visible-0-0.75.png",
+      "sha256": "62a3c00e81a38fee1877064ff8f747a9006890e04f1db7d3776eb07a8b689a80",
+      "observations": "Visible monochrome start caret alongside smooth mixed text and native underline; field bounds and native custom panels retained.",
+      "capture_sha256": "b58e2a2491f66b0a2e9163fbc0c24c3ef2e95badb8d4962ef1c58e9055804aca"
+    },
+    {
+      "file": "caret-mono-visible-0-1.5.png",
+      "sha256": "f8b3f9d75610c252b79ab6ed359bb007d88771206323d11712647af141ed1a88",
+      "observations": "Visible monochrome start caret retained at scale1.5 beside smooth mixed text and underline inside native view bounds.",
+      "preview_note": "Image tool resized 2400x1800 to 1824x1368; not per-pixel appearance proof.",
+      "capture_sha256": "6e797de67b553d39f32366bb0be58e8f4f7f22a9bc6aff1a99591b1a4c314efa"
+    },
+    {
+      "file": "caret-mono-blink-off-0-0.75.png",
+      "sha256": "f2fcfa33842cdcdaa4af967f23ff5fc3de7fb02ca1592138c1c727713ab756f6",
+      "observations": "Monochrome blink-off hides start caret while smooth mixed text and underline remain within native view bounds.",
+      "capture_sha256": "902f10f778ea63e4dabd77916e4a628e1a5bf3d415793c54649a03d3a90cc2a5"
+    },
+    {
+      "file": "selection-colour-selected-none-0.75.png",
+      "sha256": "da2c607dcda55a4dd158ee542a57bfaec857291dbdf5b74c67b7880607a20497",
+      "observations": "Colour68k selected field shows smooth mixed text with native inverted physical colours and underline, inside native bounds.",
+      "capture_sha256": "17e1f2d7dfcb99ce07d30c504083a4bb06cb1bfbf04c80ceb5771e6ac4cc26b8"
+    },
+    {
+      "file": "selection-colour-suspended-none-1.png",
+      "sha256": "84cc6107a3f949df78f747e276e683354e76782da6f47a9b183ae242e6562165",
+      "observations": "Suspended colour68k field hides selection and has inactive grey title; smooth mixed text and underline retained.",
+      "capture_sha256": "7fa108d474be39fec0fe0605841a9e865ba5f0b9f8d35355e064c6b7a280fba1"
+    },
+    {
+      "file": "selection-colour-resumed-none-1.5.png",
+      "sha256": "f1aee6406404e421f77ed1b9f785fbc93fd875ccb6326cd4038ec01cb1e18dd6",
+      "observations": "Colour68k selection returns after resume at scale1.5; smooth mixed text, underline and native view retained.",
+      "preview_note": "Image tool resized 2400x1800 to 1824x1368; not per-pixel appearance proof.",
+      "capture_sha256": "7b9c4181a2cdfcfc5dc2ea55953538b8f7b73af0ffc2a286d777717e16e014d8"
+    },
+    {
+      "file": "caret-colour-visible-0-1.png",
+      "sha256": "e3cb7c70ac76a6364bce4be91b97d1cb5767a6682dc6a2f167c3ebb0f5041f73",
+      "observations": "Colour68k visible start caret sits beside smooth mixed text; native field bounds, underline and app-drawn content retained.",
+      "capture_sha256": "223013e15d903f5c93c67c5e0596ca8d1fd81b3f788631a8788b7834d7c7a16f"
+    },
+    {
+      "file": "caret-colour-blink-off-0-2.png",
+      "sha256": "13e03e35e7a4aac901099179778315e2a9cdc649a9b9d44e5d4712469278c698",
+      "observations": "Large-scale colour68k blink-off hides the caret; smooth mixed text, native underline and view bounds retained.",
+      "preview_note": "Image tool resized 3200x2400 to 1824x1368; not per-pixel appearance proof.",
+      "capture_sha256": "0123c38d6d9d707902f63fa7ef0f1ced84a01276db1a8fca05de6ae24e3b665f"
+    },
+    {
+      "file": "caret-colour-suspended-0-0.75.png",
+      "sha256": "d1d6fc8c2a94692f81abb2620f81cfe4815baf0f97f90274aa60c67c87383735",
+      "observations": "Suspended colour68k caret hidden; inactive title grey and smooth mixed text/underline retained.",
+      "capture_sha256": "b85aa75a7a5925f7295ada4a7170c071c072473145dd462511a409f466fa2bf2"
+    },
+    {
+      "file": "caret-colour-resumed-0-2.png",
+      "sha256": "fa81371bf30631c4b2ace43f53132c34874ddd140e7beadaf5427c2c09a693ae",
+      "observations": "Resumed colour68k start caret returns at scale2 beside smooth mixed text; underline and view bounds retained.",
+      "preview_note": "Image tool resized 3200x2400 to 1824x1368; not per-pixel appearance proof.",
+      "capture_sha256": "6d78bbb270385cef4ebc71c30ab3568cccb9b0879f56033bc7be3824084ceac9"
+    },
+    {
+      "file": "caret-mono-visible-26-1.png",
+      "sha256": "ffcabf10c13f3f35d81c8da1b3daccded0592731a89871f37913e0031adc8c8a",
+      "observations": "Monochrome caret at offset26 before Font run; smooth mixed text and underline retained at native placement.",
+      "capture_sha256": "d439a3dafc948ac436836f45c1e30f881e28e563f1f49b2e87bd898f9a2eb6ee"
+    },
+    {
+      "file": "caret-mono-suspended-26-0.75.png",
+      "sha256": "6817d2c07f0e7b16be3a1bc6dc950cbb5ebe3839a86a0ceb5d5366950c272090",
+      "observations": "Suspended monochrome offset26 caret hidden; inactive grey title and smooth text retained.",
+      "capture_sha256": "0342e3ecc34fd17703d07bb42ae16ace593c1081343cd0d0528f1d6a1622e65a"
+    },
+    {
+      "file": "caret-colour-visible-26-1.png",
+      "sha256": "0a0eadff90f9e7b1b956ec1f21921315b40bb0fca56374130271cb0124888641",
+      "observations": "Colour68k caret at offset26 before Font retains native insertion placement beside smooth mixed text and underline.",
+      "capture_sha256": "79989cfeae86c53fc6a08a0c7c07072893c5ccbb02d546f6f36fdfabd85dcdf4"
+    },
+    {
+      "file": "caret-colour-blink-off-26-0.75.png",
+      "sha256": "155c7813a86ed19a5c6197158080c2a6ce75fa9863739a0d7e15382810972e2a",
+      "observations": "Colour68k offset26 blink-off hides caret, retaining smooth mixed text, underline and native view bounds.",
+      "capture_sha256": "25c8ae7eacf8adf0ed71ba6b64887d61e509fc9ff948040f7c370f64303871f7"
+    },
+    {
+      "file": "caret-ppc8-resumed-26-2.png",
+      "sha256": "b099a0cd60845ea67b8076362ba558d5c2316876c120142883235941c7e9c4e2",
+      "observations": "PPC8 resumed offset26 caret visible at scale2, with native insertion placement, smooth mixed text and underline retained.",
+      "preview_note": "Image tool resized 3200x2400 to 1824x1368; not per-pixel appearance proof.",
+      "capture_sha256": "80e21c36e9f4f2cf441b8dc3472d4b381b08fbb13e32ea5e47fee1605fdc8b3a"
+    },
+    {
+      "file": "caret-colour-suspended-26-1.png",
+      "sha256": "84cc6107a3f949df78f747e276e683354e76782da6f47a9b183ae242e6562165",
+      "observations": "Suspended colour68k offset26 caret hidden; title grey, smooth mixed text and underline retained within native view bounds.",
+      "capture_sha256": "7fa108d474be39fec0fe0605841a9e865ba5f0b9f8d35355e064c6b7a280fba1"
+    }
+  ]
+}

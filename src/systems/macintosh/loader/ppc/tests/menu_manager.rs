@@ -505,8 +505,12 @@ fn native_insert_menu_preserves_regular_and_hierarchical_partitions() {
     assert_eq!(snapshot.menus.len(), 2);
     assert!(!snapshot.menus[0].hierarchical);
     assert!(snapshot.menus[0].visible_in_menu_bar);
+    assert!(snapshot.menus[0].standard_definition);
     assert!(snapshot.menus[1].hierarchical);
     assert!(!snapshot.menus[1].visible_in_menu_bar);
+    loaded.memory.write_u16_be(menu_list + 4, 0x0808).unwrap();
+    assert!(ppc_guest_menu_snapshot(&mut loaded.memory, menu_list_handle).custom_bar_definition);
+    loaded.memory.write_u16_be(menu_list + 4, 0).unwrap();
     assert_eq!(
         ppc_get_menu_handle(&mut loaded.memory, menu_list_handle, 200),
         hierarchical
@@ -639,6 +643,45 @@ fn native_insert_menu_preserves_regular_and_hierarchical_partitions() {
         Some(before_duplicate),
         "reinserting a current menu must be a no-op"
     );
+
+    // A resource-backed standard MDEF is still host-presentable even when
+    // its bytes are not the synthetic standard shim. A custom ID retains
+    // guest rendering. Macintosh Toolbox Essentials (1992), pp. 3-3, 3-87.
+    const MDEF_HANDLE: u32 = 0x00a0_0000;
+    const MDEF_PROC: u32 = MDEF_HANDLE + 0x20;
+    loaded.memory.add_region(MDEF_HANDLE, vec![0; 0x80]);
+    loaded.memory.write_u32_be(MDEF_HANDLE, MDEF_PROC).unwrap();
+    let regular_ptr = loaded.memory.read_u32_be(regular).unwrap();
+    loaded
+        .memory
+        .write_u32_be(regular_ptr + 6, MDEF_HANDLE)
+        .unwrap();
+    let mut resource = PpcVfsResourceRecord {
+        ref_num: 1,
+        path: String::new(),
+        res_type: u32::from_be_bytes(*b"MDEF"),
+        res_id: 0,
+        name: Vec::new(),
+        data: Vec::new(),
+        raw_data: None,
+        raw_attrs: None,
+        attrs: 0,
+        handle: MDEF_HANDLE,
+    };
+    let standard = ppc_guest_menu_snapshot_with_resources(
+        &mut loaded.memory,
+        menu_list_handle,
+        std::slice::from_ref(&resource),
+    );
+    assert!(standard.menus[0].standard_definition);
+    resource.res_id = 256;
+    let custom = ppc_guest_menu_snapshot_with_resources(
+        &mut loaded.memory,
+        menu_list_handle,
+        std::slice::from_ref(&resource),
+    );
+    assert!(!custom.menus[0].standard_definition);
+    assert!(custom.requires_guest_menu_rendering());
 }
 
 #[test]
@@ -1914,6 +1957,83 @@ fn native_popup_draws_from_the_live_shared_menu_color_table() {
 }
 
 #[test]
+fn tracked_menu_draws_partial_text_without_overwriting_scroll_slots() {
+    let pef = synthetic_pef_with_import(b"NewMenu");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let menu = install_test_menu(
+        &mut loaded,
+        PPC_DATA_BASE + 0x1000,
+        128,
+        b"File",
+        b"    ;    ;    ;    ",
+    );
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let appearances = ppc_menu_item_appearances(&mut loaded.memory, menu, &[], 0);
+    let mut state = ppc_begin_tracked_menu_with_appearances(
+        &mut loaded.memory,
+        front,
+        MenuTrackingKind::MenuBar,
+        menu,
+        11,
+        20,
+        20,
+        120,
+        64,
+        0,
+        appearances,
+    )
+    .unwrap();
+    state.content_top = 12;
+    let render = |loaded: &mut PpcLoadedApp| {
+        ppc_draw_tracked_menu(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &loaded.screen_clut,
+            MenuColorTable::new(&[]),
+            StandardMenuPaneKind::PullDown,
+            &state,
+            0,
+        );
+        let mut pixels = Vec::new();
+        for y in 10..90 {
+            for x in 10..150 {
+                pixels.push((
+                    x,
+                    y,
+                    ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)),
+                ));
+            }
+        }
+        pixels
+    };
+    let before = render(&mut loaded);
+    let white = ppc_physical_screen_color_pixel(front, PPC_RGB_WHITE, &loaded.screen_clut);
+    assert_eq!(before.iter().find(|pixel| (pixel.0, pixel.1) == (30, 22)).unwrap().2,
+        white, "scroll slot background must contrast with its black arrow");
+    let (address, length) = ppc_menu_item(&mut loaded.memory, menu, 2).unwrap();
+    assert_eq!(length, 4);
+    for offset in 1..=4 {
+        loaded.memory.write_u8(address + offset, b'M').unwrap();
+    }
+    let after = render(&mut loaded);
+    let changed = before
+        .iter()
+        .zip(&after)
+        .filter(|(a, b)| a.2 != b.2)
+        .collect::<Vec<_>>();
+    assert!(
+        !changed.is_empty(),
+        "the exposed part of row 2 must contain text"
+    );
+    for (pixel, _) in changed {
+        assert!(
+            (21..139).contains(&pixel.0) && (36..44).contains(&pixel.1),
+            "partial text escaped its visible row: {pixel:?}"
+        );
+    }
+}
+
+#[test]
 fn tracked_menu_renders_each_standard_text_style() {
     let pef = synthetic_pef_with_import(b"NewMenu");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -2350,6 +2470,12 @@ fn native_custom_mdef_adapter_marshals_shared_choose_invocation() {
         .memory
         .write_u32_be(menu_ptr + 6, mdef_handle)
         .unwrap();
+    let presentation = loaded.guest_menu_snapshot();
+    assert!(presentation.requires_guest_menu_rendering());
+    assert!(presentation
+        .menus
+        .iter()
+        .any(|item| item.id == 128 && !item.standard_definition));
 
     let invocation = MenuDefinitionInvocation {
         message: crate::menu_manager::MenuDefinitionMessage::Choose,
@@ -3358,18 +3484,20 @@ fn tracked_submenu_aligns_after_a_variable_height_icon_row() {
     loaded.set_current_resource_refnum(5);
     let mut icon = vec![0; 128];
     icon[0] = 0x80;
-    loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
-        ref_num: 5,
-        path: "Menu Icons".to_owned(),
-        res_type: u32::from_be_bytes(*b"ICON"),
-        res_id: 257,
-        name: Vec::new(),
-        data: icon,
-        raw_data: None,
-        raw_attrs: None,
-        attrs: 0,
-        handle: 0,
-    });
+    loaded
+        .process_file_system
+        .push_vfs_resource(PpcVfsResourceRecord {
+            ref_num: 5,
+            path: "Menu Icons".to_owned(),
+            res_type: u32::from_be_bytes(*b"ICON"),
+            res_id: 257,
+            name: Vec::new(),
+            data: icon,
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
     ppc_track_menu_while_held_with_resources(
         &mut loaded.memory,
         &loaded.gworlds,
@@ -3409,6 +3537,29 @@ fn tracked_submenu_aligns_after_a_variable_height_icon_row() {
     let child = tracking.submenus.first().expect("submenu did not open");
     assert_eq!(tracking.highlighted_item, 2);
     assert_eq!(child.popup_top, parent_top);
+    assert_eq!(
+        loaded.toolbox_startup.retained_host_overlay_rects(),
+        vec![
+            (
+                tracking.popup_top,
+                tracking.popup_left,
+                tracking.popup_top + tracking.saved_height,
+                tracking.popup_left + tracking.saved_width
+            ),
+            (
+                child.popup_top,
+                child.popup_left,
+                child.popup_top + child.saved_height,
+                child.popup_left + child.saved_width
+            ),
+        ],
+        "all menu panes and saved shadow strips must survive desktop composition"
+    );
+    loaded.toolbox_startup.execution.menu().set(None);
+    assert!(loaded
+        .toolbox_startup
+        .retained_host_overlay_rects()
+        .is_empty());
 }
 
 #[test]
@@ -4465,7 +4616,9 @@ fn hle_import_runner_builds_and_draws_mbar_resources() {
     ppc_set_current_menu_list(&mut loaded.memory, menu_list_handle);
     let menu_list = loaded.memory.read_u32_be(menu_list_handle).unwrap();
     assert_eq!(loaded.memory.read_u16_be(menu_list), Some(12));
-    assert_eq!(loaded.memory.read_u16_be(menu_list + 4), Some(1000));
+    // DynamicMenuList.mbResID identifies MBDF, not the MBAR resource.
+    // Macintosh Toolbox Essentials (1992), pp. 3-97--3-98, 3-104, 3-111.
+    assert_eq!(loaded.memory.read_u16_be(menu_list + 4), Some(0));
     let file_menu = ppc_get_menu_handle(&mut loaded.memory, menu_list_handle, 128);
     assert_ne!(file_menu, 0);
     assert_ne!(
@@ -4505,6 +4658,7 @@ fn hle_import_runner_builds_and_draws_mbar_resources() {
     );
     assert_eq!(standard_menu_title_advance(&[0x14]), 11);
     let snapshot = loaded.guest_menu_snapshot();
+    assert!(!snapshot.custom_bar_definition);
     assert_eq!(snapshot.menus.len(), 2);
     assert_eq!(snapshot.menus[0].title, "Systemless");
     assert_eq!(snapshot.menus[1].title, "File");
@@ -6255,6 +6409,13 @@ fn native_getnewmbar_rebuilds_menu_color_state_from_loaded_menus() {
     run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNewMBar);
 
     assert_ne!(loaded.cpu.gpr[3], 0);
+    assert_eq!(
+        ppc_menu_list_definition(&mut loaded.memory, loaded.cpu.gpr[3])
+            .unwrap()
+            .mb_res_id,
+        0,
+        "MBAR ID must not become the MBDF definition ID"
+    );
     assert_eq!(
         loaded
             .memory
@@ -8511,11 +8672,17 @@ fn menu_creation_disposal_loading_and_sizing_commands_dispatch_with_canonical_ev
             let pef = synthetic_pef_with_library_import(lib, b"DisposeMenu");
             let mut loaded = load_pef_application(&pef).unwrap();
             let menu = install_test_menu(&mut loaded, 0x60000, 202, b"\x04Help", b"");
+            let generation = loaded.guest_menu_snapshot().menus[0].generation;
+            assert_ne!(generation, 0);
             loaded.cpu.gpr[3] = menu;
             let probe = loaded.run_with_hle_imports(64);
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(loaded.memory.read_u32_be(menu), Some(0));
+            loaded.process_file_system.resource_manager.with_mut(|resources| {
+                assert!(!resources.menu_generations.contains_key(&menu));
+                assert_ne!(resources.menu_generation(menu), generation);
+            });
 
             // Null menu handle in DisposeMenu handles gracefully
             let pef = synthetic_pef_with_library_import(lib, b"DisposeMenu");
@@ -10309,4 +10476,20 @@ fn menu_tracking_and_popup_selection_commands_dispatch_with_canonical_evaluation
     loaded.cpu.gpr[6] = 1;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::PopUpMenuSelect);
     assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
+fn shared_menu_font_measurement_matches_native_quickdraw() {
+    for family in [0, 1, 3, 4, 128] {
+        for size in [0, 9, 12, 17, 24] {
+            let font = crate::menu_model::GuestMenuFont { family, size };
+            for text in [b"Deep Field Archive".as_slice(), &[0x80, 0x8e, 0xae, 0xc9], b""] {
+                assert_eq!(
+                    font.text_advance(text),
+                    ppc_text_bytes_advance_for_font(text, family, size),
+                    "font family {family}, size {size}, bytes {text:?}"
+                );
+            }
+        }
+    }
 }

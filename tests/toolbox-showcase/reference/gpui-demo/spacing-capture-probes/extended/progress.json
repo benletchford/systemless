@@ -1,0 +1,73 @@
+{
+  "smooth_review": true,
+  "compositor": "shared Demo renderer",
+  "source_commit": "3529c7dff6004b21e2ce2f5046c722f0557a32ec",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "eb1d0874482535b67bd31b34df84a9c78ced082f5e6b4207e3e59d005f848ccc",
+    "src/bin/gpui_demo_text.rs": "3e8870b2a2ab33cabd04300be212e1f558f656484478dc3f632256d1983b1c8b",
+    "tests/toolbox-showcase/capture-gpui-styled-text-matrix.py": "1df6b7465fef6f0cf4f2991360754d003f2d158443500e306c4bd381addf8502",
+    "tests/toolbox-showcase/verify-gpui-smooth-styled-provenance.py": "56e9ae61b0fc90aae04c731f64e097fce38dccf9a3882caae095da6b5d34774b",
+    "tests/toolbox-showcase/check-gpui-smooth-styled-verifier.py": "61524df3e71282bda09bc5f265c384d860bc5d6e8da0985a83fd08e1f3e57513",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "ab6ea5665bb0e3743122b51b7035475275ce88c48c040f3e52b536a581123bbc"
+  },
+  "capture_binary_sha256": "2b3595270f8495feee3962e5bfa68aa86c748a51f4e06ab21fbe4a6fcd409b2c",
+  "fixture_sha256": "ab6ea5665bb0e3743122b51b7035475275ce88c48c040f3e52b536a581123bbc",
+  "matrix_kind": "multiline",
+  "spacing_style": "extended",
+  "field_bounds": [
+    126,
+    74,
+    164,
+    561
+  ],
+  "runtime_cpu_evidence": "active application runtime",
+  "complete": false,
+  "cases": [
+    {
+      "kind": "multiline",
+      "mode": "mono",
+      "actual_depth": 1,
+      "state": "selected",
+      "insertion_offset": null,
+      "scale": 1,
+      "device_scale": 2,
+      "rendered": "systemless-extended-native-probe.png",
+      "guest": "systemless-extended-native-probe.guest.png",
+      "evidence": "systemless-extended-native-probe.json",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "1",
+        "--capture-styled-spacing",
+        "extended",
+        "--capture-styled-text-edit-multiline",
+        "/tmp/systemless-extended-native-probe.png"
+      ],
+      "smooth_raster_support_1_through_8": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "rendered_dimensions": [
+        1600,
+        1200
+      ],
+      "device_scale_evidence": "inferred from composed dimensions and requested scene scale",
+      "binary_ink_oracle": "not applied to antialiased coverage",
+      "rendered_sha256": "19c648b56f18a37f4568b3edda769ef7e2f200a6763ddf5b7489cf52f197eb8c",
+      "guest_sha256": "562ae1091bf79e056ddbd0105f1d19062f6ccdbb50b89547d417764fe6adb858",
+      "evidence_sha256": "a3b8317733f6414b3e6220a22e41a59f2be66fedceff96ee26c7e1762513d5a9",
+      "capture_rendered_sha256": "e8b29513ea32b0f3d84a45538103952e7682cfdff5df12f0c092673b78de5118",
+      "capture_guest_sha256": "cb8661358b5137b82755cfba24e2f3e10008c8b8b005d53997bbb6c98235691b"
+    }
+  ],
+  "scope": "One actual uncommitted-source manual mono68k extended multiline probe; partial metadata only, not a completed matrix or native font oracle."
+}

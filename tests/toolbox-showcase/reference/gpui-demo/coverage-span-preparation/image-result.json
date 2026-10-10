@@ -1,0 +1,17 @@
+{
+  "source_sha256": "93443fef96612b1665402ed78398f6391861dfaa1c1bc68e9f68609d542fca57",
+  "harness_sha256": "7362f501657d6354bf5cff298a3e4d336923170247940c415cfae023fdb5fdc0",
+  "log_sha256": "a249a83953eebe0173727210317a30c2569097c6e1c219bc2b4d6ac198ff9538",
+  "capture_sha256": {
+    "mono": "b2e2eaaad73fb96278dd2772f76e09b12da8673c849cd03ab65589ce42f01536",
+    "ppc8": "46a2550b4a6072a9fea956c3568e8592206006660d7f18439a7a96e51b848160",
+    "ppc16": "3577a66227e6fb52f0d2f6dd8e07cce0ac2f02b5749698d65a385c81aa5b375a"
+  },
+  "crop": [
+    148,
+    252,
+    1122,
+    328
+  ],
+  "scope": "Actual-source standalone span helper reconstructs full opaque RGBA field crops exactly. Includes white background pixels, so counts are not the current compositor primitive count. Not yet integrated or benchmarked."
+}

@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "qualification_kind": "caret_colour_counterexample",
+  "source_commit": "1ed0293bc430d5b634ce38d1edbd5a7306febb7d",
+  "capture_binary_sha256": "3bc9038892a3ca496642f2a465e7d2b2e8366a6d0122bf282b50a357fb1f8a1e",
+  "fixture": "tests/toolbox-showcase/toolbox-showcase.sit",
+  "fixture_sha256": "17e3cd4dd1a2510627b55487db166773759319f93454bb9141ad8a80bc40d4b8",
+  "field_bounds": [
+    126,
+    74,
+    164,
+    561
+  ],
+  "scope": "Two insertion-start classic-theme field rasters only; no complete CPU/scale/blink/activation matrix, production ownership or native Macintosh oracle evidence",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "7635cf629767f9cf7ef2a3cd1e54ff093210dd0abc1262c85448eebb2cab935c",
+    "src/bin/gpui_demo_text.rs": "b60bdc5d136f465e7e4e650e03fb96e5caf416d1f47d9f3193949dde256c6f93",
+    "src/systems/macintosh/text_edit.rs": "51e341b20f82dc9a3a1c683dca4144a0f125a6c366af274127e5fc5091807c08",
+    "src/systems/macintosh/text_edit/drawing.rs": "a7b3f03458a41e3abe0a1ec26c8af5043342304ec8e5c81aeecca8ebd57aa326",
+    "src/systems/macintosh/trap/dialog.rs": "572d003add5f0d80c0047c79bc635c9ee0e4ed9a70efc967977f83223d439b77",
+    "src/systems/macintosh/trap/quickdraw.rs": "d807a4c456fc911945797ca338d938178a363e0d34363b62abec7ac2a5e26318",
+    "src/systems/macintosh/memory/presentation.rs": "e9c46a6706388ff59db3207bdc10e2f29aeb3bedabcf6b061c65a2d837c7aee9",
+    "src/systems/macintosh/loader/ppc/loaded_app_display.rs": "b40f62d626a5f432d97e19585baf0ee1928226a539c8b262b2ff2615965b80f6"
+  },
+  "cases": [
+    {
+      "mode": "colour",
+      "scale": 1,
+      "device_scale": 2,
+      "insertion_offset": 0,
+      "selection": [
+        0,
+        0
+      ],
+      "active": true,
+      "caret_visible": true,
+      "caret_column": [
+        75,
+        126,
+        144
+      ],
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-styled-caret-offset",
+        "0",
+        "--capture-scale",
+        "1",
+        "--capture-styled-text-edit-caret",
+        "/tmp/systemless-colour-styled-caret-start.png"
+      ],
+      "rendered": "colour.png",
+      "rendered_sha256": "9099126a0b6cbd15792af0748c2d21c0e31afd88b51668821d0bbac348a466f8",
+      "original_rendered_sha256": "d21dfedb2f0e61800daaa1dbf2ec60b44282215e24ebe0deb6491592485a6f79",
+      "guest": "colour.guest.png",
+      "guest_sha256": "ac3ad4dc699ef8e040f271d5e2773816dd48e775ef507fb3151a318cee8862f9",
+      "original_guest_sha256": "a46d82531658cbad5871ef1e86981e8db99562b26132485b2734f55c95cec930",
+      "caret_rgb": [
+        179,
+        84,
+        179
+      ]
+    },
+    {
+      "mode": "ppc8",
+      "scale": 1,
+      "device_scale": 2,
+      "insertion_offset": 0,
+      "selection": [
+        0,
+        0
+      ],
+      "active": true,
+      "caret_visible": true,
+      "caret_column": [
+        75,
+        126,
+        144
+      ],
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-styled-caret-offset",
+        "0",
+        "--capture-scale",
+        "1",
+        "--capture-styled-text-edit-caret",
+        "/tmp/systemless-ppc16-styled-caret-start.png"
+      ],
+      "rendered": "ppc16.png",
+      "rendered_sha256": "94920545c9bb934a2704913558fc68d1472c74c28b74bb11c579aeb770b2511f",
+      "original_rendered_sha256": "49ea1a261be9cfd8ae4263a07562703dc69b82e61c719bbae1332cebc2256c62",
+      "guest": "ppc16.guest.png",
+      "guest_sha256": "52c4c174aafedda2eda1112bd28fc9b8f27425cc41e1e37a115eb2e3f24d7829",
+      "original_guest_sha256": "4c4616cdac697be012baa16ec1528c0b0984f1ea0b478bd1932db714bea79fc7",
+      "caret_rgb": [
+        0,
+        0,
+        0
+      ],
+      "requested_mode": "ppc16",
+      "actual_depth": 8
+    }
+  ],
+  "depth_correction": "Pinned capture helper initialized PPC at 8bpp when no explicit depth was supplied. Original PPC16 labels were incorrect; native/composed pixel comparisons remain evidence at PPC8 only."
+}

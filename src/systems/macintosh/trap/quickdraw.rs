@@ -4982,8 +4982,10 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // RGBForeColor ($AA14)
-            // RGBForeColor ($AA14): Sets fg_color (R, G, B)
+            // RGBForeColor (0xAA14)
+            // Sets the foreground RGB color and resolves its current-port pixel value.
+            // PROCEDURE RGBForeColor (color: RGBColor);
+            // Imaging With QuickDraw (1994), pp. 4-70--4-71.
             (true, 0x214) => {
                 let sp = cpu.read_reg(Register::A7);
                 let color_ptr = bus.read_long(sp);
@@ -6697,13 +6699,17 @@ impl super::TrapDispatcher {
                     // restores all screens.
                     //
                     // Systemless models a single active CLUT device, so both
-                    // NIL and the main GDevice restore to the canonical
-                    // system 8bpp CLUT.
+                    // NIL and the main GDevice restore defaults for the
+                    // active indexed depth and color/grayscale personality.
                     let gdh = bus.read_long(sp);
                     cpu.write_reg(Register::A7, sp + 4);
                     let main = self.ensure_main_gdevice(bus);
                     if gdh == 0 || gdh == main {
-                        self.install_application_clut(bus, Self::standard_mac_8bpp_clut());
+                        let gd = bus.read_long(main);
+                        let is_color = bus.read_word(gd + 20) & 1 != 0;
+                        if let Some((clut, _)) = Self::standard_screen_depth_clut(self.screen_mode.4, is_color) {
+                            self.install_application_clut(bus, clut);
+                        }
                     }
                     return Some(Ok(()));
                 }
@@ -19872,7 +19878,7 @@ impl super::TrapDispatcher {
         )
     }
 
-    fn standard_screen_depth_clut(depth: u16, is_color: bool) -> Option<([[u16; 3]; 256], usize)> {
+    pub(crate) fn standard_screen_depth_clut(depth: u16, is_color: bool) -> Option<([[u16; 3]; 256], usize)> {
         let (mut clut, entry_count) = Self::standard_mac_indexed_clut(depth)?;
         if !is_color {
             let last = u32::try_from(entry_count.checked_sub(1)?).ok()?;
@@ -25916,3 +25922,60 @@ impl super::TrapDispatcher {
 
 #[cfg(test)]
 mod tests;
+
+impl super::TrapDispatcher {
+    /// Resolve styled screen ink without changing port RGB/pixel fields or
+    /// dispatcher draw state. The draw path temporarily resolves each RGB16 run.
+    pub(crate) fn text_edit_paint_snapshot(
+        &self, bus: &MacMemoryBus, record: &crate::text_edit::TextEditSnapshot,
+    ) -> Option<crate::text_edit::TextEditPaintSnapshot> {
+        use crate::text_edit::{TextEditCharExtraSnapshot, TextEditInkSnapshot, TextEditPaintSnapshot};
+        let runs = record.style_runs.as_ref()?;
+        let port = record.owner_port;
+        if port == 0 || !bus.is_guest_address_mapped(port, 88) { return None; }
+        let version = bus.read_word(port + 6) & 0xc000;
+        let color = version == 0xc000;
+        if version != 0 && !color { return None; }
+        let (base, row_bytes, depth) = if color {
+            let handle = bus.read_long(port + 2);
+            let pixmap = if handle != 0 { bus.read_long(handle) } else { 0 };
+            if pixmap == 0 || !bus.is_guest_address_mapped(pixmap, 50) { return None; }
+            (Self::offscreen_pixmap_base_ptr(bus, pixmap),
+                u32::from(bus.read_word(pixmap + 4) & 0x3fff), bus.read_word(pixmap + 32))
+        } else {
+            (bus.read_long(port + 2), u32::from(bus.read_word(port + 6) & 0x3fff), self.screen_mode.4)
+        };
+        if base != self.screen_mode.0 || row_bytes != self.screen_mode.1
+            || depth != self.screen_mode.4 || !matches!(depth, 1 | 8) { return None; }
+        let mode = bus.read_word(port + 72) as i16;
+        let palette = crate::display::rgba_palette_from_clut_with_gamma(&self.device_clut, &self.display_gamma.table());
+        let rgb_at = |pixel: u8| {
+            if depth == 1 { return if pixel == 0 { [255; 3] } else { [0; 3] }; }
+            let [r, g, b, _] = palette[usize::from(pixel)].to_le_bytes();
+            [r, g, b]
+        };
+        let style_ink = runs.iter().map(|run| {
+            let rgb = [run.color.0, run.color.1, run.color.2];
+            let pixel = if depth == 1 {
+                u8::from(!(matches!(mode, 0 | 1) && rgb == [u16::MAX; 3]))
+            } else if color {
+                // Styled TE drawing requests nearest matching through the live
+                // screen CLUT, without the logical GDevice inverse table.
+                Self::nearest_palette_index(&self.device_clut, rgb)
+            } else {
+                super::pict::closest_clut_index(rgb[0], rgb[1], rgb[2], &self.device_clut)
+            };
+            TextEditInkSnapshot { pixel: u16::from(pixel), rgb: rgb_at(pixel),
+                inverted_rgb: rgb_at(pixel ^ if depth == 1 { 1 } else { 255 }) }
+        }).collect();
+        Some(TextEditPaintSnapshot { depth, mode,
+            char_extra: TextEditCharExtraSnapshot::ClassicFixed(self.char_extra),
+            space_extra: bus.read_long(port + 76) as i32, style_ink,
+            solid_caret: bus.text_edit_solid_caret(record.guest_id)
+                .filter(|(_, painted_depth, _)| record.drawing_intact && *painted_depth == depth)
+                .map(|(rect, _, pixel)| (rect, TextEditInkSnapshot {
+                    pixel, rgb: rgb_at(pixel as u8),
+                    inverted_rgb: rgb_at(pixel as u8 ^ if depth == 1 { 1 } else { 255 }),
+                })) })
+    }
+}

@@ -1,8 +1,8 @@
 {
-  "fixture_sha256": "373a6a1e268b558228d4bd911b3982557c32d52d75ff9bccbb65eff89c1eb254",
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
   "scenario": "oracle/overview.json",
-  "scenario_sha256": "8529d5545d3d7b8f42697d78bc6302d681007af9d13b8f5b4249425f2c369b4f",
-  "capture_date": "2026-09-05",
+  "scenario_sha256": "9c73706f6fb5939aaa32d4dbd458d17e2092c86d30525c1b98e8234ca6d69b4f",
+  "capture_date": "2026-10-09",
   "page_count": 16,
   "verification": {
     "method": "reviewed native outcome regions, independent before/after relations, and isolated audible SysBeep interval",
@@ -186,14 +186,14 @@
   "runs": [
     {
       "emulator": "basilisk",
-      "image_id": "sha256:375159f904a736fc413b386da7b76f8d380bf09db3b0777cb2cd3de129b47e38",
+      "image_id": "sha256:92be8ffcde5c7b5985c34880b55f6e1578ef03d229372f1535a1bc9f897ee26e",
       "source_revision": "96e512bd6376e78a2869f16dcc8a9028bce5ee72",
       "system": "Mac OS 8.1",
       "clock_source": "live guest clock",
       "width": 800,
       "height": 600,
       "depth": 8,
-      "source_capture_record_sha256": "988eaecfd2ca70a853e0632eb6f9d19e1a56c0b8a72606f6e8a5a4d859a087b6",
+      "source_capture_record_sha256": "e54dd789752731005336cead4d89b901e584d0a2fe6ce0abeadd4613ea75222e",
       "checkpoints": [
         {
           "file": "reference/basiliskii-68k/overview-01-graphics.png",
@@ -357,7 +357,7 @@
         },
         {
           "file": "reference/basiliskii-68k/overview-05-difficulty-menu.png",
-          "sha256": "cb63e28ab0732a048eaf8fadd9da8d9fe25ed85ad45e4f14b883c68151641edf",
+          "sha256": "45b3db73591990800ec59840e69edecca08b8fca897dcdd2d57be2d7e1f3d36b",
           "regions": [
             [
               40,
@@ -397,7 +397,7 @@
         },
         {
           "file": "reference/basiliskii-68k/overview-05-sound-menu.png",
-          "sha256": "d292872811ea2eb96d1f060d4bfe0ae7354a1d228a620ca1d24fcbb02fa2c981",
+          "sha256": "df80fbab171abeda6fba44c4f7efcb0d8e02b3424016647bd63250f802eeaf86",
           "regions": [
             [
               40,
@@ -437,7 +437,7 @@
         },
         {
           "file": "reference/basiliskii-68k/overview-05-renderer-menu.png",
-          "sha256": "45c279df6059325f1da9c92dfead3308b02ef83d6cc9f4faae4ebfb0722304fa",
+          "sha256": "690786ad28a1c195019080c5f98fa61ddf8f23d5046f18c24167524f5905a32c",
           "regions": [
             [
               40,
@@ -517,7 +517,7 @@
         },
         {
           "file": "reference/basiliskii-68k/overview-06-modal.png",
-          "sha256": "e1948168378040ed6ac058639df7ffba5ed418c9174a78d6d8fd47a3faa2694f",
+          "sha256": "e50a0be93931524f59785740b1ed5f884b4aa95d3c12bc4ae7298c614f08105c",
           "regions": [
             [
               40,
@@ -543,7 +543,7 @@
         },
         {
           "file": "reference/basiliskii-68k/overview-06-modal-changed.png",
-          "sha256": "e215e581054bfabb8ec7aeee423dd2f88543d78370c7d948aee7a45f684bd423",
+          "sha256": "aac1e7d844df893100c7ccd7327ad971088208bd87aa33124fa260eec61ba15e",
           "regions": [
             [
               40,
@@ -629,7 +629,7 @@
         },
         {
           "file": "reference/basiliskii-68k/overview-07-textedit.png",
-          "sha256": "1524ce4c9e8737fa717f41203fcf37dd00a7778c4ebf4686530085c06120ab18",
+          "sha256": "1802c0e589968b658c7acbc7335ab7c1bf405db6f168659d3bc67625adfa2358",
           "regions": [
             [
               40,
@@ -1215,7 +1215,7 @@
         },
         {
           "file": "reference/basiliskii-68k/overview-15-events.png",
-          "sha256": "2917fc4cfc90bb5d153f7d07f57987cc0d8eb0d840a656978c08e5962aeef3ae",
+          "sha256": "3121436c8f14be799b912a412c2a30bb4f59ce7926f85ba46ebaea6580a3e755",
           "regions": [
             [
               64,
@@ -1253,7 +1253,7 @@
         },
         {
           "file": "reference/basiliskii-68k/overview-15-events-held.png",
-          "sha256": "adb44be53c95ecdc4000c71368c6ddacb65fab292ac1f8cf1c29e8ffeda8808e",
+          "sha256": "74c39712e56f116f51756fdf4dc0a01c86a96bfcbd78fa3423f57ccbf12f2297",
           "regions": [
             [
               64,
@@ -1303,7 +1303,7 @@
         },
         {
           "file": "reference/basiliskii-68k/overview-15-events-key.png",
-          "sha256": "7fd803f4f6d3666ea79eea0967c93a7f456727c98b0710b6e741188ae462bbab",
+          "sha256": "7e149b2c5516dc2ddb8cf1f69f8a6d41335a1b1aa647c8b20e523ec9f8468ad1",
           "regions": [
             [
               64,
@@ -1359,7 +1359,7 @@
         },
         {
           "file": "reference/basiliskii-68k/overview-15-cross.png",
-          "sha256": "f449c5eac965eecbdcb52f615e882a871b5ee77a8cfa61eeb5afd6b0704980e0",
+          "sha256": "9b210065ce02ad2a352c6fb443acbdfc7ab04ebcf0346d560867710587b02c35",
           "regions": [
             [
               64,
@@ -1397,7 +1397,7 @@
         },
         {
           "file": "reference/basiliskii-68k/overview-15-watch.png",
-          "sha256": "131cf10e5b03b8a5712e4c3ef1a5fc55db7ec4bcb5461e8137844f7754eb8343",
+          "sha256": "bef976de1c560c31db33fd3ba1e523997dd29558cf455f8ded4c1ec56d284a18",
           "regions": [
             [
               64,
@@ -1435,7 +1435,7 @@
         },
         {
           "file": "reference/basiliskii-68k/overview-15-hidden.png",
-          "sha256": "71563d529160747f0fd7de19065644e92a73c605fe9bb4ef1e42c321c7223d0a",
+          "sha256": "54895940a941f8fd2937c5f42346af1cea785a2a9b06c132570f4b2a337d013e",
           "regions": [
             [
               64,
@@ -1473,7 +1473,7 @@
         },
         {
           "file": "reference/basiliskii-68k/overview-15-arrow.png",
-          "sha256": "00c2038b5fa080e5937d95107d6f44efc3cc684e4502deb4c9e43b8c275bd63f",
+          "sha256": "7fad8ebbb716bca2873bd5a6dca107728d952f00f2a54f50e39805343ca42df1",
           "regions": [
             [
               64,
@@ -1549,22 +1549,58 @@
             ]
           ]
         }
-      ]
+      ],
+      "runner_sha256": "85198ba255a5f0e830384e7706ec36d1f983ca0b714c7049be0b53f3a782b067",
+      "capture_recipe_sha256": "0738b6cea00dbcd7865e8a1a9126f5e33dda0d1f6ec52473d6466d7e9d5bc8fa",
+      "rom_sha256": "05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca",
+      "system_disk_archive_sha256": "2a4985fec6b5b2a23f6141fd6de9a3066dcd87a6fe1412faefdd9d6c87876295",
+      "preferences_sha256": "a3c1c62f438817267bce62afc9748921a21427fb2237677fc7434d2cbccab2be",
+      "runner_environment": {
+        "SYSTEMLESS_BASILISK_MAC_TIME": "<runner default>",
+        "SYSTEMLESS_BASILISK_DETERMINISTIC_TICKS": "<runner default>",
+        "SYSTEMLESS_BASILISK_INSTRUCTIONS_PER_TICK": "<runner default>",
+        "SYSTEMLESS_BASILISK_CPUS": "<runner default>"
+      },
+      "source_pcm_sha256": "a0f0086768e0981c3f511d7aa76e4d703f3a1aff764863f66042d498a22b1a20",
+      "replay_verification": {
+        "checkpoints": 59,
+        "outcome_regions": 85,
+        "relations": [
+          "return to Graphics restores its original content",
+          "Reset Defaults restores the original preference controls and profile",
+          "preference input changes the controls and active profile",
+          "modal checkbox changes before acceptance",
+          "indexed palette animation recolors existing pixels",
+          "SysBeep request is recorded on the page",
+          "map refresh preserves deferred resource records",
+          "released resource reloads to the original loaded state",
+          "ReleaseResource changes the visible lifecycle state",
+          "first and reset masked sprites and validation readouts agree",
+          "Animate Sprite changes the masked source colors",
+          "ScrollRect moves the existing raster exactly 24 pixels left"
+        ],
+        "sysbeep_non_silent_frames": 44886,
+        "sysbeep_interval": [
+          3933184,
+          4083712
+        ],
+        "result": "pass"
+      }
     },
     {
       "emulator": "sheepshaver",
-      "image_id": "sha256:d2ed9be7ea9b9e7fe912aa0d8c7cd431146ae71c3b6d9ae33c7185b1654814e3",
+      "image_id": "sha256:0616fb4fb30387d31e2441a3d2aa7ef5803c855f8af8c5d83b5650ea28c78702",
       "source_revision": "96e512bd6376e78a2869f16dcc8a9028bce5ee72",
       "system": "Mac OS 8.1",
       "clock_source": "60.15 Hz wall-clock pacing",
       "width": 800,
       "height": 600,
       "depth": 32,
-      "source_capture_record_sha256": "0d5063c09909ca3548fc5f95fe9ff3a7dd0e0a5f4b86fa979965b5ee90f98712",
+      "source_capture_record_sha256": "f6229074bbc5250977f06b98bc52fed9bd6e53366ae3524209efba0be50f393c",
       "checkpoints": [
         {
           "file": "reference/sheepshaver-ppc/overview-01-graphics.png",
-          "sha256": "87683f4791669e61599b2f327bbd9b9977ad66665134e5a5d18b4e636a5bd0ac",
+          "sha256": "7f80c944641753c376f69a2f79ebefbbf828f835fbd2503bbeef3c9a3bff2036",
           "regions": [
             [
               40,
@@ -1724,7 +1760,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-05-difficulty-menu.png",
-          "sha256": "b545166d450563815eb1e0f18b97731ea4bdc1a2ba6e29812df53c5ef2d2eafb",
+          "sha256": "302f6dee33d36ce9f605ee6a52e1988f49f1258f001e595abcc6dd4cd0def5d8",
           "regions": [
             [
               40,
@@ -1744,7 +1780,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-05-difficulty-selected.png",
-          "sha256": "c7f888ed28fb29a11a19389f49100f2de8ad4d70f55c7791895e26a46d5721ef",
+          "sha256": "0c15d8c6ca9daf309b7d632825bbbc2ba47944c3521f9d18dc8f5da7cdd1a458",
           "regions": [
             [
               40,
@@ -1764,7 +1800,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-05-sound-menu.png",
-          "sha256": "aaee666c064907d8f1ddd2a767d22f0ffea9457a8579ff5f674a97b7540aa581",
+          "sha256": "48347721952dff9e448d2aebae14fc52f3f352a283d7084ad58fcb35a60efaae",
           "regions": [
             [
               40,
@@ -1804,7 +1840,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-05-renderer-menu.png",
-          "sha256": "984bae985362b704e2df20ecb0bb3b86f58053f3b7ab16c684ed458ccd36b215",
+          "sha256": "f9c9c22b6becb3ead4f09951d6e59f0845b2a2fd5efc3b28ee4ea93c3ed72b61",
           "regions": [
             [
               40,
@@ -1824,7 +1860,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-05-renderer-selected.png",
-          "sha256": "2cf3b51838ef6c77c7f850ee2623c2fcd1e5e5732af7c6dfbcd83a3fbe36061b",
+          "sha256": "8300810efc778b50042ef6d020e56ff8889a82501eedbec506c4109a3ea90f66",
           "regions": [
             [
               40,
@@ -1884,7 +1920,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-06-modal.png",
-          "sha256": "08e5fc64a2596d3c9afb132fd8bf44947a054438231394e5e4ccaebdb4a20313",
+          "sha256": "44781edd1902b6f57a06b00c6dc565b0e9bd9e594f09405347acf8f8759a6ff5",
           "regions": [
             [
               40,
@@ -1910,7 +1946,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-06-modal-changed.png",
-          "sha256": "e907233014e68af86cdbfca776fa7641730dcb88db5075cc0bdf2000f543db36",
+          "sha256": "b8937c7671910763fbdba34ea412b924a9899756db395ef87fc984143aac9ea3",
           "regions": [
             [
               40,
@@ -1936,7 +1972,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-06-dialog-accepted.png",
-          "sha256": "1a0cce40ece020324ef181abab4f600dd84434bfc55b5fe2f3f63a325b9ecfd4",
+          "sha256": "376ff68ea90c15bb31e818a80de7e65bb8c45f78c6117df8c49c5ce173f1b0f4",
           "regions": [
             [
               40,
@@ -1956,7 +1992,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-06-alert.png",
-          "sha256": "b874873353271fe69e5aed05f2ae3a3ee4db4e6a3376af637bb86ebe43ccb13c",
+          "sha256": "5a85440ed8165794785c222b45cc2ee4fbd662973b436dd7ac6a077c55f3eb02",
           "regions": [
             [
               40,
@@ -1976,7 +2012,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-06-dialogs-complete.png",
-          "sha256": "376ff68ea90c15bb31e818a80de7e65bb8c45f78c6117df8c49c5ce173f1b0f4",
+          "sha256": "7a4eb2b766b926ef68bfabc512a02b349688e8842e66087f57f154b332908fa7",
           "regions": [
             [
               40,
@@ -2082,7 +2118,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-08-graphics-restored.png",
-          "sha256": "87683f4791669e61599b2f327bbd9b9977ad66665134e5a5d18b4e636a5bd0ac",
+          "sha256": "c7ae8002fa9db9f7f17fdfc1f271e0a50ae5fdfb6f48ef40fe4cda62d992724c",
           "regions": [
             [
               40,
@@ -2102,7 +2138,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-09-lists.png",
-          "sha256": "eeda6076d2870fa845fd138eb5a7d1ca1014040398a53fa25cc8894f7c842a9b",
+          "sha256": "48399b59b1f6472c3b9dacda9d7e6f080eec926f636a87dd2ac1ef8344872808",
           "regions": [
             [
               40,
@@ -2122,7 +2158,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-10-sound-before-beep.png",
-          "sha256": "1638f68016f0c3aaed78560c71d764270b77e7727fd66c822f6523c584e5f7a2",
+          "sha256": "5a5d8759f991815e533d785e21d498d3a92871c132e37f5ae412c3a0540dbf02",
           "regions": [
             [
               40,
@@ -2202,7 +2238,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-12-standard-file.png",
-          "sha256": "dba8a25334d2d709b574fb7f043718e0878ad97b88d9c30725b67b8d7c000b56",
+          "sha256": "17de00a411ea1e3fd32b3b3cb14da6a72569996809e2d94f0a94a90b0cd75bde",
           "regions": [
             [
               40,
@@ -2222,7 +2258,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-12-open.png",
-          "sha256": "dcc3cdc88aadb96ab2898ff9f9c3897e3fe2cece90d65ba6dd3566a790e86939",
+          "sha256": "dff713dd47c70955957f125c5d4d218b4cc1a90c46c49cf6860024337faaa750",
           "regions": [
             [
               40,
@@ -2482,7 +2518,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-13-resources-reloaded.png",
-          "sha256": "0857180b1953b6294b2190f362d158f3bce1d888411c66687194e998356cb88f",
+          "sha256": "1f03f57dc033d2072305df541bf408f9313c42b12e468c235a4130b761e41aa1",
           "regions": [
             [
               40,
@@ -2582,7 +2618,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-15-events.png",
-          "sha256": "6d06d1a51278ff2f8fb983f15a26b8b18a1185cade63056bea88cfd60c173f48",
+          "sha256": "02cdf8a285ee215ec77e1ae5b88727668e6a58c493d0db8eac3b427c9bf2844b",
           "regions": [
             [
               64,
@@ -2620,7 +2656,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-15-events-held.png",
-          "sha256": "bb356a866b366635ba3a9c45373776ae9f258986634326b776f5be41390652b6",
+          "sha256": "c89207aa4fb3f1d86b5765d2b1f462affcf67d269943e3359f633b28c0290b46",
           "regions": [
             [
               64,
@@ -2670,7 +2706,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-15-events-key.png",
-          "sha256": "512984862a48e21488d9a787d7274ee7a93f014f845eb7321fb385e003e9aa46",
+          "sha256": "3120a2af9a6dfead8117b8bef5317d9c0eb3eaa58e89fe93c803b9e30aeeb082",
           "regions": [
             [
               64,
@@ -2726,7 +2762,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-15-cross.png",
-          "sha256": "821fceb1023c014e6475e7d41704da285acded28b7a75e30c162e709eee978f9",
+          "sha256": "46b91095748608ea9c5003317704dd2a52d68d60b011706354bb6df24ef22c10",
           "regions": [
             [
               64,
@@ -2764,7 +2800,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-15-watch.png",
-          "sha256": "8f4bec4110e5ad47374e44f21e55ce7766d1d7c4e2faeb9a8e4cb44cc3cf4608",
+          "sha256": "89a6af8667f3027d42219f0505e8ef1a0351a26fe0784eba85d3b5a35b532575",
           "regions": [
             [
               64,
@@ -2802,7 +2838,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-15-hidden.png",
-          "sha256": "5b7e2a0100c1dc64327a962c05952ed18fc8d109bcafd93a4befb4e9b3c4f71a",
+          "sha256": "41a29a6ca92d11bc60298fd89a56f3e180fcfd846503574c3eb150033573d0b0",
           "regions": [
             [
               64,
@@ -2840,7 +2876,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-15-arrow.png",
-          "sha256": "26c32b8fd17a5c956ab125ce569c5e5508517fc57dbd15e1d4fa0f061ef03fab",
+          "sha256": "a04d56d5bbad38f1604f5837a30bef2b9e0ac4108b52b929ed20fd80b886f988",
           "regions": [
             [
               64,
@@ -2878,7 +2914,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-16-popup.png",
-          "sha256": "60983a87cf5154f06555ce62998c3433e997861eb324c7570809a30721f12063",
+          "sha256": "017ca07c92ed76c1615fcb5cfff719f7355a176eeb0a028a73a553619d1d56e3",
           "regions": [
             [
               40,
@@ -2898,7 +2934,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/overview-16-return-graphics.png",
-          "sha256": "c7ae8002fa9db9f7f17fdfc1f271e0a50ae5fdfb6f48ef40fe4cda62d992724c",
+          "sha256": "87683f4791669e61599b2f327bbd9b9977ad66665134e5a5d18b4e636a5bd0ac",
           "regions": [
             [
               40,
@@ -2916,7 +2952,43 @@
             ]
           ]
         }
-      ]
+      ],
+      "runner_sha256": "7d5edcfb7c24858bf803d7cc88c7e5ccd85cef03ca84fb25dd5c9d6cef958a4b",
+      "capture_recipe_sha256": "0738b6cea00dbcd7865e8a1a9126f5e33dda0d1f6ec52473d6466d7e9d5bc8fa",
+      "rom_sha256": "fd13c05d678bbc7bbb527f7f418cd2dbada522af422a97452eee3bfc5010f032",
+      "system_disk_archive_sha256": "797d3d28fc8aefcb67c53ea21af40692e89c52fdc10fe79d10c512e2df0018c6",
+      "preferences_sha256": "307e437a99d6c2e56ce234d44e7c5386c0889513c407cd307ff7fff47e213436",
+      "runner_environment": {
+        "SYSTEMLESS_SHEEPSHAVER_MAC_TIME": "<runner default>",
+        "SYSTEMLESS_SHEEPSHAVER_DETERMINISTIC_TICKS": "<runner default>",
+        "SYSTEMLESS_SHEEPSHAVER_INSTRUCTIONS_PER_TICK": "<runner default>",
+        "SYSTEMLESS_SHEEPSHAVER_CPUS": "<runner default>"
+      },
+      "source_pcm_sha256": "c07d8d38c2584b0d71586757775a0bb6196e57a70141a5f501c2d1703c3d54c4",
+      "replay_verification": {
+        "checkpoints": 59,
+        "outcome_regions": 85,
+        "relations": [
+          "return to Graphics restores its original content",
+          "Reset Defaults restores the original preference controls and profile",
+          "preference input changes the controls and active profile",
+          "modal checkbox changes before acceptance",
+          "direct-color display retains colors when palette animation is unavailable",
+          "SysBeep request is recorded on the page",
+          "map refresh preserves deferred resource records",
+          "released resource reloads to the original loaded state",
+          "ReleaseResource changes the visible lifecycle state",
+          "first and reset masked sprites and validation readouts agree",
+          "Animate Sprite changes the masked source colors",
+          "ScrollRect moves the existing raster exactly 24 pixels left"
+        ],
+        "sysbeep_non_silent_frames": 11049,
+        "sysbeep_interval": [
+          3596288,
+          3756032
+        ],
+        "result": "pass"
+      }
     }
   ]
 }

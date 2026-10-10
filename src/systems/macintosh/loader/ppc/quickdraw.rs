@@ -1124,14 +1124,10 @@ pub(crate) fn ppc_apply_scaled_text_source_pixel(
     color_pixel: u16,
     text_mode: i16,
 ) {
-    let scaled_x = ppc_scale_font_floor(source_x, numerator, denominator);
-    let scaled_y = ppc_scale_font_floor(source_y, numerator, denominator);
-    let left = local_h + scaled_x;
-    let right =
-        local_h + ppc_scale_font_floor(source_x + 1, numerator, denominator).max(scaled_x + 1);
-    let top = local_v + scaled_y;
-    let bottom =
-        local_v + ppc_scale_font_floor(source_y + 1, numerator, denominator).max(scaled_y + 1);
+    let Some((left, top, right, bottom)) = crate::quickdraw::text::ppc_font_source_pixel_bounds(
+        source_x, source_y, numerator, denominator,
+    ) else { return; };
+    let (left, right, top, bottom) = (local_h + left, local_h + right, local_v + top, local_v + bottom);
     for y in top..bottom {
         for x in left..right {
             let _ = ppc_apply_text_pixel(
@@ -1221,124 +1217,17 @@ pub(crate) fn ppc_draw_text_chars_styled(
                 )),
             );
         }
-        let mut base_pixels = HashSet::new();
-        for row in 0..glyph.height as usize {
-            for col in 0..glyph.width as usize {
-                let index = glyph.data_offset + row * glyph.width as usize + col;
-                if index >= data.len() || data[index] < 128 {
-                    continue;
-                }
-                let source_y = i32::from(glyph.origin_y) + row as i32;
-                let slant = synthetic_italic.then(|| {
-                    get_italic_slant(
-                        text_font,
-                        face.size,
-                        &metrics,
-                        0,
-                        i16::try_from(source_y).unwrap_or(0),
-                    )
-                });
-                let source_x = source_advance
-                    + i32::from(glyph.origin_x)
-                    + col as i32
-                    + i32::from(slant.unwrap_or(0));
-                base_pixels.insert((source_x, source_y));
-                if style.bold() {
-                    base_pixels.insert((source_x + 1, source_y));
-                }
-            }
-        }
-
-        if style.underline() && style.smear_max().is_some() && line_advance > 0 {
-            let underline_offset: i32 = if style.shadow() { -1 } else { 0 };
-            let synthetic_italic = style.italic()
-                && get_glyph_italic(text_font, face.size, 'A').is_none();
-            let underline_left = if synthetic_italic {
-                get_italic_underline_extend_left(
-                    text_font,
-                    face.size,
-                    style.bold(),
-                    false,
-                )
-            } else {
-                0
-            };
-            let underline_right = if synthetic_italic {
-                get_italic_end_extend(text_font, face.size, &metrics)
-            } else {
-                0
-            };
-            let final_effect_advance = style.glyph_advance(0);
-            for source_x in underline_offset.saturating_sub(i32::from(underline_left))
-                ..line_advance
-                    .saturating_sub(final_effect_advance)
-                    .saturating_add(underline_offset)
-                    .saturating_add(i32::from(underline_right))
-            {
-                base_pixels.insert((source_x, 1));
-            }
-        }
-
-        if let Some(smear_max) = style.smear_max() {
-            let min_x = base_pixels
-                .iter()
-                .map(|(x, _)| *x)
-                .min()
-                .unwrap_or(source_advance)
-                - 1;
-            let max_x = base_pixels
-                .iter()
-                .map(|(x, _)| *x)
-                .max()
-                .unwrap_or(source_advance)
-                + smear_max;
-            let min_y = base_pixels.iter().map(|(_, y)| *y).min().unwrap_or(0) - 1;
-            let max_y = base_pixels.iter().map(|(_, y)| *y).max().unwrap_or(0) + smear_max;
-            for source_y in min_y..=max_y {
-                for source_x in min_x..=max_x {
-                    if base_pixels.contains(&(source_x, source_y)) {
-                        continue;
-                    }
-                    let smeared = (-1..=smear_max).any(|dy| {
-                        (-1..=smear_max)
-                            .any(|dx| base_pixels.contains(&(source_x - dx, source_y - dy)))
-                    });
-                    if smeared {
-                        ppc_apply_scaled_text_source_pixel(
-                            memory,
-                            surface,
-                            vis_storage.as_deref(),
-                            clip_storage.as_deref(),
-                            local_h,
-                            local_v,
-                            source_x,
-                            source_y,
-                            numerator,
-                            denominator,
-                            color_pixel,
-                            text_mode,
-                        );
-                    }
-                }
-            }
-        } else {
-            for (source_x, source_y) in base_pixels.iter().copied() {
+        crate::quickdraw::text::visit_ppc_styled_glyph_source_ink(
+            text_font, face.size, &metrics, glyph, data, synthetic_italic,
+            style, source_advance, line_advance,
+            |source_x, source_y| {
                 ppc_apply_scaled_text_source_pixel(
-                    memory,
-                    surface,
-                    vis_storage.as_deref(),
-                    clip_storage.as_deref(),
-                    local_h,
-                    local_v,
-                    source_x,
-                    source_y,
-                    numerator,
-                    denominator,
-                    color_pixel,
-                    text_mode,
+                    memory, surface, vis_storage.as_deref(), clip_storage.as_deref(),
+                    local_h, local_v, source_x, source_y, numerator, denominator,
+                    color_pixel, text_mode,
                 );
-            }
-        }
+            },
+        );
         memory.presentation().end_outline_glyph();
         source_advance =
             source_advance.saturating_add(style.glyph_advance(i32::from(glyph.advance)));

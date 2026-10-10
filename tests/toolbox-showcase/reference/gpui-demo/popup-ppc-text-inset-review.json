@@ -1,0 +1,20 @@
+{
+  "base_commit": "114eb01e401d290a67bee89012b2b76c154f4078",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "0aa18a3d1b3eb785f9ef8239b04bc085189e257d6f3f6a0475c9bec0cdc01100",
+    "src/bin/gpui_demo_text.rs": "97459f73bdc0b629ef6dd303240b29b602e29d011411b2ffe5fcaf38940f2f99",
+    "src/systems/macintosh/control_manager.rs": "fbb5788b6c841dd2d2faff81dcbe0719be0d55505791f602349d712391241fed",
+    "src/systems/macintosh/runner/mod.rs": "49d6c20859dab0cb35def17b2c717136845c0cb874de5e99ac4aaf6df19f2028"
+  },
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "file": "popup-ppc-text-inset.png",
+  "dimensions": [
+    1800,
+    1480
+  ],
+  "capture_sha256": "cd2f42ddea4fd85a1bc535400eb94b141ea75ffce49983ea5363d90d9a7c165c",
+  "file_sha256": "8cda0280f5ae71991901873f5340197c17aa2fdf70eaf649f93d5ffd54ae50c5",
+  "pixel_sha256": "a47ba2011b47d5fe6db2697ebd0e6c54c6059154cfa987cf47e111566f31cd7f",
+  "review": "Full PPC composition reviewed: five-pixel selected-label inset and guest ellipsis. Exact box/baseline geometry, other scales/states and native parity unqualified.",
+  "command": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit --prefer-powerpc --capture-popup-controls-selected OUTPUT"
+}

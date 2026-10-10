@@ -85,6 +85,7 @@ pub(crate) struct PpcDispatchContext<'a> {
     pub(crate) resource_files: &'a mut Vec<PpcResourceFileRecord>,
     pub(crate) vfs_resource_files: &'a mut ProcessVfsResourceFileRecords,
     pub(crate) vfs_resources: &'a mut Vec<PpcVfsResourceRecord>,
+    pub(crate) menu_generations: &'a mut HashMap<u32, u64>,
     pub(crate) next_file_ref_num: &'a mut i16,
     pub(crate) current_gworld: &'a mut u32,
     pub(crate) current_gdevice: &'a mut u32,
@@ -109,6 +110,7 @@ pub(crate) struct PpcDispatchContext<'a> {
     pub(crate) next_working_directory_ref_num: &'a mut i16,
     pub(crate) application_working_directory_ref_num: &'a mut i16,
     pub(crate) launched_app_path: Option<&'a str>,
+    pub(crate) process_mode: u32,
     pub(crate) param_text: &'a SharedProcessDialogText,
     pub(crate) scrap: &'a mut PpcScrapState,
     pub(crate) list_manager: &'a mut ProcessListManagerState,
@@ -200,6 +202,7 @@ pub(crate) fn dispatch_supported_import(
         resource_files,
         vfs_resource_files,
         vfs_resources,
+        menu_generations,
         next_file_ref_num,
         current_gworld,
         current_gdevice,
@@ -224,6 +227,7 @@ pub(crate) fn dispatch_supported_import(
         next_working_directory_ref_num,
         application_working_directory_ref_num,
         launched_app_path,
+        process_mode,
         param_text,
         scrap,
         list_manager,
@@ -481,6 +485,7 @@ pub(crate) fn dispatch_supported_import(
             resource_files,
             vfs_resource_files,
             vfs_resources,
+            menu_generations,
             current_resource_refnum,
             resource_policy,
             last_resource_error,
@@ -796,6 +801,10 @@ pub(crate) fn dispatch_supported_import(
             event_queue,
             input,
             tick_count: *tick_count,
+            process_mode,
+            cycles_per_tick,
+            window_list,
+            dialog_callback_active: !dialog_callback_stack.is_empty(),
         })
     {
         return Some(action);
@@ -839,6 +848,7 @@ pub(crate) fn dispatch_supported_import(
             handles,
             aliases,
             vfs_resources,
+            menu_generations,
             toolbox_startup,
         })
     {
@@ -856,6 +866,7 @@ pub(crate) fn dispatch_supported_import(
             last_resource_error,
             handles,
             vfs_resources,
+            menu_generations,
             current_resource_refnum: *current_resource_refnum,
             resource_policy,
             toolbox_startup,
@@ -993,6 +1004,11 @@ pub(crate) fn dispatch_supported_import(
 
     if let Some(action) = dispatch_standard_file::dispatch_standard_file_import(
         dispatch_standard_file::PpcStandardFileDispatchContext {
+            input,
+            tick_count: *tick_count,
+            next_vfs_dir_id,
+            heap_limit,
+            handles,
             binding,
             cpu,
             memory,
@@ -1030,6 +1046,7 @@ pub(crate) fn dispatch_supported_import(
             current_gworld: *current_gworld,
             toolbox_startup,
             input,
+            event_queue,
             vfs_resources,
             current_resource_refnum: *current_resource_refnum,
             last_resource_error,
@@ -1054,6 +1071,9 @@ pub(crate) fn dispatch_supported_import(
             vfs_resources,
             current_resource_refnum: *current_resource_refnum,
             tick_count: *tick_count,
+            cycles_per_tick,
+            screen_clut,
+            input: &input,
         })
     {
         return Some(action);
@@ -1115,6 +1135,7 @@ pub(crate) fn dispatch_supported_import(
             param_text,
             tick_count: *tick_count,
             input,
+            scrap,
             quickdraw_text_mode: *quickdraw_text_mode,
             quickdraw_text_size: *quickdraw_text_size,
             quickdraw_fore_color,
@@ -1257,6 +1278,7 @@ pub(crate) fn dispatch_supported_import(
             vfs_files,
             vfs_resource_files,
             launched_app_path,
+            process_mode,
         })
     {
         return Some(action);
@@ -1459,6 +1481,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::TENew
         | PpcImportDispatcherTarget::TEStyleNew
         | PpcImportDispatcherTarget::TESetStyle
+        | PpcImportDispatcherTarget::TEGetStyle
         | PpcImportDispatcherTarget::TEUseStyleScrap
         | PpcImportDispatcherTarget::TEContinuousStyle
         | PpcImportDispatcherTarget::TEGetText
@@ -2936,6 +2959,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GetTime
         | PpcImportDispatcherTarget::Delay
         | PpcImportDispatcherTarget::GetDblTime
+        | PpcImportDispatcherTarget::GetCaretTime
         | PpcImportDispatcherTarget::LMGetTime
         | PpcImportDispatcherTarget::SecondsToDate
         | PpcImportDispatcherTarget::Microseconds

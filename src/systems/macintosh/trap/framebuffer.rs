@@ -1501,7 +1501,7 @@ impl super::TrapDispatcher {
         Self::best_luma_pixel_index(bus, ctab, true).unwrap_or(0)
     }
 
-    fn logical_black_pixel_index(bus: &MacMemoryBus) -> u8 {
+    pub(crate) fn logical_black_pixel_index(bus: &MacMemoryBus) -> u8 {
         let Some(ctab) = Self::active_gdevice_ctab(bus) else {
             return 255;
         };
@@ -2805,52 +2805,6 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn fb_styled_glyph_base_pixels(
-        x: i16,
-        y: i16,
-        glyph: &Glyph,
-        data: &[u8],
-        synthetic_italic: Option<(i16, i16)>,
-        style: QuickDrawTextStyle,
-    ) -> HashSet<(i16, i16)> {
-        let gx = x + glyph.origin_x as i16;
-        let gy = y + glyph.origin_y as i16;
-        let gw = glyph.width as usize;
-        let gh = glyph.height as usize;
-        let metrics = synthetic_italic
-            .map(|(font_id, font_size)| (font_id, font_size, get_font_metrics(font_id, font_size)));
-        let mut pixels = HashSet::new();
-
-        for row in 0..gh {
-            for col in 0..gw {
-                let byte_idx = glyph.data_offset + row * gw + col;
-                if byte_idx >= data.len() || data[byte_idx] < 128 {
-                    continue;
-                }
-
-                let py = gy + row as i16;
-                let slant = metrics
-                    .as_ref()
-                    .map(|(font_id, font_size, metrics)| {
-                        get_italic_slant(*font_id, *font_size, metrics, y, py)
-                    })
-                    .unwrap_or(0);
-                let start = col as i16;
-                let (dst_start, dst_end) = (start, start + 1);
-
-                for dst_col in dst_start..dst_end {
-                    let px = gx + dst_col + slant;
-                    pixels.insert((px, py));
-                    if style.bold() {
-                        pixels.insert((px + 1, py));
-                    }
-                }
-            }
-        }
-
-        pixels
-    }
-
     fn fb_draw_char_styled(
         bus: &mut MacMemoryBus,
         screen_base: u32,
@@ -2866,7 +2820,12 @@ impl super::TrapDispatcher {
         style: QuickDrawTextStyle,
         pixel_index_override: Option<u8>,
         black: bool,
+        clip: Option<(i16, i16, i16, i16)>,
     ) -> i16 {
+        let (clip_top, clip_left, clip_bottom, clip_right) =
+            clip.unwrap_or((0, 0, screen_height, screen_width));
+        let inside =
+            |px: i16, py: i16| px >= clip_left && px < clip_right && py >= clip_top && py < clip_bottom;
         let (glyph_hit, synthetic_italic) = if style.italic() {
             if let Some(hit) = get_glyph_italic(font_id, font_size, ch) {
                 (Some(hit), None)
@@ -2887,7 +2846,15 @@ impl super::TrapDispatcher {
         // Without a per-glyph style bit the styled painter's pixel set is
         // exactly the glyph bitmap; on an 8-bit screen let the row painter
         // write it instead of building the set.
-        if pixel_size == 8 && !style.has_per_glyph_effect() {
+        let glyph_inside_clip = clip.is_none_or(|(top, left, bottom, right)| {
+            let gx = i32::from(x) + i32::from(glyph.origin_x);
+            let gy = i32::from(y) + i32::from(glyph.origin_y);
+            gx >= i32::from(left)
+                && gy >= i32::from(top)
+                && gx + i32::from(glyph.width) <= i32::from(right)
+                && gy + i32::from(glyph.height) <= i32::from(bottom)
+        });
+        if pixel_size == 8 && !style.has_per_glyph_effect() && glyph_inside_clip {
             Self::fb_draw_glyph_bitmap_with_slant(
                 bus,
                 screen_base,
@@ -2905,8 +2872,7 @@ impl super::TrapDispatcher {
                 black,
             );
             bus.end_outline_glyph();
-            return i16::try_from(style.glyph_advance(i32::from(glyph.advance)))
-                .unwrap_or(i16::MAX);
+            return i16::try_from(style.glyph_advance(i32::from(glyph.advance))).unwrap_or(i16::MAX);
         }
 
         if matches!(pixel_size, 8 | 16 | 32) {
@@ -2923,8 +2889,16 @@ impl super::TrapDispatcher {
                         Self::logical_white_pixel_index(bus)
                     }
                 });
-                for py in top.max(0)..bottom.min(i32::from(screen_height)) {
-                    for px in left.max(0)..right.min(i32::from(screen_width)) {
+                for py in top.max(0).max(i32::from(clip_top))
+                    ..bottom
+                        .min(i32::from(screen_height))
+                        .min(i32::from(clip_bottom))
+                {
+                    for px in left.max(0).max(i32::from(clip_left))
+                        ..right
+                            .min(i32::from(screen_width))
+                            .min(i32::from(clip_right))
+                    {
                         let lanes = u32::from(pixel_size / 8);
                         for lane in 0..lanes {
                             bus.outline_glyph_pixel(
@@ -2945,68 +2919,14 @@ impl super::TrapDispatcher {
             }
         }
 
-        let glyph_y = y.saturating_add(style.glyph_y_offset() as i16);
-        let base_pixels =
-            Self::fb_styled_glyph_base_pixels(x, glyph_y, glyph, data, synthetic_italic, style);
-
-        let Some(smear_max) = style.smear_max() else {
-            for (px, py) in base_pixels.iter().copied() {
+        for (px, py) in crate::quickdraw::text::styled_glyph_pixels(
+            x, y, glyph, data, synthetic_italic, style,
+        ) {
+            if inside(px, py) {
                 Self::fb_set_styled_text_pixel(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    px,
-                    py,
-                    pixel_index_override,
-                    black,
+                    bus, screen_base, row_bytes, pixel_size, screen_width, screen_height,
+                    px, py, pixel_index_override, black,
                 );
-            }
-            bus.end_outline_glyph();
-            return i16::try_from(style.glyph_advance(i32::from(glyph.advance)))
-                .unwrap_or(i16::MAX);
-        };
-
-        // QuickDraw outlines/shadows text by smearing a 1-bit glyph mask,
-        // then XORing the original glyph out of the result. That produces
-        // hollow outline and shadow faces instead of drawing offset filled
-        // glyph copies.
-        let smear_max = i16::try_from(smear_max).unwrap_or(1);
-        let min_x = base_pixels.iter().map(|(px, _)| *px).min().unwrap_or(x) - 1;
-        let max_x = base_pixels.iter().map(|(px, _)| *px).max().unwrap_or(x) + smear_max;
-        let min_y = base_pixels.iter().map(|(_, py)| *py).min().unwrap_or(y) - 1;
-        let max_y = base_pixels.iter().map(|(_, py)| *py).max().unwrap_or(y) + smear_max;
-
-        for py in min_y..=max_y {
-            for px in min_x..=max_x {
-                if base_pixels.contains(&(px, py)) {
-                    continue;
-                }
-                let mut smeared = false;
-                'smear: for dy in -1..=smear_max {
-                    for dx in -1..=smear_max {
-                        if base_pixels.contains(&(px - dx, py - dy)) {
-                            smeared = true;
-                            break 'smear;
-                        }
-                    }
-                }
-                if smeared {
-                    Self::fb_set_styled_text_pixel(
-                        bus,
-                        screen_base,
-                        row_bytes,
-                        pixel_size,
-                        screen_width,
-                        screen_height,
-                        px,
-                        py,
-                        pixel_index_override,
-                        black,
-                    );
-                }
             }
         }
 
@@ -3186,6 +3106,7 @@ impl super::TrapDispatcher {
             style,
             None,
             true,
+            None,
         )
     }
 
@@ -3219,6 +3140,7 @@ impl super::TrapDispatcher {
             style,
             None,
             black,
+            None,
         )
     }
 
@@ -3252,10 +3174,11 @@ impl super::TrapDispatcher {
             style,
             Some(pixel_index),
             true,
+            None,
         )
     }
 
-    fn fb_draw_string_styled_with_index(
+    pub(crate) fn fb_draw_string_styled_with_index(
         bus: &mut MacMemoryBus,
         screen_base: u32,
         row_bytes: u32,
@@ -3270,6 +3193,7 @@ impl super::TrapDispatcher {
         style: u8,
         pixel_index_override: Option<u8>,
         black: bool,
+        clip: Option<(i16, i16, i16, i16)>,
     ) -> i16 {
         let style = QuickDrawTextStyle::from_bits(style);
         let mut cx = x;
@@ -3289,48 +3213,29 @@ impl super::TrapDispatcher {
                 style,
                 pixel_index_override,
                 black,
+                clip,
             );
         }
 
         if style.underline() && cx > x {
+            let (top, left, bottom, right) = clip.unwrap_or((0, 0, screen_height, screen_width));
             let thickness = get_underline_thickness(font_id, font_size).max(1);
             for dy in 1..=thickness {
-                if let Some(pixel_index) = pixel_index_override {
-                    Self::fb_set_pixel_index(
+                let py = y.saturating_add(dy);
+                if py < top || py >= bottom {
+                    continue;
+                }
+                for px in x.max(left)..cx.min(right) {
+                    Self::fb_set_styled_text_pixel(
                         bus,
                         screen_base,
                         row_bytes,
                         pixel_size,
                         screen_width,
                         screen_height,
-                        x,
-                        y + dy,
-                        pixel_index,
-                    );
-                    for underline_x in (x + 1)..cx {
-                        Self::fb_set_pixel_index(
-                            bus,
-                            screen_base,
-                            row_bytes,
-                            pixel_size,
-                            screen_width,
-                            screen_height,
-                            underline_x,
-                            y + dy,
-                            pixel_index,
-                        );
-                    }
-                } else {
-                    Self::fb_hline(
-                        bus,
-                        screen_base,
-                        row_bytes,
-                        pixel_size,
-                        screen_width,
-                        screen_height,
-                        y + dy,
-                        x,
-                        cx,
+                        px,
+                        py,
+                        pixel_index_override,
                         black,
                     );
                 }
@@ -5623,6 +5528,7 @@ impl super::TrapDispatcher {
         for (top, left, width, height, pixels) in preserved_front_pixels {
             self.restore_screen_rect_pixels(bus, top, left, width, height, &pixels);
         }
+        self.window_list.record_grow_icon(window_ptr, content);
     }
 
     /// Draw a 2-pixel thick rectangle border (FrameRect with PenSize 2,2).
@@ -6151,7 +6057,19 @@ impl super::TrapDispatcher {
         self.restore_kiosk_dialog_desktop_background(bus);
         self.restore_window_manager_desktop(bus);
 
-        if !self.menus.is_empty() && !self.fullscreen_locked && !self.menu_bar_hidden {
+        // A native menu can extend over the bar. Its adapter has already
+        // painted the current bar and menu; a classic repaint would erase
+        // the top of that retained pane. MTE (1992), pp. 3-122--3-123.
+        let native_overlay_covers_bar = self.external_host_overlay_rects.iter().any(
+            |&(top, left, bottom, right)| {
+                top < menu_bar_height && bottom > 0 && left < screen_w as i16 && right > 0
+            },
+        );
+        if !self.menus.is_empty()
+            && !self.fullscreen_locked
+            && !self.menu_bar_hidden
+            && !native_overlay_covers_bar
+        {
             self.refresh_menus_from_memory(bus);
             self.draw_menu_bar_to_fb(bus);
         }
@@ -6277,14 +6195,19 @@ impl super::TrapDispatcher {
                         let abs_left = tracking.bounds.1 + item.rect.1;
                         let abs_bottom = tracking.bounds.0 + item.rect.2;
                         let abs_right = tracking.bounds.1 + item.rect.3;
-                        self.draw_edit_text(
-                            bus,
-                            abs_top,
-                            abs_left,
-                            abs_bottom,
-                            abs_right,
-                            &tracking.edit_text,
-                            !tracking.edit_text_modified,
+                        // DialogRecord.textH owns the current selection and blink phase.
+                        // Toolbox Essentials (1992), pp. 6-101--6-102; Text (1993), p. 2-84.
+                        let handle = bus.read_long(tracking.dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+                        let ptr = if handle != 0 { bus.read_long(handle) } else { 0 };
+                        let length = crate::mac_roman::encode_mac_roman_lossy(&tracking.edit_text).len();
+                        let start = if ptr != 0 { usize::from(bus.read_word(ptr + 0x20)).min(length) } else { 0 };
+                        let end = if ptr != 0 { usize::from(bus.read_word(ptr + 0x22)).min(length) } else { 0 };
+                        let active = ptr != 0 && bus.read_word(ptr + 0x24) != 0;
+                        let selection = (active && start < end).then_some((start, end));
+                        let cursor = (active && start == end && bus.read_word(ptr + 0x38) == 0).then_some(start);
+                        self.draw_edit_text_with_cursor(
+                            bus, abs_top, abs_left, abs_bottom, abs_right,
+                            &tracking.edit_text, selection, cursor, item.is_enabled(),
                         );
                     }
                 }
@@ -6568,9 +6491,11 @@ mod redraw_chrome_tests {
         disp.menus = vec![overlay_test_menu(702, "Popup", "Choice", false, false)];
         let dropdown_rect = (80, 250, 98, 340);
         disp.control_tracking = Some(ControlTrackingState {
+            simple_generation: None,
             ctrl_handle: 0x1234,
             ctrl_ptr: 0x5678,
             popup_tracking: true,
+            popup_font: Default::default(),
             active_menu: 0,
             highlighted_item: 1,
             saved_pixels: Default::default(),
@@ -6635,9 +6560,11 @@ mod redraw_chrome_tests {
         disp.menus = vec![overlay_test_menu(703, "Popup", "Choice", false, false)];
         let dropdown_rect = (100, 10, 118, 70);
         disp.control_tracking = Some(ControlTrackingState {
+            simple_generation: None,
             ctrl_handle: 0x1234,
             ctrl_ptr: 0x5678,
             popup_tracking: true,
+            popup_font: Default::default(),
             active_menu: 0,
             highlighted_item: 0,
             saved_pixels: Default::default(),
@@ -8670,6 +8597,96 @@ mod redraw_chrome_tests {
     }
 
     #[test]
+    fn frontend_styled_ink_matches_guest_framebuffer_for_every_face() {
+        use std::collections::HashSet;
+        let (mut dispatcher, mut bus, base) = text_fixture();
+        let black = TrapDispatcher::logical_black_pixel_index(&bus);
+        let bytes = [b'W', b' ', b'i', 0x8e];
+        let text: String = bytes.iter().map(|&byte| byte as char).collect();
+        for (font, size) in [(0, 12), (3, 9), (3, 12)] {
+            for face in 0..128u8 {
+                bus.fill_bytes(base, 800 * 600, 0x11);
+                let advance = TrapDispatcher::fb_draw_string_styled_index(
+                    &mut bus, base, 800, 8, 800, 600, 40, 40,
+                    &text, font, size, face, black,
+                );
+                let mut expected = HashSet::new();
+                let mut pen = 40i32;
+                for &byte in &bytes {
+                    let (width, ink) = crate::quickdraw::text::classic_styled_glyph(font, size, byte, face);
+                    expected.extend(ink.into_iter().map(|(x, y)| (pen + i32::from(x), 40 + i32::from(y))));
+                    pen += width;
+                }
+                if face & 4 != 0 {
+                    for y in 1..=crate::quickdraw::text::get_underline_thickness(font, size).max(1) {
+                        expected.extend((40..pen).map(|x| (x, 40 + i32::from(y))));
+                    }
+                }
+                assert_eq!(i32::from(advance), pen - 40, "font {font}/{size}, face {face}");
+                let actual: HashSet<_> = screen_bytes(&bus, base).into_iter().enumerate()
+                    .filter(|(_, pixel)| *pixel == black)
+                    .map(|(index, _)| ((index % 800) as i32, (index / 800) as i32)).collect();
+                assert_eq!(actual, expected, "font {font}/{size}, face {face}");
+                dispatcher.tx_font = font;
+                dispatcher.tx_size = size;
+                dispatcher.tx_face = i16::from(face);
+                let layout = dispatcher.dialog_static_text_layout(&bus, 0, 0, (0, 0, 40, 200))
+                    .expect("exact styled strike must expose statText layout");
+                assert_eq!(layout.face, face);
+                assert_eq!(layout.wrap_advance_extra, dispatcher.advance_extra());
+                assert_eq!(layout.font, (font, size));
+            }
+        }
+    }
+
+    #[test]
+    fn clipped_styled_text_matches_unclipped_pixels_inside_its_bounds() {
+        let (_, mut bus, base) = text_fixture();
+        let black = TrapDispatcher::logical_black_pixel_index(&bus);
+        for style in [0, 1, 2, 4, 8, 16, 32, 64] {
+            bus.fill_bytes(base, 800 * 600, 0x11);
+            TrapDispatcher::fb_draw_string_styled_index(
+                &mut bus, base, 800, 8, 800, 600, 40, 40, "Menu", 0, 12, style, black,
+            );
+            let full = screen_bytes(&bus, base);
+            for clip in [(34, 43, 39, 63), (37, 40, 44, 68)] {
+                bus.fill_bytes(base, 800 * 600, 0x11);
+                TrapDispatcher::fb_draw_string_styled_with_index(
+                    &mut bus,
+                    base,
+                    800,
+                    8,
+                    800,
+                    600,
+                    40,
+                    40,
+                    "Menu",
+                    0,
+                    12,
+                    style,
+                    Some(black),
+                    true,
+                    Some(clip),
+                );
+                let clipped = screen_bytes(&bus, base);
+                let mut ink = 0;
+                for (index, pixel) in clipped.iter().enumerate() {
+                    let x = (index % 800) as i16;
+                    let y = (index / 800) as i16;
+                    let inside = x >= clip.1 && x < clip.3 && y >= clip.0 && y < clip.2;
+                    assert_eq!(
+                        *pixel,
+                        if inside { full[index] } else { 0x11 },
+                        "style {style} at ({x},{y}), clip {clip:?}"
+                    );
+                    ink += usize::from(*pixel == black);
+                }
+                assert!(ink > 0, "style {style} must expose some ink");
+            }
+        }
+    }
+
+    #[test]
     fn plain_styled_text_matches_the_plain_painter() {
         let (_disp, mut bus, screen_base) = text_fixture();
         let black = TrapDispatcher::logical_black_pixel_index(&bus);
@@ -8789,6 +8806,41 @@ mod redraw_chrome_tests {
     }
 
     #[test]
+    fn redraw_chrome_preserves_native_menu_over_the_menu_bar() {
+        let (mut disp, mut bus, base) = text_fixture();
+        disp.front_window = 0;
+        disp.fullscreen_locked = false;
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.menus.push(super::super::menu::Menu {
+            id: 1,
+            title: "File".into(),
+            items: Vec::new(),
+            enabled: true,
+            handle: 0,
+            in_menu_bar: true,
+            hierarchical: false,
+            visible_in_menu_bar: true,
+        });
+        disp.external_host_overlay_rects = vec![(10, 200, 200, 300)];
+        let probe = base + 15 * 800 + 250;
+        bus.write_byte(probe, 0x7e);
+        disp.redraw_chrome(&mut bus);
+        assert_eq!(
+            bus.read_byte(probe),
+            0x7e,
+            "bar repaint erased a native menu"
+        );
+        disp.external_host_overlay_rects.clear();
+        disp.redraw_chrome(&mut bus);
+        assert_ne!(
+            bus.read_byte(probe),
+            0x7e,
+            "bar must repaint after menu disposal"
+        );
+    }
+
+    #[test]
     fn redraw_chrome_repairs_exposed_desktop_from_window_ownership() {
         let (mut disp, _cpu, mut bus) = setup_with_port();
         let (screen_base, row_bytes, screen_w, screen_h, _) = disp.screen_mode;
@@ -8849,6 +8901,8 @@ mod redraw_chrome_tests {
 
         let get_bounds = (50, 0, 228, 356);
         disp.standard_file_get_tracking = Some(StandardFileGetTrackingState {
+            generation: 1,
+            standard_entry_point: false,
             modern_reply: false,
             reply_ptr: 0,
             stack_ptr: 0,
@@ -8884,6 +8938,12 @@ mod redraw_chrome_tests {
         disp.external_host_overlay_rects.clear();
         let put_bounds = (200, 8, 460, 368);
         disp.standard_file_put_tracking = Some(StandardFilePutTrackingState {
+            pointer_anchor: None,
+            caret: crate::standard_file_ui::StandardFileCaret::default(),
+            new_folder: None,
+            confirming_replace: false,
+            generation: 2,
+            standard_entry_point: true,
             modern_reply: false,
             reply_ptr: 0,
             stack_ptr: 0,

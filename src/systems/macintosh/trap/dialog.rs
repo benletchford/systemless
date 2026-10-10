@@ -519,7 +519,6 @@ impl super::TrapDispatcher {
     const TE_N_LINES_OFFSET: u32 = 0x5E;
     const TE_LINE_STARTS_OFFSET: u32 = 0x60;
     const TE_REC_MIN_SIZE: u32 = 128;
-    const TE_CARET_BLINK_TICKS: u32 = 32;
     // TextEdit draws inside the destination rectangle (IM:I I-373 to I-374);
     // BasiliskII/System 7.5.3 `dialog_visual_textedit_smoke` pins the ROM's
     // flush-left glyph origin one pixel in from destRect.left.
@@ -702,7 +701,7 @@ impl super::TrapDispatcher {
         Some(bus.read_bytes(data_ptr, len))
     }
 
-    fn dialog_item_handle_addr(bus: &MacMemoryBus, dialog_ptr: u32, item_no: i16) -> Option<u32> {
+    pub(crate) fn dialog_item_handle_addr(bus: &MacMemoryBus, dialog_ptr: u32, item_no: i16) -> Option<u32> {
         if item_no <= 0 {
             return None;
         }
@@ -790,7 +789,9 @@ impl super::TrapDispatcher {
             let proc_id = self.dialog_window_proc_id(bus, dialog_ptr);
             let (edit_text, edit_item, default_item) =
                 Self::dialog_edit_state(bus, dialog_ptr, &items);
-            if self.dialogs_drawn_by_app.contains(&dialog_ptr) {
+            if self.dialogs_drawn_by_app.contains(&dialog_ptr)
+                && items.iter().any(|item| dialog_item_base_type(item.item_type) == DIALOG_ITEM_USER_ITEM)
+            {
                 // ShowWindow may follow a complete application composition
                 // into a still-hidden dialog port. Preserve those pixels and
                 // repaint only manager-owned controls instead of synthesizing
@@ -1290,6 +1291,75 @@ impl super::TrapDispatcher {
         }
 
         (top, x)
+    }
+
+    fn track_text_edit_selection<C: CpuOps>(
+        &mut self, cpu: &mut C, bus: &mut MacMemoryBus, te_handle: u32,
+        initial_point: (i16, i16), extend: bool,
+    ) -> bool {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr == 0 {
+            self.textedit_states.clear_click_tracking();
+            return false;
+        }
+        let previous_selection = (
+            bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET),
+            bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET),
+        );
+        let tracking = self.textedit_states.take_click_tracking();
+        let point = if tracking.is_some() {
+            let port = bus.read_long(te_ptr + Self::TE_IN_PORT_OFFSET);
+            let (top, left) = self.port_bounds_top_left(bus, port);
+            let (v, h) = self.window_tracking_mouse_pos(bus);
+            (v.wrapping_add(top), h.wrapping_add(left))
+        } else {
+            initial_point
+        };
+        let offset = self.te_point_to_char(bus, te_handle, point).max(0) as usize;
+        let anchor = tracking.map_or_else(
+            || {
+                if extend {
+                    let start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
+                    let end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
+                    if offset < start {
+                        end
+                    } else {
+                        start
+                    }
+                } else {
+                    offset
+                }
+            },
+            |tracking| tracking.anchor,
+        );
+        let length = bus.read_word(te_ptr + Self::TE_LENGTH_OFFSET) as usize;
+        let anchor = anchor.min(length);
+        bus.write_word(
+            te_ptr + Self::TE_SEL_START_OFFSET,
+            anchor.min(offset) as u16,
+        );
+        bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, anchor.max(offset) as u16);
+        bus.write_word(te_ptr + Self::TE_SEL_POINT_OFFSET, point.0 as u16);
+        bus.write_word(te_ptr + Self::TE_SEL_POINT_OFFSET + 2, point.1 as u16);
+        bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.current_tick());
+        if previous_selection != (anchor.min(offset) as u16, anchor.max(offset) as u16) {
+            self.draw_te_contents(cpu, bus, te_handle, true);
+        }
+        if self.window_tracking_button_down(bus) {
+            self.textedit_states.retain_click_tracking(
+                crate::text_edit::TextEditClickTracking {
+                    handle: te_handle,
+                    anchor,
+                    native: false,
+                    last_point: point,
+                },
+            );
+        } else {
+            if let Some(index) = self.event_queue.iter().position(|event| event.what == 2) {
+                self.event_queue.remove(index);
+            }
+        }
+        self.textedit_states.has_classic_click_tracking()
     }
 
     /// Inverse of `te_char_to_point`: locate the character offset whose
@@ -2144,35 +2214,11 @@ impl super::TrapDispatcher {
         inserted_style: TeResolvedStyle,
         new_len: usize,
     ) -> Vec<(usize, TeResolvedStyle)> {
-        let following = Self::te_style_at_offset(runs, start + deleted);
-        let mut edited: Vec<(usize, TeResolvedStyle)> = Vec::with_capacity(runs.len() + 2);
-        for run in runs {
-            if run.start < start {
-                edited.push((run.start, run.style));
-            } else if run.start > start + deleted {
-                edited.push((run.start - deleted + inserted, run.style));
-            }
-        }
-        if inserted > 0 {
-            edited.push((start, inserted_style));
-        }
-        edited.push((start + inserted, following));
-        edited.sort_by_key(|(run_start, _)| *run_start);
-        let mut folded: Vec<(usize, TeResolvedStyle)> = Vec::with_capacity(edited.len());
-        for (run_start, style) in edited {
-            if run_start >= new_len && run_start != 0 {
-                continue;
-            }
-            match folded.last_mut() {
-                Some((last_start, last_style)) if *last_start == run_start => *last_style = style,
-                Some((_, last_style)) if *last_style == style => {}
-                _ => folded.push((run_start, style)),
-            }
-        }
-        if let Some(first) = folded.first_mut() {
-            first.0 = 0;
-        }
-        folded
+        crate::text_edit::style_runs_after_edit(
+            &runs.iter().map(|run| (run.start, run.style)).collect::<Vec<_>>(),
+            (start, deleted, inserted), inserted_style,
+            Self::te_style_at_offset(runs, start + deleted), new_len,
+        )
     }
 
     /// Keep a styled record's runs on their characters across an edit of
@@ -2194,17 +2240,9 @@ impl super::TrapDispatcher {
         if old == new || !Self::te_is_styled_record(bus, te_ptr) {
             return;
         }
-        let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
-        let start = prefix.min(selection_start);
-        let room = old.len().min(new.len()) - start;
-        let suffix = old[start..]
-            .iter()
-            .rev()
-            .zip(new[start..].iter().rev())
-            .take(room)
-            .take_while(|(a, b)| a == b)
-            .count();
-        let (deleted, inserted) = (old.len() - start - suffix, new.len() - start - suffix);
+        let Some((start, deleted, inserted)) = crate::text_edit::edited_byte_span(old, new, selection_start) else {
+            return;
+        };
         let runs = self.te_style_runs(bus, te_handle, old.len());
         let inserted_style =
             Self::te_null_style_resolved_style(bus, te_handle).unwrap_or_else(|| {
@@ -2380,6 +2418,7 @@ impl super::TrapDispatcher {
         bus.write_word(te_ptr + Self::TE_TX_SIZE_OFFSET, self.tx_size as u16);
         bus.write_long(te_ptr + Self::TE_IN_PORT_OFFSET, *self.current_port);
         self.textedit_states.remove(&te_handle);
+        bus.forget_text_edit_drawing(te_handle);
     }
 
     fn initialize_styled_te_record(
@@ -2554,6 +2593,7 @@ impl super::TrapDispatcher {
         bus.write_word(te_ptr + Self::TE_N_LINES_OFFSET, 0);
         bus.write_word(te_ptr + Self::TE_LINE_STARTS_OFFSET, 0);
         self.textedit_states.remove(&te_handle);
+        bus.forget_text_edit_drawing(te_handle);
     }
 
     fn te_text_length(bus: &MacMemoryBus, te_handle: u32) -> usize {
@@ -2635,7 +2675,7 @@ impl super::TrapDispatcher {
         bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, end);
     }
 
-    fn te_set_scrap_bytes(bus: &mut MacMemoryBus, selected: &[u8]) {
+    pub(super) fn te_set_scrap_bytes(bus: &mut MacMemoryBus, selected: &[u8]) {
         use crate::memory::globals::addr;
 
         let mut scrap_handle = bus.read_long(addr::TE_SCRP_HANDLE);
@@ -2793,7 +2833,7 @@ impl super::TrapDispatcher {
         }
 
         let last_toggle = bus.read_long(te_ptr + Self::TE_CARET_TIME_OFFSET);
-        if self.current_tick().wrapping_sub(last_toggle) < Self::TE_CARET_BLINK_TICKS {
+        if self.current_tick().wrapping_sub(last_toggle) < bus.read_long(crate::memory::globals::addr::CARET_TIME) {
             return;
         }
 
@@ -2822,13 +2862,10 @@ impl super::TrapDispatcher {
     // TextEdit measures each run with its own font, size and face, independent
     // of the caller's current port style. Inside Macintosh: Text (1993), 2-20.
     fn te_styled_char_width(style: TeResolvedStyle, byte: u8) -> i16 {
-        let size = Self::font_lookup_size(style.size);
-        let (_, scale) = get_font_face_scaled(style.font, size);
-        let advance = crate::quickdraw::text::get_glyph(style.font, size, byte as char)
-            .map_or(6, |(glyph, _)| i16::from(glyph.advance));
-        advance * scale
-            + crate::quickdraw::text::QuickDrawTextStyle::from_bits(style.face as u8)
-                .advance_extra() as i16
+        crate::text_edit::styled_byte_advance(
+            crate::text_edit::TextEditLineLayoutPolicy::CumulativeGuestMetrics,
+            style.font, style.size, style.face as u8, byte,
+        )
     }
 
     fn te_char_width(&self, font: i16, size: i16, byte: u8) -> i16 {
@@ -3284,6 +3321,7 @@ impl super::TrapDispatcher {
         let sel_end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
         let (selection_start, selection_end) =
             normalize_selection_bounds(sel_start, sel_end, usize::MAX);
+        let mut solid_caret_rect = None;
         if selection_start == selection_end {
             if te_active && caret_visible {
                 if let Some(&(line_start, line_end, line_top, line_bottom, line_x)) = visual_lines
@@ -3354,6 +3392,7 @@ impl super::TrapDispatcher {
                                 },
                                 ShapeOp::Paint,
                             );
+                            solid_caret_rect = Some((top, left, bottom, right));
                         }
                     }
                 }
@@ -3454,6 +3493,8 @@ impl super::TrapDispatcher {
             );
         }
 
+        // Text (1993), p. 2-88: allocation is not evidence of painted text.
+        bus.record_text_edit_caret_drawing(te_handle, te_port, view_rect, solid_caret_rect);
         if switched_port {
             self.set_current_port_state(bus, cpu, previous_port, Some(previous_gdevice));
         }
@@ -3938,14 +3979,14 @@ impl super::TrapDispatcher {
     // ========== DLOG / DITL Resource Parsing ==========
 
     /// Parse a DLOG resource from guest memory.
-    /// Returns (bounds, procID, visible, itemsID, title, position).
+    /// Returns (bounds, procID, visible, itemsID, title, position, goAway, refCon).
     /// Inside Macintosh Volume I, I-437
     /// Macintosh Toolbox Essentials 1992, p. 6-148
     fn parse_dlog(
         bus: &MacMemoryBus,
         ptr: u32,
         data_len: u32,
-    ) -> ((i16, i16, i16, i16), i16, bool, i16, String, u16) {
+    ) -> ((i16, i16, i16, i16), i16, bool, i16, String, u16, bool, u32) {
         let bytes = bus.read_bytes(ptr, data_len as usize);
         crate::dialog_manager::parse_dialog_template(&bytes)
             .map(|template| {
@@ -3957,9 +3998,11 @@ impl super::TrapDispatcher {
                     template.items_id,
                     title,
                     template.position,
+                    template.go_away,
+                    template.ref_con,
                 )
             })
-            .unwrap_or(((0, 0, 0, 0), 0, false, 0, String::new(), 0))
+            .unwrap_or(((0, 0, 0, 0), 0, false, 0, String::new(), 0, false, 0))
     }
 
     /// Parse an ALRT resource from guest memory.
@@ -4168,7 +4211,7 @@ impl super::TrapDispatcher {
             .as_ref()
             .is_some_and(|tracking| tracking.active_button.is_some())
         {
-            self.handle_dialog_button_tracking(bus);
+            self.handle_dialog_button_tracking(cpu, bus);
             return;
         }
 
@@ -4473,6 +4516,7 @@ impl super::TrapDispatcher {
         }
         bus.free(te_handle);
         self.textedit_states.remove(&te_handle);
+        bus.forget_text_edit_drawing(te_handle);
     }
 
     fn dispose_dialog_control_storage(&mut self, bus: &mut MacMemoryBus, ctrl_handle: u32) {
@@ -4880,14 +4924,21 @@ impl super::TrapDispatcher {
             return false;
         }
 
+        let previous_edit_field = bus.read_word(
+            dialog_ptr + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET,
+        );
+        let text_handle =
+            bus.read_long(dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+        let te_ptr = Self::te_record_ptr(bus, text_handle);
+        if previous_edit_field != (edit_item - 1) as u16 && te_ptr != 0 {
+            bus.write_word(te_ptr + Self::TE_ACTIVE_OFFSET, 0);
+            self.draw_te_contents(cpu, bus, text_handle, true);
+        }
         bus.write_word(
             dialog_ptr + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET,
             (edit_item - 1) as u16,
         );
 
-        let text_handle =
-            bus.read_long(dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
-        let te_ptr = Self::te_record_ptr(bus, text_handle);
         if te_ptr == 0 {
             return true;
         }
@@ -4895,6 +4946,12 @@ impl super::TrapDispatcher {
         let item_handle = Self::dialog_item_handle(bus, dialog_ptr, edit_item);
         let text = Self::text_item_bytes_from_handle_if_present(bus, item_handle)
             .unwrap_or_else(|| encode_mac_roman_lossy(&item.text));
+        // A dialog shares one TERec among its editText items. Move its
+        // layout and owner before recalculating text or interpreting clicks.
+        Self::te_write_rect_words(bus, te_ptr + Self::TE_DEST_RECT_OFFSET, item.rect);
+        Self::te_write_rect_words(bus, te_ptr + Self::TE_VIEW_RECT_OFFSET, item.rect);
+        Self::te_write_rect_words(bus, te_ptr + Self::TE_SEL_RECT_OFFSET, item.rect);
+        bus.write_long(te_ptr + Self::TE_IN_PORT_OFFSET, dialog_ptr);
         self.te_set_text_contents(bus, text_handle, &text);
 
         let text_len = text.len().min(u16::MAX as usize);
@@ -5258,6 +5315,33 @@ impl super::TrapDispatcher {
         );
 
         self.initialize_dialog_item_handles(bus, dlg_ptr, &items);
+        // The first enabled editText item owns the shared TERec when the
+        // dialog is displayed. Its DITL rectangle is TextEdit's destination
+        // and view rectangle, and the insertion point starts at offset zero.
+        // Inside Macintosh Volume I, I-405, I-408; Macintosh Toolbox
+        // Essentials (1992), pp. 6-79--6-80.
+        if let Some((index, item)) = items
+            .iter()
+            .enumerate()
+            .find(|(_, item)| item.is_edit_text() && item.is_enabled())
+        {
+            self.initialize_te_record(bus, text_h, item.rect, item.rect);
+            let item_handle = Self::dialog_item_handle(bus, dlg_ptr, (index + 1) as i16);
+            let text = Self::text_item_bytes_from_handle_if_present(bus, item_handle)
+                .unwrap_or_else(|| encode_mac_roman_lossy(&item.text));
+            self.te_set_text_contents(bus, text_h, &text);
+            let te_ptr = Self::te_record_ptr(bus, text_h);
+            if te_ptr != 0 {
+                bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, 0);
+                bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, 0);
+                bus.write_word(te_ptr + Self::TE_ACTIVE_OFFSET, 1);
+            }
+            bus.write_word(
+                dlg_ptr + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET,
+                index as u16,
+            );
+            bus.write_word(dlg_ptr + crate::dialog_manager::DIALOG_EDIT_OPEN_OFFSET, 1);
+        }
         self.dialog_items.insert(dlg_ptr, items.clone());
         // A dialog's screen-backed GrafPort can receive application control
         // drawing even while its window is hidden. Establish the save-under
@@ -6606,7 +6690,7 @@ impl super::TrapDispatcher {
                         abs_right,
                         display_text,
                         selection_range,
-                        false,
+                        None,
                         enabled,
                     );
                 }
@@ -6809,6 +6893,7 @@ impl super::TrapDispatcher {
                                 hilite,
                             ),
                             proc_id if Self::is_popup_menu_proc_id(proc_id) => {
+                                let font = self.popup_control_font(bus, ctrl_ptr);
                                 let menu_id = self.popup_control_menu_id(bus, ctrl_ptr, min);
                                 let selected = value.max(1) as usize;
                                 let item_title = self.popup_menu_item_title(bus, menu_id, selected);
@@ -6824,7 +6909,7 @@ impl super::TrapDispatcher {
                                         title_width,
                                         proc_id,
                                     );
-                                self.draw_popup_control_label(
+                                self.draw_popup_control_label_with_font(
                                     bus,
                                     abs_top,
                                     abs_left,
@@ -6832,8 +6917,9 @@ impl super::TrapDispatcher {
                                     draw_left,
                                     &title,
                                     enabled && hilite != 255,
+                                    font,
                                 );
-                                self.draw_popup_control_with_state(
+                                self.draw_popup_control_with_font(
                                     bus,
                                     draw_top,
                                     draw_left,
@@ -6842,6 +6928,7 @@ impl super::TrapDispatcher {
                                     &item_title.unwrap_or_default(),
                                     enabled && hilite != 255,
                                     hilite == 1,
+                                    font,
                                 );
                             }
                             // For controls with custom/unhandled CDEFs (e.g. proc_id 16000),
@@ -7038,6 +7125,7 @@ impl super::TrapDispatcher {
                                 hilite,
                             ),
                             proc_id if Self::is_popup_menu_proc_id(proc_id) => {
+                                let font = self.popup_control_font(bus, ctrl_ptr);
                                 let menu_id = self.popup_control_menu_id(bus, ctrl_ptr, min);
                                 let selected = value.max(1) as usize;
                                 let item_title = self.popup_menu_item_title(bus, menu_id, selected);
@@ -7053,7 +7141,7 @@ impl super::TrapDispatcher {
                                         title_width,
                                         proc_id,
                                     );
-                                self.draw_popup_control_label(
+                                self.draw_popup_control_label_with_font(
                                     bus,
                                     abs_top,
                                     abs_left,
@@ -7061,8 +7149,9 @@ impl super::TrapDispatcher {
                                     draw_left,
                                     &title,
                                     enabled && hilite != 255,
+                                    font,
                                 );
-                                self.draw_popup_control_with_state(
+                                self.draw_popup_control_with_font(
                                     bus,
                                     draw_top,
                                     draw_left,
@@ -7071,6 +7160,7 @@ impl super::TrapDispatcher {
                                     &item_title.unwrap_or_default(),
                                     enabled && hilite != 255,
                                     hilite == 1,
+                                    font,
                                 );
                             }
                             // For controls with custom/unhandled CDEFs (e.g. proc_id 16000),
@@ -7144,7 +7234,7 @@ impl super::TrapDispatcher {
                         abs_right,
                         display_text,
                         selection_range,
-                        false,
+                        None,
                         enabled,
                     );
                 }
@@ -7646,7 +7736,7 @@ impl super::TrapDispatcher {
         max_width
     }
 
-    pub(crate) fn draw_popup_control_label(
+    pub(crate) fn draw_popup_control_label_with_font(
         &self,
         bus: &mut MacMemoryBus,
         top: i16,
@@ -7655,18 +7745,21 @@ impl super::TrapDispatcher {
         popup_left: i16,
         title: &str,
         enabled: bool,
+        font: crate::menu_model::GuestMenuFont,
     ) {
         if title.is_empty() || popup_left <= left + 4 {
             return;
         }
 
-        let font_id = 0i16;
-        let font_size = 12i16;
-        let metrics = get_font_metrics(font_id, font_size);
+        let font_id = font.family;
+        let font_size = font.point_size();
+        let metrics = font.metrics();
         let text_width = Self::fb_measure_string(title, font_id, font_size);
         let text_right = popup_left - 6;
         let text_x = (text_right - text_width).max(left);
-        let text_y = top + ((bottom - top) + metrics.ascent - metrics.descent) / 2;
+        let text_y = crate::control_manager::centered_control_label_origin(
+            (top, left, bottom, popup_left), 0, metrics.ascent, metrics.descent,
+        ).1;
 
         self.draw_control_label_text(
             bus, top, left, bottom, popup_left, text_x, text_y, title, font_id, font_size, !enabled,
@@ -7684,11 +7777,26 @@ impl super::TrapDispatcher {
         enabled: bool,
         pressed: bool,
     ) {
+        self.draw_popup_control_with_font(bus, top, left, bottom, right, title, enabled, pressed, Default::default());
+    }
+
+    pub(crate) fn draw_popup_control_with_font(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        title: &str,
+        enabled: bool,
+        pressed: bool,
+        font: crate::menu_model::GuestMenuFont,
+    ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
 
-        let font_id = 0i16;
-        let font_size = 12i16;
+        let font_id = font.family;
+        let font_size = font.point_size();
         let text_x = left + 15;
         // The standard arrow occupies the right side of the box. Inside
         // Macintosh Volume VI (1991), p. 3-17 requires popupFixedWidth item
@@ -7833,53 +7941,24 @@ impl super::TrapDispatcher {
                 }
             }
 
-            // Downward-pointing triangle on right side (popup indicator)
-            // Macintosh Toolbox Essentials 1992, 5-26
-            let tri_x = right - 12;
-            if enabled {
-                for row in 0..6i16 {
-                    Self::fb_hline(
-                        bus,
-                        screen_base,
-                        row_bytes,
-                        pixel_size,
-                        screen_width,
-                        screen_height,
-                        top + 6 + row,
-                        tri_x - 5 + row,
-                        tri_x + 6 - row,
-                        true,
-                    );
-                }
-            } else {
-                for row in [0i16, 2, 4] {
-                    let start = tri_x - 4 + row;
-                    let end = tri_x + 5 - row;
-                    for x in start..end {
-                        if (x - start) % 2 == 0 {
-                            Self::fb_set_pixel(
-                                bus,
-                                screen_base,
-                                row_bytes,
-                                pixel_size,
-                                screen_width,
-                                screen_height,
-                                x,
-                                top + 7 + row,
-                                true,
-                            );
-                        }
-                    }
-                }
+            // Shared standard indicator geometry also feeds GPUI presentation.
+            for span in crate::control_manager::popup_indicator_spans(
+                crate::control_manager::PopupIndicatorKind::Classic68k,
+                (top, left, bottom, right), enabled,
+            ) {
+                Self::fb_hline(bus, screen_base, row_bytes, pixel_size,
+                    screen_width, screen_height, span.top, span.left,
+                    span.left.saturating_add(span.width), true);
             }
         }
 
         // Selected item text inside the box
         // Macintosh Toolbox Essentials 1992, 5-26
         if !display_title.is_empty() {
-            let metrics = get_font_metrics(font_id, font_size);
-            let text_y =
-                top + (bottom - top - (metrics.ascent + metrics.descent)) / 2 + metrics.ascent - 1;
+            let metrics = font.metrics();
+            let text_y = crate::control_manager::centered_control_label_origin(
+                (top, left, bottom, right), 0, metrics.ascent, metrics.descent,
+            ).1.saturating_sub(1);
             if enabled {
                 Self::fb_draw_string_clipped(
                     bus,
@@ -7913,37 +7992,16 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn popup_control_display_title(
+    pub(crate) fn popup_control_display_title(
         title: &str,
         available_width: i16,
         font_id: i16,
         font_size: i16,
     ) -> String {
-        if available_width <= 0 {
-            return String::new();
-        }
-        if Self::fb_measure_string(title, font_id, font_size) <= available_width {
-            return title.to_owned();
-        }
-
-        let ellipses = "...";
-        let ellipses_width = Self::fb_measure_string(ellipses, font_id, font_size);
-        if ellipses_width > available_width {
-            return String::new();
-        }
-
-        let mut prefix = String::new();
-        let mut prefix_width = 0;
-        for ch in title.chars() {
-            let char_width = Self::fb_measure_string(&ch.to_string(), font_id, font_size);
-            if prefix_width + char_width + ellipses_width > available_width {
-                break;
-            }
-            prefix.push(ch);
-            prefix_width += char_width;
-        }
-        prefix.push_str(ellipses);
-        prefix
+        let chars: Vec<_> = title.chars().collect();
+        crate::control_manager::popup_display_text(&chars, &['.', '.', '.'], available_width,
+            |chars| Self::fb_measure_string(&chars.iter().collect::<String>(), font_id, font_size))
+            .into_iter().collect()
     }
 
     fn redraw_dialog_popup_controls(
@@ -8760,6 +8818,57 @@ impl super::TrapDispatcher {
         encode_mac_roman_lossy(&self.apply_param_text(text))
     }
 
+    pub(crate) fn standard_file_directory_text_layout(
+        &self,
+        rect: (i16, i16, i16, i16),
+    ) -> (i16, i16, i16) {
+        let metrics = get_font_metrics(self.tx_font, Self::font_lookup_size(self.tx_size));
+        let height = rect.2 - rect.0;
+        let baseline = if metrics.ascent >= height && height > 0 {
+            height - 1
+        } else {
+            metrics.ascent
+        };
+        (Self::TE_LINE_LEFT_INSET, baseline, metrics.ascent + metrics.descent + metrics.leading)
+    }
+
+    pub(crate) fn dialog_static_text_layout(
+        &self, bus: &MacMemoryBus, dialog: u32, index: usize, rect: (i16, i16, i16, i16),
+    ) -> Option<crate::dialog_manager::DialogStaticTextLayout> {
+        let style = self.dialog_item_text_style(bus, dialog, index);
+        let font = style.map_or(self.tx_font, |style| style.font);
+        let size = style.map_or(self.tx_size, |style| style.size);
+        let face = style.map_or(self.tx_face as u8, |style| style.face);
+        if style.is_some_and(|style| style.foreground.is_some() || style.background.is_some()) {
+            return None;
+        }
+        if crate::quickdraw::fonts::get_font_face_or_default(font, size).size != if size == 0 { 12 } else { size.max(1) } {
+            return None;
+        }
+        let metrics = get_font_metrics(font, Self::font_lookup_size(size));
+        let height = rect.2.saturating_sub(rect.0);
+        let baseline = if metrics.ascent >= height && height > 0 { height - 1 } else { metrics.ascent };
+        Some(crate::dialog_manager::DialogStaticTextLayout {
+            wrap_advance_extra: self.advance_extra(), face, font: (font, size), origin: (Self::TE_LINE_LEFT_INSET, baseline),
+            line_height: metrics.ascent + metrics.descent + metrics.leading, inclusive_bottom: true,
+        })
+    }
+
+    pub(crate) fn dialog_edit_text_layout(&self) -> Option<crate::dialog_manager::DialogEditTextLayout> {
+        let font = (self.tx_font, self.tx_size);
+        if self.tx_face != 0 || crate::quickdraw::fonts::get_font_face_or_default(font.0, font.1).size
+            != if font.1 == 0 { 12 } else { font.1.max(1) }
+        {
+            return None;
+        }
+        let metrics = get_font_metrics(font.0, Self::font_lookup_size(font.1));
+        Some(crate::dialog_manager::DialogEditTextLayout {
+            font, baseline: metrics.ascent,
+            line_height: metrics.ascent + metrics.descent + metrics.leading,
+            wrap: false, text_edit_geometry: false,
+        })
+    }
+
     fn draw_static_text(
         &self,
         bus: &mut MacMemoryBus,
@@ -8850,6 +8959,7 @@ impl super::TrapDispatcher {
     }
 
     /// Draw an editable text field with border and text.
+    #[cfg(test)]
     pub(crate) fn draw_edit_text(
         &self,
         bus: &mut MacMemoryBus,
@@ -8869,12 +8979,12 @@ impl super::TrapDispatcher {
             right,
             text,
             selection_range,
-            !selected,
+            (!selected).then_some(encode_mac_roman_lossy(text).len()),
             true,
         );
     }
 
-    fn draw_edit_text_with_cursor(
+    pub(crate) fn draw_edit_text_with_cursor(
         &self,
         bus: &mut MacMemoryBus,
         top: i16,
@@ -8883,8 +8993,25 @@ impl super::TrapDispatcher {
         right: i16,
         text: &str,
         selection_range: Option<(usize, usize)>,
-        show_cursor: bool,
+        cursor_offset: Option<usize>,
         enabled: bool,
+    ) {
+        self.draw_edit_text_scrolled(bus, top, left, bottom, right, text,
+            selection_range, cursor_offset, enabled, 0);
+    }
+
+    pub(crate) fn draw_edit_text_scrolled(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        text: &str,
+        selection_range: Option<(usize, usize)>,
+        cursor_offset: Option<usize>,
+        enabled: bool,
+        scroll_x: i16,
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
@@ -8902,7 +9029,7 @@ impl super::TrapDispatcher {
             frame_bottom,
             frame_right,
             enabled,
-            selection_range.is_some() || show_cursor,
+            selection_range.is_some() || cursor_offset.is_some(),
         ) {
             // White fill
             Self::fb_fill_rect(
@@ -8927,18 +9054,19 @@ impl super::TrapDispatcher {
         let font_size = Self::font_lookup_size(self.tx_size);
         let metrics = get_font_metrics(font_id, font_size);
         let text_y = top + metrics.ascent;
-        Self::fb_draw_string(
+        Self::fb_draw_string_clipped(
             bus,
             screen_base,
             row_bytes,
             pixel_size,
             screen_width,
             screen_height,
-            left + 1,
+            left + 1 - scroll_x,
             text_y,
             text,
             font_id,
             font_size,
+            (top, left, bottom, right),
         );
         if let Some((selection_start, selection_end)) = selection_range {
             // IM:I I-422 and MTE 1992 p. 6-131: SelIText /
@@ -8972,6 +9100,8 @@ impl super::TrapDispatcher {
                         left + Self::TE_LINE_LEFT_INSET
                             + self.te_measure_text_width(font_id, self.tx_size, &text_bytes, 0, end)
                     };
+                    let selection_left = (selection_left - scroll_x).max(left);
+                    let selection_right = if end >= text_bytes.len() { right } else { (selection_right - scroll_x).min(right) };
                     if selection_left < selection_right && selection_top < selection_bottom {
                         if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
                             self.invert_rect_exact(
@@ -8994,11 +9124,12 @@ impl super::TrapDispatcher {
                     }
                 }
             }
-        } else if show_cursor {
-            // Draw cursor bar at end of text
-            let text_width = Self::fb_measure_string(text, font_id, font_size);
-            let cursor_x = left + 3 + text_width;
-            if cursor_x < right - 1
+        } else if let Some(offset) = cursor_offset {
+            // Roman text offsets are guest bytes, each decoding to one character.
+            let prefix: String = text.chars().take(offset).collect();
+            let text_width = Self::fb_measure_string(&prefix, font_id, font_size);
+            let cursor_x = left + 1 + text_width - scroll_x;
+            if cursor_x >= left && cursor_x < right - 1
                 && !self.draw_theme_caret(bus, top + 2, cursor_x, bottom - 1, cursor_x + 1)
             {
                 for y in (top + 2)..=(bottom - 2) {
@@ -10518,7 +10649,7 @@ impl super::TrapDispatcher {
         cpu.write_reg(Register::A7, saved.stack_ptr + 8);
     }
 
-    fn handle_dialog_button_tracking(&mut self, bus: &mut MacMemoryBus) {
+    fn handle_dialog_button_tracking<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
         let Some((
             dialog_ptr,
             bounds,
@@ -10555,6 +10686,51 @@ impl super::TrapDispatcher {
         let (top, left, bottom, right) = Self::dialog_item_screen_rect(bounds, rect);
         let (mouse_v, mouse_h) = self.input_state.mouse_position();
         let inside = mouse_v >= top && mouse_v < bottom && mouse_h >= left && mouse_h < right;
+
+        if matches!(dialog_item_base_type(item_type), DIALOG_ITEM_CHECKBOX | DIALOG_ITEM_RADIO) {
+            // HIG (1992), pp. 205, 209--212: track without changing the
+            // value; only the application acts on a completed inside release.
+            let pressed = self.input_state.mouse_button_pressed() && inside;
+            if let Some(handle) = self.dialog_control_handle_for_item(dialog_ptr, item_no) {
+                let pointer = bus.read_long(handle);
+                if pointer != 0 {
+                    let highlight = if pressed { 11 } else { 0 };
+                    if bus.read_byte(pointer + 17) != highlight {
+                        bus.write_byte(pointer + 17, highlight);
+                        self.draw_control(cpu, bus, pointer);
+                    }
+                }
+            }
+            if let Some(button) = self.dialog_tracking.as_mut().and_then(|tracking| tracking.active_button.as_mut()) {
+                button.highlighted = pressed;
+            }
+            if self.input_state.mouse_button_pressed() { return; }
+            self.consume_or_retain_dialog_mouse_up(&mouse_down);
+            self.dialog_tracking.as_mut().unwrap().active_button = None;
+            if !inside { return; }
+            let (edit_item, edit_text, items) = {
+                let tracking = self.dialog_tracking.as_mut().unwrap();
+                Self::sync_tracking_active_edit_item(tracking);
+                (tracking.edit_item, tracking.edit_text.clone(), tracking.items.clone())
+            };
+            self.flush_dialog_edit_item_texts(bus, dialog_ptr, &items, edit_item, &edit_text);
+            let saved = self.dialog_tracking.take().unwrap();
+            self.persist_visible_dialog_snapshot(bus, &saved);
+            self.dialog_saved_pixels.insert(dialog_ptr, saved.saved_pixels);
+            if saved.item_hit_ptr != 0 { bus.write_word(saved.item_hit_ptr, item_no as u16); }
+            self.record_modal_dialog_input_trace(
+                "release",
+                dialog_ptr,
+                bounds,
+                item_no,
+                Some(item_type),
+                None,
+                "returned",
+                "checkbox_item_hit_retained",
+            );
+            cpu.write_reg(Register::A7, saved.stack_ptr + 8);
+            return;
+        }
 
         if self.input_state.mouse_button_pressed() {
             if inside != highlighted {
@@ -10779,7 +10955,7 @@ impl super::TrapDispatcher {
 
                 if let Some(dlog_data) = dlog_ptr {
                     let dlog_len = bus.get_alloc_size(dlog_data).unwrap_or(0);
-                    let (raw_bounds, proc_id, visible, items_id, title, position) =
+                    let (raw_bounds, proc_id, visible, items_id, title, position, go_away, ref_con) =
                         Self::parse_dlog(bus, dlog_data, dlog_len);
                     let mut bounds = raw_bounds;
 
@@ -10877,7 +11053,8 @@ impl super::TrapDispatcher {
                         .is_some()
                         .then(|| self.copy_dialog_item_color_table_resource(bus, items_id))
                         .flatten();
-                    // Honor the DLOG resource's visible flag per IM:I I-424.
+                    // Preserve the DLOG visibility, close-box flag and reference
+                    // value when creating the window (MTE 1992, pp. 6-147–6-148).
                     let dlg_ptr = self.finish_dialog_creation(
                         bus,
                         cpu,
@@ -10886,8 +11063,8 @@ impl super::TrapDispatcher {
                         &title,
                         visible,
                         proc_id,
-                        false,
-                        0,
+                        go_away,
+                        ref_con,
                         items_handle,
                         items,
                         dialog_color_table,
@@ -11361,9 +11538,34 @@ impl super::TrapDispatcher {
                                     bus, dialog_ptr,
                                 );
                                 if is_edit_text {
-                                    self.activate_dialog_edit_item(
-                                        bus, cpu, dialog_ptr, &items, item_no,
-                                    );
+                                    let was_tracking = self.textedit_states.has_classic_click_tracking();
+                                    if !was_tracking {
+                                        self.activate_dialog_edit_item(
+                                            bus, cpu, dialog_ptr, &items, item_no,
+                                        );
+                                    }
+                                    let handle = bus.read_long(dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+                                    self.track_text_edit_selection(cpu, bus, handle,
+                                        (where_v.saturating_sub(bounds.0), where_h.saturating_sub(bounds.1)),
+                                        _modifiers & 0x0200 != 0);
+                                    let ptr = Self::te_record_ptr(bus, handle);
+                                    if ptr != 0 {
+                                        let item = &mut items[(item_no - 1) as usize];
+                                        let previous = (item.sel_start, item.sel_end);
+                                        item.sel_start = bus.read_word(ptr + Self::TE_SEL_START_OFFSET) as i16;
+                                        item.sel_end = bus.read_word(ptr + Self::TE_SEL_END_OFFSET) as i16;
+                                        let edit_text = item.text.clone();
+                                        if !was_tracking || previous != (item.sel_start, item.sel_end) {
+                                            let default_item = bus.read_word(dialog_ptr + crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET) as i16;
+                                            self.redraw_standard_dialog_items(bus, bounds, &items, default_item,
+                                                &edit_text, item_no, dialog_ptr, Some(item_no));
+                                            if bus.read_word(ptr + Self::TE_SEL_START_OFFSET)
+                                                == bus.read_word(ptr + Self::TE_SEL_END_OFFSET)
+                                            {
+                                                self.draw_te_contents(cpu, bus, handle, false);
+                                            }
+                                        }
+                                    }
                                 }
                                 trace_detail = format!(
                                     "bounds=({},{},{},{}) item_hit={} item_type=${:02X} disabled=false outcome=enabled_item",
@@ -11409,9 +11611,26 @@ impl super::TrapDispatcher {
                                     "bounds=({},{},{},{}) edit_item={} item_type=${:02X} disabled=false outcome=enabled_edittext",
                                     bounds.0, bounds.1, bounds.2, bounds.3, edit_item, item_type
                                 );
-                                self.apply_dialog_select_key_to_edit_item(
+                                if self.apply_dialog_select_key_to_edit_item(
                                     bus, dialog_ptr, &mut items, edit_item, character,
-                                );
+                                ) {
+                                    // DialogSelect uses TextEdit for key input; TEKey
+                                    // redraws the changed field before returning.
+                                    // Macintosh Toolbox Essentials (1992), pp. 6-140--6-141;
+                                    // Text (1993), pp. 2-81--2-82.
+                                    let (edit_text, active_edit, default_item) =
+                                        Self::dialog_edit_state(bus, dialog_ptr, &items);
+                                    self.redraw_standard_dialog_items(
+                                        bus,
+                                        bounds,
+                                        &items,
+                                        default_item,
+                                        &edit_text,
+                                        active_edit,
+                                        dialog_ptr,
+                                        Some(edit_item),
+                                    );
+                                }
                                 result = true;
                             }
                             crate::dialog_manager::DialogSelectAction::NoAction => {
@@ -11513,7 +11732,9 @@ impl super::TrapDispatcher {
                 // DialogSelect shares IsDialogEvent's one-byte Pascal
                 // Boolean ABI: canonical TRUE is 1, not a word-sized -1.
                 bus.write_byte(sp + 12, if result { 1 } else { 0 });
-                cpu.write_reg(Register::A7, sp + 12);
+                if !self.textedit_states.has_classic_click_tracking() {
+                    cpu.write_reg(Register::A7, sp + 12);
+                }
                 Ok(())
             }
 
@@ -11859,7 +12080,10 @@ impl super::TrapDispatcher {
             //   SP+8..9:  itemType
             //   SP+10..11: itemNo
             //   SP+12..15: theDialog
-            // SetDItem ($A98E): Stores item type, rect, and proc_ptr (for userItem); updates both dialog_items and active tracking state
+            // SetDialogItem (0xA98E)
+            // Installs an item's type, handle and display rectangle without drawing it.
+            // PROCEDURE SetDialogItem (theDialog: DialogPtr; itemNo: Integer; itemType: Integer; item: Handle; box: Rect);
+            // Macintosh Toolbox Essentials (1992), pp. 6-122--6-123.
             (true, 0x18E) => {
                 let sp = cpu.read_reg(Register::A7);
                 let box_ptr = bus.read_long(sp);
@@ -12141,7 +12365,7 @@ impl super::TrapDispatcher {
 
                 if let Some(ref tracking) = self.dialog_tracking {
                     if tracking.active_button.is_some() {
-                        self.handle_dialog_button_tracking(bus);
+                        self.handle_dialog_button_tracking(cpu, bus);
                         return Some(Ok(()));
                     }
 
@@ -12155,11 +12379,42 @@ impl super::TrapDispatcher {
                         return Some(Ok(()));
                     }
 
-                    // Fast path — when nothing can produce an item hit or visible
-                    // update on this step (no filter proc, no flash animation, no
-                    // pending event, no queued events), return Ok without running
-                    // any of the re-fire body. Any of these flags being non-default
-                    // routes through the full handler below.
+                    if self.textedit_states.has_classic_click_tracking() {
+                        let (dialog_ptr, edit_item, item_hit_ptr, stack_ptr) =
+                            (tracking.dialog_ptr, tracking.edit_item, tracking.item_hit_ptr, tracking.stack_ptr);
+                        let handle = bus.read_long(dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+                        let ptr = Self::te_record_ptr(bus, handle);
+                        let previous_selection = (bus.read_word(ptr + Self::TE_SEL_START_OFFSET),
+                            bus.read_word(ptr + Self::TE_SEL_END_OFFSET));
+                        let held = self.track_text_edit_selection(cpu, bus, handle, (0, 0), false);
+                        let selection = (bus.read_word(ptr + Self::TE_SEL_START_OFFSET),
+                            bus.read_word(ptr + Self::TE_SEL_END_OFFSET));
+                        if selection != previous_selection {
+                            let bounds = self.dialog_tracking.as_ref().unwrap().bounds;
+                            let pixels = self.save_dialog_pixels(bus, bounds);
+                            self.dialog_tracking.as_mut().unwrap().rendered_pixels = pixels;
+                        }
+                        if let Some(tracking) = self.dialog_tracking.as_mut() {
+                            if let Some(item) = tracking.items.get_mut((edit_item - 1) as usize) {
+                                item.sel_start = bus.read_word(ptr + Self::TE_SEL_START_OFFSET) as i16;
+                                item.sel_end = bus.read_word(ptr + Self::TE_SEL_END_OFFSET) as i16;
+                            }
+                        }
+                        if !held {
+                            let mut saved = self.dialog_tracking.take().unwrap();
+                            self.flush_dialog_edit_item_texts(bus, dialog_ptr, &saved.items,
+                                edit_item, &saved.edit_text);
+                            saved.rendered_pixels = self.save_dialog_pixels(bus, saved.bounds);
+                            self.persist_visible_dialog_snapshot(bus, &saved);
+                            self.dialog_saved_pixels.insert(dialog_ptr, saved.saved_pixels);
+                            if item_hit_ptr != 0 { bus.write_word(item_hit_ptr, edit_item as u16); }
+                            cpu.write_reg(Register::A7, stack_ptr + 8);
+                        }
+                        return Some(Ok(()));
+                    }
+
+                    // With no filter, tracking, animation or event, only the active
+                    // editor needs idle service before retaining the modal call.
                     if tracking.filter_proc == 0
                         && tracking.flash_remaining == 0
                         && tracking.active_button.is_none()
@@ -12167,6 +12422,20 @@ impl super::TrapDispatcher {
                         && tracking.active_user_item.is_none()
                         && self.event_queue.is_empty()
                     {
+                        let dialog_ptr = tracking.dialog_ptr;
+                        let bounds = tracking.bounds;
+                        let handle = bus.read_long(dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+                        let ptr = Self::te_record_ptr(bus, handle);
+                        let phase = (ptr != 0).then(|| bus.read_word(ptr + Self::TE_CARET_STATE_OFFSET));
+                        // Service the active editor while ModalDialog owns the event loop.
+                        // Toolbox Essentials (1992), pp. 6-79--6-85; Text (1993), p. 2-84.
+                        self.textedit_idle(cpu, bus, handle);
+                        if phase.is_some_and(|phase| phase != bus.read_word(ptr + Self::TE_CARET_STATE_OFFSET)) {
+                            let pixels = self.save_dialog_pixels(bus, bounds);
+                            if let Some(tracking) = self.dialog_tracking.as_mut() {
+                                tracking.rendered_pixels = pixels;
+                            }
+                        }
                         return Some(Ok(()));
                     }
                     // Re-fire: dialog tracking is active
@@ -12618,11 +12887,20 @@ impl super::TrapDispatcher {
                                                     );
                                                 }
                                             }
-                                            // Checkbox click: return item number immediately
-                                            // The dialog stays on screen — the app toggles
-                                            // the checkbox value and calls ModalDialog again.
-                                            // Inside Macintosh Volume I, I-415
-                                            5 => {
+                                            // Checkbox/radio values remain application-owned.
+                                            // Return the item only after tracking completes.
+                                            // Inside Macintosh Volume I, I-415; HIG (1992), p. 205.
+                                            DIALOG_ITEM_CHECKBOX | DIALOG_ITEM_RADIO => {
+                                                if self.input_state.mouse_button_pressed() {
+                                                    self.dialog_tracking.as_mut().unwrap().active_button = Some(
+                                                        super::dispatch::DialogButtonTrackingState {
+                                                            mouse_down: e.clone(), item_no: hit,
+                                                            rect: item.rect, title: item.text.clone(),
+                                                            is_default: false, highlighted: false,
+                                                        });
+                                                    self.handle_dialog_button_tracking(cpu, bus);
+                                                    return Some(Ok(()));
+                                                }
                                                 let (dlg_ptr, edit_item, edit_text, items) = {
                                                     let tracking =
                                                         self.dialog_tracking.as_mut().unwrap();
@@ -12663,7 +12941,7 @@ impl super::TrapDispatcher {
                                             }
                                             // EditText click: set as active
                                             16 => {
-                                                let (dlg_ptr, edit_item, edit_text, items) = {
+                                                let (dlg_ptr, edit_item, edit_text, mut items) = {
                                                     let tracking =
                                                         self.dialog_tracking.as_mut().unwrap();
                                                     Self::sync_tracking_active_edit_item(tracking);
@@ -12683,13 +12961,32 @@ impl super::TrapDispatcher {
                                                 };
                                                 // IM:I I-415: mouseDown in an enabled editText
                                                 // item is TextEdit-handled and ModalDialog
-                                                // returns that item. TEClick's pixel-to-caret
-                                                // mapping remains the documented HLE compromise,
-                                                // but the active editField/TERecord mirror is
-                                                // still guest-visible Dialog Manager state.
+                                                // returns that item. Resolve the click with the
+                                                // active TERec's guest glyph metrics before
+                                                // persisting the field's insertion point.
                                                 self.activate_dialog_edit_item(
                                                     bus, cpu, dlg_ptr, &items, edit_item,
                                                 );
+                                                let te_handle = bus.read_long(dlg_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+                                                let held = self.track_text_edit_selection(cpu, bus, te_handle,
+                                                    (e.where_v.saturating_sub(bounds.0), e.where_h.saturating_sub(bounds.1)),
+                                                    e.modifiers & 0x0200 != 0);
+                                                let te_ptr = Self::te_record_ptr(bus, te_handle);
+                                                if te_ptr != 0 {
+                                                    let start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as i16;
+                                                    let end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as i16;
+                                                    items[(edit_item - 1) as usize].sel_start = start;
+                                                    items[(edit_item - 1) as usize].sel_end = end;
+                                                    if let Some(tracking) = self.dialog_tracking.as_mut() {
+                                                        if let Some(item) = tracking.items.get_mut((edit_item - 1) as usize) {
+                                                            item.sel_start = start;
+                                                            item.sel_end = end;
+                                                        }
+                                                    }
+                                                }
+                                                let pixels = self.save_dialog_pixels(bus, bounds);
+                                                self.dialog_tracking.as_mut().unwrap().rendered_pixels = pixels;
+                                                if held { return Some(Ok(())); }
                                                 self.flush_dialog_edit_item_texts(
                                                     bus, dlg_ptr, &items, edit_item, &edit_text,
                                                 );
@@ -12949,32 +13246,34 @@ impl super::TrapDispatcher {
                                                 0x08 | 0x20..=0x7E => {
                                         let mut text_trace = None;
                                         let mut modified_key_to_set = None;
+                                        let mut te_update = None;
                                         if let Some(tracking) = self.dialog_tracking.as_mut() {
                                             let text_before = tracking.edit_text.clone();
                                             if tracking.edit_item > 0 {
-                                                if char_code == 0x08 {
-                                                    if !tracking.edit_text_modified {
-                                                        // First backspace clears selection
-                                                        tracking.edit_text.clear();
-                                                        tracking.edit_text_modified = true;
-                                                    } else if !tracking.edit_text.is_empty() {
-                                                        tracking.edit_text.pop();
-                                                    }
-                                                } else {
-                                                    if !tracking.edit_text_modified {
-                                                        // First keypress replaces selection
-                                                        tracking.edit_text.clear();
-                                                        tracking.edit_text_modified = true;
-                                                    }
-                                                    tracking.edit_text.push(char_code as char);
-                                                }
-                                                let cursor =
-                                                    encode_mac_roman_lossy(&tracking.edit_text)
-                                                        .len();
+                                                let selection = tracking
+                                                    .items
+                                                    .get((tracking.edit_item - 1) as usize)
+                                                    .map(|item| {
+                                                        (
+                                                            item.sel_start.max(0) as usize,
+                                                            item.sel_end.max(0) as usize,
+                                                        )
+                                                    })
+                                                    .unwrap_or((0, 0));
+                                                let (updated, cursor) = Self::textedit_key_result(
+                                                    &encode_mac_roman_lossy(&tracking.edit_text),
+                                                    selection.0,
+                                                    selection.1,
+                                                    char_code,
+                                                );
+                                                tracking.edit_text = decode_mac_roman(&updated);
+                                                tracking.edit_text_modified = true;
                                                 Self::set_tracking_active_edit_selection(
                                                     tracking, cursor, cursor,
                                                 );
                                                 Self::sync_tracking_active_edit_item(tracking);
+                                                te_update =
+                                                    Some((tracking.dialog_ptr, updated, cursor));
                                                 modified_key_to_set =
                                                     Some((tracking.dialog_ptr, tracking.edit_item));
 
@@ -12998,6 +13297,25 @@ impl super::TrapDispatcher {
                                                     text_after,
                                                     enabled_edit_text,
                                                 ));
+                                            }
+                                        }
+                                        if let Some((dialog, updated, cursor)) = te_update {
+                                            let text_handle = bus.read_long(
+                                                dialog
+                                                    + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET,
+                                            );
+                                            self.te_set_text_contents(bus, text_handle, &updated);
+                                            let te_ptr = Self::te_record_ptr(bus, text_handle);
+                                            if te_ptr != 0 {
+                                                let cursor = cursor.min(u16::MAX as usize) as u16;
+                                                bus.write_word(
+                                                    te_ptr + Self::TE_SEL_START_OFFSET,
+                                                    cursor,
+                                                );
+                                                bus.write_word(
+                                                    te_ptr + Self::TE_SEL_END_OFFSET,
+                                                    cursor,
+                                                );
                                             }
                                         }
                                         if let Some(key) = modified_key_to_set {
@@ -14116,6 +14434,7 @@ impl super::TrapDispatcher {
                 let (dest_rect, view_rect, stack_pop) = Self::te_new_rect_args(bus, sp);
                 self.initialize_te_record(bus, handle, dest_rect, view_rect);
                 self.textedit_states.register(handle);
+                bus.forget_text_edit_drawing(handle);
                 bus.write_long(sp + stack_pop, handle);
                 cpu.write_reg(Register::A7, sp + stack_pop);
                 Ok(())
@@ -14170,6 +14489,7 @@ impl super::TrapDispatcher {
                 let (dest_rect, view_rect, stack_pop) = Self::te_new_rect_args(bus, sp);
                 self.initialize_styled_te_record(bus, handle, dest_rect, view_rect);
                 self.textedit_states.register(handle);
+                bus.forget_text_edit_drawing(handle);
                 bus.write_long(sp + stack_pop, handle);
                 cpu.write_reg(Register::A7, sp + stack_pop);
                 Ok(())
@@ -14582,12 +14902,18 @@ impl super::TrapDispatcher {
                         let font_ascent_ptr = bus.read_long(sp + 6);
                         let line_height_ptr = bus.read_long(sp + 10);
                         let attrs_ptr = bus.read_long(sp + 14);
-                        let _sel = bus.read_word(sp + 18) as i16;
-                        let (font, face, size, color, line_height, font_ascent) =
-                            self.te_primary_style(bus, te_handle);
+                        let sel = bus.read_word(sp + 18) as i16;
+                        let (font, face, size, color, line_height, font_ascent) = if sel >= 0 {
+                            let length = Self::te_text_length(bus, te_handle);
+                            let runs = self.te_style_runs(bus, te_handle, length);
+                            let style = Self::te_style_at_offset(&runs, (sel as usize).min(length));
+                            (style.font, style.face, style.size, style.color, style.line_height, style.ascent)
+                        } else {
+                            self.te_primary_style(bus, te_handle)
+                        };
                         if attrs_ptr != 0 {
                             bus.write_word(attrs_ptr, font as u16);
-                            bus.write_word(attrs_ptr + 2, face as u16);
+                            bus.write_byte(attrs_ptr + 2, face as u8);
                             bus.write_word(attrs_ptr + 4, size as u16);
                             bus.write_word(attrs_ptr + 6, color.0);
                             bus.write_word(attrs_ptr + 8, color.1);
@@ -15247,6 +15573,7 @@ impl super::TrapDispatcher {
                     }
                     bus.free(te_handle);
                     self.textedit_states.remove(&te_handle);
+                    bus.forget_text_edit_drawing(te_handle);
                 }
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
@@ -15637,62 +15964,8 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::A7, sp + 10);
                     return Some(Ok(()));
                 }
-                let previous_selection = (
-                    bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET),
-                    bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET),
-                );
-                let tracking = self.textedit_states.take_click_tracking();
-                let point = if tracking.is_some() {
-                    let port = bus.read_long(te_ptr + Self::TE_IN_PORT_OFFSET);
-                    let (top, left) = self.port_bounds_top_left(bus, port);
-                    let (v, h) = self.window_tracking_mouse_pos(bus);
-                    (v.wrapping_add(top), h.wrapping_add(left))
-                } else {
-                    (bus.read_word(sp + 6) as i16, bus.read_word(sp + 8) as i16)
-                };
-                let offset = self.te_point_to_char(bus, te_handle, point).max(0) as usize;
-                let anchor = tracking.map_or_else(
-                    || {
-                        if bus.read_byte(sp + 4) != 0 {
-                            let start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
-                            let end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
-                            if offset < start {
-                                end
-                            } else {
-                                start
-                            }
-                        } else {
-                            offset
-                        }
-                    },
-                    |tracking| tracking.anchor,
-                );
-                let length = bus.read_word(te_ptr + Self::TE_LENGTH_OFFSET) as usize;
-                let anchor = anchor.min(length);
-                bus.write_word(
-                    te_ptr + Self::TE_SEL_START_OFFSET,
-                    anchor.min(offset) as u16,
-                );
-                bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, anchor.max(offset) as u16);
-                bus.write_word(te_ptr + Self::TE_SEL_POINT_OFFSET, point.0 as u16);
-                bus.write_word(te_ptr + Self::TE_SEL_POINT_OFFSET + 2, point.1 as u16);
-                bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.current_tick());
-                if previous_selection != (anchor.min(offset) as u16, anchor.max(offset) as u16) {
-                    self.draw_te_contents(cpu, bus, te_handle, true);
-                }
-                if self.window_tracking_button_down(bus) {
-                    self.textedit_states.retain_click_tracking(
-                        crate::text_edit::TextEditClickTracking {
-                            handle: te_handle,
-                            anchor,
-                            native: false,
-                            last_point: point,
-                        },
-                    );
-                } else {
-                    if let Some(index) = self.event_queue.iter().position(|event| event.what == 2) {
-                        self.event_queue.remove(index);
-                    }
+                let point = (bus.read_word(sp + 6) as i16, bus.read_word(sp + 8) as i16);
+                if !self.track_text_edit_selection(cpu, bus, te_handle, point, bus.read_byte(sp + 4) != 0) {
                     cpu.write_reg(Register::A7, sp + 10);
                 }
                 Ok(())

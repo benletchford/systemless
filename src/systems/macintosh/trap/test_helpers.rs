@@ -116,6 +116,7 @@ pub fn setup() -> (TrapDispatcher, MockCpu, MacMemoryBus) {
         crate::memory::globals::addr::MENU_FLASH,
         crate::memory::globals::DEFAULT_MENU_FLASH_COUNT,
     );
+    bus.write_long(crate::memory::globals::addr::CARET_TIME, crate::memory::globals::DEFAULT_CARET_TIME_TICKS);
     // MBState ($0172) is 0 when the mouse button is down and $80 when it is
     // up. Real startup code initializes it to up; zero-filled test RAM would
     // otherwise look like a held mouse. Inside Macintosh Volume II, II-371.

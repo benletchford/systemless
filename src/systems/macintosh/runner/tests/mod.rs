@@ -201,6 +201,7 @@ pub(super) fn halted_ppc_app_with_sound(sound: PpcSoundState) -> LoadedApp {
         file_completion_context: None,
         parked_interrupt_callback: None,
         interrupt_callback_parks: 0,
+        application_size: Default::default(),
         apple_events: Default::default(),
         cfm: Some(crate::cfm::CfmState::default()),
         controls: Default::default(),

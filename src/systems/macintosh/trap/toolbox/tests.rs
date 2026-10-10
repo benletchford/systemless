@@ -7612,11 +7612,81 @@
     }
 
     #[test]
+    fn list_tracking_cleanup_restores_retained_outline_pixels() {
+        for (trap, definition_change) in [(0x1e7, false), (0x1e8, false), (0x1e7, true)] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let base = bus.alloc(32 * 32);
+            disp.screen_mode = (base, 32, 32, 32, 8);
+            let handle = bus.alloc(4);
+            bus.write_long(handle, 0);
+            bus.write_byte(base + 33, 42);
+            let pixels = disp.save_window_drag_outline_pixels(&bus, (1, 1, 2, 2));
+            bus.write_byte(base + 33, 99);
+            disp.list_states.with_mut(|manager| manager.scroll_tracking = Some(crate::list_manager::ListScrollbarTracking {
+                list: handle, generation: 1, control: 0, pointer: 0, control_generation: 1,
+                vertical: true, classic: true, frame: (TEST_SP, 0), bounds: (0, 0, 100, 16),
+                part: 129, last_tick: 0, start_mouse: (20, 8), start_limits: (0, 0, 10),
+                outline: Some(crate::list_manager::ListScrollbarOutline {
+                    rect: (1, 1, 2, 2), surface: (base, 32, 32, 32, 8),
+                    pixels: crate::list_manager::ListScrollbarPixels::IndexedStrips(pixels),
+                }),
+            }));
+            if definition_change {
+                disp.list_states.insert_record(handle, crate::list_manager::ProcessListRecord {
+                    handle, generation: 1, definition_id: 1, cells_handle: 0,
+                    view_rect: (0, 0, 100, 100), data_bounds: (0, 0, 20, 1),
+                    cell_size: (10, 100), visible: (0, 0, 10, 1), port: 0,
+                    draw_enabled: true, active: true, cells: Default::default(),
+                    selected: Default::default(), last_click: (-1, -1), last_click_tick: 0, standard_cell_drawings: Default::default(),
+                });
+            }
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(TEST_SP, if definition_change { 0x18 } else { 0x28 });
+            bus.write_long(TEST_SP + 2, handle);
+            assert!(disp.dispatch_toolbox(true, trap, &mut cpu, &mut bus).unwrap().is_ok());
+            assert_eq!(bus.read_byte(base + 33), 42, "Pack trap {trap:x} left outline pixels");
+            assert!(disp.list_states.with_ref(|manager| manager.scroll_tracking.is_none()));
+            if definition_change {
+                assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+                assert_eq!(bus.read_word(TEST_SP + 12), 0);
+                assert!(disp.list_states.get_record(handle).unwrap().selected.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn list_custom_draw_excludes_cells_beyond_data_bounds() {
+        let state = super::super::dispatch::ListState {
+            generation: crate::list_manager::new_list_generation(),
+            definition_id: 1,
+            handle: 0,
+            cells_handle: 0,
+            view_rect: (0, 0, 114, 114),
+            data_bounds: (0, 0, 12, 12),
+            cell_size: (18, 18),
+            visible: (6, 6, 13, 13),
+            port: 0,
+            draw_enabled: true,
+            active: true,
+            cells: Default::default(),
+            selected: Default::default(),
+            last_click: (-1, -1),
+            last_click_tick: 0, standard_cell_drawings: Default::default(),
+        };
+        let cells = TrapDispatcher::list_cells_to_draw(&state, None);
+        assert_eq!(cells.len(), 36);
+        assert!(cells.iter().all(|&(row, col)| (6..12).contains(&row) && (6..12).contains(&col)));
+        assert!(TrapDispatcher::list_cells_to_draw(&state, Some((12, 6))).is_empty());
+    }
+
+    #[test]
     fn pack0_lnextcell_advances_across_rows() {
         let (mut disp, mut cpu, mut bus) = setup();
         let handle = 0x350000;
         let cell = 0x350100;
         disp.list_states.insert_record(handle, super::super::dispatch::ListState {
+            generation: crate::list_manager::new_list_generation(),
+            definition_id: 0,
             handle,
             cells_handle: 0,
             view_rect: (0, 0, 20, 20),
@@ -7629,7 +7699,7 @@
             cells: Default::default(),
             selected: Default::default(),
             last_click: (-1, -1),
-            last_click_tick: 0,
+            last_click_tick: 0, standard_cell_drawings: Default::default(),
         });
         bus.write_word(cell, 0);
         bus.write_word(cell + 2, 0);
@@ -13332,6 +13402,92 @@
     }
 
     #[test]
+    fn standard_put_file_new_folder_modal_create_and_cancel() {
+        for depth in [1, 8] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let row_bytes = if depth == 1 { 100 } else { 800 };
+            let screen_base = bus.alloc(row_bytes * 600);
+            disp.set_screen_mode_for_test(screen_base, row_bytes, 800, 600, depth);
+            let reply = 0x321800;
+            let name = 0x321900;
+            let parent = disp.ensure_vfs_directory("Folder Test");
+            disp.default_dir_id.with_mut(|id| *id = parent);
+            disp.yield_for_ui = true;
+            bus.write_pstring(name, b"Untitled");
+            bus.write_word(TEST_SP, 5);
+            bus.write_long(TEST_SP + 2, reply);
+            bus.write_long(TEST_SP + 6, name);
+            disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            let original_generation = disp.standard_file_put_tracking.as_ref().unwrap().generation;
+            for (message, modifiers) in [(u32::from(b'n'), 0x100), (27, 0)] {
+                disp.event_queue.push_back(QueuedEvent {
+                    what: 3,
+                    message,
+                    when: 0,
+                    where_v: 0,
+                    where_h: 0,
+                    modifiers,
+                });
+                disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+                    .unwrap()
+                    .unwrap();
+            }
+            let tracking = disp.standard_file_put_tracking.as_ref().unwrap();
+            assert!(tracking.new_folder.is_none());
+            assert!(tracking.generation > original_generation);
+            assert_eq!(tracking.current_dir_id, parent);
+            assert_eq!(tracking.name, "Untitled");
+            assert_eq!((tracking.sel_start, tracking.sel_end), (0, 8));
+            let mut keys = vec![(u32::from(b'n'), 0x100)];
+            keys.extend(b"gpui folder".iter().map(|byte| (u32::from(*byte), 0)));
+            keys.push((13, 0));
+            for (message, modifiers) in keys {
+                disp.event_queue.push_back(QueuedEvent {
+                    what: 3,
+                    message,
+                    when: 0,
+                    where_v: 0,
+                    where_h: 0,
+                    modifiers,
+                });
+                disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+                    .unwrap()
+                    .unwrap();
+            }
+            let tracking = disp.standard_file_put_tracking.as_ref().unwrap();
+            assert!(tracking.new_folder.is_none());
+            let created = tracking.current_dir_id;
+            assert_eq!(
+                disp.directory_path_for_id(created),
+                Some("Folder Test/gpui folder")
+            );
+            assert!(tracking.entries.is_empty());
+            assert_eq!(tracking.name, "Untitled");
+            assert_eq!((tracking.sel_start, tracking.sel_end), (0, 8));
+            assert_eq!(bus.read_byte(reply), 0);
+            disp.event_queue.push_back(QueuedEvent {
+                what: 3,
+                message: 27,
+                when: 0,
+                where_v: 0,
+                where_h: 0,
+                modifiers: 0,
+            });
+            disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert!(disp.standard_file_put_tracking.is_none());
+            assert_eq!(bus.read_byte(reply), 0);
+            assert_eq!(
+                disp.directory_path_for_id(created),
+                Some("Folder Test/gpui folder")
+            );
+        }
+    }
+
+    #[test]
     fn standard_put_file_gui_navigation_returns_modern_parent_and_seeds_next_dialog() {
         let (mut disp, mut cpu, mut bus) = setup();
         let screen_base = bus.alloc(800 * 600);
@@ -13378,6 +13534,16 @@
         disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
+        // Files (1992), p. 3-7: a conflicting name must wait for Replace.
+        assert!(disp.standard_file_put_tracking.as_ref().unwrap().confirming_replace);
+        assert_eq!(bus.read_byte(reply_ptr), 0);
+        let layout = crate::standard_file_ui::StandardFileReplacementLayout::new(
+            disp.standard_file_put_tracking.as_ref().unwrap().bounds);
+        disp.event_queue.push_back(QueuedEvent {
+            what: 1, message: 0, when: 0,
+            where_v: layout.replace.0 + 5, where_h: layout.replace.1 + 5, modifiers: 0,
+        });
+        disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus).unwrap().unwrap();
         assert_eq!(bus.read_byte(reply_ptr), 1);
         assert_eq!(bus.read_byte(reply_ptr + 1), 1);
         assert_eq!(
@@ -19978,4 +20144,18 @@
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::D0), secs);
+    }
+
+    #[test]
+    fn standard_list_fallback_preserves_mac_roman_glyph_codes() {
+        let text = TrapDispatcher::list_cell_text(b"Caf\x8e\t\x80  \0ignored");
+        assert_eq!(text.chars().map(|ch| ch as u32).collect::<Vec<_>>(),
+            vec![67, 97, 102, 0x8e, 32, 0x80]);
+        for (byte, unicode) in [(0x8e_u8, 'é'), (0x80, 'Ä')] {
+            let guest = crate::quickdraw::text::get_glyph(3, 12, char::from(byte)).unwrap();
+            let decoded = crate::quickdraw::text::get_unicode_glyph(3, 12, unicode).unwrap();
+            assert_eq!(guest.0.advance, decoded.0.advance);
+            assert_eq!(guest.1, decoded.1);
+        }
+        assert_eq!(TrapDispatcher::list_cell_text(b"plain text  "), "plain text");
     }

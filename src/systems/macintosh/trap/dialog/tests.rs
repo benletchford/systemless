@@ -251,7 +251,7 @@
         bus.write_byte(ptr + 21, 0); // padding only, not a position field
         bus.write_word(ptr + 22, 0x280A); // poison: centerMainScreen if over-read
 
-        let (bounds, proc_id, visible, items_id, title, position) =
+        let (bounds, proc_id, visible, items_id, title, position, _, _) =
             TrapDispatcher::parse_dlog(&bus, ptr, 22);
 
         assert_eq!(bounds, (228, 198, 372, 455));
@@ -278,7 +278,7 @@
         bus.write_byte(ptr + 21, 0);
         bus.write_word(ptr + 22, 0x280A);
 
-        let (_, _, _, _, _, position) = TrapDispatcher::parse_dlog(&bus, ptr, 24);
+        let (_, _, _, _, _, position, _, _) = TrapDispatcher::parse_dlog(&bus, ptr, 24);
 
         assert_eq!(position, 0x280A);
     }
@@ -296,9 +296,9 @@
 
         // MTE 1992 p. 6-148: the optional position word follows the Pascal
         // title string after a 0-or-1-byte alignment pad.
-        let (odd_bounds, _, _, odd_items, odd_title, odd_position) =
+        let (odd_bounds, _, _, odd_items, odd_title, odd_position, _, _) =
             TrapDispatcher::parse_dlog(&bus, odd_ptr, odd.len() as u32);
-        let (even_bounds, _, _, even_items, even_title, even_position) =
+        let (even_bounds, _, _, even_items, even_title, even_position, _, _) =
             TrapDispatcher::parse_dlog(&bus, even_ptr, even.len() as u32);
 
         assert_eq!(odd_bounds, (10, 20, 110, 220));
@@ -324,7 +324,7 @@
             let ptr = bus.alloc(dlog.len() as u32);
             bus.write_bytes(ptr, &dlog);
 
-            let (_, _, _, _, _, parsed_position) =
+            let (_, _, _, _, _, parsed_position, _, _) =
                 TrapDispatcher::parse_dlog(&bus, ptr, dlog.len() as u32);
 
             assert_eq!(parsed_position, position);
@@ -1682,6 +1682,29 @@
         assert_eq!(bus.read_word(0x0A60) as i16, -192);
         assert!(disp.window_list.is_empty());
         assert!(disp.dialog_items.is_empty());
+    }
+
+    #[test]
+    fn get_new_dialog_preserves_resource_close_flag_and_reference_value() {
+        // Macintosh Toolbox Essentials (1992), pp. 6-147–6-148:
+        // GetNewDialog initializes the window from its DLOG template.
+        for go_away in [false, true] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let mut dlog = build_test_dlog((40, 50, 120, 240), 1911, 0);
+            dlog[12] = u8::from(go_away);
+            dlog[14..18].copy_from_slice(&0x12345678u32.to_be_bytes());
+            let ditl = build_test_ditl_item(4, (50, 80, 70, 140), b"OK");
+            disp.install_test_resource(&mut bus, *b"DLOG", 1910, &dlog);
+            disp.install_test_resource(&mut bus, *b"DITL", 1911, &ditl);
+            bus.write_long(TEST_SP, u32::MAX);
+            bus.write_long(TEST_SP + 4, 0);
+            bus.write_word(TEST_SP + 8, 1910);
+            disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus).unwrap().unwrap();
+            let window = bus.read_long(TEST_SP + 10);
+            assert_ne!(window, 0);
+            assert_eq!(bus.read_byte(window + 112) != 0, go_away);
+            assert_eq!(bus.read_long(window + 152), 0x12345678);
+        }
     }
 
     #[test]
@@ -5428,6 +5451,16 @@
                 240,
             );
         let mouse_edit_field = bus.read_word(dialog_ptr + 164);
+        assert_eq!(
+            TrapDispatcher::te_read_rect(&bus, te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET),
+            (42, 20, 62, 120),
+            "switching fields must move the shared TextEdit layout"
+        );
+        assert_eq!(
+            TrapDispatcher::te_read_rect(&bus, te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET),
+            (42, 20, 62, 120)
+        );
+        assert_eq!(bus.read_long(te_ptr + TrapDispatcher::TE_IN_PORT_OFFSET), dialog_ptr);
         let mouse_item = &disp.dialog_items[&dialog_ptr][1];
         let mouse_item_selection = (mouse_item.sel_start, mouse_item.sel_end);
         let mouse_te_text = TrapDispatcher::te_text_bytes(&bus, text_h);
@@ -5603,6 +5636,13 @@
                 modifiers: 0,
             });
 
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP, "held selection must retain the modal stack");
+        assert_eq!(bus.read_word(item_hit_ptr), 0xCAFE, "held selection must not return an item");
+        assert!(disp.dialog_tracking.is_some());
+        disp.input_state.set_mouse_button_for_test(false);
         disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -7893,10 +7933,10 @@
         assert!(classic.saved_background_retained);
         assert!(classic.queued_mouse_up_consumed);
         assert_eq!(classic.edit_field, 1);
-        assert_eq!(classic.item_selection, (2, 4));
+        assert_eq!(classic.item_selection, (3, 3));
         assert_eq!(classic.te_text, b"Second".to_vec());
         assert_eq!(classic.te_length, 6);
-        assert_eq!(classic.te_selection, (2, 4));
+        assert_eq!(classic.te_selection, (3, 3));
         assert_eq!(classic.handle_bytes, b"Second".to_vec());
         assert_eq!(
             themed, classic,
@@ -8065,7 +8105,7 @@
         );
         assert!(classic.new_update_region.is_some());
         assert!(classic.new_update_event_queued);
-        assert_eq!(classic.new_edit_field, 0xFFFF);
+        assert_eq!(classic.new_edit_field, 0);
         assert_eq!(classic.new_default_item, 1);
 
         assert_ne!(classic.get_dialog_ptr, 0);
@@ -8094,7 +8134,7 @@
         );
         assert!(classic.get_update_region.is_some());
         assert!(classic.get_update_event_queued);
-        assert_eq!(classic.get_edit_field, 0xFFFF);
+        assert_eq!(classic.get_edit_field, 0);
         assert_eq!(classic.get_default_item, 1);
         assert_eq!(
             themed, classic,
@@ -8283,10 +8323,10 @@
         assert_eq!(classic.mouse_item_hit, 2);
         assert_eq!(classic.mouse_stack_after, TEST_SP + 12);
         assert_eq!(classic.mouse_edit_field, 1);
-        assert_eq!(classic.mouse_item_selection, (2, 4));
+        assert_eq!(classic.mouse_item_selection, (3, 3));
         assert_eq!(classic.mouse_te_text, b"Second".to_vec());
         assert_eq!(classic.mouse_te_length, 6);
-        assert_eq!(classic.mouse_te_selection, (2, 4));
+        assert_eq!(classic.mouse_te_selection, (3, 3));
         assert_eq!(classic.null_result, 0);
         assert_eq!(classic.null_dialog_out, 0xDEAD_BEEF);
         assert_eq!(classic.null_item_hit, 0xCAFE);
@@ -8294,7 +8334,7 @@
         assert_eq!(classic.null_edit_field, 1);
         assert_eq!(classic.null_te_text, b"Second".to_vec());
         assert_eq!(classic.null_te_length, 6);
-        assert_eq!(classic.null_te_selection, (2, 4));
+        assert_eq!(classic.null_te_selection, (3, 3));
         assert_eq!(
             themed, classic,
             "systemless-default must not change DialogSelect editText mouse/null handling"
@@ -9041,6 +9081,10 @@
         // events call TEIdle so the insertion point blinks.
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         let dialog_ptr = bus.alloc(170);
+        let port_bytes = bus.read_bytes(0x181000, 108);
+        bus.write_bytes(dialog_ptr, &port_bytes);
+        bus.write_long(dialog_ptr + 76, 33); // QuickDraw blackColor
+        bus.write_long(dialog_ptr + 80, 30); // QuickDraw whiteColor
         let event_ptr = bus.alloc(16);
         let dialog_out_ptr = bus.alloc(4);
         let item_hit_ptr = bus.alloc(2);
@@ -9049,7 +9093,8 @@
         let text_item_handle = TrapDispatcher::allocate_handle_with_data(&mut bus, 0);
         let text_h = make_te_with_text(&mut disp, &mut bus, b"");
         let te_ptr = bus.read_long(text_h);
-        let (screen_base, row_bytes, _screen_w, _screen_h, _pixel_size) = disp.screen_mode;
+        let screen_base = bus.read_long(dialog_ptr + 2);
+        let row_bytes = u32::from(bus.read_word(dialog_ptr + 6));
 
         for i in 0..(row_bytes * 80) {
             bus.write_byte(screen_base + i, 0);
@@ -9126,7 +9171,7 @@
             0
         );
         assert!(
-            screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 21, 20),
             "DialogSelect editText mouse-down should display the insertion caret"
         );
 
@@ -9139,7 +9184,7 @@
             0
         );
         assert!(
-            screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 21, 20),
             "DialogSelect null event before 32 ticks should keep the caret visible"
         );
 
@@ -9153,7 +9198,7 @@
             1
         );
         assert!(
-            !screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            !screen_pixel_is_set(&bus, screen_base, row_bytes, 21, 20),
             "DialogSelect null event at the 32-tick boundary should hide the caret"
         );
 
@@ -9167,9 +9212,19 @@
             0
         );
         assert!(
-            screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 21, 20),
             "the next DialogSelect null-event blink interval should show the caret again"
         );
+        // GetCaretTime is an inline low-memory read on 68k. DialogSelect's
+        // TextEdit idle path must observe a changed setting without reactivation.
+        for (interval, tick, state, previous) in [(64, 227, 0, 164), (64, 228, 1, 228),
+            (5, 232, 1, 228), (5, 233, 0, 233)] {
+            bus.write_long(crate::memory::globals::addr::CARET_TIME, interval);
+            dispatch_dialog_select_event(&mut disp, &mut cpu, &mut bus, 0, tick);
+            assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_CARET_STATE_OFFSET), state);
+            assert_eq!(bus.read_long(te_ptr + TrapDispatcher::TE_CARET_TIME_OFFSET), previous);
+        }
+
     }
 
     // ---- DrawDialog ($A981) ----
@@ -12508,7 +12563,7 @@
 
     #[test]
     fn modal_dialog_button_tracking_systemless_theme_routes_pressed_state_through_provider() {
-        let (mut disp, _cpu, mut bus) = setup();
+        let (mut disp, mut cpu, mut bus) = setup();
         let screen_base = 0x300000u32;
         let row_bytes = 64u32;
         let bounds = (0, 0, 100, 220);
@@ -12568,7 +12623,7 @@
 
         disp.input_state.set_mouse_button_for_test(true);
         disp.input_state.set_mouse_position_for_test((probe_y, probe_x));
-        disp.handle_dialog_button_tracking(&mut bus);
+        disp.handle_dialog_button_tracking(&mut cpu, &mut bus);
 
         assert!(
             screen_pixel_is_set(&bus, screen_base, row_bytes, probe_x, probe_y),
@@ -12583,7 +12638,7 @@
         );
 
         disp.input_state.set_mouse_position_for_test((40, 50));
-        disp.handle_dialog_button_tracking(&mut bus);
+        disp.handle_dialog_button_tracking(&mut cpu, &mut bus);
 
         assert!(
             !screen_pixel_is_set(&bus, screen_base, row_bytes, probe_x, probe_y),
@@ -15862,6 +15917,7 @@
         bus.write_long(dialog_ptr + 24, vis);
 
         disp.dialog_items.insert(dialog_ptr, Vec::new());
+        disp.dialogs_drawn_by_app.insert(dialog_ptr);
         disp.window_proc_ids.insert(dialog_ptr, 2);
         disp.window_list.replace(vec![occluder, dialog_ptr]);
         disp.front_window = occluder;
@@ -18782,6 +18838,8 @@
         let result = disp.dispatch_dialog(true, 0x1D8, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(crate::text_edit::snapshot_guest_records(&[(te_handle, 1)],
+            &mut |addr| Some(bus.read_byte(addr))).records[0].caret_visible, true);
         assert!(
             screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
             "TEActivate should show the insertion caret before TEIdle"
@@ -18801,6 +18859,8 @@
         let result = disp.dispatch_dialog(true, 0x1DA, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(crate::text_edit::snapshot_guest_records(&[(te_handle, 1)],
+            &mut |addr| Some(bus.read_byte(addr))).records[0].caret_visible, true);
         assert!(
             screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
             "TEIdle before 32 ticks should leave the caret visible"
@@ -18816,6 +18876,8 @@
         let result = disp.dispatch_dialog(true, 0x1DA, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(crate::text_edit::snapshot_guest_records(&[(te_handle, 1)],
+            &mut |addr| Some(bus.read_byte(addr))).records[0].caret_visible, false);
         assert!(
             !screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
             "TEIdle at the 32-tick boundary should hide the caret"
@@ -18835,6 +18897,8 @@
         let result = disp.dispatch_dialog(true, 0x1DA, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(crate::text_edit::snapshot_guest_records(&[(te_handle, 1)],
+            &mut |addr| Some(bus.read_byte(addr))).records[0].caret_visible, true);
         assert!(
             screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
             "the next elapsed interval should show the caret again"
@@ -22338,4 +22402,39 @@
 
         let result = disp.dispatch_dialog(true, 0xFFFF, &mut cpu, &mut bus);
         assert!(result.is_none());
+    }
+
+
+    #[test]
+    fn tegetstyle_uses_character_offset_and_writes_style_byte_without_padding() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te = TrapDispatcher::allocate_te_handle(&mut bus);
+        disp.initialize_styled_te_record(&mut bus, te, (0, 0, 80, 200), (0, 0, 80, 200));
+        disp.te_set_text_contents(&mut bus, te, b"ABCD");
+        let first = TrapDispatcher::te_resolved_style_from_parts(3, 1, 12, (1, 2, 3), 17, 12);
+        let second = TrapDispatcher::te_resolved_style_from_parts(4, 0x42, 14, (4, 5, 6), 18, 12);
+        assert!(TrapDispatcher::te_write_style_runs(&mut bus, te, &[(0, first), (2, second)], 4));
+        let attrs = bus.alloc(12);
+        let height = bus.alloc(2);
+        let ascent = bus.alloc(2);
+        // Selection stays at zero; the explicit offset chooses the second run.
+        for (offset, style) in [(0, first), (1, first), (2, second), (3, second)] {
+            bus.write_byte(attrs + 3, 0x56);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(TEST_SP, 0x0003);
+            bus.write_long(TEST_SP + 2, te);
+            bus.write_long(TEST_SP + 6, ascent);
+            bus.write_long(TEST_SP + 10, height);
+            bus.write_long(TEST_SP + 14, attrs);
+            bus.write_word(TEST_SP + 18, offset);
+            assert!(disp.dispatch_dialog(true, 0x03D, &mut cpu, &mut bus).unwrap().is_ok());
+            assert_eq!(bus.read_word(attrs), style.font as u16);
+            assert_eq!(bus.read_byte(attrs + 2), style.face as u8);
+            assert_eq!(bus.read_byte(attrs + 3), 0x56);
+            assert_eq!(bus.read_word(attrs + 4), style.size as u16);
+            assert_eq!((bus.read_word(attrs + 6), bus.read_word(attrs + 8), bus.read_word(attrs + 10)), style.color);
+            assert_eq!(bus.read_word(height), style.line_height as u16);
+            assert_eq!(bus.read_word(ascent), style.ascent as u16);
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 20);
+        }
     }

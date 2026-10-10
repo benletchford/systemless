@@ -1,0 +1,19 @@
+{
+  "base_commit": "2dc224e85967ccf7a1f8c0c0b4e967fcfe43d7c5",
+  "outcome": "1 regression passed in67.48s; all32 spacing/CPU/depth/scale scenarios passed",
+  "command": "cargo test --locked --profile ci-test --example gpui-menu-demo --features gpui-demo-test spaced_styled_document_glyph_clicks_reach_guest_at_centered_scene_scales -- --test-threads=1 --nocapture",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "dbb6d868beb3c9f1961d03cb7c3f9be82e08efaea7636c763456b8ea5bec43eb",
+    "src/bin/gpui_demo_text.rs": "3e8870b2a2ab33cabd04300be212e1f558f656484478dc3f632256d1983b1c8b",
+    "src/bin/gpui_demo_frames.rs": "b293ad66102ebdbc69a697b2bdc8d1ba01349a36a20c6a994b7e280eb14d814b",
+    "src/systems/macintosh/text_edit.rs": "51e341b20f82dc9a3a1c683dca4144a0f125a6c366af274127e5fc5091807c08",
+    "src/systems/macintosh/trap/dialog.rs": "7e67541103ba33a756d58f2eb2607369dcfcde35a8101e069bc3ba05b2d36dd9",
+    "src/systems/macintosh/loader/ppc/textedit.rs": "dc8289445df377ad78b3aaab015b3d66170a7aaf0f6ff1e0606c38d52e889142",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "ab6ea5665bb0e3743122b51b7035475275ce88c48c040f3e52b536a581123bbc"
+  },
+  "source_hash_timing": "Pinned during execution and verified after terminal success; enhanced assertions uncommitted during execution.",
+  "test_executable": "target/ci-test/examples/gpui_menu_demo-957ebf4d71285d8e",
+  "test_executable_sha256": "381064f0dec0b860e90380097d66ceddb203fbbb741d1a1f6d76a5a4b0baca5c",
+  "binary_hash_timing": "After terminal success; no intervening rebuild.",
+  "scope": "Actual GPUI test-platform mouse clicks3/20 and held drag9..26 through centered scene scales0.75/1/1.5/2 into the guest; condensed/extended styles are applied through guest Option keys. Runtime PPC identity and actual presented depth1/8/16 are asserted. At caret20, GPUI q and backspace key events preserve text, selection, ownership/bounds and spacing bits; backspace restores exact original style runs. Edited field plans retain native-paint qualification and original-outline support at rasters1..8 and are rendered through Demo. No physical host input, native font oracle, composed editing pixel oracle, performance or full lifecycle qualification is implied."
+}

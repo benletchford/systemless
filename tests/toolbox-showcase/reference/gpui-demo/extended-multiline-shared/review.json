@@ -1,0 +1,15 @@
+{
+  "scope": "Only the two listed composed images were directly reviewed. Smooth mixed-style text, two-line selection and field bounds are visible. Application-drawn labels remain guest-rendered. No independent native font oracle or pointer interaction is established.",
+  "images": [
+    {
+      "file": "multiline-ppc8-selected-none-1.5.png",
+      "sha256": "256b162eabb4dc82b28b7e5df417c828ead0d387922dfe70ba75941cc2f79d4b",
+      "capture_sha256": "f62a066b50d957f39268528691e5e57d2f9afe7cfe6a31a4356114a643958f63"
+    },
+    {
+      "file": "multiline-colour-selected-none-1.png",
+      "sha256": "d26f21af71366772ef25a12a9b4d1147b4da865b15a7c30edb4894308de6e7a1",
+      "capture_sha256": "a11e48588c79ee0e45a504f7151fb21e35593c29f8eb9c4ae5b463946a0b306e"
+    }
+  ]
+}

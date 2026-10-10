@@ -1941,6 +1941,65 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn hle_import_runner_dir_create_preserves_literal_slash_and_failed_reply() {
+        for import in [b"DirCreate".as_slice(), b"FSpDirCreate".as_slice()] {
+            let pef = synthetic_pef_with_import(import);
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let scratch = PPC_HEAP_BASE;
+            loaded.memory.add_region(scratch, vec![0; 128]);
+            write_ppc_pstring(&mut loaded.memory, scratch, b"Audio/Video");
+            write_ppc_fsspec(
+                &mut loaded.memory,
+                scratch + 32,
+                PPC_BOOT_VOLUME_REF_NUM,
+                PPC_PREFERENCES_DIR_ID,
+                b"Audio/Video",
+            );
+            let original_count = loaded.vfs_directories.len();
+            for (reply, expected) in [(0xffff_fff0, PPC_PARAM_ERR), (scratch + 112, PPC_NO_ERR)] {
+                loaded.cpu.pc = loaded.entry_pc;
+                loaded.cpu.lr = PPC_HALT_PC;
+                if import == b"DirCreate" {
+                    loaded.cpu.gpr[3] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
+                    loaded.cpu.gpr[4] = PPC_PREFERENCES_DIR_ID;
+                    loaded.cpu.gpr[5] = scratch;
+                    loaded.cpu.gpr[6] = reply;
+                } else {
+                    loaded.cpu.gpr[3] = scratch + 32;
+                    loaded.cpu.gpr[4] = 0;
+                    loaded.cpu.gpr[5] = reply;
+                }
+                let probe = loaded.run_with_hle_imports(64);
+                assert_eq!(probe.handled_import_count, 1);
+                assert_eq!(probe.unsupported_import_index, None);
+                assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(expected));
+                let created = usize::from(expected == PPC_NO_ERR);
+                assert_eq!(loaded.vfs_directories.len(), original_count + created);
+                assert_eq!(
+                    loaded.next_vfs_dir_id,
+                    PPC_FIRST_DYNAMIC_DIR_ID + created as u32
+                );
+            }
+            assert_eq!(
+                loaded.memory.read_u32_be(scratch + 112),
+                Some(PPC_FIRST_DYNAMIC_DIR_ID)
+            );
+            let directory = loaded
+                .vfs_directories
+                .iter()
+                .find(|directory| directory.dir_id == PPC_FIRST_DYNAMIC_DIR_ID)
+                .unwrap();
+            assert_eq!(directory.parent_dir_id, PPC_PREFERENCES_DIR_ID);
+            let encoded =
+                crate::trap::dispatch::TrapDispatcher::encode_hfs_component_for_vfs("Audio/Video");
+            assert_eq!(
+                directory.path,
+                format!("System Folder/Preferences/{encoded}")
+            );
+        }
+    }
+
+    #[test]
     fn hle_import_runner_reports_missing_parent_for_dir_create() {
         let pef = synthetic_pef_with_import(b"DirCreate");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -2948,6 +3007,269 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn hle_standard_put_file_new_folder_modal_create_and_cancel() {
+        let pef = synthetic_pef_with_import(b"StandardPutFile");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let reply = PPC_DATA_BASE + 0x1400;
+        let default_name = PPC_DATA_BASE + 0x1500;
+        loaded.memory.add_region(reply, vec![0xaa; 88]);
+        loaded.memory.add_region(default_name, vec![0; 64]);
+        write_ppc_pstring(&mut loaded.memory, default_name, b"Untitled");
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = default_name;
+        loaded.cpu.gpr[5] = reply;
+        loaded.run_with_hle_imports(64);
+        let original = loaded
+            .toolbox_startup
+            .standard_file_put_tracking
+            .as_ref()
+            .unwrap()
+            .clone();
+        for (message, modifiers) in [(u32::from(b'n'), 0x100), (27, 0)] {
+            loaded.set_event_queue([PpcQueuedEvent {
+                what: 3,
+                message,
+                when: 0,
+                where_v: 0,
+                where_h: 0,
+                modifiers,
+            }]);
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        }
+        let tracking = loaded
+            .toolbox_startup
+            .standard_file_put_tracking
+            .as_ref()
+            .unwrap();
+        assert!(tracking.new_folder.is_none());
+        assert!(tracking.generation > original.generation);
+        assert_eq!(tracking.dir_id, original.dir_id);
+        assert_eq!(tracking.name, b"Untitled");
+        assert_eq!((tracking.sel_start, tracking.sel_end), (0, 8));
+        let mut keys = vec![(u32::from(b'n'), 0x100)];
+        keys.extend(b"gpui folder".iter().map(|byte| (u32::from(*byte), 0)));
+        keys.push((13, 0));
+        for (message, modifiers) in keys {
+            loaded.set_event_queue([PpcQueuedEvent {
+                what: 3,
+                message,
+                when: 0,
+                where_v: 0,
+                where_h: 0,
+                modifiers,
+            }]);
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        }
+        let tracking = loaded
+            .toolbox_startup
+            .standard_file_put_tracking
+            .as_ref()
+            .unwrap();
+        assert!(tracking.new_folder.is_none());
+        let created = tracking.dir_id;
+        assert_ne!(created, original.dir_id);
+        assert_eq!(tracking.directory_name, b"gpui folder");
+        assert_eq!(tracking.name, b"Untitled");
+        assert_eq!((tracking.sel_start, tracking.sel_end), (0, 8));
+        assert!(tracking.entries.is_empty());
+        // Standard File has not returned; preserve the caller-owned reply.
+        assert_eq!(loaded.memory.read_u8(reply), Some(0xaa));
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 3,
+            message: 27,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        }]);
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+        assert!(loaded.toolbox_startup.standard_file_put_tracking.is_none());
+        assert_eq!(loaded.memory.read_u8(reply), Some(0));
+        assert!(
+            loaded
+                .vfs_directories
+                .iter()
+                .any(|directory| directory.dir_id == created
+                    && directory.parent_dir_id == original.dir_id)
+        );
+    }
+
+    #[test]
+    fn hle_standard_put_file_navigates_directory_before_writing_reply() {
+        let pef = synthetic_pef_with_import(b"StandardPutFile");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let reply = PPC_DATA_BASE + 0x1a00;
+        let default_name = PPC_DATA_BASE + 0x1b00;
+        let fixtures_dir = 42;
+        loaded.memory.add_region(reply, vec![0xaa; 88]);
+        loaded.memory.add_region(default_name, vec![0; 64]);
+        write_ppc_pstring(&mut loaded.memory, default_name, b"New Document");
+        loaded.vfs_directories.push(PpcVfsDirectory {
+            dir_id: fixtures_dir,
+            parent_dir_id: PPC_ROOT_DIR_ID,
+            path: "Fixtures".to_string(),
+            creator: PPC_DIRECTORY_CREATOR,
+            file_type: PPC_DIRECTORY_FILE_TYPE,
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: "Fixtures/Old Document".to_string(),
+            data: b"old".to_vec().into(),
+            creator: u32::from_be_bytes(*b"SHWC"),
+            file_type: u32::from_be_bytes(*b"TEXT"),
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = default_name;
+        loaded.cpu.gpr[5] = reply;
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        let tracking = loaded.toolbox_startup.standard_file_put_tracking.as_ref().unwrap();
+        assert!(tracking.entries.iter().any(|entry| entry.dir_id == fixtures_dir));
+        let bounds = tracking.bounds;
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 1,
+            message: 0,
+            when: 10,
+            where_v: bounds.0 + PPC_STANDARD_FILE_PUT_LIST_RECT.0 + 5,
+            where_h: bounds.1 + PPC_STANDARD_FILE_PUT_LIST_RECT.1 + 5,
+            modifiers: 0,
+        }]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        assert_eq!(
+            loaded.toolbox_startup.standard_file_put_tracking.as_ref().unwrap().selected,
+            Some(0)
+        );
+        assert_eq!(
+            loaded.toolbox_startup.standard_file_snapshot().unwrap().name_has_focus,
+            Some(false)
+        );
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 1,
+            message: 0,
+            when: 40,
+            where_v: bounds.0 + PPC_STANDARD_FILE_PUT_LIST_RECT.0 + 5,
+            where_h: bounds.1 + PPC_STANDARD_FILE_PUT_LIST_RECT.1 + 5,
+            modifiers: 0,
+        }]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        assert_eq!(
+            loaded.toolbox_startup.standard_file_put_tracking.as_ref().unwrap().dir_id,
+            PPC_ROOT_DIR_ID,
+            "clicks outside DoubleTime must not enter the folder"
+        );
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 1,
+            message: 0,
+            when: 45,
+            where_v: bounds.0 + PPC_STANDARD_FILE_PUT_LIST_RECT.0 + 5,
+            where_h: bounds.1 + PPC_STANDARD_FILE_PUT_LIST_RECT.1 + 5,
+            modifiers: 0,
+        }]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        let tracking = loaded.toolbox_startup.standard_file_put_tracking.as_ref().unwrap();
+        assert_eq!(tracking.dir_id, fixtures_dir);
+        assert_eq!(tracking.directory_name, b"Fixtures");
+        assert!(tracking.entries.iter().any(|entry| entry.name == b"Old Document"));
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 3,
+            message: u32::from(0x7e_u8) << 8,
+            when: 20,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0x0100,
+        }]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        assert_eq!(
+            loaded.toolbox_startup.standard_file_put_tracking.as_ref().unwrap().dir_id,
+            PPC_ROOT_DIR_ID
+        );
+        loaded.set_event_queue([
+            PpcQueuedEvent {
+                what: 1,
+                message: 0,
+                when: 50,
+                where_v: bounds.0 + PPC_STANDARD_FILE_PUT_LIST_RECT.0 + 5,
+                where_h: bounds.1 + PPC_STANDARD_FILE_PUT_LIST_RECT.1 + 5,
+                modifiers: 0,
+            },
+            PpcQueuedEvent {
+                what: 3,
+                message: (u32::from(PPC_KEY_RETURN) << 8) | 0x0d,
+                when: 51,
+                where_v: 0,
+                where_h: 0,
+                modifiers: 0,
+            },
+        ]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        assert_eq!(
+            loaded.toolbox_startup.standard_file_put_tracking.as_ref().unwrap().dir_id,
+            fixtures_dir
+        );
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 1,
+            message: 0,
+            when: 60,
+            where_v: bounds.0 + PPC_STANDARD_FILE_PUT_NAME_RECT.0 + 5,
+            where_h: bounds.1 + PPC_STANDARD_FILE_PUT_NAME_RECT.1 + 5,
+            modifiers: 0,
+        }]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        assert_eq!(
+            loaded.toolbox_startup.standard_file_snapshot().unwrap().name_has_focus,
+            Some(true)
+        );
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 1,
+            message: 0,
+            when: 0,
+            where_v: bounds.0 + PPC_STANDARD_FILE_PUT_SAVE_RECT.0 + 5,
+            where_h: bounds.1 + PPC_STANDARD_FILE_PUT_SAVE_RECT.1 + 5,
+            modifiers: 0,
+        }]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::Halted { .. }
+        ));
+        assert_eq!(loaded.memory.read_u8(reply), Some(1));
+        assert_eq!(loaded.memory.read_u32_be(reply + 8), Some(fixtures_dir));
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, reply + 12),
+            Some(b"New Document".to_vec())
+        );
+    }
+
+    #[test]
     fn hle_import_runner_sf_put_file_gui_cancel_uses_legacy_reply_abi() {
         let pef = synthetic_pef_with_import(b"SFPutFile");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -2980,6 +3302,12 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     #[test]
     fn standard_file_name_edit_at_maximum_length_is_safe() {
         let mut tracking = PpcStandardFilePutTrackingState {
+            pointer_anchor: None,
+            caret: crate::standard_file_ui::StandardFileCaret::default(),
+            new_folder: None,
+            confirming_replace: false,
+            generation: 1,
+            standard_entry_point: true,
             call: PpcStandardFileCall {
                 mode: PpcStandardFileMode::PutModern,
                 reply: 0,
@@ -2987,6 +3315,11 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
             },
             vref: PPC_BOOT_VOLUME_REF_NUM,
             dir_id: PPC_ROOT_DIR_ID,
+            directory_name: b"Macintosh HD".to_vec(),
+            entries: Vec::new(),
+            selected: None,
+            list_has_focus: false,
+            last_list_click: None,
             prompt: Vec::new(),
             name: vec![b'x'; 63],
             sel_start: 63,
@@ -3011,6 +3344,24 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         assert_eq!(tracking.name.len(), 62);
         assert_eq!(tracking.sel_start, 62);
         assert_eq!(tracking.sel_end, 62);
+
+        tracking.name = vec![0x8e, 0xa3, b'S'];
+        tracking.sel_start = 1;
+        tracking.sel_end = 2;
+        let bounds = (10, 20, 30, 326);
+        let rect = ppc_standard_file_name_selection_rect(&tracking, bounds).unwrap();
+        let advance = |bytes: &[u8]| ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes);
+        assert_eq!(rect, (12, 20 + advance(&[0x8e]), 28, 20 + advance(&[0x8e, 0xa3])));
+        assert!(rect.1 > bounds.1 && rect.3 < bounds.3, "partial selection must not highlight the whole field");
+        tracking.list_has_focus = true;
+        assert_eq!(ppc_standard_file_name_selection_rect(&tracking, bounds), None);
+        tracking.list_has_focus = false;
+        tracking.confirming_replace = true;
+        assert_eq!(ppc_standard_file_name_selection_rect(&tracking, bounds), None);
+        tracking.confirming_replace = false;
+        tracking.new_folder = Some(Default::default());
+        assert_eq!(ppc_standard_file_name_selection_rect(&tracking, bounds), None);
+
     }
 
     #[test]
@@ -7641,6 +7992,9 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         let released_handle = loaded.cpu.gpr[3];
+        let generation = loaded.process_file_system.resource_manager.with_mut(|resources| {
+            resources.menu_generation(released_handle)
+        });
         let released_ptr = loaded.memory.read_u32_be(released_handle).unwrap();
         let allocated_heap_cursor = loaded.heap_cursor();
         assert_ne!(released_handle, 0);
@@ -7665,6 +8019,10 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         assert_eq!(loaded.cpu.gpr[3], released_handle);
         assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.process_file_system.vfs_resources[0].handle, 0);
+        loaded.process_file_system.resource_manager.with_mut(|resources| {
+            assert!(!resources.menu_generations.contains_key(&released_handle));
+            assert_ne!(resources.menu_generation(released_handle), generation);
+        });
         assert!(loaded
             .handles()
             .iter()

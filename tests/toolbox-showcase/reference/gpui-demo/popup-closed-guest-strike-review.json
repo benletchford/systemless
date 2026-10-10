@@ -1,0 +1,45 @@
+{
+  "base_commit": "3d84f5a15e8f54689129af18571135b097195cd1",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "b2bde6bc645112bb3264462d1d2058b3a6629a18da5f15f5cc9ae2a5b4afff64",
+    "src/bin/gpui_demo_text.rs": "157808a69f65a160f593291c83a53ae747faf62649aa05789f1fa3fc58a55236"
+  },
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "records": [
+    {
+      "mode": "mono",
+      "file": "popup-closed-guest-strike-mono.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "capture_sha256": "834063d601c94cb98238732437e510da953600cbd329a16a2de4ebbc255509fb",
+      "file_sha256": "9ea32acf646e760c6124c0dcb9355ac27fc11b95b476c8d83a464cf0657f85b4",
+      "pixel_sha256": "8e36e891327f5f7f4b9d3389eebf4f298de7de211a6bf1185b8e22b094a6c234"
+    },
+    {
+      "mode": "colour",
+      "file": "popup-closed-guest-strike-colour.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "capture_sha256": "57e6f9e280ca0b5fe310e0644c5ac4dc6dae1856dc102ff81c28bc20cafd12e2",
+      "file_sha256": "eaa36acb76300c2b33f58cf39e6be27073d6ba4b369d1fffe62de9a5aa177076",
+      "pixel_sha256": "06b1e2b9f797b802eb4cc43276b372d1529b616cecd94ae3d92a089bbaa874d2"
+    },
+    {
+      "mode": "ppc",
+      "file": "popup-closed-guest-strike-ppc.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "capture_sha256": "28a991b8ee6ebde375146fd131ee7246a9f8b2dccc8e846af04c7c9e5ed6fcbd",
+      "file_sha256": "f82f0d628fafd5563827d0d7dc3e2be9a4705acaf41e57c976e76ef2b24ffd50",
+      "pixel_sha256": "f022bd35ae02ad53fb49e8f4a5e4df33bd487b72021b298d4e63c00ebfbfad35"
+    }
+  ],
+  "review": "All full compositions reviewed: closed popup title and selected label guest glyphs at 12 and 9 points, long item clipped. Exact CDEF baseline, padding, border/arrow, scales/states and native font parity unqualified.",
+  "command": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit [--screen-depth 1|--screen-depth 8|--prefer-powerpc] --capture-popup-controls-selected OUTPUT"
+}

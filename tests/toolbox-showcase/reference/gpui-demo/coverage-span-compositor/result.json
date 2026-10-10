@@ -1,0 +1,242 @@
+{
+  "command": [
+    "cargo",
+    "run",
+    "--locked",
+    "--example",
+    "gpui-coverage-check",
+    "--features",
+    "gpui-demo-test",
+    "--",
+    "OUTPUT_DIRECTORY"
+  ],
+  "outcome": "12 exact full screenshot comparisons passed with nonblank black/coloured coverage checks",
+  "sha256": {
+    "examples/gpui-coverage-check.rs": "c34368d8d505c82858d6cd12a66d9443171e225fc48130315990f7cdf65caf2a",
+    "src/bin/gpui_demo_coverage.rs": "93443fef96612b1665402ed78398f6391861dfaa1c1bc68e9f68609d542fca57",
+    "target/debug/examples/gpui-coverage-check": "400dfbcddd7f71f99c6fa98fe35f46ebc10a478c2bf3420300827e8a76c53d65"
+  },
+  "hash_timing": "After successful execution; source and executable unchanged between execution and hashing. Cargo include list updated afterward only.",
+  "images": [
+    {
+      "file": "scale-0.75-origin--3.25-merged-false.png",
+      "sha256": "18a86cacdc2c56a68b7b4ffcb3b2c8a7dc067d6ac0e81dd15252c834a4a82c92",
+      "rgba_sha256": "c740db3996097779405a909e9ab85e43afebd5008c708664185b00ba5b4fc8f5",
+      "dimensions": [
+        480,
+        200
+      ]
+    },
+    {
+      "file": "scale-0.75-origin--3.25-merged-true.png",
+      "sha256": "18a86cacdc2c56a68b7b4ffcb3b2c8a7dc067d6ac0e81dd15252c834a4a82c92",
+      "rgba_sha256": "c740db3996097779405a909e9ab85e43afebd5008c708664185b00ba5b4fc8f5",
+      "dimensions": [
+        480,
+        200
+      ]
+    },
+    {
+      "file": "scale-0.75-origin-0-merged-false.png",
+      "sha256": "d044d7850566a53ef02603a80602f7cc2ddd78cd207947a0517991a9958e0430",
+      "rgba_sha256": "b2bf9a55502a3dba384ccc438a26f8daab0eebb1628ceca68107c69215d1f48d",
+      "dimensions": [
+        480,
+        200
+      ]
+    },
+    {
+      "file": "scale-0.75-origin-0-merged-true.png",
+      "sha256": "d044d7850566a53ef02603a80602f7cc2ddd78cd207947a0517991a9958e0430",
+      "rgba_sha256": "b2bf9a55502a3dba384ccc438a26f8daab0eebb1628ceca68107c69215d1f48d",
+      "dimensions": [
+        480,
+        200
+      ]
+    },
+    {
+      "file": "scale-0.75-origin-17.25-merged-false.png",
+      "sha256": "3744aad8a551a967c6e6a9108c0664407eb8c029263a9bd8e9952407a39b868c",
+      "rgba_sha256": "dbd6c7e402e1c78516f064ad502a4649544b8c38a96da653999043ad384a8f7b",
+      "dimensions": [
+        480,
+        200
+      ]
+    },
+    {
+      "file": "scale-0.75-origin-17.25-merged-true.png",
+      "sha256": "3744aad8a551a967c6e6a9108c0664407eb8c029263a9bd8e9952407a39b868c",
+      "rgba_sha256": "dbd6c7e402e1c78516f064ad502a4649544b8c38a96da653999043ad384a8f7b",
+      "dimensions": [
+        480,
+        200
+      ]
+    },
+    {
+      "file": "scale-1-origin--3.25-merged-false.png",
+      "sha256": "90ce24de549a128badc3e54e8ad02f620e0f4bf81e78d6a3727bbeb513aea7bc",
+      "rgba_sha256": "86582e875bf6a5cbb06a62e44eccecfbe1bb42d4f57d87aeedcb44dfc94fe8e1",
+      "dimensions": [
+        480,
+        200
+      ]
+    },
+    {
+      "file": "scale-1-origin--3.25-merged-true.png",
+      "sha256": "90ce24de549a128badc3e54e8ad02f620e0f4bf81e78d6a3727bbeb513aea7bc",
+      "rgba_sha256": "86582e875bf6a5cbb06a62e44eccecfbe1bb42d4f57d87aeedcb44dfc94fe8e1",
+      "dimensions": [
+        480,
+        200
+      ]
+    },
+    {
+      "file": "scale-1-origin-0-merged-false.png",
+      "sha256": "0f94e0ad8f2492e9c78e32e20f98a3b08b8e7ecb5a823ce6c2f6bf782f12569a",
+      "rgba_sha256": "3c246c6273db0973fe55b0ab86d5895f17e7e0fcb5a324e602eca9aac042f1d9",
+      "dimensions": [
+        480,
+        200
+      ]
+    },
+    {
+      "file": "scale-1-origin-0-merged-true.png",
+      "sha256": "0f94e0ad8f2492e9c78e32e20f98a3b08b8e7ecb5a823ce6c2f6bf782f12569a",
+      "rgba_sha256": "3c246c6273db0973fe55b0ab86d5895f17e7e0fcb5a324e602eca9aac042f1d9",
+      "dimensions": [
+        480,
+        200
+      ]
+    },
+    {
+      "file": "scale-1-origin-17.25-merged-false.png",
+      "sha256": "cd95c34d531be71658f1f5a1473189b6fa3b27076eed90c093cb82481663b29e",
+      "rgba_sha256": "8d2835d641d20c543c4e33a1a8b5fb1f956f125769c00f2c67fab924a872ee65",
+      "dimensions": [
+        480,
+        200
+      ]
+    },
+    {
+      "file": "scale-1-origin-17.25-merged-true.png",
+      "sha256": "cd95c34d531be71658f1f5a1473189b6fa3b27076eed90c093cb82481663b29e",
+      "rgba_sha256": "8d2835d641d20c543c4e33a1a8b5fb1f956f125769c00f2c67fab924a872ee65",
+      "dimensions": [
+        480,
+        200
+      ]
+    },
+    {
+      "file": "scale-1.5-origin--3.25-merged-false.png",
+      "sha256": "90ce24de549a128badc3e54e8ad02f620e0f4bf81e78d6a3727bbeb513aea7bc",
+      "rgba_sha256": "86582e875bf6a5cbb06a62e44eccecfbe1bb42d4f57d87aeedcb44dfc94fe8e1",
+      "dimensions": [
+        480,
+        200
+      ]
+    },
+    {
+      "file": "scale-1.5-origin--3.25-merged-true.png",
+      "sha256": "90ce24de549a128badc3e54e8ad02f620e0f4bf81e78d6a3727bbeb513aea7bc",
+      "rgba_sha256": "86582e875bf6a5cbb06a62e44eccecfbe1bb42d4f57d87aeedcb44dfc94fe8e1",
+      "dimensions": [
+        480,
+        200
+      ]
+    },
+    {
+      "file": "scale-1.5-origin-0-merged-false.png",
+      "sha256": "0f94e0ad8f2492e9c78e32e20f98a3b08b8e7ecb5a823ce6c2f6bf782f12569a",
+      "rgba_sha256": "3c246c6273db0973fe55b0ab86d5895f17e7e0fcb5a324e602eca9aac042f1d9",
+      "dimensions": [
+        480,
+        200
+      ]
+    },
+    {
+      "file": "scale-1.5-origin-0-merged-true.png",
+      "sha256": "0f94e0ad8f2492e9c78e32e20f98a3b08b8e7ecb5a823ce6c2f6bf782f12569a",
+      "rgba_sha256": "3c246c6273db0973fe55b0ab86d5895f17e7e0fcb5a324e602eca9aac042f1d9",
+      "dimensions": [
+        480,
+        200
+      ]
+    },
+    {
+      "file": "scale-1.5-origin-17.25-merged-false.png",
+      "sha256": "cd95c34d531be71658f1f5a1473189b6fa3b27076eed90c093cb82481663b29e",
+      "rgba_sha256": "8d2835d641d20c543c4e33a1a8b5fb1f956f125769c00f2c67fab924a872ee65",
+      "dimensions": [
+        480,
+        200
+      ]
+    },
+    {
+      "file": "scale-1.5-origin-17.25-merged-true.png",
+      "sha256": "cd95c34d531be71658f1f5a1473189b6fa3b27076eed90c093cb82481663b29e",
+      "rgba_sha256": "8d2835d641d20c543c4e33a1a8b5fb1f956f125769c00f2c67fab924a872ee65",
+      "dimensions": [
+        480,
+        200
+      ]
+    },
+    {
+      "file": "scale-2-origin--3.25-merged-false.png",
+      "sha256": "90ce24de549a128badc3e54e8ad02f620e0f4bf81e78d6a3727bbeb513aea7bc",
+      "rgba_sha256": "86582e875bf6a5cbb06a62e44eccecfbe1bb42d4f57d87aeedcb44dfc94fe8e1",
+      "dimensions": [
+        480,
+        200
+      ]
+    },
+    {
+      "file": "scale-2-origin--3.25-merged-true.png",
+      "sha256": "90ce24de549a128badc3e54e8ad02f620e0f4bf81e78d6a3727bbeb513aea7bc",
+      "rgba_sha256": "86582e875bf6a5cbb06a62e44eccecfbe1bb42d4f57d87aeedcb44dfc94fe8e1",
+      "dimensions": [
+        480,
+        200
+      ]
+    },
+    {
+      "file": "scale-2-origin-0-merged-false.png",
+      "sha256": "0f94e0ad8f2492e9c78e32e20f98a3b08b8e7ecb5a823ce6c2f6bf782f12569a",
+      "rgba_sha256": "3c246c6273db0973fe55b0ab86d5895f17e7e0fcb5a324e602eca9aac042f1d9",
+      "dimensions": [
+        480,
+        200
+      ]
+    },
+    {
+      "file": "scale-2-origin-0-merged-true.png",
+      "sha256": "0f94e0ad8f2492e9c78e32e20f98a3b08b8e7ecb5a823ce6c2f6bf782f12569a",
+      "rgba_sha256": "3c246c6273db0973fe55b0ab86d5895f17e7e0fcb5a324e602eca9aac042f1d9",
+      "dimensions": [
+        480,
+        200
+      ]
+    },
+    {
+      "file": "scale-2-origin-17.25-merged-false.png",
+      "sha256": "cd95c34d531be71658f1f5a1473189b6fa3b27076eed90c093cb82481663b29e",
+      "rgba_sha256": "8d2835d641d20c543c4e33a1a8b5fb1f956f125769c00f2c67fab924a872ee65",
+      "dimensions": [
+        480,
+        200
+      ]
+    },
+    {
+      "file": "scale-2-origin-17.25-merged-true.png",
+      "sha256": "cd95c34d531be71658f1f5a1473189b6fa3b27076eed90c093cb82481663b29e",
+      "rgba_sha256": "8d2835d641d20c543c4e33a1a8b5fb1f956f125769c00f2c67fab924a872ee65",
+      "dimensions": [
+        480,
+        200
+      ]
+    }
+  ],
+  "visually_reviewed": [
+    "scale-1.5-origin-17.25-merged-true.png"
+  ],
+  "scope": "Synthetic resolved-colour coverage paths in shared GPUI headless renderer at four scales and three origins. One image visually reviewed; other images compared programmatically. Density2 inferred from dimensions. No font/guest interaction oracle, production integration or live performance result."
+}

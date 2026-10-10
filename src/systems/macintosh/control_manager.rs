@@ -1,5 +1,295 @@
 //! Architecture-neutral Control Manager records and list operations.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Fixed popup menus exclude the title and the arrow/end-cap area.
+/// Inside Macintosh VI (1991), pp. 3-17--3-18 defines popupFixedWidth.
+/// Native Mac OS 8.1 68k/PPC probes with 210- and 310-pixel controls and
+/// 52-pixel titles yield 140- and 240-pixel dropdowns: an 18-pixel end cap.
+pub(crate) fn fixed_popup_menu_width(
+    proc_id: i16,
+    left: i16,
+    right: i16,
+    title_width: i16,
+) -> Option<i16> {
+    (proc_id & 1 != 0).then(|| {
+        right.saturating_sub(left)
+            .saturating_sub(title_width.max(0))
+            .saturating_sub(18)
+            .max(1)
+    })
+}
+
+/// Shared cadence for standard scrollbar action procedures, in guest ticks.
+pub(crate) const SCROLLBAR_ACTION_REPEAT_TICKS: u32 = 3;
+
+/// Standard scroll-box preview position relative to the control's axis origin.
+/// The same geometry is used for retained guest tracking and frontend feedback.
+/// Macintosh Toolbox Essentials (1992), pp. 5-89--5-90; native Mac OS 8.1 PPC
+/// cancels outside the thirty-pixel allowance on both axes.
+#[doc(hidden)]
+pub fn scrollbar_drag_position(
+    bounds: (i16, i16, i16, i16),
+    vertical: bool,
+    limits: (i16, i16, i16),
+    start_mouse: (i16, i16),
+    point: (i16, i16),
+) -> Option<i32> {
+    let (top, left, bottom, right) = (
+        i32::from(bounds.0),
+        i32::from(bounds.1),
+        i32::from(bounds.2),
+        i32::from(bounds.3),
+    );
+    let (v, h) = (i32::from(point.0), i32::from(point.1));
+    if v < top - 30 || v >= bottom + 30 || h < left - 30 || h >= right + 30 {
+        return None;
+    }
+    let (extent, delta) = if vertical {
+        (bottom - top, v - i32::from(start_mouse.0))
+    } else {
+        (right - left, h - i32::from(start_mouse.1))
+    };
+    let (value, minimum, maximum) = limits;
+    let range = i32::from(maximum) - i32::from(minimum);
+    let travel = extent - 48;
+    if travel <= 0 || range <= 0 {
+        return None;
+    }
+    let value = i32::from(value.clamp(minimum, maximum)) - i32::from(minimum);
+    let initial = i64::from(value) * i64::from(travel) / i64::from(range);
+    Some(16 + (initial + i64::from(delta)).clamp(0, i64::from(travel)) as i32)
+}
+
+static NEXT_CONTROL_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) fn new_control_generation() -> u64 {
+    NEXT_CONTROL_GENERATION
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| next.checked_add(1))
+        .expect("control lifetime generation exhausted")
+}
+
+/// One horizontal run of a standard popup indicator, in global guest pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ControlIndicatorSpan {
+    pub left: i16,
+    pub top: i16,
+    pub width: i16,
+}
+
+/// Classic CPU CDEF variants; these are shapes, never host font glyphs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PopupIndicatorKind { Classic68k, ClassicPpc }
+
+pub(crate) fn popup_indicator_spans(
+    kind: PopupIndicatorKind, bounds: (i16, i16, i16, i16), enabled: bool,
+) -> Vec<ControlIndicatorSpan> {
+    let (top, _, bottom, right) = bounds;
+    let mut spans = Vec::new();
+    match kind {
+        PopupIndicatorKind::Classic68k => {
+            let x = right.saturating_sub(12);
+            if enabled {
+                for row in 0..6i16 {
+                    spans.push(ControlIndicatorSpan {
+                        left: x.saturating_sub(5).saturating_add(row),
+                        top: top.saturating_add(6 + row), width: 11 - 2 * row,
+                    });
+                }
+            } else {
+                for row in [0i16, 2, 4] {
+                    let start = x.saturating_sub(4).saturating_add(row);
+                    for dx in (0..9 - 2 * row).step_by(2) {
+                        spans.push(ControlIndicatorSpan {
+                            left: start.saturating_add(dx),
+                            top: top.saturating_add(7 + row), width: 1,
+                        });
+                    }
+                }
+            }
+        }
+        PopupIndicatorKind::ClassicPpc => {
+            let x = right.saturating_sub(9);
+            let y = top.saturating_add(bottom.saturating_sub(top) / 2);
+            for offset in 0..3i16 {
+                for top in [y.saturating_sub(3 - offset), y.saturating_add(3 - offset)] {
+                    spans.push(ControlIndicatorSpan {
+                        left: x.saturating_sub(offset), top, width: 2 * offset + 1,
+                    });
+                }
+            }
+        }
+    }
+    spans
+}
+
+/// Resolved standard indicator shape and solid guest ink.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ControlPopupIndicator {
+    pub spans: Vec<ControlIndicatorSpan>,
+    pub rgb: [u8; 3],
+}
+
+/// Guest-resolved popup text ink. Checker phase uses global guest pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControlTextInk {
+    Solid([u8; 3]),
+    Checker,
+}
+
+impl ControlTextInk {
+    pub fn pixel(self, global_x: i32, global_y: i32) -> [u8; 3] {
+        match self {
+            Self::Solid(rgb) => rgb,
+            Self::Checker if (global_x + global_y) & 1 == 0 => [255; 3],
+            Self::Checker => [0; 3],
+        }
+    }
+}
+
+/// Read-only, frontend-neutral state of a guest Control Manager control.
+/// Bounds are in global screen coordinates; `local_bounds` retains the
+/// canonical `contrlRect` for cases where a port origin needs more context.
+/// Macintosh Toolbox Essentials (1992), pp. 5-60--5-64.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ControlSnapshot {
+    pub guest_id: u32,
+    /// Changes when a disposed control's guest handle is reused.
+    pub generation: u64,
+    pub owner_id: u32,
+    pub proc_id: i16,
+    pub local_bounds: (i16, i16, i16, i16),
+    pub bounds: (i16, i16, i16, i16),
+    pub owner_visible: bool,
+    pub visible: bool,
+    pub enabled: bool,
+    pub hilite: u8,
+    pub value: i16,
+    pub minimum: i16,
+    pub maximum: i16,
+    pub title: String,
+    /// Live Appearance font/style intent; no host-font substitution is implied.
+    pub font_style: Option<ControlFontStyle>,
+    /// Standard popup CDEF's associated menu and label width, if applicable.
+    pub popup_menu_id: Option<i16>,
+    pub popup_title_width: Option<i16>,
+    /// Selected label inset from the guest CDEF box (CPU-specific).
+    pub popup_text_inset: i16,
+    /// Ink resolved by the same CPU CDEF state as guest drawing.
+    pub popup_ink: Option<ControlTextInk>,
+    /// Standard classic indicator; themed variants await faithful projection.
+    pub popup_indicator: Option<ControlPopupIndicator>,
+    /// Resolved global selected-box bounds from the CPU CDEF.
+    pub popup_box_bounds: Option<(i16, i16, i16, i16)>,
+    /// Font resolved from the live owner port and popup CDEF variation.
+    pub popup_font: Option<crate::menu_model::GuestMenuFont>,
+}
+
+/// Read the live ControlRecord through the architecture's byte adapter. The
+/// process registry identifies a CDEF but never substitutes for guest fields.
+/// ControlRecord layout: Macintosh Toolbox Essentials (1992), pp. 5-60--5-64.
+pub(crate) fn snapshot_control_record(
+    handle: u32,
+    expected_pointer: u32,
+    generation: u64,
+    proc_id: i16,
+    popup_menu_id: i16,
+    popup_title_width: Option<i16>,
+    font_style: Option<ControlFontStyle>,
+    owner_state: impl Fn(u32) -> Option<((i16, i16, i16, i16), bool)>,
+    mut read: impl FnMut(u32) -> Option<u8>,
+) -> Option<ControlSnapshot> {
+    fn word(read: &mut impl FnMut(u32) -> Option<u8>, address: u32) -> Option<i16> {
+        Some(i16::from_be_bytes([
+            read(address)?,
+            read(address.wrapping_add(1))?,
+        ]))
+    }
+    fn long(read: &mut impl FnMut(u32) -> Option<u8>, address: u32) -> Option<u32> {
+        Some(u32::from_be_bytes([
+            read(address)?,
+            read(address.wrapping_add(1))?,
+            read(address.wrapping_add(2))?,
+            read(address.wrapping_add(3))?,
+        ]))
+    }
+    let pointer = long(&mut read, handle)?;
+    if pointer == 0 || pointer != expected_pointer {
+        return None;
+    }
+    let owner_id = long(&mut read, pointer.wrapping_add(4))?;
+    let (owner, owner_visible) = owner_state(owner_id)?;
+    let local_bounds = (
+        word(&mut read, pointer.wrapping_add(8))?,
+        word(&mut read, pointer.wrapping_add(10))?,
+        word(&mut read, pointer.wrapping_add(12))?,
+        word(&mut read, pointer.wrapping_add(14))?,
+    );
+    let visible = read(pointer.wrapping_add(16))? != 0;
+    let hilite = read(pointer.wrapping_add(17))?;
+    let value = word(&mut read, pointer.wrapping_add(18))?;
+    let minimum = word(&mut read, pointer.wrapping_add(20))?;
+    let maximum = word(&mut read, pointer.wrapping_add(22))?;
+    // popupMenuProc stores the MENU ID in contrlMin and reserves contrlMax
+    // pixels for its title, but later repurposes these fields for item range.
+    // The CDEF's contrlData private record retains MENU handle and ID.
+    // MTE (1992), pp. 5-25--5-27 and 5-77.
+    let popup = (1008..=1023).contains(&proc_id);
+    let private_popup_menu_id = if popup {
+        long(&mut read, pointer.wrapping_add(28))
+            .filter(|handle| *handle != 0)
+            .and_then(|handle| long(&mut read, handle))
+            .filter(|pointer| *pointer != 0)
+            .and_then(|pointer| word(&mut read, pointer.wrapping_add(4)))
+            .filter(|id| *id != 0)
+    } else {
+        None
+    };
+    let length = usize::from(read(pointer.wrapping_add(40))?);
+    let title = (0..length)
+        .map(|index| read(pointer.wrapping_add(41).wrapping_add(index as u32)))
+        .collect::<Option<Vec<_>>>()?;
+    Some(ControlSnapshot {
+        guest_id: handle,
+        generation,
+        owner_id,
+        proc_id,
+        local_bounds,
+        bounds: crate::dialog_manager::dialog_rect_to_global(owner, local_bounds),
+        owner_visible,
+        visible,
+        enabled: hilite != 255,
+        hilite,
+        value,
+        minimum,
+        maximum,
+        title: crate::mac_roman::decode_mac_roman(&title),
+        font_style,
+        popup_menu_id: popup
+            .then(|| private_popup_menu_id.or((popup_menu_id != 0).then_some(popup_menu_id)))
+            .flatten(),
+        popup_title_width: popup.then_some(popup_title_width.unwrap_or(0)),
+        popup_text_inset: 15,
+        popup_ink: None,
+        popup_indicator: None,
+        popup_box_bounds: None,
+        // GrafPort and CGrafPort share txFont/txSize offsets. The popup
+        // variation uses the owner font for both title and selected item.
+        // Inside Macintosh VI (1991), p. 3-18.
+        popup_font: popup.then(|| {
+            if proc_id & 8 != 0 {
+                crate::menu_model::GuestMenuFont {
+                    family: word(&mut read, owner_id.wrapping_add(68)).unwrap_or(0),
+                    size: word(&mut read, owner_id.wrapping_add(74)).unwrap_or(0),
+                }
+            } else {
+                Default::default()
+            }
+        }),
+    })
+}
+
 /// Tagged property associated with a ControlRef in Appearance Manager / Carbon.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ProcessControlProperty {
@@ -21,6 +311,7 @@ pub(crate) struct ProcessControlProperty {
 pub(crate) struct ProcessControlRecord {
     pub(crate) handle: u32,
     pub(crate) pointer: u32,
+    pub(crate) generation: u64,
     pub(crate) proc_id: i16,
     pub(crate) popup_menu_id: i16,
     pub(crate) popup_title_width: Option<i16>,
@@ -40,16 +331,17 @@ pub(crate) struct ProcessControlRecord {
 
 /// The Appearance Manager style override associated with a ControlRef.
 /// RGBColor components are stored in guest byte order as decoded host words.
+#[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ControlFontStyle {
-    pub(crate) flags: i16,
-    pub(crate) font: i16,
-    pub(crate) size: i16,
-    pub(crate) style: i16,
-    pub(crate) mode: i16,
-    pub(crate) justification: i16,
-    pub(crate) foreground: [u16; 3],
-    pub(crate) background: [u16; 3],
+pub struct ControlFontStyle {
+    pub flags: i16,
+    pub font: i16,
+    pub size: i16,
+    pub style: i16,
+    pub mode: i16,
+    pub justification: i16,
+    pub foreground: [u16; 3],
+    pub background: [u16; 3],
 }
 
 /// Canonical Control Manager metadata for one Macintosh process.
@@ -81,6 +373,7 @@ impl ProcessControlManagerState {
         self.records.push(ProcessControlRecord {
             handle,
             pointer,
+            generation: new_control_generation(),
             proc_id,
             popup_menu_id,
             popup_title_width: None,
@@ -672,6 +965,72 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
+    fn popup_snapshot_tracks_owner_font_changes_and_rejects_replaced_records() {
+        // Both CPU adapters use this reader. A retained control must resolve
+        // its current owning port, not cache the font seen at creation.
+        // Inside Macintosh VI (1991), p. 3-18: popupUseWFont.
+        let mut memory = vec![0u8; 1024];
+        memory[32..36].copy_from_slice(&128u32.to_be_bytes());
+        memory[132..136].copy_from_slice(&512u32.to_be_bytes());
+        memory[144] = 1;
+        let snapshot = |memory: &[u8], proc_id| {
+            snapshot_control_record(
+                32,
+                128,
+                7,
+                proc_id,
+                144,
+                Some(52),
+                Some(ControlFontStyle {
+                    flags: 7, font: 3, size: 10, style: 1, mode: 1,
+                    justification: -1, foreground: [1, 2, 3], background: [4, 5, 6],
+                }),
+                |owner| matches!(owner, 512 | 768).then_some(((20, 40, 300, 400), true)),
+                |address| memory.get(address as usize).copied(),
+            )
+        };
+        for (family, size) in [(3i16, 9i16), (4, 18), (0, 0)] {
+            memory[580..582].copy_from_slice(&family.to_be_bytes());
+            memory[586..588].copy_from_slice(&size.to_be_bytes());
+            let current = snapshot(&memory, 1017).unwrap();
+            let style = current.font_style.unwrap();
+            assert_eq!((style.flags, style.font, style.size, style.style), (7, 3, 10, 1));
+            assert_eq!((style.mode, style.justification), (1, -1));
+            assert_eq!((style.foreground, style.background), ([1, 2, 3], [4, 5, 6]));
+            let font = current.popup_font.unwrap();
+            assert_eq!((font.family, font.size), (family, size));
+            assert_eq!(font.point_size(), if size == 0 { 12 } else { size });
+            assert_eq!((current.guest_id, current.generation), (32, 7));
+            assert_eq!(
+                snapshot(&memory, 1009).unwrap().popup_font,
+                Some(Default::default())
+            );
+        }
+        memory[132..136].copy_from_slice(&768u32.to_be_bytes());
+        memory[836..838].copy_from_slice(&3i16.to_be_bytes());
+        memory[842..844].copy_from_slice(&24i16.to_be_bytes());
+        let moved = snapshot(&memory, 1017).unwrap();
+        assert_eq!(moved.owner_id, 768);
+        assert_eq!(moved.popup_font.unwrap().point_size(), 24);
+        assert_eq!(snapshot(&memory, 0).unwrap().popup_font, None);
+        // A disposed or repointed handle must not project the old identity.
+        for pointer in [0u32, 256] {
+            memory[32..36].copy_from_slice(&pointer.to_be_bytes());
+            assert!(snapshot(&memory, 1017).is_none());
+        }
+    }
+
+    #[test]
+    fn fixed_popup_menu_width_matches_native_control_probes() {
+        // The same dual-CPU fixture, changing only the control's right edge.
+        for (right, expected) in [(400, 140), (500, 240)] {
+            assert_eq!(fixed_popup_menu_width(1017, 190, right, 52), Some(expected));
+        }
+        assert_eq!(fixed_popup_menu_width(1008, 190, 400, 52), None);
+        assert_eq!(fixed_popup_menu_width(1016, 190, 400, 52), None);
+    }
+
+    #[test]
     fn draw_order_preserves_the_newest_first_guest_chain() {
         let next = HashMap::from([(3u32, 2u32), (2, 1), (1, 0)]);
         assert_eq!(
@@ -748,6 +1107,23 @@ mod tests {
     }
 
     #[test]
+    fn control_generation_changes_only_for_a_new_lifetime() {
+        let mut state = ProcessControlManagerState::default();
+        state.register(10, 0x1000, 1, 0);
+        let first = state
+            .iter()
+            .find(|record| record.handle == 10)
+            .unwrap()
+            .generation;
+        assert_ne!(first, 0);
+        state.register(10, 0x1000, 1, 0);
+        assert_eq!(state[0].generation, first);
+        state.remove_handle(10);
+        state.register(10, 0x1000, 1, 0);
+        assert!(state[0].generation > first);
+    }
+
+    #[test]
     fn process_control_manager_state_evaluates_tagged_properties() {
         let mut state = ProcessControlManagerState::default();
         state.register(10, 0x1000, 0, 0);
@@ -793,5 +1169,45 @@ mod tests {
 
         state.set_drag_tracking_enabled(10, true);
         assert!(state.drag_tracking_enabled(10));
+    }
+}
+
+/// Standard popup CDEF truncation, measured in guest advances.
+/// Preserve character/byte boundaries and use three periods, never host shaping.
+pub fn popup_display_text<T: Clone>(
+    title: &[T], ellipsis: &[T], available_width: i16,
+    measure: impl Fn(&[T]) -> i16,
+) -> Vec<T> {
+    if available_width <= 0 { return Vec::new(); }
+    if measure(title) <= available_width { return title.to_vec(); }
+    let suffix_width = measure(ellipsis);
+    if suffix_width > available_width { return Vec::new(); }
+    let mut prefix = Vec::new();
+    let mut width = 0i16;
+    for item in title {
+        let advance = measure(std::slice::from_ref(item));
+        if width.saturating_add(advance).saturating_add(suffix_width) > available_width { break; }
+        prefix.push(item.clone());
+        width = width.saturating_add(advance);
+    }
+    prefix.extend_from_slice(ellipsis);
+    prefix
+}
+
+#[cfg(test)]
+mod popup_display_tests {
+    #[test]
+    fn popup_display_text_preserves_character_boundaries_and_suffix_budget() {
+        let title: Vec<_> = "é£πABCDE".chars().collect();
+        let measure = |chars: &[char]| chars.iter().map(|ch| if *ch == '.' { 1 } else { 4 }).sum();
+        let display = |width| super::popup_display_text(&title, &['.', '.', '.'], width, measure)
+            .into_iter().collect::<String>();
+        assert_eq!(display(0), "");
+        assert_eq!(display(2), "");
+        assert_eq!(display(3), "...");
+        assert_eq!(display(15), "é£π...");
+        assert_eq!(display(31), "é£πABCD...");
+        assert_eq!(display(32), "é£πABCDE");
+        assert_eq!(display(i16::MAX), "é£πABCDE");
     }
 }

@@ -1102,9 +1102,10 @@ fn hle_import_runner_handles_event_button_and_exit_utilities() {
 
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
-    assert_eq!(loaded.cpu.gpr[3], 0);
-    assert_eq!(loaded.memory.read_u16_be(event_ptr), Some(0));
-    assert!(ppc_run_result_cycles(probe.result) >= PPC_Q3_IDLE_STATE_ONLY_FRAME_EXTRA_CYCLES);
+    assert_eq!(loaded.cpu.gpr[3], 0xffff, "sleep retains the import arguments");
+    assert_eq!(loaded.memory.read_u16_be(event_ptr), Some(0xaaaa), "no EventRecord is returned while asleep");
+    assert!(ppc_run_result_cycles(probe.result) <= 64);
+    assert_eq!(loaded.toolbox_startup.event_waits.len(), 1);
 
     let pef = synthetic_pef_with_import(b"Button");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -1556,4 +1557,306 @@ fn hle_run_mirrors_shared_process_input_into_powerpc_low_memory() {
     assert_eq!(loaded.memory.read_u8(addr::KEY_MAP_LM + 2), Some(0x20));
     assert_eq!(loaded.memory.read_u16_be(addr::MOUSE_LOC2), Some(115));
     assert_eq!(loaded.memory.read_u16_be(addr::MOUSE_LOC2 + 2), Some(210));
+}
+
+#[test]
+fn process_suspend_event_respects_masks_priority_and_stable_peeking() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"EventAvail")).unwrap();
+    let event_ptr = PPC_DATA_BASE + 0x1800;
+    loaded.memory.add_region(event_ptr, vec![0; 16]);
+    loaded.set_tick_count(41);
+    loaded.event_queue.with_mut(|queue| {
+        queue.activation.request(false);
+        queue.activation.begin_event_call(
+            Some(ApplicationSizeResource {
+                flags: 0x4000,
+                preferred_size: 0,
+                minimum_size: 0,
+            }),
+            true,
+            true,
+        );
+    });
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = event_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::EventAvail);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    // Native execution advances the clock before reaching the import. Capture
+    // that posting tick, then prove later scans do not substitute their ticks.
+    let posted_when = loaded.event_queue.with_ref(|queue| {
+        queue.activation.peek_os_event(0x8000).unwrap().when
+    });
+    assert!((41..99).contains(&posted_when));
+    loaded.set_tick_count(99);
+    for _ in 0..2 {
+        loaded.cpu.gpr[3] = 0x8000;
+        loaded.cpu.gpr[4] = event_ptr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::EventAvail);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+        assert_eq!(loaded.memory.read_u16_be(event_ptr), Some(15));
+        assert_eq!(loaded.memory.read_u32_be(event_ptr + 2), Some(0x0100_0000));
+        assert_eq!(loaded.memory.read_u32_be(event_ptr + 6), Some(posted_when));
+    }
+    loaded.cpu.gpr[3] = 0xffff;
+    loaded.cpu.gpr[4] = event_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetOSEvent);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3] = 0xffff;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FlushEvents);
+    for what in [3, 23] {
+        loaded.event_queue.push_back(PpcQueuedEvent {
+            what,
+            message: 0x0061,
+            when: 42,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+    }
+    for expected in [3, 15, 23] {
+        loaded.cpu.gpr[3] = 0xffff;
+        loaded.cpu.gpr[4] = event_ptr;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 1);
+        assert_eq!(loaded.memory.read_u16_be(event_ptr), Some(expected));
+        if expected == 15 {
+            assert_eq!(loaded.memory.read_u32_be(event_ptr + 6), Some(posted_when));
+        }
+    }
+    assert!(loaded
+        .event_queue
+        .with_ref(|queue| queue.activation.is_foreground()));
+    loaded.cpu.gpr[3] = 0x8000;
+    loaded.cpu.gpr[4] = event_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::EventAvail);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
+fn wait_next_event_schedules_process_switch_and_window_activation_by_size_policy() {
+    for flags in [0, 0x0800, 0x4000, 0x4800] {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_import(b"WaitNextEvent")).unwrap();
+        let bounds_ptr = PPC_DATA_BASE + 0x1800;
+        let event_ptr = PPC_DATA_BASE + 0x1900;
+        loaded.memory.add_region(bounds_ptr, vec![0; 8]);
+        loaded.memory.add_region(event_ptr, vec![0; 16]);
+        let window = super::window_manager::create_test_cwindow(
+            &mut loaded,
+            bounds_ptr,
+            (60, 80, 180, 260),
+            0,
+            true,
+            u32::MAX,
+        );
+        loaded.event_queue.clear();
+        loaded.application_size.with_mut(|size| {
+            *size = Some(ApplicationSizeResource {
+                flags,
+                preferred_size: 0,
+                minimum_size: 0,
+            })
+        });
+        let accepts = flags & 0x4000 != 0;
+        let owns_activation = flags == 0x4800;
+        for foreground in [false, true] {
+            loaded
+                .event_queue
+                .with_mut(|queue| queue.activation.request(foreground));
+            let mut expected = Vec::new();
+            if accepts {
+                expected.push(15);
+            }
+            if !owns_activation {
+                expected.push(8);
+            }
+            for what in expected {
+                loaded.cpu.gpr[3] = 0x8100;
+                loaded.cpu.gpr[4] = event_ptr;
+                loaded.cpu.gpr[5] = 0;
+                loaded.cpu.gpr[6] = 0;
+                run_test_import(
+                    &mut loaded,
+                    PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent),
+                );
+                assert_eq!(
+                    loaded.memory.read_u16_be(event_ptr),
+                    Some(what),
+                    "flags={flags:04x} foreground={foreground}"
+                );
+                if what == 15 {
+                    assert_eq!(
+                        loaded.memory.read_u32_be(event_ptr + 2),
+                        Some(0x0100_0000 | u32::from(foreground))
+                    );
+                } else {
+                    assert_eq!(loaded.memory.read_u32_be(event_ptr + 2), Some(window));
+                    assert_eq!(
+                        loaded.memory.read_u16_be(event_ptr + 14).unwrap() & 1,
+                        u16::from(foreground)
+                    );
+                    assert_eq!(
+                        loaded
+                            .memory
+                            .read_u8(window + PPC_CWINDOW_HILITED_OFFSET)
+                            .unwrap()
+                            != 0,
+                        foreground
+                    );
+                }
+            }
+            loaded.cpu.gpr[3] = 0x8100;
+            loaded.cpu.gpr[4] = event_ptr;
+            loaded.cpu.gpr[5] = 0;
+            loaded.cpu.gpr[6] = 0;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent),
+            );
+            assert_eq!(loaded.memory.read_u16_be(event_ptr), Some(0));
+            assert_eq!(
+                loaded
+                    .event_queue
+                    .with_ref(|queue| queue.activation.is_foreground()),
+                foreground
+            );
+            if owns_activation {
+                assert_ne!(
+                    loaded.memory.read_u8(window + PPC_CWINDOW_HILITED_OFFSET),
+                    Some(0),
+                    "application-owned activation must not alter hiliting"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn process_switch_waits_for_ordinary_modal_window_to_close() {
+    // Toolbox Essentials (1992), p. 2-20: ordinary and movable modality
+    // have different major-switch policies, independent of the CPU ABI.
+    for proc_id in [1, 5] {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_import(b"WaitNextEvent")).unwrap();
+        let bounds = PPC_DATA_BASE + 0x1800;
+        let event = PPC_DATA_BASE + 0x1900;
+        loaded.memory.add_region(bounds, vec![0; 8]);
+        loaded.memory.add_region(event, vec![0; 16]);
+        let window = super::window_manager::create_test_cwindow(
+            &mut loaded,
+            bounds,
+            (60, 80, 180, 260),
+            proc_id,
+            true,
+            u32::MAX,
+        );
+        loaded.event_queue.clear();
+        loaded.application_size.with_mut(|size| {
+            *size = Some(ApplicationSizeResource {
+                flags: 0x4800,
+                preferred_size: 0,
+                minimum_size: 0,
+            })
+        });
+        loaded
+            .event_queue
+            .with_mut(|queue| queue.activation.request(false));
+        for scan in 0..3 {
+            if scan == 2 && proc_id == 1 {
+                loaded
+                    .memory
+                    .write_u8(window + PPC_CWINDOW_VISIBLE_OFFSET, 0)
+                    .unwrap();
+            }
+            loaded.cpu.gpr[3] = 0x8000;
+            loaded.cpu.gpr[4] = event;
+            loaded.cpu.gpr[5] = 0;
+            loaded.cpu.gpr[6] = 0;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent),
+            );
+            let suspend = (proc_id == 1 && scan == 2) || (proc_id == 5 && scan == 0);
+            assert_eq!(
+                loaded.memory.read_u16_be(event),
+                Some(if suspend { 15 } else { 0 })
+            );
+            if suspend {
+                assert_eq!(loaded.memory.read_u32_be(event + 2), Some(0x0100_0000));
+            }
+            if proc_id == 1 {
+                assert!(loaded
+                    .event_queue
+                    .with_ref(|queue| queue.activation.is_foreground()));
+            }
+        }
+    }
+}
+
+
+#[test]
+fn sleeping_wait_next_event_wakes_for_input_activation_or_deadline() {
+    for wake in [0, 3, 15] {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_import(b"WaitNextEvent")).unwrap();
+        let event = PPC_DATA_BASE + 0x1900;
+        loaded.memory.add_region(event, vec![0xaa; 16]);
+        loaded.application_size.with_mut(|size| {
+            *size = Some(ApplicationSizeResource {
+                flags: 0x4800,
+                preferred_size: 0,
+                minimum_size: 0,
+            })
+        });
+        loaded.cpu.gpr[3] = 0x8008;
+        loaded.cpu.gpr[4] = event;
+        loaded.cpu.gpr[5] = 3600;
+        loaded.cpu.gpr[6] = 0;
+        let first = loaded.run_with_hle_imports(64);
+        assert!(ppc_run_result_cycles(first.result) <= 64);
+        assert_eq!(loaded.memory.read_u16_be(event), Some(0xaaaa));
+        let started = loaded
+            .toolbox_startup
+            .event_waits
+            .values()
+            .next()
+            .unwrap()
+            .0;
+        let frame = (loaded.cpu.pc, loaded.cpu.gpr[1], loaded.cpu.lr);
+        loaded.set_tick_count(started.wrapping_add(1));
+        if wake == 3 {
+            loaded.set_event_queue([PpcQueuedEvent {
+                what: 3,
+                message: 0x0061,
+                when: started.wrapping_add(1),
+                where_v: 0,
+                where_h: 0,
+                modifiers: 0,
+            }]);
+        } else if wake == 15 {
+            loaded
+                .event_queue
+                .with_mut(|queue| queue.activation.request(false));
+        } else {
+            let waiting = loaded.run_with_hle_imports(64);
+            assert!(ppc_run_result_cycles(waiting.result) <= 64);
+            assert_eq!((loaded.cpu.pc, loaded.cpu.gpr[1], loaded.cpu.lr), frame);
+            assert_eq!(loaded.memory.read_u16_be(event), Some(0xaaaa));
+            loaded.set_tick_count(started.wrapping_add(3600));
+        }
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.memory.read_u16_be(event), Some(wake));
+        assert_eq!(loaded.cpu.gpr[3], u32::from(wake != 0));
+        assert!(loaded.toolbox_startup.event_waits.is_empty());
+        if wake == 15 {
+            assert_eq!(loaded.memory.read_u32_be(event + 2), Some(0x0100_0000));
+            assert!(loaded
+                .event_queue
+                .with_ref(|queue| queue.activation.is_foreground()));
+        }
+    }
 }

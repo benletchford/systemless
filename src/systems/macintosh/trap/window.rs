@@ -2089,6 +2089,28 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn update_window_user_state(
+        &self,
+        bus: &mut MacMemoryBus,
+        window: u32,
+        bounds: (i16, i16, i16, i16),
+    ) {
+        // WStateData.userState follows a user's move or resize. ZoomWindow
+        // reads this rectangle to restore the window after its standard state.
+        // Macintosh Toolbox Essentials (1992), pp. 4-53--4-54.
+        if !matches!(self.window_proc_ids.get(&window), Some(8 | 12)) {
+            return;
+        }
+        let handle = bus.read_long(window + Self::WINDOW_DATA_HANDLE_OFFSET);
+        let data = if handle != 0 { bus.read_long(handle) } else { 0 };
+        if data == 0 {
+            return;
+        }
+        for (offset, value) in [(0, bounds.0), (2, bounds.1), (4, bounds.2), (6, bounds.3)] {
+            bus.write_word(data + offset, value as u16);
+        }
+    }
+
     pub(crate) fn move_window_to_global(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -2153,6 +2175,10 @@ impl super::TrapDispatcher {
 
         // portRect, visRgn, clipRgn stay in local coords — no update needed.
         let global_content = self.window_local_rect_to_global(bus, the_window, local_content_rect);
+        if delta_v != 0 || delta_h != 0 {
+            self.window_list.invalidate_grow_icon(the_window);
+        }
+        self.update_window_user_state(bus, the_window, global_content);
         let global_structure =
             self.window_structure_global_rect_for_window(bus, the_window, global_content);
         Self::write_region_handle_rect(
@@ -2752,7 +2778,9 @@ impl super::TrapDispatcher {
             // userState begins at the window's requested global content
             // bounds. The default standard state is the main device's gray
             // region inset by three pixels; applications commonly replace it
-            // with their own ideal bounds before zooming.
+            // with their own ideal bounds before zooming. The content top
+            // must also leave the title bar below the menu bar; see the
+            // standard-state rectangle in MTE (1992), Listing 4-12, p. 4-55.
             for (offset, value) in [
                 (0u32, global_content.0),
                 (2, global_content.1),
@@ -2763,8 +2791,12 @@ impl super::TrapDispatcher {
             }
             let (_, _, screen_width, screen_height, _) = self.screen_mode;
             let menu_bar_height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
+            let title_height = global_content
+                .0
+                .saturating_sub(1)
+                .saturating_sub(global_structure.0);
             let standard = (
-                menu_bar_height.saturating_add(3),
+                menu_bar_height.saturating_add(title_height).saturating_add(3),
                 3i16,
                 (screen_height as i16).saturating_sub(3),
                 (screen_width as i16).saturating_sub(3),
@@ -2829,7 +2861,7 @@ impl super::TrapDispatcher {
         })
     }
 
-    fn window_proc_id(&self, window_ptr: u32) -> i16 {
+    pub(super) fn window_proc_id(&self, window_ptr: u32) -> i16 {
         self.window_proc_ids.get(&window_ptr).copied().unwrap_or(0)
     }
 
@@ -2984,9 +3016,17 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn activate_shown_front_window(&mut self, bus: &mut MacMemoryBus, the_window: u32) {
+    fn activate_shown_front_window(&mut self, bus: &mut MacMemoryBus, the_window: u32, previous_front: u32) {
         if the_window == 0 {
             return;
+        }
+        // ShowWindow of the hidden first window changes the visible front.
+        // Preserve the old visible front before revealing it: dialog creation
+        // may already have changed the cached front pointer. MTE (1992),
+        // pp. 2-51 and 4-88: deactivate the old window before activating the new.
+        if previous_front != 0 && previous_front != the_window {
+            bus.write_byte(previous_front + Self::WINDOW_HILITED_OFFSET, 0);
+            self.queue_window_activation_event(bus, previous_front, false);
         }
         self.front_window = the_window;
         self.sync_cached_front_window_render_state(bus);
@@ -3036,6 +3076,16 @@ impl super::TrapDispatcher {
             where_h: 0,
             modifiers: active_flag,
         });
+    }
+
+    pub(super) fn hilite_process_front_window(&mut self, bus: &mut MacMemoryBus, window: u32, active: bool) {
+        if window != 0 {
+            // Same Window Manager operation as HiliteWindow (Volume I, I-286).
+            // Process switching must not directly activate TextEdit or controls.
+            bus.write_byte(window + Self::WINDOW_HILITED_OFFSET, if active { 0xff } else { 0 });
+            self.draw_single_window_chrome_inline(bus, window, active);
+            self.queue_window_activation_event(bus, window, active);
+        }
     }
 
     pub(crate) fn acknowledge_window_activation_event(
@@ -3694,6 +3744,7 @@ impl super::TrapDispatcher {
         self.window_title = wind_title.to_string();
         self.window_bounds = (wind_top, wind_left, wind_bottom, wind_right);
         self.window_proc_id = wind_proc_id;
+        self.window_list.register_new_window(window_ptr);
         self.ensure_window_aux_record(bus, window_ptr, gd_ctab_handle);
         self.go_away_flag = go_away_flag;
 
@@ -4494,6 +4545,7 @@ impl super::TrapDispatcher {
                 if the_window != 0 {
                     let was_visible = self.window_visible(bus, the_window);
                     let was_front = self.frontmost_tracked_window(bus) == the_window;
+                    let previous_front = self.frontmost_visible_window_in_list(bus);
                     // A hidden window may have had its portRect edited directly.
                     // The Window Manager derives its content region from the
                     // current port rectangle when revealing it (IM:I I-284, I-289).
@@ -4509,7 +4561,7 @@ impl super::TrapDispatcher {
                             // Inside Macintosh Volume I, I-285: ShowWindow
                             // of an invisible frontmost window highlights it
                             // and generates an activate event.
-                            self.activate_shown_front_window(bus, the_window);
+                            self.activate_shown_front_window(bus, the_window, previous_front);
                         }
                         if let Some(content_rect) = self.window_content_global_rect(bus, the_window)
                         {
@@ -4864,14 +4916,10 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // MoveWindow ($A91B)
+            // MoveWindow (0xA91B)
+            // Moves the window to global coordinates and optionally selects it.
             // PROCEDURE MoveWindow(theWindow: WindowPtr; hGlobal, vGlobal: INTEGER; front: BOOLEAN);
-            // Stack (auto-pop): SP+0=front(2), SP+2=vGlobal(2), SP+4=hGlobal(2), SP+6=theWindow(4)
-            //
-            // Honor the `front` parameter per IM:I I-287. "If front is
-            // TRUE, the window is made the active window ... equivalent
-            // to calling SelectWindow."
-            // MoveWindow ($A91B): Updates portRect, visRgn, clipRgn, and FindWindow hit-test bounds
+            // Inside Macintosh Volume I, I-287
             (true, 0x11B) => {
                 let sp = cpu.read_reg(Register::A7);
                 // Pascal BOOLEAN in high byte of 2-byte stack slot
@@ -4887,18 +4935,10 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // SizeWindow ($A91D)
+            // SizeWindow (0xA91D)
+            // Resizes the window and optionally invalidates newly exposed content.
             // PROCEDURE SizeWindow(theWindow: WindowPtr; w, h: INTEGER; fUpdate: BOOLEAN);
-            // Stack (auto-pop): SP+0=fUpdate(2), SP+2=h(2), SP+4=w(2), SP+6=theWindow(4)
-            //
-            // Honor fUpdate per IM:I I-287. "If fUpdate is TRUE,
-            // SizeWindow calls InvalRect on the window for any part that
-            // is newly uncovered." Conservative implementation:
-            // invalidate the full new content rect when fUpdate=TRUE.
-            // That's a superset of the strictly newly-uncovered area
-            // but bbox-approx region storage can't represent the precise
-            // diff anyway.
-            // SizeWindow ($A91D): Updates portRect, visRgn, clipRgn, and FindWindow hit-test bounds
+            // Inside Macintosh Volume I, I-287
             (true, 0x11D) => {
                 let sp = cpu.read_reg(Register::A7);
                 // Pascal BOOLEAN in high byte (MPW C convention).
@@ -4924,6 +4964,10 @@ impl super::TrapDispatcher {
                     let content_rect = (content_top, 0, h, w);
                     let global_content =
                         self.window_local_rect_to_global(bus, the_window, content_rect);
+                    if old_content_rect != Some(global_content) {
+                        self.window_list.invalidate_grow_icon(the_window);
+                    }
+                    self.update_window_user_state(bus, the_window, global_content);
                     let global_structure = self.window_structure_global_rect_for_window(
                         bus,
                         the_window,
@@ -6065,13 +6109,10 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // ZoomWindow ($A83A)
-            // Moves a window between user state and standard state using
-            // the WStateData record stored in the window's dataHandle.
+            // ZoomWindow (0xA83A)
+            // Switches between the window's user and standard state rectangles.
             // PROCEDURE ZoomWindow(theWindow: WindowPtr; partCode: INTEGER; front: BOOLEAN);
-            // Stack: SP+0=front(2), SP+2=partCode(2), SP+4=theWindow(4). Pop 8.
             // Inside Macintosh Volume IV, IV-66
-            // ZoomWindow ($A83A): Reads WStateData from dataHandle, updates portRect/pixmap/regions for inZoomIn(7)/inZoomOut(8) per IM:IV IV-66
             (true, 0x03A) => {
                 let sp = cpu.read_reg(Register::A7);
                 let front_flag = bus.read_byte(sp) != 0;
@@ -6084,6 +6125,15 @@ impl super::TrapDispatcher {
                     if data_handle != 0 {
                         let data_ptr = bus.read_long(data_handle);
                         if data_ptr != 0 {
+                            let old_structure = self.window_structure_rect(bus, the_window);
+                            let old_content = self.window_content_rect(bus, the_window);
+                            let windows_behind = self
+                                .window_list
+                                .windows()
+                                .into_iter()
+                                .skip_while(|window| *window != the_window)
+                                .skip(1)
+                                .collect::<Vec<_>>();
                             // WStateData: userState at +0 (8 bytes), stdState at +8 (8 bytes)
                             // inZoomIn=7 → userState; inZoomOut=8 → stdState
                             // Rect field order in memory: top(+0), left(+2), bottom(+4), right(+6)
@@ -6130,6 +6180,9 @@ impl super::TrapDispatcher {
                             // WindowRecord manager regions are in global coords.
                             let global_content =
                                 (v_global, h_global, v_global + new_h, h_global + new_w);
+                            if old_content != Some(global_content) {
+                                self.window_list.invalidate_grow_icon(the_window);
+                            }
                             let global_structure = self.window_structure_global_rect_for_window(
                                 bus,
                                 the_window,
@@ -6145,7 +6198,6 @@ impl super::TrapDispatcher {
                                 bus.read_long(the_window + Self::WINDOW_STRUC_RGN_OFFSET),
                                 Some(global_structure),
                             );
-
                             // visRgn and clipRgn in local coords
                             let local_rect = Some((0i16, 0i16, new_h, new_w));
                             Self::write_region_handle_rect(
@@ -6158,6 +6210,13 @@ impl super::TrapDispatcher {
                                 bus.read_long(the_window + 28),
                                 local_rect,
                             );
+
+                            // Shrinking a zoomed window exposes windows below
+                            // its old structure. Rebuild visibility and ask
+                            // those applications to repaint the uncovered area.
+                            // Inside Macintosh Volume I (1985), I-293, I-297.
+                            self.recalculate_window_vis_regions(bus);
+                            self.invalidate_exposed_windows(bus, &windows_behind, old_structure);
 
                             // Keep FindWindow hit-test bounds in sync
                             if the_window == self.front_window {

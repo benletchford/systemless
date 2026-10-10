@@ -1,0 +1,26 @@
+{
+  "verifier_sha256": "dc3ccb9b825fce7bd6801fd01b76c770758b3896c02eedd6850c4e6bc008fda6",
+  "positive_partial_case": true,
+  "rejected": [
+    "font-identity",
+    "font-size",
+    "style-face",
+    "style-boundary",
+    "style-run-set",
+    "actual-depth",
+    "scene-scale",
+    "active-state",
+    "selection",
+    "smooth-preflight",
+    "rendered-hash",
+    "case-set",
+    "source-digest",
+    "boolean-active-type",
+    "boolean-preflight-type",
+    "boolean-caret-type",
+    "integer-insertion-type",
+    "caret-insertion",
+    "caret-phase"
+  ],
+  "scope": "Provenance/state/geometry validation; does not verify glyph appearance."
+}

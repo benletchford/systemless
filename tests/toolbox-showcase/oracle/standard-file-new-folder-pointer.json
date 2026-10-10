@@ -1,0 +1,243 @@
+{
+  "architecture": "ppc",
+  "boot_delay_ticks": 0,
+  "show_menu_bar": true,
+  "sheepshaver_color_depth": 32,
+  "actions": [
+    {
+      "type": "run",
+      "ticks": 180
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 203,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 203,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "00-file-page.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 266,
+      "h": 400
+    },
+    {
+      "type": "mouse_down",
+      "v": 266,
+      "h": 400
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 266,
+      "h": 400
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "01-save.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 199,
+      "h": 520
+    },
+    {
+      "type": "mouse_down",
+      "v": 199,
+      "h": 520
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 199,
+      "h": 520
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "02-new-folder.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 195,
+      "h": 600
+    },
+    {
+      "type": "mouse_down",
+      "v": 195,
+      "h": 600
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 195,
+      "h": 600
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "key_down",
+      "key": "x"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "x"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "screenshot",
+      "path": "03-click-end-insert.png"
+    },
+    {
+      "type": "mouse_down",
+      "v": 195,
+      "h": 600
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 195,
+      "h": 429
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 195,
+      "h": 429
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "screenshot",
+      "path": "04-drag-select.png"
+    },
+    {
+      "type": "key_down",
+      "key": "a"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "a"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "screenshot",
+      "path": "05-selection-replaced.png"
+    },
+    {
+      "type": "key_down",
+      "key": "escape"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "escape"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "screenshot",
+      "path": "06-save-restored.png"
+    }
+  ]
+}

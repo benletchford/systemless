@@ -1,0 +1,18 @@
+{
+  "source_commit": "2dc224e85967ccf7a1f8c0c0b4e967fcfe43d7c5",
+  "hashes": {
+    "src/bin/gpui_demo.rs": "d779030ada0d35f6a33f8ab65ff8024a04c33ddf6369881fd5f709401ceb7bcd",
+    "src/bin/gpui_demo_coverage.rs": "01e703230ea3f4794d02357fd3541d5fb13ff1addc000634c2ac9dd90be3c67b",
+    "src/bin/gpui_demo_text.rs": "3e8870b2a2ab33cabd04300be212e1f558f656484478dc3f632256d1983b1c8b",
+    "src/bin/gpui_demo_frames.rs": "b293ad66102ebdbc69a697b2bdc8d1ba01349a36a20c6a994b7e280eb14d814b",
+    "src/systems/macintosh/quickdraw/text.rs": "ea9da39c50261b463329d17ec45b3faac49b7fd4a57fef75812d9c6f0fc8d242",
+    "src/systems/macintosh/quickdraw/fonts/outline.rs": "2f57a2783f586f4279984bda73b3e189d1ac399ec96e8bc21927c0124a787e7b",
+    "src/systems/macintosh/quickdraw/fonts/style.rs": "1be20f2155e9dfa4ed2cbc0669f49898dc3a336e50e972d08534170826b60c1c",
+    "src/systems/macintosh/quickdraw/fonts/mod.rs": "0923253b002fe35ada585281d8d4115679c7ad393dabac7288f4941ed248846f",
+    "Cargo.toml": "c14164d33b3c4215b590291023170d7b3a9d3539f4c236518cdc649831ed0855",
+    "Cargo.lock": "d39c8347abf84d2272d4942db42b7ade3fb9ebefacc7395b41673b9dd1060a5f",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "ab6ea5665bb0e3743122b51b7035475275ce88c48c040f3e52b536a581123bbc",
+    "target/ci-test/examples/gpui-menu-demo": "fdae247ff9b7533c284f984fb6543715383d0661cff643a73bb16a7761b33d42"
+  },
+  "scope": "Sampled after the optimized build succeeded; renderer source stayed unchanged during compilation. Documentation and capture-driver/test-only commits do not alter the compiled production renderer."
+}

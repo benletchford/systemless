@@ -14,6 +14,7 @@ pub(super) struct PpcMemoryDispatchContext<'a> {
     pub(super) handles: &'a mut Vec<PpcHandleRecord>,
     pub(super) aliases: &'a mut Vec<PpcAliasRecord>,
     pub(super) vfs_resources: &'a mut Vec<PpcVfsResourceRecord>,
+    pub(super) menu_generations: &'a mut HashMap<u32, u64>,
     pub(super) toolbox_startup: &'a mut PpcToolboxStartupState,
 }
 
@@ -32,6 +33,7 @@ pub(super) fn dispatch_memory_import(
         handles,
         aliases,
         vfs_resources,
+        menu_generations,
         toolbox_startup,
     } = context;
 
@@ -503,6 +505,7 @@ pub(super) fn dispatch_memory_import(
                 handles,
                 aliases,
                 vfs_resources,
+                menu_generations,
                 toolbox_startup,
             );
             if result_code_ptr != 0 {
@@ -526,6 +529,7 @@ pub(super) fn dispatch_memory_import(
                 handles,
                 aliases,
                 vfs_resources,
+                menu_generations,
                 toolbox_startup,
             );
             Some(PpcImportAction::ReturnPreserve)
@@ -830,6 +834,7 @@ fn ppc_dispose_handle(
     handles: &mut Vec<PpcHandleRecord>,
     aliases: &mut Vec<PpcAliasRecord>,
     vfs_resources: &mut [PpcVfsResourceRecord],
+    menu_generations: &mut HashMap<u32, u64>,
     toolbox_startup: &mut PpcToolboxStartupState,
 ) {
     let disposed = process_memory_manager.dispose_process_handle_from_native_import(memory, handle);
@@ -837,6 +842,7 @@ fn ppc_dispose_handle(
     if !disposed {
         return;
     }
+    menu_generations.remove(&handle);
     handles.retain(|record| record.handle != handle);
     toolbox_startup
         .indexed_screen_ctables

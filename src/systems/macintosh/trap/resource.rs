@@ -2300,6 +2300,7 @@ impl super::TrapDispatcher {
                         self.untrack_handle_ptr(ptr);
                         self.forget_resource_handle_index_for_handle(handle);
                         self.with_resource_manager_mut(|resource_manager| {
+                            resource_manager.forget_menu_generation(handle);
                             resource_manager.loaded_handles.remove(&handle);
                             resource_manager.resource_handle_files.remove(&handle);
                         });
@@ -6102,7 +6103,12 @@ impl super::TrapDispatcher {
                         bus.write_long(info_ptr + 12, ProcessSerialNumber::CURRENT.low); // processNumber.lowLongOfPSN
                         bus.write_long(info_ptr + 16, app.file_type);
                         bus.write_long(info_ptr + 20, app.creator);
-                        bus.write_long(info_ptr + 24, 0); // processMode
+                        // Processes (1994), pp. 2-23--2-25: processMode
+                        // reports the running application's launch SIZE flags.
+                        let process_mode = self.application_size.with_ref(|size| {
+                            size.map_or(0, |size| u32::from(size.flags))
+                        });
+                        bus.write_long(info_ptr + 24, process_mode);
                         let app_zone = bus.read_long(crate::memory::globals::addr::APP_L_ZONE);
                         let appl_limit = bus.read_long(crate::memory::globals::addr::APPL_LIMIT);
                         let process_location = if app_zone != 0 { app_zone } else { 0x0010_0000 };
@@ -6566,59 +6572,15 @@ impl super::TrapDispatcher {
                         let vref = bus.read_word(spec_ptr) as i16;
                         let dir_id = bus.read_long(spec_ptr + 2);
 
-                        let result = if filename.is_empty() {
-                            -37i16 // bdNamErr
-                        } else {
-                            let parent_dir_id = self.resolve_directory_id(vref, dir_id);
-                            let Some(parent_path) = self
-                                .directory_path_for_id(parent_dir_id)
-                                .map(str::to_string)
-                            else {
-                                bus.write_word(sp + 10, (-120i16) as u16); // dirNFErr
-                                cpu.write_reg(Register::A7, sp + 10);
-                                return Some(Ok(()));
-                            };
-                            if self.vfs_path_is_read_only(&parent_path) {
-                                bus.write_word(sp + 10, (-44i16) as u16); // wPrErr
-                                cpu.write_reg(Register::A7, sp + 10);
-                                return Some(Ok(()));
-                            }
-                            let child_name = super::TrapDispatcher::normalize_hfs_path(&filename);
-                            if child_name.is_empty() {
-                                -37i16 // bdNamErr
-                            } else {
-                                let child_path = if parent_path.is_empty() {
-                                    child_name
-                                } else {
-                                    format!("{parent_path}/{child_name}")
-                                };
-                                let duplicate = self.vfs_directories.iter().any(|directory| {
-                                    directory.path.eq_ignore_ascii_case(&child_path)
-                                }) || self
-                                    .vfs
-                                    .keys()
-                                    .any(|path| path.eq_ignore_ascii_case(&child_path))
-                                    || self
-                                        .vfs_rsrc
-                                        .keys()
-                                        .any(|path| path.eq_ignore_ascii_case(&child_path));
-                                if duplicate {
-                                    -48i16 // dupFNErr
-                                } else {
-                                    let new_dir_id = self.ensure_vfs_directory(&child_path);
-                                    if created_dir_id_ptr != 0 {
-                                        bus.write_long(created_dir_id_ptr, new_dir_id);
-                                    }
-                                    if let Some(ref dir) = self.output_dir {
-                                        let _ = std::fs::create_dir_all(dir.join(&child_path));
-                                    }
-                                    eprintln!(
-                                        "[TRAP] FSpDirCreate(\"{}\") parentDirID={} -> dirID={}",
-                                        filename, parent_dir_id, new_dir_id
-                                    );
-                                    0
+                        let parent_dir_id = self.resolve_directory_id(vref, dir_id);
+                        let result = match self.create_vfs_child_directory(parent_dir_id, &filename) {
+                            Ok(new_dir_id) => {
+                                if created_dir_id_ptr != 0 {
+                                    bus.write_long(created_dir_id_ptr, new_dir_id);
                                 }
+                                0
                             }
+                            Err(error) => error,
                         };
                         bus.write_word(sp + 10, result as u16);
                         cpu.write_reg(Register::A7, sp + 10);

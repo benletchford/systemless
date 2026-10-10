@@ -3135,7 +3135,7 @@ fn getnewmbar_present_resource_returns_handle_and_setmenubar_installs_it() {
     assert_ne!(mbar_handle, 0, "GetNewMBar should return a non-NIL handle");
     let menu_list = menu_list_from_memory(&bus, mbar_handle)
         .expect("returned handle should contain a DynamicMenuList");
-    assert_eq!(menu_list.mb_res_id, 900);
+    assert_eq!(menu_list.mb_res_id, 0, "MBAR ID is not an MBDF ID");
     assert_eq!(menu_list.regular.len(), 2);
     assert!(menu_list.regular.iter().all(|entry| entry.handle != 0));
     let file_handle = menu_list.regular[0].handle;
@@ -4163,7 +4163,7 @@ fn long_menu_mutations_preserve_trailing_item_and_refresh_guest_edits() {
 
     let snapshot = disp.guest_menu_snapshot(&bus);
     assert_eq!(snapshot.menus[0].items[39].text, "Last");
-    assert_eq!(snapshot.menus[0].items[39].key_equivalent, Some('q'));
+    assert_eq!(snapshot.menus[0].items[39].key_equivalent, Some('Q'));
     assert_eq!(
         menu_key_result(&mut disp, &mut cpu, &mut bus, b'Q'),
         ((menu_id as u32) << 16) | 40
@@ -5344,6 +5344,23 @@ fn initprocmenu_consumes_mbresid_and_preserves_stack_pointer() {
         sp_pre_five,
         "InitProcMenu must pop 2 bytes per call across a 5-call composition"
     );
+
+    // The upper 13 bits identify the MBDF; the low three are its variant.
+    // Macintosh Toolbox Essentials (1992), pp. 3-103--3-105.
+    disp.install_test_resource_in_file(&mut bus, 0, *b"MBDF", 257, &[0x4e, 0x75]);
+    let sp = cpu.read_reg(Register::A7) - 2;
+    bus.write_word(sp, 0x080b); // application MBDF 257, variant 3
+    cpu.write_reg(Register::A7, sp);
+    assert!(disp.dispatch_menu(true, 0x008, &mut cpu, &mut bus).unwrap().is_ok());
+    assert_eq!(disp.current_menu_list(&bus).unwrap().mb_res_id, 0x080b);
+    assert!(disp.guest_menu_snapshot(&bus).custom_bar_definition);
+    assert!(disp.loaded_handles.values().any(|(_, kind, id)| *kind == *b"MBDF" && *id == 257));
+
+    let sp = cpu.read_reg(Register::A7) - 2;
+    bus.write_word(sp, 0x0003); // standard MBDF, variant 3
+    cpu.write_reg(Register::A7, sp);
+    assert!(disp.dispatch_menu(true, 0x008, &mut cpu, &mut bus).unwrap().is_ok());
+    assert!(!disp.guest_menu_snapshot(&bus).custom_bar_definition);
 }
 
 // 0x137 — DrawMenuBar: no stack params, calls draw_menu_bar_to_fb.
@@ -8619,6 +8636,9 @@ fn disposemenu_releases_newmenu_menuhandle_and_record_allocations() {
     let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, menu_id, 0x30B800, "Temp");
     let menu_ptr = bus.read_long(handle);
     insert_menu(&mut disp, &mut cpu, &mut bus, handle);
+    let generation = disp.guest_menu_snapshot(&bus).menus[0].generation;
+    assert_ne!(generation, 0);
+    assert_eq!(disp.guest_menu_snapshot(&bus).menus[0].generation, generation);
 
     assert_eq!(
         get_mhandle_for_id(&mut disp, &mut cpu, &mut bus, menu_id),
@@ -8645,6 +8665,10 @@ fn disposemenu_releases_newmenu_menuhandle_and_record_allocations() {
         "DeleteMenu must leave the menu record allocated"
     );
     dispose_menu_by_handle(&mut disp, &mut cpu, &mut bus, handle);
+    disp.with_resource_manager_mut(|resources| {
+        assert!(!resources.menu_generations.contains_key(&handle));
+        assert_ne!(resources.menu_generation(handle), generation);
+    });
 
     assert_eq!(
         bus.get_alloc_size(handle),
@@ -11458,9 +11482,24 @@ fn guest_menu_snapshot_exposes_only_the_inserted_menu_list() {
     assert_eq!(snapshot.menus[0].title, "Gam…");
     assert_eq!(snapshot.menus[0].items[0].number, 1);
     assert_eq!(snapshot.menus[0].items[0].text, "New Level…");
-    assert_eq!(snapshot.menus[0].items[0].key_equivalent, Some('n'));
+    assert_eq!(snapshot.menus[0].items[0].key_equivalent, Some('N'));
     assert!(snapshot.menus[0].items[0].checked);
     assert_eq!(snapshot.menus[1].title, "Systemless");
+
+    // The live menuProc handle, rather than the original MENU resource,
+    // determines whether the frontend may replace this menu's pixels.
+    // Macintosh Toolbox Essentials (1992), pp. 3-3, 3-87.
+    const CUSTOM_MDEF_HANDLE: u32 = 0x306b00;
+    const CUSTOM_MDEF_PROC: u32 = 0x306b20;
+    bus.write_long(CUSTOM_MDEF_HANDLE, CUSTOM_MDEF_PROC);
+    bus.write_long(inserted_ptr + 6, CUSTOM_MDEF_HANDLE);
+    disp.insert_loaded_resource_handle_for_test(
+        CUSTOM_MDEF_HANDLE,
+        (CUSTOM_MDEF_PROC, *b"MDEF", 256),
+    );
+    let custom_snapshot = disp.guest_menu_snapshot(&bus);
+    assert!(!custom_snapshot.menus[0].standard_definition);
+    assert!(custom_snapshot.requires_guest_menu_rendering());
 }
 
 #[test]
@@ -11509,4 +11548,52 @@ fn native_selection_rejects_disabled_and_hierarchical_parent_items() {
     assert_eq!(disp.queue_native_menu_selection(&bus, 100, 1), None);
     assert_eq!(disp.queue_native_menu_selection(&bus, 100, 2), None);
     assert_eq!(disp.queue_native_menu_selection(&bus, 999, 1), None);
+}
+
+#[test]
+fn draw_menu_dropdown_exposes_partial_row_without_painting_scroll_slot() {
+    let (mut disp, mut cpu, mut bus) = setup_with_port();
+    let row_bytes = 64;
+    let base = bus.alloc(row_bytes * 342);
+    disp.set_screen_mode_for_test(base, row_bytes, 512, 342, 1);
+    clear_1bpp_screen(&mut bus, base, row_bytes, 342);
+    let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 612, 0x302500, "File");
+    append_menu_data(
+        &mut disp,
+        &mut cpu,
+        &mut bus,
+        menu,
+        0x302540,
+        "    ;    ;    ;    ",
+    );
+    let rect = (20, 20, 84, 140);
+    let saved = disp.save_dropdown_pixels(&bus, rect);
+    disp.menu_tracking
+        .set(Some(super::tracked_menu_state_with_content_top(
+            super::MenuTrackingKind::MenuBar,
+            menu,
+            rect,
+            12,
+            saved,
+        )));
+    disp.draw_menu_dropdown(&mut bus, 0, rect);
+    let before = bus.read_bytes(base, row_bytes as usize * 342);
+    disp.menus[0].items[1].text = "MMMM".into();
+    disp.draw_menu_dropdown(&mut bus, 0, rect);
+    let after = bus.read_bytes(base, row_bytes as usize * 342);
+    let mut changed = 0;
+    for y in 0..342usize {
+        for x in 0..512usize {
+            let index = y * row_bytes as usize + x / 8;
+            let mask = 1 << (7 - x % 8);
+            if before[index] & mask != after[index] & mask {
+                changed += 1;
+                assert!(
+                    (21..139).contains(&x) && (36..44).contains(&y),
+                    "partial row escaped its visible strip at ({x},{y})"
+                );
+            }
+        }
+    }
+    assert!(changed > 0, "partially exposed row must draw text");
 }

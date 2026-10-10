@@ -1,0 +1,54 @@
+{
+  "base_commit": "0932244e1ae1d8d973d8b31c0d43efab35fd0be3",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "d8a292167acce61e1408a0e9b0a4e63578a9e959f0a5ae003f513cc37a85ff06",
+    "src/bin/gpui_demo_text.rs": "fcd1a41006dc47eeec23c39be2f2d7389d7ab9aa6aa6f8215da01aec35178032",
+    "src/bin/gpui_demo_menu.rs": "d152b4586e992558419b777a8d4457300a45e87624fe0e0294361062149724b0"
+  },
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "scope": "All three title-bar crops reviewed at historical viewport: titles fit and Pages popover opens under its control. Full scenes not reviewed in this capture revision; no native font fidelity or explicit scale claim. Lossless archive preserves pixels.",
+  "gaps": [
+    "symbols",
+    "explicit scales and states",
+    "guest menu geometry",
+    "native font/input qualification"
+  ],
+  "captures": [
+    {
+      "mode": "mono",
+      "file": "menu-guest-title-mono.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "original_capture_sha256": "0c5714d2648438297993674bb6e84309053a820edb1de4864034d7d4f997a1a5",
+      "sha256": "e0ca644398cee322ac356453b6f430156e45d9a52729e9994563d49cc9f19dc0",
+      "decoded_pixel_sha256": "c049964e38fd8aea76f5fa1bc1c28f1f53424e036a31361a2248653e105beeeb",
+      "command": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit --screen-depth 1 --capture-standard-menu /tmp/output.png"
+    },
+    {
+      "mode": "colour",
+      "file": "menu-guest-title-colour.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "original_capture_sha256": "b0f8da08f74872af7b23e8f6e06ff20f9f80a3e8c1cd8500e55947d8c1b64bb8",
+      "sha256": "7c75eb47d0a5bfe03f0cf541297934b5e3ef66629c0956949395db25a641ca0a",
+      "decoded_pixel_sha256": "6d20a76a463d57d525aa831630e317ae49882ad7a6cb7136c67ee41ae9c95fa6",
+      "command": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit --screen-depth 8 --capture-standard-menu /tmp/output.png"
+    },
+    {
+      "mode": "ppc",
+      "file": "menu-guest-title-ppc.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "original_capture_sha256": "b0f8da08f74872af7b23e8f6e06ff20f9f80a3e8c1cd8500e55947d8c1b64bb8",
+      "sha256": "7c75eb47d0a5bfe03f0cf541297934b5e3ef66629c0956949395db25a641ca0a",
+      "decoded_pixel_sha256": "6d20a76a463d57d525aa831630e317ae49882ad7a6cb7136c67ee41ae9c95fa6",
+      "command": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit --prefer-powerpc --capture-standard-menu /tmp/output.png"
+    }
+  ]
+}

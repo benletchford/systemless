@@ -626,6 +626,7 @@ struct StandardFileSelection {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StandardFilePutAction {
+    NewFolder,
     Save,
     Cancel,
     Desktop,
@@ -652,6 +653,7 @@ const STANDARD_FILE_PUT_SCROLL_RECT: (i16, i16, i16, i16) = (38, 315, 156, 331);
 const STANDARD_FILE_PROMPT_RECT: (i16, i16, i16, i16) = (166, 24, 184, 330);
 const STANDARD_FILE_NAME_RECT: (i16, i16, i16, i16) = (188, 24, 208, 330);
 const STANDARD_FILE_PUT_DESKTOP_RECT: (i16, i16, i16, i16) = (220, 24, 242, 104);
+const STANDARD_FILE_NEW_FOLDER_RECT: (i16, i16, i16, i16) = (220, 110, 242, 160);
 const STANDARD_FILE_CANCEL_RECT: (i16, i16, i16, i16) = (220, 166, 242, 246);
 const STANDARD_FILE_SAVE_RECT: (i16, i16, i16, i16) = (220, 258, 242, 338);
 const STANDARD_FILE_GET_DIALOG_WIDTH: i16 = 356;
@@ -2453,9 +2455,31 @@ impl super::TrapDispatcher {
         selected.saturating_sub(visible_rows.saturating_sub(1))
     }
 
+    pub(crate) fn standard_file_get_layout(
+        &self,
+        tracking: &StandardFileGetTrackingState,
+    ) -> crate::standard_file_ui::StandardFileGetLayout {
+        use crate::standard_file_ui::{StandardFileGetLayout, StandardFilePutLayout};
+        let global = |rect| StandardFilePutLayout::global_rect(tracking.bounds, rect);
+        StandardFileGetLayout {
+            volume: global(STANDARD_FILE_GET_VOLUME_RECT),
+            directory_label: global(STANDARD_FILE_GET_VOLUME_LABEL_RECT),
+            list: global(STANDARD_FILE_GET_LIST_RECT),
+            scroll: global(STANDARD_FILE_GET_SCROLL_RECT),
+            eject: global(STANDARD_FILE_GET_EJECT_RECT),
+            desktop: global(STANDARD_FILE_GET_DESKTOP_RECT),
+            cancel: global(STANDARD_FILE_GET_CANCEL_RECT),
+            open: global(STANDARD_FILE_GET_OPEN_RECT),
+            row_height: STANDARD_FILE_GET_ROW_HEIGHT,
+            first_visible: Self::standard_file_get_first_visible_index(tracking),
+            visible_rows: Self::standard_file_get_visible_rows(),
+        }
+    }
+
     fn begin_standard_file_get_tracking(
         &mut self,
         bus: &mut MacMemoryBus,
+        standard_entry_point: bool,
         modern_reply: bool,
         reply_ptr: u32,
         stack_ptr: u32,
@@ -2467,7 +2491,10 @@ impl super::TrapDispatcher {
         let entries = self.standard_file_get_candidates(bus, num_types, type_list_ptr);
         let bounds = self.standard_file_get_dialog_bounds(requested_origin);
         let saved_pixels = self.save_dialog_pixels(bus, bounds);
+        self.next_standard_file_generation = self.next_standard_file_generation.saturating_add(1);
         let tracking = StandardFileGetTrackingState {
+            generation: self.next_standard_file_generation,
+            standard_entry_point,
             modern_reply,
             reply_ptr,
             stack_ptr,
@@ -2768,6 +2795,12 @@ impl super::TrapDispatcher {
                 sel_end: tracking.sel_end,
                 ..DialogItem::default()
             },
+            DialogItem {
+                item_type: if writable { 4 } else { 0x84 },
+                rect: STANDARD_FILE_NEW_FOLDER_RECT,
+                text: "New".to_string(),
+                ..DialogItem::default()
+            },
         ]
     }
 
@@ -2787,10 +2820,18 @@ impl super::TrapDispatcher {
             &items,
             STANDARD_FILE_SAVE_ITEM,
             &tracking.name,
-            STANDARD_FILE_NAME_ITEM,
+            if tracking.new_folder.is_some() || tracking.confirming_replace { 0 } else { STANDARD_FILE_NAME_ITEM },
             false,
             0,
         );
+        let rect = STANDARD_FILE_NAME_RECT;
+        let focused = tracking.new_folder.is_none() && !tracking.confirming_replace;
+        let selection = (focused && tracking.sel_start != tracking.sel_end)
+            .then_some((tracking.sel_start.max(0) as usize, tracking.sel_end.max(0) as usize));
+        let cursor = (focused && tracking.caret.on && tracking.pointer_anchor.is_none() && tracking.sel_start == tracking.sel_end)
+            .then_some(tracking.sel_start.max(0) as usize);
+        self.draw_edit_text_with_cursor(bus, tracking.bounds.0 + rect.0, tracking.bounds.1 + rect.1,
+            tracking.bounds.0 + rect.2, tracking.bounds.1 + rect.3, &tracking.name, selection, cursor, true);
         let (top, left, _, _) = tracking.bounds;
         let (button_top, button_left, button_bottom, button_right) = STANDARD_FILE_SAVE_RECT;
         self.draw_button_state(
@@ -2813,6 +2854,49 @@ impl super::TrapDispatcher {
             &location_label,
         );
         self.draw_standard_file_put_list(bus, tracking);
+        if tracking.confirming_replace {
+            let layout = crate::standard_file_ui::StandardFileReplacementLayout::new(tracking.bounds);
+            let local = |r: (i16, i16, i16, i16)| (r.0 - layout.bounds.0, r.1 - layout.bounds.1, r.2 - layout.bounds.0, r.3 - layout.bounds.1);
+            let items = vec![
+                DialogItem { item_type: 4, rect: local(layout.replace), text: "Replace".into(), ..DialogItem::default() },
+                DialogItem { item_type: 4, rect: local(layout.cancel), text: "Cancel".into(), ..DialogItem::default() },
+                DialogItem { item_type: 8, rect: local(layout.message), text: format!("Replace existing \"{}\"?", tracking.name), ..DialogItem::default() },
+            ];
+            self.draw_dialog(bus, layout.bounds, 2, "", &items, 2, "", 0, false, 0);
+        }
+        if let Some(folder) = &tracking.new_folder {
+            // Standard File owns this subsidiary dialog's text state. Native
+            // Mac OS 8.1 uses the Roman system font on both CPUs, independently
+            // of the caller's drawing font (Files 1992, pp. 3-6–3-7).
+            let saved_text = (self.tx_font, self.tx_size, self.tx_face);
+            self.tx_font = 0;
+            self.tx_size = 12;
+            self.tx_face = 0;
+            let layout = crate::standard_file_ui::StandardFileNewFolderLayout::new(tracking.bounds);
+            let local = |r: (i16, i16, i16, i16)| (r.0 - layout.bounds.0, r.1 - layout.bounds.1, r.2 - layout.bounds.0, r.3 - layout.bounds.1);
+            let name = decode_mac_roman(folder.edit.text());
+            let prompt = folder.prompt().to_string();
+            if folder.error.is_some() {
+                let items = vec![
+                    DialogItem { item_type: 4, rect: local(layout.create), text: "OK".into(), ..DialogItem::default() },
+                    DialogItem { item_type: 8, rect: local(layout.error_message()), text: prompt, ..DialogItem::default() },
+                ];
+                self.draw_dialog(bus, layout.bounds, 2, "", &items, 1, "", 0, false, 0);
+            } else {
+                let items = vec![
+                    DialogItem { item_type: if name.is_empty() { 0x84 } else { 4 }, rect: local(layout.create), text: "Create".into(), ..DialogItem::default() },
+                    DialogItem { item_type: 4, rect: local(layout.cancel), text: "Cancel".into(), ..DialogItem::default() },
+                    DialogItem { item_type: 8, rect: local(layout.prompt), text: prompt, ..DialogItem::default() },
+                    DialogItem { item_type: 16, rect: local(layout.name), text: name.clone(), sel_start: folder.edit.selection().start as i16, sel_end: folder.edit.selection().end as i16, ..DialogItem::default() },
+                ];
+                self.draw_dialog(bus, layout.bounds, 2, "", &items, 1, "", 4, false, 0);
+                let selection = folder.edit.selection();
+                self.draw_edit_text_scrolled(bus, layout.name.0, layout.name.1, layout.name.2, layout.name.3,
+                    &name, (!selection.is_empty()).then_some((selection.start, selection.end)),
+                    folder.caret_visible().then_some(selection.start), true, folder.scroll_x);
+            }
+            (self.tx_font, self.tx_size, self.tx_face) = saved_text;
+        }
         self.standard_file_drawn = bus.screen_mark();
     }
 
@@ -2846,6 +2930,32 @@ impl super::TrapDispatcher {
             return 0;
         };
         selected.saturating_sub(Self::standard_file_put_visible_rows().saturating_sub(1))
+    }
+
+    pub(crate) fn standard_file_put_layout(
+        &self,
+        tracking: &StandardFilePutTrackingState,
+    ) -> (crate::standard_file_ui::StandardFilePutLayout, String) {
+        use crate::standard_file_ui::StandardFilePutLayout;
+        let global = |rect| StandardFilePutLayout::global_rect(tracking.bounds, rect);
+        let label = self.standard_file_put_directory_location(tracking.current_dir_id).2;
+        (
+            StandardFilePutLayout {
+                directory_label: global(STANDARD_FILE_PUT_VOLUME_LABEL_RECT),
+                list: global(STANDARD_FILE_PUT_LIST_RECT),
+                scroll: global(STANDARD_FILE_PUT_SCROLL_RECT),
+                prompt: global(STANDARD_FILE_PROMPT_RECT),
+                name: global(STANDARD_FILE_NAME_RECT),
+                desktop: global(STANDARD_FILE_PUT_DESKTOP_RECT),
+                new_folder: global(STANDARD_FILE_NEW_FOLDER_RECT),
+                cancel: global(STANDARD_FILE_CANCEL_RECT),
+                save: global(STANDARD_FILE_SAVE_RECT),
+                row_height: STANDARD_FILE_GET_ROW_HEIGHT,
+                first_visible: Self::standard_file_put_first_visible_index(tracking),
+                visible_rows: Self::standard_file_put_visible_rows(),
+            },
+            label,
+        )
     }
 
     fn draw_standard_file_put_list(
@@ -3060,6 +3170,7 @@ impl super::TrapDispatcher {
     fn begin_standard_file_put_tracking(
         &mut self,
         bus: &mut MacMemoryBus,
+        standard_entry_point: bool,
         modern_reply: bool,
         reply_ptr: u32,
         stack_ptr: u32,
@@ -3072,10 +3183,17 @@ impl super::TrapDispatcher {
         Self::standard_file_clamp_name(&mut name);
         let bounds = self.standard_file_put_dialog_bounds();
         let saved_pixels = self.save_dialog_pixels(bus, bounds);
-        let name_len = name.len().min(i16::MAX as usize) as i16;
+        let name_len = encode_mac_roman_lossy(&name).len().min(i16::MAX as usize) as i16;
         let current_dir_id = *self.default_dir_id;
         let entries = self.standard_file_get_candidates_in_directory(current_dir_id, None);
+        self.next_standard_file_generation = self.next_standard_file_generation.saturating_add(1);
         let tracking = StandardFilePutTrackingState {
+            pointer_anchor: None,
+            caret: crate::standard_file_ui::StandardFileCaret::default(),
+            new_folder: None,
+            confirming_replace: false,
+            generation: self.next_standard_file_generation,
+            standard_entry_point,
             modern_reply,
             reply_ptr,
             stack_ptr,
@@ -3100,16 +3218,134 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         mut tracking: StandardFilePutTrackingState,
     ) {
+        let caret_active = tracking.sel_start == tracking.sel_end && tracking.pointer_anchor.is_none()
+            && tracking.new_folder.is_none() && !tracking.confirming_replace;
+        if tracking.caret.idle(self.current_tick(), bus.read_long(addr::CARET_TIME), caret_active) {
+            self.draw_standard_file_put_dialog(bus, &tracking);
+        }
+        if let Some(anchor) = tracking.pointer_anchor {
+            let release = self.event_queue.iter().position(|event| event.what == 2)
+                .and_then(|index| self.event_queue.remove(index));
+            let h = release.as_ref().map_or_else(|| self.window_tracking_mouse_pos(bus).1, |event| event.where_h);
+            let bytes = encode_mac_roman_lossy(&tracking.name);
+            let offset = crate::standard_file_ui::classic_text_offset_at_x(
+                &bytes, i32::from(h - tracking.bounds.1 - STANDARD_FILE_NAME_RECT.1 - 1),
+                |prefix| i32::from(Self::fb_measure_string(&decode_mac_roman(prefix), self.tx_font, self.tx_size)),
+            );
+            let previous = (tracking.sel_start, tracking.sel_end);
+            tracking.sel_start = anchor.min(offset) as i16;
+            tracking.sel_end = anchor.max(offset) as i16;
+            if release.is_some() || !self.window_tracking_button_down(bus) { tracking.pointer_anchor = None; }
+            if previous != (tracking.sel_start, tracking.sel_end) || release.is_some()
+                || !self.standard_file_dialog_intact(bus, tracking.bounds) {
+                self.draw_standard_file_put_dialog(bus, &tracking);
+            }
+            self.standard_file_put_tracking = Some(tracking);
+            return;
+        }
+        if tracking.new_folder.as_mut().is_some_and(|folder| folder.idle(self.current_tick(), bus.read_long(addr::CARET_TIME))) {
+            self.draw_standard_file_put_dialog(bus, &tracking);
+        }
+        if let Some(folder) = tracking.new_folder.as_mut().filter(|folder| folder.is_selecting()) {
+            let layout = crate::standard_file_ui::StandardFileNewFolderLayout::new(tracking.bounds);
+            let release = self.event_queue.iter().position(|event| event.what == 2)
+                .and_then(|index| self.event_queue.remove(index));
+            let point = release.as_ref().map(|event| (event.where_v, event.where_h))
+                .unwrap_or_else(|| self.window_tracking_mouse_pos(bus));
+            let offset = folder.offset_at_x(i32::from(point.1 - layout.name.1 - 1), |bytes| {
+                i32::from(Self::fb_measure_string(&decode_mac_roman(bytes), 0, 12))
+            });
+            let mut changed = folder.track_selection(offset, release.is_none() && self.window_tracking_button_down(bus));
+            if release.is_some() { folder.reset_caret(self.current_tick()); }
+                    changed |= folder.reveal_offset(offset, layout.name.3 - layout.name.1 - 3, |bytes| Self::fb_measure_string(&decode_mac_roman(bytes), 0, 12));
+            if changed || release.is_some() || !self.standard_file_dialog_intact(bus, tracking.bounds) {
+                self.draw_standard_file_put_dialog(bus, &tracking);
+            }
+            self.standard_file_put_tracking = Some(tracking);
+            return;
+        }
         let mut action = None;
         let mut consumed_event = false;
         while let Some(event) = self.event_queue.pop_front() {
             consumed_event = true;
+            tracking.caret.reset(self.current_tick());
+            if let Some(mut folder) = tracking.new_folder.take() {
+                use crate::standard_file_ui::{StandardFileNewFolderAction, StandardFileNewFolderLayout};
+                let layout = StandardFileNewFolderLayout::new(tracking.bounds);
+                if event.what == 1 && folder.error.is_none()
+                    && event.where_v >= layout.name.0 && event.where_v < layout.name.2
+                    && event.where_h >= layout.name.1 && event.where_h < layout.name.3 {
+                    let offset = folder.offset_at_x(i32::from(event.where_h - layout.name.1 - 1), |bytes| {
+                        i32::from(Self::fb_measure_string(&decode_mac_roman(bytes), 0, 12))
+                    });
+                    folder.begin_selection(offset, event.modifiers & 0x0200 != 0);
+                    folder.reset_caret(self.current_tick());
+                    folder.reveal_offset(offset, layout.name.3 - layout.name.1 - 3, |bytes| Self::fb_measure_string(&decode_mac_roman(bytes), 0, 12));
+                    tracking.new_folder = Some(folder);
+                    self.draw_standard_file_put_dialog(bus, &tracking);
+                    self.standard_file_put_tracking = Some(tracking);
+                    return;
+                }
+                let handle = bus.read_long(addr::TE_SCRP_HANDLE);
+                let ptr = if handle == 0 { 0 } else { bus.read_long(handle) };
+                let mut scrap = if ptr == 0 { Vec::new() } else { bus.read_bytes(ptr, usize::from(bus.read_word(addr::TE_SCRP_LENGTH))) };
+                let original_scrap = scrap.clone();
+                let action = folder.event(&layout, event.what, event.message, event.modifiers, (event.where_v, event.where_h), &mut scrap);
+                folder.reset_caret(self.current_tick());
+                    folder.reveal_offset(folder.edit.selection().start, layout.name.3 - layout.name.1 - 3, |bytes| Self::fb_measure_string(&decode_mac_roman(bytes), 0, 12));
+                if scrap != original_scrap { Self::te_set_scrap_bytes(bus, &scrap); }
+                let mut dismiss = action == Some(StandardFileNewFolderAction::Cancel);
+                if action == Some(StandardFileNewFolderAction::Create) {
+                    match self.create_vfs_child_directory(tracking.current_dir_id, &decode_mac_roman(folder.edit.text())) {
+                        Ok(dir_id) => {
+                            tracking.current_dir_id = dir_id;
+                            tracking.entries = self.standard_file_get_candidates_in_directory(dir_id, None);
+                            tracking.selected = None;
+                            dismiss = true;
+                        }
+                        Err(error) => {
+                            folder.error = Some(error);
+                            self.next_standard_file_generation = self.next_standard_file_generation.saturating_add(1);
+                            tracking.generation = self.next_standard_file_generation;
+                        },
+                    }
+                }
+                if dismiss {
+                    tracking.sel_start = 0;
+                    tracking.sel_end = encode_mac_roman_lossy(&tracking.name).len().min(i16::MAX as usize) as i16;
+                    self.next_standard_file_generation = self.next_standard_file_generation.saturating_add(1);
+                    tracking.generation = self.next_standard_file_generation;
+                } else {
+                    tracking.new_folder = Some(folder);
+                }
+                self.draw_standard_file_put_dialog(bus, &tracking);
+                self.standard_file_put_tracking = Some(tracking);
+                return;
+            }
+            if tracking.confirming_replace {
+                let layout = crate::standard_file_ui::StandardFileReplacementLayout::new(tracking.bounds);
+                match layout.action(event.what, event.message, event.modifiers, event.where_v, event.where_h) {
+                    Some(true) => { self.finish_standard_file_put_tracking(cpu, bus, tracking, true); return; }
+                    Some(false) => {
+                        tracking.confirming_replace = false;
+                        tracking.sel_start = 0;
+                        tracking.sel_end = encode_mac_roman_lossy(&tracking.name).len().min(i16::MAX as usize) as i16;
+                        self.next_standard_file_generation = self.next_standard_file_generation.saturating_add(1);
+                        tracking.generation = self.next_standard_file_generation;
+                    },
+                    None => {}
+                }
+                self.draw_standard_file_put_dialog(bus, &tracking);
+                self.standard_file_put_tracking = Some(tracking);
+                return;
+            }
             match event.what {
                 1 => {
                     action = self.standard_file_put_mouse_action(
                         &mut tracking,
                         event.where_v,
                         event.where_h,
+                        event.modifiers & 0x0200 != 0,
                     );
                     break;
                 }
@@ -3126,6 +3362,15 @@ impl super::TrapDispatcher {
         }
 
         match action {
+            Some(StandardFilePutAction::NewFolder) => {
+                if self.standard_file_put_directory_location(tracking.current_dir_id).3 {
+                    tracking.new_folder = Some(Default::default());
+                    self.next_standard_file_generation = self.next_standard_file_generation.saturating_add(1);
+                    tracking.generation = self.next_standard_file_generation;
+                }
+                self.draw_standard_file_put_dialog(bus, &tracking);
+                self.standard_file_put_tracking = Some(tracking);
+            }
             Some(StandardFilePutAction::Save) => {
                 let (_, _, _, writable) =
                     self.standard_file_put_directory_location(tracking.current_dir_id);
@@ -3134,7 +3379,18 @@ impl super::TrapDispatcher {
                     self.standard_file_put_tracking = Some(tracking);
                     return;
                 }
-                self.finish_standard_file_put_tracking(cpu, bus, tracking, true);
+                // Files (1992), p. 3-7: an existing name requires confirmation.
+                let name = decode_mac_roman(&encode_mac_roman_lossy(&tracking.name));
+                if self.find_vfs_file_in_directory(tracking.current_dir_id, &name).is_some()
+                    || self.find_vfs_rsrc_file_in_directory(tracking.current_dir_id, &name).is_some() {
+                    tracking.confirming_replace = true;
+                    self.next_standard_file_generation = self.next_standard_file_generation.saturating_add(1);
+                    tracking.generation = self.next_standard_file_generation;
+                    self.draw_standard_file_put_dialog(bus, &tracking);
+                    self.standard_file_put_tracking = Some(tracking);
+                } else {
+                    self.finish_standard_file_put_tracking(cpu, bus, tracking, true);
+                }
             }
             Some(StandardFilePutAction::Navigate) => {
                 let target = tracking
@@ -3233,11 +3489,14 @@ impl super::TrapDispatcher {
         tracking: &mut StandardFilePutTrackingState,
         v: i16,
         h: i16,
+        extend: bool,
     ) -> Option<StandardFilePutAction> {
         let (top, left, _, _) = tracking.bounds;
         let local_v = v - top;
         let local_h = h - left;
-        if Self::standard_file_point_in_rect(local_v, local_h, STANDARD_FILE_SAVE_RECT) {
+        if Self::standard_file_point_in_rect(local_v, local_h, STANDARD_FILE_NEW_FOLDER_RECT) {
+            Some(StandardFilePutAction::NewFolder)
+        } else if Self::standard_file_point_in_rect(local_v, local_h, STANDARD_FILE_SAVE_RECT) {
             Some(StandardFilePutAction::Save)
         } else if Self::standard_file_point_in_rect(local_v, local_h, STANDARD_FILE_CANCEL_RECT) {
             Some(StandardFilePutAction::Cancel)
@@ -3247,6 +3506,20 @@ impl super::TrapDispatcher {
             STANDARD_FILE_PUT_DESKTOP_RECT,
         ) {
             Some(StandardFilePutAction::Desktop)
+        } else if Self::standard_file_point_in_rect(local_v, local_h, STANDARD_FILE_NAME_RECT) {
+            let bytes = encode_mac_roman_lossy(&tracking.name);
+            let offset = crate::standard_file_ui::classic_text_offset_at_x(
+                &bytes, i32::from(local_h - STANDARD_FILE_NAME_RECT.1 - 1),
+                |prefix| i32::from(Self::fb_measure_string(&decode_mac_roman(prefix), self.tx_font, self.tx_size)),
+            );
+            let anchor = if extend {
+                if offset < tracking.sel_start.max(0) as usize { tracking.sel_end.max(0) as usize }
+                else { tracking.sel_start.max(0) as usize }
+            } else { offset };
+            tracking.pointer_anchor = Some(anchor);
+            tracking.sel_start = anchor.min(offset) as i16;
+            tracking.sel_end = anchor.max(offset) as i16;
+            None
         } else if Self::standard_file_point_in_rect(local_v, local_h, STANDARD_FILE_PUT_SCROLL_RECT)
             && !tracking.entries.is_empty()
         {
@@ -3307,45 +3580,37 @@ impl super::TrapDispatcher {
                 .filter(|entry| entry.is_directory)
                 .map(|_| StandardFilePutAction::Navigate);
         }
+        if command_down && char_code.eq_ignore_ascii_case(&b'n') {
+            return Some(StandardFilePutAction::NewFolder);
+        }
         if command_down && char_code.eq_ignore_ascii_case(&b'd') {
             return Some(StandardFilePutAction::Desktop);
         }
         if command_down && char_code.eq_ignore_ascii_case(&b'a') {
             tracking.sel_start = 0;
-            tracking.sel_end = tracking.name.len().min(i16::MAX as usize) as i16;
+            tracking.sel_end = encode_mac_roman_lossy(&tracking.name).len().min(i16::MAX as usize) as i16;
             return None;
         }
         if char_code == 0x08 || key_code == 0x33 {
             Self::standard_file_backspace(tracking);
             return None;
         }
-        if command_down || !(0x20..=0x7E).contains(&char_code) || matches!(char_code, b'/' | b':') {
+        if command_down || !(char_code >= 0x20 && char_code != 0x7F) || matches!(char_code, b'/' | b':') {
             return None;
         }
 
-        let ch = char_code as char;
+        let ch = decode_mac_roman(&[char_code]).chars().next().unwrap();
         Self::standard_file_replace_selection(tracking, ch);
         None
     }
 
     fn standard_file_backspace(tracking: &mut StandardFilePutTrackingState) {
         let (start, end) = Self::standard_file_selection_range(tracking);
-        if start < end {
-            tracking.name.replace_range(start..end, "");
-            tracking.sel_start = start.min(i16::MAX as usize) as i16;
-            tracking.sel_end = tracking.sel_start;
-            return;
-        }
-        if start == 0 {
-            return;
-        }
-        let prev = tracking.name[..start]
-            .char_indices()
-            .last()
-            .map(|(idx, _)| idx)
-            .unwrap_or(0);
-        tracking.name.replace_range(prev..start, "");
-        tracking.sel_start = prev.min(i16::MAX as usize) as i16;
+        let mut bytes = encode_mac_roman_lossy(&tracking.name);
+        let start = if start == end { start.saturating_sub(1) } else { start };
+        bytes.drain(start..end);
+        tracking.name = decode_mac_roman(&bytes);
+        tracking.sel_start = start as i16;
         tracking.sel_end = tracking.sel_start;
     }
 
@@ -3354,23 +3619,20 @@ impl super::TrapDispatcher {
         replacement: char,
     ) {
         let (start, end) = Self::standard_file_selection_range(tracking);
-        tracking
-            .name
-            .replace_range(start..end, &replacement.to_string());
-        Self::standard_file_clamp_name(&mut tracking.name);
-        let cursor = (start + replacement.len_utf8()).min(tracking.name.len());
-        let cursor = Self::standard_file_clamp_boundary(&tracking.name, cursor);
-        tracking.sel_start = cursor.min(i16::MAX as usize) as i16;
+        let mut bytes = encode_mac_roman_lossy(&tracking.name);
+        let byte = crate::mac_roman::encode_mac_roman_char(replacement).unwrap_or(b'?');
+        bytes.splice(start..end, [byte]);
+        bytes.truncate(63);
+        tracking.name = decode_mac_roman(&bytes);
+        tracking.sel_start = (start + 1).min(bytes.len()) as i16;
         tracking.sel_end = tracking.sel_start;
     }
 
     fn standard_file_selection_range(tracking: &StandardFilePutTrackingState) -> (usize, usize) {
-        let len = tracking.name.len();
+        let len = encode_mac_roman_lossy(&tracking.name).len();
         let a = (tracking.sel_start.max(0) as usize).min(len);
         let b = (tracking.sel_end.max(0) as usize).min(len);
-        let start = Self::standard_file_clamp_boundary(&tracking.name, a.min(b));
-        let end = Self::standard_file_clamp_boundary(&tracking.name, a.max(b));
-        (start, end)
+        (a.min(b), a.max(b))
     }
 
     fn standard_file_clamp_name(name: &mut String) {
@@ -3379,14 +3641,6 @@ impl super::TrapDispatcher {
                 break;
             }
         }
-    }
-
-    fn standard_file_clamp_boundary(text: &str, mut idx: usize) -> usize {
-        idx = idx.min(text.len());
-        while idx > 0 && !text.is_char_boundary(idx) {
-            idx -= 1;
-        }
-        idx
     }
 
     fn standard_file_point_in_rect(v: i16, h: i16, rect: (i16, i16, i16, i16)) -> bool {
@@ -3993,6 +4247,295 @@ impl super::TrapDispatcher {
         )
     }
 
+    fn cancel_list_scrollbar_tracking(&mut self, bus: &mut MacMemoryBus, list_handle: u32) {
+        let tracking = self.list_states.with_mut(|manager| {
+            if manager
+                .scroll_tracking
+                .as_ref()
+                .is_some_and(|tracking| tracking.list == list_handle && tracking.classic)
+            {
+                manager.scroll_tracking.take()
+            } else {
+                None
+            }
+        });
+        if let Some(outline) = tracking.and_then(|tracking| tracking.outline) {
+            let (base, row_bytes, width, height, depth) = self.get_screen_params();
+            if outline.surface
+                == (
+                    base,
+                    row_bytes,
+                    width as u32,
+                    height as u32,
+                    u32::from(depth),
+                )
+            {
+                if let crate::list_manager::ListScrollbarPixels::IndexedStrips(pixels) = outline.pixels
+                {
+                    self.restore_window_drag_outline_pixels(bus, &pixels);
+                }
+            }
+        }
+    }
+
+    // LClick retains standard scrollbar arrow and page tracking through release.
+    // More Macintosh Toolbox (1993), pp. 4-84--4-85.
+    fn track_list_scrollbar<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        list_handle: u32,
+        point: (i16, i16),
+        sp: u32,
+    ) -> bool {
+        use crate::systems::macintosh::list_manager::ListScrollbarTracking;
+        use crate::systems::macintosh::window_manager::{
+            snapshot_local_rect_to_global, snapshot_port_bounds_origin,
+        };
+        let Some(state) = self.list_states.get_record(list_handle) else {
+            return false;
+        };
+        if state.definition_id != 0
+            || Self::proc_entry_looks_callable(bus, Self::list_def_proc_addr(bus, list_handle))
+        {
+            let retained = self.list_states.with_ref(|manager| {
+                manager.scroll_tracking.as_ref().is_some_and(|tracking| {
+                    tracking.list == list_handle && tracking.classic && tracking.frame == (sp, 0)
+                })
+            });
+            if retained {
+                self.cancel_list_scrollbar_tracking(bus, list_handle);
+                bus.write_word(sp + 12, 0);
+                cpu.write_reg(Register::A7, sp + 12);
+            }
+            return retained;
+        }
+        let existing = self
+            .list_states
+            .with_mut(|manager| manager.scroll_tracking.take());
+        let initial = existing.is_none();
+        let list_ptr = Self::list_record_ptr(bus, list_handle);
+        let tick = self.current_tick();
+        let origin = snapshot_port_bounds_origin(&mut |address| bus.read_byte(address), state.port);
+        let mut tracking = if let Some(tracking) = existing {
+            if !tracking.classic || tracking.frame != (sp, 0) || tracking.list != list_handle {
+                self.list_states
+                    .with_mut(|manager| manager.scroll_tracking = Some(tracking));
+                return false;
+            }
+            tracking
+        } else {
+            if !state.active || list_ptr == 0 {
+                return false;
+            }
+            let mut found = None;
+            for (offset, vertical) in [
+                (Self::LIST_VSCROLL_OFFSET, true),
+                (Self::LIST_HSCROLL_OFFSET, false),
+            ] {
+                let handle = bus.read_long(list_ptr + offset);
+                let pointer = if handle == 0 {
+                    0
+                } else {
+                    bus.read_long(handle)
+                };
+                let generation = self.control_manager.with_ref(|manager| {
+                    manager
+                        .iter()
+                        .find(|control| {
+                            control.handle == handle
+                                && control.pointer == pointer
+                                && control.active
+                                && control.proc_id == 16
+                        })
+                        .map(|control| control.generation)
+                });
+                let Some(control_generation) = generation else {
+                    continue;
+                };
+                if bus.read_byte(pointer + 16) == 0 || bus.read_byte(pointer + 17) == 255 {
+                    continue;
+                }
+                let bounds = (
+                    bus.read_word(pointer + 8) as i16,
+                    bus.read_word(pointer + 10) as i16,
+                    bus.read_word(pointer + 12) as i16,
+                    bus.read_word(pointer + 14) as i16,
+                );
+                let Some(part) = ListScrollbarTracking::part(
+                    bounds,
+                    point,
+                    vertical,
+                    state.scrollbar_limits(vertical),
+                ) else {
+                    continue;
+                };
+                found = Some(ListScrollbarTracking {
+                    list: list_handle,
+                    generation: state.generation,
+                    control: handle,
+                    pointer,
+                    control_generation,
+                    vertical,
+                    classic: true,
+                    frame: (sp, 0),
+                    bounds: snapshot_local_rect_to_global(bounds, origin),
+                    part,
+                    start_mouse: (
+                        point.0.wrapping_sub(origin.0),
+                        point.1.wrapping_sub(origin.1),
+                    ),
+                    start_limits: state.scrollbar_limits(vertical),
+                    outline: None,
+                    last_tick: tick.wrapping_sub(
+                        crate::systems::macintosh::control_manager::SCROLLBAR_ACTION_REPEAT_TICKS,
+                    ),
+                });
+                break;
+            }
+            let Some(tracking) = found else {
+                return false;
+            };
+            tracking
+        };
+        let valid = state.generation == tracking.generation
+            && state.active
+            && bus.read_long(tracking.control) == tracking.pointer
+            && self.control_manager.with_ref(|manager| {
+                manager.iter().any(|control| {
+                    control.handle == tracking.control
+                        && control.pointer == tracking.pointer
+                        && control.generation == tracking.control_generation
+                        && control.active
+                        && control.proc_id == 16
+                })
+            })
+            && snapshot_local_rect_to_global(
+                (
+                    bus.read_word(tracking.pointer + 8) as i16,
+                    bus.read_word(tracking.pointer + 10) as i16,
+                    bus.read_word(tracking.pointer + 12) as i16,
+                    bus.read_word(tracking.pointer + 14) as i16,
+                ),
+                origin,
+            ) == tracking.bounds
+            && bus.read_byte(tracking.pointer + 16) != 0
+            && bus.read_byte(tracking.pointer + 17) != 255;
+        let down =
+            valid && (self.input_state.mouse_button_pressed() || bus.read_byte(addr::MB_STATE) == 0);
+        let mouse = if initial {
+            (
+                point.0.wrapping_sub(origin.0),
+                point.1.wrapping_sub(origin.1),
+            )
+        } else {
+            self.input_state.mouse_position()
+        };
+        let delta = if valid && !down && !initial && tracking.part == 129 {
+            tracking.release_delta(mouse, &state)
+        } else if valid && (initial || down) {
+            tracking.step(mouse, tick, &state).map(i32::from)
+        } else {
+            None
+        };
+        let next_outline = if valid && down {
+            tracking.outline_rect(mouse, &state)
+        } else {
+            None
+        };
+        let (base, row_bytes, width, height, depth) = self.get_screen_params();
+        // The classic save/restore helpers support indexed surfaces only.
+        let next_outline = next_outline.filter(|_| matches!(depth, 1 | 2 | 4 | 8));
+        let surface = (
+            base,
+            row_bytes,
+            width as u32,
+            height as u32,
+            u32::from(depth),
+        );
+        // Restore before control redraw; retain stationary feedback without
+        // repeatedly capturing its own pixels. MTE, pp. 5-89--5-90.
+        if tracking
+            .outline
+            .as_ref()
+            .is_some_and(|outline| Some(outline.rect) != next_outline || outline.surface != surface)
+        {
+            if let Some(outline) = tracking.outline.take() {
+                if outline.surface == surface {
+                    if let crate::list_manager::ListScrollbarPixels::IndexedStrips(pixels) =
+                        outline.pixels
+                    {
+                        self.restore_window_drag_outline_pixels(bus, &pixels);
+                    }
+                }
+            }
+        }
+        let mut changed = false;
+        if let Some(delta) = delta {
+            self.list_states.with_record_mut(list_handle, |state| {
+                let before = state.visible;
+                state.set_visible_origin(
+                    (i32::from(state.visible.0) + if tracking.vertical { delta } else { 0 })
+                        .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+                    (i32::from(state.visible.1) + if tracking.vertical { 0 } else { delta })
+                        .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+                );
+                changed = state.visible != before;
+                Self::sync_list_state_to_guest(bus, list_handle, state);
+            });
+        }
+        if valid {
+            let highlighted = down
+                && self
+                    .list_states
+                    .with_record_ref(list_handle, |state| tracking.hit(mouse, state))
+                    .unwrap_or(false);
+            let hilite = if highlighted { tracking.part } else { 0 };
+            let needs_draw = changed || bus.read_byte(tracking.pointer + 17) != hilite;
+            bus.write_byte(tracking.pointer + 17, hilite);
+            if needs_draw {
+                if let Some(outline) = tracking.outline.take() {
+                    if outline.surface == surface {
+                        if let crate::list_manager::ListScrollbarPixels::IndexedStrips(pixels) =
+                            outline.pixels
+                        {
+                            self.restore_window_drag_outline_pixels(bus, &pixels);
+                        }
+                    }
+                }
+                self.draw_list_scrollbars(cpu, bus, list_handle);
+            }
+        }
+        if changed {
+            if let Some(state) = self
+                .list_states
+                .get_record(list_handle)
+                .filter(|state| state.draw_enabled)
+            {
+                self.draw_list_fallback(cpu, bus, &state, None);
+            }
+        }
+        if tracking.outline.is_none() {
+            if let Some(rect) = next_outline {
+                let pixels = self.save_window_drag_outline_pixels(bus, rect);
+                self.draw_window_drag_outline(bus, rect);
+                tracking.outline = Some(crate::list_manager::ListScrollbarOutline {
+                    rect,
+                    surface,
+                    pixels: crate::list_manager::ListScrollbarPixels::IndexedStrips(pixels),
+                });
+            }
+        }
+        bus.write_word(sp + 12, 0);
+        if down {
+            self.list_states
+                .with_mut(|manager| manager.scroll_tracking = Some(tracking));
+        } else {
+            cpu.write_reg(Register::A7, sp + 12);
+        }
+        true
+    }
+
     fn list_scrollbar_limits(
         state: &super::dispatch::ListState,
         vertical: bool,
@@ -4237,7 +4780,9 @@ impl super::TrapDispatcher {
             .copied()
             .take_while(|&b| b != 0)
             .map(|b| {
-                if b.is_ascii_graphic() || b == b' ' {
+                // draw_char consumes guest character codes, not Unicode scalars.
+                // Keep high Mac Roman bytes intact for the guest font resolver.
+                if b >= 0x80 || b.is_ascii_graphic() || b == b' ' {
                     b as char
                 } else {
                     ' '
@@ -4369,7 +4914,9 @@ impl super::TrapDispatcher {
         let mut cells = Vec::new();
         for row in state.visible.0..state.visible.2 {
             for col in state.visible.1..state.visible.3 {
-                cells.push((row, col));
+                if Self::list_cell_is_valid(state, row, col) {
+                    cells.push((row, col));
+                }
             }
         }
         cells
@@ -4768,6 +5315,26 @@ impl super::TrapDispatcher {
                 }
                 self.draw_char(cpu, bus, ch);
             }
+        }
+
+        if state.definition_id == 0 {
+            let mut drawings = state.standard_cell_drawings.borrow_mut();
+            drawings.retain(|&(row, column), _| row >= state.visible.0 && row < state.visible.2
+                && column >= state.visible.1 && column < state.visible.3);
+            if let Some(pixels) = crate::text_edit::TextEditDrawing::capture(
+                state.port, rect, |address| Some(bus.read_byte(address)),
+            ) {
+                let size = self.tx_size.max(9);
+                let metrics = get_font_metrics(self.tx_font, size);
+                drawings.insert((row, col), crate::list_manager::StandardListCellDrawing {
+                    generation: state.generation, font: self.tx_font, size, left: rect.1.saturating_add(3),
+                    baseline: rect.0 + (rect.2 - rect.0 - metrics.ascent - metrics.descent).max(0) / 2 + metrics.ascent,
+                    clip: rect, stop_before: Some(rect.3.saturating_sub(3)),
+                    char_extra: crate::text_edit::TextEditCharExtraSnapshot::ClassicFixed(self.char_extra),
+                    space_extra: bus.read_long(state.port.wrapping_add(76)) as i32,
+                    bytes: text.chars().map(|ch| ch as u8).collect(), source_bytes: data.to_vec(), selected, pixels,
+                });
+            } else { drawings.remove(&(row, col)); }
         }
 
         bus.write_long(state.port.wrapping_add(28), saved_clip_handle);
@@ -5649,6 +6216,7 @@ impl super::TrapDispatcher {
                 let event_ptr = bus.read_long(sp);
                 let event_mask = bus.read_word(sp + 4);
 
+                self.service_process_activation(bus, false);
                 self.service_invalid_menu_bar(bus);
 
                 // tick_count is maintained by the runner via advance_guest_tick()
@@ -5691,6 +6259,7 @@ impl super::TrapDispatcher {
                 let event_ptr = bus.read_long(sp + 8);
                 let event_mask = bus.read_word(sp + 12);
 
+                self.service_process_activation(bus, true);
                 self.service_invalid_menu_bar(bus);
 
                 // tick_count is maintained by the runner via advance_guest_tick()
@@ -5812,6 +6381,7 @@ impl super::TrapDispatcher {
                 let event_ptr = bus.read_long(sp);
                 let event_mask = bus.read_word(sp + 4);
 
+                self.service_process_activation(bus, true);
                 self.service_invalid_menu_bar(bus);
 
                 // tick_count is maintained by the runner via advance_guest_tick()
@@ -11690,6 +12260,8 @@ impl super::TrapDispatcher {
 
                         let state = super::dispatch::ListState {
                             handle: list_handle,
+                            generation: crate::list_manager::new_list_generation(),
+                            definition_id: proc_id,
                             cells_handle,
                             view_rect,
                             data_bounds,
@@ -11702,6 +12274,7 @@ impl super::TrapDispatcher {
                             selected: std::collections::BTreeSet::new(),
                             last_click: Self::list_no_click_cell(),
                             last_click_tick: 0,
+                            standard_cell_drawings: Default::default(),
                         };
                         let (v_scroll, v_scroll_ptr) = if scroll_v {
                             self.create_list_scrollbar(bus, &state, true)
@@ -12241,6 +12814,9 @@ impl super::TrapDispatcher {
                         let modifiers = bus.read_word(sp + 6);
                         let point = Self::read_stack_point(bus, sp + 8);
                         let result_addr = sp + 12;
+                        if self.track_list_scrollbar(cpu, bus, list_handle, point, sp) {
+                            return Some(Ok(()));
+                        }
                         let list_ptr = Self::list_record_ptr(bus, list_handle);
                         let mut double_click = false;
                         let mut draw_state = None;
@@ -12514,6 +13090,7 @@ impl super::TrapDispatcher {
                         } else {
                             (0, 0)
                         };
+                        self.cancel_list_scrollbar_tracking(bus, list_handle);
                         self.list_states.remove_record(list_handle);
                         self.dispose_control_handle(bus, v_scroll);
                         self.dispose_control_handle(bus, h_scroll);
@@ -12697,6 +13274,7 @@ impl super::TrapDispatcher {
                         } else {
                             (0, 0)
                         };
+                        self.cancel_list_scrollbar_tracking(bus, list_handle);
                         self.list_states.remove_record(list_handle);
                         self.dispose_control_handle(bus, v_scroll);
                         self.dispose_control_handle(bus, h_scroll);
@@ -12859,6 +13437,8 @@ impl super::TrapDispatcher {
 
                         let state = super::dispatch::ListState {
                             handle: list_handle,
+                            generation: crate::list_manager::new_list_generation(),
+                            definition_id: proc_id,
                             cells_handle,
                             view_rect,
                             data_bounds,
@@ -12871,6 +13451,7 @@ impl super::TrapDispatcher {
                             selected: std::collections::BTreeSet::new(),
                             last_click: Self::list_no_click_cell(),
                             last_click_tick: 0,
+                            standard_cell_drawings: Default::default(),
                         };
 
                         let (v_scroll, v_scroll_ptr) = if scroll_v {
@@ -13259,6 +13840,7 @@ impl super::TrapDispatcher {
                     if self.yield_for_ui {
                         self.begin_standard_file_put_tracking(
                             bus,
+                            selector == 0x0005,
                             modern_reply,
                             reply_ptr,
                             sp,
@@ -13323,6 +13905,7 @@ impl super::TrapDispatcher {
                         });
                         self.begin_standard_file_get_tracking(
                             bus,
+                            selector == 0x0006,
                             modern_reply,
                             reply_ptr,
                             sp,

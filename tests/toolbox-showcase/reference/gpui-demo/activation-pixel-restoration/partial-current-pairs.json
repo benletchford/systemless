@@ -1,0 +1,38 @@
+{
+  "pairs": [
+    {
+      "mode": "ppc8",
+      "scale": 0.75
+    },
+    {
+      "mode": "ppc8",
+      "scale": 1
+    },
+    {
+      "mode": "ppc8",
+      "scale": 1.5
+    },
+    {
+      "mode": "ppc8",
+      "scale": 2
+    },
+    {
+      "mode": "ppc16",
+      "scale": 0.75
+    },
+    {
+      "mode": "ppc16",
+      "scale": 1
+    },
+    {
+      "mode": "ppc16",
+      "scale": 1.5
+    },
+    {
+      "mode": "ppc16",
+      "scale": 2
+    }
+  ],
+  "partial": true,
+  "scope": "Exact RGBA equality of guest and shared-compositor selected/resumed field crops. Does not establish original font appearance, host activation or performance."
+}

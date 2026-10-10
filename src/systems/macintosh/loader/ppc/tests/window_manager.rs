@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn select_window_delivers_activation_pair_and_ignores_reselection() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SelectWindow")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1400;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let document = create_test_cwindow(&mut loaded, scratch, (40, 50, 240, 350), 0, true, u32::MAX);
+    let dialog = create_test_cwindow(&mut loaded, scratch, (90, 120, 260, 430), 4, true, u32::MAX);
+    loaded.event_queue.clear();
+    loaded.cpu.gpr[3] = document;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SelectWindow);
+    let activation: Vec<_> = loaded.event_queue.iter()
+        .filter(|event| event.what == 8)
+        .map(|event| (event.message, event.modifiers & 1))
+        .collect();
+    assert_eq!(activation, vec![(dialog, 0), (document, 1)]);
+    assert!(loaded.event_queue.iter().any(|event| event.what == 6 && event.message == document),
+        "newly exposed document needs an update event");
+    loaded.event_queue.clear();
+    loaded.cpu.gpr[3] = document;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SelectWindow);
+    assert!(loaded.event_queue.iter().all(|event| event.what != 8));
+}
+
+#[test]
 fn select_window_preserves_classic_visible_region() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SelectWindow")).unwrap();
     let scratch = PPC_DATA_BASE + 0x1400;
@@ -47,6 +70,72 @@ pub(crate) fn create_test_cwindow(
     let window = loaded.cpu.gpr[3];
     assert_ne!(window, 0, "test NewCWindow must succeed");
     window
+}
+
+#[test]
+fn standard_window_title_descender_stays_inside_wdef_clip() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewCWindow")).unwrap();
+    loaded.set_ui_theme(UiThemeId::SystemlessDefault);
+    let scratch = PPC_DATA_BASE + 0x1400;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let bounds = (250, 330, 495, 575);
+    let window = create_test_cwindow(&mut loaded, scratch, bounds, 8, true, u32::MAX);
+    write_ppc_pstring(&mut loaded.memory, scratch + 16, b"p");
+    loaded.cpu.gpr[3] = window;
+    loaded.cpu.gpr[4] = scratch + 16;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowTitle),
+    );
+    loaded
+        .memory
+        .write_u8(window + PPC_CWINDOW_HILITED_OFFSET, 0)
+        .unwrap();
+    ppc_draw_standard_window_frame(&mut loaded.memory, &loaded.gworlds, window, 800, 600, true);
+    let front =
+        ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+            .unwrap();
+    let metrics = get_font_metrics(0, 12);
+    let width = ppc_text_bytes_advance_for_font(b"p", 0, 12);
+    let chrome = crate::window_manager::standard_window_chrome(
+        bounds,
+        20,
+        width,
+        metrics.ascent,
+        metrics.descent,
+        true,
+        false,
+        true,
+        true,
+        true,
+    );
+    let palette = ppc_ui_theme(&loaded.gworlds).provider().palette();
+    let background = ppc_physical_screen_color_pixel(
+        front,
+        ppc_theme_rgb(palette.frame_light),
+        &loaded.screen_clut,
+    )
+    .unwrap();
+    for x in chrome.title_h..chrome.title_h + width {
+        assert_eq!(
+            ppc_quickdraw_read_pixel(
+                &mut loaded.memory,
+                front,
+                (i32::from(x), i32::from(chrome.title_clip.2))
+            ),
+            Some(background),
+            "title ink escaped below the shared WDEF clip at x={x}"
+        );
+    }
+    assert!(
+        (chrome.title_clip.0..chrome.title_clip.2).any(|y| {
+            (chrome.title_h..chrome.title_h + width).any(|x| {
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, (i32::from(x), i32::from(y)))
+                    != Some(background)
+            })
+        }),
+        "clipping must leave the title visible"
+    );
 }
 
 #[test]
@@ -382,7 +471,7 @@ fn hle_import_runner_creates_window_title_and_zoom_state() {
     loaded.cpu.gpr[4] = scratch;
     loaded.cpu.gpr[5] = scratch + 8;
     loaded.cpu.gpr[6] = 1;
-    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[7] = 8;
     loaded.cpu.gpr[8] = u32::MAX;
     loaded.cpu.gpr[9] = 1;
     loaded.cpu.gpr[10] = 0x4455_6677;
@@ -413,10 +502,10 @@ fn hle_import_runner_creates_window_title_and_zoom_state() {
     assert_eq!(
         ppc_read_rect(&mut loaded.memory, state + 8),
         Some((
-            20,
-            0,
-            ppc_main_screen_height() as i16,
-            ppc_main_screen_width() as i16,
+            41,
+            3,
+            ppc_main_screen_height() as i16 - 3,
+            ppc_main_screen_width() as i16 - 3,
         ))
     );
 
@@ -427,12 +516,67 @@ fn hle_import_runner_creates_window_title_and_zoom_state() {
     assert_eq!(
         ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
         Some((
-            20,
-            0,
-            ppc_main_screen_height() as i16,
-            ppc_main_screen_width() as i16,
+            41,
+            3,
+            ppc_main_screen_height() as i16 - 3,
+            ppc_main_screen_width() as i16 - 3,
         ))
     );
+
+    // An application may replace stdState before ZoomWindow. FindWindow
+    // must report the matching zoom direction, and zooming back must retain
+    // the original userState. MTE (1992), pp. 4-53--4-55.
+    zoom_cpu.gpr[4] = 7;
+    ppc_zoom_window(&zoom_cpu, &mut loaded.memory, &mut loaded.gworlds).unwrap();
+    assert_eq!(
+        ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
+        Some((40, 50, 240, 350))
+    );
+    let custom_standard = (70, 80, 370, 580);
+    ppc_write_rect(
+        &mut loaded.memory,
+        state + 8,
+        custom_standard.0,
+        custom_standard.1,
+        custom_standard.2,
+        custom_standard.3,
+    )
+    .unwrap();
+    assert_eq!(
+        ppc_find_window_at_point(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &loaded.window_list,
+            31,
+            343,
+            20,
+        ),
+        (8, window),
+    );
+    zoom_cpu.gpr[4] = 8;
+    ppc_zoom_window(&zoom_cpu, &mut loaded.memory, &mut loaded.gworlds).unwrap();
+    assert_eq!(
+        ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
+        Some(custom_standard),
+    );
+    assert_eq!(
+        ppc_find_window_at_point(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &loaded.window_list,
+            61,
+            573,
+            20,
+        ),
+        (7, window),
+    );
+    zoom_cpu.gpr[4] = 7;
+    ppc_zoom_window(&zoom_cpu, &mut loaded.memory, &mut loaded.gworlds).unwrap();
+    assert_eq!(
+        ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
+        Some((40, 50, 240, 350)),
+    );
+    assert_eq!(ppc_read_rect(&mut loaded.memory, state + 8), Some(custom_standard));
 }
 
 #[test]
@@ -2289,7 +2433,7 @@ fn ppc_zoom_window_recalculates_visibility_and_queues_redraw() {
 
     assert_eq!(
         ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
-        Some((20, 0, ppc_main_screen_height() as i16, ppc_main_screen_width() as i16)),
+        Some((41, 3, ppc_main_screen_height() as i16 - 3, ppc_main_screen_width() as i16 - 3)),
     );
     assert_ne!(
         ppc_read_rgn_bbox(&mut loaded.memory, vis_rgn),
@@ -3670,7 +3814,7 @@ fn show_window_does_not_read_dialog_edit_state_as_a_color_table() {
         )
         .unwrap();
     let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
-    ppc_quickdraw_write_pixel(&mut loaded.memory, front, (50, 50), PPC_RGB_WHITE);
+    ppc_quickdraw_write_pixel(&mut loaded.memory, front, (50, 50), PPC_RGB_BLACK);
     loaded.cpu.gpr[3] = dialog;
 
     let probe = loaded.run_with_hle_imports(64);
@@ -4050,6 +4194,18 @@ fn window_creation_and_disposal_commands_dispatch_with_canonical_evaluation() {
             assert_eq!(loaded.cpu.gpr[3] as i32, -50);
         }
     }
+}
+
+#[test]
+fn dialog_structure_encloses_the_painted_eight_pixel_frame() {
+    assert_eq!(
+        ppc_window_structure_bounds(1, (130, 150, 260, 450)),
+        (122, 142, 268, 458)
+    );
+    assert_eq!(
+        ppc_window_structure_bounds(2, (130, 150, 260, 450)),
+        (129, 149, 261, 451)
+    );
 }
 
 #[test]
@@ -4550,6 +4706,44 @@ fn import_bindings_classify_window_sizing_positioning_and_zooming_imports() {
 }
 
 #[test]
+fn size_window_away_and_back_does_not_restore_old_grow_icon() {
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"SizeWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+    let window = create_test_cwindow(
+        &mut loaded,
+        bounds_ptr,
+        (20, 20, 120, 220),
+        0,
+        true,
+        u32::MAX,
+    );
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::SizeWindow;
+    let original_bounds =
+        ppc_window_global_content_bounds(&mut loaded.memory, &loaded.gworlds, window).unwrap();
+    loaded.window_list.record_grow_icon(window, original_bounds);
+
+    for (width, height) in [(300, 200), (200, 100)] {
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = window;
+        loaded.cpu.gpr[4] = width;
+        loaded.cpu.gpr[5] = height;
+        loaded.cpu.gpr[6] = 1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+    }
+
+    assert_eq!(
+        ppc_window_global_content_bounds(&mut loaded.memory, &loaded.gworlds, window),
+        Some(original_bounds)
+    );
+    assert!(!loaded.window_list.grow_icon_drawn_at(window, original_bounds));
+}
+
+#[test]
 fn window_sizing_positioning_and_zooming_commands_dispatch_with_canonical_evaluation() {
     for lib in [
         b"InterfaceLib".as_slice(),
@@ -4634,7 +4828,7 @@ fn window_sizing_positioning_and_zooming_commands_dispatch_with_canonical_evalua
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(
                 ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
-                Some((20, 0, ppc_main_screen_height() as i16, ppc_main_screen_width() as i16)),
+                Some((41, 3, ppc_main_screen_height() as i16 - 3, ppc_main_screen_width() as i16 - 3)),
             );
 
             // ZoomWindow with window = 0 returns gracefully

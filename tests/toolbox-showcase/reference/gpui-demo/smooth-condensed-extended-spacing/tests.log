@@ -1,0 +1,150 @@
+warning: method `instrument` is never used
+   --> src/systems/macintosh/sound.rs:609:19
+    |
+403 | impl SndChannel {
+    | --------------- method in this implementation
+...
+609 |     pub(crate) fn instrument(&self) -> Option<&SampledInstrument> {
+    |                   ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `dispatch_toolbox` is never used
+    --> src/systems/macintosh/trap/toolbox.rs:6187:19
+     |
+1169 | impl super::TrapDispatcher {
+     | -------------------------- method in this implementation
+...
+6187 |     pub(crate) fn dispatch_toolbox<C: CpuOps>(
+     |                   ^^^^^^^^^^^^^^^^
+
+warning: `systemless` (lib) generated 2 warnings
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+warning: field `debug_socket` is never read
+  --> src/bin/gpui_demo.rs:12:9
+   |
+ 3 | pub(crate) struct LaunchOptions {
+   |                   ------------- field in this struct
+...
+12 |     pub debug_socket: Option<std::path::PathBuf>,
+   |         ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `main` is never used
+  --> src/bin/gpui_demo.rs:22:4
+   |
+22 | fn main() {
+   |    ^^^^
+
+warning: field `geometry` is never read
+    --> src/bin/gpui_demo_text.rs:1143:9
+     |
+1142 | pub(crate) struct StyledTextEditLine {
+     |                   ------------------ field in this struct
+1143 |     pub geometry: systemless::runner::TextEditLineGeometry,
+     |         ^^^^^^^^
+     |
+     = note: `StyledTextEditLine` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `pixels_with_selection` is never used
+    --> src/bin/gpui_demo_text.rs:1535:12
+     |
+1497 | impl StyledTextEditLine {
+     | ----------------------- method in this implementation
+...
+1535 |     pub fn pixels_with_selection(
+     |            ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_ink` is never used
+    --> src/bin/gpui_demo_text.rs:1598:15
+     |
+1598 | pub(crate) fn classic_styled_text_edit_ink(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_selection` is never used
+    --> src/bin/gpui_demo_text.rs:1604:15
+     |
+1604 | pub(crate) fn classic_styled_text_edit_selection(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_solid_caret` is never used
+    --> src/bin/gpui_demo_text.rs:1613:15
+     |
+1613 | pub(crate) fn classic_styled_text_edit_solid_caret(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_pixels` is never used
+    --> src/bin/gpui_demo_text.rs:1631:4
+     |
+1631 | fn classic_styled_text_pixels(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_pixels_with_background` is never used
+    --> src/bin/gpui_demo_text.rs:1638:4
+     |
+1638 | fn classic_styled_text_pixels_with_background(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `main` is never used
+    --> src/bin/gpui_demo.rs:4616:19
+     |
+4616 |     pub(super) fn main() {
+     |                   ^^^^
+
+warning: constant `SAVE_SCAN_FRAME_INTERVAL` is never used
+  --> src/bin/desktop/desktop_save_store.rs:10:7
+   |
+10 | const SAVE_SCAN_FRAME_INTERVAL: u8 = 30;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `save_scan_frame` is never read
+  --> src/bin/desktop/desktop_save_store.rs:21:5
+   |
+16 | pub struct DesktopSaveStore {
+   |            ---------------- field in this struct
+...
+21 |     save_scan_frame: u8,
+   |     ^^^^^^^^^^^^^^^
+   |
+   = note: `DesktopSaveStore` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: method `sync_save_files` is never used
+   --> src/bin/desktop/desktop_save_store.rs:130:12
+    |
+ 77 | impl DesktopSaveStore {
+    | --------------------- method in this implementation
+...
+130 |     pub fn sync_save_files(&mut self, runner: &mut FixtureRunner) {
+    |            ^^^^^^^^^^^^^^^
+
+warning: `systemless` (bin "systemless" test) generated 13 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.86s
+     Running unittests src/bin/systemless.rs (target/debug/deps/systemless-4c6b108506f367df)
+
+running 22 tests
+test gpui_frontend::text::tests::classic_textedit_run_keeps_per_character_underline_and_guest_positions ... ok
+test gpui_frontend::text::tests::continuous_italic_edges_preserve_coverage_and_native_envelope ... ok
+test gpui_frontend::text::tests::file_name_abbreviation_preserves_guest_character_boundary ... ok
+test gpui_frontend::text::tests::host_glyph_midpoints_map_to_guest_positions_at_every_scale ... ok
+test gpui_frontend::text::tests::list_bitmap_recipe_preserves_guest_crop_and_stopping_boundary ... ok
+test gpui_frontend::text::tests::list_cell_qualification_requires_complete_native_evidence ... ok
+test gpui_frontend::text::tests::menu_command_display_preserves_every_mac_roman_glyph_and_advance ... ok
+test gpui_frontend::text::tests::ppc_run_preserves_guest_insertion_positions_and_binary_ink ... ok
+test gpui_frontend::text::tests::selected_trailing_dialog_space_does_not_become_a_caret ... ok
+test gpui_frontend::text::tests::shared_styled_glyph_plain_face_matches_gpui_binary_ink ... ok
+test gpui_frontend::text::tests::smooth_basic_menu_faces_keep_native_pens_and_continuous_underline ... ok
+test gpui_frontend::text::tests::smooth_condensed_extended_textedit_preserves_native_paint_and_insertion_positions ... ok
+test gpui_frontend::text::tests::smooth_field_preserves_physical_inversion_order_clipping_and_caret ... ok
+test gpui_frontend::text::tests::smooth_halos_match_native_binary_silhouettes_and_keep_fractional_edges ... ok
+test gpui_frontend::text::tests::smooth_label_sources_preserve_guest_advances_and_have_fractional_coverage ... ok
+test gpui_frontend::text::tests::smooth_textedit_bold_uses_native_smear_and_paint_advances_on_both_cpus ... ok
+test gpui_frontend::text::tests::smooth_textedit_italic_keeps_native_row_shear_and_guest_layout ... ok
+test gpui_frontend::text::tests::smooth_textedit_underlines_preserve_cpu_strokes_and_native_ink ... ok
+test gpui_frontend::text::tests::solid_styled_caret_overwrites_ink_without_inverting_or_selecting ... ok
+test gpui_frontend::text::tests::styled_line_preserves_guest_advances_and_full_line_underline ... ok
+test gpui_frontend::text::tests::styled_outline_preflight_is_atomic_and_keeps_native_paint_pens ... ok
+test gpui_frontend::text::tests::unicode_labels_resolve_guest_mac_roman_and_symbol_glyphs ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 135 filtered out; finished in 11.89s
+

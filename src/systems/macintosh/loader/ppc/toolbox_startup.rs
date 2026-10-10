@@ -31,11 +31,14 @@ pub struct PpcToolboxStartupState {
     pub(crate) go_away_tracking: Option<PpcGoAwayTrackingState>,
     pub(crate) drag_window_tracking: Option<PpcDragWindowTrackingState>,
     pub(crate) grow_window_tracking: Option<PpcGrowWindowTrackingState>,
+    pub(crate) simple_control_tracking: Option<PpcSimpleControlTrackingState>,
+    pub(crate) scrollbar_thumb_tracking: Option<PpcScrollbarThumbTrackingState>,
     /// Retained native Standard File calls are resumed at the same import
     /// frame after the host supplies a mouse or keyboard event.
     pub(super) standard_file_get_filtering: Option<PpcStandardFileFilteringState>,
     pub(super) standard_file_get_tracking: Option<PpcStandardFileGetTrackingState>,
     pub(super) standard_file_put_tracking: Option<PpcStandardFilePutTrackingState>,
+    pub(crate) next_standard_file_generation: u64,
     pub text_edit_initialized: bool,
     pub(crate) printing_error: i16,
     pub dialogs_initialized: bool,
@@ -65,6 +68,9 @@ pub struct PpcToolboxStartupState {
     pub(super) application_event_loop_quit_requested: bool,
     /// Last tick through which a Carbon or classic event-loop wait is active.
     pub(super) event_loop_poll_until_tick: Option<u32>,
+    /// WaitNextEvent calls retained at their native (PC, SP, LR) frame.
+    /// Separate frames let a task-level callback run a nested event loop.
+    pub(super) event_waits: HashMap<(u32, u32, u32), (u32, u32)>,
     pub(crate) last_button_result: Option<bool>,
     pub(crate) last_still_down_result: Option<bool>,
     pub(crate) last_wait_mouse_up_result: Option<bool>,
@@ -142,9 +148,12 @@ impl Default for PpcToolboxStartupState {
             go_away_tracking: None,
             drag_window_tracking: None,
             grow_window_tracking: None,
+            simple_control_tracking: None,
+            scrollbar_thumb_tracking: None,
             standard_file_get_filtering: None,
             standard_file_get_tracking: None,
             standard_file_put_tracking: None,
+            next_standard_file_generation: 0,
             text_edit_initialized: false,
             printing_error: 0,
             dialogs_initialized: false,
@@ -170,6 +179,7 @@ impl Default for PpcToolboxStartupState {
             application_event_loop_context: None,
             application_event_loop_quit_requested: false,
             event_loop_poll_until_tick: None,
+            event_waits: HashMap::new(),
             last_button_result: None,
             last_still_down_result: None,
             last_wait_mouse_up_result: None,
@@ -217,6 +227,148 @@ impl Default for PpcToolboxStartupState {
 }
 
 impl PpcToolboxStartupState {
+    pub(crate) fn standard_file_snapshot(
+        &self,
+    ) -> Option<crate::standard_file_ui::StandardFileSnapshot> {
+        use crate::standard_file_ui::{
+            StandardFileEntrySnapshot, StandardFileGetLayout, StandardFileKind,
+            StandardFilePutLayout,
+            StandardFileSnapshot,
+        };
+
+        if let Some(tracking) = self.standard_file_get_tracking.as_ref().or_else(|| {
+            self.standard_file_get_filtering
+                .as_ref()
+                .map(|filtering| &filtering.tracking)
+        }) {
+            return Some(StandardFileSnapshot {
+                guest_id: tracking.call.reply,
+                generation: tracking.generation,
+                kind: StandardFileKind::Get,
+                list_text_origin: (3, 13),
+                directory_marker: ">",
+                list_name_limit: None,
+                volume_text: Some(("Maci...".into(), (0, 12))),
+                confirming_replace: false,
+                        new_folder: None,
+                standard_entry_point: tracking.standard_entry_point,
+                bounds: tracking.bounds,
+                directory_id: tracking.current_dir_id,
+                entries: Some(
+                    tracking
+                        .entries
+                        .iter()
+                        .map(|entry| StandardFileEntrySnapshot {
+                            name: crate::mac_roman::decode_mac_roman(&entry.name),
+                            directory_id: entry.dir_id,
+                            is_directory: entry.is_directory,
+                            file_type: entry.file_type,
+                        })
+                        .collect(),
+                ),
+                selected: (tracking.selected < tracking.entries.len())
+                    .then_some(tracking.selected),
+                prompt: None,
+                name: None,
+                name_selection: None,
+                name_text_layout: None,
+                name_caret_visible: None,
+                name_has_focus: None,
+                directory_label: Some(crate::trap::dispatch::BOOT_VOLUME_NAME.to_string()),
+                directory_font: (0, 0, 0),
+                directory_text_layout: (0, 12, 16),
+                get_layout: Some({
+                    use super::dispatch_standard_file::{
+                        PPC_STANDARD_FILE_GET_CANCEL_RECT, PPC_STANDARD_FILE_GET_DESKTOP_RECT,
+                        PPC_STANDARD_FILE_GET_EJECT_RECT, PPC_STANDARD_FILE_GET_LIST_RECT,
+                        PPC_STANDARD_FILE_GET_OPEN_RECT, PPC_STANDARD_FILE_GET_ROW_HEIGHT,
+                        PPC_STANDARD_FILE_GET_SCROLL_RECT, PPC_STANDARD_FILE_GET_VOLUME_LABEL_RECT,
+                        PPC_STANDARD_FILE_GET_VOLUME_RECT,
+                    };
+                    let global = |rect| StandardFilePutLayout::global_rect(tracking.bounds, rect);
+                    StandardFileGetLayout {
+                        volume: global(PPC_STANDARD_FILE_GET_VOLUME_RECT),
+                        directory_label: global(PPC_STANDARD_FILE_GET_VOLUME_LABEL_RECT),
+                        list: global(PPC_STANDARD_FILE_GET_LIST_RECT),
+                        scroll: global(PPC_STANDARD_FILE_GET_SCROLL_RECT),
+                        eject: global(PPC_STANDARD_FILE_GET_EJECT_RECT),
+                        desktop: global(PPC_STANDARD_FILE_GET_DESKTOP_RECT),
+                        cancel: global(PPC_STANDARD_FILE_GET_CANCEL_RECT),
+                        open: global(PPC_STANDARD_FILE_GET_OPEN_RECT),
+                        row_height: PPC_STANDARD_FILE_GET_ROW_HEIGHT,
+                        first_visible: tracking.selected.saturating_sub(7),
+                        visible_rows: 8,
+                    }
+                }),
+                put_layout: None,
+            });
+        }
+        let tracking = self.standard_file_put_tracking.as_ref()?;
+        Some(StandardFileSnapshot {
+            guest_id: tracking.call.reply,
+            generation: tracking.generation,
+            kind: StandardFileKind::Put,
+                list_text_origin: (3, 13),
+                directory_marker: ">",
+                list_name_limit: None,
+                volume_text: None,
+            confirming_replace: tracking.confirming_replace,
+            new_folder: tracking.new_folder.as_ref().map(|folder| folder.snapshot(tracking.bounds, 2, |bytes| {
+                ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes)
+            })),
+            standard_entry_point: tracking.standard_entry_point,
+            bounds: tracking.bounds,
+            directory_id: tracking.dir_id,
+            entries: Some(
+                tracking
+                    .entries
+                    .iter()
+                    .map(|entry| StandardFileEntrySnapshot {
+                        name: crate::mac_roman::decode_mac_roman(&entry.name),
+                        directory_id: entry.dir_id,
+                        is_directory: entry.is_directory,
+                        file_type: entry.file_type,
+                    })
+                    .collect(),
+            ),
+            selected: tracking.selected,
+            prompt: Some(crate::mac_roman::decode_mac_roman(&tracking.prompt)),
+            name: Some(crate::mac_roman::decode_mac_roman(&tracking.name)),
+            name_selection: Some((tracking.sel_start, tracking.sel_end)),
+            name_text_layout: Some(crate::standard_file_ui::StandardFileNameTextLayout::powerpc()),
+            name_caret_visible: Some(tracking.caret.on && tracking.pointer_anchor.is_none() && tracking.sel_start == tracking.sel_end && !tracking.list_has_focus && !tracking.confirming_replace && tracking.new_folder.is_none()),
+            name_has_focus: Some(!tracking.list_has_focus && !tracking.confirming_replace && tracking.new_folder.is_none()),
+            directory_label: Some(crate::mac_roman::decode_mac_roman(&tracking.directory_name)),
+            directory_font: (0, 0, 0),
+            directory_text_layout: (0, 12, 16),
+            get_layout: None,
+            put_layout: Some({
+                use super::dispatch_standard_file::{
+                    PPC_STANDARD_FILE_GET_ROW_HEIGHT, PPC_STANDARD_FILE_PUT_CANCEL_RECT,
+                    PPC_STANDARD_FILE_PUT_DESKTOP_RECT,
+                    PPC_STANDARD_FILE_PUT_DIRECTORY_LABEL_RECT, PPC_STANDARD_FILE_PUT_LIST_RECT,
+                    PPC_STANDARD_FILE_PUT_NAME_RECT, PPC_STANDARD_FILE_PUT_PROMPT_RECT,
+                    PPC_STANDARD_FILE_PUT_SAVE_RECT, PPC_STANDARD_FILE_PUT_SCROLL_RECT,
+                };
+                let global = |rect| StandardFilePutLayout::global_rect(tracking.bounds, rect);
+                StandardFilePutLayout {
+                    directory_label: global(PPC_STANDARD_FILE_PUT_DIRECTORY_LABEL_RECT),
+                    list: global(PPC_STANDARD_FILE_PUT_LIST_RECT),
+                    scroll: global(PPC_STANDARD_FILE_PUT_SCROLL_RECT),
+                    prompt: global(PPC_STANDARD_FILE_PUT_PROMPT_RECT),
+                    name: global(PPC_STANDARD_FILE_PUT_NAME_RECT),
+                    desktop: global(PPC_STANDARD_FILE_PUT_DESKTOP_RECT),
+                    new_folder: global(super::dispatch_standard_file::PPC_STANDARD_FILE_PUT_NEW_FOLDER_RECT),
+                    cancel: global(PPC_STANDARD_FILE_PUT_CANCEL_RECT),
+                    save: global(PPC_STANDARD_FILE_PUT_SAVE_RECT),
+                    row_height: PPC_STANDARD_FILE_GET_ROW_HEIGHT,
+                    first_visible: tracking.selected.unwrap_or(0).saturating_sub(7),
+                    visible_rows: 8,
+                }
+            }),
+        })
+    }
+
     pub(crate) fn window_default_button(&self, window: u32) -> u32 {
         self.window_default_buttons.get(&window).copied().unwrap_or(0)
     }
@@ -289,7 +441,8 @@ impl PpcToolboxStartupState {
     }
 
     pub(crate) fn retained_host_overlay_rects(&self) -> Vec<(i16, i16, i16, i16)> {
-        self.standard_file_get_tracking
+        let mut rects: Vec<_> = self
+            .standard_file_get_tracking
             .iter()
             .map(|tracking| tracking.bounds)
             .chain(
@@ -297,7 +450,27 @@ impl PpcToolboxStartupState {
                     .iter()
                     .map(|tracking| tracking.bounds),
             )
-            .collect()
+            .collect();
+        // Menus own screen pixels outside WindowList too, including the
+        // saved shadow strip. Keep the host desktop pass beneath every pane.
+        // Macintosh Toolbox Essentials (1992), pp. 3-122--3-123 and 4-118--4-119.
+        if let Some(menu) = self.execution.menu().as_ref() {
+            rects.push((
+                menu.popup_top,
+                menu.popup_left,
+                menu.popup_top.saturating_add(menu.saved_height),
+                menu.popup_left.saturating_add(menu.saved_width),
+            ));
+            rects.extend(menu.submenus.iter().map(|pane| {
+                (
+                    pane.popup_top,
+                    pane.popup_left,
+                    pane.popup_top.saturating_add(pane.saved_height),
+                    pane.popup_left.saturating_add(pane.saved_width),
+                )
+            }));
+        }
+        rects
     }
 
     pub(crate) fn active_menu_definition(&self) -> Option<&MenuDefinitionTracking> {

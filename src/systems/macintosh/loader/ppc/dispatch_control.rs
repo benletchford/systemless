@@ -2,6 +2,36 @@
 
 use super::*;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PpcSimpleControlTrackingState {
+    handle: u32,
+    pointer: u32,
+    generation: u64,
+    return_address: u32,
+    stack_pointer: u32,
+    bounds: (i16, i16, i16, i16),
+    part: i16,
+    saved_hilite: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PpcScrollbarThumbTrackingState {
+    handle: u32,
+    pointer: u32,
+    generation: u64,
+    return_address: u32,
+    stack_pointer: u32,
+    start_global: (i16, i16),
+    slop_global: (i16, i16, i16, i16),
+    vertical: bool,
+    start_thumb: i32,
+    track_start: i32,
+    travel: i32,
+    start_value: i16,
+    minimum: i16,
+    maximum: i16,
+}
+
 pub(super) struct PpcControlDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,
@@ -17,6 +47,7 @@ pub(super) struct PpcControlDispatchContext<'a> {
     pub(super) current_gworld: u32,
     pub(super) toolbox_startup: &'a mut PpcToolboxStartupState,
     pub(super) input: PpcInputSnapshot,
+    pub(super) event_queue: &'a mut EventQueue,
     pub(super) vfs_resources: &'a mut [PpcVfsResourceRecord],
     pub(super) current_resource_refnum: i16,
     pub(super) last_resource_error: &'a mut i16,
@@ -40,6 +71,7 @@ pub(super) fn dispatch_control_import(
         current_gworld,
         toolbox_startup,
         input,
+        event_queue,
         vfs_resources,
         current_resource_refnum,
         last_resource_error,
@@ -185,6 +217,7 @@ pub(super) fn dispatch_control_import(
             screen_clut,
             toolbox_startup,
             input,
+            event_queue,
             vfs_resources,
             current_resource_refnum,
             last_resource_error,
@@ -240,6 +273,23 @@ pub(super) fn ppc_set_control_title(
     *last_mem_error = if wrote { PPC_NO_ERR } else { PPC_PARAM_ERR };
 }
 
+fn ppc_popup_control_font(
+    memory: &mut PpcSectionMem,
+    owner: u32,
+    proc_id: i16,
+) -> crate::menu_model::GuestMenuFont {
+    // popupUseWFont covers title, selected value and active dropdown.
+    // Inside Macintosh VI (1991), p. 3-18.
+    if proc_id & 8 != 0 {
+        crate::menu_model::GuestMenuFont {
+            family: memory.read_u16_be(owner + 68).unwrap_or(0) as i16,
+            size: memory.read_u16_be(owner + 74).unwrap_or(0) as i16,
+        }
+    } else {
+        Default::default()
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn ppc_dispatch_popup_track_control(
     cpu: &PpcCpu,
@@ -280,10 +330,14 @@ fn ppc_dispatch_popup_track_control(
     // coordinates. Reuse the standard retained popup session so CDEF-backed
     // controls get the same disabled/separator hit testing, save-under, and
     // repaint behavior as a direct PopUpMenuSelect call.
-    let (control_top, control_left, _, _) =
+    let (control_top, control_left, _, control_right) =
         ppc_read_rect(memory, control + PPC_CONTROL_RECT_OFFSET)?;
-    let (global_h, global_v) =
-        surface.local_point((i32::from(control_left), i32::from(control_top)));
+    // Anchor at the selection box after the title, not at the label.
+    // Macintosh Toolbox Essentials (1992), pp. 5-25--5-27.
+    let (global_h, global_v) = surface.local_point((
+        i32::from(control_left) + i32::from(record.popup_title_width.unwrap_or(0).max(0)),
+        i32::from(control_top),
+    ));
     let mut popup_cpu = cpu.clone();
     popup_cpu.gpr[3] = menu_handle;
     popup_cpu.gpr[4] = u32::from(ppc_i32_to_i16_saturating(global_v) as u16);
@@ -293,7 +347,8 @@ fn ppc_dispatch_popup_track_control(
         .unwrap_or(1) as u32;
     let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
     let menu_colors = MenuColorTable::new(&menu_color_bytes);
-    let action = ppc_dispatch_pop_up_menu_select(
+    let font = ppc_popup_control_font(memory, owner, record.proc_id);
+    let action = ppc_dispatch_pop_up_menu_select_with_font(
         &popup_cpu,
         memory,
         gworlds,
@@ -303,6 +358,11 @@ fn ppc_dispatch_popup_track_control(
         input,
         vfs_resources,
         current_resource_refnum,
+        font,
+        crate::control_manager::fixed_popup_menu_width(
+            record.proc_id, control_left, control_right,
+            record.popup_title_width.unwrap_or(0),
+        ),
     );
     Some(match action {
         PpcImportAction::Return(result) => {
@@ -445,6 +505,7 @@ pub(super) fn ppc_dispatch_legacy_control(
     screen_clut: &[[u16; 3]; 256],
     toolbox_startup: &mut PpcToolboxStartupState,
     input: PpcInputSnapshot,
+    event_queue: &mut EventQueue,
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
@@ -1017,6 +1078,98 @@ pub(super) fn ppc_dispatch_legacy_control(
             Some(PpcImportAction::Return(ppc_i16_result(part)))
         }
         PpcLegacyControlOperation::TrackControl => {
+            // Nil-action standard controls retain their import until release.
+            // Macintosh Toolbox Essentials (1992), pp. 5-73--5-74, 5-90--5-92.
+            if let Some(tracking) = toolbox_startup.simple_control_tracking.take() {
+                if tracking.handle != cpu.gpr[3] || tracking.return_address != cpu.lr
+                    || tracking.stack_pointer != cpu.gpr[1]
+                    || ppc_control_ptr(memory, tracking.handle) != Some(tracking.pointer)
+                    || !controls.iter().any(|record| record.active && record.handle == tracking.handle
+                        && record.pointer == tracking.pointer && record.generation == tracking.generation)
+                {
+                    return Some(PpcImportAction::Return(0));
+                }
+                let release = event_queue.iter().position(|event| event.what == 2);
+                let held = input.mouse_button && release.is_none();
+                let point = if !held {
+                    release.and_then(|index| event_queue.remove(index))
+                        .map(|event| (event.where_v, event.where_h))
+                        .unwrap_or((input.mouse_v, input.mouse_h))
+                } else { (input.mouse_v, input.mouse_h) };
+                let (top, left, bottom, right) = tracking.bounds;
+                let inside = point.0 >= top && point.0 < bottom && point.1 >= left && point.1 < right;
+                let hilite = if held && inside { tracking.part as u8 } else { tracking.saved_hilite };
+                if memory.read_u8(tracking.pointer + PPC_CONTROL_HILITE_OFFSET) != Some(hilite) {
+                    let _ = memory.write_u8(tracking.pointer + PPC_CONTROL_HILITE_OFFSET, hilite);
+                    let _ = ppc_draw_control(memory, handles, controls, gworlds, vfs_resources,
+                        current_resource_refnum, tracking.handle);
+                }
+                if held {
+                    toolbox_startup.simple_control_tracking = Some(tracking);
+                    return Some(PpcImportAction::Yield(u64::MAX));
+                }
+                return Some(PpcImportAction::Return(ppc_i16_result(if inside { tracking.part } else { 0 })));
+            }
+            // Retain the import frame until mouse-up so the scroll-box value
+            // follows the release displacement, as TrackControl specifies.
+            // Macintosh Toolbox Essentials (1992), pp. 5-36, 5-89--5-90.
+            if let Some(tracking) = toolbox_startup.scrollbar_thumb_tracking.take() {
+                if tracking.handle != cpu.gpr[3]
+                    || tracking.return_address != cpu.lr
+                    || tracking.stack_pointer != cpu.gpr[1]
+                    || ppc_control_ptr(memory, tracking.handle) != Some(tracking.pointer)
+                    || !controls.iter().any(|record| {
+                        record.handle == tracking.handle
+                            && record.pointer == tracking.pointer
+                            && record.generation == tracking.generation
+                            && record.active
+                    })
+                {
+                    return Some(PpcImportAction::Return(0));
+                }
+                if input.mouse_button {
+                    toolbox_startup.scrollbar_thumb_tracking = Some(tracking);
+                    return Some(PpcImportAction::Yield(u64::MAX));
+                }
+                if let Some(index) = event_queue.iter().position(|event| event.what == 2) {
+                    event_queue.remove(index);
+                }
+                let (top, left, bottom, right) = tracking.slop_global;
+                let inside = input.mouse_v >= top
+                    && input.mouse_v < bottom
+                    && input.mouse_h >= left
+                    && input.mouse_h < right;
+                if !inside {
+                    return Some(PpcImportAction::Return(0));
+                }
+                let delta = if tracking.vertical {
+                    i32::from(input.mouse_v) - i32::from(tracking.start_global.0)
+                } else {
+                    i32::from(input.mouse_h) - i32::from(tracking.start_global.1)
+                };
+                let thumb = (tracking.start_thumb + delta)
+                    .clamp(tracking.track_start, tracking.track_start + tracking.travel);
+                let range = i32::from(tracking.maximum) - i32::from(tracking.minimum);
+                let value = if tracking.travel > 0 && range > 0 {
+                    i32::from(tracking.minimum)
+                        + (((i64::from(thumb - tracking.track_start) * i64::from(range)
+                            + i64::from(tracking.travel / 2))
+                            / i64::from(tracking.travel)) as i32)
+                } else {
+                    i32::from(tracking.start_value)
+                } as i16;
+                let _ = memory.write_u16_be(tracking.pointer + PPC_CONTROL_VALUE_OFFSET, value as u16);
+                let _ = ppc_draw_control(
+                    memory,
+                    handles,
+                    controls,
+                    gworlds,
+                    vfs_resources,
+                    current_resource_refnum,
+                    tracking.handle,
+                );
+                return Some(PpcImportAction::Return(ppc_i16_result(129)));
+            }
             // Macintosh Toolbox Essentials (1992), pp. 5-79--5-80:
             // -1 selects contrlAction; a second -1 invokes the popup CDEF.
             let action_proc = if cpu.gpr[5] == u32::MAX {
@@ -1058,6 +1211,14 @@ pub(super) fn ppc_dispatch_legacy_control(
             // Arrow/page value changes belong to the action procedure.
             // A nil action only returns the hit part to the caller.
             if part == 129 {
+                if input.mouse_button {
+                    if let Some(tracking) = ppc_begin_scrollbar_thumb_tracking(
+                        cpu, memory, controls, gworlds, v, h,
+                    ) {
+                        toolbox_startup.scrollbar_thumb_tracking = Some(tracking);
+                        return Some(PpcImportAction::Yield(u64::MAX));
+                    }
+                }
                 let _ = ppc_track_scroll_control_value(
                     memory,
                     handles,
@@ -1070,6 +1231,42 @@ pub(super) fn ppc_dispatch_legacy_control(
                     h,
                 );
                 return Some(PpcImportAction::Return(ppc_i16_result(part)));
+            }
+            if matches!(part, 10 | 11) && action_proc == 0 {
+                let handle = cpu.gpr[3];
+                if let Some(record) = controls.iter().find(|record| record.active && record.handle == handle
+                    && matches!(record.proc_id, 0 | 1 | 2)) {
+                    if let Some(pointer) = ppc_control_ptr(memory, handle) {
+                        let owner = memory.read_u32_be(pointer + PPC_CONTROL_OWNER_OFFSET)?;
+                        let surface = ppc_live_quickdraw_surface(memory, gworlds, owner)?;
+                        let bounds = surface.local_rect(ppc_read_rect(memory, pointer + PPC_CONTROL_RECT_OFFSET)?);
+                        // A fast host click can queue mouse-up before the guest
+                        // reaches TrackControl. Consume its release point now.
+                        // Macintosh Toolbox Essentials (1992), pp. 5-90--5-92.
+                        if let Some(index) = event_queue.iter().position(|event| event.what == 2) {
+                            let release = event_queue.remove(index).unwrap();
+                            let point = (i32::from(release.where_v), i32::from(release.where_h));
+                            let inside = point.0 >= bounds.0 && point.0 < bounds.2
+                                && point.1 >= bounds.1 && point.1 < bounds.3;
+                            return Some(PpcImportAction::Return(ppc_i16_result(if inside { part } else { 0 })));
+                        }
+                        if !input.mouse_button {
+                            return Some(PpcImportAction::Return(ppc_i16_result(part)));
+                        }
+                        let tracking = PpcSimpleControlTrackingState {
+                            handle, pointer, generation: record.generation,
+                            return_address: cpu.lr, stack_pointer: cpu.gpr[1],
+                            bounds: (ppc_i32_to_i16_saturating(bounds.0), ppc_i32_to_i16_saturating(bounds.1),
+                                ppc_i32_to_i16_saturating(bounds.2), ppc_i32_to_i16_saturating(bounds.3)),
+                            part, saved_hilite: memory.read_u8(pointer + PPC_CONTROL_HILITE_OFFSET).unwrap_or(0),
+                        };
+                        let _ = memory.write_u8(pointer + PPC_CONTROL_HILITE_OFFSET, part as u8);
+                        let _ = ppc_draw_control(memory, handles, controls, gworlds, vfs_resources,
+                            current_resource_refnum, handle);
+                        toolbox_startup.simple_control_tracking = Some(tracking);
+                        return Some(PpcImportAction::Yield(u64::MAX));
+                    }
+                }
             }
             if part == 0 || action_proc == 0 || action_proc == u32::MAX {
                 return Some(PpcImportAction::Return(ppc_i16_result(part)));
@@ -1839,6 +2036,7 @@ pub(super) fn ppc_new_control_record_values(
     controls.push(PpcControlRecord {
         handle,
         pointer: control,
+        generation: crate::control_manager::new_control_generation(),
         proc_id,
         popup_menu_id: if popup { min } else { 0 },
         popup_title_width: popup.then_some(max),
@@ -2657,7 +2855,9 @@ pub(super) fn ppc_control_part_at_point(
             let track_start = axis_start.saturating_add(arrow);
             let track_end = axis_end.saturating_sub(arrow);
             let track = i32::from(track_end.saturating_sub(track_start)).max(1);
-            let thumb = 8i32.min(track);
+            // The themed CDEF paints a 16-pixel thumb; use the same span for
+            // hit testing. Macintosh Toolbox Essentials (1992), pp. 5-58--5-61.
+            let thumb = 16i32.min(track);
             let span = i32::from(max).saturating_sub(i32::from(min)).max(1);
             let relative = i32::from(value)
                 .saturating_sub(i32::from(min))
@@ -2694,6 +2894,80 @@ pub(super) fn ppc_control_part_at_point(
         }
         _ => Some(10),
     }
+}
+
+/// Build the Control Manager's retained scroll-box tracking geometry from
+/// the live ControlRecord and its owning port. Macintosh Toolbox Essentials
+/// (1992), pp. 5-58--5-61, 5-89--5-90.
+fn ppc_begin_scrollbar_thumb_tracking(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    controls: &[PpcControlRecord],
+    gworlds: &[PpcGWorldRecord],
+    start_v: i16,
+    start_h: i16,
+) -> Option<PpcScrollbarThumbTrackingState> {
+    let handle = cpu.gpr[3];
+    let generation = controls.iter().find(|record| record.handle == handle)?.generation;
+    if ppc_control_part_at_point(memory, controls, handle, start_v, start_h)? != 129 {
+        return None;
+    }
+    let pointer = ppc_control_ptr(memory, handle)?;
+    let owner = memory.read_u32_be(pointer + PPC_CONTROL_OWNER_OFFSET)?;
+    let surface = ppc_live_quickdraw_surface(memory, gworlds, owner)?;
+    let (top, left, bottom, right) =
+        ppc_read_rect(memory, pointer + PPC_CONTROL_RECT_OFFSET)?;
+    let vertical = bottom.saturating_sub(top) >= right.saturating_sub(left);
+    let (axis_start, axis_end) = if vertical {
+        (top, bottom)
+    } else {
+        (left, right)
+    };
+    let arrow = i32::from(axis_end.saturating_sub(axis_start)).clamp(1, 16);
+    let track_start = i32::from(axis_start) + arrow;
+    let track_end = i32::from(axis_end) - arrow;
+    let track = (track_end - track_start).max(0);
+    let thumb = track.min(16);
+    let travel = track - thumb;
+    let minimum = memory.read_u16_be(pointer + PPC_CONTROL_MIN_OFFSET)? as i16;
+    let maximum = memory.read_u16_be(pointer + PPC_CONTROL_MAX_OFFSET)? as i16;
+    let start_value = memory.read_u16_be(pointer + PPC_CONTROL_VALUE_OFFSET)? as i16;
+    let range = i32::from(maximum) - i32::from(minimum);
+    let relative = (i32::from(start_value) - i32::from(minimum)).clamp(0, range.max(0));
+    let start_thumb = track_start
+        + if range > 0 { relative * travel / range } else { 0 };
+    let (global_h, global_v) =
+        surface.local_point((i32::from(start_h), i32::from(start_v)));
+    let (slop_top, slop_left, slop_bottom, slop_right) = surface.local_rect((
+        top.saturating_sub(30),
+        left.saturating_sub(30),
+        bottom.saturating_add(30),
+        right.saturating_add(30),
+    ));
+    Some(PpcScrollbarThumbTrackingState {
+        handle,
+        pointer,
+        generation,
+        return_address: cpu.lr,
+        stack_pointer: cpu.gpr[1],
+        start_global: (
+            ppc_i32_to_i16_saturating(global_v),
+            ppc_i32_to_i16_saturating(global_h),
+        ),
+        slop_global: (
+            ppc_i32_to_i16_saturating(slop_top),
+            ppc_i32_to_i16_saturating(slop_left),
+            ppc_i32_to_i16_saturating(slop_bottom),
+            ppc_i32_to_i16_saturating(slop_right),
+        ),
+        vertical,
+        start_thumb,
+        track_start,
+        travel,
+        start_value,
+        minimum,
+        maximum,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2737,7 +3011,7 @@ pub(super) fn ppc_track_scroll_control_value(
         23 => i32::from(value) + page,
         129 => {
             let track = i32::from(track_end.saturating_sub(track_start)).max(1);
-            let thumb = 8i32.min(track);
+            let thumb = 16i32.min(track);
             let travel = track.saturating_sub(thumb).max(1);
             let coord = if vertical { v } else { h };
             let rel = (i32::from(coord) - i32::from(track_start)).clamp(0, travel);
@@ -2818,35 +3092,8 @@ pub(super) fn ppc_popup_control_display_title(
     text_font: i16,
     text_size: i16,
 ) -> Vec<u8> {
-    if available_width <= 0 {
-        return Vec::new();
-    }
-    if ppc_text_bytes_advance_for_font(title, text_font, text_size) <= available_width {
-        return title.to_vec();
-    }
-
-    let ellipsis = b"...";
-    let ellipsis_width = ppc_text_bytes_advance_for_font(ellipsis, text_font, text_size);
-    if ellipsis_width > available_width {
-        return Vec::new();
-    }
-
-    let mut prefix = Vec::new();
-    let mut prefix_width = 0i16;
-    for byte in title {
-        let byte_width = ppc_text_byte_advance_for_font(*byte, text_font, text_size);
-        if prefix_width
-            .saturating_add(byte_width)
-            .saturating_add(ellipsis_width)
-            > available_width
-        {
-            break;
-        }
-        prefix.push(*byte);
-        prefix_width = prefix_width.saturating_add(byte_width);
-    }
-    prefix.extend_from_slice(ellipsis);
-    prefix
+    crate::control_manager::popup_display_text(title, b"...", available_width,
+        |bytes| ppc_text_bytes_advance_for_font(bytes, text_font, text_size))
 }
 
 pub(super) fn ppc_draw_control(
@@ -3046,6 +3293,37 @@ fn ppc_dim_control_color(
     }
 }
 
+pub(crate) fn ppc_popup_text_ink(
+    gworlds: &[PpcGWorldRecord], active: bool,
+) -> crate::control_manager::ControlTextInk {
+    let palette = ppc_control_palette(gworlds, active);
+    let rgb = palette.frame_dark;
+    crate::control_manager::ControlTextInk::Solid([rgb.r, rgb.g, rgb.b])
+}
+
+pub(crate) fn ppc_popup_indicator(
+    gworlds: &[PpcGWorldRecord], bounds: (i16, i16, i16, i16),
+    active: bool, enabled: bool,
+) -> Option<crate::control_manager::ControlPopupIndicator> {
+    if ppc_ui_theme(gworlds) != UiThemeId::ClassicSystem7 { return None; }
+    let rgb = ppc_control_palette(gworlds, active).frame_dark;
+    Some(crate::control_manager::ControlPopupIndicator {
+        spans: crate::control_manager::popup_indicator_spans(
+            crate::control_manager::PopupIndicatorKind::ClassicPpc, bounds, enabled),
+        rgb: [rgb.r, rgb.g, rgb.b],
+    })
+}
+
+fn ppc_control_palette(gworlds: &[PpcGWorldRecord], active: bool) -> crate::ui_theme::UiThemePalette {
+    let palette = ppc_ui_theme(gworlds).provider().palette();
+    if active { palette } else {
+        crate::ui_theme::UiThemePalette {
+            frame_dark: ppc_dim_control_color(palette.frame_dark, palette.window_background),
+            ..palette
+        }
+    }
+}
+
 /// Font, size, face and ink for a control title after applying the control's
 /// Appearance Manager ControlFontStyleRec.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3170,22 +3448,15 @@ pub(super) fn ppc_draw_control_inner(
     else {
         return false;
     };
-    let palette = ppc_ui_theme(gworlds).provider().palette();
     let record = controls.iter().find(|record| record.handle == handle);
     let proc_id = record.map_or(0, |record| record.proc_id) & 0x0fff;
+    let popup_font = ppc_popup_control_font(memory, owner, proc_id);
     // Appearance Manager DeactivateControl dims a control without touching
     // contrlHilite. Draw its frame and title with the same 50% blend the 68K
     // control manager uses for an inactive title, so a non-hittable control
     // also looks non-hittable.
     let active = record.is_none_or(|record| record.active);
-    let palette = if active {
-        palette
-    } else {
-        crate::ui_theme::UiThemePalette {
-            frame_dark: ppc_dim_control_color(palette.frame_dark, palette.window_background),
-            ..palette
-        }
-    };
+    let palette = ppc_control_palette(gworlds, active);
     let mut frame_cpu = PpcCpu::new();
     frame_cpu.gpr[3] = control + PPC_CONTROL_RECT_OFFSET;
     let is_default = ppc_ui_theme(gworlds) != UiThemeId::ClassicSystem7
@@ -3530,40 +3801,14 @@ pub(super) fn ppc_draw_control_inner(
                         ppc_theme_rgb(palette.frame_dark),
                         None,
                     );
-                    let arrow_h = draw_right.saturating_sub(9);
-                    let center_v =
-                        draw_top.saturating_add(draw_bottom.saturating_sub(draw_top) / 2);
-                    for offset in 0..3i16 {
-                        wrote |= ppc_line_to(
-                            memory,
-                            gworlds,
-                            draw_owner,
-                            (
-                                arrow_h.saturating_sub(offset),
-                                center_v.saturating_sub(3 - offset),
-                            ),
-                            (
-                                arrow_h.saturating_add(offset),
-                                center_v.saturating_sub(3 - offset),
-                            ),
-                            ppc_theme_rgb(palette.frame_dark),
-                            None,
-                        );
-                        wrote |= ppc_line_to(
-                            memory,
-                            gworlds,
-                            draw_owner,
-                            (
-                                arrow_h.saturating_sub(offset),
-                                center_v.saturating_add(3 - offset),
-                            ),
-                            (
-                                arrow_h.saturating_add(offset),
-                                center_v.saturating_add(3 - offset),
-                            ),
-                            ppc_theme_rgb(palette.frame_dark),
-                            None,
-                        );
+                    for span in crate::control_manager::popup_indicator_spans(
+                        crate::control_manager::PopupIndicatorKind::ClassicPpc,
+                        (draw_top, draw_left, draw_bottom, draw_right), enabled,
+                    ) {
+                        wrote |= ppc_line_to(memory, gworlds, draw_owner,
+                            (span.left, span.top),
+                            (span.left.saturating_add(span.width - 1), span.top),
+                            ppc_theme_rgb(palette.frame_dark), None);
                     }
                 }
                 let selected = memory
@@ -3582,17 +3827,22 @@ pub(super) fn ppc_draw_control_inner(
                 let display_title = ppc_popup_control_display_title(
                     &selected_text,
                     text_right.saturating_sub(text_left),
-                    PPC_QD_TEXT_FONT_DEFAULT,
-                    PPC_QD_TEXT_SIZE_SYSTEM,
+                    popup_font.family,
+                    popup_font.point_size(),
                 );
                 if !display_title.is_empty() {
+                    let metrics = popup_font.metrics();
+                    let baseline = crate::control_manager::centered_control_label_origin(
+                        (draw_top, draw_left, draw_bottom, draw_right),
+                        0, metrics.ascent, metrics.descent,
+                    ).1.saturating_sub(1);
                     let _ = ppc_draw_text_bytes(
                         memory,
                         gworlds,
                         draw_owner,
-                        (text_left, draw_top.saturating_add(14)),
-                        PPC_QD_TEXT_FONT_DEFAULT,
-                        PPC_QD_TEXT_SIZE_SYSTEM,
+                        (text_left, baseline),
+                        popup_font.family,
+                        popup_font.point_size(),
                         PPC_QD_TEXT_MODE_SRC_OR,
                         ppc_theme_rgb(palette.frame_dark),
                         None,
@@ -3632,10 +3882,14 @@ pub(super) fn ppc_draw_control_inner(
                 }
             })
             .collect::<Vec<_>>();
-        let title_style = ppc_control_title_style(
+        let mut title_style = ppc_control_title_style(
             proc_id,
             record.and_then(|record| record.font_style.as_ref()),
         );
+        if (1008..=1023).contains(&proc_id) && proc_id & 8 != 0 {
+            title_style.font = popup_font.family;
+            title_style.size = popup_font.point_size();
+        }
         let advance =
             ppc_text_width_bytes(title_style.font, title_style.size, title_style.face, &title);
         let metrics = get_font_metrics(title_style.font, title_style.size);

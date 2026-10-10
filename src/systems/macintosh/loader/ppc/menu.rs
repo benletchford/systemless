@@ -676,12 +676,14 @@ pub(crate) fn ppc_menu_resource_data<'a>(
     Some(&resources.get(index)?.data)
 }
 
-pub(crate) fn ppc_menu_item_appearance(
+
+pub(crate) fn ppc_menu_item_appearance_with_font(
     memory: &mut PpcSectionMem,
     menu_handle: u32,
     item: i16,
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
+    font: crate::menu_model::GuestMenuFont,
 ) -> PpcTrackedMenuItemAppearance {
     let is_separator = ppc_menu_item_is_separator(memory, menu_handle, item);
     let icon = ppc_menu_item_attribute_address(memory, menu_handle, item, 0)
@@ -730,10 +732,11 @@ pub(crate) fn ppc_menu_item_appearance(
             }),
     };
     PpcTrackedMenuItemAppearance {
+        font,
         height: if is_separator {
             STANDARD_MENU_SEPARATOR_HEIGHT
         } else {
-            icon_kind.row_height(QuickDrawTextStyle::from_bits(style))
+            icon_kind.row_height_for_font(QuickDrawTextStyle::from_bits(style), font)
         },
         icon_kind,
         icon: tracked_icon,
@@ -746,15 +749,26 @@ pub(crate) fn ppc_menu_item_appearances(
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
 ) -> Vec<PpcTrackedMenuItemAppearance> {
+    ppc_menu_item_appearances_with_font(memory, menu_handle, resources, current_resource_refnum, Default::default())
+}
+
+pub(crate) fn ppc_menu_item_appearances_with_font(
+    memory: &mut PpcSectionMem,
+    menu_handle: u32,
+    resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    font: crate::menu_model::GuestMenuFont,
+) -> Vec<PpcTrackedMenuItemAppearance> {
     let mut items = (1..=ppc_count_menu_items(memory, menu_handle) as i16)
         .map(|item| {
             (
-                ppc_menu_item_appearance(
+                ppc_menu_item_appearance_with_font(
                     memory,
                     menu_handle,
                     item,
                     resources,
                     current_resource_refnum,
+                    font,
                 ),
                 ppc_menu_item_is_separator(memory, menu_handle, item),
             )
@@ -825,11 +839,21 @@ pub(crate) fn ppc_calc_menu_size_with_resources(
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
 ) {
+    ppc_calc_menu_size_for_font(memory, menu_handle, resources, current_resource_refnum, Default::default())
+}
+
+pub(crate) fn ppc_calc_menu_size_for_font(
+    memory: &mut PpcSectionMem,
+    menu_handle: u32,
+    resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    font: crate::menu_model::GuestMenuFont,
+) {
     let Some(menu) = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0) else {
         return;
     };
     let appearances =
-        ppc_menu_item_appearances(memory, menu_handle, resources, current_resource_refnum);
+        ppc_menu_item_appearances_with_font(memory, menu_handle, resources, current_resource_refnum, font);
     let width = standard_menu_width((1..=appearances.len()).filter_map(|item| {
         let item = i16::try_from(item).ok()?;
         let (address, len) = ppc_menu_item(memory, menu_handle, item)?;
@@ -842,7 +866,7 @@ pub(crate) fn ppc_calc_menu_size_with_resources(
             .map(|appearance| appearance.icon_kind.width())
             .unwrap_or(0);
         Some(StandardMenuItemWidth {
-            text: standard_menu_text_advance(&text),
+            text: font.text_advance(&text),
             icon,
             command,
         })
@@ -1157,12 +1181,25 @@ pub(crate) fn ppc_menu_item_is_selectable(memory: &mut PpcSectionMem, menu_handl
 }
 
 pub(crate) fn ppc_guest_menu_snapshot(memory: &mut PpcSectionMem, menu_list_handle: u32) -> GuestMenuSnapshot {
+    ppc_guest_menu_snapshot_with_resources(memory, menu_list_handle, &[])
+}
+
+pub(crate) fn ppc_guest_menu_snapshot_with_resources(
+    memory: &mut PpcSectionMem,
+    menu_list_handle: u32,
+    resources: &[PpcVfsResourceRecord],
+) -> GuestMenuSnapshot {
     let menu_list = ppc_menu_list_definition(memory, menu_list_handle).unwrap_or_default();
     menu_list.guest_snapshot(|menu_handle| {
         let menu = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0)?;
         Some(MenuSnapshotRecord {
             id: memory.read_u16_be(menu)? as i16,
             title: ppc_read_pascal_string(memory, menu + 14)?,
+            // A custom MDEF owns drawing and hit testing. The execution path
+            // uses this same resource-aware predicate; an unrecognized MDEF
+            // retains guest pixels. Macintosh Toolbox Essentials (1992),
+            // pp. 3-3, 3-87.
+            standard_definition: !ppc_menu_uses_guest_definition(memory, resources, menu_handle),
             items: ppc_menu_items_from_memory(memory, menu_handle)?,
         })
     })
@@ -1756,12 +1793,15 @@ pub(crate) fn ppc_popup_menu_is_inserted(
     })
 }
 
-pub(crate) fn ppc_popup_menu_layout_with_resources(
+
+pub(crate) fn ppc_popup_menu_layout_for_font(
     memory: &mut PpcSectionMem,
     request: PopupMenuRequest,
     front: PpcFrontBuffer,
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
+    font: crate::menu_model::GuestMenuFont,
+    fixed_width: Option<i16>,
 ) -> Option<(i16, i16, i16, i16, i16, i16)> {
     let menu_handle = request.menu_handle;
     let menu = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0)?;
@@ -1770,13 +1810,13 @@ pub(crate) fn ppc_popup_menu_layout_with_resources(
         return None;
     }
 
-    ppc_calc_menu_size_with_resources(memory, menu_handle, resources, current_resource_refnum);
+    ppc_calc_menu_size_for_font(memory, menu_handle, resources, current_resource_refnum, font);
     let appearances =
-        ppc_menu_item_appearances(memory, menu_handle, resources, current_resource_refnum);
+        ppc_menu_item_appearances_with_font(memory, menu_handle, resources, current_resource_refnum, font);
     let rows = ppc_menu_rows_for_appearances(&appearances);
     let layout = standard_popup_menu_layout(
         &rows,
-        i16::try_from(memory.read_u16_be(menu + 2)?.max(32)).ok()?,
+        fixed_width.unwrap_or(i16::try_from(memory.read_u16_be(menu + 2)?.max(32)).ok()?),
         (
             ppc_u32_to_i16_saturating(front.width),
             ppc_u32_to_i16_saturating(front.height),
@@ -2124,6 +2164,22 @@ pub(crate) fn ppc_dispatch_pop_up_menu_select(
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
 ) -> PpcImportAction {
+    ppc_dispatch_pop_up_menu_select_with_font(cpu, memory, gworlds, screen_clut, menu_colors, startup, input, resources, current_resource_refnum, Default::default(), None)
+}
+
+pub(crate) fn ppc_dispatch_pop_up_menu_select_with_font(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    screen_clut: &[[u16; 3]; 256],
+    menu_colors: MenuColorTable<'_>,
+    startup: &mut PpcToolboxStartupState,
+    input: PpcInputSnapshot,
+    resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    font: crate::menu_model::GuestMenuFont,
+    fixed_width: Option<i16>,
+) -> PpcImportAction {
     let menu_handle = cpu.gpr[3];
     let call = ppc_popup_menu_call(cpu);
     let current_menu_list = ppc_current_menu_list(memory);
@@ -2284,12 +2340,14 @@ pub(crate) fn ppc_dispatch_pop_up_menu_select(
         return PpcImportAction::Return(0);
     };
     let Some((popup_left, popup_top, popup_width, popup_height, requested_item, content_top)) =
-        ppc_popup_menu_layout_with_resources(
+        ppc_popup_menu_layout_for_font(
             memory,
             call.popup_request().unwrap(),
             front,
             resources,
             current_resource_refnum,
+            font,
+            fixed_width,
         )
     else {
         return PpcImportAction::Return(0);
@@ -2300,7 +2358,7 @@ pub(crate) fn ppc_dispatch_pop_up_menu_select(
         0
     };
     let appearances =
-        ppc_menu_item_appearances(memory, menu_handle, resources, current_resource_refnum);
+        ppc_menu_item_appearances_with_font(memory, menu_handle, resources, current_resource_refnum, font);
     let Some(state) = ppc_begin_tracked_menu_with_appearances(
         memory,
         front,
@@ -2642,6 +2700,7 @@ pub(crate) fn ppc_draw_tracked_menu_icon(
     top: i16,
     left: i16,
     content_pixel: u16,
+    clip: (i16, i16, i16, i16),
 ) {
     // The shared standard-MDEF sampler owns monochrome resource validation,
     // reduced-ICON scaling, and SICN first-image selection. This adapter owns
@@ -2669,6 +2728,13 @@ pub(crate) fn ppc_draw_tracked_menu_icon(
                     .sample_with(|offset| data.get(offset).copied(), x, y)
                     .unwrap_or(false)
                 {
+                    if i32::from(top) + (y as i32) < i32::from(clip.0)
+                        || i32::from(top) + y as i32 >= i32::from(clip.2)
+                        || i32::from(left) + (x as i32) < i32::from(clip.1)
+                        || i32::from(left) + x as i32 >= i32::from(clip.3)
+                    {
+                        continue;
+                    }
                     let _ = ppc_quickdraw_write_raw_pixel(
                         memory,
                         front,
@@ -2710,6 +2776,13 @@ pub(crate) fn ppc_draw_tracked_menu_icon(
                             })
                     };
                     if let Some(pixel) = pixel {
+                        if i32::from(top) + (y as i32) < i32::from(clip.0)
+                            || i32::from(top) + y as i32 >= i32::from(clip.2)
+                            || i32::from(left) + (x as i32) < i32::from(clip.1)
+                            || i32::from(left) + x as i32 >= i32::from(clip.3)
+                        {
+                            continue;
+                        }
                         let _ = ppc_quickdraw_write_raw_pixel(
                             memory,
                             front,
@@ -2818,6 +2891,14 @@ pub(crate) fn ppc_draw_tracked_menu(
         .popup_top()
         .saturating_add(state.popup_height())
         .saturating_sub(if scroll_down { 16 } else { 0 });
+    // Scroll slots and pane borders are outside item drawing, including
+    // partially exposed rows. Inside Macintosh V (1986), pp. V-248--V-249.
+    let item_clip = (
+        visible_item_top,
+        rect.1.saturating_add(1),
+        visible_item_bottom.min(rect.2.saturating_sub(1)),
+        rect.3.saturating_sub(1),
+    );
     for y in 1..i32::from(state.popup_height()).saturating_sub(1) {
         let absolute_y = state
             .popup_top()
@@ -2833,7 +2914,7 @@ pub(crate) fn ppc_draw_tracked_menu(
                         i32::from(state.popup_left()) + x,
                         i32::from(state.popup_top()) + y,
                     ),
-                    black,
+                    background,
                 );
             }
         }
@@ -2854,10 +2935,11 @@ pub(crate) fn ppc_draw_tracked_menu(
         if row_top >= popup_bottom.saturating_sub(1) {
             break;
         }
-        if row_top < visible_item_top || row_top.saturating_add(row_height) > visible_item_bottom {
+        if row_top >= item_clip.2 || row_top.saturating_add(row_height) <= item_clip.0 {
             continue;
         }
-        let row_bottom = row_top.saturating_add(row_height).min(popup_bottom - 1);
+        let row_bottom = row_top.saturating_add(row_height).min(item_clip.2);
+        let paint_top = row_top.max(item_clip.0);
         let command = memory.read_u8(address + 2 + u32::from(len)).unwrap_or(0);
         let mark = memory.read_u8(address + 3 + u32::from(len)).unwrap_or(0);
         let style = memory.read_u8(address + 4 + u32::from(len)).unwrap_or(0);
@@ -2909,7 +2991,7 @@ pub(crate) fn ppc_draw_tracked_menu(
                 screen_clut,
             )
             .unwrap_or(black);
-            for y in row_top..row_bottom {
+            for y in paint_top..row_bottom {
                 for x in state.popup_left().saturating_add(1)
                     ..state
                         .popup_left()
@@ -2925,10 +3007,11 @@ pub(crate) fn ppc_draw_tracked_menu(
                 }
             }
         }
-        let metrics = get_font_metrics(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
         let appearance = usize::try_from(item.saturating_sub(1))
             .ok()
             .and_then(|index| state.item_appearances().get(index));
+        let font = appearance.map(|item| item.font).unwrap_or_default();
+        let metrics = font.metrics();
         let layout = standard_menu_item_layout(
             (
                 state.popup_left(),
@@ -2946,6 +3029,9 @@ pub(crate) fn ppc_draw_tracked_menu(
 
         if is_separator {
             let separator_y = layout.separator_y;
+            if separator_y < item_clip.0 || separator_y >= item_clip.2 {
+                continue;
+            }
             for x in 1..state.popup_width().saturating_sub(1) {
                 if front.depth == 1
                     && !standard_menu_gray_pattern_is_ink(
@@ -2983,12 +3069,12 @@ pub(crate) fn ppc_draw_tracked_menu(
                 gworlds,
                 PPC_MAIN_GWORLD,
                 (layout.mark_left, text_baseline),
-                PPC_QD_TEXT_FONT_DEFAULT,
-                PPC_QD_TEXT_SIZE_SYSTEM,
+                font.family,
+                font.point_size(),
                 PPC_QD_TEXT_MODE_SRC_OR,
                 mark_color,
                 mark_index,
-                None,
+                Some(item_clip),
                 std::iter::once(mark_char),
             ));
         }
@@ -3002,21 +3088,23 @@ pub(crate) fn ppc_draw_tracked_menu(
                 row_top,
                 layout.icon_left,
                 name_pixel,
+                item_clip,
             );
         }
 
         let mode = PPC_QD_TEXT_MODE_SRC_OR;
-        let _ = ppc_with_unclipped_screen_port(memory, |memory| ppc_draw_text_bytes_styled(
+        let _ = ppc_with_unclipped_screen_port(memory, |memory| ppc_draw_text_bytes_styled_clipped(
             memory,
             gworlds,
             PPC_MAIN_GWORLD,
             (layout.text_left, text_baseline),
-            PPC_QD_TEXT_FONT_DEFAULT,
-            PPC_QD_TEXT_SIZE_SYSTEM,
+            font.family,
+            font.point_size(),
             mode,
             name_color,
             name_index,
             style,
+            Some(item_clip),
             &text,
         ));
 
@@ -3025,6 +3113,9 @@ pub(crate) fn ppc_draw_tracked_menu(
                 layout.indicator_left,
                 layout.indicator_mid_y,
                 |x, y| {
+                    if y < item_clip.0 || y >= item_clip.2 || x < item_clip.1 || x >= item_clip.3 {
+                        return;
+                    }
                     let _ = ppc_quickdraw_write_raw_pixel(
                         memory,
                         front,
@@ -3039,12 +3130,12 @@ pub(crate) fn ppc_draw_tracked_menu(
                 gworlds,
                 PPC_MAIN_GWORLD,
                 (layout.command_left, text_baseline),
-                PPC_QD_TEXT_FONT_DEFAULT,
-                PPC_QD_TEXT_SIZE_SYSTEM,
+                font.family,
+                font.point_size(),
                 mode,
                 command_color,
                 command_index,
-                None,
+                Some(item_clip),
                 ['\u{2318}', char::from(command)],
             ));
         }
@@ -3053,7 +3144,7 @@ pub(crate) fn ppc_draw_tracked_menu(
         // the 50-percent gray pattern because no intermediate color exists.
         // Macintosh Toolbox Essentials (1992), pp. 3-13 and 3-150.
         if dimmed && front.depth == 1 {
-            for y in row_top..row_bottom {
+            for y in paint_top..row_bottom {
                 for x in state.popup_left().saturating_add(1)
                     ..state
                         .popup_left()
@@ -4794,7 +4885,9 @@ pub(crate) fn ppc_get_new_mbar(
     // Macintosh Toolbox Essentials (1992), pp. 3-110--3-112 and 3-155:
     // GetNewMBar expands the MBAR's ordered MENU resource IDs into a new,
     // caller-owned menu-list handle; it does not install or draw that list.
-    let mut menu_list = PpcMenuListDefinition::from_regular_handles(mbar_id, menu_handles);
+    // MBAR resource identity does not select the MBDF; InitProcMenu does.
+    // Macintosh Toolbox Essentials (1992), pp. 3-104, 3-111.
+    let mut menu_list = PpcMenuListDefinition::from_regular_handles(0, menu_handles);
     ppc_relayout_menu_list(memory, &mut menu_list);
     let mut allocator = PpcProcessAllocatorView {
         memory_manager: process_memory_manager,

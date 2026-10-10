@@ -8,7 +8,19 @@ impl PpcLoadedApp {
     /// model used by the 68k Toolbox implementation.
     pub fn guest_menu_snapshot(&mut self) -> GuestMenuSnapshot {
         let menu_list = ppc_current_menu_list(&mut self.memory);
-        ppc_guest_menu_snapshot(&mut self.memory, menu_list)
+        self.process_file_system.with_mut(|file_system| {
+            let mut snapshot = ppc_guest_menu_snapshot_with_resources(
+                &mut self.memory,
+                menu_list,
+                &file_system.resource_manager.vfs_resources,
+            );
+            file_system.resource_manager.with_mut(|resources| {
+                for menu in &mut snapshot.menus {
+                    menu.generation = resources.menu_generation(menu.guest_id);
+                }
+            });
+            snapshot
+        })
     }
 
     /// Validate and stage a command selected through a host-native menu.

@@ -5023,6 +5023,52 @@ pub(super) fn initial_ppc_vfs_directories() -> Vec<PpcVfsDirectory> {
     ]
 }
 
+/// Shared directory creation for File Manager calls and retained Standard File.
+/// Inside Macintosh: Files (1992), "FSpDirCreate": create under the specified
+/// parent and return its directory ID. Publish the reply before committing the
+/// VFS mutation so an invalid guest output pointer cannot leave a new directory.
+pub(super) fn ppc_create_vfs_directory(
+    vfs_directories: &mut Vec<PpcVfsDirectory>,
+    next_vfs_dir_id: &mut u32,
+    parent_dir_id: u32,
+    directory_name: &str,
+    mut publish_id: impl FnMut(u32) -> bool,
+) -> i16 {
+    // HFS uses colon separators; a slash is a legal character in one name.
+    // Use the same literal-slash encoding as the 68K File Manager.
+    // Inside Macintosh: Files (1992), "Names and Pathnames".
+    let normalized_name = crate::trap::dispatch::TrapDispatcher::normalize_hfs_path(directory_name);
+    if normalized_name.is_empty() {
+        return PPC_PARAM_ERR;
+    }
+    let Some(parent_path) = ppc_directory_path_for_id(vfs_directories, parent_dir_id) else {
+        return PPC_FNF_ERR;
+    };
+    let path = ppc_join_vfs_path(parent_path, &normalized_name);
+    if let Some(existing) = ppc_directory_id_for_path(vfs_directories, &path) {
+        publish_id(existing);
+        return PPC_DUP_FN_ERR;
+    }
+    let dir_id = *next_vfs_dir_id;
+    let Some(next_dir_id) = next_vfs_dir_id.checked_add(1) else {
+        return PPC_PARAM_ERR;
+    };
+    if !publish_id(dir_id) {
+        return PPC_PARAM_ERR;
+    }
+    *next_vfs_dir_id = next_dir_id;
+    vfs_directories.push(PpcVfsDirectory {
+        dir_id,
+        parent_dir_id,
+        path,
+        creator: PPC_DIRECTORY_CREATOR,
+        file_type: PPC_DIRECTORY_FILE_TYPE,
+        finder_flags: 0,
+        dirty: true,
+    });
+    PPC_NO_ERR
+}
+
 pub(super) fn ppc_dir_create(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
@@ -5040,37 +5086,13 @@ pub(super) fn ppc_dir_create(
     let Some(directory_name) = ppc_read_pstring(memory, directory_name_ptr) else {
         return PPC_PARAM_ERR;
     };
-    let normalized_name = ppc_normalize_vfs_path(&directory_name);
-    if normalized_name.is_empty() {
-        return PPC_PARAM_ERR;
-    }
-    let Some(parent_path) = ppc_directory_path_for_id(vfs_directories, parent_dir_id) else {
-        return PPC_FNF_ERR;
-    };
-    let path = ppc_join_vfs_path(parent_path, &normalized_name);
-    if let Some(existing) = ppc_directory_id_for_path(vfs_directories, &path) {
-        let _ = memory.write_u32_be(created_dir_id_ptr, existing);
-        return PPC_DUP_FN_ERR;
-    }
-
-    let dir_id = *next_vfs_dir_id;
-    let Some(next_dir_id) = next_vfs_dir_id.checked_add(1) else {
-        return PPC_PARAM_ERR;
-    };
-    if memory.write_u32_be(created_dir_id_ptr, dir_id).is_none() {
-        return PPC_PARAM_ERR;
-    }
-    *next_vfs_dir_id = next_dir_id;
-    vfs_directories.push(PpcVfsDirectory {
-        dir_id,
+    ppc_create_vfs_directory(
+        vfs_directories,
+        next_vfs_dir_id,
         parent_dir_id,
-        path,
-        creator: PPC_DIRECTORY_CREATOR,
-        file_type: PPC_DIRECTORY_FILE_TYPE,
-        finder_flags: 0,
-        dirty: true,
-    });
-    PPC_NO_ERR
+        &directory_name,
+        |dir_id| memory.write_u32_be(created_dir_id_ptr, dir_id).is_some(),
+    )
 }
 
 pub(super) fn ppc_fsp_dir_create(
@@ -5093,37 +5115,13 @@ pub(super) fn ppc_fsp_dir_create(
         return PPC_PARAM_ERR;
     }
     let parent_dir_id = ppc_resolve_directory_id(vref, requested_dir_id, default_dir_id);
-    let normalized_name = ppc_normalize_vfs_path(&decode_mac_roman(&directory_name));
-    if normalized_name.is_empty() {
-        return PPC_PARAM_ERR;
-    }
-    let Some(parent_path) = ppc_directory_path_for_id(vfs_directories, parent_dir_id) else {
-        return PPC_FNF_ERR;
-    };
-    let path = ppc_join_vfs_path(parent_path, &normalized_name);
-    if let Some(existing) = ppc_directory_id_for_path(vfs_directories, &path) {
-        let _ = memory.write_u32_be(created_dir_id_ptr, existing);
-        return PPC_DUP_FN_ERR;
-    }
-
-    let dir_id = *next_vfs_dir_id;
-    let Some(next_dir_id) = next_vfs_dir_id.checked_add(1) else {
-        return PPC_PARAM_ERR;
-    };
-    if memory.write_u32_be(created_dir_id_ptr, dir_id).is_none() {
-        return PPC_PARAM_ERR;
-    }
-    *next_vfs_dir_id = next_dir_id;
-    vfs_directories.push(PpcVfsDirectory {
-        dir_id,
+    ppc_create_vfs_directory(
+        vfs_directories,
+        next_vfs_dir_id,
         parent_dir_id,
-        path,
-        creator: PPC_DIRECTORY_CREATOR,
-        file_type: PPC_DIRECTORY_FILE_TYPE,
-        finder_flags: 0,
-        dirty: true,
-    });
-    PPC_NO_ERR
+        &decode_mac_roman(&directory_name),
+        |dir_id| memory.write_u32_be(created_dir_id_ptr, dir_id).is_some(),
+    )
 }
 
 pub(super) fn ppc_find_folder_dir_id(folder_type: u32) -> u32 {

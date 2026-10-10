@@ -276,6 +276,7 @@ impl PpcLoadedApp {
         let mut agl = std::mem::take(&mut self.agl);
         let gworld_pixel_states = self.gworld_pixel_states.shared_handle();
         let window_list = self.window_list.shared_handle();
+        let application_size = self.application_size.shared_handle();
         let mut q3_objects = std::mem::take(&mut self.q3_objects);
         let mut q3_object_refs = std::mem::take(&mut self.q3_object_refs);
         let mut next_q3_object = self.next_q3_object;
@@ -1808,6 +1809,7 @@ impl PpcLoadedApp {
                                                 resource_files,
                                                 vfs_resource_files,
                                                 vfs_resources,
+                                                menu_generations,
                                                 ..
                                             } = resource_manager;
                                             current_gworld.with_mut(|current_gworld| {
@@ -1895,6 +1897,7 @@ impl PpcLoadedApp {
                                             resource_files,
                                             vfs_resource_files,
                                             vfs_resources,
+                                            menu_generations,
                                             next_file_ref_num,
                                             current_gworld,
                                             current_gdevice,
@@ -1919,6 +1922,7 @@ impl PpcLoadedApp {
                                             next_working_directory_ref_num,
                                             application_working_directory_ref_num,
                                             launched_app_path: launched_app_path.as_deref(),
+                                            process_mode: application_size.with_ref(|size| size.map_or(0, |size| u32::from(size.flags))),
                                             param_text: &param_text,
                                             scrap: &mut scrap,
                                             list_manager,

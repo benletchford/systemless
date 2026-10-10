@@ -3,7 +3,7 @@
 use crate::mac_roman::decode_mac_roman;
 use crate::memory::SavedPixels;
 use crate::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
-use crate::quickdraw::text::{get_glyph, QuickDrawTextStyle};
+use crate::quickdraw::text::QuickDrawTextStyle;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -120,14 +120,7 @@ pub(crate) fn is_standard_system_menu_title(title: &[u8]) -> bool {
 /// byte-oriented also preserves the MENU record's Mac Roman identity across
 /// both CPU gateways. Macintosh Toolbox Essentials (1992), pp. 3-10--3-13.
 pub(crate) fn standard_menu_text_advance(text: &[u8]) -> i16 {
-    let advance = text.iter().fold(0i32, |advance, byte| {
-        advance.saturating_add(
-            get_glyph(0, 12, char::from(*byte))
-                .map(|(glyph, _)| i32::from(glyph.advance))
-                .unwrap_or(6),
-        )
-    });
-    i16::try_from(advance).unwrap_or(i16::MAX)
+    crate::menu_model::GuestMenuFont::default().text_advance(text)
 }
 
 /// Measure one standard menu-bar title.
@@ -854,6 +847,7 @@ pub(crate) enum TrackedMenuIcon {
 /// Presentation snapshot retained for one native standard-menu item.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TrackedMenuItemAppearance {
+    pub(crate) font: crate::menu_model::GuestMenuFont,
     pub(crate) height: i16,
     pub(crate) icon_kind: StandardMenuIconKind,
     pub(crate) icon: Option<TrackedMenuIcon>,
@@ -1665,6 +1659,31 @@ impl StandardMenuIconKind {
             Self::Normal => 32,
             Self::Reduced | Self::Small => 16,
         }
+    }
+
+    pub(crate) fn row_height_for_font(
+        self,
+        style: QuickDrawTextStyle,
+        font: crate::menu_model::GuestMenuFont,
+    ) -> i16 {
+        if font == crate::menu_model::GuestMenuFont::default() {
+            return self.row_height(style);
+        }
+        let metrics = font.metrics();
+        self.row_height_for_text(style, metrics.ascent.saturating_add(metrics.descent)
+            .saturating_add(metrics.leading))
+    }
+
+    pub(crate) fn row_height_for_text(self, style: QuickDrawTextStyle, text: i16) -> i16 {
+        // Menu rows follow ascent + descent + leading; icon slots retain
+        // their minimum geometry. Inside Macintosh V (1986), V-249.
+        let icon = match self {
+            Self::None => 0,
+            Self::Normal => 34,
+            Self::Color { height, .. } => height.max(16),
+            Self::Reduced | Self::Small => 16,
+        };
+        text.max(1).saturating_add(if style.shadow() { 5 } else { 0 }).max(icon)
     }
 
     pub(crate) fn row_height(self, style: QuickDrawTextStyle) -> i16 {
@@ -3140,6 +3159,7 @@ pub(crate) fn install_menu_list_copy<E>(
 pub(crate) struct MenuSnapshotRecord {
     pub(crate) id: i16,
     pub(crate) title: Vec<u8>,
+    pub(crate) standard_definition: bool,
     pub(crate) items: MenuItems,
 }
 
@@ -3498,28 +3518,39 @@ impl MenuList {
                         let number = i16::try_from(index + 1).unwrap_or(i16::MAX);
                         let submenu_id = hierarchical_menu_id(item.command, item.mark);
                         GuestMenuItem {
+                            mark: item.mark,
+                            style: item.style,
                             number,
                             text: decode_mac_roman(&item.text),
                             enabled: item.enabled,
                             checked: item.mark != 0 && submenu_id.is_none(),
                             key_equivalent: (item.command > 0x20)
-                                .then(|| char::from(item.command).to_ascii_lowercase()),
+                                .then(|| decode_mac_roman(&[item.command]).chars().next().unwrap()),
                             submenu_id,
                             separator: item.text == b"-",
                         }
                     })
                     .collect();
                 Some(GuestMenu {
+                    guest_id: handle,
+                    generation: 0,
                     id: record.id,
                     title,
                     enabled,
+                    standard_definition: record.standard_definition,
                     hierarchical,
                     visible_in_menu_bar: !hierarchical,
                     items,
                 })
             })
             .collect();
-        GuestMenuSnapshot { menus }
+        GuestMenuSnapshot {
+            menus,
+            // InitProcMenu stores the MBDF resource ID in the upper 13 bits;
+            // the low three bits select its variant. Macintosh Toolbox
+            // Essentials (1992), pp. 3-103--3-105.
+            custom_bar_definition: (self.mb_res_id as u16) >> 3 != 0,
+        }
     }
 
     pub(crate) fn hierarchical_handles(&self) -> impl DoubleEndedIterator<Item = u32> + '_ {
@@ -5771,6 +5802,7 @@ mod tests {
         let snapshot = list.guest_snapshot(|handle| {
             Some(MenuSnapshotRecord {
                 id: if handle == 0x1000 { 128 } else { 200 },
+                standard_definition: true,
                 title: if handle == 0x1000 {
                     vec![0x14]
                 } else {
@@ -5789,7 +5821,7 @@ mod tests {
                             icon: 0,
                             command: if handle == 0x1000 { 0x1b } else { b'D' },
                             mark: if handle == 0x1000 { 200 } else { 0x12 },
-                            style: 0,
+                            style: 0x03,
                             enabled: handle == 0x1000,
                         },
                         MenuItem {
@@ -5806,6 +5838,12 @@ mod tests {
         });
 
         assert_eq!(snapshot.menus.len(), 2);
+        assert_eq!(snapshot.menus[0].items[0].style, 0x03);
+        assert_eq!(snapshot.menus[0].items[0].mark, 200);
+        assert_eq!(snapshot.menus[1].items[0].mark, 0x12);
+        assert_eq!(snapshot.menus[1].items[0].style, 0x03);
+        assert_eq!(snapshot.menus[0].guest_id, 0x1000);
+        assert_eq!(snapshot.menus[1].guest_id, 0x2000);
         assert_eq!(snapshot.menus[0].title, "Systemless");
         assert!(snapshot.menus[0].visible_in_menu_bar);
         assert_eq!(snapshot.menus[0].items[0].submenu_id, Some(200));
@@ -5813,9 +5851,42 @@ mod tests {
         assert!(snapshot.menus[1].hierarchical);
         assert!(!snapshot.menus[1].visible_in_menu_bar);
         assert!(!snapshot.menus[1].enabled);
-        assert_eq!(snapshot.menus[1].items[0].key_equivalent, Some('d'));
+        assert_eq!(snapshot.menus[1].items[0].key_equivalent, Some('D'));
         assert!(snapshot.menus[1].items[0].checked);
         assert_eq!(snapshot.menus[1].items[1].key_equivalent, None);
+    }
+
+    #[test]
+    fn guest_snapshot_preserves_command_case_and_mac_roman_in_both_partitions() {
+        let list = MenuList {
+            regular: vec![MenuListEntry { handle: 0x1000, value: 11 }],
+            hierarchical: vec![MenuListEntry { handle: 0x2000, value: 0 }],
+            ..MenuList::default()
+        };
+        let snapshot = list.guest_snapshot(|handle| Some(MenuSnapshotRecord {
+            id: if handle == 0x1000 { 128 } else { 200 },
+            standard_definition: true,
+            title: b"Commands".to_vec(),
+            items: MenuItems {
+                first_item: 0,
+                enable_flags: u32::MAX,
+                items: (0..=255).map(|command| MenuItem {
+                    text: b"Command".to_vec(), icon: 0, command, mark: 0,
+                    style: 0, enabled: true,
+                }).collect(),
+            },
+        }));
+        for menu in &snapshot.menus {
+            for (command, item) in menu.items.iter().enumerate() {
+                let expected = (command > 0x20).then(|| {
+                    crate::mac_roman::decode_mac_roman(&[command as u8]).chars().next().unwrap()
+                });
+                assert_eq!(item.key_equivalent, expected, "command {command:#x}");
+            }
+            assert_eq!(menu.items[b'q' as usize].key_equivalent, Some('q'));
+            assert_eq!(menu.items[b'Q' as usize].key_equivalent, Some('Q'));
+            assert_eq!(menu.items[0x8e].key_equivalent, Some('é'));
+        }
     }
 
     #[test]

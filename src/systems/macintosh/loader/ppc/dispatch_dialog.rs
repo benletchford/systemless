@@ -130,6 +130,7 @@ pub(crate) struct PpcDialogCallbackState {
     pub(super) completion: PpcDialogCallbackCompletion,
     /// Set while ModalDialog waits for the application's filter proc.
     pub(super) modal_filter: Option<PpcModalFilterCall>,
+    pub(super) tracked_press: Option<PpcQueuedEvent>,
 }
 
 /// One ModalDialog filter call in flight: the event handed to the filter
@@ -200,6 +201,7 @@ pub(super) struct PpcDialogDispatchContext<'a> {
     pub(super) param_text: &'a SharedProcessDialogText,
     pub(super) tick_count: u32,
     pub(super) input: PpcInputSnapshot,
+    pub(super) scrap: &'a mut PpcScrapState,
     pub(super) quickdraw_text_mode: i16,
     pub(super) quickdraw_text_size: i16,
     pub(super) quickdraw_fore_color: &'a mut PpcRgbColor,
@@ -236,6 +238,7 @@ pub(super) fn dispatch_dialog_import(
         param_text,
         tick_count,
         input,
+        scrap,
         quickdraw_text_mode,
         quickdraw_text_size,
         quickdraw_fore_color,
@@ -1050,6 +1053,8 @@ pub(super) fn dispatch_dialog_import(
                 vfs_resources,
                 current_resource_refnum,
                 filter_result,
+                &scrap.text_edit,
+                *quickdraw_back_color,
             );
             Some(match pass {
                 PpcModalDialogPass::Done(action) => action,
@@ -1191,6 +1196,8 @@ pub(super) fn dispatch_dialog_import(
                 vfs_resources,
                 current_resource_refnum,
                 filter_result,
+                &scrap.text_edit,
+                *quickdraw_back_color,
             );
             caller_registers.restore(cpu);
             let action = match pass {
@@ -1372,6 +1379,8 @@ pub(super) fn dispatch_dialog_import(
                 vfs_resources,
                 current_resource_refnum,
                 filter_result,
+                &scrap.text_edit,
+                *quickdraw_back_color,
             );
             caller_registers.restore(cpu);
             let action = match pass {
@@ -1466,6 +1475,7 @@ pub(super) fn dispatch_dialog_import(
                 last_resource_error,
                 param_text,
                 tick_count,
+                input, scrap, *quickdraw_fore_color, *quickdraw_back_color, quickdraw_fore_indices,
             ))
         }
         _ => None,
@@ -1704,6 +1714,11 @@ fn ppc_dispatch_dialog_compatibility(
     last_resource_error: &mut i16,
     param_text: &SharedProcessDialogText,
     tick_count: u32,
+    input: PpcInputSnapshot,
+    scrap: &mut PpcScrapState,
+    fore_color: PpcRgbColor,
+    back_color: PpcRgbColor,
+    fore_indices: &HashMap<u32, u8>,
 ) -> PpcImportAction {
     let dialog = cpu.gpr[3];
     match operation {
@@ -1835,18 +1850,33 @@ fn ppc_dispatch_dialog_compatibility(
                     ..
                 } => {
                     if is_edit_text {
+                        let current_field = memory
+                            .read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET)
+                            .unwrap_or(u16::MAX);
+                        if current_field != (item_no - 1) as u16 {
+                            let mut allocator = PpcProcessAllocatorView {
+                                memory_manager: process_memory_manager,
+                            };
+                            ppc_select_dialog_item_text(
+                                Some(&mut allocator), None, memory, heap_cursor,
+                                heap_limit, last_mem_error, handles,
+                                SelectDialogItemTextParameters::new(dialog, item_no as usize, 0, 0),
+                                event.when, PPC_QD_TEXT_MODE_SRC_OR,
+                                PPC_QD_TEXT_SIZE_SYSTEM, fore_color,
+                            );
+                            let _ = ppc_draw_dialog(
+                                memory, handles, controls, gworlds, screen_clut,
+                                vfs_resources, current_resource_refnum, dialog,
+                            );
+                        }
                         let te_handle = memory
                             .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
                             .unwrap_or(0);
-                        ppc_te_click(
-                            memory,
-                            handles,
-                            te_handle,
-                            event.where_v.saturating_sub(bounds.0),
-                            event.where_h.saturating_sub(bounds.1),
-                            event.modifiers & 0x0200 != 0,
-                            event.when,
-                        );
+                        let held = super::dispatch_textedit::track_ppc_text_edit_selection(
+                            memory, handles, gworlds, &scrap.text_edit, input, event_queue, te_handle,
+                            (event.where_v.saturating_sub(bounds.0), event.where_h.saturating_sub(bounds.1)),
+                            event.modifiers & 0x0200 != 0, event.when, dialog, fore_color, back_color, fore_indices);
+                        if held { return PpcImportAction::Yield(u64::MAX); }
                     } else if is_resource_control {
                         if let Some(item) =
                             items.get(usize::from(item_no as u16).saturating_sub(1))
@@ -1867,7 +1897,9 @@ fn ppc_dispatch_dialog_compatibility(
                     PpcImportAction::Return(1)
                 }
                 crate::dialog_manager::DialogSelectAction::KeyStroke {
-                    character, ..
+                    edit_item,
+                    character,
+                    ..
                 } => {
                     let te_handle = memory
                         .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
@@ -1889,6 +1921,23 @@ fn ppc_dispatch_dialog_compatibility(
                     if *last_mem_error != PPC_NO_ERR {
                         return PpcImportAction::Return(0);
                     }
+                    // DialogSelect delegates key input to TextEdit, whose
+                    // TEKey operation redraws the changed field immediately.
+                    // Limit this redraw to the active edit item so guest-owned
+                    // picture, control, and user-item pixels are untouched.
+                    // Macintosh Toolbox Essentials (1992), pp. 6-140--6-141;
+                    // Text (1993), pp. 2-81--2-82.
+                    let _ = ppc_draw_dialog_selected(
+                        memory,
+                        handles,
+                        controls,
+                        gworlds,
+                        screen_clut,
+                        vfs_resources,
+                        current_resource_refnum,
+                        dialog,
+                        Some(edit_item),
+                    );
                     PpcImportAction::Return(1)
                 }
                 _ => PpcImportAction::Return(0),
@@ -3792,13 +3841,13 @@ fn ppc_te_create_for_dialog_item(
     {
         return 0;
     }
-    // Macintosh Toolbox Essentials (1992), pp. 6-135--6-137: when a
-    // dialog opens its first editText item, Dialog Manager activates the
-    // shared TERec and selects the item's initial text. The first typed
-    // character therefore replaces resource placeholder/default text.
+    // A new dialog normally places the insertion point at the start of its
+    // first editText item; SelectDialogItemText is needed to preselect text.
+    // Macintosh Toolbox Essentials (1992), "Responding to Events in Editable
+    // Text Items" and "SelectDialogItemText", pp. 6-79--6-80, 6-131.
     if let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) {
         let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, 0);
-        let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, length);
+        let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, 0);
         let _ = memory.write_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET, 1);
         let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, tick_count);
     }
@@ -4210,6 +4259,7 @@ fn ppc_begin_dialog_callbacks(
         import_args: cpu.gpr[3..11].try_into().unwrap(),
         completion,
         modal_filter: None,
+        tracked_press: None,
     });
     ppc_next_dialog_callback(cpu, memory, dialog_callback_stack)
 }
@@ -4457,7 +4507,7 @@ pub(super) fn ppc_draw_dialog_text(
     }
 }
 
-fn ppc_dialog_item_title(
+pub(super) fn ppc_dialog_item_title(
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
     item: &PpcDialogItemView,
@@ -4487,6 +4537,30 @@ pub(super) fn ppc_draw_dialog(
     current_resource_refnum: i16,
     dialog: u32,
 ) -> bool {
+    ppc_draw_dialog_selected(
+        memory,
+        handles,
+        controls,
+        gworlds,
+        screen_clut,
+        vfs_resources,
+        current_resource_refnum,
+        dialog,
+        None,
+    )
+}
+
+pub(super) fn ppc_draw_dialog_selected(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    controls: &[PpcControlRecord],
+    gworlds: &[PpcGWorldRecord],
+    screen_clut: &[[u16; 3]; 256],
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    dialog: u32,
+    only_item: Option<i16>,
+) -> bool {
     let Some(front) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) else {
         return false;
     };
@@ -4505,6 +4579,9 @@ pub(super) fn ppc_draw_dialog(
         .read_u16_be(dialog.wrapping_add(DIALOG_DEFAULT_ITEM_OFFSET))
         .unwrap_or(1) as usize;
     for (index, item) in items.iter().enumerate() {
+        if only_item.is_some_and(|number| number != (index + 1) as i16) {
+            continue;
+        }
         // Imaging With QuickDraw (1994), pp. 2-20--2-21: drawing is clipped
         // to the port's visible region. Some applications deliberately keep
         // inactive DITL items beyond the DialogRecord's portRect; the native
@@ -4572,61 +4649,25 @@ pub(super) fn ppc_draw_dialog(
                         1,
                     );
                 }
-                let selected = if base_type == DIALOG_ITEM_EDIT_TEXT
-                    && memory
-                        .read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET)
+                if base_type == DIALOG_ITEM_EDIT_TEXT
+                    && memory.read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET)
                         .is_some_and(|field| usize::from(field) == index)
                 {
-                    memory
-                        .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
-                        .and_then(|handle| ppc_te_record_ptr(memory, handle))
-                        .is_some_and(|te_ptr| {
-                            memory
-                                .read_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET)
-                                .unwrap_or(0)
-                                != 0
-                                && memory
-                                    .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
-                                    .unwrap_or(0)
-                                    < memory
-                                        .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
-                                        .unwrap_or(0)
-                        })
-                } else {
-                    false
-                };
-                if selected {
-                    let interior = (
-                        rect.0,
-                        rect.1,
-                        rect.0.saturating_add(16).min(rect.2),
-                        rect.3,
-                    );
-                    if !ppc_draw_themed_selection(memory, gworlds, PPC_MAIN_GWORLD, interior) {
-                        let _ = ppc_fill_front_rect(
-                            memory,
-                            front,
-                            interior,
-                            ppc_theme_rgb(palette.frame_dark),
-                        );
+                    if let Some(handle) = memory.read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
+                        .filter(|handle| ppc_te_record_ptr(memory, *handle).is_some())
+                    {
+                        ppc_te_draw(memory, handles, gworlds, handle, dialog,
+                            ppc_theme_rgb(palette.frame_dark), &HashMap::new());
+                        continue;
                     }
                 }
-                let text_rect =
-                    if matches!(base_type, DIALOG_ITEM_STATIC_TEXT | DIALOG_ITEM_EDIT_TEXT) {
-                        dialog_text_rect(rect)
-                    } else {
-                        rect
-                    };
+                let text_rect = dialog_text_rect(rect);
                 ppc_draw_dialog_text(
                     memory,
                     gworlds,
                     text_rect,
                     &text,
-                    if selected && ppc_ui_theme(gworlds) == UiThemeId::ClassicSystem7 {
-                        ppc_theme_rgb(palette.window_background)
-                    } else {
-                        ppc_theme_rgb(palette.frame_dark)
-                    },
+                    ppc_theme_rgb(palette.frame_dark),
                 );
             }
             DIALOG_ITEM_PICTURE => {
@@ -4666,7 +4707,7 @@ pub(super) fn ppc_draw_dialog(
     // controls owned by the dialog as a final pass so SetControlValue calls
     // made before the dialog is positioned cannot leave them missing or at
     // stale local coordinates.
-    for record in controls {
+    for record in controls.iter().filter(|_| only_item.is_none()) {
         if !(1008..=1023).contains(&(record.proc_id & 0x0fff)) {
             continue;
         }
@@ -4954,6 +4995,7 @@ fn ppc_call_modal_filter(
         restore_rtoc: cpu.gpr[2],
         import_args: cpu.gpr[3..11].try_into().unwrap(),
         completion: PpcDialogCallbackCompletion::ReturnPreserve,
+        tracked_press: None,
         modal_filter: Some(PpcModalFilterCall {
             event: launch.event,
             event_ptr,
@@ -5051,8 +5093,22 @@ fn ppc_modal_dialog(
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
     filter_result: Option<PpcModalFilterResult>,
+    text_edit: &crate::process_context::SharedProcessTextEditManager,
+    back_color: PpcRgbColor,
 ) -> PpcModalDialogPass {
     use PpcModalDialogPass::Done;
+    // Toolbox Essentials (1992), pp. 5-33--5-36, 6-79--6-80:
+    // control tracking owns an already-filtered press until release.
+    let tracked_press = dialog_callback_stack.last().and_then(|state| {
+        (state.import_pc == cpu.pc).then_some(state.tracked_press).flatten()
+    });
+    let filter_result = if let Some(event) = tracked_press {
+        dialog_callback_stack.pop();
+        Some(PpcModalFilterResult { handled: false, event: Some(event) })
+    } else {
+        filter_result
+    };
+
     if filter_result.is_none() {
         if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {
             return Done(action);
@@ -5105,7 +5161,15 @@ fn ppc_modal_dialog(
     };
     *current_gworld = dialog;
     *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
-    let event = match event {
+    if text_edit.has_click_tracking() {
+        let handle = memory.read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET).unwrap_or(0);
+        super::dispatch_textedit::track_ppc_text_edit_selection(
+            memory, handles, gworlds, text_edit, input, event_queue, handle,
+            (0, 0), false, tick_count, dialog, fore_color, back_color, fore_indices,
+        );
+        return Done(PpcImportAction::Yield(u64::MAX));
+    }
+    let mut event = match event {
         // The filter has seen this event and declined it.
         Some(event) => event,
         None => {
@@ -5127,6 +5191,83 @@ fn ppc_modal_dialog(
             event
         }
     };
+    // HIG (1992), p. 205; Toolbox Essentials (1992), pp. 6-79--6-80:
+    // standard dialog buttons track a press until release, and releasing
+    // outside the original item cancels it. Retain the original mouseDown
+    // while this synchronous import owns tracking.
+    if let Some(mouse_down) = event.as_ref().filter(|event| event.what == 1) {
+        if let Some(hit) = ppc_dialog_item_at_global_point(
+            memory, controls, &items, bounds, mouse_down.where_v, mouse_down.where_h,
+        ) {
+            if items.get(usize::from(hit).saturating_sub(1)).is_some_and(|item| {
+                matches!(item.kind(), crate::dialog_manager::DialogItemKind::Button
+                    | crate::dialog_manager::DialogItemKind::Checkbox
+                    | crate::dialog_manager::DialogItemKind::RadioButton)
+            }) {
+                let release_index = event_queue.iter().position(|event| event.what == 2);
+                let held_inside = release_index.is_none() && input.mouse_button
+                    && ppc_dialog_item_at_global_point(memory, controls, &items, bounds,
+                        input.mouse_v, input.mouse_h) == Some(hit);
+                let handle = items[usize::from(hit) - 1].handle;
+                if let Some(pointer) = ppc_control_ptr(memory, handle) {
+                    // Toolbox Essentials (1992), pp. 5-89, 5-95:
+                    // contrlHilite stores the tracked part code, not a Boolean.
+                    let highlight = if held_inside {
+                        ppc_control_part_at_point(memory, controls, handle,
+                            input.mouse_v.saturating_sub(bounds.0),
+                            input.mouse_h.saturating_sub(bounds.1)).unwrap_or(0) as u8
+                    } else { 0 };
+                    if memory.read_u8(pointer + PPC_CONTROL_HILITE_OFFSET) != Some(highlight) {
+                        let _ = memory.write_u8(pointer + PPC_CONTROL_HILITE_OFFSET, highlight);
+                        let _ = ppc_draw_dialog_selected(memory, handles, controls, gworlds,
+                            screen_clut, vfs_resources, current_resource_refnum, dialog, Some(hit as i16));
+                    }
+                }
+                if release_index.is_none() && input.mouse_button {
+                    dialog_callback_stack.push(PpcDialogCallbackState {
+                        import_pc: cpu.pc,
+                        dialog,
+                        callbacks: Vec::new(),
+                        next_callback: 0,
+                        final_pc: cpu.lr,
+                        restore_rtoc: cpu.gpr[2],
+                        import_args: cpu.gpr[3..11].try_into().unwrap(),
+                        completion: PpcDialogCallbackCompletion::Yield,
+                        modal_filter: None,
+                        tracked_press: event.take(),
+                    });
+                    return Done(PpcImportAction::Yield(u64::MAX));
+                }
+                let release = release_index.and_then(|index| event_queue.remove(index));
+                let (vertical, horizontal) = release.as_ref()
+                    .map(|event| (event.where_v, event.where_h))
+                    .unwrap_or((input.mouse_v, input.mouse_h));
+                let released_item = ppc_dialog_item_at_global_point(
+                    memory, controls, &items, bounds, vertical, horizontal,
+                );
+                if released_item != Some(hit) {
+                    event = None;
+                }
+            }
+        }
+    }
+    // ModalDialog owns idle processing while it retains the caller.
+    // Toolbox Essentials (1992), pp. 6-79--6-85; Text (1993), p. 2-84.
+    if event.is_none() && filter_proc == 0 {
+        let handle = memory.read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET).unwrap_or(0);
+        if ppc_te_idle(memory, handle, tick_count) {
+            // Repaint only the active edit item, including its background,
+            // so the hidden phase removes the previously drawn caret.
+            if let Some(field) = memory.read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET) {
+                let _ = ppc_draw_dialog_selected(
+                    memory, handles, controls, gworlds, screen_clut,
+                    vfs_resources, current_resource_refnum, dialog,
+                    Some((field as i16).saturating_add(1)),
+                );
+            }
+        }
+    }
+
     let mut handled_edit_event = false;
     let hit = match event.as_ref().map(|event| event.what) {
         Some(1) => event.as_ref().and_then(|event| {
@@ -5181,14 +5322,11 @@ fn ppc_modal_dialog(
                 let te_handle = memory
                     .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
                     .unwrap_or(0);
-                ppc_te_click(
-                    memory,
-                    handles,
-                    te_handle,
-                    event.where_v.saturating_sub(bounds.0),
-                    event.where_h.saturating_sub(bounds.1),
-                    event.modifiers & 0x0200 != 0,
-                    0,
+                super::dispatch_textedit::track_ppc_text_edit_selection(
+                    memory, handles, gworlds, text_edit, input, event_queue, te_handle,
+                    (event.where_v.saturating_sub(bounds.0), event.where_h.saturating_sub(bounds.1)),
+                    event.modifiers & 0x0200 != 0, tick_count, dialog,
+                    fore_color, back_color, fore_indices,
                 );
                 handled_edit_event = true;
                 None

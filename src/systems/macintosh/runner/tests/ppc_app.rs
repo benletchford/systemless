@@ -123,6 +123,7 @@ fn ppc_loaded_app_runs_through_fixture_runner() {
         file_completion_context: None,
         parked_interrupt_callback: None,
         interrupt_callback_parks: 0,
+        application_size: Default::default(),
         apple_events: Default::default(),
         cfm: Some(crate::cfm::CfmState::default()),
         controls: Default::default(),

@@ -1,0 +1,188 @@
+{
+  "evidence": "Actual shared Demo::render macOS GPUI headless compositor; guest frames retained alongside composed images.",
+  "font_policy": "Plain exact-size QuickDraw strikes, canonical TERec baseline; bundled outlines are not claimed as authentic Apple bitmap fonts.",
+  "visual_review": "All six document views preserve positions/wrapping; selection hides during suspension. Monochrome black custom panels are retained intentionally.",
+  "cpu_modes": [
+    "monochrome 68k",
+    "colour 68k",
+    "PowerPC"
+  ],
+  "gpui_pointer_regression": {
+    "name": "classic_document_glyph_clicks_reach_guest_at_scene_scales",
+    "scene_scales": [
+      0.75,
+      1,
+      1.5,
+      2
+    ],
+    "lines": [
+      0,
+      1
+    ],
+    "result": "pass",
+    "seconds": 119.31
+  },
+  "selected_to_suspended_difference_bounds_pixels": [
+    165,
+    347,
+    325,
+    377
+  ],
+  "colour_68k_ppc_document_region": [
+    167,
+    349,
+    821,
+    651
+  ],
+  "colour_68k_ppc_document_pixels_identical": true,
+  "limitations": [
+    "Showcase plain Geneva 9 document slice only; other fonts/sizes/styles and system surfaces remain unqualified.",
+    "SDK platform events plus actual guest callbacks, not physical macOS input or native-oracle qualification.",
+    "Capture viewport 900x740 logical, 1800x1480 pixels; scale matrix verified by SDK events, not screenshots at every scale.",
+    "Live performance of binary glyph-span painting remains unqualified."
+  ],
+  "captures": [
+    {
+      "mode": "mono",
+      "state": "selected",
+      "files": [
+        {
+          "file": "text-classic-strike-selected-mono.png",
+          "sha256": "e8bbf1f5a6f9e03ae08ae5e655e1007794ed918b15b7a5f2c1154e991977c7ab",
+          "size": [
+            1800,
+            1480
+          ]
+        },
+        {
+          "file": "text-classic-strike-selected-mono.guest.png",
+          "sha256": "f63b8455c95580c0f27487eb87236254afcca2eae16a8d09dfd5e248ec86615c",
+          "size": [
+            800,
+            600
+          ]
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "suspended",
+      "files": [
+        {
+          "file": "text-classic-strike-suspended-mono.png",
+          "sha256": "b8e87303765fb9e3a2b94a0b6e39c36a993985e1fdc4ef833d12b55eb2424946",
+          "size": [
+            1800,
+            1480
+          ]
+        },
+        {
+          "file": "text-classic-strike-suspended-mono.guest.png",
+          "sha256": "713e2ed2ce18d5111bda8f4f4d2349b7118fa665befc51f0efa616781eccec28",
+          "size": [
+            800,
+            600
+          ]
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "selected",
+      "files": [
+        {
+          "file": "text-classic-strike-selected-colour.png",
+          "sha256": "c0b1b67763c2a4a81cafc7a53ae86a02678ba0015b340a8f5cddf93ee33b24bf",
+          "size": [
+            1800,
+            1480
+          ]
+        },
+        {
+          "file": "text-classic-strike-selected-colour.guest.png",
+          "sha256": "dbeb94170d916dea45bca07c641f769941940f082b5b545051a051160e6a20cb",
+          "size": [
+            800,
+            600
+          ]
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "suspended",
+      "files": [
+        {
+          "file": "text-classic-strike-suspended-colour.png",
+          "sha256": "5942145536c8bc7582e81d4858296ff854587abda67cae05aa7ec700a5d9a581",
+          "size": [
+            1800,
+            1480
+          ]
+        },
+        {
+          "file": "text-classic-strike-suspended-colour.guest.png",
+          "sha256": "0e1a1dab8640db3aec8a161547ccf7f2cc2590b94672c2138057e26071130b01",
+          "size": [
+            800,
+            600
+          ]
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "selected",
+      "files": [
+        {
+          "file": "text-classic-strike-selected-ppc.png",
+          "sha256": "c0b1b67763c2a4a81cafc7a53ae86a02678ba0015b340a8f5cddf93ee33b24bf",
+          "size": [
+            1800,
+            1480
+          ]
+        },
+        {
+          "file": "text-classic-strike-selected-ppc.guest.png",
+          "sha256": "dbeb94170d916dea45bca07c641f769941940f082b5b545051a051160e6a20cb",
+          "size": [
+            800,
+            600
+          ]
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "suspended",
+      "files": [
+        {
+          "file": "text-classic-strike-suspended-ppc.png",
+          "sha256": "5942145536c8bc7582e81d4858296ff854587abda67cae05aa7ec700a5d9a581",
+          "size": [
+            1800,
+            1480
+          ]
+        },
+        {
+          "file": "text-classic-strike-suspended-ppc.guest.png",
+          "sha256": "0e1a1dab8640db3aec8a161547ccf7f2cc2590b94672c2138057e26071130b01",
+          "size": [
+            800,
+            600
+          ]
+        }
+      ]
+    }
+  ],
+  "capture_command": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit {mode_flags} {capture_flag} {output}",
+  "mode_flags": {
+    "mono": "--screen-depth 1",
+    "colour": "--screen-depth 8",
+    "ppc": "--prefer-powerpc"
+  },
+  "capture_flags": {
+    "selected": "--capture-text-edit-selected",
+    "suspended": "--capture-text-edit-host-suspended"
+  }
+}

@@ -55,6 +55,8 @@ fn init_app_seeds_classic_double_click_interval() {
         DEFAULT_DOUBLE_TIME_TICKS,
         "a zero DoubleTime makes every application-level double-click test fail"
     );
+    assert_eq!(runner.bus.read_long(addr::CARET_TIME), crate::memory::globals::DEFAULT_CARET_TIME_TICKS);
+
 }
 
 #[test]
@@ -545,4 +547,65 @@ fn init_app_ignores_too_small_application_partition_override() {
         app.initial_sp - APP_STACK_SAFETY_MARGIN,
         "invalid tiny overrides must fall back to the default launch limit"
     );
+}
+
+#[test]
+fn application_size_policy_survives_cpu_launch_and_resets_without_size() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let code0 = minimal_code0(0, 0x2000, 0, 0);
+    let size = size_resource_bytes(0x5a40, 0x0008_0000, 0x0008_0000);
+    let bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0), (*b"SIZE", -1, &size)]);
+    let fork = ResourceFork::parse(&bytes).unwrap();
+    let classic = runner.load_app(&fork).unwrap();
+    runner.init_app(&classic);
+    assert_eq!(
+        runner
+            .dispatcher
+            .application_size
+            .with_ref(|size| size.unwrap().flags),
+        0x5a40
+    );
+
+    let mut native = halted_ppc_app_with_sound(Default::default());
+    let ppc = native.ppc.as_mut().unwrap();
+    ppc.seed_vfs_files_and_resources(
+        Vec::new(),
+        Vec::new(),
+        vec![crate::loader::ppc::PpcVfsResourceRecord {
+            ref_num: 0,
+            path: "Policy App".into(),
+            res_type: u32::from_be_bytes(*b"SIZE"),
+            res_id: -1,
+            name: Vec::new(),
+            data: size_resource_bytes(0x4080, 0x0008_0000, 0x0008_0000),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        }],
+    );
+    ppc.set_launched_app_path("Policy App");
+    runner.init_app(&native);
+    assert_eq!(
+        runner
+            .dispatcher
+            .application_size
+            .with_ref(|size| size.unwrap().flags),
+        0x4080
+    );
+    assert_eq!(
+        runner
+            .native
+            .application()
+            .unwrap()
+            .application_size
+            .with_ref(|size| size.unwrap().flags),
+        0x4080
+    );
+
+    let bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0)]);
+    let fork = ResourceFork::parse(&bytes).unwrap();
+    let classic = runner.load_app(&fork).unwrap();
+    runner.init_app(&classic);
+    assert!(runner.dispatcher.application_size.with_ref(Option::is_none));
 }

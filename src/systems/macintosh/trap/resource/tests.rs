@@ -1869,11 +1869,17 @@ fn release_resource_invalidates_handle_and_getresource_allocates_fresh_handle() 
     let (mut disp, mut cpu, mut bus) = setup();
     let data_ptr = setup_resources(&mut disp, &mut bus, b"DLOG", 200, &[0xAB; 8]);
     let handle = disp.get_or_create_resource_handle(&mut bus, *b"DLOG", 200, data_ptr);
+    let generation = disp.with_resource_manager_mut(|resources| resources.menu_generation(handle));
 
     let sp = TEST_SP;
     bus.write_long(sp, handle);
 
     call(&mut disp, true, 0x1A3, &mut cpu, &mut bus).unwrap();
+
+    disp.with_resource_manager_mut(|resources| {
+        assert!(!resources.menu_generations.contains_key(&handle));
+        assert_ne!(resources.menu_generation(handle), generation);
+    });
 
     assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
     assert_eq!(bus.read_long(handle), 0);
@@ -11302,4 +11308,28 @@ fn osdispatch_sameprocess_selector_003d_writes_boolean_result() {
     assert_eq!(bus.read_byte(result_ptr), 0, "different PSNs => FALSE");
     assert_eq!(bus.read_word(TEST_SP + 14), 0, "noErr result");
     assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 14);
+}
+
+#[test]
+fn osdispatch_getprocessinformation_reports_shared_launch_size_policy() {
+    for flags in [0, 0x4000, 0x4800, 0x5a40] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let context = crate::process_context::ProcessContext::default();
+        context.attach_application_size(&mut disp.application_size);
+        context.reset_application_size(Some(crate::loader::ApplicationSizeResource {
+            flags,
+            preferred_size: 2 * 1024 * 1024,
+            minimum_size: 1024 * 1024,
+        }));
+        let info_ptr = 0x2A0900;
+        let psn_ptr = 0x2A0A00;
+        bus.write_long(psn_ptr, 0);
+        bus.write_long(psn_ptr + 4, 2);
+        bus.write_word(TEST_SP, 0x003A);
+        bus.write_long(TEST_SP + 2, info_ptr);
+        bus.write_long(TEST_SP + 6, psn_ptr);
+        call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
+        assert_eq!(bus.read_word(TEST_SP + 10), 0);
+        assert_eq!(bus.read_long(info_ptr + 24), u32::from(flags));
+    }
 }

@@ -1,0 +1,467 @@
+{
+  "surface": "modal",
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "scope": "Shared GPUI compositor and guest session API; not native host observer or native Macintosh qualification.",
+  "visual_review": "Field crops for all 12 compositions reviewed; consistent offsets 3..6 highlight and no prior name-field caret. Full-screen review only for mono 0.75; wider scene/state/native fidelity is not qualified by this review.",
+  "captures": [
+    {
+      "mode": "mono",
+      "state": "active",
+      "scale": 0.75,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "0.75",
+        "--capture-modal-dialog-selection",
+        "/private/tmp/gpui-modal-scale-a55926e6/dialog-modal-selection-scale-mono-active-075.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "dialog-modal-selection-scale-mono-active-075.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "sha256": "325fa7ec7aafe6be2f22f03556850da8e17374443ca316357efa259b3603fbeb",
+          "original_capture_sha256": "1d6e764a08d50e698910633efcee043528250604f63eab85100b680bff2db1f3",
+          "decoded_pixel_sha256": "41bb573e6359d8c1d56538df12538d2100d0b486bc053c2f1c4aa8d2eda9c83f"
+        },
+        {
+          "file": "dialog-modal-selection-scale-mono-active-075.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "09f9fcefa21b00cdc6a5824804bb13787eca401728e5f196c8011b34d488ba64",
+          "original_capture_sha256": "d8179dd048bf874dba7e64c51b4e754ef41660322b5ae9640bca8adcedde646e",
+          "decoded_pixel_sha256": "43be3952fba7a22585a3683b82dabae91d1cf37cad76c995d202032d1c2913f1"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "active",
+      "scale": 1.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "1.0",
+        "--capture-modal-dialog-selection",
+        "/private/tmp/gpui-modal-scale-a55926e6/dialog-modal-selection-scale-mono-active-100.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "dialog-modal-selection-scale-mono-active-100.png",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "sha256": "986e867a50a78e0b534b0f38f6791fe96bcac1e0297685f87555685624abd17c",
+          "original_capture_sha256": "af756c89d79946ec0bb851fd1e930a64d7300f0bca29d770e06851d9c7c4c931",
+          "decoded_pixel_sha256": "5d4295dc067b6918b907c6d22fa29aec0bdf7d333368b71e94453d6c8d0fd448"
+        },
+        {
+          "file": "dialog-modal-selection-scale-mono-active-100.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "09f9fcefa21b00cdc6a5824804bb13787eca401728e5f196c8011b34d488ba64",
+          "original_capture_sha256": "d8179dd048bf874dba7e64c51b4e754ef41660322b5ae9640bca8adcedde646e",
+          "decoded_pixel_sha256": "43be3952fba7a22585a3683b82dabae91d1cf37cad76c995d202032d1c2913f1"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "active",
+      "scale": 1.5,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "1.5",
+        "--capture-modal-dialog-selection",
+        "/private/tmp/gpui-modal-scale-a55926e6/dialog-modal-selection-scale-mono-active-150.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "dialog-modal-selection-scale-mono-active-150.png",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "sha256": "49a81654b68021f6e1e86da9f37ab83e5e3fb569e6f01405669986a71068a41c",
+          "original_capture_sha256": "eca1f6d63a101c2633b2136c53d648bf5af5f30ac7ff398eed11f08efeea6da8",
+          "decoded_pixel_sha256": "ea5ca7eee3636dc730816ec1534089b1c5a3278a61406ae194e4b79cf535fe09"
+        },
+        {
+          "file": "dialog-modal-selection-scale-mono-active-150.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "09f9fcefa21b00cdc6a5824804bb13787eca401728e5f196c8011b34d488ba64",
+          "original_capture_sha256": "d8179dd048bf874dba7e64c51b4e754ef41660322b5ae9640bca8adcedde646e",
+          "decoded_pixel_sha256": "43be3952fba7a22585a3683b82dabae91d1cf37cad76c995d202032d1c2913f1"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "active",
+      "scale": 2.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "2.0",
+        "--capture-modal-dialog-selection",
+        "/private/tmp/gpui-modal-scale-a55926e6/dialog-modal-selection-scale-mono-active-200.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "dialog-modal-selection-scale-mono-active-200.png",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "sha256": "5367b634362c75a17c26a599a5ec0f903d6f6bfc1369a64af8cc9af1dedea9c5",
+          "original_capture_sha256": "dd9ef216297e262d9d0353c8a85bdd77ca9624802a370b10dee008b012e06af8",
+          "decoded_pixel_sha256": "c80a9de96a2c2d5f52985e9025d32d4d3d4e7a29400d26992c2e6209dadd5505"
+        },
+        {
+          "file": "dialog-modal-selection-scale-mono-active-200.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "09f9fcefa21b00cdc6a5824804bb13787eca401728e5f196c8011b34d488ba64",
+          "original_capture_sha256": "d8179dd048bf874dba7e64c51b4e754ef41660322b5ae9640bca8adcedde646e",
+          "decoded_pixel_sha256": "43be3952fba7a22585a3683b82dabae91d1cf37cad76c995d202032d1c2913f1"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "active",
+      "scale": 0.75,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "0.75",
+        "--capture-modal-dialog-selection",
+        "/private/tmp/gpui-modal-scale-a55926e6/dialog-modal-selection-scale-colour-active-075.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "dialog-modal-selection-scale-colour-active-075.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "sha256": "558acb88526028b5480a3684eb83b48c8f60e261162c33ffb5a8ce6796ced319",
+          "original_capture_sha256": "3d94a3d9a12190fd4f577883c60a7c4a71dddb241cf637e361ee027e410122a4",
+          "decoded_pixel_sha256": "c910835843c8cfa7a5a04139b7567ffa0dc912c49787488ca4a1255b1bfe670a"
+        },
+        {
+          "file": "dialog-modal-selection-scale-colour-active-075.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "01bf9e4ad15b7c2a2b5266e8bd3b621a5636c197a46f5d093ef98436e3babe9a",
+          "original_capture_sha256": "9c23afe647c37457aa75a490b5d90f55f3ed86672299b8f81c986e3d0a8ffee8",
+          "decoded_pixel_sha256": "5e87c8431a4100fe9078ba580d5525eb25abfbbb6990efc6c57a1eef64371c11"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "active",
+      "scale": 1.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1.0",
+        "--capture-modal-dialog-selection",
+        "/private/tmp/gpui-modal-scale-a55926e6/dialog-modal-selection-scale-colour-active-100.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "dialog-modal-selection-scale-colour-active-100.png",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "sha256": "b9d64b0e0ac5b02bf30961d4cf084e0d50e3fcc416bbc9123af19d4160ec8686",
+          "original_capture_sha256": "61ca9f3150b229e6ed6645ad555f7859642ac6cd649e57b1e277a4a63fdd9213",
+          "decoded_pixel_sha256": "ff0164effc82f6a0339ae036128dab0fbe07e6d93af64f3fb1965062775f616e"
+        },
+        {
+          "file": "dialog-modal-selection-scale-colour-active-100.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "01bf9e4ad15b7c2a2b5266e8bd3b621a5636c197a46f5d093ef98436e3babe9a",
+          "original_capture_sha256": "9c23afe647c37457aa75a490b5d90f55f3ed86672299b8f81c986e3d0a8ffee8",
+          "decoded_pixel_sha256": "5e87c8431a4100fe9078ba580d5525eb25abfbbb6990efc6c57a1eef64371c11"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "active",
+      "scale": 1.5,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1.5",
+        "--capture-modal-dialog-selection",
+        "/private/tmp/gpui-modal-scale-a55926e6/dialog-modal-selection-scale-colour-active-150.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "dialog-modal-selection-scale-colour-active-150.png",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "sha256": "5e39c968abc0450c121f693bb6dc8ecd365810c2e092c2d8facad4ac18781f5e",
+          "original_capture_sha256": "d9c1f5fa0dc7c38f86f5b23b9c2a070f8e58946f7adc4bb63b9e5ed653dc3bea",
+          "decoded_pixel_sha256": "80cbfd36d4ab4f5552a2fc549236a399bbfa6799e449daa63117033dc232a6bf"
+        },
+        {
+          "file": "dialog-modal-selection-scale-colour-active-150.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "01bf9e4ad15b7c2a2b5266e8bd3b621a5636c197a46f5d093ef98436e3babe9a",
+          "original_capture_sha256": "9c23afe647c37457aa75a490b5d90f55f3ed86672299b8f81c986e3d0a8ffee8",
+          "decoded_pixel_sha256": "5e87c8431a4100fe9078ba580d5525eb25abfbbb6990efc6c57a1eef64371c11"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "active",
+      "scale": 2.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "2.0",
+        "--capture-modal-dialog-selection",
+        "/private/tmp/gpui-modal-scale-a55926e6/dialog-modal-selection-scale-colour-active-200.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "dialog-modal-selection-scale-colour-active-200.png",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "sha256": "0fea5a85d355a2359891d9f156b5cc786fe29e38ced2fdc0456cbd741c5accd4",
+          "original_capture_sha256": "38973a5b238e45685611ccb428e4b5edc1cdafc558289c2a86f0496f693df84a",
+          "decoded_pixel_sha256": "d076b50cb6830023fd3a8d8a31a17c3a3115f8b8af132f18df3519aee1464eb3"
+        },
+        {
+          "file": "dialog-modal-selection-scale-colour-active-200.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "01bf9e4ad15b7c2a2b5266e8bd3b621a5636c197a46f5d093ef98436e3babe9a",
+          "original_capture_sha256": "9c23afe647c37457aa75a490b5d90f55f3ed86672299b8f81c986e3d0a8ffee8",
+          "decoded_pixel_sha256": "5e87c8431a4100fe9078ba580d5525eb25abfbbb6990efc6c57a1eef64371c11"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "active",
+      "scale": 0.75,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "0.75",
+        "--capture-modal-dialog-selection",
+        "/private/tmp/gpui-modal-scale-a55926e6/dialog-modal-selection-scale-ppc-active-075.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "dialog-modal-selection-scale-ppc-active-075.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "sha256": "558acb88526028b5480a3684eb83b48c8f60e261162c33ffb5a8ce6796ced319",
+          "original_capture_sha256": "3d94a3d9a12190fd4f577883c60a7c4a71dddb241cf637e361ee027e410122a4",
+          "decoded_pixel_sha256": "c910835843c8cfa7a5a04139b7567ffa0dc912c49787488ca4a1255b1bfe670a"
+        },
+        {
+          "file": "dialog-modal-selection-scale-ppc-active-075.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "a4227dd9e6eef304f5744a3252f2d951d148d3c31edefe2cb4b4355ae889db24",
+          "original_capture_sha256": "c77fb96792bf9e1a8d681812574a46388fdb51a1be25e5840070460a665294ec",
+          "decoded_pixel_sha256": "823c9b6a14942c7b4209b2b719e03885b032930fc63b3034770e6a0199e3830f"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "active",
+      "scale": 1.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "1.0",
+        "--capture-modal-dialog-selection",
+        "/private/tmp/gpui-modal-scale-a55926e6/dialog-modal-selection-scale-ppc-active-100.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "dialog-modal-selection-scale-ppc-active-100.png",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "sha256": "b9d64b0e0ac5b02bf30961d4cf084e0d50e3fcc416bbc9123af19d4160ec8686",
+          "original_capture_sha256": "61ca9f3150b229e6ed6645ad555f7859642ac6cd649e57b1e277a4a63fdd9213",
+          "decoded_pixel_sha256": "ff0164effc82f6a0339ae036128dab0fbe07e6d93af64f3fb1965062775f616e"
+        },
+        {
+          "file": "dialog-modal-selection-scale-ppc-active-100.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "a4227dd9e6eef304f5744a3252f2d951d148d3c31edefe2cb4b4355ae889db24",
+          "original_capture_sha256": "c77fb96792bf9e1a8d681812574a46388fdb51a1be25e5840070460a665294ec",
+          "decoded_pixel_sha256": "823c9b6a14942c7b4209b2b719e03885b032930fc63b3034770e6a0199e3830f"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "active",
+      "scale": 1.5,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "1.5",
+        "--capture-modal-dialog-selection",
+        "/private/tmp/gpui-modal-scale-a55926e6/dialog-modal-selection-scale-ppc-active-150.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "dialog-modal-selection-scale-ppc-active-150.png",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "sha256": "5e39c968abc0450c121f693bb6dc8ecd365810c2e092c2d8facad4ac18781f5e",
+          "original_capture_sha256": "d9c1f5fa0dc7c38f86f5b23b9c2a070f8e58946f7adc4bb63b9e5ed653dc3bea",
+          "decoded_pixel_sha256": "80cbfd36d4ab4f5552a2fc549236a399bbfa6799e449daa63117033dc232a6bf"
+        },
+        {
+          "file": "dialog-modal-selection-scale-ppc-active-150.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "a4227dd9e6eef304f5744a3252f2d951d148d3c31edefe2cb4b4355ae889db24",
+          "original_capture_sha256": "c77fb96792bf9e1a8d681812574a46388fdb51a1be25e5840070460a665294ec",
+          "decoded_pixel_sha256": "823c9b6a14942c7b4209b2b719e03885b032930fc63b3034770e6a0199e3830f"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "active",
+      "scale": 2.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "2.0",
+        "--capture-modal-dialog-selection",
+        "/private/tmp/gpui-modal-scale-a55926e6/dialog-modal-selection-scale-ppc-active-200.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "dialog-modal-selection-scale-ppc-active-200.png",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "sha256": "0fea5a85d355a2359891d9f156b5cc786fe29e38ced2fdc0456cbd741c5accd4",
+          "original_capture_sha256": "38973a5b238e45685611ccb428e4b5edc1cdafc558289c2a86f0496f693df84a",
+          "decoded_pixel_sha256": "d076b50cb6830023fd3a8d8a31a17c3a3115f8b8af132f18df3519aee1464eb3"
+        },
+        {
+          "file": "dialog-modal-selection-scale-ppc-active-200.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "a4227dd9e6eef304f5744a3252f2d951d148d3c31edefe2cb4b4355ae889db24",
+          "original_capture_sha256": "c77fb96792bf9e1a8d681812574a46388fdb51a1be25e5840070460a665294ec",
+          "decoded_pixel_sha256": "823c9b6a14942c7b4209b2b719e03885b032930fc63b3034770e6a0199e3830f"
+        }
+      ]
+    }
+  ],
+  "base_commit": "a55926e678fea9f704f22ff7aff44bd9d74854c6",
+  "gaps": [
+    "inactive/suspended modal selection",
+    "native host pointer transforms",
+    "native Macintosh font oracle",
+    "full scene visual review at all scales"
+  ]
+}

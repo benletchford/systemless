@@ -1,0 +1,48 @@
+{
+  "base_commit": "47b514a8922c8f61f051188e80fd74134d76f672",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "2e04dbe02de88d26275137ddd32f0dab3c858872ec0e08f0d0159e121d9eee51",
+    "src/bin/gpui_demo_text.rs": "22c5e6779a11f0242388974af021dcd4a693cc5525cb9feab1c091c77e1fd875",
+    "src/systems/macintosh/control_manager.rs": "3a3470809801c64254931fddd52584849515b5d5b6f664ab542d33ff3224ee14",
+    "src/systems/macintosh/trap/dialog.rs": "c63369736bf9e5ec9a8f4d80ee8c954bd78bb69afef596144882a4e6a9b1c94a",
+    "src/systems/macintosh/loader/ppc/dispatch_control.rs": "80eb326ed899662208524b212a546b5ce955e6b5ac90ea699500ce5a46f07066"
+  },
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "records": [
+    {
+      "mode": "mono",
+      "file": "popup-guest-ellipsis-mono.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "capture_sha256": "e5b6f56a34f18deabd037c32053224354d2ba297fc4a4a49923d9b3ba1fc62fe",
+      "file_sha256": "6207b66e60ee07816ffbaa3ebe2fdcd3816e7ce41f7bf25afa99bbef582bf8c2",
+      "pixel_sha256": "d7428d1e2658d87cced4348e6608884cf84f928e1f4a27e662b5f9a7177adc21"
+    },
+    {
+      "mode": "colour",
+      "file": "popup-guest-ellipsis-colour.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "capture_sha256": "a7f51913261811274369face419edfc2bd5d7e2387f4b4ac0378e1751bc41b35",
+      "file_sha256": "49fc5db75babaf64e11cbcea2f7863a07c3457ebf840be954847ef406fb9466a",
+      "pixel_sha256": "aea4e713fdde49bdd9f880aecff0f552b804c0e75a23e194fc94c1924ec498f2"
+    },
+    {
+      "mode": "ppc",
+      "file": "popup-guest-ellipsis-ppc.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "capture_sha256": "166a3edbfd324d97b2bd6ee469d32fd21a8e54ed961eff88ab5c1155f7a746a4",
+      "file_sha256": "b5f36e269d764d21b822e04527035c824bfd49578fe7a66211e4cb51733a8dd8",
+      "pixel_sha256": "e180c48ad5c762225777f0466c1b8bfabfb47aa4674254b71265b22d347bfffc"
+    }
+  ],
+  "review": "All three full compositions reviewed: selected long label ends in guest three-period ellipsis, title alignment retained, 9-point Theme text remains. Exact control border/content geometry, scales/states and native parity unqualified.",
+  "command": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit [--screen-depth 1|--screen-depth 8|--prefer-powerpc] --capture-popup-controls-selected OUTPUT"
+}

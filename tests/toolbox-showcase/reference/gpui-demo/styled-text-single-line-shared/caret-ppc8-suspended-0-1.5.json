@@ -1,0 +1,23 @@
+{
+  "caret_state": "suspended",
+  "insertion_offset": 0,
+  "multiline": false,
+  "selection": [
+    0,
+    0
+  ],
+  "compositor": "shared Demo renderer",
+  "active": false,
+  "caret_visible": true,
+  "drawing_intact": true,
+  "generation": 2,
+  "guest_tick": 86,
+  "view": [
+    126,
+    74,
+    164,
+    561
+  ],
+  "scale": 1.5,
+  "depth": 8
+}

@@ -13,7 +13,7 @@ use crate::menu_manager::{
     merge_menu_color_entries as shared_merge_menu_color_entries, new_standard_menu_record,
     standard_menu_gray_pattern_is_ink, standard_menu_height as shared_standard_menu_height,
     standard_menu_highlighted_value, standard_menu_icon_kind, standard_menu_icon_resource_id,
-    standard_menu_item_layout, standard_menu_text_advance as shared_standard_menu_text_advance,
+    standard_menu_item_layout,
     standard_menu_width as shared_standard_menu_width, standard_popup_menu_layout,
     standard_pull_down_menu_layout, standard_submenu_layout,
     ColorIconLayout as SharedColorIconLayout, MenuBarBuild as SharedMenuBarBuild,
@@ -716,7 +716,7 @@ impl super::TrapDispatcher {
     /// procedures can mutate guest-owned MenuInfo records directly, so this
     /// reads those records instead of the adapter's presentation cache.
     pub(crate) fn guest_menu_snapshot(&mut self, bus: &MacMemoryBus) -> GuestMenuSnapshot {
-        self.current_menu_list(bus)
+        let mut snapshot = self.current_menu_list(bus)
             .unwrap_or_default()
             .guest_snapshot(|menu_handle| {
                 let menu = bus.read_long(menu_handle);
@@ -727,9 +727,16 @@ impl super::TrapDispatcher {
                 Some(SharedMenuSnapshotRecord {
                     id: bus.read_word(menu) as i16,
                     title: bus.read_bytes(menu + 15, title_len),
+                    standard_definition: self.menu_uses_standard_definition(bus, menu),
                     items: menu_items_from_memory(bus, menu_handle)?,
                 })
-            })
+            });
+        self.with_resource_manager_mut(|resources| {
+            for menu in &mut snapshot.menus {
+                menu.generation = resources.menu_generation(menu.guest_id);
+            }
+        });
+        snapshot
     }
 
     /// Validate and stage a host-native selection, returning a point inside
@@ -2131,8 +2138,11 @@ impl super::TrapDispatcher {
                         let handle = self.load_menu_resource(bus, menu_id);
                         (handle != 0).then_some(handle)
                     });
+                    // The MBAR ID selects the resource; the new list uses the
+                    // standard MBDF until InitProcMenu changes mbResID.
+                    // Macintosh Toolbox Essentials (1992), pp. 3-104, 3-111.
                     let mut menu_list =
-                        SharedMenuList::from_regular_handles(mbar_id, menu_handles.iter().copied());
+                        SharedMenuList::from_regular_handles(0, menu_handles.iter().copied());
                     self.relayout_menu_list(bus, &mut menu_list);
                     let list_bytes = menu_list.encode();
                     let list_block = bus.alloc(list_bytes.len() as u32);
@@ -3113,6 +3123,7 @@ impl super::TrapDispatcher {
                     }
                     self.forget_resource_handle_index_for_handle(menu_handle);
                     self.with_resource_manager_mut(|resource_manager| {
+                        resource_manager.forget_menu_generation(menu_handle);
                         resource_manager.loaded_handles.remove(&menu_handle);
                         resource_manager.detached_handles.remove(&menu_handle);
                         resource_manager.resource_handle_files.remove(&menu_handle);
@@ -3740,17 +3751,30 @@ impl super::TrapDispatcher {
             // agree): both consume the 2-byte mbResID and preserve A7
             // across the call.
             //
-            // Apple-vs-BasiliskII divergence on the side effect:
-            // BasiliskII System 7.5.3 ROM Menu Manager allocates the
-            // MenuList if not yet allocated, stores mbResID, and (when
-            // the high 13 bits select a non-default MBDF) loads the
-            // 'MBDF' resource. Systemless HLE is a true pop-2-and-return
-            // stub because the host runtime draws the menu bar
-            // directly from the Rust menu list — there is no separate
-            // MBDF resource to honour. The visible "MBDF resource
-            // gets loaded" path is intentionally not modeled.
+            // Store mbResID in the live MenuList so guest reads and frontend
+            // fallback observe the requested definition. Resolve its MBDF
+            // resource through the process Resource Manager; executing its
+            // messages remains separate runtime work.
             (true, 0x008) => {
                 let sp = cpu.read_reg(Register::A7);
+                let mb_res_id = bus.read_word(sp) as i16;
+                let mut menu_list = self.current_menu_list(bus).unwrap_or_default();
+                menu_list.mb_res_id = mb_res_id;
+                self.replace_current_menu_list(bus, &menu_list);
+                let definition_id = ((mb_res_id as u16) >> 3) as i16;
+                if definition_id != 0 {
+                    if let Some((refnum, ptr)) =
+                        self.find_or_load_resource_any(bus, *b"MBDF", definition_id)
+                    {
+                        self.get_or_create_resource_handle_in_file(
+                            bus,
+                            *b"MBDF",
+                            definition_id,
+                            ptr,
+                            refnum,
+                        );
+                    }
+                }
                 cpu.write_reg(Register::A7, sp + 2);
                 Ok(())
             }
@@ -4221,11 +4245,27 @@ impl super::TrapDispatcher {
     }
 
     pub(super) fn menu_rows(&self, bus: &MacMemoryBus, items: &[MenuItem]) -> SharedMenuRows {
+        self.menu_rows_with_font(bus, items, Default::default())
+    }
+
+    pub(super) fn menu_rows_with_font(
+        &self, bus: &MacMemoryBus, items: &[MenuItem], font: crate::menu_model::GuestMenuFont,
+    ) -> SharedMenuRows {
+        let text_height = if font == crate::menu_model::GuestMenuFont::default() {
+            16
+        } else {
+            let metrics = font.metrics();
+            metrics.ascent.saturating_add(metrics.descent).saturating_add(metrics.leading)
+        };
         SharedMenuRows::new(
             Self::laid_out_items(items)
                 .iter()
                 .map(|item| SharedMenuRow {
-                    height: self.menu_item_height(bus, item),
+                    height: if item.text == "-" { STANDARD_MENU_SEPARATOR_HEIGHT } else {
+                        self.menu_item_icon_kind(bus, item).row_height_for_text(
+                            QuickDrawTextStyle::from_bits(item.style), text_height,
+                        )
+                    },
                     selectable: item.enabled && item.text != "-",
                 }),
         )
@@ -4274,9 +4314,15 @@ impl super::TrapDispatcher {
     }
 
     pub(super) fn standard_menu_width(&self, bus: &MacMemoryBus, items: &[MenuItem]) -> i16 {
+        self.standard_menu_width_with_font(bus, items, Default::default())
+    }
+
+    pub(super) fn standard_menu_width_with_font(
+        &self, bus: &MacMemoryBus, items: &[MenuItem], font: crate::menu_model::GuestMenuFont,
+    ) -> i16 {
         shared_standard_menu_width(Self::laid_out_items(items).iter().map(|item| {
             StandardMenuItemWidth {
-                text: shared_standard_menu_text_advance(&internal_menu_string_bytes(&item.text)),
+                text: font.text_advance(&internal_menu_string_bytes(&item.text)),
                 icon: self.menu_item_icon_width(bus, item),
                 command: item.key_equiv,
             }
@@ -4366,6 +4412,7 @@ impl super::TrapDispatcher {
         left: i16,
         kind: StandardMenuIconKind,
         pixel_index_override: Option<u8>,
+        clip: (i16, i16, i16, i16),
     ) {
         let Some(layout) = SharedMonochromeMenuIconLayout::for_kind(
             kind,
@@ -4384,6 +4431,15 @@ impl super::TrapDispatcher {
         // framebuffer writes.
         for dy in 0..layout.height {
             for dx in 0..layout.width {
+                let px = i32::from(left) + i32::try_from(dx).unwrap_or(i32::MAX);
+                let py = i32::from(top) + i32::try_from(dy).unwrap_or(i32::MAX);
+                if px < i32::from(clip.1)
+                    || px >= i32::from(clip.3)
+                    || py < i32::from(clip.0)
+                    || py >= i32::from(clip.2)
+                {
+                    continue;
+                }
                 let set = layout
                     .sample_with(
                         |offset| {
@@ -4425,7 +4481,14 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn draw_cicn_menu_icon(&self, bus: &mut MacMemoryBus, icon_ptr: u32, top: i16, left: i16) {
+    fn draw_cicn_menu_icon(
+        &self,
+        bus: &mut MacMemoryBus,
+        icon_ptr: u32,
+        top: i16,
+        left: i16,
+        clip: (i16, i16, i16, i16),
+    ) {
         let Some(layout) = Self::menu_cicn_layout(bus, icon_ptr) else {
             return;
         };
@@ -4441,6 +4504,15 @@ impl super::TrapDispatcher {
 
         for dy in 0..layout.height {
             for dx in 0..layout.width {
+                let px = i32::from(left) + i32::try_from(dx).unwrap_or(i32::MAX);
+                let py = i32::from(top) + i32::try_from(dy).unwrap_or(i32::MAX);
+                if px < i32::from(clip.1)
+                    || px >= i32::from(clip.3)
+                    || py < i32::from(clip.0)
+                    || py >= i32::from(clip.2)
+                {
+                    continue;
+                }
                 let (Ok(sx), Ok(sy)) = (usize::try_from(dx), usize::try_from(dy)) else {
                     continue;
                 };
@@ -4465,12 +4537,7 @@ impl super::TrapDispatcher {
                     // to 5-26; Imaging With QuickDraw (1994), p. 4-106.
                     let destination_index = Self::fb_main_screen_pixel_index_for_rgb(bus, rgb)
                         .unwrap_or_else(|| {
-                            super::pict::closest_clut_index(
-                                rgb[0],
-                                rgb[1],
-                                rgb[2],
-                                &self.device_clut,
-                            )
+                            super::pict::closest_clut_index(rgb[0], rgb[1], rgb[2], &self.device_clut)
                         });
                     let dst_x = left + dx;
                     let dst_y = top + dy;
@@ -5046,6 +5113,9 @@ impl super::TrapDispatcher {
             tracking.menu_handle == menu.handle
                 && tracking.dropdown_rect() == rect
                 && !menu.visible_in_menu_bar
+        }) || self.control_tracking.as_ref().is_some_and(|tracking| {
+            tracking.popup_tracking && tracking.active_menu == menu_idx
+                && tracking.dropdown_rect == rect
         });
         let attached_pulldown =
             !detached_popup && menu.in_menu_bar && top == bus.read_word(addr::MBAR_HEIGHT) as i16;
@@ -5182,10 +5252,16 @@ impl super::TrapDispatcher {
             None
         };
 
-        // Draw items
-        let font_id: i16 = 0;
-        let font_size: i16 = 12;
-        let metrics = crate::quickdraw::text::get_font_metrics(font_id, font_size);
+        // The retained popup font owns both layout and guest painting.
+        let font = self
+            .control_tracking
+            .as_ref()
+            .filter(|tracking| tracking.popup_tracking && tracking.active_menu == menu_idx)
+            .map(|tracking| tracking.popup_font)
+            .unwrap_or_default();
+        let font_id = font.family;
+        let font_size = font.point_size();
+        let metrics = font.metrics();
         let (highlighted_item, content_top) = self
             .menu_tracking
             .as_ref()
@@ -5218,16 +5294,23 @@ impl super::TrapDispatcher {
                     .map(|popup| (popup.highlighted_item, top))
             })
             .unwrap_or((0, top));
-        let rows = self.menu_rows(bus, &menu.items);
+        let rows = self.menu_rows_with_font(bus, &menu.items, font);
         let (scroll_up, scroll_down) = rows.scroll_indicators(rect, content_top);
         let visible_item_top = top.saturating_add(if scroll_up { MENU_ROW_HEIGHT } else { 0 });
-        let visible_item_bottom =
-            bottom.saturating_sub(if scroll_down { MENU_ROW_HEIGHT } else { 0 });
+        let visible_item_bottom = bottom.saturating_sub(if scroll_down { MENU_ROW_HEIGHT } else { 0 });
 
+        // Preserve original row baselines while clipping exposed portions.
+        // Inside Macintosh V (1986), pp. V-248--V-249.
+        let item_clip = (
+            visible_item_top,
+            left + 1,
+            visible_item_bottom.min(bottom - 1),
+            right - 1,
+        );
         let mut item_top = content_top;
         for (i, item) in Self::laid_out_items(&menu.items).iter().enumerate() {
             let item_no = i as i16 + 1;
-            let item_height = self.menu_item_height(bus, item);
+            let item_height = rows.height(item_no, 0);
             let item_bottom = item_top.saturating_add(item_height);
             if item_bottom <= top {
                 item_top = item_bottom;
@@ -5236,7 +5319,7 @@ impl super::TrapDispatcher {
             if item_top >= bottom {
                 break;
             }
-            if item_top < visible_item_top || item_bottom > visible_item_bottom {
+            if item_top >= item_clip.2 || item_bottom <= item_clip.0 {
                 item_top = item_bottom;
                 continue;
             }
@@ -5245,7 +5328,12 @@ impl super::TrapDispatcher {
             let (mark_pixel_index, name_pixel_index, command_pixel_index, item_bg_pixel_index) =
                 if matches!(pixel_size, 2 | 4 | 8) {
                     if color_table_bytes.is_empty() {
-                        (standard_black, standard_black, standard_black, standard_white)
+                        (
+                            standard_black,
+                            standard_black,
+                            standard_black,
+                            standard_white,
+                        )
                     } else {
                         let colors = menu_color_table.item_colors(menu.id, item_no);
                         (
@@ -5263,20 +5351,15 @@ impl super::TrapDispatcher {
                 && row_enabled
                 && !is_separator;
             let selected_mono = classic_selected && pixel_size == 1;
-            let selected_colors =
-                (classic_selected && matches!(pixel_size, 2 | 4 | 8)).then(|| {
-                    // IM:V 1986 pp. V-233 and V-249: the standard color MDEF
-                    // redraws a selected row with its item/name color (RGB2, or
-                    // the default item color) as the background and its menu
-                    // background (RGB4) as the foreground for every component.
-                    let selected_background = name_pixel_index
-                        .or(standard_black)
-                        .unwrap_or(255);
-                    let selected_foreground = item_bg_pixel_index
-                        .or(standard_white)
-                        .unwrap_or(0);
-                    (selected_background, selected_foreground)
-                });
+            let selected_colors = (classic_selected && matches!(pixel_size, 2 | 4 | 8)).then(|| {
+                // IM:V 1986 pp. V-233 and V-249: the standard color MDEF
+                // redraws a selected row with its item/name color (RGB2, or
+                // the default item color) as the background and its menu
+                // background (RGB4) as the foreground for every component.
+                let selected_background = name_pixel_index.or(standard_black).unwrap_or(255);
+                let selected_foreground = item_bg_pixel_index.or(standard_white).unwrap_or(0);
+                (selected_background, selected_foreground)
+            });
             if let Some((selected_background, _)) = selected_colors {
                 Self::fb_fill_rect_index(
                     bus,
@@ -5285,9 +5368,9 @@ impl super::TrapDispatcher {
                     pixel_size,
                     screen_width,
                     screen_height,
-                    item_top,
+                    item_top.max(item_clip.0),
                     left + 1,
-                    item_bottom,
+                    item_bottom.min(item_clip.2),
                     right - 1,
                     selected_background,
                 );
@@ -5311,9 +5394,9 @@ impl super::TrapDispatcher {
             // (Macintosh Toolbox Essentials 1992, pp. 3-90 and 3-148--3-150).
             let provider_row_chrome = self.draw_theme_menu_item_chrome(
                 bus,
-                item_top.max(top.saturating_add(1)),
+                item_top.max(item_clip.0),
                 left + 1,
-                item_bottom.min(bottom.saturating_sub(1)),
+                item_bottom.min(item_clip.2),
                 right - 1,
                 row_enabled,
                 highlighted_item == i as i16 + 1,
@@ -5322,11 +5405,9 @@ impl super::TrapDispatcher {
                 item.mark != 0,
                 has_command_key,
             );
-            let provider_selected_foreground = (provider_row_chrome
-                && highlighted_item == item_no
-                && row_enabled
-                && !is_separator)
-                .then(|| self.theme_pixel_index(bus, self.ui_theme().palette().window_background));
+            let provider_selected_foreground =
+                (provider_row_chrome && highlighted_item == item_no && row_enabled && !is_separator)
+                    .then(|| self.theme_pixel_index(bus, self.ui_theme().palette().window_background));
             let layout = standard_menu_item_layout(
                 (left, right),
                 (item_top, item_height),
@@ -5372,6 +5453,10 @@ impl super::TrapDispatcher {
                 // above the row's midpoint in the System 7.5.3 standard MDEF.
                 // Inside Macintosh Volume I, I-359
                 let sep_y = layout.separator_y;
+                if sep_y < item_clip.0 || sep_y >= item_clip.2 {
+                    item_top = item_bottom;
+                    continue;
+                }
                 for x in (left + 1)..(right - 1) {
                     match dim_index {
                         Some(pixel_index) => Self::fb_set_pixel_index(
@@ -5437,7 +5522,7 @@ impl super::TrapDispatcher {
                     s.into()
                 };
                 if let Some(pixel_index) = content_index(mark_pixel_index) {
-                    Self::fb_draw_string_styled_index(
+                    Self::fb_draw_string_styled_with_index(
                         bus,
                         screen_base,
                         row_bytes,
@@ -5450,10 +5535,12 @@ impl super::TrapDispatcher {
                         font_id,
                         font_size,
                         0,
-                        pixel_index,
+                        Some(pixel_index),
+                        true,
+                        Some(item_clip),
                     );
                 } else {
-                    Self::fb_draw_string(
+                    Self::fb_draw_string_styled_with_index(
                         bus,
                         screen_base,
                         row_bytes,
@@ -5465,12 +5552,16 @@ impl super::TrapDispatcher {
                         &mark_str,
                         font_id,
                         font_size,
+                        0,
+                        None,
+                        true,
+                        Some(item_clip),
                     );
                 }
             }
 
             if let Some(icon_ptr) = cicn_icon_ptr {
-                self.draw_cicn_menu_icon(bus, icon_ptr, item_top, layout.icon_left);
+                self.draw_cicn_menu_icon(bus, icon_ptr, item_top, layout.icon_left, item_clip);
             } else if let Some(icon_ptr) = normal_icon_ptr {
                 self.draw_monochrome_menu_icon(
                     bus,
@@ -5479,6 +5570,7 @@ impl super::TrapDispatcher {
                     layout.icon_left,
                     StandardMenuIconKind::Normal,
                     content_index(name_pixel_index),
+                    item_clip,
                 );
             } else if let Some(icon_ptr) = reduced_icon_ptr {
                 self.draw_monochrome_menu_icon(
@@ -5488,6 +5580,7 @@ impl super::TrapDispatcher {
                     layout.icon_left,
                     StandardMenuIconKind::Reduced,
                     content_index(name_pixel_index),
+                    item_clip,
                 );
             } else if let Some(icon_ptr) = small_icon_ptr {
                 self.draw_monochrome_menu_icon(
@@ -5497,6 +5590,7 @@ impl super::TrapDispatcher {
                     layout.icon_left,
                     StandardMenuIconKind::Small,
                     content_index(name_pixel_index),
+                    item_clip,
                 );
             }
 
@@ -5506,7 +5600,7 @@ impl super::TrapDispatcher {
             // the framebuffer text renderer apply only the visible style
             // pixels for the app-owned item text.
             if let Some(pixel_index) = content_index(name_pixel_index) {
-                Self::fb_draw_string_styled_index(
+                Self::fb_draw_string_styled_with_index(
                     bus,
                     screen_base,
                     row_bytes,
@@ -5519,10 +5613,12 @@ impl super::TrapDispatcher {
                     font_id,
                     font_size,
                     item.style,
-                    pixel_index,
+                    Some(pixel_index),
+                    true,
+                    Some(item_clip),
                 );
             } else {
-                Self::fb_draw_string_styled(
+                Self::fb_draw_string_styled_with_index(
                     bus,
                     screen_base,
                     row_bytes,
@@ -5535,6 +5631,9 @@ impl super::TrapDispatcher {
                     font_id,
                     font_size,
                     item.style,
+                    None,
+                    true,
+                    Some(item_clip),
                 );
             }
 
@@ -5545,29 +5644,34 @@ impl super::TrapDispatcher {
                 for_each_standard_hierarchy_indicator_pixel(
                     layout.indicator_left,
                     layout.indicator_mid_y,
-                    |x, y| match indicator_color {
-                        Some(pixel_index) => Self::fb_set_pixel_index(
-                            bus,
-                            screen_base,
-                            row_bytes,
-                            pixel_size,
-                            screen_width,
-                            screen_height,
-                            x,
-                            y,
-                            pixel_index,
-                        ),
-                        None => Self::fb_set_pixel(
-                            bus,
-                            screen_base,
-                            row_bytes,
-                            pixel_size,
-                            screen_width,
-                            screen_height,
-                            x,
-                            y,
-                            true,
-                        ),
+                    |x, y| {
+                        if y < item_clip.0 || y >= item_clip.2 || x < item_clip.1 || x >= item_clip.3 {
+                            return;
+                        }
+                        match indicator_color {
+                            Some(pixel_index) => Self::fb_set_pixel_index(
+                                bus,
+                                screen_base,
+                                row_bytes,
+                                pixel_size,
+                                screen_width,
+                                screen_height,
+                                x,
+                                y,
+                                pixel_index,
+                            ),
+                            None => Self::fb_set_pixel(
+                                bus,
+                                screen_base,
+                                row_bytes,
+                                pixel_size,
+                                screen_width,
+                                screen_height,
+                                x,
+                                y,
+                                true,
+                            ),
+                        }
                     },
                 );
             }
@@ -5585,7 +5689,7 @@ impl super::TrapDispatcher {
                 // MenuSelect reference. MTE 1992 pp. 3-115 to 3-117.
                 let command_left = layout.command_left;
                 if let Some(pixel_index) = content_index(command_pixel_index) {
-                    Self::fb_draw_string_styled_index(
+                    Self::fb_draw_string_styled_with_index(
                         bus,
                         screen_base,
                         row_bytes,
@@ -5598,10 +5702,12 @@ impl super::TrapDispatcher {
                         font_id,
                         font_size,
                         0,
-                        pixel_index,
+                        Some(pixel_index),
+                        true,
+                        Some(item_clip),
                     );
                 } else {
-                    Self::fb_draw_string_styled(
+                    Self::fb_draw_string_styled_with_index(
                         bus,
                         screen_base,
                         row_bytes,
@@ -5614,6 +5720,9 @@ impl super::TrapDispatcher {
                         font_id,
                         font_size,
                         0,
+                        None,
+                        true,
+                        Some(item_clip),
                     );
                 }
             }
@@ -5626,7 +5735,7 @@ impl super::TrapDispatcher {
             // pixels. IM:V 1986 p. V-142; Imaging With QuickDraw 1994
             // pp. 3-5--3-6.
             if dim_with_pattern && !provider_row_chrome {
-                for y in item_top..item_bottom {
+                for y in item_top.max(item_clip.0)..item_bottom.min(item_clip.2) {
                     for x in (left + 1)..(right - 1) {
                         if !standard_menu_gray_pattern_is_ink(x, y) {
                             if let Some(bg_index) = dropdown_bg_index {
@@ -5664,7 +5773,7 @@ impl super::TrapDispatcher {
                 // fully rendered row. Doing this after icons and text keeps
                 // cicn bitmap fallbacks and every other 1-bit component
                 // byte-for-byte identical to the classic XOR path.
-                for y in item_top..item_bottom {
+                for y in item_top.max(item_clip.0)..item_bottom.min(item_clip.2) {
                     for x in (left + 1)..(right - 1) {
                         if x >= 0 && x < screen_width && y >= 0 && y < screen_height {
                             let byte_offset = (y as u32) * row_bytes + (x as u32 / 8);

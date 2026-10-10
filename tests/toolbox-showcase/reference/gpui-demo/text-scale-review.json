@@ -1,0 +1,1221 @@
+{
+  "scope": "Shared GPUI headless scene captures; guest session API suspension, not native host observer qualification.",
+  "base_commit": "8f3f7aaf",
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "renderer_source_sha256": "279e21134c875377ada960ff8f2e8e44623e805caf8f7bd4dff05b4d08460e62",
+  "assertions": [
+    "dimensions match requested guest-scene scale with 2x host pixel density",
+    "active selection exists and normalized bounds remain within one guest pixel across scales",
+    "window-inactive and host-suspended views omit the active selection"
+  ],
+  "captures": [
+    {
+      "mode": "mono",
+      "state": "active",
+      "scale": 0.75,
+      "selection_blue_pixels": 1580,
+      "selection_bounds_in_guest_coordinates": [
+        74.0,
+        126.0,
+        144.0,
+        138.0
+      ],
+      "artifacts": [
+        {
+          "file": "text-scale-mono-active-075.png",
+          "sha256": "03402a8760cc33ce2392022b1bc2416c14b6948fb6e85917e4a32724d3cba11a",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "original_capture_sha256": "68948c9a948d473d18899737f72b1961b6a66122a48e8fe03cf5239018510b04",
+          "decoded_pixel_sha256": "b02dfad7d524861c9932b2460556eebf4c90137c69f2ad6779bed288635dd181",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-mono-active-075.guest.png",
+          "sha256": "c4a6dfac40db36387bc40e06191f25a0f596f65c111581b7d00ecab666f6e372",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "f63b8455c95580c0f27487eb87236254afcca2eae16a8d09dfd5e248ec86615c",
+          "decoded_pixel_sha256": "1b1efa29d97c97843c2d82e3af7f99776e98b227686ea79126c6daeb9c22c625",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "inactive",
+      "scale": 0.75,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-mono-inactive-075.png",
+          "sha256": "bb29fa552db0734da465120a4ba1c090b260d2d2fd4a01b65852d09dea48a11a",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "original_capture_sha256": "c5a5dcb7f20b3f7ffb08176b80686e4e50f4a97954cc22be07fc091d025e3819",
+          "decoded_pixel_sha256": "641588c88881e3d8b5e1cea5fac858013001c7a4e46b1e0d1564f440a215b02b",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-mono-inactive-075.guest.png",
+          "sha256": "d92cdfd08af9034c2c63f33aa71fce3bef8d6f537beae6c64db8e4c5bbd7b949",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "3dcb5b689df525614d358aa3c6831e2c742d46075a965c2553327e21caf4e700",
+          "decoded_pixel_sha256": "8b571b66cbf9a0fc21f52d7ea13bb4696b2d149355433e77e4ef3b27326300a7",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "host-suspended",
+      "scale": 0.75,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-mono-host-suspended-075.png",
+          "sha256": "746158165eff18815cca714ef690a7f066bb168d8ce5f416db62250108f4e245",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "original_capture_sha256": "4004dc5c9fc04684510f742796b51f649d216386835f66eac013fb56f3fef8fd",
+          "decoded_pixel_sha256": "f00700efef8bd114e824c5125e0c53873d69a498f15d4dd456839e11a27637c7",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-mono-host-suspended-075.guest.png",
+          "sha256": "da89b96779d6fb2e0ffdfb0c46dbeaa2b4c3de2e8a763fdfd8cc1e4f2c154309",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "713e2ed2ce18d5111bda8f4f4d2349b7118fa665befc51f0efa616781eccec28",
+          "decoded_pixel_sha256": "cb4efd6bcb04859632ab3f14382dc9830abd230e89d480de53ace68bda584243",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "active",
+      "scale": 1.0,
+      "selection_blue_pixels": 2744,
+      "selection_bounds_in_guest_coordinates": [
+        74.0,
+        126.0,
+        144.0,
+        138.0
+      ],
+      "artifacts": [
+        {
+          "file": "text-scale-mono-active-100.png",
+          "sha256": "316ffd0c4754c25e72b132c625598ca88838eb8c1f4c8b474f20f52e8e375342",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "original_capture_sha256": "589f1324efe799dbf83ee5119913f240d9cd26203db6c217d60825add269bef3",
+          "decoded_pixel_sha256": "8d430bc564b6c87f711eca4873feff7da427e3ce808c423912078e124a0b1deb",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-mono-active-100.guest.png",
+          "sha256": "c4a6dfac40db36387bc40e06191f25a0f596f65c111581b7d00ecab666f6e372",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "f63b8455c95580c0f27487eb87236254afcca2eae16a8d09dfd5e248ec86615c",
+          "decoded_pixel_sha256": "1b1efa29d97c97843c2d82e3af7f99776e98b227686ea79126c6daeb9c22c625",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "inactive",
+      "scale": 1.0,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-mono-inactive-100.png",
+          "sha256": "3d520320fde553b8c0ed6678351d0322cc323fc480aad120170885cbedf86d4d",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "original_capture_sha256": "62ed5ffd46a04b52411c0b58e8e69354c592504aa035123f081d4440ed555506",
+          "decoded_pixel_sha256": "fc47cdd3077fdd66a63a445e2ca6b20624cd3d26a6022629ece51afb2367ae8c",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-mono-inactive-100.guest.png",
+          "sha256": "d92cdfd08af9034c2c63f33aa71fce3bef8d6f537beae6c64db8e4c5bbd7b949",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "3dcb5b689df525614d358aa3c6831e2c742d46075a965c2553327e21caf4e700",
+          "decoded_pixel_sha256": "8b571b66cbf9a0fc21f52d7ea13bb4696b2d149355433e77e4ef3b27326300a7",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "host-suspended",
+      "scale": 1.0,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-mono-host-suspended-100.png",
+          "sha256": "de1ef0e2bd078c918879d688458c10ea86007e8642cbcdf23baefb46dcedeea9",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "original_capture_sha256": "a66b88dd9495e3ccd7ba6e3d13fd2d8a2f0d96454d096f8e39ded8b7b244aabe",
+          "decoded_pixel_sha256": "b9e4b9f54008a276bc39ec9182c4a14398d03eba5e18d48462b87c5dad77af94",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-mono-host-suspended-100.guest.png",
+          "sha256": "da89b96779d6fb2e0ffdfb0c46dbeaa2b4c3de2e8a763fdfd8cc1e4f2c154309",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "713e2ed2ce18d5111bda8f4f4d2349b7118fa665befc51f0efa616781eccec28",
+          "decoded_pixel_sha256": "cb4efd6bcb04859632ab3f14382dc9830abd230e89d480de53ace68bda584243",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "active",
+      "scale": 1.5,
+      "selection_blue_pixels": 6174,
+      "selection_bounds_in_guest_coordinates": [
+        74.0,
+        126.0,
+        144.0,
+        138.0
+      ],
+      "artifacts": [
+        {
+          "file": "text-scale-mono-active-150.png",
+          "sha256": "57c7c5600536ed532a42808dc4137ae2f457b5d8db964a4068bf787797c08cb2",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "original_capture_sha256": "7b757522d703164ca06a5d686439b22126d95dfe2e3d72cbf1630854637e0c93",
+          "decoded_pixel_sha256": "5c198bfcae1ec104a5ac31cdbc8cc345aca8a2813e9764d10aa1d2b999a2151d",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-mono-active-150.guest.png",
+          "sha256": "c4a6dfac40db36387bc40e06191f25a0f596f65c111581b7d00ecab666f6e372",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "f63b8455c95580c0f27487eb87236254afcca2eae16a8d09dfd5e248ec86615c",
+          "decoded_pixel_sha256": "1b1efa29d97c97843c2d82e3af7f99776e98b227686ea79126c6daeb9c22c625",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "inactive",
+      "scale": 1.5,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-mono-inactive-150.png",
+          "sha256": "e4268adfa3a89091dd5fcc6fa9c0ac4659794762927360004cde0323f7e66df1",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "original_capture_sha256": "ee3395893b8cacb04358026d2b627d1254b08f1a514fac73a6054b834d5bcc32",
+          "decoded_pixel_sha256": "87566b29db8031e54d4f1faaf5b9eb1598e6883c6ebedc76e4e0320337adf2a0",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-mono-inactive-150.guest.png",
+          "sha256": "d92cdfd08af9034c2c63f33aa71fce3bef8d6f537beae6c64db8e4c5bbd7b949",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "3dcb5b689df525614d358aa3c6831e2c742d46075a965c2553327e21caf4e700",
+          "decoded_pixel_sha256": "8b571b66cbf9a0fc21f52d7ea13bb4696b2d149355433e77e4ef3b27326300a7",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "host-suspended",
+      "scale": 1.5,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-mono-host-suspended-150.png",
+          "sha256": "9a62207e88295a4e4f121fdd362a9015536e1ab72bbd1bee1397264c906c98ce",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "original_capture_sha256": "97c122e2a49f6c0b12d4bf7e3d5e2b3eda218194d6fb47fa4976351dc8f1fb53",
+          "decoded_pixel_sha256": "56733f5ea4bcf6436a5aa5dde021b8597abbfef608e469dd2d5ca8984b400654",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-mono-host-suspended-150.guest.png",
+          "sha256": "da89b96779d6fb2e0ffdfb0c46dbeaa2b4c3de2e8a763fdfd8cc1e4f2c154309",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "713e2ed2ce18d5111bda8f4f4d2349b7118fa665befc51f0efa616781eccec28",
+          "decoded_pixel_sha256": "cb4efd6bcb04859632ab3f14382dc9830abd230e89d480de53ace68bda584243",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "active",
+      "scale": 2.0,
+      "selection_blue_pixels": 10976,
+      "selection_bounds_in_guest_coordinates": [
+        74.0,
+        126.0,
+        144.0,
+        138.0
+      ],
+      "artifacts": [
+        {
+          "file": "text-scale-mono-active-200.png",
+          "sha256": "b8d9a5f9028b8184c31dbf5e47f56a49f7bdcd464c4dfb47dbd592ae4a02d1aa",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "original_capture_sha256": "8f02525e5f688ae0bd37f20adaf422355b4743ccf4719b554050c0f89ef2042e",
+          "decoded_pixel_sha256": "6b83b6b46f302c82ba138f4566326e341faa353a58a3a8adec09e2312ebf530a",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-mono-active-200.guest.png",
+          "sha256": "c4a6dfac40db36387bc40e06191f25a0f596f65c111581b7d00ecab666f6e372",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "f63b8455c95580c0f27487eb87236254afcca2eae16a8d09dfd5e248ec86615c",
+          "decoded_pixel_sha256": "1b1efa29d97c97843c2d82e3af7f99776e98b227686ea79126c6daeb9c22c625",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "inactive",
+      "scale": 2.0,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-mono-inactive-200.png",
+          "sha256": "9f5447ca9720500f56029276dd954a6d47ff3fe42dd34d97e1cc175ef8e2873e",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "original_capture_sha256": "d9dc84e9e7ad31d9db322dbe60aa36bfbb36c421a043e303d92a807435886d7c",
+          "decoded_pixel_sha256": "968d498c86db0fd4cf5b333d814a908febc69b9cac10bbf4576edc9adb369011",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-mono-inactive-200.guest.png",
+          "sha256": "d92cdfd08af9034c2c63f33aa71fce3bef8d6f537beae6c64db8e4c5bbd7b949",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "3dcb5b689df525614d358aa3c6831e2c742d46075a965c2553327e21caf4e700",
+          "decoded_pixel_sha256": "8b571b66cbf9a0fc21f52d7ea13bb4696b2d149355433e77e4ef3b27326300a7",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "host-suspended",
+      "scale": 2.0,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-mono-host-suspended-200.png",
+          "sha256": "e7131b59afb28f8602984cd9f90862082bae1b7981ede8381332f9a9826efd33",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "original_capture_sha256": "c9d902bad4eabe41ca6ada14e0ab29a170f18878c2547a42f124812d300f6bc6",
+          "decoded_pixel_sha256": "e551e4e3c2c7eb95d7b49bb6fefe34a9a002baab9998b18aa47486fd0f9ad29b",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-mono-host-suspended-200.guest.png",
+          "sha256": "da89b96779d6fb2e0ffdfb0c46dbeaa2b4c3de2e8a763fdfd8cc1e4f2c154309",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "713e2ed2ce18d5111bda8f4f4d2349b7118fa665befc51f0efa616781eccec28",
+          "decoded_pixel_sha256": "cb4efd6bcb04859632ab3f14382dc9830abd230e89d480de53ace68bda584243",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "active",
+      "scale": 0.75,
+      "selection_blue_pixels": 1580,
+      "selection_bounds_in_guest_coordinates": [
+        74.0,
+        126.0,
+        144.0,
+        138.0
+      ],
+      "artifacts": [
+        {
+          "file": "text-scale-colour-active-075.png",
+          "sha256": "f62e52b3548094aa0786d12d53a839ecb4bfed9728bd8d4e6088bc9a8cea4f58",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "original_capture_sha256": "83a2e3abe39e3a6428ebf67a2e8e3d31aaa7757eb792906451e46f315966d2bb",
+          "decoded_pixel_sha256": "facb2a302f660b4b8f9689eebea77dd37228edd509f619e491af9b4e27141b2d",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-colour-active-075.guest.png",
+          "sha256": "b4d95ee264ef6039d4337e991eb6d985fef72a9d0002da39bf9426b17e0279cb",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "dbeb94170d916dea45bca07c641f769941940f082b5b545051a051160e6a20cb",
+          "decoded_pixel_sha256": "31ca0a1adf47ae95b3de6a187658068f157393f9a8bc9e7d546afc7d5d647291",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "inactive",
+      "scale": 0.75,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-colour-inactive-075.png",
+          "sha256": "bac151ebee4e80a6809bf3200f10647521b19260c3519098967ae5072ea745b9",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "original_capture_sha256": "4d2ced05abd8a9b4700f33caf35d2fc279eea54cf269e631df74c1453f648fb9",
+          "decoded_pixel_sha256": "a9f250cd080937dcfaa895a37774c2bbd3eacd46a61bd3a5ac4e1b588ae5a1b9",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-colour-inactive-075.guest.png",
+          "sha256": "15c35230b9b125cc00c692fa9001582cfa1c1d637906b1b971d431f5fbbadc1f",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "770326ccbba1876f53202d986d28ed40a414f87a6075efa8260ec9f0f5f45a03",
+          "decoded_pixel_sha256": "a09fe6cdc4978f4c5ac12eb3dabce27d1796970c6c53115eee4accf758abbf55",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "host-suspended",
+      "scale": 0.75,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-colour-host-suspended-075.png",
+          "sha256": "ed602fff2a8d25a926c9019bffc86b989deddbf7e235ae1df09187094c7b8a0b",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "original_capture_sha256": "d762e86355e3c7b94d838ff062d1a0cf911830899a8b095d641068c0cec4387e",
+          "decoded_pixel_sha256": "215df39e5ed4a4984c183c2bb02f53d4aae68d3c14332477b07097caf00fcb24",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-colour-host-suspended-075.guest.png",
+          "sha256": "546f4abd873146ada30b61410af7824231f2d035d134fee1e36734ebee2b5675",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "0e1a1dab8640db3aec8a161547ccf7f2cc2590b94672c2138057e26071130b01",
+          "decoded_pixel_sha256": "3165e0d3375e9b382f4fde3c3963ea99139e5bb525c4c6a71a0a5e24f37a5922",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "active",
+      "scale": 1.0,
+      "selection_blue_pixels": 2744,
+      "selection_bounds_in_guest_coordinates": [
+        74.0,
+        126.0,
+        144.0,
+        138.0
+      ],
+      "artifacts": [
+        {
+          "file": "text-scale-colour-active-100.png",
+          "sha256": "8761edf39e076e872ecc6e40c087ddd837a033a4fb8234fbe3791309bc3a87ad",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "original_capture_sha256": "d17578b121e8218f3b5eba9bb2aeb1793948aec58136badb9819f7f6895e0a10",
+          "decoded_pixel_sha256": "a85c2b8621e00a427b0aec2e76e65cc95f3adee05aeb284cb826ddf84003a661",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-colour-active-100.guest.png",
+          "sha256": "b4d95ee264ef6039d4337e991eb6d985fef72a9d0002da39bf9426b17e0279cb",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "dbeb94170d916dea45bca07c641f769941940f082b5b545051a051160e6a20cb",
+          "decoded_pixel_sha256": "31ca0a1adf47ae95b3de6a187658068f157393f9a8bc9e7d546afc7d5d647291",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "inactive",
+      "scale": 1.0,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-colour-inactive-100.png",
+          "sha256": "19c73ed5164d924ef89bb1e8edd36bb9b131b1e40f96ee8d006b07fd1a76deb2",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "original_capture_sha256": "09d60c7972687c3638c8385a5d9cddb4f5fe8f4ae4e288d9336dab3f1d0d7a4f",
+          "decoded_pixel_sha256": "bfafe128a28668ce85306d17d0275cafe6a16fe58c604f7cbbaf26e18daa7251",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-colour-inactive-100.guest.png",
+          "sha256": "15c35230b9b125cc00c692fa9001582cfa1c1d637906b1b971d431f5fbbadc1f",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "770326ccbba1876f53202d986d28ed40a414f87a6075efa8260ec9f0f5f45a03",
+          "decoded_pixel_sha256": "a09fe6cdc4978f4c5ac12eb3dabce27d1796970c6c53115eee4accf758abbf55",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "host-suspended",
+      "scale": 1.0,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-colour-host-suspended-100.png",
+          "sha256": "aee6d1dd74fb802d1c587641bd767438949b6e124f73f07bae891788b81189cb",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "original_capture_sha256": "ab5096dd2652f8170b4cb6dcfa311699f06e1c12bfc0272b52e6eb1dc34762e1",
+          "decoded_pixel_sha256": "e5ac5b9fb04caa34bac4996cd3db779958179932a2422af138d4acd6c26a0e52",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-colour-host-suspended-100.guest.png",
+          "sha256": "546f4abd873146ada30b61410af7824231f2d035d134fee1e36734ebee2b5675",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "0e1a1dab8640db3aec8a161547ccf7f2cc2590b94672c2138057e26071130b01",
+          "decoded_pixel_sha256": "3165e0d3375e9b382f4fde3c3963ea99139e5bb525c4c6a71a0a5e24f37a5922",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "active",
+      "scale": 1.5,
+      "selection_blue_pixels": 6174,
+      "selection_bounds_in_guest_coordinates": [
+        74.0,
+        126.0,
+        144.0,
+        138.0
+      ],
+      "artifacts": [
+        {
+          "file": "text-scale-colour-active-150.png",
+          "sha256": "1e5abfa267afe4da7acc20d24633e645174903d7a489861fe2be408bc90298ae",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "original_capture_sha256": "dfb7e3bdefae3d0a9c1630709f9cb71c0ae53cf2648d7c340696cb7ab45d26e1",
+          "decoded_pixel_sha256": "2dc3fe490cd6915d1b0c2332301199bc503700327cf7c4850196a61a07840896",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-colour-active-150.guest.png",
+          "sha256": "b4d95ee264ef6039d4337e991eb6d985fef72a9d0002da39bf9426b17e0279cb",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "dbeb94170d916dea45bca07c641f769941940f082b5b545051a051160e6a20cb",
+          "decoded_pixel_sha256": "31ca0a1adf47ae95b3de6a187658068f157393f9a8bc9e7d546afc7d5d647291",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "inactive",
+      "scale": 1.5,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-colour-inactive-150.png",
+          "sha256": "d77fae76efee80e76014e6a99c1fbd1e4bacda4750a5e0b47bd3b3d6ed44bcd9",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "original_capture_sha256": "35a8184576abc4490317801771e0c4301caea58ec175b2acac29cf1b520fe339",
+          "decoded_pixel_sha256": "43363fc5c6dafbe594f40293cbe76f634bbe82a24f3a1f5b2b7aa5dd8d73fe27",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-colour-inactive-150.guest.png",
+          "sha256": "15c35230b9b125cc00c692fa9001582cfa1c1d637906b1b971d431f5fbbadc1f",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "770326ccbba1876f53202d986d28ed40a414f87a6075efa8260ec9f0f5f45a03",
+          "decoded_pixel_sha256": "a09fe6cdc4978f4c5ac12eb3dabce27d1796970c6c53115eee4accf758abbf55",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "host-suspended",
+      "scale": 1.5,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-colour-host-suspended-150.png",
+          "sha256": "416357539ca472cfa192d4fc4263e511fd97e52a987183fe8a684c42d8ad0d3f",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "original_capture_sha256": "cad3f5107b0164e9c8225ee2b9bfbd83ed6c31350db3e5ba0e093ad4a5c81208",
+          "decoded_pixel_sha256": "52b8e8e9d988b38570387d7ed4c063cc3cf253fa7f7fe38c2a7a68166c594b45",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-colour-host-suspended-150.guest.png",
+          "sha256": "546f4abd873146ada30b61410af7824231f2d035d134fee1e36734ebee2b5675",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "0e1a1dab8640db3aec8a161547ccf7f2cc2590b94672c2138057e26071130b01",
+          "decoded_pixel_sha256": "3165e0d3375e9b382f4fde3c3963ea99139e5bb525c4c6a71a0a5e24f37a5922",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "active",
+      "scale": 2.0,
+      "selection_blue_pixels": 10976,
+      "selection_bounds_in_guest_coordinates": [
+        74.0,
+        126.0,
+        144.0,
+        138.0
+      ],
+      "artifacts": [
+        {
+          "file": "text-scale-colour-active-200.png",
+          "sha256": "d4a137974834eeb9f06735a8972b71403d77466c41f8d5bd9aaa8de8eed63852",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "original_capture_sha256": "b6deef21bbdd1dffff45419b00b646b89f5e3df2a382c86b150a49381bf92bea",
+          "decoded_pixel_sha256": "35a88b531ad66c0d8f7c55dd5fed74810f52589d2825cb1770773a64e85c2c87",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-colour-active-200.guest.png",
+          "sha256": "b4d95ee264ef6039d4337e991eb6d985fef72a9d0002da39bf9426b17e0279cb",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "dbeb94170d916dea45bca07c641f769941940f082b5b545051a051160e6a20cb",
+          "decoded_pixel_sha256": "31ca0a1adf47ae95b3de6a187658068f157393f9a8bc9e7d546afc7d5d647291",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "inactive",
+      "scale": 2.0,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-colour-inactive-200.png",
+          "sha256": "49091aea81a0f8af5faf4174f87332ad8e19fd5a7236791fe7e69c81157d2494",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "original_capture_sha256": "f802b9f8a4a2fab8bba6475ff9ffe8fa7e8ad0f537ae317eb5b8895208d5f629",
+          "decoded_pixel_sha256": "fdf7feb6fc4cfcdac46617c2c0622bc818c7001499e7bd441d2268ffd539a4b7",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-colour-inactive-200.guest.png",
+          "sha256": "15c35230b9b125cc00c692fa9001582cfa1c1d637906b1b971d431f5fbbadc1f",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "770326ccbba1876f53202d986d28ed40a414f87a6075efa8260ec9f0f5f45a03",
+          "decoded_pixel_sha256": "a09fe6cdc4978f4c5ac12eb3dabce27d1796970c6c53115eee4accf758abbf55",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "host-suspended",
+      "scale": 2.0,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-colour-host-suspended-200.png",
+          "sha256": "5b76ed2349a27417dcc0dd4a57d5cdbbb05677d4b176ae3e297cd59b61f41a53",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "original_capture_sha256": "fbced99daa02b40934d886e209831920ccb662c1ea1a3b380dca127184edcfae",
+          "decoded_pixel_sha256": "644ecd159723a698b18bac9c92d32aecdfc1b2658f6c8710fd0d47b637d6f544",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-colour-host-suspended-200.guest.png",
+          "sha256": "546f4abd873146ada30b61410af7824231f2d035d134fee1e36734ebee2b5675",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "0e1a1dab8640db3aec8a161547ccf7f2cc2590b94672c2138057e26071130b01",
+          "decoded_pixel_sha256": "3165e0d3375e9b382f4fde3c3963ea99139e5bb525c4c6a71a0a5e24f37a5922",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "active",
+      "scale": 0.75,
+      "selection_blue_pixels": 1580,
+      "selection_bounds_in_guest_coordinates": [
+        74.0,
+        126.0,
+        144.0,
+        138.0
+      ],
+      "artifacts": [
+        {
+          "file": "text-scale-ppc-active-075.png",
+          "sha256": "f62e52b3548094aa0786d12d53a839ecb4bfed9728bd8d4e6088bc9a8cea4f58",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "original_capture_sha256": "83a2e3abe39e3a6428ebf67a2e8e3d31aaa7757eb792906451e46f315966d2bb",
+          "decoded_pixel_sha256": "facb2a302f660b4b8f9689eebea77dd37228edd509f619e491af9b4e27141b2d",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-ppc-active-075.guest.png",
+          "sha256": "b4d95ee264ef6039d4337e991eb6d985fef72a9d0002da39bf9426b17e0279cb",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "dbeb94170d916dea45bca07c641f769941940f082b5b545051a051160e6a20cb",
+          "decoded_pixel_sha256": "31ca0a1adf47ae95b3de6a187658068f157393f9a8bc9e7d546afc7d5d647291",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "inactive",
+      "scale": 0.75,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-ppc-inactive-075.png",
+          "sha256": "fe61fa71dcd025a33607e701148b7b2c84292d60f92fe3e10ce4a953ce69b083",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "original_capture_sha256": "b501bf4cc07bbd48e2bb209196be888d5fa09c4dfb300113cd3fb5aded09203e",
+          "decoded_pixel_sha256": "038f0028f84f04cb334c1890089b39ca479efeccebe98d1c7ceb4b2066c53eb4",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-ppc-inactive-075.guest.png",
+          "sha256": "5f6f5776e62df2cf195249f68a7b51bd43f0d19b7eacb7b7a0a42488741e1e63",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "40ae90794526f34e03dfaa309aae9efdc2ba068bce096413bf5fb44e61db317a",
+          "decoded_pixel_sha256": "ff9c612de46b2556e08da96d783c286b4ab21b8e8434a336eaa6fadf71686c41",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "host-suspended",
+      "scale": 0.75,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-ppc-host-suspended-075.png",
+          "sha256": "ed602fff2a8d25a926c9019bffc86b989deddbf7e235ae1df09187094c7b8a0b",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "original_capture_sha256": "d762e86355e3c7b94d838ff062d1a0cf911830899a8b095d641068c0cec4387e",
+          "decoded_pixel_sha256": "215df39e5ed4a4984c183c2bb02f53d4aae68d3c14332477b07097caf00fcb24",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-ppc-host-suspended-075.guest.png",
+          "sha256": "546f4abd873146ada30b61410af7824231f2d035d134fee1e36734ebee2b5675",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "0e1a1dab8640db3aec8a161547ccf7f2cc2590b94672c2138057e26071130b01",
+          "decoded_pixel_sha256": "3165e0d3375e9b382f4fde3c3963ea99139e5bb525c4c6a71a0a5e24f37a5922",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "active",
+      "scale": 1.0,
+      "selection_blue_pixels": 2744,
+      "selection_bounds_in_guest_coordinates": [
+        74.0,
+        126.0,
+        144.0,
+        138.0
+      ],
+      "artifacts": [
+        {
+          "file": "text-scale-ppc-active-100.png",
+          "sha256": "8761edf39e076e872ecc6e40c087ddd837a033a4fb8234fbe3791309bc3a87ad",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "original_capture_sha256": "d17578b121e8218f3b5eba9bb2aeb1793948aec58136badb9819f7f6895e0a10",
+          "decoded_pixel_sha256": "a85c2b8621e00a427b0aec2e76e65cc95f3adee05aeb284cb826ddf84003a661",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-ppc-active-100.guest.png",
+          "sha256": "b4d95ee264ef6039d4337e991eb6d985fef72a9d0002da39bf9426b17e0279cb",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "dbeb94170d916dea45bca07c641f769941940f082b5b545051a051160e6a20cb",
+          "decoded_pixel_sha256": "31ca0a1adf47ae95b3de6a187658068f157393f9a8bc9e7d546afc7d5d647291",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "inactive",
+      "scale": 1.0,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-ppc-inactive-100.png",
+          "sha256": "7aa4bdf98ca0404bed42e1e69f70d9ffb716f5980d24ea82cceffc3fde8f9d97",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "original_capture_sha256": "1af9381cd8c9a89898bfeadcfcca761ded52a1347b8428e9e2f51bcf9236badc",
+          "decoded_pixel_sha256": "8a49c9c17c729b2a8b8961302ebea96c3985dd7671eebc91ec8fafea4993d08e",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-ppc-inactive-100.guest.png",
+          "sha256": "5f6f5776e62df2cf195249f68a7b51bd43f0d19b7eacb7b7a0a42488741e1e63",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "40ae90794526f34e03dfaa309aae9efdc2ba068bce096413bf5fb44e61db317a",
+          "decoded_pixel_sha256": "ff9c612de46b2556e08da96d783c286b4ab21b8e8434a336eaa6fadf71686c41",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "host-suspended",
+      "scale": 1.0,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-ppc-host-suspended-100.png",
+          "sha256": "aee6d1dd74fb802d1c587641bd767438949b6e124f73f07bae891788b81189cb",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "original_capture_sha256": "ab5096dd2652f8170b4cb6dcfa311699f06e1c12bfc0272b52e6eb1dc34762e1",
+          "decoded_pixel_sha256": "e5ac5b9fb04caa34bac4996cd3db779958179932a2422af138d4acd6c26a0e52",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-ppc-host-suspended-100.guest.png",
+          "sha256": "546f4abd873146ada30b61410af7824231f2d035d134fee1e36734ebee2b5675",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "0e1a1dab8640db3aec8a161547ccf7f2cc2590b94672c2138057e26071130b01",
+          "decoded_pixel_sha256": "3165e0d3375e9b382f4fde3c3963ea99139e5bb525c4c6a71a0a5e24f37a5922",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "active",
+      "scale": 1.5,
+      "selection_blue_pixels": 6174,
+      "selection_bounds_in_guest_coordinates": [
+        74.0,
+        126.0,
+        144.0,
+        138.0
+      ],
+      "artifacts": [
+        {
+          "file": "text-scale-ppc-active-150.png",
+          "sha256": "1e5abfa267afe4da7acc20d24633e645174903d7a489861fe2be408bc90298ae",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "original_capture_sha256": "dfb7e3bdefae3d0a9c1630709f9cb71c0ae53cf2648d7c340696cb7ab45d26e1",
+          "decoded_pixel_sha256": "2dc3fe490cd6915d1b0c2332301199bc503700327cf7c4850196a61a07840896",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-ppc-active-150.guest.png",
+          "sha256": "b4d95ee264ef6039d4337e991eb6d985fef72a9d0002da39bf9426b17e0279cb",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "dbeb94170d916dea45bca07c641f769941940f082b5b545051a051160e6a20cb",
+          "decoded_pixel_sha256": "31ca0a1adf47ae95b3de6a187658068f157393f9a8bc9e7d546afc7d5d647291",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "inactive",
+      "scale": 1.5,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-ppc-inactive-150.png",
+          "sha256": "dcceac22fe3da3079f7899953221ea133228b549a4254bcd4585c5aab9d8db89",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "original_capture_sha256": "c937227ac9368bedace258ab4afa67257444ac55fcf72e86721ef72e1f6167c8",
+          "decoded_pixel_sha256": "ac2bd49ed2fe66a6bb28458ffa1e281a2c3129c00373ec17b0730d842d6b8738",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-ppc-inactive-150.guest.png",
+          "sha256": "5f6f5776e62df2cf195249f68a7b51bd43f0d19b7eacb7b7a0a42488741e1e63",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "40ae90794526f34e03dfaa309aae9efdc2ba068bce096413bf5fb44e61db317a",
+          "decoded_pixel_sha256": "ff9c612de46b2556e08da96d783c286b4ab21b8e8434a336eaa6fadf71686c41",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "host-suspended",
+      "scale": 1.5,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-ppc-host-suspended-150.png",
+          "sha256": "416357539ca472cfa192d4fc4263e511fd97e52a987183fe8a684c42d8ad0d3f",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "original_capture_sha256": "cad3f5107b0164e9c8225ee2b9bfbd83ed6c31350db3e5ba0e093ad4a5c81208",
+          "decoded_pixel_sha256": "52b8e8e9d988b38570387d7ed4c063cc3cf253fa7f7fe38c2a7a68166c594b45",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-ppc-host-suspended-150.guest.png",
+          "sha256": "546f4abd873146ada30b61410af7824231f2d035d134fee1e36734ebee2b5675",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "0e1a1dab8640db3aec8a161547ccf7f2cc2590b94672c2138057e26071130b01",
+          "decoded_pixel_sha256": "3165e0d3375e9b382f4fde3c3963ea99139e5bb525c4c6a71a0a5e24f37a5922",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "active",
+      "scale": 2.0,
+      "selection_blue_pixels": 10976,
+      "selection_bounds_in_guest_coordinates": [
+        74.0,
+        126.0,
+        144.0,
+        138.0
+      ],
+      "artifacts": [
+        {
+          "file": "text-scale-ppc-active-200.png",
+          "sha256": "d4a137974834eeb9f06735a8972b71403d77466c41f8d5bd9aaa8de8eed63852",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "original_capture_sha256": "b6deef21bbdd1dffff45419b00b646b89f5e3df2a382c86b150a49381bf92bea",
+          "decoded_pixel_sha256": "35a88b531ad66c0d8f7c55dd5fed74810f52589d2825cb1770773a64e85c2c87",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-ppc-active-200.guest.png",
+          "sha256": "b4d95ee264ef6039d4337e991eb6d985fef72a9d0002da39bf9426b17e0279cb",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "dbeb94170d916dea45bca07c641f769941940f082b5b545051a051160e6a20cb",
+          "decoded_pixel_sha256": "31ca0a1adf47ae95b3de6a187658068f157393f9a8bc9e7d546afc7d5d647291",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "inactive",
+      "scale": 2.0,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-ppc-inactive-200.png",
+          "sha256": "c0aacfb2172cf38ede025a80a6e057c8d8a8d8c4ace807972ac77da5e523ff38",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "original_capture_sha256": "bf58492a057abf61d09eda941bca1efc612e21d13c2b9b33c346eb0829de27e3",
+          "decoded_pixel_sha256": "8374140af2d4c079473fc97bfb79ed170c73af0de47b183feafe9ee344c4a1a9",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-ppc-inactive-200.guest.png",
+          "sha256": "5f6f5776e62df2cf195249f68a7b51bd43f0d19b7eacb7b7a0a42488741e1e63",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "40ae90794526f34e03dfaa309aae9efdc2ba068bce096413bf5fb44e61db317a",
+          "decoded_pixel_sha256": "ff9c612de46b2556e08da96d783c286b4ab21b8e8434a336eaa6fadf71686c41",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "host-suspended",
+      "scale": 2.0,
+      "selection_blue_pixels": 0,
+      "selection_bounds_in_guest_coordinates": null,
+      "artifacts": [
+        {
+          "file": "text-scale-ppc-host-suspended-200.png",
+          "sha256": "5b76ed2349a27417dcc0dd4a57d5cdbbb05677d4b176ae3e297cd59b61f41a53",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "original_capture_sha256": "fbced99daa02b40934d886e209831920ccb662c1ea1a3b380dca127184edcfae",
+          "decoded_pixel_sha256": "644ecd159723a698b18bac9c92d32aecdfc1b2658f6c8710fd0d47b637d6f544",
+          "pixel_mode": "RGBA"
+        },
+        {
+          "file": "text-scale-ppc-host-suspended-200.guest.png",
+          "sha256": "546f4abd873146ada30b61410af7824231f2d035d134fee1e36734ebee2b5675",
+          "dimensions": [
+            800,
+            600
+          ],
+          "original_capture_sha256": "0e1a1dab8640db3aec8a161547ccf7f2cc2590b94672c2138057e26071130b01",
+          "decoded_pixel_sha256": "3165e0d3375e9b382f4fde3c3963ea99139e5bb525c4c6a71a0a5e24f37a5922",
+          "pixel_mode": "RGBA"
+        }
+      ]
+    }
+  ],
+  "visual_review": "Reviewed all 36 text-field crops in the mono/colour/PPC contact sheets; wrapping and inset stay stable, active selection tracks glyph advances, front-dialog occlusion clips the field, and suspended selection is hidden. Full mono active/inactive 0.75 scene and paired active guest frame also inspected.",
+  "reproduction": [
+    "cargo build --locked --example gpui-menu-demo --features gpui-demo-test",
+    "python3 tests/toolbox-showcase/capture-gpui-text-scales.py /tmp/new-empty-output"
+  ],
+  "limitations": [
+    "No native Macintosh font-oracle qualification",
+    "No native host observer verification; suspension is driven through guest session API",
+    "No pointer/editing interaction qualification at each capture scale",
+    "Mixed-run TextEdit and general dialog editing remain unfinished",
+    "Contact sheets crop the text area and do not establish whole-scene UI qualification"
+  ],
+  "contact_sheets": [
+    {
+      "file": "text-scale-mono-contact.png",
+      "sha256": "3eddb2b8b49e6129ce023b6c3ac5dc5ac975f18213e17dbf0a1d7bca68da6be6"
+    },
+    {
+      "file": "text-scale-colour-contact.png",
+      "sha256": "b3b13141c12ed476abc05083f00e9ac06c91bb8718b5ec2f4685e74e0b3813ae"
+    },
+    {
+      "file": "text-scale-ppc-contact.png",
+      "sha256": "f3bebf3e6cfc175489d0cdae9751e18634bdf69d7bb7506fca4189ea67c61a4e"
+    }
+  ],
+  "encoding": "Archived PNGs are losslessly re-encoded; exact decoded mode, size and pixel bytes were compared before/after. Original capture byte hashes are retained separately for replay.",
+  "replay": {
+    "method": "Fresh run of the checked-in capture helper; original capture byte hashes compared, not the losslessly re-encoded archive bytes. This is Systemless determinism evidence, not an independent Macintosh oracle.",
+    "matching_artifacts": 72,
+    "mismatches": []
+  }
+}

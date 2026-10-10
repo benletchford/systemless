@@ -529,14 +529,15 @@ pub(super) fn dispatch_window_import(
                         ppc_invalidate_window_local_rect(memory, window, port_rect);
                     }
                     // Macintosh Toolbox Essentials (1992), Window Manager,
-                    // PaintOne: newly exposed content uses its window color table.
+                    // PaintOne: newly exposed content uses its window color table,
+                    // or the default white background when there is no WCTab.
                     let content_color = ppc_window_color_table_handle(memory, window)
-                        .and_then(|handle| ppc_window_content_color(memory, handle));
-                    if let (Some(rect), Some(color)) = (
-                        ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET)),
-                        content_color,
-                    ) {
-                        let _ = ppc_paint_window_background_bounds(memory, gworlds, window, rect, color);
+                        .and_then(|handle| ppc_window_content_color(memory, handle))
+                        .unwrap_or(PPC_RGB_WHITE);
+                    if let Some(rect) =
+                        ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET))
+                    {
+                        let _ = ppc_paint_window_background_bounds(memory, gworlds, window, rect, content_color);
                     }
                     if ppc_front_visible_process_window(memory, window_list) != Some(window) {
                         ppc_draw_existing_window_frame(
@@ -854,6 +855,16 @@ pub(super) fn dispatch_window_import(
                 let window = params.window_ptr();
                 let previous_front = ppc_front_visible_process_window(memory, window_list);
                 ppc_reorder_window(gworlds, window_list, window, 0, true);
+                // Macintosh Toolbox Essentials (1992), SelectWindow, p. 4-87:
+                // selecting a window generates deactivation followed by
+                // activation, including when the selected window is hidden.
+                ppc_enqueue_window_activation_transition(
+                    memory,
+                    event_queue,
+                    previous_front,
+                    Some(window),
+                    tick_count,
+                );
                 ppc_recalculate_window_vis_regions(
                     process_memory_manager,
                     memory,
@@ -871,6 +882,13 @@ pub(super) fn dispatch_window_import(
                         previous_front,
                         toolbox_startup.host_menu_bar_hidden,
                     );
+                    // SelectWindow exposes content formerly covered by other
+                    // windows; the application redraws it on updateEvt.
+                    // Macintosh Toolbox Essentials (1992), pp. 4-43–4-44.
+                    if let Some(bounds) = ppc_read_rect(memory, cpu.gpr[3] + 16) {
+                        ppc_invalidate_window_local_rect(memory, cpu.gpr[3], bounds);
+                        ppc_enqueue_window_update_event(event_queue, cpu.gpr[3], tick_count, input);
+                    }
                 }
                 *current_gworld = window;
                 *current_gdevice =
@@ -1204,7 +1222,14 @@ pub(super) fn ppc_window_structure_bounds(
     content: (i16, i16, i16, i16),
 ) -> (i16, i16, i16, i16) {
     let has_title_bar = ppc_window_proc_has_title_bar(proc_id);
-    let border: i16 = if proc_id == 2 { 1 } else { 6 };
+    // dBoxProc paints an eight-pixel frame around the content. Its structure
+    // region must include that ink for hit testing, occlusion, and overlays.
+    // Macintosh Toolbox Essentials (1992), pp. 4-12, 4-24--4-26.
+    let border: i16 = match proc_id {
+        1 => 8,
+        2 => 1,
+        _ => 6,
+    };
     if has_title_bar {
         crate::window_manager::standard_window_structure_bounds(content)
     } else {
@@ -1624,6 +1649,7 @@ pub(super) fn ppc_new_cwindow_with_parameters(
         pixels_no_purge: true,
     });
     ppc_reorder_window(gworlds, window_list, port, behind, false);
+    window_list.register_new_window(port);
     if visible && proc_id == 1 {
         ppc_draw_existing_window_frame(memory, gworlds, window_list, port, false);
     }
@@ -1737,7 +1763,7 @@ pub(super) fn ppc_draw_standard_window_frame(
 
     if !title.is_empty() {
         let _ = ppc_with_unclipped_screen_port(memory, |memory| {
-            ppc_draw_text_bytes(
+            super::quickdraw::ppc_draw_text_bytes_styled_clipped(
             memory,
             gworlds,
             PPC_MAIN_GWORLD,
@@ -1747,6 +1773,8 @@ pub(super) fn ppc_draw_standard_window_frame(
             PPC_QD_TEXT_MODE_SRC_OR,
             ppc_theme_rgb(palette.frame_dark),
             None,
+            0,
+            Some(chrome.title_clip),
             &title,
             )
         });
@@ -1795,6 +1823,7 @@ pub(super) fn ppc_draw_grow_icon(
             ppc_restore_saved_detail(memory, saved.front_buffer, (x, y), &saved.pixels, index);
         }
     }
+    window_list.record_grow_icon(window, content);
 }
 
 pub(super) fn ppc_draw_existing_window_frame(
@@ -2099,6 +2128,9 @@ pub(super) fn ppc_repaint_window_geometry_transition(
     when: u32,
     input: PpcInputSnapshot,
 ) {
+    if previous_structure != next_structure {
+        window_list.invalidate_grow_icon(window);
+    }
     if !was_visible {
         return;
     }
@@ -2517,6 +2549,26 @@ pub(super) fn ppc_get_new_cwindow(
     window
 }
 
+fn ppc_update_window_user_state(
+    memory: &mut PpcSectionMem,
+    window: u32,
+    bounds: (i16, i16, i16, i16),
+) {
+    // The Window Manager updates WStateData.userState when the user changes
+    // a zoomable window's bounds. MTE (1992), pp. 4-53--4-54.
+    if !matches!(ppc_window_proc_id(memory, window), 8 | 12) {
+        return;
+    }
+    let data = memory
+        .read_u32_be(window.wrapping_add(PPC_CWINDOW_STATE_HANDLE_OFFSET))
+        .filter(|handle| *handle != 0)
+        .and_then(|handle| memory.read_u32_be(handle))
+        .filter(|data| *data != 0);
+    if let Some(data) = data {
+        let _ = ppc_write_rect(memory, data, bounds.0, bounds.1, bounds.2, bounds.3);
+    }
+}
+
 pub(super) fn ppc_size_window_dimensions(
     memory: &mut PpcSectionMem,
     gworlds: &mut [PpcGWorldRecord],
@@ -2567,6 +2619,16 @@ pub(super) fn ppc_size_window_dimensions(
             ppc_i32_to_i16_saturating(i32::from(global_left).saturating_add(width as i32)),
         ),
     )?;
+    ppc_update_window_user_state(
+        memory,
+        window_ptr,
+        (
+            global_top,
+            global_left,
+            ppc_i32_to_i16_saturating(i32::from(global_top).saturating_add(height as i32)),
+            ppc_i32_to_i16_saturating(i32::from(global_left).saturating_add(width as i32)),
+        ),
+    );
 
     if ppc_hle_trace_enabled() {
         eprintln!(
@@ -2637,6 +2699,20 @@ pub(super) fn ppc_move_window_coordinates(
             ),
         ),
     )?;
+    ppc_update_window_user_state(
+        memory,
+        window_ptr,
+        (
+            new_top,
+            new_left,
+            ppc_i32_to_i16_saturating(
+                i32::from(new_top).saturating_add(i32::from(port_bottom.saturating_sub(port_top))),
+            ),
+            ppc_i32_to_i16_saturating(
+                i32::from(new_left).saturating_add(i32::from(port_right.saturating_sub(port_left))),
+            ),
+        ),
+    );
 
     // portRect is guest-writable and describes local coordinates, not the
     // allocated backing surface. It may legitimately differ from the cached
@@ -3188,7 +3264,16 @@ pub(super) fn ppc_find_window_at_point(
                 && h >= right.saturating_sub(24)
                 && h < right.saturating_sub(6)
             {
-                return (7, window);
+                // FindWindow reports inZoomIn only when the content already
+                // matches WStateData.stdState; otherwise it reports inZoomOut.
+                // Macintosh Toolbox Essentials (1992), pp. 4-53--4-54.
+                let standard = memory
+                    .read_u32_be(window.wrapping_add(PPC_CWINDOW_STATE_HANDLE_OFFSET))
+                    .filter(|handle| *handle != 0)
+                    .and_then(|handle| memory.read_u32_be(handle))
+                    .filter(|state| *state != 0)
+                    .and_then(|state| ppc_read_rect(memory, state + 8));
+                return (if standard == Some((top, left, bottom, right)) { 7 } else { 8 }, window);
             }
             return (4, window);
         }
@@ -5480,10 +5565,12 @@ pub(super) fn ppc_new_window_from_cpu(
         && ppc_write_rect(
             memory,
             state + 8,
-            20,
-            0,
-            ppc_main_screen_height() as i16,
-            ppc_main_screen_width() as i16,
+            // Leave the standard document title bar below the menu bar.
+            // Macintosh Toolbox Essentials (1992), Listing 4-12, p. 4-55.
+            41,
+            3,
+            (ppc_main_screen_height() as i16).saturating_sub(3),
+            (ppc_main_screen_width() as i16).saturating_sub(3),
         )
         .is_some()
         && memory
@@ -5666,7 +5753,7 @@ pub(super) fn ppc_close_window(
                 || gworld.port == PPC_DSP_BACK_GWORLD
                 || gworld.port != window
         });
-        window_list.with_mut(|windows| windows.retain(|candidate| *candidate != window));
+        window_list.retain(|candidate| *candidate != window);
         ppc_recalculate_window_vis_regions(
             process_memory_manager,
             memory,
@@ -5813,7 +5900,7 @@ pub(super) fn ppc_dispose_window(
     gworlds.retain(|record| {
         record.port != window || matches!(record.port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
     });
-    window_list.with_mut(|windows| windows.retain(|candidate| *candidate != window));
+    window_list.retain(|candidate| *candidate != window);
     if *current_gworld == window {
         *current_gworld =
             ppc_front_visible_process_window(memory, window_list).unwrap_or(PPC_MAIN_GWORLD);
@@ -6620,6 +6707,7 @@ pub(super) fn ppc_zoom_window(
         .and_then(|handle| memory.read_u32_be(handle))
         .filter(|state| *state != 0);
     let state = state?;
+    let user_state = ppc_read_rect(memory, state)?;
     let offset = if part == 8 { 8 } else { 0 };
     let (top, left, bottom, right) = ppc_read_rect(memory, state + offset)?;
     let mut move_cpu = cpu.clone();
@@ -6630,5 +6718,13 @@ pub(super) fn ppc_zoom_window(
     size_cpu.gpr[4] = right.saturating_sub(left) as u16 as u32;
     size_cpu.gpr[5] = bottom.saturating_sub(top) as u16 as u32;
     ppc_size_window(&size_cpu, memory, gworlds)?;
+    ppc_write_rect(
+        memory,
+        state,
+        user_state.0,
+        user_state.1,
+        user_state.2,
+        user_state.3,
+    )?;
     Some(())
 }

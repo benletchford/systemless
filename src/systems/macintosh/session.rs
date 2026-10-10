@@ -111,6 +111,29 @@ impl MacintoshSession {
         }
     }
 
+    /// Import changed host clipboard text as Macintosh Roman bytes with CR
+    /// line endings, before requesting resume. Guest code owns private scrap
+    /// conversion in response to the resulting resume notification.
+    /// An already foreground application receives a conversion-only resume at
+    /// an eligible guest yield; no suspend or window activation is synthesized.
+    pub fn import_clipboard_text(&mut self, text: Vec<u8>) {
+        self.runner.import_clipboard_text(text);
+    }
+
+    /// Global TEXT after the guest has finished suspend handling and yielded.
+    /// Outer `None` denotes an unsettled/foreground process; inner `None`
+    /// denotes a settled clipboard without TEXT. Bytes are Macintosh Roman.
+    pub fn clipboard_text_after_suspend(&self) -> Option<Option<Vec<u8>>> {
+        self.runner.clipboard_text_after_suspend()
+    }
+
+    /// Request a foreground change without bypassing the guest Event Manager.
+    /// The request takes effect at an eligible scheduling call, respecting
+    /// modality and the application's SIZE suspend/resume policy.
+    pub fn request_foreground(&mut self, foreground: bool) {
+        self.runner.request_foreground(foreground);
+    }
+
     /// Composite host presentation and return an owned RGBA8 frame.
     pub fn video_frame(&mut self) -> Option<VideoFrame> {
         self.runner.composite_frame();

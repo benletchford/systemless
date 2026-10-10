@@ -5,6 +5,23 @@ use crate::runner::MenuBarPolicy;
 use crate::systems::macintosh::runner::{NativeEngineRole, UiThemeId};
 
 #[test]
+fn presented_menu_follows_guest_height_and_fullscreen_state() {
+    use crate::memory::globals::addr;
+
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.bus.write_word(addr::MBAR_HEIGHT, 20);
+    assert!(runner.guest_menu_bar_presented());
+    runner.bus.write_word(addr::MBAR_HEIGHT, 0);
+    assert!(!runner.guest_menu_bar_presented());
+    runner.bus.write_word(addr::MBAR_HEIGHT, 20);
+    runner.dispatcher.fullscreen_locked = true;
+    assert!(!runner.guest_menu_bar_presented());
+    runner.dispatcher.fullscreen_locked = false;
+    runner.set_menu_bar_policy(MenuBarPolicy::ForceHidden);
+    assert!(!runner.guest_menu_bar_presented());
+}
+
+#[test]
 fn ppc_initialization_attaches_both_cpu_adapters_to_one_native_menu_selection() {
     let app = halted_ppc_app_with_sound(PpcSoundState::default());
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -61,6 +78,11 @@ fn native_menu_select_observes_68k_disable_item_after_mdef_returns() {
     // This fixture pre-renders classic menu pixels before attaching to the runner.
     runner.set_ui_theme(UiThemeId::ClassicSystem7);
     runner.init_app(&app);
+    let menus = runner.guest_menu_snapshot();
+    assert!(menus.requires_guest_menu_rendering());
+    assert!(menus.menus.iter().any(|menu| {
+        menu.id == 141 && menu.hierarchical && !menu.standard_definition
+    }));
 
     let framebuffer_before = {
         let native = runner.native.application_mut().expect("native app");
@@ -131,6 +153,22 @@ fn native_menu_select_observes_68k_disable_item_after_mdef_returns() {
         .menu_tracking()
         .expect("native interaction should remain retained");
     assert_eq!(tracking.menu_handle, root_menu);
+    assert!(runner.guest_menu_snapshot().requires_guest_menu_rendering());
+    let framebuffer_during = {
+        let native = runner.native.application_mut().expect("native app");
+        let front = native.current_front_buffer().expect("front buffer");
+        let mut framebuffer = Vec::with_capacity((front.row_bytes * front.height) as usize);
+        let mut row = vec![0; front.row_bytes as usize];
+        for y in 0..front.height {
+            native.read_front_buffer_row(front, y, &mut row).unwrap();
+            framebuffer.extend_from_slice(&row);
+        }
+        framebuffer
+    };
+    assert_ne!(
+        framebuffer_during, framebuffer_before,
+        "guest menu pixels must remain in the front buffer for GPUI fallback"
+    );
     assert_eq!(
         runner
             .native

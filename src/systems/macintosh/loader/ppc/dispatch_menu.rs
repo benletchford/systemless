@@ -13,6 +13,7 @@ pub(super) struct PpcMenuDispatchContext<'a> {
     pub(super) last_resource_error: &'a mut i16,
     pub(super) handles: &'a mut Vec<PpcHandleRecord>,
     pub(super) vfs_resources: &'a mut Vec<PpcVfsResourceRecord>,
+    pub(super) menu_generations: &'a mut HashMap<u32, u64>,
     pub(super) current_resource_refnum: i16,
     pub(super) resource_policy: &'a SharedProcessResourcePolicy,
     pub(super) toolbox_startup: &'a mut PpcToolboxStartupState,
@@ -37,6 +38,7 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
         last_resource_error,
         handles,
         vfs_resources,
+        menu_generations,
         current_resource_refnum,
         resource_policy,
         toolbox_startup,
@@ -180,6 +182,7 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                 crate::menu_manager::evaluate_dispose_menu_parameters(cpu.gpr[3])
             {
                 let menu_handle = params.menu_handle();
+                menu_generations.remove(&menu_handle);
                 for resource in vfs_resources
                     .iter_mut()
                     .filter(|resource| resource.handle == menu_handle)

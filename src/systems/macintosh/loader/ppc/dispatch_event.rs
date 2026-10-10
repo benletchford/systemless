@@ -507,6 +507,12 @@ pub(super) fn dispatch_time_import(context: PpcTimeDispatchContext<'_>) -> Optio
                 Some(PpcImportAction::Yield(u64::from(cycles_per_tick.max(1))))
             }
         }
+        // GetCaretTime: Toolbox Essentials (1992), p. 2-113.
+        // FUNCTION GetCaretTime: LongInt; reads the live CaretTime global.
+        PpcImportDispatcherTarget::GetCaretTime => Some(PpcImportAction::Return(
+            memory.read_u32_be(crate::memory::globals::addr::CARET_TIME)
+                .unwrap_or(crate::memory::globals::DEFAULT_CARET_TIME_TICKS),
+        )),
         PpcImportDispatcherTarget::GetDblTime => Some(PpcImportAction::Return(
             memory
                 .read_u32_be(crate::memory::globals::addr::DOUBLE_TIME)
@@ -543,6 +549,10 @@ pub(super) struct PpcEventDispatchContext<'a> {
     pub(super) event_queue: &'a mut EventQueue,
     pub(super) input: PpcInputSnapshot,
     pub(super) tick_count: u32,
+    pub(super) process_mode: u32,
+    pub(super) cycles_per_tick: u32,
+    pub(super) window_list: &'a SharedProcessWindowList,
+    pub(super) dialog_callback_active: bool,
 }
 
 pub(super) fn dispatch_event_import(
@@ -562,6 +572,10 @@ pub(super) fn dispatch_event_import(
         event_queue,
         input,
         tick_count,
+        process_mode,
+        cycles_per_tick,
+        window_list,
+        dialog_callback_active,
     } = context;
     match binding.dispatcher_target {
         PpcImportDispatcherTarget::GetMainEventLoop => {
@@ -1232,6 +1246,12 @@ pub(super) fn dispatch_event_import(
                 PpcImportDispatcherTarget::GetOSEvent
             );
             if !os_only {
+                ppc_service_process_activation(memory, gworlds, window_list,
+                    toolbox_startup, event_queue, process_mode, tick_count,
+                    matches!(binding.dispatcher_target,
+                        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent)),
+                    dialog_callback_active);
+
                 let wait_ticks = if matches!(
                     binding.dispatcher_target,
                     PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent)
@@ -1260,7 +1280,7 @@ pub(super) fn dispatch_event_import(
             }
             ppc_suppress_window_updates(event_queue, &toolbox_startup.windows_without_updates);
             let (what, message, when, where_v, where_h, modifiers, has_event) =
-                ppc_dequeue_event(event_queue, event_mask, input, os_only, tick_count);
+                ppc_poll_process_event(event_queue, event_mask, input, os_only, tick_count, true);
             if has_event && what == 8 {
                 let pending = if (modifiers & 1) != 0 { 0x0A64 } else { 0x0A68 };
                 if memory.read_u32_be(pending) == Some(message) {
@@ -1274,6 +1294,23 @@ pub(super) fn dispatch_event_import(
                     "[INPUT] PPC {} lr=${:08X} mask=${event_mask:04X} event_ptr=${event_ptr:08X} sleep={} -> has_event={} what={} message=${message:08X} where=({}, {}) modifiers=${modifiers:04X}",
                     binding.symbol_name, cpu.lr, sleep_ticks, has_event, what, where_v, where_h,
                 );
+            }
+            if matches!(binding.dispatcher_target,
+                PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent)) {
+                let frame = (cpu.pc, cpu.gpr[1], cpu.lr);
+                let (started, duration) = toolbox_startup.event_waits.get(&frame)
+                    .copied().unwrap_or((tick_count, sleep_ticks));
+                // Toolbox Essentials (1992), pp. 2-21--2-22: sleep is a
+                // maximum wait, interrupted by an eligible event. Retain the
+                // ABI frame and poll in bounded slices so timers and host
+                // input can run without charging the entire sleep at once.
+                if !has_event && tick_count.wrapping_sub(started) < duration {
+                    toolbox_startup.event_waits.insert(frame, (started, duration));
+                    toolbox_startup.event_loop_poll_until_tick = Some(started.wrapping_add(duration));
+                    return Some(PpcImportAction::Yield(u64::from(cycles_per_tick.max(1))));
+                }
+                toolbox_startup.event_waits.remove(&frame);
+                toolbox_startup.event_loop_poll_until_tick = Some(tick_count.wrapping_add(1));
             }
             if event_ptr != 0
                 && ppc_write_event_record(
@@ -1295,21 +1332,7 @@ pub(super) fn dispatch_event_import(
                     has_event, what, message, when, where_v, where_h, modifiers,
                 ));
             }
-            let action = PpcImportAction::Return(u32::from(has_event));
-            if matches!(
-                binding.dispatcher_target,
-                PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent)
-            ) && !has_event
-                && sleep_ticks > 0
-            {
-                Some(ppc_import_action_with_extra_cycles(
-                    action,
-                    u64::from(sleep_ticks)
-                        .saturating_mul(PPC_Q3_IDLE_STATE_ONLY_FRAME_EXTRA_CYCLES),
-                ))
-            } else {
-                Some(action)
-            }
+            Some(PpcImportAction::Return(u32::from(has_event)))
         }
         PpcImportDispatcherTarget::EventAvail | PpcImportDispatcherTarget::OSEventAvail => {
             let event_mask = cpu.gpr[3] as u16;
@@ -1319,6 +1342,10 @@ pub(super) fn dispatch_event_import(
                 PpcImportDispatcherTarget::OSEventAvail
             );
             if !os_only {
+                ppc_service_process_activation(memory, gworlds, window_list,
+                    toolbox_startup, event_queue, process_mode, tick_count, true,
+                    dialog_callback_active);
+
                 toolbox_startup.event_loop_poll_until_tick = Some(tick_count.wrapping_add(1));
                 ppc_service_invalid_menu_bar(
                     event_queue,
@@ -1338,7 +1365,7 @@ pub(super) fn dispatch_event_import(
             }
             ppc_suppress_window_updates(event_queue, &toolbox_startup.windows_without_updates);
             let (what, message, when, where_v, where_h, modifiers, has_event) =
-                ppc_peek_event(event_queue, event_mask, input, os_only, tick_count);
+                ppc_poll_process_event(event_queue, event_mask, input, os_only, tick_count, false);
             if event_ptr != 0
                 && ppc_write_event_record(
                     memory, event_ptr, what, message, when, where_v, where_h, modifiers,

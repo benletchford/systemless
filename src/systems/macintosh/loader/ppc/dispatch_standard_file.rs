@@ -31,6 +31,8 @@ pub(super) struct PpcStandardFileEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PpcStandardFileGetTrackingState {
+    pub(super) generation: u64,
+    pub(super) standard_entry_point: bool,
     pub(super) call: PpcStandardFileCall,
     pub(super) entries: Vec<PpcStandardFileEntry>,
     pub(super) current_dir_id: u32,
@@ -61,9 +63,20 @@ pub(super) struct PpcStandardFileFilteringState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PpcStandardFilePutTrackingState {
+    pub(super) pointer_anchor: Option<usize>,
+    pub(super) caret: crate::standard_file_ui::StandardFileCaret,
+    pub(super) new_folder: Option<crate::standard_file_ui::StandardFileNewFolderState>,
+    pub(super) confirming_replace: bool,
+    pub(super) generation: u64,
+    pub(super) standard_entry_point: bool,
     pub(super) call: PpcStandardFileCall,
     pub(super) vref: i16,
     pub(super) dir_id: u32,
+    pub(super) directory_name: Vec<u8>,
+    pub(super) entries: Vec<PpcStandardFileEntry>,
+    pub(super) selected: Option<usize>,
+    pub(super) list_has_focus: bool,
+    pub(super) last_list_click: Option<(usize, u32)>,
     pub(super) prompt: Vec<u8>,
     pub(super) name: Vec<u8>,
     pub(super) sel_start: usize,
@@ -74,6 +87,11 @@ pub(super) struct PpcStandardFilePutTrackingState {
 }
 
 pub(super) struct PpcStandardFileDispatchContext<'a> {
+    pub(super) input: PpcInputSnapshot,
+    pub(super) tick_count: u32,
+    pub(super) next_vfs_dir_id: &'a mut u32,
+    pub(super) heap_limit: u32,
+    pub(super) handles: &'a mut Vec<PpcHandleRecord>,
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,
     pub(super) memory: &'a mut PpcSectionMem,
@@ -96,6 +114,11 @@ pub(super) fn dispatch_standard_file_import(
     context: PpcStandardFileDispatchContext<'_>,
 ) -> Option<PpcImportAction> {
     let PpcStandardFileDispatchContext {
+        input,
+        tick_count,
+        next_vfs_dir_id,
+        heap_limit,
+        handles,
         binding,
         cpu,
         memory,
@@ -132,6 +155,11 @@ pub(super) fn dispatch_standard_file_import(
             working_directories,
             next_working_directory_ref_num,
             event_queue,
+            next_vfs_dir_id,
+            heap_limit,
+            handles,
+            input,
+            tick_count,
         )),
         PpcImportDispatcherTarget::StandardFileCompatibility(operation) => {
             Some(ppc_dispatch_standard_file(
@@ -151,6 +179,11 @@ pub(super) fn dispatch_standard_file_import(
                 working_directories,
                 next_working_directory_ref_num,
                 event_queue,
+            next_vfs_dir_id,
+            heap_limit,
+            handles,
+            input,
+            tick_count,
             ))
         }
         _ => None,
@@ -170,10 +203,71 @@ pub(super) const PPC_STANDARD_FILE_GET_CANCEL_RECT: (i16, i16, i16, i16) = (110,
 pub(super) const PPC_STANDARD_FILE_GET_OPEN_RECT: (i16, i16, i16, i16) = (138, 258, 159, 338);
 pub(super) const PPC_STANDARD_FILE_GET_ROW_HEIGHT: i16 = 14;
 pub(super) const PPC_STANDARD_FILE_PUT_DIALOG_WIDTH: i16 = 360;
-pub(super) const PPC_STANDARD_FILE_PUT_DIALOG_HEIGHT: i16 = 148;
-pub(super) const PPC_STANDARD_FILE_PUT_CANCEL_RECT: (i16, i16, i16, i16) = (103, 166, 125, 246);
-pub(super) const PPC_STANDARD_FILE_PUT_SAVE_RECT: (i16, i16, i16, i16) = (103, 258, 125, 338);
-pub(super) const PPC_STANDARD_FILE_PUT_NAME_RECT: (i16, i16, i16, i16) = (52, 24, 72, 330);
+pub(super) const PPC_STANDARD_FILE_PUT_DIALOG_HEIGHT: i16 = 270;
+pub(super) const PPC_STANDARD_FILE_PUT_CANCEL_RECT: (i16, i16, i16, i16) = (239, 166, 261, 246);
+pub(super) const PPC_STANDARD_FILE_PUT_SAVE_RECT: (i16, i16, i16, i16) = (239, 258, 261, 338);
+pub(super) const PPC_STANDARD_FILE_PUT_NAME_RECT: (i16, i16, i16, i16) = (204, 24, 224, 330);
+pub(super) const PPC_STANDARD_FILE_PUT_PROMPT_RECT: (i16, i16, i16, i16) = (183, 18, 201, 330);
+pub(super) const PPC_STANDARD_FILE_PUT_DIRECTORY_LABEL_RECT: (i16, i16, i16, i16) = (16, 18, 36, 236);
+pub(super) const PPC_STANDARD_FILE_PUT_LIST_RECT: (i16, i16, i16, i16) = (39, 18, 167, 314);
+pub(super) const PPC_STANDARD_FILE_PUT_SCROLL_RECT: (i16, i16, i16, i16) = (39, 314, 167, 330);
+pub(super) const PPC_STANDARD_FILE_PUT_DESKTOP_RECT: (i16, i16, i16, i16) = (239, 24, 261, 104);
+
+pub(super) const PPC_STANDARD_FILE_PUT_NEW_FOLDER_RECT: (i16, i16, i16, i16) = (239, 110, 261, 160);
+
+/// Validate the destination before New Folder changes the catalog.
+/// Files (1992), FSpDirCreate and PBSetVInfo: duplicate names and locked
+/// volumes must fail without creating a directory or consuming its ID.
+fn ppc_standard_file_new_folder_error(
+    directories: &[PpcVfsDirectory],
+    files: &[PpcVfsFileRecord],
+    resources: &[PpcVfsResourceFileRecord],
+    volumes: &[PpcVfsVolumeRecord],
+    parent: u32,
+    name: &[u8],
+) -> Option<i16> {
+    let parent_path = ppc_directory_path_for_id(directories, parent)?;
+    let mut ancestor = parent;
+    for _ in 0..=directories.len() {
+        if let Some(volume) = volumes.iter().find(|volume| volume.root_dir_id == ancestor) {
+            if volume.attributes & 0x80 != 0 {
+                return Some(-44);
+            }
+            if volume.attributes & 0x8000 != 0 {
+                return Some(-46);
+            }
+            break;
+        }
+        let Some(directory) = directories
+            .iter()
+            .find(|directory| directory.dir_id == ancestor)
+        else {
+            break;
+        };
+        if directory.parent_dir_id == ancestor {
+            break;
+        }
+        ancestor = directory.parent_dir_id;
+    }
+    let child = crate::trap::dispatch::TrapDispatcher::encode_hfs_component_for_vfs(
+        &decode_mac_roman(name),
+    );
+    let path = ppc_join_vfs_path(parent_path, &child);
+    if directories
+        .iter()
+        .any(|directory| directory.path.eq_ignore_ascii_case(&path))
+        || files
+            .iter()
+            .any(|file| file.path.eq_ignore_ascii_case(&path))
+        || resources
+            .iter()
+            .any(|file| file.path.eq_ignore_ascii_case(&path))
+    {
+        Some(PPC_DUP_FN_ERR)
+    } else {
+        None
+    }
+}
 
 fn ppc_standard_file_reply_ptr(mode: PpcStandardFileMode, cpu: &PpcCpu) -> u32 {
     match mode {
@@ -236,7 +330,7 @@ fn ppc_standard_file_get_entries(
         .filter(|directory| directory.parent_dir_id == dir_id)
     {
         entries.push(PpcStandardFileEntry {
-            name: encode_mac_roman_lossy(ppc_vfs_basename(&directory.path))
+            name: encode_mac_roman_lossy(&crate::trap::dispatch::TrapDispatcher::hfs_name_from_vfs_component(ppc_vfs_basename(&directory.path)))
                 .into_iter()
                 .take(63)
                 .collect(),
@@ -303,6 +397,40 @@ fn ppc_standard_file_get_entries(
             ))
     });
     entries
+}
+
+fn ppc_standard_file_directory_name(
+    vfs_directories: &[PpcVfsDirectory],
+    dir_id: u32,
+) -> Vec<u8> {
+    if dir_id == PPC_ROOT_DIR_ID {
+        return crate::trap::dispatch::BOOT_VOLUME_NAME.as_bytes().to_vec();
+    }
+    ppc_directory_path_for_id(vfs_directories, dir_id)
+        .map(ppc_vfs_basename)
+        .filter(|name| !name.is_empty())
+        .map(|name| encode_mac_roman_lossy(&crate::trap::dispatch::TrapDispatcher::hfs_name_from_vfs_component(name)))
+        .unwrap_or_else(|| crate::trap::dispatch::BOOT_VOLUME_NAME.as_bytes().to_vec())
+}
+
+fn ppc_standard_file_put_enter_directory(
+    tracking: &mut PpcStandardFilePutTrackingState,
+    dir_id: u32,
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &[PpcVfsFileRecord],
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
+) {
+    tracking.dir_id = dir_id;
+    tracking.directory_name = ppc_standard_file_directory_name(vfs_directories, dir_id);
+    tracking.entries = ppc_standard_file_get_entries(
+        vfs_directories,
+        vfs_files,
+        vfs_resource_files,
+        dir_id,
+        None,
+    );
+    tracking.selected = None;
+    tracking.last_list_click = None;
 }
 
 pub(super) fn ppc_capture_saved_detail<T>(
@@ -733,27 +861,23 @@ fn ppc_standard_file_global_rect(
     )
 }
 
-fn ppc_standard_file_draw_get_dialog(
+fn ppc_standard_file_draw_list(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
-    tracking: &PpcStandardFileGetTrackingState,
+    front: PpcFrontBuffer,
+    bounds: (i16, i16, i16, i16),
+    list_rect: (i16, i16, i16, i16),
+    entries: &[PpcStandardFileEntry],
+    selected: Option<usize>,
 ) {
-    let front = tracking.front_buffer;
-    let bounds = tracking.bounds;
-    ppc_draw_retained_dialog_frame(memory, gworlds, bounds, bounds, 2);
-    let list = (
-        bounds.0.saturating_add(PPC_STANDARD_FILE_GET_LIST_RECT.0),
-        bounds.1.saturating_add(PPC_STANDARD_FILE_GET_LIST_RECT.1),
-        bounds.0.saturating_add(PPC_STANDARD_FILE_GET_LIST_RECT.2),
-        bounds.1.saturating_add(PPC_STANDARD_FILE_GET_LIST_RECT.3),
-    );
+    let list = ppc_standard_file_global_rect(bounds, list_rect);
     let _ = ppc_fill_front_rect(memory, front, list, PPC_RGB_WHITE);
     let _ = ppc_frame_front_rect(memory, front, list, PPC_RGB_BLACK, 1);
     let visible_rows = 8usize;
-    let first_visible = tracking.selected.saturating_sub(visible_rows - 1);
+    let first_visible = selected.unwrap_or(0).saturating_sub(visible_rows - 1);
     for row in 0..visible_rows {
         let index = first_visible + row;
-        let Some(entry) = tracking.entries.get(index) else {
+        let Some(entry) = entries.get(index) else {
             break;
         };
         let row_top = list.0.saturating_add(2).saturating_add(
@@ -764,14 +888,14 @@ fn ppc_standard_file_draw_get_dialog(
         let row_bottom = row_top
             .saturating_add(PPC_STANDARD_FILE_GET_ROW_HEIGHT)
             .min(list.2.saturating_sub(1));
-        let selected = index == tracking.selected;
+        let is_selected = selected == Some(index);
         let row_rect = (
             row_top,
             list.1.saturating_add(2),
             row_bottom,
             list.3.saturating_sub(2),
         );
-        if selected {
+        if is_selected {
             let _ = ppc_fill_front_rect(memory, front, row_rect, PPC_RGB_BLACK);
         }
         let mut text = entry.name.clone();
@@ -788,13 +912,28 @@ fn ppc_standard_file_draw_get_dialog(
                 list.3.saturating_sub(3),
             ),
             &text,
-            if selected {
-                PPC_RGB_WHITE
-            } else {
-                PPC_RGB_BLACK
-            },
+            if is_selected { PPC_RGB_WHITE } else { PPC_RGB_BLACK },
         );
     }
+}
+
+fn ppc_standard_file_draw_get_dialog(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    tracking: &PpcStandardFileGetTrackingState,
+) {
+    let front = tracking.front_buffer;
+    let bounds = tracking.bounds;
+    ppc_draw_retained_dialog_frame(memory, gworlds, bounds, bounds, 2);
+    ppc_standard_file_draw_list(
+        memory,
+        gworlds,
+        front,
+        bounds,
+        PPC_STANDARD_FILE_GET_LIST_RECT,
+        &tracking.entries,
+        Some(tracking.selected),
+    );
     let volume_rect = ppc_standard_file_global_rect(bounds, PPC_STANDARD_FILE_GET_VOLUME_RECT);
     ppc_draw_retained_control_rect(
         memory,
@@ -862,6 +1001,24 @@ fn ppc_standard_file_draw_get_dialog(
     );
 }
 
+pub(super) fn ppc_standard_file_name_selection_rect(
+    tracking: &PpcStandardFilePutTrackingState,
+    name: (i16, i16, i16, i16),
+) -> Option<(i16, i16, i16, i16)> {
+    if tracking.list_has_focus || tracking.confirming_replace || tracking.new_folder.is_some() {
+        return None;
+    }
+    let start = tracking.sel_start.min(tracking.name.len());
+    let end = tracking.sel_end.min(tracking.name.len());
+    if start >= end { return None; }
+    let x = |offset| name.1.saturating_add(ppc_text_width_bytes(
+        PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, &tracking.name[..offset],
+    ));
+    let rect = (name.0.saturating_add(2), x(start).max(name.1),
+        name.0.saturating_add(18).min(name.2), x(end).min(name.3));
+    (rect.0 < rect.2 && rect.1 < rect.3).then_some(rect)
+}
+
 fn ppc_standard_file_draw_put_dialog(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -876,24 +1033,7 @@ fn ppc_standard_file_draw_put_dialog(
     ppc_draw_dialog_text(
         memory,
         gworlds,
-        (
-            bounds.0.saturating_add(14),
-            bounds.1.saturating_add(18),
-            bounds.0.saturating_add(32),
-            bounds.1.saturating_add(330),
-        ),
-        b"Save File",
-        PPC_RGB_BLACK,
-    );
-    ppc_draw_dialog_text(
-        memory,
-        gworlds,
-        (
-            bounds.0.saturating_add(32),
-            bounds.1.saturating_add(18),
-            bounds.0.saturating_add(50),
-            bounds.1.saturating_add(330),
-        ),
+        ppc_standard_file_global_rect(bounds, PPC_STANDARD_FILE_PUT_PROMPT_RECT),
         &tracking.prompt,
         PPC_RGB_BLACK,
     );
@@ -905,35 +1045,67 @@ fn ppc_standard_file_draw_put_dialog(
     );
     let _ = ppc_fill_front_rect(memory, front, name, PPC_RGB_WHITE);
     let _ = ppc_frame_front_rect(memory, front, name, PPC_RGB_BLACK, 1);
-    let selected = tracking.sel_start < tracking.sel_end;
-    let themed = ppc_ui_theme(gworlds) != UiThemeId::ClassicSystem7;
-    if selected && !themed {
-        let _ = ppc_fill_front_rect(
-            memory,
-            front,
-            (
-                name.0,
-                name.1.saturating_add(2),
-                name.2,
-                name.3.saturating_sub(2),
-            ),
-            PPC_RGB_BLACK,
-        );
-    }
     ppc_draw_dialog_text(
         memory,
         gworlds,
         (name.0.saturating_add(2), name.1, name.2, name.3),
         &tracking.name,
-        if selected && !themed {
-            PPC_RGB_WHITE
-        } else {
-            PPC_RGB_BLACK
-        },
+        PPC_RGB_BLACK,
     );
-    if selected && themed {
-        ppc_draw_themed_selection(memory, gworlds, PPC_MAIN_GWORLD, name);
+    if tracking.caret.on && tracking.pointer_anchor.is_none() && tracking.sel_start == tracking.sel_end && !tracking.list_has_focus
+        && !tracking.confirming_replace && tracking.new_folder.is_none() {
+        let offset = tracking.sel_start.min(tracking.name.len());
+        let x = name.1.saturating_add(ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT,
+            PPC_QD_TEXT_SIZE_SYSTEM, 0, &tracking.name[..offset]));
+        if x >= name.1 && x < name.3.saturating_sub(1) {
+            let _ = ppc_fill_front_rect(memory, front, (name.0.saturating_add(2), x,
+                name.2.saturating_sub(1), x.saturating_add(1)), PPC_RGB_BLACK);
+        }
     }
+    if let Some(selection) = ppc_standard_file_name_selection_rect(tracking, name) {
+        let _ = ppc_with_unclipped_screen_port(memory, |memory| {
+            if !ppc_draw_themed_selection(memory, gworlds, PPC_MAIN_GWORLD, selection) {
+                ppc_invert_rect_bounds(memory, gworlds, PPC_MAIN_GWORLD, selection);
+            }
+        });
+    }
+    ppc_draw_dialog_text(
+        memory,
+        gworlds,
+        ppc_standard_file_global_rect(bounds, PPC_STANDARD_FILE_PUT_DIRECTORY_LABEL_RECT),
+        &tracking.directory_name,
+        PPC_RGB_BLACK,
+    );
+    ppc_standard_file_draw_button(
+        memory,
+        front,
+        gworlds,
+        bounds,
+        PPC_STANDARD_FILE_PUT_DESKTOP_RECT,
+        b"Desktop",
+        true,
+        false,
+    );
+    ppc_standard_file_draw_list(
+        memory,
+        gworlds,
+        front,
+        bounds,
+        PPC_STANDARD_FILE_PUT_LIST_RECT,
+        &tracking.entries,
+        tracking.selected,
+    );
+    let scroll = ppc_standard_file_global_rect(bounds, PPC_STANDARD_FILE_PUT_SCROLL_RECT);
+    let first_visible = tracking.selected.unwrap_or(0).saturating_sub(7);
+    ppc_draw_retained_scrollbar_rect(
+        memory,
+        gworlds,
+        PPC_MAIN_GWORLD,
+        scroll,
+        first_visible.min(i16::MAX as usize) as i16,
+        0,
+        tracking.entries.len().saturating_sub(8).min(i16::MAX as usize) as i16,
+    );
     ppc_standard_file_draw_button(
         memory,
         front,
@@ -954,6 +1126,69 @@ fn ppc_standard_file_draw_put_dialog(
         true,
         true,
     );
+    ppc_standard_file_draw_button(memory, front, gworlds, bounds, PPC_STANDARD_FILE_PUT_NEW_FOLDER_RECT, b"New", true, false);
+    if let Some(folder) = &tracking.new_folder {
+        let layout = crate::standard_file_ui::StandardFileNewFolderLayout::new(bounds);
+        if !ppc_draw_themed_dialog_frame(memory, gworlds, layout.bounds, layout.bounds, 2) {
+            let _ = ppc_fill_front_rect(memory, front, layout.bounds, PPC_RGB_WHITE);
+            let _ = ppc_frame_front_rect(memory, front, layout.bounds, PPC_RGB_BLACK, 2);
+        }
+        let prompt = folder.prompt();
+        if folder.error.is_some() {
+            ppc_draw_dialog_text(memory, gworlds, layout.error_message(), prompt.as_bytes(), PPC_RGB_BLACK);
+            ppc_standard_file_draw_button(memory, front, gworlds, (0,0,0,0), layout.create, b"OK", true, true);
+        } else {
+            ppc_draw_dialog_text(memory, gworlds, layout.prompt, prompt.as_bytes(), PPC_RGB_BLACK);
+            let _ = ppc_fill_front_rect(memory, front, layout.name, PPC_RGB_WHITE);
+            let _ = ppc_frame_front_rect(memory, front, layout.name, PPC_RGB_BLACK, 1);
+            let text_rect = (layout.name.0 + 2, layout.name.1 + 2, layout.name.2 - 1, layout.name.3 - 2);
+            let draw_name = |memory: &mut PpcSectionMem, clip, color| {
+                ppc_with_unclipped_screen_port(memory, |memory| ppc_draw_text_bytes_clipped(
+                    memory, gworlds, PPC_MAIN_GWORLD, (text_rect.1 - folder.scroll_x, text_rect.0 + 12),
+                    PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, PPC_QD_TEXT_MODE_SRC_OR,
+                    color, None, Some(clip), folder.edit.text(),
+                ));
+            };
+            draw_name(memory, text_rect, PPC_RGB_BLACK);
+            // Text (1993), pp. 2-36–2-37: selection offsets count text bytes.
+            let selection = folder.edit.selection();
+            if !selection.is_empty() {
+                let measure = |bytes: &[u8]| ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes);
+                let left = (text_rect.1 - folder.scroll_x + measure(&folder.edit.text()[..selection.start])).clamp(text_rect.1, text_rect.3);
+                let right = (text_rect.1 - folder.scroll_x + measure(&folder.edit.text()[..selection.end])).clamp(text_rect.1, text_rect.3);
+                let highlight = (text_rect.0, left, text_rect.2, right);
+                if !ppc_draw_themed_selection(memory, gworlds, PPC_MAIN_GWORLD, highlight) && left < right {
+                    let _ = ppc_fill_front_rect(memory, front, highlight, PPC_RGB_BLACK);
+                    draw_name(memory, highlight, PPC_RGB_WHITE);
+                }
+            } else if folder.caret_visible() {
+                // Text (1993), pp. 2-36–2-37: an empty active selection is
+                // represented by a caret at its insertion position.
+                let advance = ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM,
+                    0, &folder.edit.text()[..selection.start]);
+                let x = text_rect.1 - folder.scroll_x + advance;
+                if x >= text_rect.1 && x < text_rect.3 {
+                    let _ = ppc_fill_front_rect(memory, front, (text_rect.0, x, text_rect.2, x + 1), PPC_RGB_BLACK);
+                }
+            }
+            ppc_standard_file_draw_button(memory, front, gworlds, (0,0,0,0), layout.cancel, b"Cancel", true, false);
+            ppc_standard_file_draw_button(memory, front, gworlds, (0,0,0,0), layout.create, b"Create", !folder.edit.text().is_empty(), true);
+        }
+    }
+    if tracking.confirming_replace {
+        let layout = crate::standard_file_ui::StandardFileReplacementLayout::new(bounds);
+        if !ppc_draw_themed_dialog_frame(memory, gworlds, layout.bounds, layout.bounds, 2) {
+            let _ = ppc_fill_front_rect(memory, front, layout.bounds, PPC_RGB_WHITE);
+            let _ = ppc_frame_front_rect(memory, front, layout.bounds, PPC_RGB_BLACK, 2);
+        }
+        let mut message = b"Replace existing \"".to_vec();
+        message.extend_from_slice(&tracking.name);
+        message.extend_from_slice(b"\"?");
+        ppc_draw_dialog_text(memory, gworlds, layout.message, &message, PPC_RGB_BLACK);
+        for (rect, label, default) in [(layout.cancel, b"Cancel".as_slice(), true), (layout.replace, b"Replace".as_slice(), false)] {
+            ppc_standard_file_draw_button(memory, front, gworlds, (0, 0, 0, 0), rect, label, true, default);
+        }
+    }
 }
 
 fn ppc_standard_file_write_cancel_reply(
@@ -1532,7 +1767,10 @@ fn ppc_standard_file_get_start(
             include_directories: operation == PpcStandardFileOperation::CustomGetFile
                 && num_types == -1,
         });
+    startup.next_standard_file_generation = startup.next_standard_file_generation.saturating_add(1);
     let tracking = PpcStandardFileGetTrackingState {
+        generation: startup.next_standard_file_generation,
+        standard_entry_point: operation == PpcStandardFileOperation::StandardGetFile,
         call: ppc_standard_file_call(mode, cpu),
         entries,
         current_dir_id,
@@ -1566,11 +1804,15 @@ fn ppc_standard_file_put_start(
     memory: &mut PpcSectionMem,
     startup: &mut PpcToolboxStartupState,
     default_dir_id: u32,
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &[PpcVfsFileRecord],
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
     gworlds: &[PpcGWorldRecord],
-    mode: PpcStandardFileMode,
+    operation: PpcStandardFileOperation,
     prompt_ptr: u32,
     requested_origin: Option<(i16, i16)>,
 ) -> PpcImportAction {
+    let mode = operation.mode();
     let name_ptr = match mode {
         PpcStandardFileMode::PutModern => cpu.gpr[4],
         PpcStandardFileMode::PutLegacy => cpu.gpr[5],
@@ -1598,10 +1840,28 @@ fn ppc_standard_file_put_start(
         PPC_STANDARD_FILE_PUT_DIALOG_HEIGHT,
         requested_origin,
     );
+    startup.next_standard_file_generation = startup.next_standard_file_generation.saturating_add(1);
     let tracking = PpcStandardFilePutTrackingState {
+            pointer_anchor: None,
+            caret: crate::standard_file_ui::StandardFileCaret::default(),
+        new_folder: None,
+        confirming_replace: false,
+        generation: startup.next_standard_file_generation,
+        standard_entry_point: operation == PpcStandardFileOperation::StandardPutFile,
         call: ppc_standard_file_call(mode, cpu),
         vref: PPC_BOOT_VOLUME_REF_NUM,
         dir_id: default_dir_id,
+        directory_name: ppc_standard_file_directory_name(vfs_directories, default_dir_id),
+        entries: ppc_standard_file_get_entries(
+            vfs_directories,
+            vfs_files,
+            vfs_resource_files,
+            default_dir_id,
+            None,
+        ),
+        selected: None,
+        list_has_focus: false,
+        last_list_click: None,
         prompt: ppc_standard_file_prompt(memory, prompt_ptr),
         name: name.clone(),
         sel_start: 0,
@@ -1633,6 +1893,11 @@ fn ppc_dispatch_standard_file(
     working_directories: &mut HashMap<i16, ProcessWorkingDirectory>,
     next_working_directory_ref_num: &mut i16,
     event_queue: &mut EventQueue,
+    next_vfs_dir_id: &mut u32,
+    heap_limit: u32,
+    handles: &mut Vec<PpcHandleRecord>,
+    input: PpcInputSnapshot,
+    tick_count: u32,
 ) -> PpcImportAction {
     let mode = operation.mode();
     let requested_origin = operation.requested_origin(cpu);
@@ -1675,10 +1940,156 @@ fn ppc_dispatch_standard_file(
                         false,
                     );
                 }
+                let caret_active = tracking.sel_start == tracking.sel_end && tracking.pointer_anchor.is_none()
+                    && !tracking.list_has_focus && !tracking.confirming_replace && tracking.new_folder.is_none();
+                if tracking.caret.idle(tick_count,
+                    memory.read_u32_be(crate::memory::globals::addr::CARET_TIME).unwrap_or(crate::memory::globals::DEFAULT_CARET_TIME_TICKS), caret_active) {
+                    ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+                }
+                if let Some(anchor) = tracking.pointer_anchor {
+                    let release = event_queue.iter().position(|event| event.what == 2)
+                        .and_then(|index| event_queue.remove(index));
+                    let h = release.as_ref().map_or(input.mouse_h, |event| event.where_h);
+                    let offset = crate::standard_file_ui::classic_text_offset_at_x(
+                        &tracking.name, i32::from(h - tracking.bounds.1 - PPC_STANDARD_FILE_PUT_NAME_RECT.1),
+                        |prefix| i32::from(ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, prefix)),
+                    );
+                    let previous = (tracking.sel_start, tracking.sel_end);
+                    tracking.sel_start = anchor.min(offset);
+                    tracking.sel_end = anchor.max(offset);
+                    if release.is_some() || !input.mouse_button { tracking.pointer_anchor = None; }
+                    if previous != (tracking.sel_start, tracking.sel_end) || release.is_some() {
+                        ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+                    }
+                    startup.standard_file_put_tracking = Some(tracking);
+                    return PpcImportAction::Yield(u64::MAX);
+                }
+                if tracking.new_folder.as_mut().is_some_and(|folder| folder.idle(tick_count, memory.read_u32_be(crate::memory::globals::addr::CARET_TIME).unwrap_or(crate::memory::globals::DEFAULT_CARET_TIME_TICKS))) {
+                    ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+                }
+                if let Some(folder) = tracking.new_folder.as_mut().filter(|folder| folder.is_selecting()) {
+                    let layout = crate::standard_file_ui::StandardFileNewFolderLayout::new(tracking.bounds);
+                    let release = event_queue.iter().position(|event| event.what == 2)
+                        .and_then(|index| event_queue.remove(index));
+                    let h = release.as_ref().map_or(input.mouse_h, |event| event.where_h);
+                    let offset = folder.offset_at_x(i32::from(h - layout.name.1 - 2), |bytes| {
+                        i32::from(ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes))
+                    });
+                    let mut changed = folder.track_selection(offset, release.is_none() && input.mouse_button);
+                    if release.is_some() { folder.reset_caret(tick_count); }
+                    changed |= folder.reveal_offset(offset, layout.name.3 - layout.name.1 - 5, |bytes| ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes));
+                    if changed || release.is_some() {
+                        ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+                    }
+                    startup.standard_file_put_tracking = Some(tracking);
+                    return PpcImportAction::Yield(u64::MAX);
+                }
                 let event = event_queue
                     .iter()
                     .position(|event| matches!(event.what, 1 | 3 | 5))
-                    .and_then(|index| event_queue.remove(index));
+                    .and_then(|index| {
+                        let event = event_queue.remove(index);
+                        // Standard File has advanced past these releases. They
+                        // cannot belong to a new selection gesture (TEClick,
+                        // Text 1993, p. 2-85).
+                        for stale in (0..index).rev() {
+                            if event_queue[stale].what == 2 {
+                                event_queue.remove(stale);
+                            }
+                        }
+                        event
+                    });
+                if event.is_some() { tracking.caret.reset(tick_count); }
+                if let Some(mut folder) = tracking.new_folder.take() {
+                    use crate::standard_file_ui::{StandardFileNewFolderAction, StandardFileNewFolderLayout};
+                    let mut dismiss = false;
+                    if let Some(event) = event {
+                        let layout = StandardFileNewFolderLayout::new(tracking.bounds);
+                        if event.what == 1 && folder.error.is_none()
+                            && event.where_v >= layout.name.0 && event.where_v < layout.name.2
+                            && event.where_h >= layout.name.1 && event.where_h < layout.name.3 {
+                            let offset = folder.offset_at_x(i32::from(event.where_h - layout.name.1 - 2), |bytes| {
+                                i32::from(ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes))
+                            });
+                            folder.begin_selection(offset, event.modifiers & 0x0200 != 0);
+                            folder.reset_caret(tick_count);
+                    folder.reveal_offset(offset, layout.name.3 - layout.name.1 - 5, |bytes| ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes));
+                            tracking.new_folder = Some(folder);
+                            ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+                            startup.standard_file_put_tracking = Some(tracking);
+                            return PpcImportAction::Yield(u64::MAX);
+                        }
+                        let mut scrap = ppc_te_scrap_bytes(memory);
+                        let original = scrap.clone();
+                        let action = folder.event(&layout, event.what, event.message, event.modifiers, (event.where_v, event.where_h), &mut scrap);
+                        folder.reset_caret(tick_count);
+                    folder.reveal_offset(folder.edit.selection().start, layout.name.3 - layout.name.1 - 5, |bytes| ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes));
+                        if scrap != original {
+                            let mut allocator = PpcProcessAllocatorView { memory_manager: process_memory_manager };
+                            ppc_te_set_scrap_bytes(Some(&mut allocator), memory, heap_cursor, heap_limit, last_mem_error, handles, &scrap);
+                        }
+                        dismiss = action == Some(StandardFileNewFolderAction::Cancel);
+                        if action == Some(StandardFileNewFolderAction::Create) {
+                            let mut created = 0;
+                            let result = if let Some(error) = ppc_standard_file_new_folder_error(vfs_directories, vfs_files, vfs_resource_files, vfs_volumes, tracking.dir_id, folder.edit.text()) {
+                                error
+                            } else {
+                                ppc_create_vfs_directory(vfs_directories, next_vfs_dir_id, tracking.dir_id, &decode_mac_roman(folder.edit.text()), |id| { created = id; true })
+                            };
+                            if result == PPC_NO_ERR {
+                                ppc_standard_file_put_enter_directory(&mut tracking, created, vfs_directories, vfs_files, vfs_resource_files);
+                                dismiss = true;
+                            } else {
+                                folder.error = Some(result);
+                                startup.next_standard_file_generation = startup.next_standard_file_generation.saturating_add(1);
+                                tracking.generation = startup.next_standard_file_generation;
+                            }
+                        }
+                    }
+                    if dismiss {
+                        tracking.list_has_focus = false;
+                        tracking.sel_start = 0;
+                        tracking.sel_end = tracking.name.len();
+                        startup.next_standard_file_generation = startup.next_standard_file_generation.saturating_add(1);
+                        tracking.generation = startup.next_standard_file_generation;
+                    } else {
+                        tracking.new_folder = Some(folder);
+                    }
+                    ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+                    startup.standard_file_put_tracking = Some(tracking);
+                    return PpcImportAction::Yield(u64::MAX);
+                }
+                if event.as_ref().is_some_and(|event| {
+                    (matches!(event.what, 3 | 5) && event.modifiers & 0x100 != 0 && (event.message as u8).eq_ignore_ascii_case(&b'n'))
+                        || (event.what == 1 && ppc_standard_file_point_in_rect((event.where_v - tracking.bounds.0, event.where_h - tracking.bounds.1), PPC_STANDARD_FILE_PUT_NEW_FOLDER_RECT))
+                }) && !tracking.confirming_replace {
+                    tracking.new_folder = Some(Default::default());
+                    startup.next_standard_file_generation = startup.next_standard_file_generation.saturating_add(1);
+                    tracking.generation = startup.next_standard_file_generation;
+                    ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+                    startup.standard_file_put_tracking = Some(tracking);
+                    return PpcImportAction::Yield(u64::MAX);
+                }
+                if tracking.confirming_replace {
+                    let layout = crate::standard_file_ui::StandardFileReplacementLayout::new(tracking.bounds);
+                    if let Some(event) = event {
+                        match layout.action(event.what, event.message, event.modifiers, event.where_v, event.where_h) {
+                            Some(true) => return ppc_standard_file_finish_put(memory, startup, tracking, vfs_directories, vfs_files, vfs_resource_files, vfs_volumes, working_directories, next_working_directory_ref_num, true),
+                            Some(false) => {
+                                tracking.confirming_replace = false;
+                                tracking.list_has_focus = false;
+                                tracking.sel_start = 0;
+                                tracking.sel_end = tracking.name.len();
+                                startup.next_standard_file_generation = startup.next_standard_file_generation.saturating_add(1);
+                                tracking.generation = startup.next_standard_file_generation;
+                            },
+                            None => {}
+                        }
+                    }
+                    ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+                    startup.standard_file_put_tracking = Some(tracking);
+                    return PpcImportAction::Yield(u64::MAX);
+                }
                 let mut accept = false;
                 if let Some(event) = event {
                     if event.what == 1 {
@@ -1686,6 +2097,12 @@ fn ppc_dispatch_standard_file(
                             event.where_v.saturating_sub(tracking.bounds.0),
                             event.where_h.saturating_sub(tracking.bounds.1),
                         );
+                        if !ppc_standard_file_point_in_rect(
+                            local,
+                            PPC_STANDARD_FILE_PUT_LIST_RECT,
+                        ) {
+                            tracking.last_list_click = None;
+                        }
                         if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_PUT_CANCEL_RECT)
                         {
                             return ppc_standard_file_finish_put(
@@ -1703,12 +2120,90 @@ fn ppc_dispatch_standard_file(
                         }
                         accept =
                             ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_PUT_SAVE_RECT);
+                        if ppc_standard_file_point_in_rect(
+                            local,
+                            PPC_STANDARD_FILE_PUT_DESKTOP_RECT,
+                        ) {
+                            ppc_standard_file_put_enter_directory(
+                                &mut tracking,
+                                PPC_ROOT_DIR_ID,
+                                vfs_directories,
+                                vfs_files,
+                                vfs_resource_files,
+                            );
+                        } else if ppc_standard_file_point_in_rect(
+                            local,
+                            PPC_STANDARD_FILE_PUT_LIST_RECT,
+                        ) {
+                            let row = ((local.0 - PPC_STANDARD_FILE_PUT_LIST_RECT.0 - 2)
+                                / PPC_STANDARD_FILE_GET_ROW_HEIGHT)
+                                .max(0) as usize;
+                            let first_visible = tracking.selected.unwrap_or(0).saturating_sub(7);
+                            let index = first_visible.saturating_add(row);
+                            if index < tracking.entries.len() {
+                                let double_time = memory
+                                    .read_u32_be(crate::memory::globals::addr::DOUBLE_TIME)
+                                    .unwrap_or(PPC_DEFAULT_DOUBLE_TIME_TICKS);
+                                let double_click = tracking.last_list_click.is_some_and(
+                                    |(previous_index, previous_time)| {
+                                        previous_index == index
+                                            && previous_time != 0
+                                            && event.when.wrapping_sub(previous_time) <= double_time
+                                    },
+                                );
+                                tracking.selected = Some(index);
+                                tracking.list_has_focus = true;
+                                tracking.last_list_click = Some((index, event.when));
+                                if double_click && tracking.entries[index].is_directory {
+                                    let dir_id = tracking.entries[index].dir_id;
+                                    ppc_standard_file_put_enter_directory(
+                                        &mut tracking,
+                                        dir_id,
+                                        vfs_directories,
+                                        vfs_files,
+                                        vfs_resource_files,
+                                    );
+                                }
+                            }
+                        } else if ppc_standard_file_point_in_rect(
+                            local,
+                            PPC_STANDARD_FILE_PUT_NAME_RECT,
+                        ) {
+                            tracking.list_has_focus = false;
+                            let offset = crate::standard_file_ui::classic_text_offset_at_x(
+                                &tracking.name, i32::from(local.1 - PPC_STANDARD_FILE_PUT_NAME_RECT.1),
+                                |prefix| i32::from(ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, prefix)),
+                            );
+                            let anchor = if event.modifiers & 0x0200 != 0 {
+                                if offset < tracking.sel_start { tracking.sel_end } else { tracking.sel_start }
+                            } else { offset };
+                            tracking.pointer_anchor = Some(anchor);
+                            tracking.sel_start = anchor.min(offset);
+                            tracking.sel_end = anchor.max(offset);
+                        } else if ppc_standard_file_point_in_rect(
+                            local,
+                            PPC_STANDARD_FILE_PUT_SCROLL_RECT,
+                        ) && !tracking.entries.is_empty() {
+                            let relative_v = local.0 - PPC_STANDARD_FILE_PUT_SCROLL_RECT.0;
+                            let height = PPC_STANDARD_FILE_PUT_SCROLL_RECT.2
+                                - PPC_STANDARD_FILE_PUT_SCROLL_RECT.0;
+                            let selected = tracking.selected.unwrap_or(0);
+                            tracking.selected = Some(if relative_v < 16 {
+                                selected.saturating_sub(1)
+                            } else if relative_v >= height - 16 {
+                                (selected + 1).min(tracking.entries.len() - 1)
+                            } else if relative_v < height / 2 {
+                                selected.saturating_sub(8)
+                            } else {
+                                (selected + 8).min(tracking.entries.len() - 1)
+                            });
+                            tracking.list_has_focus = true;
+                        }
                     } else {
+                        tracking.last_list_click = None;
                         let character = event.message as u8;
                         let key_code = (event.message >> 8) as u8;
-                        if crate::dialog_manager::is_dialog_default_key(character, key_code) {
-                            accept = true;
-                        } else if crate::dialog_manager::is_dialog_cancel_key(
+                        if crate::dialog_manager::is_dialog_cancel_key(
                             character,
                             key_code,
                             event.modifiers,
@@ -1725,6 +2220,58 @@ fn ppc_dispatch_standard_file(
                                 next_working_directory_ref_num,
                                 false,
                             );
+                        } else if character == 0x09 {
+                            tracking.list_has_focus = !tracking.list_has_focus;
+                        } else if event.modifiers & 0x0100 != 0 && key_code == 0x7e {
+                            let parent = vfs_directories
+                                .iter()
+                                .find(|directory| directory.dir_id == tracking.dir_id)
+                                .map(|directory| directory.parent_dir_id)
+                                .filter(|parent| *parent != 0)
+                                .unwrap_or(PPC_ROOT_DIR_ID);
+                            ppc_standard_file_put_enter_directory(
+                                &mut tracking,
+                                parent,
+                                vfs_directories,
+                                vfs_files,
+                                vfs_resource_files,
+                            );
+                        } else if crate::dialog_manager::is_dialog_default_key(character, key_code) {
+                            if tracking.list_has_focus {
+                                if let Some(entry) = tracking
+                                    .selected
+                                    .and_then(|index| tracking.entries.get(index))
+                                {
+                                    if entry.is_directory {
+                                        let dir_id = entry.dir_id;
+                                        ppc_standard_file_put_enter_directory(
+                                            &mut tracking,
+                                            dir_id,
+                                            vfs_directories,
+                                            vfs_files,
+                                            vfs_resource_files,
+                                        );
+                                    } else {
+                                        tracking.name = entry.name.clone();
+                                        tracking.sel_start = 0;
+                                        tracking.sel_end = tracking.name.len();
+                                        tracking.list_has_focus = false;
+                                    }
+                                }
+                            } else {
+                                accept = true;
+                            }
+                        } else if tracking.list_has_focus {
+                            if key_code == 0x7e || character == 0x1e {
+                                tracking.selected = Some(tracking.selected.unwrap_or(0).saturating_sub(1));
+                            } else if (key_code == 0x7d || character == 0x1f)
+                                && !tracking.entries.is_empty()
+                            {
+                                tracking.selected = Some(
+                                    tracking.selected.map_or(0, |selected| selected + 1)
+                                        .min(tracking.entries.len() - 1),
+                                );
+                            }
                         } else if character.eq_ignore_ascii_case(&b'a')
                             && event.modifiers & 0x0100 != 0
                         {
@@ -1733,7 +2280,7 @@ fn ppc_dispatch_standard_file(
                         } else if character == 0x08 || key_code == 0x33 {
                             ppc_standard_file_backspace_name(&mut tracking);
                         } else if event.modifiers & 0x0100 == 0
-                            && (0x20..=0x7e).contains(&character)
+                            && (character >= 0x20 && character != 0x7f)
                             && !matches!(character, b'/' | b':')
                             && tracking.sel_start <= tracking.sel_end
                             && tracking.sel_end <= tracking.name.len()
@@ -1741,6 +2288,13 @@ fn ppc_dispatch_standard_file(
                             ppc_standard_file_insert_name_character(&mut tracking, character);
                         }
                     }
+                }
+                if accept && ppc_fsspec_target_exists(vfs_directories, vfs_files, vfs_resource_files, tracking.dir_id, &tracking.name) {
+                    // Files (1992), p. 3-7: retain Save until Replace is confirmed.
+                    tracking.confirming_replace = true;
+                    startup.next_standard_file_generation = startup.next_standard_file_generation.saturating_add(1);
+                    tracking.generation = startup.next_standard_file_generation;
+                    accept = false;
                 }
                 if accept {
                     return ppc_standard_file_finish_put(
@@ -1766,12 +2320,115 @@ fn ppc_dispatch_standard_file(
                     memory,
                     startup,
                     default_dir_id,
+                    vfs_directories,
+                    vfs_files,
+                    vfs_resource_files,
                     gworlds,
-                    mode,
+                    operation,
                     prompt_ptr,
                     requested_origin,
                 )
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod directory_name_tests {
+    use super::*;
+
+    #[test]
+    fn standard_file_new_folder_rejects_files_and_locked_ancestor_volumes() {
+        let directories = initial_ppc_vfs_directories();
+        let path = "System Folder/Preferences/Audio\u{f02f}Video".to_string();
+        let file = PpcVfsFileRecord {
+            path: path.clone(),
+            data: Vec::new().into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        };
+        let resource = PpcVfsResourceFileRecord {
+            path,
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            resource_len: 0,
+            raw_data: None,
+            map_attrs: 0,
+            dirty: false,
+        };
+        assert_eq!(
+            ppc_standard_file_new_folder_error(
+                &directories,
+                &[file],
+                &[],
+                &[],
+                PPC_PREFERENCES_DIR_ID,
+                b"audio/video"
+            ),
+            Some(-48)
+        );
+        assert_eq!(
+            ppc_standard_file_new_folder_error(
+                &directories,
+                &[],
+                &[resource],
+                &[],
+                PPC_PREFERENCES_DIR_ID,
+                b"audio/video"
+            ),
+            Some(-48)
+        );
+        let mut volume = PpcVfsVolumeRecord {
+            ref_num: PPC_BOOT_VOLUME_REF_NUM,
+            name: "Disk".into(),
+            root_dir_id: PPC_ROOT_DIR_ID,
+            attributes: 0,
+            file_count: 0,
+            allocation_block_count: 0,
+            allocation_block_size: 0,
+            clump_size: 0,
+            free_blocks: 0,
+            bitmap_start: 0,
+            allocation_pointer: 0,
+            allocation_start: 0,
+            next_catalog_id: 0,
+            created_date: 0,
+            modified_date: 0,
+        };
+        for (attributes, expected) in [(0x80, Some(-44)), (0x8000, Some(-46)), (0, None)] {
+            volume.attributes = attributes;
+            assert_eq!(
+                ppc_standard_file_new_folder_error(
+                    &directories,
+                    &[],
+                    &[],
+                    &[volume.clone()],
+                    PPC_PREFERENCES_DIR_ID,
+                    b"New Folder"
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn standard_file_directory_literal_slash_round_trips() {
+        let mut directories = initial_ppc_vfs_directories();
+        let mut next_id = PPC_FIRST_DYNAMIC_DIR_ID;
+        let mut created_id = 0;
+        assert_eq!(ppc_create_vfs_directory(
+            &mut directories,
+            &mut next_id,
+            PPC_PREFERENCES_DIR_ID,
+            "Audio/Video",
+            |id| { created_id = id; true },
+        ), PPC_NO_ERR);
+        let entries = ppc_standard_file_get_entries(&directories, &[], &[], PPC_PREFERENCES_DIR_ID, None);
+        let entry = entries.iter().find(|entry| entry.dir_id == created_id).unwrap();
+        assert_eq!(entry.name, b"Audio/Video");
+        assert_eq!(ppc_standard_file_directory_name(&directories, created_id), b"Audio/Video");
     }
 }

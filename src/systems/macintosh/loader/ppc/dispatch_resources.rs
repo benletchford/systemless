@@ -12,6 +12,7 @@ pub(super) struct PpcResourceDispatchContext<'a> {
     pub(super) resource_files: &'a mut Vec<PpcResourceFileRecord>,
     pub(super) vfs_resource_files: &'a mut ProcessVfsResourceFileRecords,
     pub(super) vfs_resources: &'a mut Vec<PpcVfsResourceRecord>,
+    pub(super) menu_generations: &'a mut HashMap<u32, u64>,
     pub(super) current_resource_refnum: &'a mut i16,
     pub(super) resource_policy: &'a SharedProcessResourcePolicy,
     pub(super) last_resource_error: &'a mut i16,
@@ -32,6 +33,7 @@ pub(super) fn dispatch_resource_import(
         resource_files,
         vfs_resource_files,
         vfs_resources,
+        menu_generations,
         current_resource_refnum,
         resource_policy,
         last_resource_error,
@@ -230,6 +232,7 @@ pub(super) fn dispatch_resource_import(
             ))))
         }
         PpcImportDispatcherTarget::ReleaseResource => {
+            let handle = cpu.gpr[3];
             ppc_release_resource(
                 cpu,
                 process_memory_manager,
@@ -241,6 +244,11 @@ pub(super) fn dispatch_resource_import(
                 vfs_resources,
                 last_resource_error,
             );
+            if *last_resource_error == PPC_NO_ERR
+                && !vfs_resources.iter().any(|record| record.handle == handle)
+            {
+                menu_generations.remove(&handle);
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::DetachResource => {

@@ -17,6 +17,8 @@ pub(crate) const DEFAULT_SYS_EVT_MASK: u16 = 0xFFEF;
 /// Inside Macintosh Volume I, I-246 documents the initial delay and repeat rate.
 pub(crate) const DEFAULT_AUTO_KEY_THRESHOLD_TICKS: u16 = 16;
 pub(crate) const DEFAULT_AUTO_KEY_RATE_TICKS: u16 = 4;
+/// Initial caret blink interval. Inside Macintosh: Text (1993), p. 2-84.
+pub(crate) const DEFAULT_CARET_TIME_TICKS: u32 = 32;
 
 /// Unit-table size for Systemless's Mac OS 8.1 machine profile. Inside
 /// Macintosh Volume V (1986), p. V-215 documents a 64-entry table that grows
@@ -78,6 +80,9 @@ pub mod addr {
     /// Inside Macintosh Volume I (1985), p. I-85 gives $00FFFFFF;
     /// Volume III (1985), p. III-228 places the long at $031A.
     pub const LO3_BYTES: u32 = 0x031A;
+    /// Caret blink interval (long). Toolbox Essentials (1992), p. 2-113
+    /// describes GetCaretTime; its Event Manager C summary gives $02F4.
+    pub const CARET_TIME: u32 = 0x02F4;
     /// DefltStack: default stack allocation in bytes (long).
     /// Inside Macintosh Volume III (1985), low-memory globals table, lists
     /// `DefltStack` at `$0322`; Volume II, II-17, describes it as the default

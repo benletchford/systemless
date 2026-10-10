@@ -1,5 +1,200 @@
 use super::*;
 
+fn prepare_standard_control_tracking(proc_id: i16) -> (PpcLoadedApp, u32, u32) {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TrackControl")).unwrap();
+    let mut error = loaded.last_mem_error();
+    let handle = with_test_controls!(loaded, |controls| ppc_new_control_record_values(
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut error,
+        test_handles!(loaded),
+        controls,
+        PPC_MAIN_GWORLD,
+        (10, 10, 30, 100),
+        b"Choice",
+        true,
+        1,
+        0,
+        1,
+        proc_id,
+        0,
+    ));
+    let pointer = ppc_control_ptr(&mut loaded.memory, handle).unwrap();
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = (20 << 16) | 20;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.lr = PPC_HALT_PC;
+    (loaded, handle, pointer)
+}
+
+fn begin_standard_control_tracking(proc_id: i16) -> (PpcLoadedApp, u32, u32) {
+    let (mut loaded, handle, pointer) = prepare_standard_control_tracking(proc_id);
+    loaded.set_input_snapshot(PpcInputSnapshot {
+        mouse_button: true,
+        mouse_v: 20,
+        mouse_h: 20,
+        ..PpcInputSnapshot::default()
+    });
+    let sp = loaded.cpu.gpr[1];
+    let probe = loaded.run_with_hle_imports(64);
+    assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+    assert_eq!(loaded.cpu.gpr[1], sp);
+    assert_eq!(loaded.cpu.gpr[3], handle);
+    assert!(loaded.toolbox_startup.simple_control_tracking.is_some());
+    assert_eq!(
+        loaded.memory.read_u8(pointer + PPC_CONTROL_HILITE_OFFSET),
+        Some(if proc_id == 0 { 10 } else { 11 })
+    );
+    (loaded, handle, pointer)
+}
+
+#[test]
+fn standard_control_tracking_handles_release_queued_before_entry() {
+    for proc_id in [0, 1, 2] {
+        for inside in [true, false] {
+            let (mut loaded, _, pointer) = prepare_standard_control_tracking(proc_id);
+            loaded.event_queue.push_back(PpcQueuedEvent {
+                what: 2,
+                message: 0,
+                when: 0,
+                where_v: if inside { 20 } else { 40 },
+                where_h: 20,
+                modifiers: 0,
+            });
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: false,
+                mouse_v: if inside { 40 } else { 20 },
+                mouse_h: 20,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+            assert_eq!(
+                loaded.cpu.gpr[3],
+                if inside {
+                    if proc_id == 0 {
+                        10
+                    } else {
+                        11
+                    }
+                } else {
+                    0
+                }
+            );
+            assert_eq!(
+                loaded
+                    .memory
+                    .read_u16_be(pointer + PPC_CONTROL_VALUE_OFFSET),
+                Some(1)
+            );
+            assert_eq!(
+                loaded.memory.read_u8(pointer + PPC_CONTROL_HILITE_OFFSET),
+                Some(0)
+            );
+            assert!(!loaded.event_queue.iter().any(|event| event.what == 2));
+        }
+    }
+}
+
+#[test]
+fn standard_control_tracking_uses_queued_release_without_mutating_value() {
+    // TrackControl returns the released part; the caller owns value changes.
+    // Macintosh Toolbox Essentials (1992), pp. 5-90--5-92.
+    for proc_id in [0, 1, 2] {
+        for inside in [true, false] {
+            let (mut loaded, _, pointer) = begin_standard_control_tracking(proc_id);
+            loaded.event_queue.push_back(PpcQueuedEvent {
+                what: 2,
+                message: 0,
+                when: 0,
+                where_v: if inside { 20 } else { 40 },
+                where_h: 20,
+                modifiers: 0,
+            });
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: false,
+                mouse_v: if inside { 40 } else { 20 },
+                mouse_h: 20,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+            assert_eq!(
+                loaded.cpu.gpr[3],
+                if inside {
+                    if proc_id == 0 {
+                        10
+                    } else {
+                        11
+                    }
+                } else {
+                    0
+                }
+            );
+            assert_eq!(
+                loaded
+                    .memory
+                    .read_u16_be(pointer + PPC_CONTROL_VALUE_OFFSET),
+                Some(1)
+            );
+            assert_eq!(
+                loaded.memory.read_u8(pointer + PPC_CONTROL_HILITE_OFFSET),
+                Some(0)
+            );
+            assert!(loaded.toolbox_startup.simple_control_tracking.is_none());
+            assert!(!loaded.event_queue.iter().any(|event| event.what == 2));
+        }
+    }
+}
+
+#[test]
+fn standard_control_tracking_rejects_disposal_and_reused_identity() {
+    for mutation in ["dispose", "generation", "pointer"] {
+        let (mut loaded, handle, pointer) = begin_standard_control_tracking(2);
+        if mutation == "dispose" {
+            let mut error = loaded.last_mem_error();
+            let mut free = loaded.free_handle_blocks();
+            with_test_controls!(loaded, |controls| ppc_dispose_control(
+                None,
+                Some(&mut free),
+                &mut loaded.memory,
+                test_heap_cursor!(loaded),
+                test_heap_limit!(loaded),
+                &mut error,
+                test_handles!(loaded),
+                controls,
+                handle,
+            ));
+        } else if mutation == "generation" {
+            with_test_controls!(loaded, |controls| {
+                controls
+                    .iter_mut()
+                    .find(|record| record.handle == handle)
+                    .unwrap()
+                    .generation += 1;
+            });
+        } else {
+            loaded.memory.write_u32_be(handle, pointer + 4).unwrap();
+        }
+        let before = ppc_memory_read_bytes(&mut loaded.memory, pointer, 48).unwrap();
+        loaded.set_input_snapshot(PpcInputSnapshot::default());
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(
+            matches!(probe.result, PpcRunResult::Halted { .. }),
+            "{mutation}"
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0, "{mutation}");
+        assert!(loaded.toolbox_startup.simple_control_tracking.is_none());
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, pointer, 48),
+            Some(before),
+            "stale tracking must not redraw or restore state into a different lifetime: {mutation}"
+        );
+    }
+}
+
 #[test]
 fn scrollbar_tracking_without_action_leaves_arrow_and_page_values_to_the_caller() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TrackControl")).unwrap();
@@ -84,6 +279,39 @@ fn dialog_scrollbar_tracking_changes_the_value_for_arrow_clicks() {
 }
 
 #[test]
+fn scrollbar_thumb_hit_region_matches_the_painted_sixteen_pixels() {
+    let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+    let mut last_mem_error = loaded.last_mem_error();
+    let handle = with_test_controls!(loaded, |controls| ppc_new_control_record_values(
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+        controls,
+        PPC_MAIN_GWORLD,
+        (0, 0, 100, 16),
+        b"",
+        true,
+        0,
+        0,
+        25,
+        16,
+        0,
+    ));
+    let records = loaded.controls.records();
+    assert_eq!(
+        ppc_control_part_at_point(&mut loaded.memory, &records, handle, 30, 8),
+        Some(129)
+    );
+    assert_eq!(
+        ppc_control_part_at_point(&mut loaded.memory, &records, handle, 32, 8),
+        Some(23)
+    );
+}
+
+#[test]
 fn hle_import_runner_creates_and_links_a_classic_control_record() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewControl")).unwrap();
     let scratch = ppc_heap_alloc(
@@ -157,11 +385,13 @@ fn hle_import_runner_creates_and_links_a_classic_control_record() {
         ppc_read_pstring_bytes(&mut loaded.memory, control + PPC_CONTROL_TITLE_OFFSET),
         Some(b"Launch".to_vec())
     );
+    assert_ne!(loaded.controls.records()[0].generation, 0);
     assert_eq!(
         loaded.controls.records(),
         vec![PpcControlRecord {
             handle,
             pointer: control,
+            generation: loaded.controls.records()[0].generation,
             proc_id: 16,
             popup_menu_id: 0,
             popup_title_width: None,
@@ -962,6 +1192,11 @@ fn popup_track_control_requires_a_visible_enabled_hit_and_cdef_action() {
 
         if opens {
             assert!(loaded.toolbox_startup.execution.menu().is_some(), "{label}");
+            let tracking = loaded.toolbox_startup.execution.menu().as_ref().unwrap();
+            assert_eq!(
+                tracking.popup_left, 6 + 52,
+                "popup must anchor after the control title"
+            );
             assert!(
                 loaded
                     .toolbox_startup
