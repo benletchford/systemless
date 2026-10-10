@@ -5095,3 +5095,23 @@ were reviewed. Evidence: `tests/toolbox-showcase/reference/gpui-demo/cursor-shar
 This is selected-scale opaque arrow coverage, not the full cross product, physical
 pointer latency, guest warps, themed inversion, native cursor lifecycle or
 notification qualification. All broad production gates remain open.
+
+
+### Optimized production executable checkpoint
+
+`cargo build --locked --release --bin systemless` passes in 13m46s on
+production source e6690b21 (the intervening 7829afcb changes documentation only).
+The linked executable's help path succeeds. Its existing public Graphics to
+Controls play workflow passes on actual 68k and PPC, requesting depth8, with
+two assertions per run and zero exhausted frame budgets. Both Controls images
+were reviewed. These are guest-runtime captures, not GPUI compositor captures
+or physical frontend qualification. The play report records CPU but does not
+independently sample depth; launcher source applies the requested depth to both
+CPU paths.
+
+The package listing includes the production frontend, new cursor module and save
+store; this is an inclusion audit, not a new extracted-package build. Logs,
+reports, images, exact commands/scope and source/binary hashes are archived in
+`tests/toolbox-showcase/reference/gpui-demo/release-executable-smoke`. Warnings
+remain. Final packaged runtime, live GPUI, sustained game performance/audio and
+the complete release gates remain open.

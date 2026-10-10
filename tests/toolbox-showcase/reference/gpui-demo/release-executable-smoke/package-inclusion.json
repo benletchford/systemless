@@ -1,0 +1,12 @@
+{
+  "head": "e6690b212ee03d875d50f9576afbeebc2426aa9c",
+  "command": "cargo package --locked --allow-dirty --list",
+  "scope": "Manifest inclusion audit only; no packaged build/runtime claim",
+  "required_sha256": {
+    "src/bin/systemless.rs": "83e40f3c4246d7d1abbdcaec27596608fc2d9e09f416cf0ddddac74b0ba8cfc6",
+    "src/bin/gpui_demo.rs": "f7a93f0def199a963f0f87f8087cef6f92bb7347b06922c7250bbed586212fa3",
+    "src/bin/gpui_demo_cursor.rs": "6d6c7d13aff562a64bbfd2ca289c3c1812663cce521e0608d60f93cb2b7c6f78",
+    "src/bin/desktop/desktop_save_store.rs": "9481ddac58d01af25902a6781bb6f7757aab3c8d85aba1c871008dfdcaf3ecfc"
+  },
+  "file_count": 444
+}

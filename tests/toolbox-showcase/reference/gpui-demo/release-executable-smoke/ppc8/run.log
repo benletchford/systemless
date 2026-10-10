@@ -1,0 +1,13 @@
+[SYSTEMLESS] Native PowerPC slice preferred when available
+[PLAY] action=0 frontend_tick=0 RunUntilPixel { x: 305, y: 145, rgb: [255, 84, 84], not: false, tolerance: 2, timeout_ticks: 120 }
+[PLAY] action=1 frontend_tick=1 Run { ticks: 10 }
+[PLAY] action=2 frontend_tick=11 Screenshot { name: "graphics" }
+[PLAY] action=3 frontend_tick=11 AssertPixel { x: 305, y: 145, rgb: [255, 84, 84], not: false, tolerance: 0 }
+[PLAY] action=4 frontend_tick=11 MouseDown { v: 10, h: 56 }
+[PLAY] action=5 frontend_tick=11 Run { ticks: 2 }
+[PLAY] action=6 frontend_tick=13 MouseMove { v: 44, h: 56 }
+[PLAY] action=7 frontend_tick=13 Run { ticks: 2 }
+[PLAY] action=8 frontend_tick=15 MouseUp { v: 44, h: 56 }
+[PLAY] action=9 frontend_tick=15 Run { ticks: 20 }
+[PLAY] action=10 frontend_tick=35 Screenshot { name: "controls" }
+[PLAY] action=11 frontend_tick=35 AssertPixel { x: 305, y: 145, rgb: [255, 255, 255], not: false, tolerance: 0 }
