@@ -10,7 +10,7 @@ from pathlib import Path
 from PIL import Image
 
 SOURCES = [
-    'src/bin/gpui_demo.rs', 'src/bin/gpui_demo_text.rs',
+    'src/bin/gpui_demo.rs', 'src/bin/gpui_demo_text.rs', 'src/bin/gpui_demo_frames.rs',
     'src/systems/macintosh/text_edit.rs', 'src/systems/macintosh/text_edit/drawing.rs',
     'src/systems/macintosh/memory/presentation.rs',
     'src/systems/macintosh/trap/dialog.rs', 'src/systems/macintosh/trap/quickdraw.rs',
@@ -68,7 +68,7 @@ def main():
     review = args.destination / 'review.json'
     review.write_text(json.dumps(manifest, indent=2) + '\n')
     verifier.verify_manifest(review)
-    print('Archived 192 capture pairs and state sidecars without changing their pixels')
+    print(f"Archived {len(manifest['cases'])} capture pairs and state sidecars without changing their pixels")
 
 
 if __name__ == '__main__':

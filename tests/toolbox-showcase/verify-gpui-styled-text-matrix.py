@@ -12,7 +12,10 @@ SCALES = [0.75, 1, 1.5, 2]
 CARET_STATES = ['visible', 'blink-off', 'suspended', 'resumed']
 
 
-def required_cases():
+def required_cases(matrix_kind="single-line"):
+    assert matrix_kind in {"single-line", "multiline"}, "unknown matrix kind"
+    if matrix_kind == "multiline":
+        return {("multiline", mode, scale, "selected", None) for mode in MODES for scale in SCALES}
     configs = [('inactive', 'inactive', None)]
     configs += [('selection', state, None) for state in ['selected', 'suspended', 'resumed']]
     configs += [('caret', state, offset) for offset in [0, 26] for state in CARET_STATES]
@@ -36,7 +39,7 @@ def verify_manifest(path, partial=False):
     spec = importlib.util.spec_from_file_location('styled_ink', Path(__file__).with_name('verify-gpui-styled-text-ink.py'))
     verifier = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(verifier)
-    required = required_cases()
+    required = required_cases(manifest.get("matrix_kind", "single-line"))
     seen = set()
     for case in manifest['cases']:
         key = (case['kind'], case['mode'], case['scale'], case['state'], case['insertion_offset'])
@@ -51,7 +54,10 @@ def verify_manifest(path, partial=False):
         assert evidence['view'] == manifest['field_bounds']
         assert evidence['active'] == (case['state'] not in ['inactive', 'suspended'])
         offset = case['insertion_offset']
-        expected = [0, 26] if case['kind'] == 'selection' else [offset or 0, offset or 0]
+        expected = [0, 31] if case['kind'] == 'multiline' else [0, 26] if case['kind'] == 'selection' else [offset or 0, offset or 0]
+        assert bool(evidence.get('multiline', False)) == (case['kind'] == 'multiline')
+        if manifest.get('compositor'):
+            assert evidence.get('compositor') == manifest['compositor'], 'wrong compositor'
         assert evidence['selection'] == expected, f'wrong guest range: {key}'
         if case['kind'] == 'caret':
             assert evidence['caret_state'] == case['state'] and evidence['insertion_offset'] == offset
@@ -62,7 +68,7 @@ def verify_manifest(path, partial=False):
         verifier.verify_case(path.parent, case, manifest['field_bounds'])
     if not partial:
         assert seen == required, 'incomplete CPU/depth/scale/state/insertion matrix'
-    print(f'verified {len(seen)}/192 styled field captures; ' +
+    print(f'verified {len(seen)}/{len(required)} styled field captures; ' +
           ('incomplete qualification' if partial else 'fixture raster matrix only, not production readiness'))
     return manifest
 

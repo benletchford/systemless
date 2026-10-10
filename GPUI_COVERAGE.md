@@ -4084,7 +4084,11 @@ through the shared macOS Metal headless compositor. It does not establish
 production ownership, live GPUI pointer mapping, arbitrary fonts/backgrounds
 or themes, other platforms, or the newer whole-field canvas. A separate
 whole-field multiline run against `716378c4` reached 16/16 terminal passes; its
-manifest and images still need independent verification and repository archival.
+manifest and images passed independent verification and lossless repository
+archival at `reference/gpui-demo/styled-text-multiline/review.json` (under
+`tests/toolbox-showcase`). Original and archived byte hashes, sidecars, pinned
+source hashes and RGBA equality are retained. Three additional representative
+visuals were reviewed; the archive remains isolated-canvas evidence.
 The first true PPC16 capture matches every composed field pixel and has been
 visually reviewed.
 
@@ -4106,3 +4110,25 @@ remain guest-rendered. Guest event routing and byte offsets are unchanged.
 Live pointer, centered-scene, clipping and lifecycle capture qualification for
 this integration is still required; prior isolated canvas captures do not
 prove those paths.
+
+
+Styled capture commands now instantiate the same `Demo` renderer as the live
+frontend, with standard-window visibility and the native-qualified styled
+plan. They erase the native field from the source texture before composing it,
+so retained guest pixels cannot hide a missing GPUI field. Sidecars identify
+`shared Demo renderer`. A true PPC16 selected multiline field at 1x and a
+colour-68k selected field at 0.75x matched every device-snapped native field
+pixel; the PPC16 composed image was visually reviewed. These two smoke checks
+are not a complete CPU/state/scale matrix. The older isolated-canvas evidence
+retains its original scope.
+
+The centered-scene GPUI interaction regression completed all mono/colour/PPC8/
+PPC16 and 0.75/1/1.5/2x combinations: two styled insertion clicks and a drag
+across style boundaries per combination reach the guest event path and produce
+the expected byte selections. A stronger revision additionally asserts visible
+standard ownership and refreshes snapshots during held gestures; that revision
+is being verified separately. New capture matrices support `--multiline` and
+require `shared Demo renderer` sidecars. The verifier retains legacy matrix
+scope and rejects missing, duplicate, wrong-depth, wrong-state or wrong-pixel
+cases. Neither these checks nor native-pixel equality establish arbitrary guest
+font replacement, native host activation observation or release readiness.
