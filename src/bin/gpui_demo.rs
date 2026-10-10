@@ -8572,9 +8572,10 @@ mod desktop {
         fn classic_document_glyph_clicks_reach_guest_at_scene_scales(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::{test::TestWindowExt, AppContext, InputEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent};
             cx.update(gpui_kit::init);
-            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, Some(8)), (true, Some(16))] {
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, Some(8)), (true, None)] {
                 let mut session = MacintoshSession::new(true, depth);
                 session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth.unwrap_or(16)).unwrap(); }
                 let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
                 session.initialize(&app);
@@ -8582,6 +8583,9 @@ mod desktop {
                 assert!(session.runner_mut().select_guest_menu_item(129, 7));
                 wait_for_menu(&mut session, 129, 7, true);
                 settle(&mut session);
+                assert_eq!(session.runner().presented_screen_depth(), Some(u32::from(depth.unwrap_or(16))),
+                    "interaction matrix must exercise the intended framebuffer depth");
+
                 for scale in [0.75, 1., 1.5, 2.] {
                     let (sender, receiver) = std::sync::mpsc::channel();
                     let (window, view) = cx.update(|cx| {
@@ -8855,15 +8859,19 @@ mod desktop {
             use gpui_kit::{test::TestWindowExt, AppContext, InputEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent};
             use super::super::activation::{ControlActivation, FileAction};
             cx.update(gpui_kit::init);
-            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, Some(8)), (true, Some(16))] {
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, Some(8)), (true, None)] {
                 let mut session = MacintoshSession::new(true, depth);
                 session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth.unwrap_or(16)).unwrap(); }
                 let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
                 session.initialize(&app);
                 wait_for_menu(&mut session, 129, 1, true);
                 assert!(session.runner_mut().select_guest_menu_item(129, 12));
                 wait_for_menu(&mut session, 129, 12, true);
                 settle(&mut session);
+                assert_eq!(session.runner().presented_screen_depth(), Some(u32::from(depth.unwrap_or(16))),
+                    "interaction matrix must exercise the intended framebuffer depth");
+
                 let step = |session: &mut MacintoshSession| {
                     let tick = session.runner().guest_tick().saturating_add(1);
                     session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
