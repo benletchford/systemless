@@ -1,0 +1,54 @@
+{
+  "source_commit": "0b8b5cc0d8cd0dbab56b0d5c02f5253b5d429113",
+  "source_dirty": true,
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "f553d5c5c08723691129f64df8d986ab234a6c0c21f9e3e638adcaaa8f73b4cc",
+    "src/bin/gpui_demo_text.rs": "6ed6732f34547235d013f73092653734179b589b0fd4e13f6788d1b4416e966f",
+    "src/bin/gpui_demo_frames.rs": "b293ad66102ebdbc69a697b2bdc8d1ba01349a36a20c6a994b7e280eb14d814b"
+  },
+  "binary_sha256": "e572c92e4ef90aa7c6483a0fafb243f6daced75af49ba263eddca60f333d011e",
+  "fixture_sha256": "17e3cd4dd1a2510627b55487db166773759319f93454bb9141ad8a80bc40d4b8",
+  "cases": [
+    {
+      "name": "mono-075",
+      "depth": 1,
+      "scale": 0.75,
+      "capture_sha256": "4403a66a9501fa89015e3f765099a526f67c5a9fe6049417b0b0f3964e447c5c",
+      "archived_sha256": "bd82b5acf475a9a091ba173c44d78d4693cc3b7cbca102840a5769ed02f71322",
+      "metadata_sha256": "29bb659bf3f9f2fa28c36130e156145c20d358e0f70e405cc806377c9b3653a0",
+      "decoded_rgba_preserved": true,
+      "visually_reviewed": true
+    },
+    {
+      "name": "colour-1",
+      "depth": 8,
+      "scale": 1,
+      "capture_sha256": "0005f178af6bf236553d7bf5c6758ef5896e4bebd97c9298a7e9576e48e42c8c",
+      "archived_sha256": "b4f700b740a4bad3fe6f48740412e456736bbcce75149a2d4d0fb70089c181d2",
+      "metadata_sha256": "ec2d28c7d84d6beff4c4f5e334d9a537ae70df69eb18397c3eb8c4c5f0ccfac3",
+      "decoded_rgba_preserved": true,
+      "visually_reviewed": true
+    },
+    {
+      "name": "ppc8-2",
+      "depth": 8,
+      "scale": 2,
+      "capture_sha256": "e413ac3dded064a3366e75659184ec538a90857356e53ee05e27b90a0230039e",
+      "archived_sha256": "02901ed625e4ade16609e013da450fa7dc23265f5f10155e5966c4e2ff8db8f3",
+      "metadata_sha256": "e429094b17fff0651613361d249c6abb5c2ac32c0c6ed5376f2dc39b3c242486",
+      "decoded_rgba_preserved": true,
+      "visually_reviewed": true
+    },
+    {
+      "name": "ppc16-075",
+      "depth": 16,
+      "scale": 0.75,
+      "capture_sha256": "23778be663ebe7125a940132d0b0e84f82d725a3cddeec2034681e939b2250b5",
+      "archived_sha256": "d7c8de5d0d15950e54265c6b8fb7051dc6cdc03d0781bee9a2fee73e57db8097",
+      "metadata_sha256": "0348cfd7ee195fbdd965ae49d79cacb375e73c59851a0fa8d7a08fb18df6c890",
+      "decoded_rgba_preserved": true,
+      "visually_reviewed": true
+    }
+  ],
+  "scope": "Four shared Demo plain Pages-menu captures visually reviewed. PPC8 scale2 preview resized to1824x1368. Not styled face qualification, complete CPU/scale/state matrix, physical host integration, glyph appearance oracle or performance. Density2 inferred from output dimensions."
+}

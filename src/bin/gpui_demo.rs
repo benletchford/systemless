@@ -4620,7 +4620,7 @@ mod desktop {
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_standard_menu.as_ref() {
-            capture_standard_menu(&args.game, output, args.prefer_powerpc, args.screen_depth, args.capture_standard_menu_id);
+            capture_standard_menu(&args.game, output, args.prefer_powerpc, args.screen_depth, args.capture_standard_menu_id, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -5402,11 +5402,15 @@ mod desktop {
         prefer_powerpc: bool,
         screen_depth: Option<u16>,
         menu_id: i16,
+        capture_scale: Option<f32>,
     ) {
         use gpui_kit::{platform, test::TestWindowExt, HeadlessAppContext};
 
         let mut session = MacintoshSession::new(true, screen_depth.or(Some(8)));
         session.runner_mut().set_prefer_powerpc_executables(prefer_powerpc);
+        if prefer_powerpc {
+            session.runner_mut().set_powerpc_screen_depth(screen_depth.unwrap_or(16)).unwrap();
+        }
         let app = session.load_path(game).unwrap();
         session.initialize(&app);
         let menus = (0..300)
@@ -5419,6 +5423,14 @@ mod desktop {
             .expect("showcase standard menu should become available");
         assert!(!menus.requires_guest_menu_rendering());
         let menu = menus.menus.iter().find(|menu| menu.id == menu_id).unwrap();
+        let metadata = serde_json::json!({
+            "actual_depth": session.runner().presented_screen_depth(),
+            "prefer_powerpc": prefer_powerpc, "menu_id": menu_id,
+            "requested_scale": capture_scale,
+            "items": menu.items.iter().map(|item| serde_json::json!({
+                "text": item.text, "style": item.style,
+            })).collect::<Vec<_>>(),
+        });
         let trigger = format!("guest-menu-{}-{}", menu.guest_id, menu.generation);
         let menu_presented = session.runner().guest_menu_bar_presented();
         let menu_height = session.runner().bus().read_word(MBAR_HEIGHT);
@@ -5442,14 +5454,16 @@ mod desktop {
         let updates = Arc::new(Mutex::new(None));
         let mut view = None;
         let window = visual
-            .open_window(size(px(900.), px(740.)), |_, cx| {
+            .open_window(capture_scale.map_or(size(px(900.), px(740.)), |scale|
+                size(px(frame_width as f32 * scale), px(frame_height as f32 * scale))), |_, cx| {
                 let entity = cx.new(|cx| Demo::new(sender, updates, cx));
                 view = Some(entity.clone());
                 entity
             })
             .unwrap();
+        let view = view.unwrap();
         visual.update(|cx| {
-            view.unwrap().update(cx, |demo, cx| {
+            view.update(cx, |demo, cx| {
                 demo.menus = menus;
                 demo.windows = windows;
                 demo.dialogs = dialogs;
@@ -5479,6 +5493,15 @@ mod desktop {
         }).unwrap();
         visual.run_until_parked();
         visual.capture_screenshot(window.into()).unwrap().save(output).unwrap();
+        let mut metadata = metadata;
+        visual.update_window(window.into(), |_, window, cx| {
+            view.update(cx, |demo, _| {
+                metadata["display_scale"] = serde_json::json!(demo.display_scale);
+                metadata["display_origin"] = serde_json::json!(demo.display_origin);
+            });
+            metadata["viewport"] = serde_json::json!([f32::from(window.viewport_size().width), f32::from(window.viewport_size().height)]);
+        }).unwrap();
+        std::fs::write(output.with_extension("json"), serde_json::to_vec_pretty(&metadata).unwrap()).unwrap();
         eprintln!("saved composed GPUI menu capture to {}", output.display());
     }
 
