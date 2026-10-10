@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.91.2](https://github.com/benletchford/systemless/compare/v0.91.1...v0.91.2) (2026-10-10)
+
+
+### Bug Fixes
+
+* support PPC system highlight colour accessors ([0cf1a97](https://github.com/benletchford/systemless/commit/0cf1a976b65db5154e0b57f20d61f202a1782b1b))
+
 ## [0.91.1](https://github.com/benletchford/systemless/compare/v0.91.0...v0.91.1) (2026-10-10)
 
 
