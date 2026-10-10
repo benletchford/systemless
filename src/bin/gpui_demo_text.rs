@@ -54,6 +54,39 @@ mod tests {
     }
 
     #[test]
+    fn styled_outline_preflight_is_atomic_and_keeps_native_paint_pens() {
+        use super::{ClassicLine, StyledTextEditPaintOp as Op, ResolvedTextEditPaintOp as Resolved};
+        let ink = systemless::runner::TextEditInkSnapshot {
+            pixel: 1, rgb: [20, 40, 60], inverted_rgb: [235, 215, 195],
+        };
+        let positions = vec![0, 100, 200];
+        let (line, _) = ClassicLine::classic_textedit_run_with_paint_advance(
+            b"Wi", 3, 12, 0, positions.clone()).unwrap();
+        let pens: Vec<_> = line.smooth_sources.iter().map(|source| source.0).collect();
+        assert_ne!(pens[1], positions[1]);
+        let run = Op::Run { glyphs: line, left: 17, baseline: 23, ink: ink.clone() };
+        let ops = vec![run.clone(), Op::Invert((0, 0, 30, 40)),
+            Op::Caret((1, 2, 3, 4), ink.clone())];
+        for raster in 1..=4 {
+            let resolved = Op::resolve_all(&ops, raster).unwrap();
+            match &resolved[0] {
+                Resolved::Run { glyphs, left, baseline, ink: paint } => {
+                    assert_eq!(glyphs.iter().map(|item| item.0).collect::<Vec<_>>(), pens);
+                    assert_eq!((*left, *baseline, paint.rgb), (17, 23, ink.rgb));
+                }
+                _ => panic!("native run order"),
+            }
+            assert!(matches!(resolved[1], Resolved::Invert((0, 0, 30, 40))));
+            assert!(matches!(&resolved[2], Resolved::Caret((1, 2, 3, 4), paint) if paint.rgb == ink.rgb));
+        }
+        let unsupported = Op::Run { glyphs: ClassicLine::styled(b"bold", 3, 12, 1),
+            left: 0, baseline: 12, ink };
+        assert!(Op::resolve_all(&[run, unsupported], 2).is_none());
+        assert!(Op::resolve_all(&ops, 0).is_none());
+        assert!(Op::resolve_all(&ops, 9).is_none());
+    }
+
+    #[test]
     fn list_cell_qualification_requires_complete_native_evidence() {
         use super::{ClassicListCellLayout, ClassicListCellPaintPlan};
         let layout = ClassicListCellLayout { font: 3, size: 12, left: 3, baseline: 10,
@@ -912,6 +945,38 @@ impl ClassicListCellLayout {
     }
 }
 
+#[derive(Clone, Debug)]
+enum StyledTextEditPaintOp {
+    Run { glyphs: ClassicLine, left: i16, baseline: i16,
+        ink: systemless::runner::TextEditInkSnapshot },
+    Invert((i16, i16, i16, i16)),
+    Caret((i16, i16, i16, i16), systemless::runner::TextEditInkSnapshot),
+}
+
+#[derive(Clone, Debug)]
+enum ResolvedTextEditPaintOp {
+    Run { glyphs: Vec<(i32, systemless::quickdraw::text::SmoothGlyphSnapshot)>,
+        left: i16, baseline: i16, ink: systemless::runner::TextEditInkSnapshot },
+    Invert((i16, i16, i16, i16)),
+    Caret((i16, i16, i16, i16), systemless::runner::TextEditInkSnapshot),
+}
+
+impl StyledTextEditPaintOp {
+    /// All operations resolve before a field is painted. Preserve native paint
+    /// pens independently of the guest insertion coordinates used by hit testing.
+    fn resolve_all(ops: &[Self], raster: u32) -> Option<Vec<ResolvedTextEditPaintOp>> {
+        if !(1..=8).contains(&raster) { return None; }
+        ops.iter().map(|op| Some(match op {
+            Self::Run { glyphs, left, baseline, ink } => ResolvedTextEditPaintOp::Run {
+                glyphs: if glyphs.positions == [0] { Vec::new() } else { resolve_smooth_run(glyphs, raster)? },
+                left: *left, baseline: *baseline, ink: ink.clone(),
+            },
+            Self::Invert(rect) => ResolvedTextEditPaintOp::Invert(*rect),
+            Self::Caret(rect, ink) => ResolvedTextEditPaintOp::Caret(*rect, ink.clone()),
+        })).collect()
+    }
+}
+
 /// A whole-field recipe, qualified against native pixels before ownership.
 /// The caller supplies resolved background and caret paint; no host font or
 /// theme colour is inferred. Application drawing or unsupported paint declines.
@@ -920,6 +985,7 @@ pub(crate) struct StyledTextEditPaintPlan {
     pub pixels: std::collections::BTreeMap<(i16, i16), [u8; 3]>,
     pub background: [u8; 3],
     pub view: (i16, i16, i16, i16),
+    ops: Vec<StyledTextEditPaintOp>,
 }
 
 impl StyledTextEditPaintPlan {
@@ -949,6 +1015,7 @@ impl StyledTextEditPaintPlan {
             } }
         }
         let mut pairs = InkPairs::new();
+        let mut ops = Vec::new();
         let mut selections = Vec::new();
         for index in 0..record.line_count {
             let (geometry, _) = record.guest_styled_line_geometry(index)?;
@@ -956,6 +1023,8 @@ impl StyledTextEditPaintPlan {
                 && (geometry.top.saturating_add(geometry.height) <= view.0 || geometry.top >= view.2) { continue; }
             let line = StyledTextEditLine::from_guest(record, index)?;
             for run in &line.runs {
+                ops.push(StyledTextEditPaintOp::Run { glyphs: run.glyphs.clone(),
+                    left: run.left, baseline: line.baseline, ink: run.ink.clone() });
                 for &(x, y, count) in &run.glyphs.ink {
                     let y = i16::try_from(i32::from(line.baseline).checked_add(y)?).ok()?;
                     for dx in 0..count {
@@ -969,12 +1038,16 @@ impl StyledTextEditPaintPlan {
                 // can overwrite earlier selected pixels in overlapping boxes.
                 if record.line_layout_policy == TextEditLineLayoutPolicy::PpcRunMetrics {
                     invert(&mut pairs, rect, background);
+                    ops.push(StyledTextEditPaintOp::Invert(rect));
                 } else { selections.push(rect); }
             }
         }
         // Classic highlights after all visible line ink. Every inversion
         // swaps the actual current physical ink pair, including prior highlights.
-        for rect in selections { invert(&mut pairs, rect, background); }
+        for rect in selections {
+            invert(&mut pairs, rect, background);
+            ops.push(StyledTextEditPaintOp::Invert(rect));
+        }
         let mut pixels: std::collections::BTreeMap<_, _> = pairs.into_iter()
             .map(|(point, (rgb, _))| (point, rgb)).collect();
         if let Some((rect, ink)) = caret {
@@ -983,6 +1056,7 @@ impl StyledTextEditPaintPlan {
             if top >= bottom || left >= right || top < view.0 || left < view.1
                 || bottom > view.2 || right > view.3 { return None; }
             for y in top..bottom { for x in left..right { pixels.insert((x, y), ink.rgb); } }
+            ops.push(StyledTextEditPaintOp::Caret(rect, ink));
         }
         for y in view.0..view.2 { for x in view.1..view.3 {
             let gx = i32::from(global.1) + i32::from(x) - i32::from(view.1);
@@ -990,7 +1064,7 @@ impl StyledTextEditPaintPlan {
             let at = (gy as usize * width as usize + gx as usize) * 4;
             if native[at..at + 3] != pixels.get(&(x, y)).copied().unwrap_or(background.rgb) { return None; }
         } }
-        Some(Self { pixels, background: background.rgb, view })
+        Some(Self { pixels, background: background.rgb, view, ops })
     }
 }
 
