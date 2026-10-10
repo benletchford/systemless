@@ -4863,11 +4863,15 @@ mod desktop {
                 }).unwrap();
                 let view = view.unwrap(); visual.run_until_parked();
                 let baseline = visual.capture_screenshot(window.into()).unwrap();
+                let prefix = "row\r\n".repeat(20);
+                let last = prefix.encode_utf16().count();
+                for (label, text, selection) in [("single", "日😀".to_owned(), 1..3),
+                    ("multiline", format!("{prefix}日😀"), last + 1..last + 3)] {
                 visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
                     demo.host_active = Some(true);
                     window.focus(&demo.focus, cx);
                     demo.synchronize_composition(window, cx);
-                    assert!(demo.composition.mark("日😀", 1..3)); cx.notify();
+                    assert!(demo.composition.mark(&text, selection.clone())); cx.notify();
                 })).unwrap();
                 visual.run_until_parked();
                 let marked = visual.capture_screenshot(window.into()).unwrap();
@@ -4875,13 +4879,13 @@ mod desktop {
                 visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
                     use gpui_kit::EntityInputHandler;
                     let start = demo.composition.owner().unwrap().selection.start;
-                    let bounds = demo.bounds_for_range(start + 1..start + 3, Bounds::default(), window, cx).unwrap();
+                    let bounds = demo.bounds_for_range(start + selection.start..start + selection.end, Bounds::default(), window, cx).unwrap();
                     assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
-                    assert_eq!(demo.character_index_for_point(point(bounds.origin.x, bounds.origin.y + px(1.)), window, cx), Some(start + 1));
-                    assert!(demo.bounds_for_range(start + 1..start + 2, Bounds::default(), window, cx).is_none(), "cannot split emoji surrogate pair");
+                    assert_eq!(demo.character_index_for_point(point(bounds.origin.x, bounds.origin.y + px(1.)), window, cx), Some(start + selection.start));
+                    assert!(demo.bounds_for_range(start + selection.start..start + selection.start + 1, Bounds::default(), window, cx).is_none(), "cannot split emoji surrogate pair");
                     assert_eq!(demo.text_edits, records);
                 })).unwrap();
-                marked.save(output.join(format!("{powerpc}-{depth}-marked.png"))).unwrap();
+                marked.save(output.join(format!("{powerpc}-{depth}-{label}-marked.png"))).unwrap();
                 visual.update(|cx| view.update(cx, |demo, cx| {
                     assert_eq!(demo.text_edits, records);
                     demo.composition.cancel(); cx.notify();
@@ -4890,7 +4894,8 @@ mod desktop {
                 let restored = visual.capture_screenshot(window.into()).unwrap();
                 assert_eq!(baseline, restored, "cancellation must restore exact composed pixels");
                 baseline.save(output.join(format!("{powerpc}-{depth}-baseline.png"))).unwrap();
-                eprintln!("PASS composition-surface-restoration powerpc={powerpc} depth={depth}");
+                eprintln!("PASS composition-surface-restoration powerpc={powerpc} depth={depth} case={label}");
+                }
             }
         }
 
@@ -6094,6 +6099,7 @@ mod desktop {
                         capture_standard_menu_id: 129,
                         capture_standard_menu_styled: false,
                         capture_windows: None,
+                        capture_composition_surface: None,
                         capture_windows_moved: None,
                         capture_windows_activated: None,
                         capture_windows_grown: None,

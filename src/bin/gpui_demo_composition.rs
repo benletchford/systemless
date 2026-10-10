@@ -20,6 +20,28 @@ pub(super) fn text_line_geometry(record: &systemless::runner::TextEditSnapshot, 
     record.line_geometry(index, text_range_width(record, start..end)?)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MarkedLine { text: String, start: usize, end: usize }
+
+fn marked_lines(text: &str) -> Vec<MarkedLine> {
+    let mut result = Vec::new();
+    let mut chars = text.char_indices().peekable();
+    let (mut byte_start, mut unit_start, mut units) = (0, 0, 0);
+    while let Some((byte, ch)) = chars.next() {
+        if matches!(ch, '\r' | '\n') {
+            result.push(MarkedLine { text: text[byte_start..byte].to_owned(), start: unit_start, end: units });
+            units += 1;
+            byte_start = byte + ch.len_utf8();
+            if ch == '\r' && chars.peek().is_some_and(|(_, next)| *next == '\n') {
+                let (byte, _) = chars.next().unwrap(); units += 1; byte_start = byte + 1;
+            }
+            unit_start = units;
+        } else { units += ch.len_utf16(); }
+    }
+    result.push(MarkedLine { text: text[byte_start..].to_owned(), start: unit_start, end: units });
+    result
+}
+
 #[derive(Clone)]
 struct MarkedRow { start: usize, positions: Vec<(usize, f32)>, origin: (f32, f32) }
 
@@ -66,8 +88,8 @@ impl Demo {
         let y = i32::from(dest.0) - i32::from(record.dest_rect.0) + i32::from(geometry.top);
         if x < i32::from(view.1) || x >= i32::from(view.3) || y < i32::from(view.0) || y >= i32::from(view.2) { return None; }
         let width = 240f32.min(self.width as f32 * self.display_scale).max(1.);
-        let lines: Vec<String> = preedit.text.split('\n').map(str::to_owned).collect();
-        let height = (lines.len().max(1) as f32 * 20. + 8.).min(self.height as f32 * self.display_scale);
+        let lines = marked_lines(&preedit.text);
+        let height = (lines.len().max(1) as f32 * 20. + 8.).min(168.).min(self.height as f32 * self.display_scale);
         let left = (self.display_origin.0 + x as f32 * self.display_scale)
             .min(self.display_origin.0 + self.width as f32 * self.display_scale - width);
         let top = (self.display_origin.1 + (y + i32::from(geometry.height)) as f32 * self.display_scale)
@@ -81,10 +103,16 @@ impl Demo {
         Some(div().id("guest-composition-surface").absolute().left(px(left)).top(px(top))
             .w(px(width)).h(px(height)).bg(cx.theme().background).border_1().border_color(foreground)
             .overflow_hidden().child(canvas(move |bounds, _, _| bounds, move |_, bounds, window, cx| {
-                let mut utf16_start = 0usize;
+                let caret_line = lines.iter().position(|line| preedit.selection_utf16.end >= line.start
+                    && preedit.selection_utf16.end <= line.end).unwrap_or(lines.len() - 1);
+                let vertical_scroll = (caret_line as f32 * 20. - (height - 28.).max(0.)).max(0.);
                 let mut rows = Vec::new();
-                for (index, text) in lines.iter().enumerate() {
-                    let length = text.encode_utf16().count();
+                for (index, marked) in lines.iter().enumerate() {
+                    let row_top = 4. + index as f32 * 20. - vertical_scroll;
+                    if row_top + 20. <= 0. || row_top >= height { continue; }
+                    let text = &marked.text;
+                    let utf16_start = marked.start;
+                    let length = marked.end - marked.start;
                     let byte_at = |unit: usize| {
                         let mut count = 0;
                         for (byte, ch) in text.char_indices() {
@@ -101,7 +129,7 @@ impl Demo {
                     }], None);
                     let caret = line.x_for_index(byte_at(selected_end));
                     let scroll = (f32::from(caret) - (width - 12.)).max(0.);
-                    let origin = point(bounds.origin.x + px(4. - scroll), bounds.origin.y + px(4. + index as f32 * 20.));
+                    let origin = point(bounds.origin.x + px(4. - scroll), bounds.origin.y + px(row_top));
                     if selected_start < selected_end {
                         let a = line.x_for_index(byte_at(selected_start));
                         let b = line.x_for_index(byte_at(selected_end));
@@ -121,7 +149,6 @@ impl Demo {
                     positions.push((length, f32::from(line.x_for_index(text.len()))));
                     rows.push(MarkedRow { start: utf16_start, positions,
                         origin: (f32::from(origin.x), f32::from(origin.y)) });
-                    utf16_start += length + 1;
                 }
                 *cache.borrow_mut() = Some(PaintedComposition {
                     owner: cache_owner.clone(), preedit: preedit.clone(), record: cache_record.clone(), transform,
@@ -144,6 +171,10 @@ impl Demo {
         let start = range.start.checked_sub(painted.owner.selection.start)?;
         let end = range.end.checked_sub(painted.owner.selection.start)?;
         if start > end || end > painted.preedit.text.encode_utf16().count() { return None; }
+        let boundaries: std::collections::BTreeSet<_> = std::iter::once(0).chain(painted.preedit.text.chars().scan(0, |units, ch| {
+            *units += ch.len_utf16(); Some(*units)
+        })).collect();
+        if !boundaries.contains(&start) || !boundaries.contains(&end) { return None; }
         for row in &painted.rows {
             let Some(local) = start.checked_sub(row.start) else { continue; };
             if local > row.positions.last()?.0 { continue; }
@@ -297,5 +328,15 @@ impl EntityInputHandler for Demo {
     }
     fn accepts_text_input(&self, window: &mut Window, _: &mut Context<Self>) -> bool {
         self.focus.is_focused(window) && self.composition.owner().is_some()
+    }
+}
+
+#[cfg(test)]
+mod marked_line_tests {
+    #[test]
+    fn preserves_original_utf16_offsets_across_all_line_endings() {
+        let lines = super::marked_lines("日😀\r\nx\ry\nz\n");
+        assert_eq!(lines.iter().map(|line| (line.text.as_str(), line.start, line.end)).collect::<Vec<_>>(),
+            vec![("日😀", 0, 3), ("x", 5, 6), ("y", 7, 8), ("z", 9, 10), ("", 11, 11)]);
     }
 }
