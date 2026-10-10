@@ -1,0 +1,19 @@
+{
+  "base_head": "d07f58e6c80a5456060b99c3b24fa07d41faef40",
+  "source_sha256": "58e106dc8c33d0c2b7107d51041339c22f10fca84b757197859514f683d7208d",
+  "source_state": "uncommitted capture-only extension",
+  "terminal_results": {
+    "build": 0,
+    "colour-document": 0,
+    "ppc16-save": 0,
+    "mono-document": 0,
+    "ppc8-folder": 0
+  },
+  "commands": [
+    "--screen-depth 8 --capture-scale 1 --capture-text-edit-selected",
+    "--prefer-powerpc --capture-scale 1.5 --capture-standard-file-save-composed",
+    "--screen-depth 1 --capture-scale 0.75 --capture-text-edit-selected",
+    "--prefer-powerpc --screen-depth 8 --capture-scale 2 --capture-standard-file-new-folder-composed"
+  ],
+  "scope": "Four selected shared compositor cases covering mono68k, colour68k, PPC8 and PPC16; all stage images visually reviewed. Geometry, surrogate rejection, exact cancellation and simulated focus restoration. No physical IME or complete workflow/scale matrix."
+}
