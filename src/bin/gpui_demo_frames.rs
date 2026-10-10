@@ -133,9 +133,11 @@ pub fn popup_control_label<'a>(
 }
 
 fn standard_control(control: &ControlSnapshot, menus: &GuestMenuSnapshot) -> bool {
-    // Appearance overrides need guest font/style shaping before Kit can own
-    // these pixels. Keep their guest CDEF painting, including overlap masks.
-    control.font_style.is_none() && (matches!(control.proc_id, 0 | 1 | 2 | 16)
+    // Font/size/face use the shared guest recipe. Other selected Appearance
+    // fields retain guest CDEF paint until their modes and colors are qualified.
+    let supported_font = control.font_style.is_none_or(|style|
+        matches!(control.proc_id, 0 | 1 | 2) && (style.flags as u16 & !0x0187) == 0);
+    supported_font && (matches!(control.proc_id, 0 | 1 | 2 | 16)
         || popup_control_label(control, menus).is_some())
 }
 
@@ -1229,13 +1231,18 @@ mod tests {
 
         let mut overridden = controls.to_vec();
         overridden[1].font_style = Some(systemless::runner::ControlFontStyle {
-            flags: 7, font: 3, size: 10, style: 1, mode: 1, justification: -1,
+            flags: 7 | 0x0040, font: 3, size: 10, style: 1, mode: 1, justification: -1,
             foreground: [0; 3], background: [65535; 3],
         });
         let pieces = control_pieces(&overridden, &GuestMenuSnapshot::default(), &[window.clone()], viewport);
         // Override retains its guest pixels and masks the intersecting standard
         // control rather than being erased underneath a host-shaped label.
         assert!(pieces.is_empty(), "overlapping guest-owned font override retains both controls");
+
+        overridden[1].font_style.as_mut().unwrap().flags = 7;
+        let pieces = control_pieces(&overridden, &GuestMenuSnapshot::default(), &[window.clone()], viewport);
+        assert_eq!(pieces.iter().map(|piece| piece.control).collect::<Vec<_>>(), [1, 0],
+            "unselected Appearance fields must not block supported guest-font labels");
 
         let mut controls_with_custom = controls.to_vec();
         controls_with_custom.push(control(1, 99, (105, 150, 130, 190)));

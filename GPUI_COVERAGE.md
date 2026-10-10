@@ -192,8 +192,11 @@ All CPU modes share these rules after their guest snapshots are normalized.
 
 The classification guards establish where guest ownership is retained; they do
 not establish that a custom fallback has complete CPU lifecycle qualification.
-In particular, recognized ControlFontStyle overrides remain an implementation
-gap, and the final inventory must associate every supported variant with actual
+Recognized button/checkbox/radio ControlFontStyle family, size and face flags
+now use the shared guest recipe in GPUI, with an ownership regression recorded
+in `control-font-overlay`. Other selected Appearance fields and popup overrides
+remain implementation gaps; composed style and interaction qualification remains
+open. The final inventory must associate every supported variant with actual
 rendering, interaction and lifecycle evidence before the inventory gate closes.
 
 The control-font source trace identified a guest-side prerequisite: classic

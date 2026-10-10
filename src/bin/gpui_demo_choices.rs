@@ -16,6 +16,19 @@ pub fn guest_checkbox(
     scale: f32,
     cx: &App,
 ) -> Checkbox {
+    guest_checkbox_with_font(id, label, checked, enabled, pressed, scale, None, cx)
+}
+
+pub fn guest_checkbox_with_font(
+    id: String,
+    label: String,
+    checked: bool,
+    enabled: bool,
+    pressed: bool,
+    scale: f32,
+    font: Option<systemless::runner::ControlTitleStyle>,
+    cx: &App,
+) -> Checkbox {
     Checkbox::new(id)
         .checked(checked)
         .disabled(!enabled)
@@ -24,7 +37,7 @@ pub fn guest_checkbox(
         .w_full()
         .h_full()
         .child(choice_content(
-            label, checked, enabled, pressed, scale, false, cx,
+            label, checked, enabled, pressed, scale, false, font, cx,
         ))
         .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
 }
@@ -38,6 +51,19 @@ pub fn guest_radio(
     scale: f32,
     cx: &App,
 ) -> Radio {
+    guest_radio_with_font(id, label, checked, enabled, pressed, scale, None, cx)
+}
+
+pub fn guest_radio_with_font(
+    id: String,
+    label: String,
+    checked: bool,
+    enabled: bool,
+    pressed: bool,
+    scale: f32,
+    font: Option<systemless::runner::ControlTitleStyle>,
+    cx: &App,
+) -> Radio {
     Radio::new(id)
         .checked(checked)
         .disabled(!enabled)
@@ -46,7 +72,7 @@ pub fn guest_radio(
         .w_full()
         .h_full()
         .child(choice_content(
-            label, checked, enabled, pressed, scale, true, cx,
+            label, checked, enabled, pressed, scale, true, font, cx,
         ))
         .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
 }
@@ -58,6 +84,7 @@ fn choice_content(
     pressed: bool,
     scale: f32,
     circular: bool,
+    font: Option<systemless::runner::ControlTitleStyle>,
     cx: &App,
 ) -> Div {
     let theme = cx.theme();
@@ -143,14 +170,16 @@ fn choice_content(
                 .flex_1()
                 .h_full()
                 .overflow_hidden()
-                .child(super::text::classic_choice_label(
+                .child(super::text::classic_control_label_with_style(
                     &label,
+                    false,
                     scale,
                     if enabled {
                         theme.foreground
                     } else {
                         theme.muted_foreground
                     },
+                    font,
                 )),
         )
 }
@@ -164,6 +193,20 @@ pub fn guest_button(
     pressed: bool,
     primary: bool,
     scale: f32,
+    cx: &App,
+) -> gpui_kit::base::Button {
+    guest_button_with_font(id, label, enabled, active, pressed, primary, scale, None, cx)
+}
+
+pub fn guest_button_with_font(
+    id: String,
+    label: String,
+    enabled: bool,
+    active: bool,
+    pressed: bool,
+    primary: bool,
+    scale: f32,
+    font: Option<systemless::runner::ControlTitleStyle>,
     cx: &App,
 ) -> gpui_kit::base::Button {
     let theme = cx.theme();
@@ -204,5 +247,5 @@ pub fn guest_button(
                 .border_color(theme.border)
                 .rounded(theme.radius),
         )
-        .child(super::text::classic_button_label(&label, scale, foreground))
+        .child(super::text::classic_control_label_with_style(&label, true, scale, foreground, font))
 }
