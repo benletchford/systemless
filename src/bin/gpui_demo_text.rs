@@ -2443,19 +2443,22 @@ fn paint_smooth_label(
                 let y0 = baseline + px((glyph.top + y) as f32 * unit);
                 let x1 = x0 + px((x - start) as f32 * unit);
                 let y1 = y0 + px(unit);
-                let path = paths.entry(alpha).or_insert_with(PathBuilder::fill);
-                path.move_to(point(x0, y0));
-                path.line_to(point(x1, y0));
-                path.line_to(point(x1, y1));
-                path.line_to(point(x0, y1));
-                path.close();
+                let path = paths.entry(alpha).or_insert_with(|| Path::new(point(x0, y0)));
+                // Coverage spans are already rectangles, so their two triangles
+                // need no general polygon tessellation. Keep the same coverage
+                // and device coordinates, including fractional scale boundaries.
+                let solid = point(0., 1.);
+                path.push_triangle((point(x0, y0), point(x1, y0), point(x1, y1)),
+                    (solid, solid, solid));
+                path.push_triangle((point(x0, y0), point(x1, y1), point(x0, y1)),
+                    (solid, solid, solid));
             }
         }
     }
     for (alpha, path) in paths {
         let mut ink = foreground;
         ink.a *= f32::from(alpha) / 255.;
-        window.paint_path(path.build().expect("resolved outline coverage spans"), ink);
+        window.paint_path(path, ink);
     }
     true
 }
