@@ -1,0 +1,15 @@
+{
+  "source_commit": "7c2e238f5f40e6df06f3656bf9032f3952b79d20",
+  "scope": "Two representative shared Demo visuals; not all 16 visual reviews or general UI qualification",
+  "reviewed": [
+    {
+      "rendered": "multiline-ppc16-selected-none-0.75.png",
+      "sha256": "bdd8819e327cca5a48de604d921e2d8787c9f1eb983e56560c7e791884c129a5"
+    },
+    {
+      "rendered": "multiline-mono-selected-none-2.png",
+      "sha256": "11154cac88e928eb50c05802dd3c838fd590c1dc0711e146397b3b439af40d7d"
+    }
+  ],
+  "observations": "Two selected styled lines keep their guest bounds and underline. Monochrome black application-drawn panels remain unchanged. Window chrome is shared Demo presentation; diagnostic labels outside the field remain guest-rendered and unqualified."
+}

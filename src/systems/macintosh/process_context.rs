@@ -14559,6 +14559,7 @@ mod tests {
                 selected: [(0, 0)].into(),
                 last_click: (0, 0),
                 last_click_tick: 10,
+                standard_cell_drawings: Default::default(),
             },
         );
         context.attach_list_manager(&mut native);

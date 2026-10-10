@@ -540,6 +540,7 @@ fn cloned_native_adapter_detaches_list_manager_state() {
             selected: [(0, 0)].into(),
             last_click: (0, 0),
             last_click_tick: 10,
+            standard_cell_drawings: Default::default(),
         },
     );
     let detached = original.clone();
@@ -568,6 +569,7 @@ fn cloned_native_adapter_detaches_list_manager_state() {
             selected: Default::default(),
             last_click: (-1, -1),
             last_click_tick: 0,
+            standard_cell_drawings: Default::default(),
         },
     );
 

@@ -403,6 +403,7 @@ mod desktop {
         dialogs: Vec<DialogSnapshot>,
         controls: Vec<ControlSnapshot>,
         lists: Vec<ListManagerSnapshot>,
+        list_text_plans: Vec<std::collections::BTreeMap<(i16, i16), super::text::ClassicListCellPaintPlan>>,
         text_edits: Vec<TextEditSnapshot>,
         styled_text_plans: Vec<Option<super::text::StyledTextEditPaintPlan>>,
         standard_file: Option<StandardFileSnapshot>,
@@ -634,6 +635,8 @@ mod desktop {
                 let lists = session.runner_mut().list_manager_snapshot();
                 let text_edits = session.runner_mut().text_edit_snapshot().records;
                 let standard_file = session.runner_mut().standard_file_snapshot();
+                let list_text_plans = frame.as_ref().map(|frame|
+                    qualify_list_text_fields(&lists, &frame.pixels, frame.width, frame.height)).unwrap_or_default();
                 let styled_text_plans = frame.as_ref().map(|frame|
                     qualify_styled_text_fields(&text_edits, &frame.pixels, frame.width, frame.height))
                     .unwrap_or_default();
@@ -650,6 +653,7 @@ mod desktop {
                     dialogs,
                     controls,
                     lists,
+                    list_text_plans,
                     text_edits,
                     styled_text_plans,
                     standard_file,
@@ -692,6 +696,7 @@ mod desktop {
         dialogs: Vec<DialogSnapshot>,
         controls: Vec<ControlSnapshot>,
         lists: Vec<ListManagerSnapshot>,
+        list_text_plans: Vec<std::collections::BTreeMap<(i16, i16), super::text::ClassicListCellPaintPlan>>,
         text_edits: Vec<TextEditSnapshot>,
         styled_text_plans: Vec<Option<super::text::StyledTextEditPaintPlan>>,
         standard_file: Option<StandardFileSnapshot>,
@@ -834,6 +839,7 @@ mod desktop {
                             this.dialogs = update.dialogs;
                             this.controls = update.controls;
                             this.lists = update.lists;
+                            this.list_text_plans = update.list_text_plans;
                             this.text_edits = update.text_edits;
                             this.styled_text_plans = update.styled_text_plans;
                             this.standard_file = update.standard_file;
@@ -878,6 +884,7 @@ mod desktop {
                 dialogs: Vec::new(),
                 controls: Vec::new(),
                 lists: Vec::new(),
+                list_text_plans: Vec::new(),
                 text_edits: Vec::new(),
                 styled_text_plans: Vec::new(),
                 standard_file: None,
@@ -1611,79 +1618,38 @@ mod desktop {
                             .child(gutter),
                     );
                 }
-                // A standard LDEF's unstyled text rows can use Kit list items.
-                // The list's guest-visible cells, selection, and view origin remain
-                // authoritative, and unknown LDEFs retain their framebuffer pixels.
-                // More Macintosh Toolbox (1993), pp. 4-70--4-76.
-                for piece in super::frames::list_pieces(
-                    &self.lists,
-                    &self.controls,
-                    &self.windows,
-                    viewport,
-                ) {
+                // Preserve standard list cell semantics, but paint only the
+                // native-qualified guest recipe. Unknown/modified cells keep
+                // guest pixels and input continues through LClick.
+                for piece in super::frames::list_pieces(&self.lists, &self.controls, &self.windows, viewport) {
                     let list = &self.lists[piece.list];
-                    let Some(cells) = list.text_cells.as_ref() else {
-                        continue;
-                    };
-                    let source = piece.source;
-                    let clip = piece.clip;
-                    let mut overlay = div()
-                        .absolute()
-                        .left(guest_px((source.left - clip.left) as f32))
-                        .top(guest_px((source.top - clip.top) as f32))
-                        .w(guest_px(source.width() as f32))
-                        .h(guest_px(source.height() as f32))
-                        .bg(cx.theme().background);
-                    for (&(row, column), text) in cells {
-                        if row < list.visible.0
-                            || row >= list.visible.2
-                            || column < list.visible.1
-                            || column >= list.visible.3
-                        {
-                            continue;
+                    let Some(cells) = list.text_cells.as_ref() else { continue; };
+                    let Some(global) = list.global_view_rect else { continue; };
+                    for (&cell, text) in cells {
+                        let (row, column) = cell;
+                        if row < list.visible.0 || row >= list.visible.2 || column < list.visible.1 || column >= list.visible.3 { continue; }
+                        let top = piece.source.top + i32::from(row - list.visible.0) * i32::from(list.cell_size.0.max(1));
+                        let left = piece.source.left + i32::from(column - list.visible.1) * i32::from(list.cell_size.1.max(1));
+                        let bounds = super::frames::Rect { top, left,
+                            bottom: top + i32::from(list.cell_size.0.max(1)), right: left + i32::from(list.cell_size.1.max(1)) };
+                        let Some(clip) = bounds.intersection(piece.clip) else { continue; };
+                        screen = screen.child(div().absolute()
+                            .id(format!("guest-list-cell-{}-{}-{row}-{column}", list.guest_id, list.generation)).test_support()
+                            .role(Role::ListItem).aria_label(text.clone()).aria_selected(list.selected.contains(&cell))
+                            .left(guest_px(clip.left as f32)).top(guest_px(clip.top as f32))
+                            .w(guest_px(clip.width() as f32)).h(guest_px(clip.height() as f32)));
+                        let Some(plan) = self.list_text_plans.get(piece.list).and_then(|plans| plans.get(&cell)) else { continue; };
+                        let Some(paint) = list.standard_cell_paint.get(&cell) else { continue; };
+                        let origin = (self.display_origin.0 + (i32::from(global.1) - i32::from(list.view_rect.1)) as f32 * scene_scale,
+                            self.display_origin.1 + (i32::from(global.0) - i32::from(list.view_rect.0)) as f32 * scene_scale);
+                        for painted in &paint.painted_regions {
+                            let Some(clip) = clip.intersection(super::frames::Rect::from(*painted)) else { continue; };
+                            let Some(ink) = super::text::classic_list_cell(plan.clone(), scene_scale, origin) else { continue; };
+                            screen = screen.child(div().absolute().overflow_hidden()
+                                .left(guest_px(clip.left as f32)).top(guest_px(clip.top as f32))
+                                .w(guest_px(clip.width() as f32)).h(guest_px(clip.height() as f32)).child(ink));
                         }
-                        let top = i32::from(row - list.visible.0) * i32::from(list.cell_size.0.max(1));
-                        let left =
-                            i32::from(column - list.visible.1) * i32::from(list.cell_size.1.max(1));
-                        let selected = list.selected.contains(&(row, column));
-                        overlay = overlay.child(
-                            div()
-                            .id(format!(
-                                "guest-list-cell-{}-{}-{}-{}",
-                                list.guest_id, list.generation, row, column
-                            ))
-                            .test_support()
-                            .role(Role::ListItem)
-                            .aria_label(text.clone())
-                            .aria_selected(selected)
-                            .absolute()
-                            .left(guest_px(left as f32))
-                            .top(guest_px(top as f32))
-                            .w(guest_px(f32::from(list.cell_size.1.max(1))))
-                            .h(guest_px(f32::from(list.cell_size.0.max(1))))
-                            .overflow_hidden()
-                            .flex()
-                            .items_center()
-                            .bg(if selected && list.active {
-                                cx.theme().accent
-                            } else {
-                                cx.theme().background
-                            })
-                            .px_1()
-                            .text_size(guest_px(13.))
-                            .child(text.clone()),
-                        );
                     }
-                    screen = screen.child(
-                        div()
-                            .absolute()
-                            .overflow_hidden()
-                            .left(guest_px(clip.left as f32))
-                            .top(guest_px(clip.top as f32))
-                            .w(guest_px(clip.width() as f32))
-                            .h(guest_px(clip.height() as f32))
-                            .child(overlay),
-                    );
                 }
                 // TextEdit supplies the guest line breaks and scroll origin. Keep
                 // keyboard and pointer events on the normal guest path.
@@ -4104,6 +4070,7 @@ mod desktop {
         let guest_popup = session.runner_mut().guest_popup_snapshot();
         let frame = session.video_frame().unwrap();
         let styled_text_plans = qualify_styled_text_fields(&text_edits, &frame.pixels, frame.width, frame.height);
+        let list_text_plans = qualify_list_text_fields(&lists, &frame.pixels, frame.width, frame.height);
         if matches!(capture, CaptureCase::WindowsZoomRestored) {
             // This exposed main-window point used to retain the zoomed
             // auxiliary window's blue pixels after the 68K zoom-back.
@@ -4171,6 +4138,7 @@ mod desktop {
                 demo.dialogs = dialogs;
                 demo.controls = controls;
                 demo.lists = lists;
+                demo.list_text_plans = list_text_plans;
                 demo.text_edits = text_edits;
                 demo.styled_text_plans = styled_text_plans;
                 demo.standard_file = standard_file;
@@ -4201,6 +4169,28 @@ mod desktop {
             .save(output)
             .unwrap();
         eprintln!("saved composed GPUI capture to {}", output.display());
+    }
+
+    fn qualify_list_text_fields(
+        lists: &[ListManagerSnapshot], native: &[u8], width: u32, height: u32,
+    ) -> Vec<std::collections::BTreeMap<(i16, i16), super::text::ClassicListCellPaintPlan>> {
+        lists.iter().map(|list| {
+            let mut plans = std::collections::BTreeMap::new();
+            if list.definition_id != 0 || !list.draw_enabled { return plans; }
+            let Some(global) = list.global_view_rect else { return plans; };
+            for (&cell, paint) in &list.standard_cell_paint {
+                let offset_y = i32::from(global.0) - i32::from(list.view_rect.0);
+                let offset_x = i32::from(global.1) - i32::from(list.view_rect.1);
+                let bounds = [i32::from(paint.clip.0) + offset_y, i32::from(paint.clip.1) + offset_x,
+                    i32::from(paint.clip.2) + offset_y, i32::from(paint.clip.3) + offset_x];
+                let Some(bounds) = bounds.into_iter().map(|value| i16::try_from(value).ok()).collect::<Option<Vec<_>>>() else { continue; };
+                if let Some(plan) = super::text::ClassicListCellPaintPlan::from_guest(paint,
+                    (bounds[0], bounds[1], bounds[2], bounds[3]), native, width, height) {
+                    plans.insert(cell, plan);
+                }
+            }
+            plans
+        }).collect()
     }
 
     // White is an explicit classic-field candidate, not inferred host theme
@@ -7299,6 +7289,11 @@ mod desktop {
                 let baseline = if powerpc { local.0 + metrics.ascent } else {
                     local.0 + (bottom - local.0 - metrics.ascent - metrics.descent).max(0) / 2 + metrics.ascent
                 };
+                let retained = list.standard_cell_paint.get(&cell).expect("native standard painter retained this cell");
+                assert_eq!((retained.font, retained.size, retained.left, retained.baseline),
+                    (1, 9, local.1 + if powerpc { 1 } else { 3 }, baseline));
+                assert_eq!(retained.bytes, list.cells[&cell]);
+                assert!(!retained.selected);
                 let layout = super::super::text::ClassicListCellLayout {
                     font: 1, size: 9, left: local.1 + if powerpc { 1 } else { 3 }, baseline,
                     clip: (local.0 + 1, local.1 + 1, bottom, right - 1),
@@ -7332,6 +7327,9 @@ mod desktop {
                 let selected = session.runner_mut().list_manager_snapshot().into_iter()
                     .find(|next| next.guest_id == list.guest_id).unwrap();
                 assert!(selected.active && selected.selected.contains(&cell));
+                let retained = selected.standard_cell_paint.get(&cell).expect("selected native painter evidence");
+                assert!(retained.selected);
+                assert_eq!((retained.font, retained.size, retained.baseline), (1, 9, baseline));
                 assert_eq!(selected.cells, list.cells);
                 assert_eq!(selected.generation, list.generation);
                 let frame = session.video_frame().unwrap();
@@ -7347,6 +7345,10 @@ mod desktop {
                     &frame.pixels, frame.width, frame.height,
                 );
                 assert!(qualified.is_some(), "native selected row: PPC={powerpc}, depth={depth}, background={background:?}");
+                let plans = super::qualify_list_text_fields(std::slice::from_ref(&selected),
+                    &frame.pixels, frame.width, frame.height);
+                assert!(!plans[0].is_empty(), "production list qualification needs an owned native cell: PPC={powerpc}, depth={depth}, paint={:?}", selected.standard_cell_paint);
+
             }
         }
 
@@ -11877,6 +11879,7 @@ mod desktop {
                         selected: Default::default(),
                         vertical_scrollbar: None,
                         horizontal_scrollbar: None,
+                        standard_cell_paint: Default::default(),
                     }];
                     demo.width = 800;
                     demo.height = 600;

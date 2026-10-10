@@ -31,6 +31,7 @@ pub use crate::standard_file_ui::{
     StandardFileEntrySnapshot, StandardFileGetLayout, StandardFileKind, StandardFilePutLayout,
     StandardFileNameTextLayout, StandardFileSnapshot, StandardFileReplacementLayout, StandardFileNewFolderSnapshot, StandardFileNewFolderLayout,
 };
+pub use crate::list_manager::StandardListCellPaintSnapshot;
 pub use crate::text_edit::{TextEditCharExtraSnapshot, TextEditInkSnapshot, TextEditPaintSnapshot, TextEditLineGeometry, TextEditLineLayoutPolicy, TextEditManagerSnapshot, TextEditSnapshot, TextEditStyleRunSnapshot};
 use crate::trap::dispatch::TrapTableProfile;
 use crate::trap::TrapDispatcher;
@@ -68,6 +69,8 @@ pub struct ListManagerSnapshot {
     pub selected: BTreeSet<(i16, i16)>,
     pub vertical_scrollbar: Option<(bool, u8)>,
     pub horizontal_scrollbar: Option<(bool, u8)>,
+    /// Actual built-in standard painter inputs; decoded labels are not a text recipe.
+    pub standard_cell_paint: BTreeMap<(i16, i16), crate::list_manager::StandardListCellPaintSnapshot>,
 }
 
 /// One resource-map entry exposed by the fixture introspection snapshot.
@@ -3544,7 +3547,8 @@ impl FixtureRunner {
         let snapshot =
             |record: &ProcessListRecord,
              bars: [Option<(bool, u8)>; 2],
-             global_view_rect: Option<(i16, i16, i16, i16)>| ListManagerSnapshot {
+             global_view_rect: Option<(i16, i16, i16, i16)>,
+             standard_cell_paint| ListManagerSnapshot {
                 guest_id: record.handle,
                 generation: record.generation,
                 definition_id: record.definition_id,
@@ -3571,6 +3575,7 @@ impl FixtureRunner {
                 selected: record.selected.clone(),
                 vertical_scrollbar: bars[0],
                 horizontal_scrollbar: bars[1],
+                standard_cell_paint,
             };
         // ListRec.vScroll/hScroll: More Macintosh Toolbox, pp. 4-3--4-7.
         // ControlRecord.contrlVis/contrlHilite: Toolbox Essentials, pp. 5-61--5-63.
@@ -3595,7 +3600,8 @@ impl FixtureRunner {
                             app.memory.read_u8(control + 17)?,
                         ))
                     });
-                    (record.handle, snapshot(record, bars, global_view_rect))
+                    (record.handle, snapshot(record, bars, global_view_rect,
+                        record.standard_cell_paint_snapshot(|address| app.memory.read_u8(address))))
                 })
                 .collect::<Vec<_>>()
         } else {
@@ -3628,7 +3634,8 @@ impl FixtureRunner {
                             self.bus.read_byte(control + 17),
                         ))
                     });
-                    (record.handle, snapshot(record, bars, global_view_rect))
+                    (record.handle, snapshot(record, bars, global_view_rect,
+                        record.standard_cell_paint_snapshot(|address| Some(self.bus.read_byte(address)))))
                 })
                 .collect::<Vec<_>>()
         };

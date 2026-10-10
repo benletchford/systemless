@@ -5317,6 +5317,26 @@ impl super::TrapDispatcher {
             }
         }
 
+        if state.definition_id == 0 {
+            let mut drawings = state.standard_cell_drawings.borrow_mut();
+            drawings.retain(|&(row, column), _| row >= state.visible.0 && row < state.visible.2
+                && column >= state.visible.1 && column < state.visible.3);
+            if let Some(pixels) = crate::text_edit::TextEditDrawing::capture(
+                state.port, rect, |address| Some(bus.read_byte(address)),
+            ) {
+                let size = self.tx_size.max(9);
+                let metrics = get_font_metrics(self.tx_font, size);
+                drawings.insert((row, col), crate::list_manager::StandardListCellDrawing {
+                    generation: state.generation, font: self.tx_font, size, left: rect.1.saturating_add(3),
+                    baseline: rect.0 + (rect.2 - rect.0 - metrics.ascent - metrics.descent).max(0) / 2 + metrics.ascent,
+                    clip: rect, stop_before: Some(rect.3.saturating_sub(3)),
+                    char_extra: crate::text_edit::TextEditCharExtraSnapshot::ClassicFixed(self.char_extra),
+                    space_extra: bus.read_long(state.port.wrapping_add(76)) as i32,
+                    bytes: text.chars().map(|ch| ch as u8).collect(), source_bytes: data.to_vec(), selected, pixels,
+                });
+            } else { drawings.remove(&(row, col)); }
+        }
+
         bus.write_long(state.port.wrapping_add(28), saved_clip_handle);
         let cell_clip_ptr = bus.read_long(cell_clip_handle);
         if cell_clip_ptr != 0 {
@@ -12254,6 +12274,7 @@ impl super::TrapDispatcher {
                             selected: std::collections::BTreeSet::new(),
                             last_click: Self::list_no_click_cell(),
                             last_click_tick: 0,
+                            standard_cell_drawings: Default::default(),
                         };
                         let (v_scroll, v_scroll_ptr) = if scroll_v {
                             self.create_list_scrollbar(bus, &state, true)
@@ -13430,6 +13451,7 @@ impl super::TrapDispatcher {
                             selected: std::collections::BTreeSet::new(),
                             last_click: Self::list_no_click_cell(),
                             last_click_tick: 0,
+                            standard_cell_drawings: Default::default(),
                         };
 
                         let (v_scroll, v_scroll_ptr) = if scroll_v {
