@@ -6,7 +6,7 @@ pub(crate) struct TextEditDrawing {
     port: u32,
     bitmap: u32,
     row_bytes: u32,
-    depth: u16,
+    pub(crate) depth: u16,
     bounds: (i16, i16, i16, i16),
     view: (i16, i16, i16, i16),
     pixels: Vec<u8>,

@@ -36,6 +36,8 @@ pub(crate) struct StandardListCellDrawing {
 #[doc(hidden)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StandardListCellPaintSnapshot {
+    /// Actual backing bitmap depth retained at native draw time.
+    pub depth: u16,
     pub font: i16,
     pub size: i16,
     pub left: i16,
@@ -94,6 +96,7 @@ impl ProcessListRecord {
             let intact = current.as_ref().is_some_and(|current| held.pixels.same_pixels(current));
             let painted_regions = current.as_ref().map(|current| held.pixels.unchanged_painted_regions(current)).unwrap_or_default();
             (cell, StandardListCellPaintSnapshot {
+                depth: held.pixels.depth,
                 font: held.font, size: held.size, left: held.left, baseline: held.baseline,
                 clip: held.clip, stop_before: held.stop_before, char_extra: held.char_extra.clone(),
                 space_extra: held.space_extra, bytes: held.bytes.clone(), selected: held.selected,

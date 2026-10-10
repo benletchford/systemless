@@ -4170,3 +4170,24 @@ raster, bytes, selection, scroll anchor, custom definition and reused lifetime.
 The existing GPUI row click test passes with native fallback and retained
 accessibility semantics. These tests do not replace composed list image or
 performance qualification.
+
+The shared Demo selected-list matrix now passes all 16 mono/colour/PPC8/PPC16
+and 0.75/1/1.5/2x combinations, with actual retained backing-paint depth in
+each sidecar. The generic capture path explicitly applies requested PPC depth;
+PPC16 uses the CLI architecture default because its indexed-depth argument
+accepts only 1/2/4/8. Qualified visible regions are erased to magenta before
+composition, so original guest glyphs cannot conceal absent GPUI list paint.
+The first fractional-scale capture exposed row-boundary scissor seams; list
+clips now share the canvas's global device-edge rounding, including centered
+origins. Every erased owned device pixel matches native guest paint. Magenta
+sampling at unowned custom borders is a capture-mask artifact outside that
+comparison, not qualified replacement of those borders.
+
+The lossless archive is `reference/gpui-demo/list-text-shared/review.json` under
+`tests/toolbox-showcase`; original and archived hashes and dirty source hashes
+are retained. All archived cases passed `verify-gpui-list-text.py` again; a
+changed owned pixel and wrong actual-depth record were independently rejected.
+The PPC16 0.75x image was visually reviewed. The production check and example
+build pass. This establishes selected standard-list fixture paint only;
+inactive, scrolling, lifecycle, interaction matrices and release qualification
+remain outstanding.

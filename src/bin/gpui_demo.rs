@@ -1645,9 +1645,21 @@ mod desktop {
                         for painted in &paint.painted_regions {
                             let Some(clip) = clip.intersection(super::frames::Rect::from(*painted)) else { continue; };
                             let Some(ink) = super::text::classic_list_cell(plan.clone(), scene_scale, origin) else { continue; };
+                            // Canvas glyphs and backgrounds snap global edges to
+                            // device pixels. Match those edges for the scissor,
+                            // including centered scenes and half-pixel ties.
+                            let dpi = window.scale_factor();
+                            let snap = |value: f32, origin: f32| {
+                                let device = (origin + value * scene_scale) * dpi;
+                                (device.abs() - 0.5).ceil().copysign(device) / dpi - origin
+                            };
+                            let left = snap(clip.left as f32, self.display_origin.0);
+                            let right = snap(clip.right as f32, self.display_origin.0);
+                            let top = snap(clip.top as f32, self.display_origin.1);
+                            let bottom = snap(clip.bottom as f32, self.display_origin.1);
                             screen = screen.child(div().absolute().overflow_hidden()
-                                .left(guest_px(clip.left as f32)).top(guest_px(clip.top as f32))
-                                .w(guest_px(clip.width() as f32)).h(guest_px(clip.height() as f32)).child(ink));
+                                .left(px(left)).top(px(top))
+                                .w(px(right - left)).h(px(bottom - top)).child(ink));
                         }
                     }
                 }
@@ -3000,10 +3012,14 @@ mod desktop {
         let controls_dragged = matches!(capture, CaptureCase::ControlsDragged);
         let controls_held = matches!(capture, CaptureCase::ControlsHeld);
 
-        let mut session = MacintoshSession::new(true, screen_depth.or(Some(8)));
+        let mut session = MacintoshSession::new(true,
+            if prefer_powerpc { Some(8) } else { screen_depth.or(Some(8)) });
         session
             .runner_mut()
             .set_prefer_powerpc_executables(prefer_powerpc);
+        if prefer_powerpc {
+            session.runner_mut().set_powerpc_screen_depth(screen_depth.unwrap_or(16)).unwrap();
+        }
         let app = session.load_path(game).unwrap();
         session.initialize(&app);
         for _ in 0..300 {
@@ -4098,7 +4114,41 @@ mod desktop {
             .unwrap();
             eprintln!("saved guest frame to {}", guest_output.display());
         }
-        let pixels = gpui_pixels(frame.pixels);
+        let mut source_pixels = frame.pixels;
+        if lists_page {
+            // Remove only visible, qualified ownership from the source texture.
+            // A composed capture must prove the shared renderer supplies these
+            // pixels; application borders and declined cells stay untouched.
+            let viewport = super::frames::Rect { top: 0, left: 0,
+                bottom: frame.height as i32, right: frame.width as i32 };
+            let mut erased_regions = Vec::new();
+            for piece in super::frames::list_pieces(&lists, &controls, &windows, viewport) {
+                let list = &lists[piece.list];
+                for (&cell, _) in &list_text_plans[piece.list] {
+                    let paint = &list.standard_cell_paint[&cell];
+                    for &region in &paint.painted_regions {
+                        let Some(region) = super::frames::Rect::from(region).intersection(piece.clip) else { continue; };
+                        for y in region.top..region.bottom {
+                            for x in region.left..region.right {
+                                let offset = ((y as u32 * frame.width + x as u32) * 4) as usize;
+                                source_pixels[offset..offset + 4].copy_from_slice(&[255, 0, 255, 255]);
+                            }
+                        }
+                        erased_regions.push((piece.list, cell, (region.top, region.left, region.bottom, region.right)));
+                    }
+                }
+            }
+            assert!(!erased_regions.is_empty(), "list capture requires visible GPUI text ownership");
+            std::fs::write(output.with_extension("json"), serde_json::to_vec_pretty(&serde_json::json!({
+                "compositor": "shared Demo renderer", "source_mask": "magenta qualified visible regions",
+                "prefer_powerpc": prefer_powerpc, "requested_depth": screen_depth,
+                "paint_depths": lists.iter().flat_map(|list| list.standard_cell_paint.values()
+                    .map(|paint| paint.depth)).collect::<std::collections::BTreeSet<_>>(),
+                "scale": capture_scale, "guest_tick": session.runner().guest_tick(),
+                "erased_regions": erased_regions,
+            })).unwrap()).unwrap();
+        }
+        let pixels = gpui_pixels(source_pixels);
         let frame_height = frame.height;
         if matches!(capture, CaptureCase::StandardFileSave) {
             image::RgbaImage::from_raw(frame.width, frame_height, pixels)
