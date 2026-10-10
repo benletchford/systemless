@@ -8,7 +8,7 @@ year: 2000
 architectures:
 - 68k
 default_architecture: 68k
-category: Sports
+category: Simulation
 launch_enabled: false
 compatibility:
   status: playable
