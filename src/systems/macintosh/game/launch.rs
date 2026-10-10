@@ -1971,6 +1971,32 @@ fn payload_from_forks(
         return Ok(payload);
     }
 
+    if file_type == *b"APPL" {
+        if let Some(files) = crate::game::smaller_installer::expand(&data, &rsrc)? {
+            let mut payload = Payload {
+                dirs: vec![name.to_string()],
+                files: Vec::new(),
+                volumes: Vec::new(),
+                installer_roots: vec![name.to_string()],
+                skipped_disk_image_errors: Vec::new(),
+            };
+            for file in files {
+                let embedded_name = format!("{name}/{}", file.name);
+                let embedded = payload_from_forks(
+                    &embedded_name,
+                    file.data,
+                    file.rsrc,
+                    file.file_type,
+                    file.creator,
+                    file.finder_flags,
+                    executable_priority,
+                )?;
+                merge_payload(&mut payload, embedded);
+            }
+            return Ok(payload);
+        }
+    }
+
     if let Some(parsed) = crate::game::vise::parse_vise(&data) {
         match parsed {
             Ok(_) => match expand_vise_payload(name, &data, executable_priority, &[]) {
