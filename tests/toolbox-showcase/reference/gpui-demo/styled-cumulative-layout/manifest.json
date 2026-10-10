@@ -21,6 +21,8 @@
     "styled-cumulative-ppc16-scale1_5.png": "b29c84b1cd770f78dfb242bbcec4fd7f040164bc57e7ca32667dcc6ed5bef963",
     "styled-cumulative-ppc16-scale1_5.json": "ea3586728a3a6584578746083404235faca7313b47564bbdba5d8f9618f6f7d9",
     "styled-cumulative-colour68k-scale1.guest.png": "b5a548660cd7852e0b857421a70f7055c2c9be6be79d5ad9f655209a667c124e",
-    "styled-cumulative-ppc8-scale1.png": "114fe2e2f390f67142b85d40a46c043ccfd48be7811b7af3629ddaa72cbc0c82"
-  }
+    "styled-cumulative-ppc8-scale1.png": "114fe2e2f390f67142b85d40a46c043ccfd48be7811b7af3629ddaa72cbc0c82",
+    "styled-cumulative-editing-integration.log": "8bda725d4eee4fe395b41cad3480fd122cb6067c086b721687757f4e90bf6c82"
+  },
+  "editing_followup": "At base 6b3ec0d9, the actual guest multiline selection/replacement/deletion and paint qualification regression passes across all four CPU/depth modes (53.40s); its obsolete overlapping-highlight assertion now checks cumulative adjacency."
 }
