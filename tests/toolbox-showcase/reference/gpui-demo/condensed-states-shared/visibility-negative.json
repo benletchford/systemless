@@ -1,0 +1,10 @@
+{
+  "rejected": [
+    "missing-composed-caret",
+    "caret-leaks-on-suspend",
+    "change-outside-caret",
+    "missing-native-caret",
+    "selection-leaks-on-suspend"
+  ],
+  "scope": "Five deliberate pixel bugs with updated hashes preserve all48 restoration pairs but fail visibility checks. No font oracle is supplied."
+}

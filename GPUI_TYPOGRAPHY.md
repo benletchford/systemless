@@ -83,8 +83,13 @@ frontend. Condensed/extended support has native recipe and smooth-mask tests,
 guest-driven editing checks, and selected two-line composed captures across
 four CPU/display modes at four scales. Native-pixel field crops from all32
 cases were directly reviewed; this scope excludes the field's right edge and
-full scene. GPUI pointer routing, caret/activation matrices, broader editing
-and scrolling, and independent native-font comparison remain unfinished.
+full scene. Actual GPUI pointer routing and typing/backspace pass all32
+condensed/extended CPU/depth/scale scenarios. Each style also completes192
+single-line caret/selection/activation captures:48 restoration pairs and48
+visibility checks pass, with one device pixel allowance around native change
+bounds. Exactly two full composed state images per style were directly
+reviewed. Broader editing and scrolling, physical host input and independent
+native-font comparison remain unfinished.
 
 ## Evidence and completion gate
 
