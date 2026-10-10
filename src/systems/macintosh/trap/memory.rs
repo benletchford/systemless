@@ -10,6 +10,7 @@ use crate::machine_profile::{
     KEYBOARD_ENVIRON_TYPE, REFERENCE_M68K_EXECUTION_CAPABILITIES, REFERENCE_MACHINE_PROFILE,
 };
 use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
+use crate::notification_manager;
 use crate::process_context::{
     ProcessHandleHeap, ProcessNewHandleBackend, ProcessNewHandleRequest, ProcessNewHandleResult,
 };
@@ -646,25 +647,26 @@ impl super::TrapDispatcher {
     }
 
     fn remove_notification_request(&mut self, bus: &mut MacMemoryBus, nm_rec: u32) -> i16 {
-        let Some(index) = self
-            .notification_requests
-            .iter()
-            .position(|&request| request == nm_rec)
-        else {
-            return -1; // qErr
+        let q_type = if nm_rec != 0 {
+            bus.read_word(nm_rec + notification_manager::Q_TYPE_OFFSET)
+        } else {
+            0
         };
-        self.notification_requests.remove(index);
-        bus.write_long(nm_rec, 0);
-        if index > 0 {
-            let previous = self.notification_requests[index - 1];
-            let next = self
-                .notification_requests
-                .get(index)
-                .copied()
-                .unwrap_or(0);
-            bus.write_long(previous, next);
+        match notification_manager::evaluate_nm_remove(
+            nm_rec,
+            q_type,
+            &self.notification_requests,
+        ) {
+            Ok(action) => {
+                self.notification_requests.remove(action.queue_index);
+                bus.write_long(action.clear_link_ptr + notification_manager::Q_LINK_OFFSET, 0);
+                if let Some((previous, next)) = action.update_link {
+                    bus.write_long(previous + notification_manager::Q_LINK_OFFSET, next);
+                }
+                notification_manager::NO_ERR
+            }
+            Err(err) => err,
         }
-        0
     }
 
     fn arm_notification_response<C: CpuOps>(
@@ -678,7 +680,8 @@ impl super::TrapDispatcher {
             return;
         }
 
-        let trampoline = bus.alloc(28);
+        let trampoline =
+            bus.alloc(notification_manager::NOTIFICATION_TRAMPOLINE_SIZE as u32);
         if trampoline == 0 {
             return;
         }
@@ -687,17 +690,14 @@ impl super::TrapDispatcher {
 
         // MyResponse(nmReqPtr) is a Pascal procedure. Reset A7 after the JSR
         // so either RTS or RTD #4 response procedures return safely.
-        bus.write_word(trampoline, 0x48E7); // MOVEM.L D0-D3/A0-A3,-(SP)
-        bus.write_word(trampoline + 2, 0xF0F0);
-        bus.write_word(trampoline + 4, 0x2F3C); // MOVE.L #nmReqPtr,-(SP)
-        bus.write_long(trampoline + 6, nm_rec);
-        bus.write_word(trampoline + 10, 0x4EB9); // JSR abs.L
-        bus.write_long(trampoline + 12, response);
-        bus.write_word(trampoline + 16, 0x2E7C); // MOVEA.L #savedRegsSP,A7
-        bus.write_long(trampoline + 18, saved_regs_sp);
-        bus.write_word(trampoline + 22, 0x4CDF); // MOVEM.L (SP)+,D0-D3/A0-A3
-        bus.write_word(trampoline + 24, 0x0F0F);
-        bus.write_word(trampoline + 26, 0x4E75); // RTS
+        let code = notification_manager::build_68k_notification_response_trampoline(
+            nm_rec,
+            response,
+            saved_regs_sp,
+        );
+        for (offset, &byte) in code.iter().enumerate() {
+            bus.write_byte(trampoline + offset as u32, byte);
+        }
 
         bus.write_long(return_slot, cpu.read_reg(Register::PC));
         cpu.write_reg(Register::A7, return_slot);
@@ -710,27 +710,46 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         nm_rec: u32,
     ) -> i16 {
-        if nm_rec == 0 || bus.read_word(nm_rec + 4) != 8 {
-            return -299; // nmTypErr
-        }
-        if self.notification_requests.contains(&nm_rec) {
-            return 0;
-        }
-
-        if let Some(&tail) = self.notification_requests.last() {
-            bus.write_long(tail, nm_rec);
-        }
-        bus.write_long(nm_rec, 0);
-        self.notification_requests.push(nm_rec);
-
-        match bus.read_long(nm_rec + 28) {
-            u32::MAX => {
-                self.remove_notification_request(bus, nm_rec);
+        let q_type = if nm_rec != 0 {
+            bus.read_word(nm_rec + notification_manager::Q_TYPE_OFFSET)
+        } else {
+            0
+        };
+        let nm_resp = if nm_rec != 0 {
+            bus.read_long(nm_rec + notification_manager::NM_RESP_OFFSET)
+        } else {
+            0
+        };
+        match notification_manager::evaluate_nm_install(
+            nm_rec,
+            q_type,
+            &self.notification_requests,
+            nm_resp,
+        ) {
+            Ok(action) => {
+                match action {
+                    notification_manager::NmInstallAction::AlreadyPresent => {}
+                    notification_manager::NmInstallAction::AutoRemoved => {
+                        bus.write_long(nm_rec + notification_manager::Q_LINK_OFFSET, 0);
+                    }
+                    notification_manager::NmInstallAction::Enqueued {
+                        previous_tail,
+                        arm_response,
+                    } => {
+                        if let Some(tail) = previous_tail {
+                            bus.write_long(tail + notification_manager::Q_LINK_OFFSET, nm_rec);
+                        }
+                        bus.write_long(nm_rec + notification_manager::Q_LINK_OFFSET, 0);
+                        self.notification_requests.push(nm_rec);
+                        if let Some(response) = arm_response {
+                            self.arm_notification_response(cpu, bus, nm_rec, response);
+                        }
+                    }
+                }
+                notification_manager::NO_ERR
             }
-            0 => {}
-            response => self.arm_notification_response(cpu, bus, nm_rec, response),
+            Err(err) => err,
         }
-        0
     }
 
     fn install_vbl_task(
@@ -3745,11 +3764,7 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume VI (1991), pp. 24-10 to 24-11.
             (false, 0x5F) => {
                 let nm_rec = cpu.read_reg(Register::A0);
-                let result = if nm_rec == 0 || bus.read_word(nm_rec + 4) != 8 {
-                    -299 // nmTypErr
-                } else {
-                    self.remove_notification_request(bus, nm_rec)
-                };
+                let result = self.remove_notification_request(bus, nm_rec);
                 cpu.write_reg(Register::D0, result as u16 as u32);
                 Ok(())
             }
