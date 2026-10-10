@@ -14,9 +14,11 @@ parser.add_argument('output',type=pathlib.Path)
 parser.add_argument('--multiline', action='store_true', help='capture the 16-case selected two-line matrix')
 parser.add_argument('--smooth-review', action='store_true', help='record smooth coverage/state evidence without the binary ink oracle')
 parser.add_argument('--spacing', choices=['normal','condensed','extended','both'], default='normal', help='guest Option-key spacing style before capture')
+parser.add_argument('--halo', choices=['normal','underlined-outline','underlined-shadow','underlined-both','everything'], default='normal', help='guest Option-key underline/halo style before capture')
 parser.add_argument('--binary', type=pathlib.Path, help='explicit gpui-menu-demo build artifact; defaults to target/debug/examples/gpui-menu-demo')
 args=parser.parse_args()
 if args.spacing != 'normal' and not args.smooth_review:parser.error('spacing style capture requires --smooth-review; the binary ink oracle is not qualified for these styles')
+if args.halo != 'normal' and not args.smooth_review:parser.error('halo style capture requires --smooth-review; the binary ink oracle is not qualified for these styles')
 root=pathlib.Path(__file__).resolve().parents[2];out=args.output.resolve()
 if out.exists() and any(out.iterdir()):parser.error('use a fresh output directory; do not restart a live capture job')
 out.mkdir(parents=True,exist_ok=True)
@@ -45,6 +47,7 @@ manifest['source_sha256']=source_hashes
 manifest['runtime_cpu_evidence']='active application runtime'
 manifest['smooth_review']=args.smooth_review
 manifest['spacing_style']=args.spacing
+manifest['halo_style']=args.halo
 if args.smooth_review:manifest['scope']='Shared smooth field preflight, native guest state and geometry; requires explicit composed visual review. No binary ink oracle, all font fidelity, physical host input, production performance or release claim.'
 configs=[('inactive','inactive',None,'--capture-styled-text-edit-ink'),*[( 'selection',state,None,flag) for state,flag in [('selected','--capture-styled-text-edit-selected'),('suspended','--capture-styled-text-edit-selected-suspended'),('resumed','--capture-styled-text-edit-selected-resumed')]],*[( 'caret',state,offset,'--capture-styled-text-edit-caret') for offset in [0,26] for state in ['visible','blink-off','suspended','resumed']]]
 if args.multiline: configs=[('multiline','selected',None,'--capture-styled-text-edit-multiline')]
@@ -55,7 +58,7 @@ for mode,depth,flags in [('ppc16',16,['--prefer-powerpc']),('ppc8',8,['--prefer-
    check_pins()
    name=f'{kind}-{mode}-{state}-{offset if offset is not None else "none"}-{scale}'
    path=out/(name+'.png');cmd=[str(binary),str(root/manifest['fixture']),*flags,'--capture-scale',str(scale),flag,str(path)]
-   cmd+=['--capture-styled-spacing',args.spacing]
+   cmd+=['--capture-styled-spacing',args.spacing,'--capture-styled-halo',args.halo]
    if kind=='caret':cmd+=['--capture-styled-caret-offset',str(offset),'--capture-styled-caret-state',state]
    result=subprocess.run(cmd,capture_output=True,text=True)
    if result.returncode:

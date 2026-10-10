@@ -732,5 +732,8 @@ colour, text and selection. Option-A requests all five basic effects. For
 manual shared-compositor probes, use `--capture-styled-halo` with
 `underlined-outline`, `underlined-shadow`, `underlined-both` or `everything`.
 The default `normal` performs no halo mutation. Guest line metrics may change
-with effects and are retained from the new snapshot. The styled matrix driver
-does not yet expose this option; full halo matrices remain unfinished.
+with effects and are retained from the new snapshot. The styled matrix driver accepts `--halo` with the same values, together
+with `--smooth-review`. It records the policy and explicit capture command;
+the provenance verifier checks actual guest face bits, including preserved
+spacing bits. Non-normal halo requests reject the unqualified binary oracle
+before output creation. Full halo matrices remain unfinished.
