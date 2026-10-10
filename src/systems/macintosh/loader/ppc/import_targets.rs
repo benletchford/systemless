@@ -672,6 +672,7 @@ pub enum PpcImportDispatcherTarget {
     TEGetPoint,
     TEScroll { pinned: bool },
     TEAutoView,
+    TESelView,
     TEFeatureFlag,
     TECopy { cut: bool, dialog: bool },
     TEPaste { dialog: bool },
@@ -3942,6 +3943,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "TEScroll") => PpcImportDispatcherTarget::TEScroll { pinned: false },
         ("InterfaceLib", "TEPinScroll") => PpcImportDispatcherTarget::TEScroll { pinned: true },
         ("InterfaceLib", "TEAutoView") => PpcImportDispatcherTarget::TEAutoView,
+        ("InterfaceLib", "TESelView") => PpcImportDispatcherTarget::TESelView,
         ("InterfaceLib", "TEFeatureFlag") => PpcImportDispatcherTarget::TEFeatureFlag,
         ("InterfaceLib", "TECopy") => PpcImportDispatcherTarget::TECopy {
             cut: false,

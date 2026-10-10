@@ -1876,6 +1876,39 @@ pub(super) fn ppc_te_get_point(
     (u32::from(v as u16) << 16) | u32::from(h as u16)
 }
 
+/// Inside Macintosh: Text (1993), p. 2-92: reveal the selection's
+/// top-left when it exceeds the view; leave feature policy to the caller.
+pub(super) fn ppc_te_selection_scroll_delta(
+    memory: &mut PpcSectionMem, handles: &[PpcHandleRecord], te_handle: u32,
+) -> Option<(i16, i16)> {
+    fn delta(start: i16, stop: i16, view_start: i16, view_stop: i16) -> i16 {
+        if start < view_start { view_start.saturating_sub(start) }
+        else if stop > view_stop {
+            if stop.saturating_sub(start) > view_stop.saturating_sub(view_start) {
+                view_start.saturating_sub(start)
+            } else { view_stop.saturating_sub(stop) }
+        } else { 0 }
+    }
+    let ptr = ppc_te_record_ptr(memory, te_handle)?;
+    let view = ppc_read_rect(memory, ptr + PPC_TE_VIEW_RECT_OFFSET)?;
+    let start = memory.read_u16_be(ptr + PPC_TE_SEL_START_OFFSET)?;
+    let end = memory.read_u16_be(ptr + PPC_TE_SEL_END_OFFSET)?;
+    let first = ppc_te_get_point(memory, handles, te_handle, start);
+    let last = ppc_te_get_point(memory, handles, te_handle, end);
+    let count = usize::from(memory.read_u16_be(ptr + PPC_TE_N_LINES_OFFSET)?);
+    let mut line = 0;
+    for candidate in 1..count {
+        if memory.read_u16_be(ptr + PPC_TE_LINE_STARTS_OFFSET + candidate as u32 * 2)? <= end {
+            line = candidate;
+        } else { break; }
+    }
+    let (_, _, fallback_height, _) = ppc_te_metrics(memory, ptr);
+    let height = ppc_te_line_height(memory, ptr, line);
+    let height = if height > 0 { height } else { fallback_height };
+    Some((delta(first as u16 as i16, last as u16 as i16, view.1, view.3),
+        delta((first >> 16) as i16, ((last >> 16) as i16).saturating_add(height), view.0, view.2)))
+}
+
 /// Moves destRect by (dh, dv), pinned to the text when requested. Returns
 /// whether destRect actually moved.
 pub(super) fn ppc_te_scroll(memory: &mut PpcSectionMem, te_handle: u32, dh: i16, dv: i16, pinned: bool) -> bool {

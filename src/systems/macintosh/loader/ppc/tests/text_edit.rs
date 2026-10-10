@@ -1257,3 +1257,87 @@ fn styled_snapshot_advances_match_ppc_quickdraw_widths() {
         }
     }
 }
+
+#[test]
+fn te_sel_view_respects_auto_scroll_and_reveals_selection() {
+    let pef = synthetic_pef_with_import(b"TESelView");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let dest_rect = scratch;
+    let view_rect = scratch + 8;
+    loaded.memory.add_region(scratch, vec![0; 0x20]);
+    ppc_write_rect(&mut loaded.memory, dest_rect, 60, 10, 200, 100).unwrap();
+    ppc_write_rect(&mut loaded.memory, view_rect, 60, 10, 120, 100).unwrap();
+    loaded.quickdraw_fore_indices.insert(PPC_MAIN_GWORLD, 103);
+    let mut last_mem_error = PPC_NO_ERR;
+    let te_handle = ppc_te_initialize_record(
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+        dest_rect,
+        view_rect,
+        PPC_MAIN_GWORLD,
+        0,
+        PPC_QD_TEXT_MODE_SRC_OR,
+        12,
+        loaded.quickdraw_fore_color,
+        false,
+    );
+    assert_eq!(
+        ppc_te_set_text(
+            None,
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            &mut last_mem_error,
+            test_handles!(loaded),
+            te_handle,
+            b"0\r0\r0\r0\r0\r0\r0\r0",
+        ),
+        PPC_NO_ERR
+    );
+    let ptr = ppc_te_record_ptr(&mut loaded.memory, te_handle).unwrap();
+    loaded.memory.write_u16_be(ptr + PPC_TE_SEL_START_OFFSET, 14).unwrap();
+    loaded.memory.write_u16_be(ptr + PPC_TE_SEL_END_OFFSET, 14).unwrap();
+    let before = ppc_read_rect(&mut loaded.memory, ptr + PPC_TE_DEST_RECT_OFFSET).unwrap();
+    loaded.cpu.gpr[3] = te_handle;
+    // Exercise the actual imported symbol, not only the geometry helper.
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(ppc_read_rect(&mut loaded.memory, ptr + PPC_TE_DEST_RECT_OFFSET), Some(before));
+    loaded.cpu.gpr[3] = 1;
+    loaded.cpu.gpr[4] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEAutoView);
+    loaded.cpu.gpr[3] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESelView);
+    let after = ppc_read_rect(&mut loaded.memory, ptr + PPC_TE_DEST_RECT_OFFSET).unwrap();
+    assert!(after.0 < before.0, "last-line selection must move into the view");
+    assert_eq!(after.2 - after.0, before.2 - before.0);
+    let point = ppc_te_get_point(&mut loaded.memory, test_handles!(loaded), te_handle, 14);
+    let top = (point >> 16) as i16;
+    let height = ppc_te_line_height(&mut loaded.memory, ptr, 7);
+    assert!(top >= 60 && top.saturating_add(height) <= 120);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let pixels = |memory: &mut PpcSectionMem| {
+        let mut result = Vec::new();
+        for y in 60..120 {
+            for x in 10..100 { result.push(ppc_quickdraw_read_pixel(memory, front, (x, y))); }
+        }
+        result
+    };
+    let painted = pixels(&mut loaded.memory);
+    loaded.cpu.gpr[3] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESelView);
+    assert_eq!(pixels(&mut loaded.memory), painted, "visible selection must not repaint existing ink");
+    assert_eq!(ppc_read_rect(&mut loaded.memory, ptr + PPC_TE_DEST_RECT_OFFSET), Some(after),
+        "already visible selection must not keep scrolling");
+    loaded.memory.write_u16_be(ptr + PPC_TE_SEL_START_OFFSET, 0).unwrap();
+    loaded.memory.write_u16_be(ptr + PPC_TE_SEL_END_OFFSET, 0).unwrap();
+    loaded.cpu.gpr[3] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESelView);
+    assert_eq!(ppc_read_rect(&mut loaded.memory, ptr + PPC_TE_DEST_RECT_OFFSET), Some(before),
+        "revealing the first line must restore the original scroll origin");
+}

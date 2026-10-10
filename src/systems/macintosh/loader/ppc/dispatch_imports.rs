@@ -1502,6 +1502,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::TEGetHeight
         | PpcImportDispatcherTarget::TEGetPoint
         | PpcImportDispatcherTarget::TEScroll { .. }
+        | PpcImportDispatcherTarget::TESelView
         | PpcImportDispatcherTarget::TEAutoView
         | PpcImportDispatcherTarget::TEFeatureFlag
         | PpcImportDispatcherTarget::TECopy { .. }

@@ -1,0 +1,15 @@
+{
+  "base": "c4a34f8ede8be533eb6285a44a747ad270fe0281",
+  "results": {
+    "new_regression": "PASS .01s after final-source rebuild",
+    "ppc_textedit": "21 passed .46s"
+  },
+  "reference": "https://dev.os9.ca/techpubs/mac/pdf/Text/TextEdit.pdf (Apple Inside Macintosh: Text, TESelView p2-92)",
+  "scope": "Synthetic actual imported PPC TESelView resolves, disabled feature leaves origin unchanged, enabled plain selection reveals last line, repeated visible request retains pixels/origin, first-line reveal restores origin. Existing PPC TextEdit integration passes.",
+  "limits": "No new guest fixture compositor scrolling capture, physical input or independent Macintosh oracle. Styled variable-height selection reveal remains unqualified; existing PPC point and paint line-stacking policies need reconciliation.",
+  "sha256": {
+    "source.patch": "4cd3235e2a0ec5aa89f05bd94157d7edb940024ca52bde92f8687cca8f922227",
+    "teselview-final-regression.log": "0f8a34f8916fd609cab66e806720908bd65eb70f4c3d8459632217dd395fef12",
+    "teselview-ppc-textedit-integration.log": "e74b41568b9db649928f80ddb3d86c44d007adc387eeb4f9e2283b3f29e66427"
+  }
+}
