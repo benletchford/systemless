@@ -807,3 +807,77 @@ Testing exposed the shared Down-arrow preset's keypad-5 mapping, while Moria
 uses keypad 2 for south. The catalogue provides its own Down-arrow mapping;
 the rebuilt preview confirms normal Left and Down input visibly move the player
 west and south.
+
+## Ingemar's Skiing Game original freeware intake
+
+Target slot 579 uses the [original author's ISG-103.hqx](https://ftp.lysator.liu.se/pub/mac/games/ISG-103.hqx),
+309448 bytes, SHA-256 `baefe3381b5dc05b929c70b59b2189959213dbea07310560b3feb193750d495c`.
+The complete original includes game, optional launcher, Read me first and Easy courses.
+Original main TEXT 128 explicitly permits free distribution when charges do not
+exceed distribution costs; the [author's news](https://www.lysator.liu.se/~ingemar/games/news.html)
+also lifts distribution restrictions on ISG. The original application and Read me
+first dates are August 2000; the optional launcher notice is copyright 2000.
+This identifies the complete 1.0.3 freeware release, rather than the earlier
+restricted shareware builds. All original forks and notices remain in the untouched
+BinHex/StuffIt package. The independent intake download matches hash and size.
+
+Main executable `Ingemar's skiing game 1.0.3.cpt/Ingemar's Skiing Game 1.0.3 ƒ/Ingemar's skiing game 1.0.3` has
+eight CODE resources and no PPC cfrg. The optional launcher also has only CODE.
+Native source `1f9b99bc8afa3013ccbe7e99c84b460346bb58dc`, actual binary v0.92.0,
+starts Practice 1 through the original Game menu and ordinary mouse click. Inspected
+captures show left/right mouse steering, an advancing course and timer. A fresh
+repeat passes six measured pixel assertions at 1138 frontend / 1714 guest ticks
+with zero exhausted budgets. The unedited native gameplay screenshot contains
+only the guest game and desktop. Browser/public qualification, complete courses,
+cups, editor, saves and audio remain pending. [Tracking issue #4444](https://github.com/benletchford/systemless/issues/4444).
+
+## MacSokoban original-author intake
+
+Target slot 81's [original-author MacSokoban-303.hqx](https://ftp.lysator.liu.se/pub/mac/games/MacSokoban-303.hqx)
+is 175992 bytes, SHA-256 `52eb209006f22e4ecc81fe2cb6acaec37b6b9890eec1900e5facff1c39a246c8`.
+Original TEXT 0 grants personal use and noncommercial distribution, while an
+older retained about-screen graphic says Shareware Authors Inc. has exclusive
+CD-ROM and other high-capacity-media distribution rights. The author news's
+explicit unrestricted-distribution announcement applies to Bachman, Bert and ISG;
+it does not name MacSokoban. Applicability of the conflicting retained notices to
+this intact 3.0.3 package remains unresolved; no hosting grant is inferred solely
+from the freeware label. Keep the archive unhosted while clarifying this evidence.
+
+The original main has four CODE resources and no PPC cfrg. Native source
+`1f9b99bc8afa3013ccbe7e99c84b460346bb58dc` starts the original board at 600 frontend
+ticks with zero exhausted budgets and zero assertions; its actual capture was
+inspected. No player creation, movement, puzzle completion or browser qualification
+is claimed. Archives, extracted forks and scenarios remain outside Git.
+
+The first skiing browser preview exposed a missing outer Compact Pro path prefix
+in the preferred-executable setting. Production decoding identifies all four
+original files under the original `Ingemar's skiing game 1.0.3.cpt` container.
+The entry now uses that complete path. The earlier native environment override
+could fall back to normal application selection; its visible race remains valid,
+but browser launch is not qualified by that run. The complete-path native replay again passes
+all six measured assertions at 1138 frontend ticks, with the actual left/right
+race captures inspected. The rebuilt v0.92.2 ordinary Chrome worker/WebGL preview at source
+`9bbeb477e4ff244c4370be5d40fe816fd979eeb2` also passes original practice
+start and a fresh right-then-left mouse steering replay, with timer and course
+advancement visible in inspected captures. All four original files and both
+forks match independent unar extraction byte-for-byte. Local preview CORS
+requires an exact unchanged, independently hash-verified R2 archive fixture;
+no archive or guest state is patched. Launch is enabled after this qualification;
+actual public-route gameplay remains pending after the normal release.
+
+### Moria released public follow-through
+
+The [actual public route](https://systemless.org/moria/) is independently verified
+at v0.93.0, source `fec43f23c31b130cf7fafbb62b4571df48504320`, after merged
+[catalogue #4442](https://github.com/benletchford/systemless/pull/4442) and
+[release #4443](https://github.com/benletchford/systemless/pull/4443). Ordinary
+Chrome worker/WebGL input creates a character, moves in all four town directions,
+descends to 50 feet and moves west/north in the dungeon. Actual public R2 HTTP 200
+response bytes match the original archive hash and 290684-byte size, with no
+fixture or interception. [Public evidence](https://github.com/benletchford/systemless/issues/4441#issuecomment-6102008369).
+The complete [v0.93.0 release run](https://github.com/benletchford/systemless/actions/runs/38084330409)
+passed, including website deployment and all six native platforms. Independent
+release inventory confirms all twelve nonempty platform archives/checksums.
+[Final pipeline evidence](https://github.com/benletchford/systemless/issues/4441#issuecomment-6102041775)
+closes the fulfilled intake issue. Combat, sustained play, saves and audio remain
+unverified.
