@@ -1,0 +1,107 @@
+diff --git a/src/bin/gpui_demo.rs b/src/bin/gpui_demo.rs
+index 8510db01..2cc6f381 100644
+--- a/src/bin/gpui_demo.rs
++++ b/src/bin/gpui_demo.rs
+@@ -8926,17 +8926,23 @@ mod desktop {
+         #[cfg(feature = "gpui-demo-test")]
+         #[gpui_kit::test]
+         fn styled_document_glyph_clicks_reach_guest_at_centered_scene_scales(cx: &mut gpui_kit::TestAppContext) {
+-            check_styled_document_pointer_spacing(cx, 0);
++            check_styled_document_pointer_style(cx, 0, 0);
+         }
+ 
+         #[cfg(feature = "gpui-demo-test")]
+         #[gpui_kit::test]
+         fn spaced_styled_document_glyph_clicks_reach_guest_at_centered_scene_scales(cx: &mut gpui_kit::TestAppContext) {
+-            for spacing in [32, 64] { check_styled_document_pointer_spacing(cx, spacing); }
++            for spacing in [32, 64] { check_styled_document_pointer_style(cx, spacing, 0); }
+         }
+ 
+         #[cfg(feature = "gpui-demo-test")]
+-        fn check_styled_document_pointer_spacing(cx: &mut gpui_kit::TestAppContext, spacing: u8) {
++        #[gpui_kit::test]
++        fn halo_styled_document_glyph_clicks_and_editing_reach_guest_at_centered_scene_scales(cx: &mut gpui_kit::TestAppContext) {
++            for halo in [12, 20, 28, 31] { check_styled_document_pointer_style(cx, 0, halo); }
++        }
++
++        #[cfg(feature = "gpui-demo-test")]
++        fn check_styled_document_pointer_style(cx: &mut gpui_kit::TestAppContext, spacing: u8, halo: u8) {
+             use gpui_kit::{test::TestWindowExt, AppContext, InputEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent};
+             cx.update(gpui_kit::init);
+             for (powerpc, depth, ppc_depth) in [(false, Some(1), None), (false, Some(8), None), (true, None, Some(16)), (true, None, Some(8))] {
+@@ -8953,14 +8959,21 @@ mod desktop {
+                 assert_eq!(session.runner().is_powerpc_app(), powerpc, "pointer test must execute the requested CPU");
+                 let actual_depth = session.runner().presented_screen_depth().expect("presented guest screen");
+                 assert_eq!(actual_depth, u32::from(ppc_depth.or(depth).unwrap()));
+-                if spacing != 0 {
++                if spacing != 0 || halo != 0 {
+                     let before = session.runner_mut().text_edit_snapshot().records.into_iter()
+                         .find(|record| record.styled).unwrap();
+                     let mut expected = before.style_runs.clone().unwrap();
+-                    for run in &mut expected { run.face = (run.face & !96) | spacing; }
+-                    let (mac_key, character) = match spacing {
+-                        32 => (0x08, b'c'), 64 => (0x0e, b'e'), _ => unreachable!(),
++                    let (mask, bits, mac_key, character) = if halo != 0 {
++                        assert_eq!(spacing, 0);
++                        match halo {
++                            12 => (28, 12, 0x1f, b'o'), 20 => (28, 20, 0x01, b's'),
++                            28 => (28, 28, 0x04, b'h'), 31 => (31, 31, 0x00, b'a'),
++                            _ => unreachable!(),
++                        }
++                    } else {
++                        match spacing { 32 => (96, 32, 0x08, b'c'), 64 => (96, 64, 0x0e, b'e'), _ => unreachable!() }
+                     };
++                    for run in &mut expected { run.face = (run.face & !mask) | bits; }
+                     for input in [
+                         MacintoshInput::KeyDown { mac_key: 0x3a, character: 0 },
+                         MacintoshInput::KeyDown { mac_key, character },
+@@ -8971,10 +8984,17 @@ mod desktop {
+                         session.runner_mut().run_steps(10_000, None);
+                         let settled = session.runner().event_manager_snapshot().last_record
+                             .is_some_and(|event| event.what == 0);
+-                        session.runner_mut().text_edit_snapshot().records.into_iter().find(|record|
+-                            settled && record.guest_id == before.guest_id && record.drawing_intact
+-                                && record.style_runs.as_ref() == Some(&expected))
+-                    }).expect("guest spacing change must settle before GPUI pointer interaction");
++                        session.runner_mut().text_edit_snapshot().records.into_iter().find(|record| {
++                            let mut styles = record.style_runs.clone().unwrap_or_default();
++                            if styles.len() != expected.len() { return false; }
++                            if halo != 0 {
++                                for (style, original) in styles.iter_mut().zip(&expected) {
++                                    style.line_height = original.line_height; style.ascent = original.ascent;
++                                }
++                            }
++                            settled && record.guest_id == before.guest_id && record.drawing_intact && styles == expected
++                        })
++                    }).expect("guest style change must settle before GPUI pointer interaction");
+                     assert_eq!(changed.text, before.text);
+                     assert_eq!((changed.generation, changed.owner_port, changed.selection),
+                         (before.generation, before.owner_port, before.selection));
+@@ -9078,7 +9098,7 @@ mod desktop {
+                         let expected_end = starts[line_index] + drag_end.unwrap_or(offset) + usize::from(narrow_boundary);
+                         assert_eq!(clicked.selection, (expected, expected_end),
+                             "PPC={powerpc}, depth={depth:?}, scale={scale}, line={line_index}, drag_end={drag_end:?}");
+-                        if spacing != 0 && offset == 20 && drag_end.is_none() {
++                        if (spacing != 0 || halo != 0) && offset == 20 && drag_end.is_none() {
+                             let before = clicked.clone();
+                             let mut inserted = before.text.clone();
+                             inserted.insert(expected, b'q');
+@@ -9113,7 +9133,8 @@ mod desktop {
+                                 assert_eq!(edited.selection, (selection, selection));
+                                 assert_eq!((edited.generation, edited.owner_port, edited.dest_rect, edited.view_rect),
+                                     (before.generation, before.owner_port, before.dest_rect, before.view_rect));
+-                                assert!(edited.style_runs.as_ref().unwrap().iter().all(|run| run.face & 96 == spacing));
++                                assert!(edited.style_runs.as_ref().unwrap().iter().all(|run|
++                                    run.face & 96 == spacing && (halo == 0 || run.face & (if halo == 31 { 31 } else { 28 }) == halo)));
+                                 if key == "backspace" { assert_eq!(edited.style_runs, before.style_runs); }
+                                 let frame = session.video_frame().unwrap();
+                                 let plans = super::qualify_styled_text_fields(&records, &frame.pixels, frame.width, frame.height);
+@@ -9135,7 +9156,7 @@ mod desktop {
+                             }
+                         }
+                     }
+-                    eprintln!("PASS styled spacing={spacing} runtime_powerpc={powerpc} depth={actual_depth} scale={scale}");
++                    eprintln!("PASS styled spacing={spacing} halo={halo} runtime_powerpc={powerpc} depth={actual_depth} scale={scale}");
+                 }
+             }
+         }
