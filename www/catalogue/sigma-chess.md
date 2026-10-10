@@ -29,6 +29,19 @@ compatibility:
       ticks with zero budget exhaustion. Browser, complete matches, sustained search, other modes,
       auxiliary generators, saving and audio remain unverified.
     evidence: https://github.com/benletchford/systemless/issues/4418
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: 5e82d0a34a7527fe7a4ef75b4f9bf37ab92dc1d2
+    architecture: 68k
+    status: playable
+    environment: >-
+      Optimized local release preview in ordinary Chrome with isolated worker
+      and WebGL. Original archive bytes supplied to the preview request after
+      independent SHA-256 and size verification. Drag e2-e4 and d2-d4;
+      computer replies e7-e6 and d7-d5 and records both turns. Per-step
+      captures inspected. Public route, complete matches, sustained search,
+      other modes, auxiliary generators, saving and audio remain unverified.
+    evidence: https://github.com/benletchford/systemless/issues/4418
 runtime:
   executable_path: Sigma Chess Lite 4.0/∑ Chess 4.0 Lite
   show_menu_bar: true
@@ -38,7 +51,7 @@ artifacts:
   format: sit
   source:
     type: url
-    url: https://www.vintageapplemac.com/files/games/Sigma%20Chess%20Lite%204.0.sit
+    url: https://github.com/benletchford/systemless/releases/download/catalogue-intake-20261010/sigma-chess-lite-40.sit
     expected_sha256: 1ec34342042511ef0accdaea957eeb174ba0b2955d7ea53c8ab3113d110bc11a
     expected_size: 925961
   provenance:
@@ -90,7 +103,8 @@ five minutes per player. **Analyze → Stop** interrupts a search and plays the
 best move found. Use **File → New Game** when it is your turn to start again.
 
 Bounded native verification covers **e2–e4**, **d2–d4**, and the computer replies
-**e7–e6**, **d7–d5** with the move record updated. Browser qualification is pending.
+**e7–e6**, **d7–d5** with the move record updated. Optimized browser verification also passes both player moves and computer replies.
+Public release verification is pending.
 Complete matches, sustained search, other modes, saving and audio remain
 unverified. The original Lite edition retains its feature limits, including
 unsavable libraries and limited transposition tables.
@@ -98,4 +112,3 @@ unsavable libraries and limited transposition tables.
 This original main game is **68K only**. The included PPC endgame generators
 are auxiliary tools and are not counted as a second game or a PPC game port.
 The complete original archive retains all 164 files and distribution notices.
-The separate 5.1.3 shareware installer remains under compatibility investigation.

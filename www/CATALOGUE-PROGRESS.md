@@ -455,7 +455,7 @@ Stages: **rights** = applicable affirmative archive redistribution terms; **arch
 | 429 | Project Magellan | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 430 | Quidditch Practice | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 431 | R.I.P | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 432 | Sigma Chess | Lite 4.0 original-form distribution grant; 5.1.3 installed terms pending | [Two exact archives; 164-file Lite package](https://github.com/benletchford/systemless/issues/4418) | Lite 4.0 legal e2-e4 and computer e7-e6; 5.1.3 installer resource-hook gap | Lite game has CODE, no PPC slice; PPC generators are auxiliary | Pending | Pending | Pending |
+| 432 | Sigma Chess | Lite 4.0 original-form distribution grant; 5.1.3 installed terms pending | [Two exact archives; 164-file Lite package](https://github.com/benletchford/systemless/issues/4418) | Lite 4.0 two legal moves, computer replies, four measured assertions; 5.1.3 installer resource-hook gap | Lite game has CODE, no PPC slice; PPC generators are auxiliary | Optimized Chrome passes both player moves and replies | [Catalogue #4419](https://github.com/benletchford/systemless/pull/4419); first promotion source HTTP 403, intact intake staged | Pending |
 | 433 | TakeAway | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 434 | Unprovoked | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 435 | Vampire Chess | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
