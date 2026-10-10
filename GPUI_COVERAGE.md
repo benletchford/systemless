@@ -4191,3 +4191,22 @@ The PPC16 0.75x image was visually reviewed. The production check and example
 build pass. This establishes selected standard-list fixture paint only;
 inactive, scrolling, lifecycle, interaction matrices and release qualification
 remain outstanding.
+
+The shared Demo list transition matrix completed 48/48 combinations: all four
+CPU/display modes and scales, with guest-button scrolling, LActivate(false)
+and LActivate(true) after deactivation. Captures assert retained row-7 selection,
+first visible row 4 after scrolling, actual backing paint depth, active state
+and stable list lifetime metadata. Every erased owned device pixel matches the
+native frame. This is guest-button/session fixture state and composed paint
+evidence; it does not independently prove GPUI click targets, native host
+activation observation or general list lifecycle behavior.
+
+Reusable list capture, matrix verification and lossless archival scripts are
+documented in `tests/toolbox-showcase/README.md`. The matrix verifier rejects
+missing/duplicate combinations, changed file hashes and incorrect depth; the
+pixel verifier rejects changed active, selection and scroll metadata. The
+archive tool passed a complete selected-matrix round trip. Monochrome scrolled
+custom black panels were reviewed against their native source and retained.
+Typography remains the canonical guest glyph canvas pending the user's explicit
+smooth-versus-bitmap presentation preference; pixel equality is evidence for
+this bitmap path, not a qualification of future host typography.

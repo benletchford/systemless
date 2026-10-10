@@ -19,6 +19,15 @@ def verify(path):
     if expected_depth is None:
         expected_depth = 16 if evidence['prefer_powerpc'] else 8
     assert evidence['paint_depths'] == [expected_depth], 'actual paint depth differs'
+    transition = evidence.get('transition', 'none')
+    if transition != 'none':
+        states = evidence['list_state']
+        assert len(states) == 1, 'transition fixture must retain one list'
+        state = states[0]
+        assert state['generation'] > 0 and state['id'] > 0
+        assert state['selected'] == [[7, 0]], 'transition lost guest selection'
+        assert state['active'] == (transition != 'inactive')
+        assert state['visible'][0] == (4 if transition == 'scrolled' else 0)
     regions = evidence['erased_regions']
     assert regions, 'capture has no GPUI ownership'
     with Image.open(path) as image:

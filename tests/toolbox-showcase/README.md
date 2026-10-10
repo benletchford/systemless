@@ -623,3 +623,46 @@ SYSTEMLESS_PREFER_POWERPC=1 SYSTEMLESS_UPDATE_TOOLBOX_REFERENCES=1 cargo test --
 On the Popup & Dropdown Lists page, press `d` to disable both popup controls
 through guest `HiliteControl`, or `e` to re-enable them. These keys preserve
 the selected values and exercise disabled CDEF drawing and hit testing.
+
+## GPUI standard-list paint qualification
+
+The list capture path uses the same `Demo` compositor as the desktop frontend.
+It erases qualified visible standard-cell paint to magenta in the source image
+before composition. The `.guest.png` retains the original native frame, and
+the JSON sidecar records the exact erased regions and actual backing-paint
+depth. Application borders, custom drawing and declined cells remain native.
+Magenta sampling at unowned boundaries is outside the owned-pixel comparison.
+
+Build the example, commit the source, and use a fresh output directory:
+
+```sh
+cargo build --locked --example gpui-menu-demo --features gpui-demo-test
+python3 tests/toolbox-showcase/capture-gpui-list-matrix.py /tmp/list-transitions
+python3 tests/toolbox-showcase/verify-gpui-list-matrix.py /tmp/list-transitions/progress.json
+python3 tests/toolbox-showcase/archive-gpui-list-matrix.py /tmp/list-transitions/progress.json /tmp/list-transitions-archive
+```
+
+The default matrix covers 48 cases: monochrome/colour 68k and PPC8/PPC16,
+four scene scales, and scrolled/inactive/reactivated list states. Add
+`--selected` to capture the 16 selected-state cases instead. Each transition
+clicks a guest fixture button through session input. Guest selection must
+survive; the visible first row must become 4 after scrolling, and the active
+flag must match the requested activation state. The matrix verifier requires
+every combination exactly once, checks file hashes and sidecar state, and
+compares every owned device pixel with the native frame using the canvas's
+device-edge rounding. The capture script pins source, fixture and binary
+hashes; do not rebuild the example or edit pinned files during its run.
+
+For an individual fractional-scale PPC16 transition capture, omit the indexed
+depth argument to use the PPC16 architecture default:
+
+```sh
+target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit --prefer-powerpc --capture-lists-transition /tmp/list-inactive.png --capture-list-transition inactive --capture-scale 0.75
+python3 tests/toolbox-showcase/verify-gpui-list-text.py /tmp/list-inactive.png
+```
+
+These captures establish retained standard-cell paint and guest-button fixture
+states. They do not establish general font replacement, GPUI pointer routing,
+native host activation observation, complete lifecycle behavior, performance,
+or release readiness. Review rendered and guest images before describing
+visible behavior; retain the evidence's original scope when archiving it.

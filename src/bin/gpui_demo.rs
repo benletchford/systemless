@@ -203,6 +203,12 @@ mod desktop {
         #[arg(long, hide = true)]
         capture_lists_cancelled: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_lists_transition: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, default_value = "scrolled", value_parser = ["scrolled", "inactive", "reactivated"])]
+        capture_list_transition: String,
+        #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true, value_parser = parse_capture_scale)]
         capture_scale: Option<f32>,
         #[cfg(feature = "gpui-demo-test")]
@@ -2818,6 +2824,9 @@ mod desktop {
         ListsSelected,
         ListsHeld,
         ListsCancelled,
+        ListsScrolled,
+        ListsInactive,
+        ListsReactivated,
         TextEdit,
         TextEditSelected,
         TextEditEdited,
@@ -2984,7 +2993,8 @@ mod desktop {
                 | CaptureCase::WindowsPromoted
                 | CaptureCase::WindowsMainPromoted
         );
-        let lists_page = matches!(capture, CaptureCase::Lists | CaptureCase::ListsSelected | CaptureCase::ListsHeld | CaptureCase::ListsCancelled);
+        let lists_page = matches!(capture, CaptureCase::Lists | CaptureCase::ListsSelected | CaptureCase::ListsHeld | CaptureCase::ListsCancelled
+            | CaptureCase::ListsScrolled | CaptureCase::ListsInactive | CaptureCase::ListsReactivated);
         let text_edit_page = matches!(
             capture,
             CaptureCase::TextEdit | CaptureCase::TextEditSelected | CaptureCase::TextEditEdited | CaptureCase::TextEditInactive | CaptureCase::TextEditReactivated | CaptureCase::TextEditHostSuspended | CaptureCase::TextEditHostResumed
@@ -3793,7 +3803,7 @@ mod desktop {
                 .iter()
                 .any(|control| control.visible && control.proc_id == 16 && control.value > 0));
         }
-        if matches!(capture, CaptureCase::ListsSelected) {
+        if matches!(capture, CaptureCase::ListsSelected | CaptureCase::ListsScrolled | CaptureCase::ListsInactive | CaptureCase::ListsReactivated) {
             let list = session
                 .runner_mut()
                 .list_manager_snapshot()
@@ -3823,6 +3833,25 @@ mod desktop {
                 .list_manager_snapshot()
                 .iter()
                 .any(|list| list.guest_id == list_id && list.selected.contains(&(7, 0))));
+        }
+        if matches!(capture, CaptureCase::ListsScrolled | CaptureCase::ListsInactive | CaptureCase::ListsReactivated) {
+            let title = if matches!(capture, CaptureCase::ListsScrolled) { "Scroll Four Rows" } else { "Toggle Activation" };
+            let repetitions = if matches!(capture, CaptureCase::ListsReactivated) { 2 } else { 1 };
+            for _ in 0..repetitions {
+                let control = session.runner_mut().control_snapshot().into_iter()
+                    .find(|control| control.visible && control.title == title).expect("guest transition button");
+                let point = ((control.bounds.0 + control.bounds.2) / 2, (control.bounds.1 + control.bounds.3) / 2);
+                for input in [MacintoshInput::MouseDown { vertical: point.0, horizontal: point.1 },
+                    MacintoshInput::MouseUp { vertical: point.0, horizontal: point.1 }] {
+                    session.deliver_input(input);
+                    for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
+                }
+            }
+            let after = session.runner_mut().list_manager_snapshot().into_iter()
+                .find(|list| list.draw_enabled && list.definition_id == 0).unwrap();
+            assert!(after.selected.contains(&(7, 0)), "transition preserves guest selection");
+            if matches!(capture, CaptureCase::ListsScrolled) { assert_eq!(after.visible.0, 4); }
+            else { assert_eq!(after.active, matches!(capture, CaptureCase::ListsReactivated)); }
         }
         if matches!(capture, CaptureCase::PopupControlsScrolled) {
             scroll_showcase_theme_popup(&mut session);
@@ -4146,6 +4175,16 @@ mod desktop {
                     .map(|paint| paint.depth)).collect::<std::collections::BTreeSet<_>>(),
                 "scale": capture_scale, "guest_tick": session.runner().guest_tick(),
                 "erased_regions": erased_regions,
+                "list_state": lists.iter().map(|list| serde_json::json!({
+                    "id": list.guest_id, "generation": list.generation, "active": list.active,
+                    "visible": list.visible, "selected": list.selected,
+                })).collect::<Vec<_>>(),
+                "transition": match capture {
+                    CaptureCase::ListsScrolled => "scrolled",
+                    CaptureCase::ListsInactive => "inactive",
+                    CaptureCase::ListsReactivated => "reactivated",
+                    _ => "none",
+                },
             })).unwrap()).unwrap();
         }
         let pixels = gpui_pixels(source_pixels);
@@ -4844,6 +4883,18 @@ mod desktop {
         if let Some(output) = args.capture_lists_cancelled.as_ref() {
             capture_fixture_screen(&args.game, output, args.prefer_powerpc,
                 args.screen_depth, CaptureCase::ListsCancelled, args.capture_scale);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_lists_transition.as_ref() {
+            let state = match args.capture_list_transition.as_str() {
+                "scrolled" => CaptureCase::ListsScrolled,
+                "inactive" => CaptureCase::ListsInactive,
+                "reactivated" => CaptureCase::ListsReactivated,
+                _ => unreachable!(),
+            };
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc,
+                args.screen_depth, state, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -5550,6 +5601,8 @@ mod desktop {
                         capture_lists_selected: None,
                         capture_lists_held: None,
                         capture_lists_cancelled: None,
+                        capture_lists_transition: None,
+                        capture_list_transition: "scrolled".into(),
                         capture_scale: None,
                         capture_text_edit: None,
                         capture_styled_text_edit_ink: None,
