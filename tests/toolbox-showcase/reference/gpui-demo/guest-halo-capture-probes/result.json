@@ -1,0 +1,77 @@
+{
+  "cases": [
+    {
+      "name": "ppc16-both",
+      "halo_style": "underlined-both",
+      "images": {
+        "ppc16-both.png": {
+          "capture_sha256": "139fbaf35f8cf0dbe7744ad7fce5899be39a5eefb2d99f914a7233d495794de8",
+          "archive_sha256": "3970bc025f7b1c1c2924ff685f6458e65dba9ec3da2aa2b1ab7df79c41638c5c",
+          "decoded_rgba_preserved": true
+        },
+        "ppc16-both.guest.png": {
+          "capture_sha256": "48dfdf30d0b9149a7d8769486c9679131b2fa370138688e276c4a9de6a0e9cf4",
+          "archive_sha256": "eeada5e11617e966ccbb80a97130057f7e80fbf41d82b5c2386d99f60acf3b0e",
+          "decoded_rgba_preserved": true
+        }
+      },
+      "directly_reviewed_composed": true,
+      "review_scope": "Full1600x1200 composed image directly viewed without resizing; no independent font appearance oracle."
+    },
+    {
+      "name": "mono-everything",
+      "halo_style": "everything",
+      "images": {
+        "mono-everything.png": {
+          "capture_sha256": "1a31dbee27017ee040aa730361ef545baf4f25333d7ae94b789de75218ad557b",
+          "archive_sha256": "0ab04a7542e10f07fe8379b368dd2d6f86fe43e9a9513e0f22b8735aa5829e65",
+          "decoded_rgba_preserved": true
+        },
+        "mono-everything.guest.png": {
+          "capture_sha256": "82fe33e99fb970f56d9d4fbb45524620491fef6affd746caa28561e96e1e054d",
+          "archive_sha256": "2d2ca1379b746b13e39fc89729c271164bd03ef81876e37a11c4727c08b2f216",
+          "decoded_rgba_preserved": true
+        }
+      },
+      "directly_reviewed_composed": true,
+      "review_scope": "Full1600x1200 composed image directly viewed without resizing; no independent font appearance oracle."
+    },
+    {
+      "name": "colour-outline",
+      "halo_style": "underlined-outline",
+      "images": {
+        "colour-outline.png": {
+          "capture_sha256": "3b4354918d31bce170ff91eea31f93a8fbef369bf5df3bf556dd01dc9b629ee6",
+          "archive_sha256": "8ab8b311032c52b83a8f9b54f2c000628d37be1519ba582cb4f9b7a102328f55",
+          "decoded_rgba_preserved": true
+        },
+        "colour-outline.guest.png": {
+          "capture_sha256": "fb5e976c0b997a6eb9b4336fcdea8324ab9d6975fbf8accb7fef6ec61c614920",
+          "archive_sha256": "7c777a7d398ba577b269caa8e2be3d2e40590e866eeb0258eaa594e89d0701b2",
+          "decoded_rgba_preserved": true
+        }
+      },
+      "directly_reviewed_composed": true,
+      "review_scope": "Full1600x1200 composed image directly viewed without resizing; no independent font appearance oracle."
+    },
+    {
+      "name": "ppc8-shadow",
+      "halo_style": "underlined-shadow",
+      "images": {
+        "ppc8-shadow.png": {
+          "capture_sha256": "f2f6e6baa232b92609f665b58b8333518784f7d69547fbd2118cd8c7c2fef4a3",
+          "archive_sha256": "8db9ef28e162399fa34b48c69e686b5a70d425c674dd47c9980a0c89d07ad0ce",
+          "decoded_rgba_preserved": true
+        },
+        "ppc8-shadow.guest.png": {
+          "capture_sha256": "afeb9d57515ce15fb7598be6aea8e9fefdaa6e287c9501d168d203e06432468a",
+          "archive_sha256": "5964d584096d69ad85cf9b2c207df045ee046c63fdf009cfe5ccadb88a06e88f",
+          "decoded_rgba_preserved": true
+        }
+      },
+      "directly_reviewed_composed": true,
+      "review_scope": "Full1600x1200 composed image directly viewed without resizing; no independent font appearance oracle."
+    }
+  ],
+  "scope": "Four manual selected single-line scale1 probes from pinned uncommitted capture/fixture source. One halo style per CPU/depth mode; metadata checks and four direct composed reviews. Fixture builds byte-for-byte. Not full matrices, independent font fidelity, physical host integration, new-style typing or performance."
+}

@@ -1,0 +1,11 @@
+{
+  "source_base": "9eacaad08d8c3534a083be6de132c7034f2e04ff",
+  "sha256": {
+    "src/bin/gpui_demo.rs": "f947234c8d2649b375bd5ba43ed5221392cc9f8fbba719d670741c82527f0709",
+    "src/bin/gpui_demo_text.rs": "911b5548145eba7e9d4aaf9bf23f81e8249a3d0bd95abb09001eea5e78ae41d8",
+    "src/systems/macintosh/quickdraw/text.rs": "13d48af835cb1f3a45162c877caf0e98439a355d672d4a88b861cacfa1be6ab3",
+    "tests/toolbox-showcase/showcase.c": "9bd67b9d02be135e2455d38c0b378d70f300b72b0b43794e10d74a84039896a9",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "bd3440b855f9521e2d36505cc52be974e825bf2f6fc71127428ad111d2759999",
+    "target/ci-test/examples/gpui-menu-demo": "19e9b8d76ba4c78342d55a160d60af3d0aedc4fceb5747b4ae390050bafae928"
+  }
+}

@@ -2721,10 +2721,11 @@ void ApplyStyledStyle(short start, short end, TextStyle *style)
     TESetStyle(doAll, style, true, gStyledTE);
 }
 
-/* Preserve each character's font, size, colour and non-spacing face bits.
+/* Preserve each character's font, size, colour and unmasked face bits.
  * Option-C/E/B/N exercises condensed/extended/both/normal through guest
- * TEGetStyle and TESetStyle, retaining the existing selection. */
-void SetStyledSpacing(Style spacing)
+ * TEGetStyle and TESetStyle, retaining the existing selection. Option-O/S/H
+ * add underline with outline/shadow/both; Option-A requests all basic effects. */
+void SetStyledFaceBits(Style mask, Style bits)
 {
     short offset, start, end, length, height, ascent;
     TextStyle style;
@@ -2736,7 +2737,7 @@ void SetStyledSpacing(Style spacing)
     for (offset = 0; offset < length; ++offset) {
         TESetSelect(offset, offset + 1, gStyledTE);
         TEGetStyle(offset, &style, &height, &ascent, gStyledTE);
-        style.tsFace = (style.tsFace & ~(condense | extend)) | spacing;
+        style.tsFace = (style.tsFace & ~mask) | bits;
         TESetStyle(doFace, &style, true, gStyledTE);
     }
     TESetSelect(start, end, gStyledTE);
@@ -5101,9 +5102,17 @@ static void DoEvent(EventRecord *event)
                 DoMenuChoice(MenuKey(key));
             } else if (gPage == pageStyledText && gStyledTE != nil &&
                        (event->modifiers & optionKey) != 0 &&
-                       (key == 'c' || key == 'e' || key == 'b' || key == 'n')) {
-                SetStyledSpacing(key == 'c' ? condense : key == 'e' ? extend :
-                                 key == 'b' ? (condense | extend) : 0);
+                       (key == 'c' || key == 'e' || key == 'b' || key == 'n' ||
+                        key == 'o' || key == 's' || key == 'h' || key == 'a')) {
+                if (key == 'o' || key == 's' || key == 'h' || key == 'a') {
+                    SetStyledFaceBits(key == 'a' ? 31 : (underline | outline | shadow),
+                        key == 'a' ? 31 : underline |
+                        (key == 'o' ? outline : key == 's' ? shadow : (outline | shadow)));
+                } else {
+                    SetStyledFaceBits(condense | extend,
+                        key == 'c' ? condense : key == 'e' ? extend :
+                        key == 'b' ? (condense | extend) : 0);
+                }
                 DrawMainWindow();
             } else if (gPage == pageTextEdit && gTE != nil) {
                 TEKey(key, gTE);
