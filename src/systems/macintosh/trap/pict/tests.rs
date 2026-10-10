@@ -148,6 +148,46 @@ fn render_text_picture(picture: &[u8], width: u16, height: u16) -> Vec<u8> {
 }
 
 #[test]
+fn pict_v1_text_metadata_preserves_byte_aligned_following_text() {
+    let frame = (0, 0, 48, 80);
+    let mut plain = Vec::new();
+    push_v1_long_text(&mut plain, 20, 20, b"A");
+    let expected = render_text_picture(&finish_v1_picture(frame, &plain), 80, 48);
+    for opcode in [0x24, 0x25, 0x26, 0x27, 0x2C, 0x2D, 0x2E, 0x2F] {
+        let mut commands = vec![opcode, 0, 4, 0, 0, 0, 0];
+        commands.extend_from_slice(&plain);
+        let picture = finish_v1_picture(frame, &commands);
+        assert_eq!(picture_stream_len(&picture), Some(picture.len()));
+        assert_eq!(
+            render_text_picture(&picture, 80, 48),
+            expected,
+            "opcode {opcode:#x}"
+        );
+    }
+}
+
+#[test]
+fn pict_v2_text_metadata_keeps_word_padding_before_following_text() {
+    let frame = (0, 0, 48, 80);
+    let mut plain = Vec::new();
+    super::recording_push_long_text(&mut plain, 20, 20, b"A");
+    let expected = render_text_picture(&super::finish_recording(frame, plain.clone()), 80, 48);
+    for opcode in [0x24, 0x25, 0x26, 0x27, 0x2C, 0x2D, 0x2E, 0x2F] {
+        let mut commands = Vec::new();
+        super::recording_push_word(&mut commands, opcode);
+        commands.extend_from_slice(&[0, 3, 0, 0, 0, 0xFF]);
+        commands.extend_from_slice(&plain);
+        let picture = super::finish_recording(frame, commands);
+        assert_eq!(picture_stream_len(&picture), Some(picture.len()));
+        assert_eq!(
+            render_text_picture(&picture, 80, 48),
+            expected,
+            "opcode {opcode:#x}"
+        );
+    }
+}
+
+#[test]
 fn pict_v2_relative_text_uses_unsigned_deltas_from_previous_origins() {
     // Imaging With QuickDraw 1994, Appendix A, pp. A-6--A-7 defines
     // text deltas as 0..255, unlike signed ShortLine deltas. Text 1993,

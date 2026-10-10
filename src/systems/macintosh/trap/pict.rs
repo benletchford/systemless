@@ -980,19 +980,25 @@ pub fn draw_picture(
                 // FontName (v2)
                 let data_len = bus.read_word(pos) as u32;
                 pos += 2 + data_len;
-                pos = align_pict_pos(pos);
+                if is_v2 {
+                    pos = align_pict_pos(pos);
+                }
             }
             0x2D | 0x2E => {
                 // lineJustify / glyphState: word data length followed by data.
                 let data_len = bus.read_word(pos) as u32;
                 pos += 2 + data_len;
-                pos = align_pict_pos(pos);
+                if is_v2 {
+                    pos = align_pict_pos(pos);
+                }
             }
             0x24..=0x27 | 0x2F => {
                 // Reserved data-bearing opcodes: word length + data.
                 let data_len = bus.read_word(pos) as u32;
                 pos += 2 + data_len;
-                pos = align_pict_pos(pos);
+                if is_v2 {
+                    pos = align_pict_pos(pos);
+                }
             }
             // Rectangle drawing opcodes ($30-$34, $38-$3C)
             // Imaging With QuickDraw 1994, Appendix A, A-7
@@ -1857,7 +1863,9 @@ pub(crate) fn peek_initial_packbits_clut(
             0x24..=0x27 | 0x2C..=0x2F => {
                 let data_len = bus.read_word(pos) as u32;
                 pos += 2 + data_len;
-                pos = align_pict_pos(pos);
+                if is_v2 {
+                    pos = align_pict_pos(pos);
+                }
             }
             0x90 | 0x91 if bus.read_word(pos) & 0x8000 != 0 => {
                 return peek_pack_bits_rect_clut(bus, pos);
@@ -2402,7 +2410,11 @@ fn walk_picture_bytes(bytes: &[u8], mut visit: impl FnMut(u16, usize) -> Option<
             0x2C | 0x2D | 0x2E | 0x24..=0x27 | 0x2F => {
                 let data_len = usize::from(read_pict_u16(bytes, pos)?);
                 let next = pict_add(pos, 2usize.checked_add(data_len)?, bytes.len())?;
-                pict_align_index(next, bytes.len())?
+                if is_v2 {
+                    pict_align_index(next, bytes.len())?
+                } else {
+                    next
+                }
             }
             0x60..=0x64 => pict_add(pos, 12, bytes.len())?,
             0x90 => skip_bits_rect_bytes(bytes, pos, false)?,
