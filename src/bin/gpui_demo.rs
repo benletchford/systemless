@@ -453,6 +453,7 @@ mod desktop {
         Menu(i16, i16, u32, u64),
         Input(MacintoshInput),
         Wheel(super::scroll::WheelRequest),
+        FileWheel(u32, u64, super::activation::FileAction),
         ActivateControl(u32, u64),
         ActivateDialog(u32, u64, i16, Option<(u32, u64)>),
         ActivateFile(u32, u64, super::activation::FileAction),
@@ -579,7 +580,7 @@ mod desktop {
                 loop {
                     match commands.try_recv() {
                         Ok(Command::CancelWheel) => {
-                            queued.retain(|command| !matches!(command, Command::Wheel(_)));
+                            queued.retain(|command| !matches!(command, Command::Wheel(_) | Command::FileWheel(..)));
                             if let Some(click) = wheel.as_mut() { click.stop_repeating(); }
                         }
                         Ok(Command::Wheel(request)) => {
@@ -634,7 +635,7 @@ mod desktop {
                                 activation = super::activation::ControlActivation::begin_dialog(&mut session, id, generation, number, identity);
                             }
                         }
-                        Ok(Command::ActivateFile(id, generation, action)) => {
+                        Ok(Command::ActivateFile(id, generation, action) | Command::FileWheel(id, generation, action)) => {
                             if !pointer_down {
                                 activation = super::activation::ControlActivation::begin_file(&mut session, id, generation, action);
                             }
@@ -1578,11 +1579,19 @@ mod desktop {
                     let viewport = super::frames::Rect {
                         top: 0, left: 0, bottom: this.height as i32, right: this.width as i32,
                     };
-                    let Some(target) = super::scroll::target(
-                        &this.controls, &this.menus, &this.windows, viewport, origin, vertical,
-                    ) else { this.wheel.reset(); return; };
+                    let file = this.standard_file.is_some();
+                    let target = if let Some(panel) = &this.standard_file {
+                        super::scroll::file_target(panel, origin, vertical)
+                    } else { super::scroll::target(&this.controls, &this.menus, &this.windows, viewport, origin, vertical) };
+                    let Some(target) = target else { this.wheel.reset(); return; };
                     let steps = this.wheel.push(target, -(if vertical { y } else { x }));
-                    if steps != 0 {
+                    if file {
+                        let action = if steps < 0 { super::activation::FileAction::ScrollUp }
+                            else { super::activation::FileAction::ScrollDown };
+                        for _ in 0..steps.unsigned_abs() {
+                            let _ = this.commands.send(Command::FileWheel(target.id, target.generation, action));
+                        }
+                    } else if steps != 0 {
                         let _ = this.commands.send(Command::Wheel(super::scroll::WheelRequest {
                             target, origin, steps,
                         }));
@@ -12179,6 +12188,90 @@ mod desktop {
                     }));
                     assert!(session.runner_mut().guest_popup_snapshot().is_none());
                 }
+            }
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn standard_file_wheel_actions_scroll_actual_guest_lists(cx: &mut gpui_kit::TestAppContext) {
+            use super::super::activation::{ControlActivation, FileAction};
+            use gpui_kit::{test::TestWindowExt, AppContext, InputEvent, ScrollDelta, ScrollWheelEvent, TouchPhase};
+            cx.update(gpui_kit::init);
+            for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app); wait_for_menu(&mut session, 129, 1, true);
+                for index in 0..30 {
+                    session.runner_mut().import_vfs_directory(&systemless::runner::VfsDirectorySnapshot {
+                        path: format!("Wheel Folder {index:02}"), creator: 0, file_type: 0, finder_flags: 0,
+                    });
+                }
+                assert!(session.runner_mut().select_guest_menu_item(129, 12));
+                wait_for_menu(&mut session, 129, 12, true); settle(&mut session);
+                let step = |session: &mut MacintoshSession| {
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                };
+                step(&mut session);
+                session.deliver_input(MacintoshInput::MouseDown { vertical: 266, horizontal: 400 });
+                session.deliver_input(MacintoshInput::MouseUp { vertical: 266, horizontal: 400 });
+                let before = (0..100).find_map(|_| { step(&mut session); session.runner().standard_file_snapshot() }).unwrap();
+                let layout = before.put_layout.as_ref().unwrap();
+                assert!(before.entries.as_ref().unwrap().len() > layout.visible_rows);
+                let point = (layout.list.0 + 5, layout.list.1 + 5);
+                let target = super::super::scroll::file_target(&before, point, true).unwrap();
+                assert!(super::super::scroll::file_target(&before, point, false).is_none());
+                assert!(super::super::scroll::file_target(&before, (0, 0), true).is_none());
+                assert!(ControlActivation::begin_file(&mut session, target.id, target.generation + 1, FileAction::ScrollDown).is_none());
+                let (sender, receiver) = std::sync::mpsc::channel();
+                let (window, view) = cx.update(|cx| gpui_kit::open_window(Default::default(), cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap());
+                cx.update_window(window.into(), |_, window, cx| {
+                    view.update(cx, |demo, _| {
+                        demo.width = 800; demo.height = 600; demo.standard_file = Some(before.clone());
+                    });
+                    window.render_frame(cx);
+                    let position = view.update(cx, |demo, _| gpui_kit::point(
+                        gpui_kit::px(demo.display_origin.0 + f32::from(point.1) * demo.display_scale),
+                        gpui_kit::px(demo.display_origin.1 + f32::from(point.0) * demo.display_scale)));
+                    let event = ScrollWheelEvent { position, delta: ScrollDelta::Lines(gpui_kit::point(0., -0.5)),
+                        modifiers: Default::default(), touch_phase: TouchPhase::Moved };
+                    window.dispatch_event(event.clone().to_platform_input(), cx);
+                    assert!(!receiver.try_iter().any(|command| matches!(command, super::Command::FileWheel(..))));
+                    window.dispatch_event(event.to_platform_input(), cx);
+                    let actions: Vec<_> = receiver.try_iter().filter_map(|command| match command {
+                        super::Command::FileWheel(id, generation, action) => Some((id, generation, action)), _ => None,
+                    }).collect();
+                    assert_eq!(actions.len(), 1); assert_eq!((actions[0].0, actions[0].1), (target.id, target.generation));
+                    assert!(matches!(actions[0].2, FileAction::ScrollDown));
+                    window.remove_window();
+                }).unwrap();
+                let click = |session: &mut MacintoshSession, action| {
+                    let mut activation = ControlActivation::begin_file(session, target.id, target.generation, action).unwrap();
+                    step(session);
+                    for _ in 0..3 {
+                        let Some(next) = activation.advance(session) else { break; };
+                        activation = next; step(session);
+                    }
+                    for _ in 0..5 { step(session); }
+                };
+                for _ in 0..layout.visible_rows + 1 { click(&mut session, FileAction::ScrollDown); }
+                let down = session.runner().standard_file_snapshot().unwrap();
+                assert!(down.put_layout.as_ref().unwrap().first_visible > layout.first_visible);
+                assert_eq!(down.entries, before.entries); assert_eq!(down.directory_id, before.directory_id);
+                assert_eq!(down.name, before.name); assert_eq!(down.name_selection, before.name_selection);
+                for _ in 0..layout.visible_rows + 1 { click(&mut session, FileAction::ScrollUp); }
+                let up = session.runner().standard_file_snapshot().unwrap();
+                assert_eq!(up.put_layout.as_ref().unwrap().first_visible, layout.first_visible);
+                click(&mut session, FileAction::NewFolder);
+                let nested = session.runner().standard_file_snapshot().unwrap();
+                assert!(nested.new_folder.is_some());
+                assert!(super::super::scroll::file_target(&nested, point, true).is_none());
+                assert!(ControlActivation::begin_file(&mut session, target.id, target.generation, FileAction::ScrollDown).is_none());
+                eprintln!("PASS Standard File wheel guest actions powerpc={powerpc} depth={depth}");
             }
         }
 

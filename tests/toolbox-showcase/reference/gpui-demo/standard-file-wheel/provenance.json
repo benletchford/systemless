@@ -1,0 +1,10 @@
+{
+  "base_head": "f18c7f959d01fe447b1d541e165f10ad8409637a",
+  "source_state": "uncommitted Standard File wheel routing",
+  "source_hashes": {
+    "src/bin/gpui_demo.rs": "e63617bf8389f00f870b09f85552c985eff7b8e8cb823d7cc2ad8f82619d5026",
+    "src/bin/gpui_demo_activation.rs": "a28af9ec4f119a913c9834b3a9108e5f5eb56162a52bb3762bcdd8f84529f548",
+    "src/bin/gpui_demo_scroll.rs": "6f4b725a0ceedd4b33102585714ed0071980e473dd0e010b90d8f55b391e38ab"
+  },
+  "scope": "Current source: four wheel regression tests exit0, including GPUI fractional Standard File dispatch and actual Save guest list actions on mono68k, colour68k, PPC8 and PPC16. Direction/reversal, filename preservation, stale identity and nested-dialog guards checked. Existing GPUI/document/control wheel regressions pass. Current default application check exit0. No physical wheel, Open workflow or visual scrolling qualification. Dedicated FileWheel commands allow CancelWheel to remove pending scroll clicks; no OS cancellation claim."
+}
