@@ -42,6 +42,18 @@ compatibility:
       unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4418
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: 63848fde91083d26506bc2c17d36d20a6460ccad
+    architecture: 68k
+    environment: >-
+      Actual public v0.91.0 route in fresh ordinary Chrome, without response substitution.
+      Managed archive HTTP 200 response body matches the pinned SHA-256 and 925961 bytes.
+      Drag e2-e4 and d2-d4; computer replies e7-e6 and d7-d5. Board and move record
+      update in inspected captures. crossOriginIsolated is false. Complete matches,
+      sustained search, other modes, saving and audio remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4418
 runtime:
   executable_path: Sigma Chess Lite 4.0/∑ Chess 4.0 Lite
   show_menu_bar: true
@@ -103,7 +115,8 @@ best move found. Use **File → New Game** when it is your turn to start again.
 
 Bounded native verification covers **e2–e4**, **d2–d4**, and the computer replies
 **e7–e6**, **d7–d5** with the move record updated. Optimized browser verification also passes both player moves and computer replies.
-Public release verification is pending.
+The public v0.91.0 player also passes both moves and computer replies from the
+exact hosted archive; [public evidence](https://github.com/benletchford/systemless/issues/4418#issuecomment-6099963380).
 Complete matches, sustained search, other modes, saving and audio remain
 unverified. The original Lite edition retains its feature limits, including
 unsavable libraries and limited transposition tables.
