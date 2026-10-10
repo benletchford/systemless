@@ -690,6 +690,10 @@ impl std::fmt::Debug for ClassicLine {
 }
 
 impl ClassicLine {
+    pub fn smooth_raster_support(&self) -> [bool; 8] {
+        std::array::from_fn(|index| resolve_smooth_run(self, index as u32 + 1).is_some())
+    }
+
     pub fn plain(bytes: &[u8], font: i16, point_size: i16) -> Self {
         Self::from_glyphs(
             font,
@@ -1888,7 +1892,9 @@ fn paint_smooth_label(
 ) -> bool {
     use gpui_kit::*;
     if line.smooth_sources.is_empty() || line.smooth_sources.len() + 1 != line.positions.len() { return false; }
-    if line.smooth_sources.iter().enumerate().any(|(index, source)| source.0 != line.positions[index]) { return false; }
+    // Paint pens can be translated for negative menu bearings independently
+    // of insertion advances. Resolution validates the complete source run;
+    // equating the two coordinate roles would silently reject styled labels.
     let raster = (scale * window.scale_factor()).ceil().max(1.) as u32;
     let Some(glyphs) = resolve_smooth_run(line, raster) else { return false; };
     let unit = scale / raster as f32;
