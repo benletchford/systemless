@@ -2311,25 +2311,49 @@ pub(crate) fn picture_basic_info(bytes: &[u8]) -> Option<PictureBasicInfo> {
     Some(info)
 }
 
-fn walk_picture_bytes(bytes: &[u8], mut visit: impl FnMut(u16, usize) -> Option<()>) -> Option<usize> {
-    if bytes.len() < 10 {
-        return None;
+/// One decoded opcode boundary. Keeping its source range lets picture playback
+/// suspend between guest bottlenecks without decoding later commands early.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct PictureOpcode {
+    pub opcode: u16,
+    pub start: usize,
+    pub data_start: usize,
+    pub end: usize,
+}
+
+/// Per-picture stream ownership, independent of pixels and guest CPU state.
+/// Each step reads only the current opcode; nested pictures have their own
+/// cursor and may not overwrite an enclosing picture's stream position.
+#[derive(Clone, Debug)]
+pub(super) struct PictureCursor {
+    pos: usize,
+    opcount: usize,
+    is_v2: bool,
+    ended: bool,
+}
+
+impl PictureCursor {
+    pub fn new(bytes: &[u8]) -> Option<Self> {
+        (bytes.len() >= 10).then_some(Self {
+            pos: 10,
+            opcount: 0,
+            is_v2: false,
+            ended: false,
+        })
     }
 
-    let mut pos = 10usize;
-    let mut opcount = 0usize;
-    let mut is_v2 = false;
-
-    while pos < bytes.len() {
-        if opcount > 1_000_000 {
+    /// Advance transactionally: malformed/truncated data never publishes a
+    /// partial opcode or moves the cursor past the last complete command.
+    pub fn next(&mut self, bytes: &[u8]) -> Option<PictureOpcode> {
+        if self.ended || self.opcount >= 1_000_000 {
             return None;
         }
-        opcount += 1;
-
+        let mut pos = self.pos;
+        let mut is_v2 = self.is_v2;
         if is_v2 {
             pos = pict_align_index(pos, bytes.len())?;
         }
-
+        let start = pos;
         let opcode = if is_v2 {
             let op = read_pict_u16(bytes, pos)?;
             pos = pict_add(pos, 2, bytes.len())?;
@@ -2339,8 +2363,7 @@ fn walk_picture_bytes(bytes: &[u8], mut visit: impl FnMut(u16, usize) -> Option<
             pos = pict_add(pos, 1, bytes.len())?;
             op
         };
-
-        visit(opcode, pos)?;
+        let data_start = pos;
         pos = match opcode {
             0x00
             | 0x1C
@@ -2419,7 +2442,7 @@ fn walk_picture_bytes(bytes: &[u8], mut visit: impl FnMut(u16, usize) -> Option<
                 }
                 next
             }
-            0xFF => return Some(pos),
+            0xFF => pos,
             0x0C00 => pict_add(pos, 24, bytes.len())?,
             0x02FF => pict_add(pos, 2, bytes.len())?,
             _ if is_v2 => {
@@ -2442,8 +2465,27 @@ fn walk_picture_bytes(bytes: &[u8], mut visit: impl FnMut(u16, usize) -> Option<
             }
             _ => skip_v1_reserved_bytes(bytes, opcode, pos)?,
         };
+        self.pos = pos;
+        self.is_v2 = is_v2;
+        self.opcount += 1;
+        self.ended = opcode == 0xFF;
+        Some(PictureOpcode {
+            opcode,
+            start,
+            data_start,
+            end: pos,
+        })
     }
+}
 
+fn walk_picture_bytes(bytes: &[u8], mut visit: impl FnMut(u16, usize) -> Option<()>) -> Option<usize> {
+    let mut cursor = PictureCursor::new(bytes)?;
+    while let Some(command) = cursor.next(bytes) {
+        visit(command.opcode, command.data_start)?;
+        if command.opcode == 0xFF {
+            return Some(command.end);
+        }
+    }
     None
 }
 

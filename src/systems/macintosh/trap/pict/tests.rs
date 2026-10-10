@@ -2851,3 +2851,88 @@ fn recorded_round_rect_honors_ovsize_when_scaled() {
     assert_eq!(bus.read_byte(screen + 60 + 1), 0);
     assert_eq!(bus.read_byte(screen + 6 * 60 + 6), 255);
 }
+
+fn cursor_picture_v2(commands: &[u8]) -> Vec<u8> {
+    let mut picture = vec![0; 10];
+    picture.extend_from_slice(&[0x00, 0x11, 0x02, 0xff]);
+    picture.extend_from_slice(commands);
+    picture
+}
+
+#[test]
+fn picture_cursor_preserves_order_and_source_boundaries_across_resumption() {
+    // TextBegin, LongText, TextEnd, OvSize, FrameRRect, EndOfPicture.
+    let picture = cursor_picture_v2(&[
+        0x00, 0xa0, 0x00, 0x96,
+        0x00, 0x28, 0x00, 0x08, 0x00, 0x10, 0x03, b'a', b'b', b'c',
+        0x00, 0xa0, 0x00, 0x97,
+        0x00, 0x0b, 0x00, 0x04, 0x00, 0x06,
+        0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x20,
+        0x00, 0xff,
+    ]);
+    let mut cursor = super::PictureCursor::new(&picture).unwrap();
+    assert_eq!(cursor.next(&picture).unwrap().opcode, 0x00);
+    assert_eq!(cursor.next(&picture).unwrap().opcode, 0x11);
+    let expected = [
+        (0xa0, 14, 16, 18), (0x28, 18, 20, 28),
+        (0xa0, 28, 30, 32), (0x0b, 32, 34, 38),
+        (0x40, 38, 40, 48), (0xff, 48, 50, 50),
+    ];
+    for (opcode, start, data_start, end) in expected {
+        // Move the operation as a suspended playback would; source range and
+        // version state must survive without running the next command early.
+        cursor = cursor.clone();
+        assert_eq!(cursor.next(&picture), Some(super::PictureOpcode {
+            opcode, start, data_start, end,
+        }));
+    }
+    assert!(cursor.next(&picture).is_none());
+}
+
+#[test]
+fn picture_cursor_reads_later_commands_only_when_resumed() {
+    let mut picture = cursor_picture_v2(&[0x00, 0xa0, 0x00, 0x96, 0x00, 0xff]);
+    let mut cursor = super::PictureCursor::new(&picture).unwrap();
+    assert_eq!(cursor.next(&picture).unwrap().opcode, 0x00);
+    assert_eq!(cursor.next(&picture).unwrap().opcode, 0x11);
+    // A guest input callback can supply a different next command. Retaining
+    // predecoded future commands would incorrectly keep the old ShortComment.
+    picture[14..18].copy_from_slice(&[0x00, 0x0d, 0x00, 0x18]);
+    let next = cursor.next(&picture).unwrap();
+    assert_eq!(next.opcode, 0x0d);
+    assert_eq!(&picture[next.data_start..next.end], &[0x00, 0x18]);
+    assert_eq!(cursor.next(&picture).unwrap().opcode, 0xff);
+}
+
+#[test]
+fn picture_cursor_truncated_payload_does_not_advance() {
+    let mut picture = cursor_picture_v2(&[0x00, 0xa1, 0x00, 0x97, 0x00, 0x04, 1]);
+    let mut cursor = super::PictureCursor::new(&picture).unwrap();
+    assert_eq!(cursor.next(&picture).unwrap().opcode, 0x00);
+    assert_eq!(cursor.next(&picture).unwrap().opcode, 0x11);
+    assert!(cursor.next(&picture).is_none());
+    assert_eq!(cursor.pos, 14);
+    assert_eq!(cursor.opcount, 2);
+    picture.extend_from_slice(&[2, 3, 4, 0x00, 0xff]);
+    let comment = cursor.next(&picture).unwrap();
+    assert_eq!(comment.opcode, 0xa1);
+    assert_eq!(comment.end, 24);
+    assert_eq!(cursor.next(&picture).unwrap().opcode, 0xff);
+}
+
+#[test]
+fn picture_cursor_nested_v1_stream_does_not_change_outer_v2_position() {
+    let outer = cursor_picture_v2(&[0x00, 0xa0, 0x00, 0x96, 0x00, 0xff]);
+    let mut inner = vec![0; 10];
+    inner.extend_from_slice(&[0x11, 0x01, 0xa0, 0x00, 0x97, 0xff]);
+    let mut enclosing = super::PictureCursor::new(&outer).unwrap();
+    assert_eq!(enclosing.next(&outer).unwrap().opcode, 0x00);
+    assert_eq!(enclosing.next(&outer).unwrap().opcode, 0x11);
+    let mut nested = super::PictureCursor::new(&inner).unwrap();
+    assert_eq!(nested.next(&inner).unwrap().opcode, 0x11);
+    assert_eq!(nested.next(&inner).unwrap().opcode, 0xa0);
+    assert_eq!(nested.next(&inner).unwrap().opcode, 0xff);
+    assert!(nested.next(&inner).is_none());
+    assert_eq!(enclosing.next(&outer).unwrap().start, 14);
+    assert_eq!(enclosing.next(&outer).unwrap().opcode, 0xff);
+}
