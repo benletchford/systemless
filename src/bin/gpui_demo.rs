@@ -4821,6 +4821,24 @@ mod desktop {
                     settled && next.guest_id == before.guest_id && next.drawing_intact
                         && next.selection == (offset, offset) && next.caret_visible)
             }).expect("guest click at the scrolled glyph boundary reaches the same byte offset");
+            if selected {
+                let end = offset + 3;
+                let right = dest.1 - record.dest_rect.1 + geometry.left
+                    + record.guest_styled_range_width(start..end).unwrap();
+                for input in [MacintoshInput::MouseDown { vertical, horizontal },
+                    MacintoshInput::MouseMove { vertical, horizontal: right },
+                    MacintoshInput::MouseUp { vertical, horizontal: right }] {
+                    session.deliver_input(input);
+                    for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
+                }
+                record = (0..300).find_map(|_| {
+                    session.runner_mut().run_steps(10_000, None);
+                    let settled = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
+                    session.runner_mut().text_edit_snapshot().records.into_iter().find(|next|
+                        settled && next.guest_id == before.guest_id && next.drawing_intact
+                            && next.selection == (offset, end))
+                }).expect("guest drag selects the visible scrolled glyph range");
+            }
             assert_eq!(record.text, before.text);
             assert_eq!(record.style_runs, before.style_runs);
         }
@@ -4881,6 +4899,9 @@ mod desktop {
         assert_eq!(record.text, original.text);
         assert_eq!(record.style_runs, original.style_runs);
         assert_eq!(record.generation, original.generation);
+        assert_eq!((record.owner_port, record.dest_rect, record.view_rect),
+            (original.owner_port, original.dest_rect, original.view_rect),
+            "activation preserves the guest owner and scroll geometry");
         let runtime_powerpc = session.runner().is_powerpc_app();
         assert_eq!(runtime_powerpc, prefer_powerpc, "capture must execute the requested CPU");
         let mut evidence = serde_json::json!({
@@ -4890,6 +4911,7 @@ mod desktop {
             "spacing_style": spacing_style,
             "halo_style": halo_style,
             "compositor": "shared Demo renderer",
+            "activation": activation,
             "active": record.active, "caret_visible": record.caret_visible,
             "drawing_intact": record.drawing_intact, "generation": record.generation,
             "guest_tick": session.runner().guest_tick(), "view": record.global_view_rect,
@@ -5557,8 +5579,12 @@ mod desktop {
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_multiline.as_ref() {
+            let activation: &[bool] = match args.capture_styled_caret_state.as_str() {
+                "visible" => &[], "suspended" => &[false], "resumed" => &[false, true],
+                _ => panic!("multiline capture supports visible, suspended or resumed state"),
+            };
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[], "visible", true, args.capture_styled_scroll, &args.capture_styled_spacing, &args.capture_styled_halo);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, activation, &args.capture_styled_caret_state, true, args.capture_styled_scroll, &args.capture_styled_spacing, &args.capture_styled_halo);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
