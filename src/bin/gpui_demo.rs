@@ -605,11 +605,19 @@ mod desktop {
                                 let events = session.runner().event_manager_snapshot();
                                 let in_event = events.queue_len != 0 || events.last_record.is_some_and(|record| record.what != 0)
                                     || session.runner().is_ui_tracking_active();
-                                let same_field = session.runner_mut().text_edit_snapshot().records.iter().any(|record|
-                                    record.active && (record.guest_id, record.generation) == owner.identity
-                                        && record.owner_port == owner.port);
+                                let same_field = match owner.target {
+                                    super::input::TextInputTarget::Document { port } => session.runner_mut().text_edit_snapshot().records.iter().any(|record|
+                                        record.active && (record.guest_id, record.generation) == owner.identity && record.owner_port == port),
+                                    super::input::TextInputTarget::Dialog { item, content_revision } => {
+                                        let dialogs = session.runner_mut().dialog_snapshot();
+                                        let windows = session.runner_mut().window_frame_snapshot();
+                                        super::input::dialog_text_owner(&dialogs, &windows).is_some_and(|actual|
+                                            actual.identity == owner.identity && actual.item == item && actual.content_revision == content_revision)
+                                    }
+                                };
                                 let document = session.runner().standard_file_snapshot().is_none()
-                                    && !session.runner_mut().dialog_snapshot().iter().any(|dialog| dialog.visible && dialog.active);
+                                    && (matches!(owner.target, super::input::TextInputTarget::Dialog { .. })
+                                        || !session.runner_mut().dialog_snapshot().iter().any(|dialog| dialog.visible && dialog.active));
                                 if !pointer_down && same_field && document && in_event
                                     && text_commit_wait.get_or_insert_with(Instant::now).elapsed() < Duration::from_millis(250) {
                                     queued.push_front(Command::CommitText(owner, bytes));
@@ -8915,7 +8923,7 @@ mod desktop {
                 assert_eq!(matches!(record.line_layout_policy, systemless::runner::TextEditLineLayoutPolicy::PpcRunMetrics), powerpc);
                 let mut composition = super::super::input::GuestComposition::default();
                 let owner = super::super::input::TextInputOwner { identity: (record.guest_id, record.generation),
-                    port: record.owner_port, text: record.text.clone(), selection: record.selection.0..record.selection.1 };
+                    target: super::super::input::TextInputTarget::Document { port: record.owner_port }, text: record.text.clone(), selection: record.selection.0..record.selection.1 };
                 composition.synchronize(Some(owner.clone()));
                 let mut expected = owner.text.clone(); expected.splice(owner.selection.clone(), [0x8e, b'Z']);
                 for text in ["é", "Z"] {
@@ -8939,6 +8947,89 @@ mod desktop {
                 assert_eq!(actual.text, expected);
                 eprintln!("PASS worker-commit-rejection powerpc={powerpc} depth={actual_depth}");
                 eprintln!("PASS worker-rapid-composition powerpc={powerpc} depth={actual_depth}");
+                drop(worker);
+            }
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[test]
+        fn worker_preserves_rapid_modal_composed_text_commits() {
+            use clap::Parser;
+            use super::{Args, Command, Update};
+            use std::sync::{mpsc, Arc, Mutex};
+            use std::time::{Duration, Instant};
+            struct Worker(mpsc::Sender<Command>, Option<std::thread::JoinHandle<()>>);
+            impl Drop for Worker {
+                fn drop(&mut self) {
+                    let _ = self.0.send(Command::Shutdown);
+                    if let Some(handle) = self.1.take() { let _ = handle.join(); }
+                }
+            }
+            fn wait(stage: &str, updates: &Mutex<Option<Update>>, ready: impl Fn(&Update) -> bool) -> Update {
+                let start = Instant::now();
+                loop {
+                    if let Some(update) = updates.lock().unwrap().take() {
+                        if ready(&update) { return update; }
+                    }
+                    assert!(start.elapsed() < Duration::from_secs(15), "worker did not complete composed text: {stage}");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            for (powerpc, depth) in [(false, Some(1u16)), (false, Some(8)), (true, Some(8)), (true, None)] {
+                let mut argv = vec!["gpui-menu-demo".to_string(), PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit").to_string_lossy().into_owned()];
+                if powerpc { argv.push("--prefer-powerpc".into()); }
+                if let Some(depth) = depth { argv.extend(["--screen-depth".into(), depth.to_string()]); }
+                let args = Args::try_parse_from(argv).unwrap();
+                let (sender, receiver) = mpsc::channel();
+                let updates = Arc::new(Mutex::new(None));
+                let output = updates.clone();
+                let worker = Worker(sender, Some(std::thread::spawn(move || super::run_guest(args, receiver, output, false))));
+                let initial = wait("menus", &updates, |update| update.menus.menus.iter().any(|menu| menu.id == 132));
+                let menu = initial.menus.menus.iter().find(|menu| menu.id == 132).unwrap();
+                worker.0.send(Command::Menu(132, 6, menu.guest_id, menu.generation)).unwrap();
+                let modal = wait("modal dialog", &updates, |update| update.dialogs.iter().any(|dialog| dialog.visible && dialog.items.len() == 10));
+                let dialog = modal.dialogs.iter().find(|dialog| dialog.visible && dialog.items.len() == 10).unwrap();
+                let rect = dialog.items[8].bounds;
+                for input in [MacintoshInput::MouseDown { vertical: rect.0 + 5, horizontal: rect.1 + 1 },
+                    MacintoshInput::MouseUp { vertical: rect.0 + 5, horizontal: rect.1 + 1 }] {
+                    worker.0.send(Command::Input(input)).unwrap();
+                }
+                let focused = wait("focused modal field", &updates, |update| update.dialogs.iter().any(|dialog| dialog.visible && dialog.active && dialog.edit_field == Some(9)));
+                let dialog_owner = super::super::input::dialog_text_owner(&focused.dialogs, &focused.windows).unwrap();
+                let before = focused.dialogs.iter().find(|dialog| dialog.guest_id == dialog_owner.identity.0).unwrap().clone();
+                let actual_depth = depth.unwrap_or(16);
+                let mut composition = super::super::input::GuestComposition::default();
+                let owner = super::super::input::TextInputOwner { identity: dialog_owner.identity,
+                    target: super::super::input::TextInputTarget::Dialog { item: dialog_owner.item, content_revision: dialog_owner.content_revision },
+                    text: dialog_owner.text, selection: dialog_owner.selection };
+                composition.synchronize(Some(owner.clone()));
+                let mut expected = owner.text.clone(); expected.splice(owner.selection.clone(), [0x8e, b'Z']);
+                for text in ["é", "Z"] {
+                    let (owner, bytes) = composition.commit(text).unwrap();
+                    worker.0.send(Command::CommitText(owner, bytes)).unwrap();
+                }
+                let expected_text = systemless::systems::macintosh::mac_roman::decode_mac_roman(&expected);
+                let completed = wait("modal commits", &updates, |update| update.dialogs.iter().any(|dialog|
+                    (dialog.guest_id, dialog.generation) == owner.identity && dialog.items[8].text == expected_text));
+                let after = completed.dialogs.iter().find(|dialog| (dialog.guest_id, dialog.generation) == owner.identity).unwrap();
+                let caret = (owner.selection.start + 2) as i16;
+                assert_eq!(after.items[8].selection, Some((caret, caret)));
+                assert_eq!(after.items[6].text, before.items[6].text);
+                assert_eq!(after.items[8].bounds, before.items[8].bounds);
+                // A stale request must report rejection persistently, even if
+                // the frontend misses the first worker frame carrying it.
+                worker.0.send(Command::CommitText(owner.clone(), vec![b'x'])).unwrap();
+                let rejected = wait("rejection", &updates, |update| update.text_commit_rejection.is_some());
+                assert_eq!(rejected.text_commit_rejection.as_ref().unwrap().1, owner);
+                let revision = rejected.text_commit_rejection.as_ref().unwrap().0;
+                let repeated = wait("persistent rejection", &updates, |update|
+                    update.text_commit_rejection.as_ref().is_some_and(|(value, _)| *value == revision));
+                assert_eq!(repeated.text_commit_rejection.as_ref().unwrap().1, owner);
+                let actual = repeated.dialogs.iter().find(|dialog| (dialog.guest_id, dialog.generation) == owner.identity).unwrap();
+                assert_eq!(actual.items[8].text, expected_text);
+                assert_eq!(actual.items[6].text, before.items[6].text);
+                eprintln!("PASS worker-modal-rapid-composition-and-rejection powerpc={powerpc} depth={actual_depth}");
                 drop(worker);
             }
         }
@@ -9163,10 +9254,10 @@ mod desktop {
                 settle(&mut session);
                 let before = session.runner_mut().text_edit_snapshot().records.into_iter().find(|record| record.styled).unwrap();
                 let owner = super::super::input::TextInputOwner { identity: (before.guest_id, before.generation),
-                    port: before.owner_port, text: before.text.clone(), selection: before.selection.0..before.selection.1 };
+                    target: super::super::input::TextInputTarget::Document { port: before.owner_port }, text: before.text.clone(), selection: before.selection.0..before.selection.1 };
                 for invalid in 0..4 {
                     let mut stale = owner.clone();
-                    match invalid { 0 => stale.identity.1 += 1, 1 => stale.port += 1,
+                    match invalid { 0 => stale.identity.1 += 1, 1 => stale.target = super::super::input::TextInputTarget::Document { port: before.owner_port + 1 },
                         2 => stale.text.push(b'x'), _ => stale.selection = 0..usize::MAX }
                     assert!(super::super::input::guest_commit_inputs(&mut session, &stale, b"x").is_none());
                 }
@@ -11083,6 +11174,74 @@ mod desktop {
                         current.guest_id == dialog.guest_id && current.generation == dialog.generation && current.visible
                     })
                 }), "modal Cancel failed after inside release: PPC={powerpc}, depth={depth:?}");
+            }
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn modal_platform_composition_commits_to_active_guest_item(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::{AppContext, EntityInputHandler, Bounds, test::TestWindowExt};
+            cx.update(gpui_kit::init);
+            for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app); wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(132, 6)); settle(&mut session);
+                let dialog = session.runner_mut().dialog_snapshot().into_iter().find(|dialog| dialog.visible && dialog.items.len() == 10).unwrap();
+                let bounds = dialog.items[8].bounds;
+                for input in [MacintoshInput::MouseDown { vertical: bounds.0 + 5, horizontal: bounds.1 + 1 },
+                    MacintoshInput::MouseUp { vertical: bounds.0 + 5, horizontal: bounds.1 + 1 }] {
+                    session.deliver_input(input); settle(&mut session);
+                }
+                let dialogs = session.runner_mut().dialog_snapshot();
+                let before = dialogs.iter().find(|next| next.guest_id == dialog.guest_id).unwrap().clone();
+                let (sender, receiver) = std::sync::mpsc::channel();
+                let (window, view) = cx.update(|cx| gpui_kit::open_window(Default::default(), cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap());
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.render_frame(cx);
+                    view.update(cx, |demo, cx| {
+                        demo.width = 800; demo.height = 600; demo.dialogs = dialogs;
+                        demo.windows = session.runner_mut().window_frame_snapshot();
+                        demo.host_active = Some(true); window.focus(&demo.focus, cx); cx.notify();
+                    });
+                    window.render_frame(cx);
+                    view.update(cx, |demo, cx| {
+                        let owner = demo.composition.owner().unwrap().clone();
+                        assert!(matches!(owner.target, super::super::input::TextInputTarget::Dialog { item: 9, .. }));
+                        assert!(demo.bounds_for_range(owner.selection.clone(), Bounds::default(), window, cx).is_some());
+                        demo.replace_and_mark_text_in_range(None, "日😀", Some(1..3), window, cx);
+                        assert!(demo.composition_surface(cx).is_some());
+                    });
+                    window.render_frame(cx);
+                    window.press("escape", cx);
+                    assert!(view.read(cx).composition.preedit.is_none());
+                }).unwrap();
+                receiver.try_iter().for_each(drop);
+                cx.simulate_input(window.into(), "éZ");
+                let commands: Vec<_> = receiver.try_iter().collect();
+                assert!(!commands.iter().any(|command| matches!(command,
+                    super::Command::Input(MacintoshInput::KeyDown { character, .. } | MacintoshInput::KeyUp { character, .. }) if *character != 0)),
+                    "committed text must not duplicate physical character events");
+                let commits: Vec<_> = commands.into_iter().filter_map(|command| match command {
+                    super::Command::CommitText(owner, bytes) => Some((owner, bytes)), _ => None,
+                }).collect();
+                assert_eq!(commits.len(), 2);
+                for (owner, bytes) in commits {
+                    let inputs = super::super::input::guest_commit_inputs(&mut session, &owner, &bytes).unwrap();
+                    for pair in inputs.chunks_exact(2) {
+                        session.deliver_input(pair[0]); session.deliver_input(pair[1]); settle(&mut session);
+                    }
+                }
+                let after = session.runner_mut().dialog_snapshot().into_iter().find(|next| next.guest_id == before.guest_id).unwrap();
+                assert_eq!(after.items[8].text, format!("éZ{}", before.items[8].text));
+                assert_eq!(after.items[8].selection, Some((2, 2)));
+                assert_eq!(after.items[6].text, before.items[6].text);
+                eprintln!("PASS modal-platform-composition powerpc={powerpc} depth={depth}");
+                cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
             }
         }
 
