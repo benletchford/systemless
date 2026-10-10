@@ -2152,6 +2152,7 @@ pub(crate) fn dispatch_supported_import(
             unreachable!("Desk Manager imports return through dispatch_desk_import")
         }
         PpcImportDispatcherTarget::AEInstallEventHandler
+        | PpcImportDispatcherTarget::AEInstallSpecialHandler
         | PpcImportDispatcherTarget::AEProcessAppleEvent => {
             unreachable!("Apple Event imports return through dispatch_apple_event_import")
         }

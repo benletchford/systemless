@@ -124,6 +124,7 @@ pub struct PpcAppleEventState {
     pub(super) object_support_initialized: bool,
     pub(super) object_accessors: HashMap<(bool, u32, u32), PpcObjectAccessor>,
     pub(super) object_callbacks: HashMap<u32, u32>,
+    pub(super) special_handlers: HashMap<(bool, u32), u32>,
 }
 
 impl PpcAppleEventState {
@@ -795,6 +796,19 @@ pub(super) fn dispatch_apple_event_import(
                 }
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::AEInstallSpecialHandler => {
+            // AEInstallSpecialHandler(functionClass, handler, isSysHandler).
+            // Retain the supplied routine descriptor in process-owned state.
+            // Application object callbacks use the existing native callback table.
+            let function_class = cpu.gpr[3];
+            let handler = cpu.gpr[4];
+            let is_system = cpu.gpr[5] as u8 != 0;
+            apple_events.special_handlers.insert((is_system, function_class), handler);
+            if !is_system {
+                apple_events.object_callbacks.insert(function_class, handler);
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
         PpcImportDispatcherTarget::AEInstallEventHandler => {
             Some(ppc_install_apple_event_handler(cpu, memory, apple_events))

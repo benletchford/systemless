@@ -641,3 +641,28 @@ fn native_apple_event_dispatch_enters_registered_classic_handler() {
         .descriptors
         .contains_key(&dispatch.descriptors));
 }
+
+#[test]
+fn ppc_special_handler_install_preserves_native_callbacks_and_system_scope() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "AEInstallSpecialHandler"),
+        PpcImportDispatcherTarget::AEInstallSpecialHandler,
+    );
+    let pef = synthetic_pef_with_import(b"AEInstallSpecialHandler");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let class = u32::from_be_bytes(*b"phac");
+    for (system, handler) in [(false, 0x1000), (true, 0x2000), (false, 0x3000)] {
+        loaded.cpu.gpr[3] = class;
+        loaded.cpu.gpr[4] = handler;
+        loaded.cpu.gpr[5] = u32::from(system);
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::AEInstallSpecialHandler);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            loaded.apple_events.special_handlers.get(&(system, class)),
+            Some(&handler),
+        );
+    }
+    assert_eq!(loaded.apple_events.object_callbacks.get(&class), Some(&0x3000));
+    assert_eq!(loaded.apple_events.special_handlers.get(&(true, class)), Some(&0x2000));
+    assert_eq!(loaded.apple_events.special_handlers.get(&(false, class)), Some(&0x3000));
+}
