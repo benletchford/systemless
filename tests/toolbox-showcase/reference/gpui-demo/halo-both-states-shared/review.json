@@ -1,0 +1,10 @@
+{
+  "images": [
+    {
+      "file": "selection-ppc16-suspended-none-1.png",
+      "sha256": "9b6d6a5045b881662ed17aff2745a380d98f7a89267b280165edc8e87a1b5060",
+      "scope": "Full1600x1200 composed image directly viewed without resizing. One case only; other cases are not direct appearance reviews.",
+      "capture_sha256": "8191a682714025d2ca5e054a07287ffe5a7ab42255c12aa5a0e39a0f674b3bf0"
+    }
+  ]
+}

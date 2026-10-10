@@ -1,0 +1,86 @@
+{
+  "runtime_powerpc": false,
+  "caret_state": "visible",
+  "insertion_offset": 0,
+  "multiline": false,
+  "selection": [
+    0,
+    0
+  ],
+  "spacing_style": "normal",
+  "halo_style": "underlined-both",
+  "compositor": "shared Demo renderer",
+  "active": true,
+  "caret_visible": true,
+  "drawing_intact": true,
+  "generation": 2,
+  "guest_tick": 16004,
+  "view": [
+    126,
+    74,
+    164,
+    561
+  ],
+  "scale": 1.5,
+  "depth": 8,
+  "smooth_raster_support_1_through_8": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+  ],
+  "style_runs": [
+    {
+      "start": 0,
+      "font": 3,
+      "size": 10,
+      "face": 28
+    },
+    {
+      "start": 7,
+      "font": 3,
+      "size": 12,
+      "face": 29
+    },
+    {
+      "start": 11,
+      "font": 3,
+      "size": 10,
+      "face": 28
+    },
+    {
+      "start": 13,
+      "font": 4,
+      "size": 10,
+      "face": 28
+    },
+    {
+      "start": 18,
+      "font": 3,
+      "size": 10,
+      "face": 28
+    },
+    {
+      "start": 20,
+      "font": 4,
+      "size": 14,
+      "face": 30
+    },
+    {
+      "start": 24,
+      "font": 3,
+      "size": 10,
+      "face": 28
+    },
+    {
+      "start": 26,
+      "font": 3,
+      "size": 10,
+      "face": 28
+    }
+  ]
+}
