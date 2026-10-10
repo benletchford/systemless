@@ -263,6 +263,26 @@ impl GuestComposition {
 
     pub fn cancel(&mut self) { self.preedit = None; }
 
+    /// Host replacement ranges use document UTF-16 offsets. A range inside
+    /// staged Unicode can be edited without changing the pinned guest range.
+    /// Return the insertion offset within the resulting stage for its selection.
+    pub fn replacement_text(&self, range: Option<&std::ops::Range<usize>>, text: &str)
+        -> Option<(String, usize)> {
+        let owner = self.owner.as_ref()?;
+        let Some(range) = range else { return Some((text.into(), 0)); };
+        let Some(preedit) = &self.preedit else {
+            return (range == &owner.selection).then(|| (text.into(), 0));
+        };
+        let start = range.start.checked_sub(owner.selection.start)?;
+        let end = range.end.checked_sub(owner.selection.start)?;
+        if start > end { return None; }
+        let units: Vec<_> = preedit.text.encode_utf16().collect();
+        // Decoding the slices rejects ranges that split a surrogate pair.
+        let prefix = String::from_utf16(units.get(..start)?).ok()?;
+        let suffix = String::from_utf16(units.get(end..)?).ok()?;
+        Some((prefix + text + &suffix, start))
+    }
+
     /// Return a pinned request for the guest event path. Reject the entire
     /// commit on unrepresentable Unicode; never synthesize replacement glyphs.
     pub fn commit(&mut self, text: &str) -> Option<(TextInputOwner, Vec<u8>)> {
@@ -341,6 +361,31 @@ mod composition_tests {
         let predicted = state.owner().cloned();
         state.reject(&first);
         assert_eq!(state.owner().cloned(), predicted);
+    }
+
+    #[test]
+    fn composition_replaces_marked_subranges_without_changing_guest_ownership() {
+        let mut state = GuestComposition::default();
+        state.synchronize(Some(owner()));
+        assert!(state.mark("a😀Z", 1..3));
+        let unchanged = state.preedit.clone();
+        for invalid in [0..2, 2..3, 3..3, 4..6, 4..2] {
+            assert!(state.replacement_text(Some(&invalid), "é").is_none());
+            assert_eq!(state.preedit, unchanged);
+        }
+        let (text, offset) = state.replacement_text(Some(&(2..4)), "é").unwrap();
+        assert_eq!(text, "aéZ");
+        assert_eq!(offset, 1);
+        assert!(state.mark(&text, offset..offset + 1));
+        assert_eq!(state.owner(), Some(&owner()), "staging must not alter pinned guest state");
+        let (text, offset) = state.replacement_text(Some(&(2..2)), "x").unwrap();
+        assert_eq!((text.as_str(), offset), ("axéZ", 1));
+        let (text, _) = state.replacement_text(Some(&(2..3)), "").unwrap();
+        assert_eq!(text, "aZ");
+        let (pinned, bytes) = state.commit(&text).unwrap();
+        assert_eq!(pinned, owner());
+        assert_eq!(bytes, b"aZ");
+        assert_eq!(state.owner().unwrap().text, b"aaZb");
     }
 
     #[test]

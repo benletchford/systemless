@@ -420,11 +420,6 @@ impl Demo {
         Some(text)
     }
 
-    fn composition_range_allowed(&self, range: Option<&Range<usize>>) -> bool {
-        let Some(owner) = self.composition.owner() else { return false; };
-        range.is_none_or(|range| range == &owner.selection || self.composition.preedit.as_ref().is_some_and(|preedit|
-            range == &(owner.selection.start..owner.selection.start + preedit.text.encode_utf16().count())))
-    }
 }
 
 impl EntityInputHandler for Demo {
@@ -455,17 +450,22 @@ impl EntityInputHandler for Demo {
     }
     fn replace_text_in_range(&mut self, range: Option<Range<usize>>, text: &str,
         _: &mut Window, cx: &mut Context<Self>) {
-        if !self.composition_range_allowed(range.as_ref()) { return; }
-        if let Some((owner, bytes)) = self.composition.commit(text) {
+        let Some((text, _)) = self.composition.replacement_text(range.as_ref(), text) else { return; };
+        if let Some((owner, bytes)) = self.composition.commit(&text) {
             let _ = self.commands.send(Command::CommitText(owner, bytes));
             cx.notify();
         }
     }
     fn replace_and_mark_text_in_range(&mut self, range: Option<Range<usize>>, text: &str,
         selected: Option<Range<usize>>, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.composition_range_allowed(range.as_ref()) { return; }
         let end = text.encode_utf16().count();
-        if self.composition.mark(text, selected.unwrap_or(end..end)) { cx.notify(); }
+        let selected = selected.unwrap_or(end..end);
+        // Selection is relative to the inserted text, not the retained prefix.
+        if selected.start > selected.end || selected.end > end { return; }
+        let Some((text, offset)) = self.composition.replacement_text(range.as_ref(), text) else { return; };
+        let Some(start) = selected.start.checked_add(offset) else { return; };
+        let Some(end) = selected.end.checked_add(offset) else { return; };
+        if self.composition.mark(&text, start..end) { cx.notify(); }
     }
     fn bounds_for_range(&mut self, range: Range<usize>, _: Bounds<Pixels>,
         _: &mut Window, _: &mut Context<Self>) -> Option<Bounds<Pixels>> {

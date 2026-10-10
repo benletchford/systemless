@@ -9660,7 +9660,7 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
         fn platform_text_commit_reaches_guest_without_duplicate_character_events(cx: &mut gpui_kit::TestAppContext) {
-            use gpui_kit::{AppContext, test::TestWindowExt};
+            use gpui_kit::{AppContext, EntityInputHandler, test::TestWindowExt};
             cx.update(gpui_kit::init);
             for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
                 let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
@@ -9758,6 +9758,10 @@ mod desktop {
                         let mut adjusted = None;
                         assert_eq!(demo.text_for_range(start..start + 3, &mut adjusted, window, cx), Some("日😀".into()));
                         assert!(demo.text_for_range(start + 1..start + 2, &mut adjusted, window, cx).is_none());
+                        demo.replace_and_mark_text_in_range(Some(start + 1..start + 3), "é", Some(0..1), window, cx);
+                        assert_eq!(demo.marked_text_range(window, cx), Some(start..start + 2));
+                        assert_eq!(demo.selected_text_range(false, window, cx).unwrap().range, start + 1..start + 2);
+                        assert_eq!(demo.text_for_range(start..start + 2, &mut adjusted, window, cx), Some("日é".into()));
                         assert!(demo.composition_surface(cx).is_some());
                         assert_eq!(demo.text_edits.iter().find(|record| record.guest_id == before.guest_id).unwrap(), &before);
                     });
@@ -9772,6 +9776,15 @@ mod desktop {
                 }).unwrap();
                 assert!(!receiver.try_iter().any(|command| matches!(command, super::Command::Input(_) | super::Command::CommitText(..))),
                     "cancelling host preedit must preserve guest text");
+
+                cx.update_window(window.into(), |_, window, cx| {
+                    view.update(cx, |demo, cx| {
+                        let start = demo.composition.owner().unwrap().selection.start;
+                        demo.replace_and_mark_text_in_range(None, "z😀", Some(1..3), window, cx);
+                        demo.replace_text_in_range(Some(start + 1..start + 3), "z", window, cx);
+                        assert!(demo.composition.preedit.is_none());
+                    });
+                }).unwrap();
                 cx.simulate_input(window.into(), "zz");
                 let commands: Vec<_> = receiver.try_iter().collect();
                 assert!(!commands.iter().any(|command| matches!(command, super::Command::Input(_))),
@@ -9779,14 +9792,26 @@ mod desktop {
                 let commits: Vec<_> = commands.into_iter().filter_map(|command| match command {
                     super::Command::CommitText(owner, bytes) => Some((owner, bytes)), _ => None,
                 }).collect();
-                assert_eq!(commits.len(), 2, "rapid platform characters must each commit exactly once");
-                for (owner, bytes) in &commits {
-                    assert_eq!(bytes, b"z");
-                    let inputs = super::super::input::guest_commit_inputs(&mut session, owner, bytes).unwrap();
-                    for pair in inputs.chunks_exact(2) { session.deliver_input(pair[0]); session.deliver_input(pair[1]); settle(&mut session); }
+                assert_eq!(commits.len(), 3, "corrected stage and rapid platform characters must each commit exactly once");
+                for (index, (owner, bytes)) in commits.iter().enumerate() {
+                    assert_eq!(bytes.as_slice(), if index == 0 { &b"zz"[..] } else { &b"z"[..] });
+                    let inputs = super::super::input::guest_commit_inputs(&mut session, owner, bytes).unwrap_or_else(|| panic!("rejected commit {index} powerpc={powerpc} depth={depth} owner={owner:?} records={:?}", session.runner_mut().text_edit_snapshot().records));
+                    for pair in inputs.chunks_exact(2) {
+                        session.deliver_input(pair[0]); session.deliver_input(pair[1]);
+                        // Two ticks can stop PPC between EraseRect and TEUpdate.
+                        // Match the worker's event-completion boundary rather
+                        // than treating a mid-redraw snapshot as final ownership.
+                        assert!((0..100).any(|_| {
+                            settle(&mut session);
+                            let events = session.runner().event_manager_snapshot();
+                            events.queue_len == 0 && events.last_record.is_some_and(|event| event.what == 0)
+                                && session.runner_mut().text_edit_snapshot().records.iter().any(|record|
+                                    (record.guest_id, record.generation) == owner.identity && record.drawing_intact)
+                        }), "guest edit must finish and retain qualified drawing");
+                    }
                 }
                 let after = session.runner_mut().text_edit_snapshot().records.into_iter().find(|record| record.styled).unwrap();
-                let mut expected = before.text.clone(); expected.splice(before.selection.0..before.selection.1, [b'z', b'z']);
+                let mut expected = before.text.clone(); expected.splice(before.selection.0..before.selection.1, [b'z', b'z', b'z', b'z']);
                 assert_eq!(after.text, expected);
                 eprintln!("PASS platform-text-commit powerpc={powerpc} depth={depth}");
                 cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
@@ -11874,6 +11899,12 @@ mod desktop {
                         assert!(matches!(owner.target, super::super::input::TextInputTarget::Dialog { item: 9, .. }));
                         assert!(demo.bounds_for_range(owner.selection.clone(), Bounds::default(), window, cx).is_some());
                         demo.replace_and_mark_text_in_range(None, "日😀", Some(1..3), window, cx);
+                        // Correct a subrange in document UTF-16 coordinates.
+                        let start = owner.selection.start;
+                        demo.replace_and_mark_text_in_range(Some(start + 1..start + 3), "é", Some(0..1), window, cx);
+                        assert_eq!(demo.composition.preedit.as_ref().unwrap().text, "日é");
+                        assert_eq!(demo.selected_text_range(false, window, cx).unwrap().range, start + 1..start + 2);
+                        assert_eq!(demo.marked_text_range(window, cx), Some(start..start + 2));
                         assert!(demo.composition_surface(cx).is_some());
                     });
                     window.render_frame(cx);
@@ -11881,7 +11912,18 @@ mod desktop {
                     assert!(view.read(cx).composition.preedit.is_none());
                 }).unwrap();
                 receiver.try_iter().for_each(drop);
-                cx.simulate_input(window.into(), "éZ");
+                cx.update_window(window.into(), |_, window, cx| {
+                    view.update(cx, |demo, cx| {
+                        let start = demo.composition.owner().unwrap().selection.start;
+                        demo.replace_and_mark_text_in_range(None, "é😀", Some(1..3), window, cx);
+                        // Commit a correction of just the surrogate-pair range.
+                        // The retained accent and replacement both go through
+                        // the active guest DialogSelect event path together.
+                        demo.replace_text_in_range(Some(start + 1..start + 3), "Z", window, cx);
+                        assert!(demo.composition.preedit.is_none());
+                    });
+                }).unwrap();
+                cx.simulate_input(window.into(), "Q");
                 let commands: Vec<_> = receiver.try_iter().collect();
                 assert!(!commands.iter().any(|command| matches!(command,
                     super::Command::Input(MacintoshInput::KeyDown { character, .. } | MacintoshInput::KeyUp { character, .. }) if *character != 0)),
@@ -11897,8 +11939,8 @@ mod desktop {
                     }
                 }
                 let after = session.runner_mut().dialog_snapshot().into_iter().find(|next| next.guest_id == before.guest_id).unwrap();
-                assert_eq!(after.items[8].text, format!("éZ{}", before.items[8].text));
-                assert_eq!(after.items[8].selection, Some((2, 2)));
+                assert_eq!(after.items[8].text, format!("éZQ{}", before.items[8].text));
+                assert_eq!(after.items[8].selection, Some((3, 3)));
                 assert_eq!(after.items[6].text, before.items[6].text);
                 eprintln!("PASS modal-platform-composition powerpc={powerpc} depth={depth}");
                 cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
@@ -11951,6 +11993,12 @@ mod desktop {
                         assert!(matches!(owner.target, super::super::input::TextInputTarget::StandardFile { new_folder: actual } if actual == new_folder));
                         assert!(demo.bounds_for_range(owner.selection.clone(), Bounds::default(), window, cx).is_some());
                         demo.replace_and_mark_text_in_range(None, "日😀", Some(1..3), window, cx);
+                        // Correct a subrange in document UTF-16 coordinates.
+                        let start = owner.selection.start;
+                        demo.replace_and_mark_text_in_range(Some(start + 1..start + 3), "é", Some(0..1), window, cx);
+                        assert_eq!(demo.composition.preedit.as_ref().unwrap().text, "日é");
+                        assert_eq!(demo.selected_text_range(false, window, cx).unwrap().range, start + 1..start + 2);
+                        assert_eq!(demo.marked_text_range(window, cx), Some(start..start + 2));
                         assert!(demo.composition_surface(cx).is_some());
                     });
                     window.render_frame(cx);
@@ -11958,7 +12006,15 @@ mod desktop {
                     assert!(view.read(cx).composition.preedit.is_none());
                 }).unwrap();
                 receiver.try_iter().for_each(drop);
-                cx.simulate_input(window.into(), "éZ");
+                cx.update_window(window.into(), |_, window, cx| {
+                    view.update(cx, |demo, cx| {
+                        let start = demo.composition.owner().unwrap().selection.start;
+                        demo.replace_and_mark_text_in_range(None, "é😀", Some(1..3), window, cx);
+                        demo.replace_text_in_range(Some(start + 1..start + 3), "Z", window, cx);
+                        assert!(demo.composition.preedit.is_none());
+                    });
+                }).unwrap();
+                cx.simulate_input(window.into(), "Q");
                 let commands: Vec<_> = receiver.try_iter().collect();
                 assert!(!commands.iter().any(|command| matches!(command,
                     super::Command::Input(MacintoshInput::KeyDown { character, .. } | MacintoshInput::KeyUp { character, .. }) if *character != 0)),
@@ -11976,9 +12032,9 @@ mod desktop {
                 }
                 let after = session.runner().standard_file_snapshot().unwrap();
                 let actual = super::super::input::standard_file_text_owner(&after).unwrap();
-                let mut expected = original_owner.text.clone(); expected.splice(original_owner.selection.clone(), [0x8e, b'Z']);
+                let mut expected = original_owner.text.clone(); expected.splice(original_owner.selection.clone(), [0x8e, b'Z', b'Q']);
                 assert_eq!(actual.text, expected);
-                assert_eq!(actual.selection, original_owner.selection.start+2..original_owner.selection.start+2);
+                assert_eq!(actual.selection, original_owner.selection.start+3..original_owner.selection.start+3);
                 assert_eq!(after.directory_id, before.directory_id); assert_eq!(after.entries, before.entries);
                 if new_folder { assert_eq!(after.name, parent.name); }
                 // A modal transition must cancel pending marked text and replace ownership.

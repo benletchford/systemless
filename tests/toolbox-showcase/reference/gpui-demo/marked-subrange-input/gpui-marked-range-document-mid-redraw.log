@@ -1,0 +1,157 @@
+warning: method `instrument` is never used
+   --> src/systems/macintosh/sound.rs:609:19
+    |
+403 | impl SndChannel {
+    | --------------- method in this implementation
+...
+609 |     pub(crate) fn instrument(&self) -> Option<&SampledInstrument> {
+    |                   ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `dispatch_toolbox` is never used
+    --> src/systems/macintosh/trap/toolbox.rs:6187:19
+     |
+1169 | impl super::TrapDispatcher {
+     | -------------------------- method in this implementation
+...
+6187 |     pub(crate) fn dispatch_toolbox<C: CpuOps>(
+     |                   ^^^^^^^^^^^^^^^^
+
+warning: `systemless` (lib) generated 2 warnings
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+warning: unused variable: `cx`
+     --> src/bin/gpui_demo.rs:10007:65
+      |
+10007 |                     cx.update_window(window.into(), |_, window, cx| window.remove_window()).unwrap();
+      |                                                                 ^^ help: if this is intentional, prefix it with an underscore: `_cx`
+      |
+      = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `game`, `prefer_powerpc`, `screen_depth`, and `debug_socket` are never read
+  --> src/bin/gpui_demo.rs:4:9
+   |
+ 3 | pub(crate) struct LaunchOptions {
+   |                   ------------- fields in this struct
+ 4 |     pub game: std::path::PathBuf,
+   |         ^^^^
+ 5 |     pub prefer_powerpc: bool,
+   |         ^^^^^^^^^^^^^^
+ 6 |     pub screen_depth: Option<u16>,
+   |         ^^^^^^^^^^^^
+...
+12 |     pub debug_socket: Option<std::path::PathBuf>,
+   |         ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `launch` is never used
+  --> src/bin/gpui_demo.rs:17:15
+   |
+17 | pub(crate) fn launch(options: LaunchOptions) {
+   |               ^^^^^^
+
+warning: field `geometry` is never read
+    --> src/bin/gpui_demo_text.rs:1434:9
+     |
+1433 | pub(crate) struct StyledTextEditLine {
+     |                   ------------------ field in this struct
+1434 |     pub geometry: systemless::runner::TextEditLineGeometry,
+     |         ^^^^^^^^
+     |
+     = note: `StyledTextEditLine` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `pixels_with_selection` is never used
+    --> src/bin/gpui_demo_text.rs:1822:12
+     |
+1788 | impl StyledTextEditLine {
+     | ----------------------- method in this implementation
+...
+1822 |     pub fn pixels_with_selection(
+     |            ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_ink` is never used
+    --> src/bin/gpui_demo_text.rs:1885:15
+     |
+1885 | pub(crate) fn classic_styled_text_edit_ink(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_selection` is never used
+    --> src/bin/gpui_demo_text.rs:1891:15
+     |
+1891 | pub(crate) fn classic_styled_text_edit_selection(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_solid_caret` is never used
+    --> src/bin/gpui_demo_text.rs:1900:15
+     |
+1900 | pub(crate) fn classic_styled_text_edit_solid_caret(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_pixels` is never used
+    --> src/bin/gpui_demo_text.rs:1918:4
+     |
+1918 | fn classic_styled_text_pixels(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_pixels_with_background` is never used
+    --> src/bin/gpui_demo_text.rs:1925:4
+     |
+1925 | fn classic_styled_text_pixels_with_background(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `launch` is never used
+    --> src/bin/gpui_demo.rs:5124:19
+     |
+5124 |     pub(super) fn launch(options: super::LaunchOptions) {
+     |                   ^^^^^^
+
+warning: `systemless` (example "gpui-menu-demo" test) generated 11 warnings (run `cargo fix --example "gpui-menu-demo" -p systemless --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.90s
+     Running unittests src/bin/gpui_demo.rs (target/debug/examples/gpui_menu_demo-5b8d3de0cdbde419)
+
+running 1 test
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1D0 bkLim=$0044A1D0 zcbFree=2400656 (2.3MB)
+[INIT] Set MainDevice=$00226274, TheGDevice=$00226274 (ptr=$00226240)
+[INIT] GDevice chain: $8A4→$00226274→$00226240 gdPMap→$0022623C→$00226208
+[INIT]   PixMap: rowBytes=$8070 bounds=(0,0,600,800) pixelSize=1
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAEE4 randSeed_addr=$003FAE66
+[INITGRAF] screenBits: base=$07F80000 rowBytes=112 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$002262D0 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00226BCC bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00226BCC pixmap=$002058D8 bounds=(50,40,420,600) goAway=true
+PASS platform-text-commit powerpc=false depth=1
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1D0 bkLim=$0044A1D0 zcbFree=2400656 (2.3MB)
+[INIT] Set MainDevice=$00226A64, TheGDevice=$00226A64 (ptr=$00226A30)
+[INIT] GDevice chain: $8A4→$00226A64→$00226A30 gdPMap→$00226A2C→$002269F8
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAEE4 randSeed_addr=$003FAE66
+[INITGRAF] screenBits: base=$07F80000 rowBytes=816 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$00226AC0 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$002273BC bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$002273BC pixmap=$002058D8 bounds=(50,40,420,600) goAway=true
+PASS platform-text-commit powerpc=false depth=8
+
+thread 'desktop::tests::platform_text_commit_reaches_guest_without_duplicate_character_events' (699899) panicked at src/bin/gpui_demo.rs:9798:121:
+rejected commit 2 powerpc=true depth=8 owner=TextInputOwner { identity: (50347184, 2), target: Document { port: 50333280 }, text: [80, 122, 122, 122, 108, 97, 105, 110, 32, 32, 66, 111, 108, 100, 32, 32, 67, 111, 108, 111, 114, 32, 32, 83, 105, 122, 101, 32, 32, 70, 111, 110, 116], selection: 4..4 } records=[TextEditSnapshot { drawing_intact: false, painted_regions: [], guest_id: 50339776, generation: 1, owner_port: 50333280, global_dest_rect: Some((126, 74, 261, 366)), global_view_rect: Some((126, 74, 261, 366)), dest_rect: (76, 34, 211, 326), view_rect: (76, 34, 211, 326), text: [84, 101, 120, 116, 69, 100, 105, 116, 32, 109, 97, 110, 97, 103, 101, 115, 32, 115, 116, 121, 108, 101, 100, 32, 97, 110, 100, 32, 112, 108, 97, 105, 110, 32, 116, 101, 120, 116, 32, 102, 111, 114, 109, 97, 116, 116, 105, 110, 103, 44, 32, 97, 117, 116, 111, 109, 97, 116, 105, 99, 32, 119, 111, 114, 100, 32, 119, 114, 97, 112, 112, 105, 110, 103, 44, 32, 115, 101, 108, 101, 99, 116, 105, 111, 110, 32, 104, 105, 103, 104, 108, 105, 103, 104, 116, 105, 110, 103, 44, 32, 97, 110, 100, 32, 99, 108, 105, 112, 98, 111, 97, 114, 100, 32, 115, 99, 114, 97, 112, 32, 111, 112, 101, 114, 97, 116, 105, 111, 110, 115, 46, 13, 13, 67, 108, 105, 99, 107, 32, 116, 111, 32, 109, 111, 118, 101, 32, 116, 104, 101, 32, 105, 110, 115, 101, 114, 116, 105, 111, 110, 32, 112, 111, 105, 110, 116, 32, 111, 114, 32, 100, 114, 97, 103, 32, 97, 99, 114, 111, 115, 115, 32, 99, 104, 97, 114, 97, 99, 116, 101, 114, 115, 32, 116, 111, 32, 115, 101, 108, 101, 99, 116, 32, 116, 101, 120, 116, 46], selection: (0, 0), active: false, caret_visible: true, clips_line_offsets_to_visible_text: true, justification: 0, line_count: 6, line_starts: Some([0, 61, 120, 132, 133, 196, 208]), line_height: 12, font_ascent: 9, font: 1, face: 0, size: 9, styled: false, style_runs: None, line_metrics: None, line_layout_policy: PpcRunMetrics, paint: None }, TextEditSnapshot { drawing_intact: false, painted_regions: [], guest_id: 50347184, generation: 2, owner_port: 50333280, global_dest_rect: Some((126, 74, 164, 561)), global_view_rect: Some((126, 74, 164, 561)), dest_rect: (76, 34, 114, 521), view_rect: (76, 34, 114, 521), text: [80, 122, 122, 122, 108, 97, 105, 110, 32, 32, 66, 111, 108, 100, 32, 32, 67, 111, 108, 111, 114, 32, 32, 83, 105, 122, 101, 32, 32, 70, 111, 110, 116], selection: (4, 4), active: true, caret_visible: true, clips_line_offsets_to_visible_text: true, justification: 0, line_count: 1, line_starts: Some([0, 33]), line_height: -1, font_ascent: -1, font: 768, face: 62, size: -1, styled: true, style_runs: Some([TextEditStyleRunSnapshot { start: 0, font: 3, face: 0, size: 10, color: (0, 0, 0), line_height: 14, ascent: 10 }, TextEditStyleRunSnapshot { start: 10, font: 3, face: 1, size: 12, color: (4369, 8738, 56797), line_height: 17, ascent: 12 }, TextEditStyleRunSnapshot { start: 14, font: 3, face: 0, size: 10, color: (0, 0, 0), line_height: 14, ascent: 10 }, TextEditStyleRunSnapshot { start: 16, font: 4, face: 0, size: 10, color: (65535, 8738, 8738), line_height: 13, ascent: 9 }, TextEditStyleRunSnapshot { start: 21, font: 3, face: 0, size: 10, color: (0, 0, 0), line_height: 14, ascent: 10 }, TextEditStyleRunSnapshot { start: 23, font: 4, face: 2, size: 14, color: (4369, 39321, 8738), line_height: 18, ascent: 12 }, TextEditStyleRunSnapshot { start: 27, font: 3, face: 0, size: 10, color: (0, 0, 0), line_height: 14, ascent: 10 }, TextEditStyleRunSnapshot { start: 29, font: 3, face: 4, size: 10, color: (34952, 8738, 39321), line_height: 14, ascent: 10 }]), line_metrics: Some([(18, 12)]), line_layout_policy: PpcRunMetrics, paint: Some(TextEditPaintSnapshot { depth: 8, mode: 1, char_extra: PpcPacked(0), space_extra: 0, style_ink: [TextEditInkSnapshot { pixel: 255, rgb: [0, 0, 0], inverted_rgb: [255, 255, 255] }, TextEditInkSnapshot { pixel: 205, rgb: [0, 84, 218], inverted_rgb: [218, 179, 179] }, TextEditInkSnapshot { pixel: 255, rgb: [0, 0, 0], inverted_rgb: [255, 255, 255] }, TextEditInkSnapshot { pixel: 28, rgb: [255, 84, 84], inverted_rgb: [0, 205, 0] }, TextEditInkSnapshot { pixel: 255, rgb: [0, 0, 0], inverted_rgb: [255, 255, 255] }, TextEditInkSnapshot { pixel: 196, rgb: [0, 179, 84], inverted_rgb: [218, 135, 0] }, TextEditInkSnapshot { pixel: 255, rgb: [0, 0, 0], inverted_rgb: [255, 255, 255] }, TextEditInkSnapshot { pixel: 98, rgb: [179, 84, 179], inverted_rgb: [84, 179, 218] }], solid_caret: None }) }]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test desktop::tests::platform_text_commit_reaches_guest_without_duplicate_character_events ... FAILED
+
+failures:
+
+failures:
+    desktop::tests::platform_text_commit_reaches_guest_without_duplicate_character_events
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 155 filtered out; finished in 5.35s
+
+error: test failed, to rerun pass `--example gpui-menu-demo`
