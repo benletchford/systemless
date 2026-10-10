@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.86.0](https://github.com/benletchford/systemless/compare/v0.85.0...v0.86.0) (2026-10-10)
+
+
+### Features
+
+* **catalogue:** enable FiveStones browser gameplay ([c86ebe7](https://github.com/benletchford/systemless/commit/c86ebe7ab459fee14b62c68e587b928b90b8c3cb))
+
 ## [0.85.0](https://github.com/benletchford/systemless/compare/v0.84.1...v0.85.0) (2026-10-10)
 
 
