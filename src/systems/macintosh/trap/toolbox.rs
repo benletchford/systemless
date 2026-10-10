@@ -23,7 +23,6 @@ use super::dispatch::{
 };
 use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
 
-static TRACE_MUNGER: OnceLock<bool> = OnceLock::new();
 static TRACE_LIST: OnceLock<bool> = OnceLock::new();
 static TRACE_ENTROPY: OnceLock<bool> = OnceLock::new();
 static TRACE_TITLE_DIAG: OnceLock<bool> = OnceLock::new();
@@ -917,7 +916,7 @@ fn nearest_color_index(palette: &[[u8; 3]], r: u8, g: u8, b: u8) -> u8 {
 }
 
 fn trace_munger_enabled() -> bool {
-    *TRACE_MUNGER.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_MUNGER").is_some())
+    crate::text_utils::trace_munger_enabled()
 }
 
 fn trace_list_manager_enabled() -> bool {
@@ -4928,52 +4927,21 @@ impl super::TrapDispatcher {
         } else {
             Vec::new()
         };
+
+        let eval = crate::text_utils::evaluate_munger(
+            &data,
+            offset,
+            ptr1 == 0,
+            &needle,
+            len1,
+            ptr2 == 0,
+            &replacement,
+            len2,
+        );
+
         let should_trace = trace_munger_enabled();
-
-        let offset = offset as usize;
-        if offset > data.len() {
-            return -1;
-        }
-
-        let mut replace_offset = offset;
-        let mut replace_len = len1.max(0) as usize;
-
-        if ptr1 != 0 && len1 > 0 {
-            let mut search = offset;
-            let mut found = None;
-
-            while search < data.len() {
-                let remaining = data.len() - search;
-                let compare_len = needle.len().min(remaining);
-                if compare_len > 0 && data[search..search + compare_len] == needle[..compare_len] {
-                    found = Some((search, compare_len == needle.len()));
-                    break;
-                }
-                search += 1;
-            }
-
-            let Some((found_offset, full_match)) = found else {
-                return -1;
-            };
-
-            replace_offset = found_offset;
-            if full_match {
-                replace_len = needle.len();
-            } else {
-                // BasiliskII/System 7.5 ROM does not perform the Apple-
-                // documented tail-partial replacement here; it treats the
-                // partial tail match as not found and leaves the destination
-                // bytes unchanged.
-                return -1;
-            }
-        } else if ptr1 == 0 && len1 < 0 {
-            replace_len = data.len() - offset;
-        }
-
-        replace_len = replace_len.min(data.len().saturating_sub(replace_offset));
-
-        if ptr2 == 0 && ptr1 != 0 {
-            if should_trace {
+        if should_trace {
+            if eval.new_data.is_none() && eval.is_success() {
                 eprintln!(
                     "[MUNGER] @${:08X} h=${:08X} ptr=${:08X} old_size={} offset={} len1={} len2={} needle={:02X?} replacement=<search-only> before={:02X?} result={}",
                     trap_site,
@@ -4985,17 +4953,30 @@ impl super::TrapDispatcher {
                     len2,
                     needle,
                     data,
-                    replace_offset
+                    eval.return_offset
+                );
+            } else if let Some(ref new_data) = eval.new_data {
+                eprintln!(
+                    "[MUNGER] @${:08X} h=${:08X} ptr=${:08X} old_size={} offset={} len1={} len2={} needle={:02X?} replacement={:02X?} before={:02X?} after={:02X?} result={}",
+                    trap_site,
+                    handle,
+                    data_ptr,
+                    old_size,
+                    offset,
+                    len1,
+                    len2,
+                    needle,
+                    replacement,
+                    data,
+                    new_data,
+                    eval.return_offset
                 );
             }
-            return replace_offset as i32;
         }
 
-        let tail_start = replace_offset + replace_len;
-        let mut new_data = Vec::with_capacity(data.len() - replace_len + replacement.len());
-        new_data.extend_from_slice(&data[..replace_offset]);
-        new_data.extend_from_slice(&replacement);
-        new_data.extend_from_slice(&data[tail_start..]);
+        let Some(new_data) = eval.new_data else {
+            return eval.return_offset;
+        };
 
         if new_data.is_empty() {
             if data_ptr != 0 {
@@ -5018,25 +4999,7 @@ impl super::TrapDispatcher {
             bus.write_bytes(data_ptr, &new_data);
         }
 
-        let result = (replace_offset + replacement.len()) as i32;
-        if should_trace {
-            eprintln!(
-                "[MUNGER] @${:08X} h=${:08X} ptr=${:08X} old_size={} offset={} len1={} len2={} needle={:02X?} replacement={:02X?} before={:02X?} after={:02X?} result={}",
-                trap_site,
-                handle,
-                data_ptr,
-                old_size,
-                offset,
-                len1,
-                len2,
-                needle,
-                replacement,
-                data,
-                new_data,
-                result
-            );
-        }
-        result
+        eval.return_offset
     }
 
     /// Minimal KeyTranslate / KeyTrans helper for the nominal
@@ -7180,7 +7143,7 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume I 1985, I-468 to I-469;
             // Text 1993, 5-75 to 5-76
             // Munger ($A9E0): Searches/replaces bytes in a handle, including insert/delete and tail-partial-match behavior
-            (true, 0x1E0) => {
+            (true, crate::text_utils::MUNGER_TRAP_OFFSET) => {
                 let sp = cpu.read_reg(Register::A7);
                 let trap_site = cpu.read_reg(Register::PC).wrapping_sub(2);
                 let len2 = bus.read_long(sp) as i32;
@@ -7202,7 +7165,7 @@ impl super::TrapDispatcher {
             // namespace. BasiliskII treats it as an observed no-op/no-pop
             // stub: callers keep the original handle contents and the stack
             // frame remains unbalanced after the call.
-            (true, 0x019) => Ok(()),
+            (true, crate::text_utils::XMUNGER_TRAP_OFFSET) => Ok(()),
 
             // PBOpenRF / PBHOpenRF ($A00A / $A20A) — Open Resource Fork
             // FUNCTION PBOpenRF (paramBlock: ParmBlkPtr; async: BOOLEAN): OSErr;

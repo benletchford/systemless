@@ -92,67 +92,86 @@ pub(crate) fn ppc_munger_compatibility(
 ) -> u32 {
     let handle = cpu.gpr[3];
     let offset = cpu.gpr[4] as i32;
-    let search_len = cpu.gpr[6] as i32;
-    let replacement_len = cpu.gpr[8] as i32;
-    if offset < 0 || search_len < 0 || replacement_len < 0 {
+    let ptr1 = cpu.gpr[5];
+    let len1 = cpu.gpr[6] as i32;
+    let ptr2 = cpu.gpr[7];
+    let len2 = cpu.gpr[8] as i32;
+
+    if handle == 0 || offset < 0 {
+        *last_mem_error = PPC_NIL_HANDLE_ERR;
         return u32::MAX;
     }
-    let Some(mut contents) = ppc_handle_bytes(memory, handles, handle) else {
+    let Some(contents) = ppc_handle_bytes(memory, handles, handle) else {
         *last_mem_error = PPC_NIL_HANDLE_ERR;
         return u32::MAX;
     };
-    let start = offset as usize;
-    if start > contents.len() {
-        return u32::MAX;
-    }
-    let Some(needle) = ppc_memory_read_bytes(memory, cpu.gpr[5], search_len as u32)
-        .or_else(|| (search_len == 0).then(Vec::new))
-    else {
-        return u32::MAX;
-    };
-    let position = if needle.is_empty() {
-        Some(start)
+    let needle = if ptr1 != 0 && len1 > 0 {
+        match ppc_memory_read_bytes(memory, ptr1, len1 as u32) {
+            Some(bytes) => bytes,
+            None => {
+                *last_mem_error = PPC_PARAM_ERR;
+                return u32::MAX;
+            }
+        }
     } else {
-        contents[start..]
-            .windows(needle.len())
-            .position(|window| window == needle)
-            .map(|relative| start + relative)
+        Vec::new()
     };
-    let Some(position) = position else {
-        return u32::MAX;
+    let replacement = if ptr2 != 0 && len2 > 0 {
+        match ppc_memory_read_bytes(memory, ptr2, len2 as u32) {
+            Some(bytes) => bytes,
+            None => {
+                *last_mem_error = PPC_PARAM_ERR;
+                return u32::MAX;
+            }
+        }
+    } else {
+        Vec::new()
     };
-    if cpu.gpr[7] == 0 && replacement_len == 0 {
-        return u32::try_from(position).unwrap_or(u32::MAX);
-    }
-    let Some(replacement) = ppc_memory_read_bytes(memory, cpu.gpr[7], replacement_len as u32)
-        .or_else(|| (replacement_len == 0).then(Vec::new))
-    else {
-        return u32::MAX;
-    };
-    contents.splice(position..position + needle.len(), replacement);
-    let result = ppc_allocator_view_resize_handle(
-        allocator,
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-        handle,
-        u32::try_from(contents.len()).unwrap_or(u32::MAX),
+
+    let eval = crate::text_utils::evaluate_munger(
+        &contents,
+        offset,
+        ptr1 == 0,
+        &needle,
+        len1,
+        ptr2 == 0,
+        &replacement,
+        len2,
     );
-    *last_mem_error = result;
-    if result != PPC_NO_ERR {
+
+    if eval.return_offset < 0 {
         return u32::MAX;
     }
-    let Some(ptr) = memory.read_u32_be(handle) else {
-        return u32::MAX;
-    };
-    if memory.write_bytes(ptr, &contents).is_none() {
-        *last_mem_error = PPC_PARAM_ERR;
-        return u32::MAX;
+
+    if let Some(new_data) = eval.new_data {
+        let result = ppc_allocator_view_resize_handle(
+            allocator,
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            handle,
+            u32::try_from(new_data.len()).unwrap_or(u32::MAX),
+        );
+        *last_mem_error = result;
+        if result != PPC_NO_ERR {
+            return u32::MAX;
+        }
+        let Some(ptr) = memory.read_u32_be(handle) else {
+            return u32::MAX;
+        };
+        if memory.write_bytes(ptr, &new_data).is_none() {
+            *last_mem_error = PPC_PARAM_ERR;
+            return u32::MAX;
+        }
+    } else {
+        *last_mem_error = PPC_NO_ERR;
     }
-    u32::try_from(position).unwrap_or(u32::MAX)
+
+    eval.return_offset as u32
 }
+
 
 pub(crate) fn ppc_enqueue_compatibility(
     memory: &mut PpcSectionMem,
