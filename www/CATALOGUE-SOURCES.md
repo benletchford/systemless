@@ -895,8 +895,13 @@ is 68K-only. Native v0.93.0 at emulator implementation `0f4ee1ae9fa59ab6d6be0c51
 accepts the mine-count dialog and reveals two numbered hexes with ordinary clicks.
 Actual captures inspected; a fresh six-assertion replay passes at 926 frontend /
 1526 guest ticks with zero exhausted frames. Gameplay image is a lossless crop
-to the original content surface. Browser/public qualification, launch approval,
-marking, complete paths, wins, settings, saves and audio remain unverified.
+to the original content surface. Assets promoted through CI; hosted archive hash and size independently match.
+Ordinary v0.94.0 Chrome worker/WebGL preview at `4a82241cde8baff0f577dcab845acd9636c03598`
+accepts the mine-count dialog and reveals the first and several adjacent numbered
+hexes with ordinary input; actual captures inspected. Local-origin CORS uses only
+an unchanged integrity-checked archive fixture. Launch is explicitly approved.
+Actual public replay, marking, complete paths, wins, settings, saves and audio
+remain unverified.
 [Delivery evidence and remaining stages](https://github.com/benletchford/systemless/issues/4454).
 
 ### Skiing release follow-through

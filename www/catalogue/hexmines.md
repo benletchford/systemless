@@ -9,6 +9,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -25,6 +26,21 @@ compatibility:
       both original files independently match unar extraction. This original application
       has four CODE resources and no PPC cfrg or PEF. Browser/public input, marking,
       completed paths, wins, settings, saves and audio remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4454
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: 4a82241cde8baff0f577dcab845acd9636c03598
+    architecture: 68k
+    environment: >-
+      Ordinary Chrome worker/WebGL preview v0.94.0, 800-by-600/8-bit display,
+      25 MHz and maximum two ticks per paint, crossOriginIsolated true. Return
+      accepts the original mine-count dialog. Ordinary mouse clicks reveal the
+      first numbered hex and several adjacent numbered hexes; before/after
+      captures inspected. Only local-origin archive delivery uses an unchanged
+      integrity-checked hosted-archive fixture (original SHA-256 and 79058-byte size).
+      No archive or guest state is patched. Public replay, marking, complete paths,
+      wins, settings, saves and audio remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4454
 runtime:
@@ -95,5 +111,6 @@ This is the complete original **Hexmines 2.0.4** freeware package, including its
 documentation and noncommercial redistribution terms. This release is 68K-only.
 
 Bounded native testing verifies starting the board and revealing numbered hexes.
-Browser and public gameplay, marking, complete paths, wins, settings, saves and
-audio remain unverified.
+Ordinary browser testing also verifies starting the board and revealing several
+adjacent numbered hexes. Public gameplay, marking, complete paths, wins, settings,
+saves and audio remain unverified.
