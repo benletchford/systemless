@@ -3,6 +3,22 @@ use super::{Command, Demo};
 use gpui_kit::*;
 use std::ops::Range;
 
+pub(super) fn text_range_width(record: &systemless::runner::TextEditSnapshot, range: Range<usize>) -> Option<i16> {
+    if record.styled { return record.guest_styled_range_width(range); }
+    let line = super::super::text::ClassicLine::plain(record.text.get(range)?, record.font, record.size);
+    i16::try_from(*line.positions.last()?).ok()
+}
+
+pub(super) fn text_line_geometry(record: &systemless::runner::TextEditSnapshot, index: usize)
+    -> Option<systemless::runner::TextEditLineGeometry> {
+    if record.styled { return record.guest_styled_line_geometry(index).map(|(geometry, _)| geometry); }
+    let starts = record.line_starts.as_ref()?;
+    let start = *starts.get(index)?;
+    let mut end = *starts.get(index + 1)?;
+    while end > start && matches!(record.text.get(end - 1), Some(b' ' | b'\r' | b'\n')) { end -= 1; }
+    record.line_geometry(index, text_range_width(record, start..end)?)
+}
+
 impl Demo {
     pub(super) fn synchronize_composition(&mut self, window: &Window, _: &mut Context<Self>) {
         let eligible = self.focus.is_focused(window) && self.host_active != Some(false)
@@ -80,21 +96,61 @@ impl EntityInputHandler for Demo {
         _: &mut Window, _: &mut Context<Self>) -> Option<Bounds<Pixels>> {
         let owner = self.composition.owner()?;
         let record = self.text_edits.iter().find(|record| (record.guest_id, record.generation) == owner.identity)?;
-        let offset = range.start.min(owner.text.len());
+        // Geometry is meaningful only for the currently painted guest text.
+        // Pending commits and Unicode preedit need their own painted layout.
+        if self.composition.preedit.is_some() || record.text != owner.text
+            || range.start > range.end || range.end > owner.text.len()
+            || !self.display_scale.is_finite() || self.display_scale <= 0. { return None; }
         let starts = record.line_starts.as_ref()?;
-        let index = starts.partition_point(|start| *start <= offset).saturating_sub(1).min(starts.len().checked_sub(2)?);
-        let (geometry, runs) = record.guest_styled_line_geometry(index)?;
-        let x = runs.iter().find_map(|(bytes, positions)|
-            (bytes.start <= offset && offset <= bytes.end).then(|| positions.get(offset - bytes.start).copied()).flatten())?;
+        let index = starts.partition_point(|start| *start <= range.start).saturating_sub(1).min(starts.len().checked_sub(2)?);
+        let geometry = text_line_geometry(record, index)?;
+        let start = starts[index];
+        let end = range.end.min(starts[index + 1]);
+        let x = i32::from(geometry.left) + i32::from(text_range_width(record, start..range.start)?);
+        let right = if range.is_empty() { x + 1 } else {
+            i32::from(geometry.left) + i32::from(text_range_width(record, start..end)?)
+        };
         let dest = record.global_dest_rect?;
         let view = record.global_view_rect?;
-        let left = (i32::from(dest.1) - i32::from(record.dest_rect.1) + i32::from(x)).clamp(i32::from(view.1), i32::from(view.3));
-        let top = (i32::from(dest.0) - i32::from(record.dest_rect.0) + i32::from(geometry.top)).clamp(i32::from(view.0), i32::from(view.2));
+        let dx = i32::from(dest.1) - i32::from(record.dest_rect.1);
+        let dy = i32::from(dest.0) - i32::from(record.dest_rect.0);
+        let left = (dx + x).max(i32::from(view.1));
+        let right = (dx + right).min(i32::from(view.3));
+        let top = (dy + i32::from(geometry.top)).max(i32::from(view.0));
+        let bottom = (dy + i32::from(geometry.top) + i32::from(geometry.height)).min(i32::from(view.2));
+        if left >= right || top >= bottom { return None; }
         Some(Bounds::new(point(px(self.display_origin.0 + left as f32 * self.display_scale),
             px(self.display_origin.1 + top as f32 * self.display_scale)),
-            size(px(self.display_scale), px(f32::from(geometry.height.max(1)) * self.display_scale))))
+            size(px((right - left) as f32 * self.display_scale), px((bottom - top) as f32 * self.display_scale))))
     }
-    fn character_index_for_point(&mut self, _: Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
+    fn character_index_for_point(&mut self, point: Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
+        let owner = self.composition.owner()?;
+        let record = self.text_edits.iter().find(|record| (record.guest_id, record.generation) == owner.identity)?;
+        if self.composition.preedit.is_some() || record.text != owner.text
+            || !self.display_scale.is_finite() || self.display_scale <= 0. { return None; }
+        let x = (f32::from(point.x) - self.display_origin.0) / self.display_scale;
+        let y = (f32::from(point.y) - self.display_origin.1) / self.display_scale;
+        let view = record.global_view_rect?;
+        if !x.is_finite() || !y.is_finite() || x < f32::from(view.1) || x >= f32::from(view.3)
+            || y < f32::from(view.0) || y >= f32::from(view.2) { return None; }
+        let dest = record.global_dest_rect?;
+        let local_x = x - f32::from(dest.1) + f32::from(record.dest_rect.1);
+        let local_y = y - f32::from(dest.0) + f32::from(record.dest_rect.0);
+        let starts = record.line_starts.as_ref()?;
+        for index in 0..record.line_count {
+            let geometry = text_line_geometry(record, index)?;
+            if local_y < f32::from(geometry.top) || local_y >= f32::from(geometry.top) + f32::from(geometry.height) { continue; }
+            let start = *starts.get(index)?;
+            let end = *starts.get(index + 1)?;
+            let mut left = i32::from(geometry.left);
+            for offset in start..end {
+                if matches!(record.text.get(offset), Some(b'\r' | b'\n')) { return Some(offset); }
+                let right = left + i32::from(text_range_width(record, offset..offset + 1)?);
+                if local_x < (left + right) as f32 / 2. { return Some(offset); }
+                left = right;
+            }
+            return Some(end);
+        }
         None
     }
     fn text_length_utf16(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
