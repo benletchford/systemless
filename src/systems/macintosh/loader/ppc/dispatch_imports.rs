@@ -2890,6 +2890,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::LMSetKeyThresh
         | PpcImportDispatcherTarget::LMGetKeyRepThresh
         | PpcImportDispatcherTarget::LMSetKeyRepThresh
+        | PpcImportDispatcherTarget::LMGetHiliteRGB
+        | PpcImportDispatcherTarget::LMSetHiliteRGB
         | PpcImportDispatcherTarget::LMGetPaintWhite
         | PpcImportDispatcherTarget::LMGetHWCfgFlags
         | PpcImportDispatcherTarget::LMSetROMMapInsert
