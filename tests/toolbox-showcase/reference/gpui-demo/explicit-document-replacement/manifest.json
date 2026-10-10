@@ -1,0 +1,21 @@
+{
+  "base_head": "c6dcf8da96c5a2af944d03ead9ee7098b8f8c1ed",
+  "scope": "Explicit document replacement when no Unicode stage is active; GPUI input handler emits one pinned request; production worker uses shared TESetSelect then ordinary guest key events; text/style/caret and stale rejection tested across four CPU/depth modes",
+  "results": {
+    "state_tests": 7,
+    "worker_parent": "PASS8.78s, four modes",
+    "platform_parent": "PASS15.19s, four modes",
+    "modal_regression": "2PASS27.14s, dialog and Save/New Folder across four modes"
+  },
+  "limitations": [
+    "Replacement crossing or outside an active Unicode stage remains unfinished",
+    "Explicit replacement in dialogs/Standard File remains unfinished",
+    "No physical IME, composed visual or independent native oracle claim"
+  ],
+  "hashes": {
+    "state.log": "691708939be80c5823e863324c5ea724cd7f8cc95b685a7734aae217b22eb7bd",
+    "worker.log": "ef8fe7d2788078d19610fbcce1ec1196cdaac09a00b4da94b9a8e8d38a947160",
+    "modal-regression.log": "bbd9a47928611b97fd5f52a0be854ae642068a30c3a402ccbff115e77337211b",
+    "platform.log": "d3b72b005f3ebc15e8c3960334983b2776bb5c047821933839e7e6707d229276"
+  }
+}
