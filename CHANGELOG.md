@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.94.0](https://github.com/benletchford/systemless/compare/v0.93.0...v0.94.0) (2026-10-10)
+
+
+### Features
+
+* add the original Ingemar skiing freeware release ([#4445](https://github.com/benletchford/systemless/issues/4445)) ([ba45c0f](https://github.com/benletchford/systemless/commit/ba45c0f923c4e4e49ebeaa7e7925ad2cdf54f996))
+
 ## [0.93.0](https://github.com/benletchford/systemless/compare/v0.92.2...v0.93.0) (2026-10-10)
 
 
