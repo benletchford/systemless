@@ -821,7 +821,7 @@ This identifies the complete 1.0.3 freeware release, rather than the earlier
 restricted shareware builds. All original forks and notices remain in the untouched
 BinHex/StuffIt package. The independent intake download matches hash and size.
 
-Main executable `Ingemar's Skiing Game 1.0.3 ƒ/Ingemar's skiing game 1.0.3` has
+Main executable `Ingemar's skiing game 1.0.3.cpt/Ingemar's Skiing Game 1.0.3 ƒ/Ingemar's skiing game 1.0.3` has
 eight CODE resources and no PPC cfrg. The optional launcher also has only CODE.
 Native source `1f9b99bc8afa3013ccbe7e99c84b460346bb58dc`, actual binary v0.92.0,
 starts Practice 1 through the original Game menu and ordinary mouse click. Inspected
@@ -848,3 +848,13 @@ The original main has four CODE resources and no PPC cfrg. Native source
 ticks with zero exhausted budgets and zero assertions; its actual capture was
 inspected. No player creation, movement, puzzle completion or browser qualification
 is claimed. Archives, extracted forks and scenarios remain outside Git.
+
+The first skiing browser preview exposed a missing outer Compact Pro path prefix
+in the preferred-executable setting. Production decoding identifies all four
+original files under the original `Ingemar's skiing game 1.0.3.cpt` container.
+The entry now uses that complete path. The earlier native environment override
+could fall back to normal application selection; its visible race remains valid,
+but browser launch is not qualified by that run. The complete-path native replay again passes
+all six measured assertions at 1138 frontend ticks, with the actual left/right
+race captures inspected. A rebuilt ordinary browser replay is still required
+before enabling launch.

@@ -28,7 +28,7 @@ compatibility:
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4444
 runtime:
-  executable_path: Ingemar's Skiing Game 1.0.3 ƒ/Ingemar's skiing game 1.0.3
+  executable_path: Ingemar's skiing game 1.0.3.cpt/Ingemar's Skiing Game 1.0.3 ƒ/Ingemar's skiing game 1.0.3
   screen_depth: 8
   show_menu_bar: true
 artifacts:
