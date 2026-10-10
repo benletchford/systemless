@@ -2,14 +2,16 @@
 id: solitaire-till-dawn
 kind: game
 title: Solitaire Till Dawn
-summary: Play forty classic solitaire variants with illustrated cards and smart card controls.
+summary: >-
+  Play forty classic solitaire variants with illustrated cards and smart card
+  controls.
 developer: Rick Holzgrafe
 publisher: Semicolon Software
 year: 2001
-architectures: [68k]
+architectures:
+- 68k
 default_architecture: 68k
 category: Puzzle
-launch_enabled: false
 compatibility:
   status: playable
   verified:
@@ -17,28 +19,27 @@ compatibility:
     tester: Catalogue maintainer
     systemless_version: 238fd95fd419c3f6a59940b43a208268bfa80d03
     architecture: 68k
-    status: playable
     environment: >-
       Bounded native frontend-tick replay from the intact original publisher archive.
       Original 100-game notice and Not Yet; Games menu selects Klondike (Easy),
-      ordinary tip dismissal, legal four-clubs drag onto five diamonds with revealed
-      five spades and move-count increment, then stock draw reveals jack clubs and
-      reduces stock count to 23. Actual captures inspected. Repeat passes four
-      measured pixel assertions at 1578 frontend ticks with zero budget exhaustion.
-      Browser, full games, other variants, sustained play, saves and audio unverified.
+      ordinary tip dismissal, legal four-clubs drag onto five diamonds with revealed five
+      spades and move-count increment, then stock draw reveals jack clubs and reduces
+      stock count to 23. Actual captures inspected. Repeat passes four measured pixel
+      assertions at 1578 frontend ticks with zero budget exhaustion. Browser, full games,
+      other variants, sustained play, saves and audio unverified.
+    status: playable
     evidence: https://github.com/benletchford/systemless/issues/4415
 runtime:
-  show_menu_bar: true
   executable_path: Solitaire Till Dawn 4.0.1/Solitaire Till Dawn™
+  show_menu_bar: true
 artifacts:
 - id: archive
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://github.com/benletchford/systemless/releases/download/catalogue-intake-20261010/solitaire-till-dawn-401.sit.hqx
-    expected_sha256: 89ed4855970a6b84ed01967fc13fb83a802a2aa17d38977bacee4d8a608545fa
-    expected_size: 1736853
+    type: sha256
+    sha256: 89ed4855970a6b84ed01967fc13fb83a802a2aa17d38977bacee4d8a608545fa
+    size_bytes: 1736853
   provenance:
     redistribution: permitted
     original: true
@@ -50,33 +51,34 @@ artifacts:
     rights_holder: Rick Holzgrafe and Semicolon Software
     permission: >-
       The bundled Games Guide Copyright and License chapter (TEXT resource 10988)
-      permits copying and distribution when no package file is sold or altered and
-      every file is included. Register separately permits unchanged distribution.
-      The bundled artwork notice states that third-party card designs are included
-      by permission of their copyright holders.
-    notes: >-
-      Complete original publisher download containing all 46 files: game, both guides,
-      Read Me, Register, purchase link and all forty sample games. Preserve the original
-      100-game shareware trial and all notices. No registration key or bypass. Main
-      executable has a zero-byte data fork, 45 CODE resources and no cfrg/PPC slice.
+      permits copying and distribution when no package file is sold or altered and every
+      file is included. Register separately permits unchanged distribution. The bundled
+      artwork notice states that third-party card designs are included by permission of
+      their copyright holders.
+    notes: "Complete original publisher download containing all 46 files: game, both guides, Read Me, Register, purchase link and all forty sample games. Preserve the original 100-game shareware trial and all notices. No registration key or bypass. Main executable has a zero-byte data fork, 45 CODE resources and no cfrg/PPC slice."
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/solitaire-till-dawn/gameplay.png
+    type: sha256
+    sha256: b8b9e6794cc64d0b0cb86c8812081088950fee9446e0642a4e9d947e1bcb2ce7
+    size_bytes: 53569
   provenance:
     redistribution: permitted
     content_only: true
     sources:
     - https://github.com/benletchford/systemless/issues/4415
-    permission: Original gameplay screenshot captured for this catalogue at the maintainer's request.
-    notes: Actual native Klondike gameplay after a legal move and stock draw, cropped to game content without host UI or menu bar.
+    permission: >-
+      Original gameplay screenshot captured for this catalogue at the maintainer's
+      request.
+    notes: >-
+      Actual native Klondike gameplay after a legal move and stock draw, cropped to
+      game content without host UI or menu bar.
 references:
 - https://www.semicolon.com/old/STD.html
 ---
 
-![Solitaire Till Dawn gameplay](incoming/solitaire-till-dawn/gameplay.png)
+![Solitaire Till Dawn gameplay](https://assets.systemless.org/catalogue/media/sha256/b8/b8b9e6794cc64d0b0cb86c8812081088950fee9446e0642a4e9d947e1bcb2ce7.png)
 
 Play the original **Solitaire Till Dawn 4.0.1** shareware distribution. Acknowledge
 its original **100-game** trial notice, choose **Not Yet**, then select a variant
