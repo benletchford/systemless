@@ -5619,3 +5619,112 @@ fn erase_round_rect_uses_background_pattern_and_original_curves_under_clipping()
         "background bits of bkPat"
     );
 }
+
+#[test]
+fn fill_round_rect_uses_supplied_pattern_and_original_curves_under_clipping() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"FillRoundRect")).unwrap();
+    let rect = PPC_DATA_BASE + 0x1000;
+    let clip = rect + 8;
+    loaded.memory.add_region(rect, vec![0; 24]);
+    ppc_write_rect(&mut loaded.memory, rect, 10, 10, 30, 30).unwrap();
+    ppc_write_rect(&mut loaded.memory, clip, 0, 20, 40, 40).unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    for y in 10..30 {
+        for x in 10..30 {
+            ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, y), 17);
+        }
+    }
+    loaded.toolbox_startup.quickdraw_back_pattern = [0; 8];
+    let pattern = rect + 16;
+    loaded.memory.write_bytes(pattern, &[0xaa; 8]).unwrap();
+    loaded
+        .toolbox_startup
+        .quickdraw_back_indices
+        .insert(PPC_MAIN_GWORLD, 84);
+    loaded.cpu.gpr[3] = clip;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ClipRect);
+    loaded.cpu.gpr[3] = 10; // patXor must not affect FillRoundRect's patCopy.
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PenMode);
+    loaded.cpu.gpr[3] = rect;
+    loaded.cpu.gpr[4] = 8;
+    loaded.cpu.gpr[5] = 8;
+    loaded.cpu.gpr[6] = pattern;
+    let pen_mode = loaded
+        .memory
+        .read_u16_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PN_MODE_OFFSET);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FillRoundRect);
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PN_MODE_OFFSET),
+        pen_mode
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (15, 20)),
+        Some(17),
+        "outside clip"
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (29, 10)),
+        Some(17),
+        "outside curved corner"
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (22, 20)),
+        Some(255),
+        "foreground bits of supplied pattern"
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (23, 20)),
+        Some(84),
+        "background bits of supplied pattern"
+    );
+}
+
+#[test]
+fn fill_round_rect_records_pattern_and_curved_region_without_painting() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"FillRoundRect")).unwrap();
+    let rect = PPC_DATA_BASE + 0x1000;
+    let pattern = rect + 8;
+    loaded.memory.add_region(rect, vec![0; 16]);
+    ppc_write_rect(&mut loaded.memory, rect, 10, 10, 30, 30).unwrap();
+    loaded.memory.write_bytes(pattern, &[0xaa; 8]).unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (20, 20), 17);
+    loaded.toolbox_startup.open_picture = Some((1, PPC_MAIN_GWORLD, (0, 0, 40, 40), Vec::new()));
+    loaded.cpu.gpr[3] = rect;
+    loaded.cpu.gpr[4] = 8;
+    loaded.cpu.gpr[5] = 12;
+    loaded.cpu.gpr[6] = pattern;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FillRoundRect);
+    let commands = &loaded.toolbox_startup.open_picture.as_ref().unwrap().3;
+    assert_eq!(
+        &commands[..10],
+        &[0, 10, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa]
+    );
+    assert_eq!(
+        &commands[10..],
+        &[0, 11, 0, 12, 0, 8, 0, 0x44, 0, 10, 0, 10, 0, 30, 0, 30]
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (20, 20)),
+        Some(17)
+    );
+
+    loaded.toolbox_startup.open_picture = None;
+    loaded.toolbox_startup.open_region_port = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[3] = rect;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FillRoundRect);
+    let (top, rows) = loaded.toolbox_startup.open_region_rows.as_ref().unwrap();
+    assert_eq!(*top, 10);
+    assert_eq!(
+        loaded.toolbox_startup.open_region_bounds,
+        Some((10, 10, 30, 30))
+    );
+    assert!(rows[0][0] > 10, "rounded upper-left corner is excluded");
+    assert_eq!(rows[10], vec![10, 30]);
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (20, 20)),
+        Some(17)
+    );
+}
