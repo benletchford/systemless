@@ -101,7 +101,7 @@ Stages: **rights** = applicable affirmative archive redistribution terms; **arch
 | 75 | Macgammon | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 76 | Solitaire Till Dawn | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 77 | Mike's Cards | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 78 | Angband | [Bundled historical copying grant; full review pending](CATALOGUE-SOURCES.md#angband-278-original-archive-intake) | [Two intact 2.7.8 port receipts](CATALOGUE-SOURCES.md#angband-278-original-archive-intake) | Male/Human/Warrior selected; stat roller reached; [#4405](https://github.com/benletchford/systemless/issues/4405) | Male/Human/Warrior selected; stat roller reached; [#4405](https://github.com/benletchford/systemless/issues/4405) | Pending | Pending | Pending |
+| 78 | Angband | [Complete historical nonprofit copying grant](catalogue/angband.md) | [Two intact original 2.7.8 ports, separately hash-pinned](catalogue/angband.md) | Character creation, town and dungeon movement; four measured native assertions | Character creation, town and dungeon movement; four measured native assertions; text-cell fix merged | [Both optimized browser ports: descent, movement, ascent](https://github.com/benletchford/systemless/issues/4405#issuecomment-6099121524); public release pending | [Catalogue #4414](https://github.com/benletchford/systemless/pull/4414); CI promotion passed | Pending deployment and public verification |
 | 79 | Moria | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 80 | Rogue | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 81 | MacSokoban | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
