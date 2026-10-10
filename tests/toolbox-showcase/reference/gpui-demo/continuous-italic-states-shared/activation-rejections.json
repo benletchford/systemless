@@ -1,0 +1,18 @@
+{
+  "verifier_sha256": "978e93e6bbe92aa4e976d1f74e878ebf4c1e65570d677153daf047f8e6883f7e",
+  "rejected": [
+    "selection-None-selected-guest",
+    "selection-None-selected-rendered",
+    "selection-None-resumed-guest",
+    "selection-None-resumed-rendered",
+    "caret-0-visible-guest",
+    "caret-0-visible-rendered",
+    "caret-0-resumed-guest",
+    "caret-0-resumed-rendered",
+    "caret-26-visible-guest",
+    "caret-26-visible-rendered",
+    "caret-26-resumed-guest",
+    "caret-26-resumed-rendered"
+  ],
+  "scope": "Restoration equality rejection checks with valid updated hashes; no native font oracle."
+}

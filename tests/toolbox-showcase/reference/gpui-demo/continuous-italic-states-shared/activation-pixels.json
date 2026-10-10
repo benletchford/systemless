@@ -1,0 +1,294 @@
+{
+  "pairs": [
+    {
+      "kind": "selection",
+      "mode": "mono",
+      "insertion_offset": null,
+      "scale": 0.75
+    },
+    {
+      "kind": "selection",
+      "mode": "mono",
+      "insertion_offset": null,
+      "scale": 1
+    },
+    {
+      "kind": "selection",
+      "mode": "mono",
+      "insertion_offset": null,
+      "scale": 1.5
+    },
+    {
+      "kind": "selection",
+      "mode": "mono",
+      "insertion_offset": null,
+      "scale": 2
+    },
+    {
+      "kind": "selection",
+      "mode": "colour",
+      "insertion_offset": null,
+      "scale": 0.75
+    },
+    {
+      "kind": "selection",
+      "mode": "colour",
+      "insertion_offset": null,
+      "scale": 1
+    },
+    {
+      "kind": "selection",
+      "mode": "colour",
+      "insertion_offset": null,
+      "scale": 1.5
+    },
+    {
+      "kind": "selection",
+      "mode": "colour",
+      "insertion_offset": null,
+      "scale": 2
+    },
+    {
+      "kind": "selection",
+      "mode": "ppc8",
+      "insertion_offset": null,
+      "scale": 0.75
+    },
+    {
+      "kind": "selection",
+      "mode": "ppc8",
+      "insertion_offset": null,
+      "scale": 1
+    },
+    {
+      "kind": "selection",
+      "mode": "ppc8",
+      "insertion_offset": null,
+      "scale": 1.5
+    },
+    {
+      "kind": "selection",
+      "mode": "ppc8",
+      "insertion_offset": null,
+      "scale": 2
+    },
+    {
+      "kind": "selection",
+      "mode": "ppc16",
+      "insertion_offset": null,
+      "scale": 0.75
+    },
+    {
+      "kind": "selection",
+      "mode": "ppc16",
+      "insertion_offset": null,
+      "scale": 1
+    },
+    {
+      "kind": "selection",
+      "mode": "ppc16",
+      "insertion_offset": null,
+      "scale": 1.5
+    },
+    {
+      "kind": "selection",
+      "mode": "ppc16",
+      "insertion_offset": null,
+      "scale": 2
+    },
+    {
+      "kind": "caret",
+      "mode": "mono",
+      "insertion_offset": 0,
+      "scale": 0.75
+    },
+    {
+      "kind": "caret",
+      "mode": "mono",
+      "insertion_offset": 0,
+      "scale": 1
+    },
+    {
+      "kind": "caret",
+      "mode": "mono",
+      "insertion_offset": 0,
+      "scale": 1.5
+    },
+    {
+      "kind": "caret",
+      "mode": "mono",
+      "insertion_offset": 0,
+      "scale": 2
+    },
+    {
+      "kind": "caret",
+      "mode": "colour",
+      "insertion_offset": 0,
+      "scale": 0.75
+    },
+    {
+      "kind": "caret",
+      "mode": "colour",
+      "insertion_offset": 0,
+      "scale": 1
+    },
+    {
+      "kind": "caret",
+      "mode": "colour",
+      "insertion_offset": 0,
+      "scale": 1.5
+    },
+    {
+      "kind": "caret",
+      "mode": "colour",
+      "insertion_offset": 0,
+      "scale": 2
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc8",
+      "insertion_offset": 0,
+      "scale": 0.75
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc8",
+      "insertion_offset": 0,
+      "scale": 1
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc8",
+      "insertion_offset": 0,
+      "scale": 1.5
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc8",
+      "insertion_offset": 0,
+      "scale": 2
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc16",
+      "insertion_offset": 0,
+      "scale": 0.75
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc16",
+      "insertion_offset": 0,
+      "scale": 1
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc16",
+      "insertion_offset": 0,
+      "scale": 1.5
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc16",
+      "insertion_offset": 0,
+      "scale": 2
+    },
+    {
+      "kind": "caret",
+      "mode": "mono",
+      "insertion_offset": 26,
+      "scale": 0.75
+    },
+    {
+      "kind": "caret",
+      "mode": "mono",
+      "insertion_offset": 26,
+      "scale": 1
+    },
+    {
+      "kind": "caret",
+      "mode": "mono",
+      "insertion_offset": 26,
+      "scale": 1.5
+    },
+    {
+      "kind": "caret",
+      "mode": "mono",
+      "insertion_offset": 26,
+      "scale": 2
+    },
+    {
+      "kind": "caret",
+      "mode": "colour",
+      "insertion_offset": 26,
+      "scale": 0.75
+    },
+    {
+      "kind": "caret",
+      "mode": "colour",
+      "insertion_offset": 26,
+      "scale": 1
+    },
+    {
+      "kind": "caret",
+      "mode": "colour",
+      "insertion_offset": 26,
+      "scale": 1.5
+    },
+    {
+      "kind": "caret",
+      "mode": "colour",
+      "insertion_offset": 26,
+      "scale": 2
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc8",
+      "insertion_offset": 26,
+      "scale": 0.75
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc8",
+      "insertion_offset": 26,
+      "scale": 1
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc8",
+      "insertion_offset": 26,
+      "scale": 1.5
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc8",
+      "insertion_offset": 26,
+      "scale": 2
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc16",
+      "insertion_offset": 26,
+      "scale": 0.75
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc16",
+      "insertion_offset": 26,
+      "scale": 1
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc16",
+      "insertion_offset": 26,
+      "scale": 1.5
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc16",
+      "insertion_offset": 26,
+      "scale": 2
+    }
+  ],
+  "partial": false,
+  "scope": "Exact RGBA equality of guest and shared-compositor selection/caret before/resumed field crops. Does not establish original font appearance, host activation or performance."
+}
