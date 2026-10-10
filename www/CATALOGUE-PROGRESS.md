@@ -8,7 +8,7 @@ Stages: **rights** = applicable affirmative archive redistribution terms; **arch
 
 ## Active intake
 
-- **Avara (slot 50):** original installers downloaded and hashed; bundled installed-game terms and application slices still under inspection. Modern MIT source-code permission is not being applied to historical archive contents. See [archive receipts](CATALOGUE-SOURCES.md#avara-expansion-intake). Gameplay, hosting, browser approval and publication remain pending.
+- **Avara (slot 50):** Avara 1.0.1 expands to 132 files. Its bundled licence permits complete unmodified nonprofit distribution and retains the 30-day trial. The game contains 17 CODE resources and four PPC acceleration modules; PPC preference still starts the 68K route. Player setup and the mission roster are visible, but Game → Start reaches a blue horizon and “no HECTOR available”; gameplay remains unqualified. Track mission/spawn investigation in [#4355](https://github.com/benletchford/systemless/issues/4355). Modern MIT source-code permission is not being applied to historical archive contents. See [archive receipts](CATALOGUE-SOURCES.md#avara-expansion-intake). Gameplay, hosting, browser approval and publication remain pending.
 
 ## Primary intake ledger
 
@@ -63,7 +63,7 @@ Stages: **rights** = applicable affirmative archive redistribution terms; **arch
 | 47 | Nanosaur | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 48 | Cro-Mag Rally | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 49 | Otto Matic | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 50 | Avara | Pending | [Receipts](CATALOGUE-SOURCES.md#avara-expansion-intake); contents pending | Pending | Pending | Pending | Pending | Pending |
+| 50 | Avara | [Conditional nonprofit grant](CATALOGUE-SOURCES.md#avara-expansion-intake); remaining terms pending | [1.0.1 receipt and payload](CATALOGUE-SOURCES.md#avara-expansion-intake) | [Mission/spawn unqualified](https://github.com/benletchford/systemless/issues/4355) | Embedded modules; route unqualified | Pending | Pending | Pending |
 | 51 | Ares | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 52 | Barrack | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 53 | Bubble Trouble | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
