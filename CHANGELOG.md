@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.92.1](https://github.com/benletchford/systemless/compare/v0.92.0...v0.92.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* enable the qualified Monkey Shines launcher ([da29806](https://github.com/benletchford/systemless/commit/da29806547a760479d087f5b5e259999d1354fba))
+
 ## [0.92.0](https://github.com/benletchford/systemless/compare/v0.91.2...v0.92.0) (2026-10-10)
 
 
