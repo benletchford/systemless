@@ -91,7 +91,7 @@ mod debug_server;
 
 #[cfg(target_os = "macos")]
 mod desktop {
-    //! Opt-in GPUI Kit presentation experiment for live guest menus.
+    //! GPUI Kit desktop presentation and shared headless capture frontend.
 
     use std::{
         collections::{HashMap, HashSet},

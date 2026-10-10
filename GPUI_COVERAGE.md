@@ -1,5 +1,9 @@
 # GPUI Kit system-interface coverage
 
+The [production release gates](GPUI_RELEASE_GATES.md) consolidate the current
+completion requirements and next work; the chronological checkpoints below
+retain their original evidence scope.
+
 The [typography policy](GPUI_TYPOGRAPHY.md) records font-resource precedence,
 bitmap and outline fidelity, display-resolution synthetic styles, guest layout
 authority and the evidence required for text qualification.
