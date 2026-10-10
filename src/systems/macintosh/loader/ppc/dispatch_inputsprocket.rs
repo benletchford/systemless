@@ -92,6 +92,18 @@ pub(super) fn dispatch_inputsprocket_import(
         PpcImportDispatcherTarget::ISpDeviceGetElementList => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_isp_device_get_element_list(cpu, memory)),
         )),
+        PpcImportDispatcherTarget::ISpGetGlobalElementList => {
+            let output = cpu.gpr[3];
+            // Apple InputSprocket.h: the result is an opaque system-wide
+            // list reference; a null output pointer returns paramErr.
+            let result = if output == 0 || !ppc_memory_can_write_bytes(memory, output, 4) {
+                PPC_PARAM_ERR
+            } else {
+                let _ = memory.write_u32_be(output, PPC_ISP_GLOBAL_ELEMENT_LIST);
+                PPC_NO_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         PpcImportDispatcherTarget::ISpElementListExtract => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_isp_element_list_extract(cpu, memory)),
         )),

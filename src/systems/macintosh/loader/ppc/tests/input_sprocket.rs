@@ -1,6 +1,68 @@
 use super::*;
 
 #[test]
+fn global_input_sprocket_element_list_resolves_and_enumerates_the_supported_devices() {
+    let pef = synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpGetGlobalElementList");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let output = PPC_DATA_BASE + 0x1000;
+    let count = output + 4;
+    let elements = output + 8;
+    loaded.memory.add_region(output, vec![0xAA; 24]);
+    loaded.cpu.gpr[3] = output;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let list = loaded.memory.read_u32_be(output).unwrap();
+    assert_eq!(list, PPC_ISP_GLOBAL_ELEMENT_LIST);
+
+    loaded.cpu.gpr[3] = list;
+    loaded.cpu.gpr[4] = 2;
+    loaded.cpu.gpr[5] = count;
+    loaded.cpu.gpr[6] = elements;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::ISpElementListExtract,
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(count), Some(4));
+    assert_eq!(
+        loaded.memory.read_u32_be(elements),
+        Some(PPC_ISP_KEYBOARD_ELEMENT)
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(elements + 4),
+        Some(PPC_ISP_MOUSE_X_ELEMENT)
+    );
+    assert_eq!(loaded.memory.read_u32_be(elements + 8), Some(0xAAAA_AAAA));
+
+    loaded.cpu.gpr[3] = output;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::ISpGetGlobalElementList,
+    );
+    assert_eq!(loaded.memory.read_u32_be(output), Some(list));
+}
+
+#[test]
+fn global_input_sprocket_element_list_rejects_invalid_outputs_without_partial_writes() {
+    let pef = synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpGetGlobalElementList");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let short_output = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(short_output, vec![0xAA; 3]);
+    for output in [0, short_output, u32::MAX] {
+        loaded.cpu.gpr[3] = output;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::ISpGetGlobalElementList,
+        );
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    }
+    assert_eq!(loaded.memory.read_u8(short_output), Some(0xAA));
+    assert_eq!(loaded.memory.read_u8(short_output + 2), Some(0xAA));
+}
+
+#[test]
 fn hle_import_runner_handles_input_sprocket_version_structure_result() {
     let pef = synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpGetVersion");
     let mut loaded = load_pef_application(&pef).unwrap();

@@ -101,8 +101,8 @@ Stages: **rights** = applicable affirmative archive redistribution terms; **arch
 | 81 | MacSokoban | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 82 | Sokoban | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 83 | MacBrickout | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 84 | Pac the Man | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 85 | PacMac Deluxe | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 84 | Pac the Man | Freeware label; explicit hosting grant unverified | [4.0.1e receipt; eight files](CATALOGUE-SOURCES.md#pac-game-expansion-intake) | [Level 1; Right differs from matched idle](CATALOGUE-SOURCES.md#pac-game-expansion-intake) | [Level 1 and directional input after fix; sound defect remains](CATALOGUE-SOURCES.md#pac-the-man-global-input-list-compatibility-fix) | Pending | Pending | Pending |
+| 85 | PacMac Deluxe | Collection permission and plugin terms unverified | [1.3 receipt; 141 files](CATALOGUE-SOURCES.md#pac-game-expansion-intake) | Fatal Sound Library error -5 | Pending | Pending | Pending | Pending |
 | 86 | MacSnake | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 87 | Tetris Max | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 88 | Oxyd | Pending | Pending | Pending | Pending | Pending | Pending | Pending |

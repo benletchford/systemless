@@ -376,6 +376,7 @@ pub const PPC_ISP_KEYBOARD_ELEMENT: u32 = 0x4000_2020;
 pub const PPC_ISP_MOUSE_X_ELEMENT: u32 = 0x4000_2030;
 pub const PPC_ISP_MOUSE_Y_ELEMENT: u32 = 0x4000_2040;
 pub const PPC_ISP_MOUSE_BUTTON_ELEMENT: u32 = 0x4000_2050;
+pub const PPC_ISP_GLOBAL_ELEMENT_LIST: u32 = 0x4000_2060;
 pub const PPC_ISP_DEVICE_DEFINITION_SIZE: u32 = 92;
 pub const PPC_ISP_ELEMENT_INFO_SIZE: u32 = 80;
 pub const PPC_ISP_DEVICE_CLASS_KEYBOARD: u32 = u32::from_be_bytes(*b"keyd");
@@ -3228,6 +3229,12 @@ pub(crate) fn ppc_isp_element_list_extract(cpu: &PpcCpu, memory: &mut PpcSection
     let out_count_ptr = cpu.gpr[5];
     let buffer_ptr = cpu.gpr[6];
     let elements: &[u32] = match element_list {
+        PPC_ISP_GLOBAL_ELEMENT_LIST => &[
+            PPC_ISP_KEYBOARD_ELEMENT,
+            PPC_ISP_MOUSE_X_ELEMENT,
+            PPC_ISP_MOUSE_Y_ELEMENT,
+            PPC_ISP_MOUSE_BUTTON_ELEMENT,
+        ],
         PPC_ISP_KEYBOARD_DEVICE => &[PPC_ISP_KEYBOARD_ELEMENT],
         PPC_ISP_MOUSE_DEVICE => &[
             PPC_ISP_MOUSE_X_ELEMENT,
