@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.95.1](https://github.com/benletchford/systemless/compare/v0.95.0...v0.95.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* preserve byte alignment after PICT v1 metadata ([2b05217](https://github.com/benletchford/systemless/commit/2b05217ec4edbce728fbb62087672fa19033faf3))
+
 ## [0.95.0](https://github.com/benletchford/systemless/compare/v0.94.0...v0.95.0) (2026-10-10)
 
 
