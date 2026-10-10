@@ -1,0 +1,15 @@
+{
+  "tests": 2,
+  "exit_code": 0,
+  "runtime_seconds": 0.13,
+  "source_sha256": {
+    "src/systems/macintosh/quickdraw/text.rs": "13d48af835cb1f3a45162c877caf0e98439a355d672d4a88b861cacfa1be6ab3",
+    "src/bin/gpui_demo_text.rs": "911b5548145eba7e9d4aaf9bf23f81e8249a3d0bd95abb09001eea5e78ae41d8",
+    "src/bin/gpui_demo.rs": "dbb6d868beb3c9f1961d03cb7c3f9be82e08efaea7636c763456b8ea5bec43eb",
+    "Cargo.lock": "d39c8347abf84d2272d4942db42b7ade3fb9ebefacc7395b41673b9dd1060a5f",
+    "Cargo.toml": "c14164d33b3c4215b590291023170d7b3a9d3539f4c236518cdc649831ed0855"
+  },
+  "binary": "target/ci-test/deps/systemless-ab8d3978307603c0",
+  "binary_sha256": "47ed909ea50dfd7d988509fa40e84cb55091bcb2aa77c51132fa9219cb69805e",
+  "scope": "Guest-recipe derivation only, font3/size12, all underlined halo faces0..127, bytes g space W and MacRoman 0x8e. Binary silhouettes, native spacing and CPU-specific stroke/exclusion policy. Not independent native font fidelity or composed GPUI appearance."
+}

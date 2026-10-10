@@ -658,6 +658,52 @@ pub(crate) fn styled_glyph_pixels(
     ink
 }
 
+/// PPC source-strike underline before outline/shadow smear and exclusion.
+/// This ribbon belongs to the entire run and is included in each glyph's
+/// effect buffer by the native painter. Coordinates precede rational scaling.
+#[doc(hidden)]
+pub fn ppc_styled_run_halo_underline_ink(
+    text_font: i16, text_size: i16, face: u8, line_advance: i32,
+) -> Vec<(i32, i32)> {
+    let style = QuickDrawTextStyle::from_bits(face);
+    if !style.underline() || style.smear_max().is_none() || line_advance <= 0 {
+        return Vec::new();
+    }
+    let metrics = get_font_metrics(text_font, text_size);
+    let mut ink = Vec::new();
+    if style.underline() && style.smear_max().is_some() && line_advance > 0 {
+        let underline_offset: i32 = if style.shadow() { -1 } else { 0 };
+        let synthetic_italic = style.italic()
+            && get_glyph_italic(text_font, text_size, 'A').is_none();
+        let underline_left = if synthetic_italic {
+            crate::quickdraw::fonts::style::get_italic_underline_extend_left(
+                text_font,
+                text_size,
+                style.bold(),
+                false,
+            )
+        } else {
+            0
+        };
+        let underline_right = if synthetic_italic {
+            crate::quickdraw::fonts::style::get_italic_end_extend(text_font, text_size, &metrics)
+        } else {
+            0
+        };
+        let final_effect_advance = style.glyph_advance(0);
+        for source_x in underline_offset.saturating_sub(i32::from(underline_left))
+            ..line_advance
+                .saturating_sub(final_effect_advance)
+                .saturating_add(underline_offset)
+                .saturating_add(i32::from(underline_right))
+        {
+            ink.push((source_x, 1));
+        }
+    }
+
+    ink
+}
+
 /// PPC source-strike mask, including its run underline/outline interaction.
 /// Pixel coordinates precede the CPU's rational scaling and port spacing.
 #[allow(clippy::too_many_arguments)]
@@ -695,35 +741,8 @@ pub(crate) fn visit_ppc_styled_glyph_source_ink(
         }
     }
 
-    if style.underline() && style.smear_max().is_some() && line_advance > 0 {
-        let underline_offset: i32 = if style.shadow() { -1 } else { 0 };
-        let synthetic_italic = style.italic()
-            && get_glyph_italic(text_font, text_size, 'A').is_none();
-        let underline_left = if synthetic_italic {
-            crate::quickdraw::fonts::style::get_italic_underline_extend_left(
-                text_font,
-                text_size,
-                style.bold(),
-                false,
-            )
-        } else {
-            0
-        };
-        let underline_right = if synthetic_italic {
-            crate::quickdraw::fonts::style::get_italic_end_extend(text_font, text_size, &metrics)
-        } else {
-            0
-        };
-        let final_effect_advance = style.glyph_advance(0);
-        for source_x in underline_offset.saturating_sub(i32::from(underline_left))
-            ..line_advance
-                .saturating_sub(final_effect_advance)
-                .saturating_add(underline_offset)
-                .saturating_add(i32::from(underline_right))
-        {
-            base_pixels.insert((source_x, 1));
-        }
-    }
+    base_pixels.extend(ppc_styled_run_halo_underline_ink(
+        text_font, text_size, style.0, line_advance));
 
     if let Some(smear_max) = style.smear_max() {
         let min_x = base_pixels
@@ -1093,12 +1112,14 @@ fn classic_underline_has_descender(
 
 /// Native per-character underline strokes, independent of glyph coverage.
 /// Presentation can smooth the glyph without changing descender gaps or making
-/// overlapping underline pixels translucent. Only unscaled basic faces qualify.
+/// overlapping underline pixels translucent. Outline/shadow callers apply the
+/// effect after combining these strokes with the basic glyph. Only unscaled
+/// strikes qualify; descender gaps use basic glyph ink before halo synthesis.
 #[doc(hidden)]
 pub fn classic_textedit_underline_ink(
     font: i16, size: i16, byte: u8, face: u8,
 ) -> Option<Vec<(i16, i16)>> {
-    if face > 7 { return None; }
+    if face >= 128 { return None; }
     if face & 4 == 0 { return Some(Vec::new()); }
     let (_, scale) = crate::quickdraw::fonts::get_font_face_scaled(font, size);
     if scale != 1 { return None; }
@@ -1112,12 +1133,12 @@ pub fn classic_textedit_underline_ink(
     let extend = if synthetic {
         crate::quickdraw::fonts::style::get_italic_underline_extend_left(font, size, face & 1 != 0, precaptured)
     } else { 0 };
-    let offset = crate::quickdraw::fonts::style::get_underline_offset(font, size, glyph, false);
+    let offset = crate::quickdraw::fonts::style::get_underline_offset(font, size, glyph, face & 16 != 0);
     let right_extend = if synthetic {
         crate::quickdraw::fonts::style::get_italic_underline_extend_right(font, size)
     } else { 0 };
     let coverage = |y, x| classic_glyph_coverage(glyph, data, font, size, &metrics,
-        1, precaptured, face & !4, (0, 0), None, y, x);
+        1, precaptured, face & 3, (0, 0), None, y, x);
     let mut ink = Vec::new();
     for x in -extend + offset..i16::from(glyph.advance) + i16::from(face & 1 != 0) + offset + right_extend {
         if !classic_underline_has_descender(0, x, metrics.descent, coverage) {
@@ -1191,6 +1212,69 @@ pub fn classic_textedit_glyph_ink(
 #[cfg(test)]
 mod classic_textedit_ink_tests {
     use super::*;
+
+    #[test]
+    fn classic_halo_underline_recipe_preserves_descenders_and_everything_style() {
+        use std::collections::BTreeSet;
+        for face in (0u8..128).filter(|face| face & 4 != 0 && face & 24 != 0) {
+            for byte in b"g W\x8e" {
+                let (glyph, data) = get_glyph(3, 12, *byte as char).unwrap();
+                let metrics = get_font_metrics(3, 12);
+                let mut base = BTreeSet::new();
+                for y in -20..10 { for x in -10..30 {
+                    if classic_glyph_coverage(glyph, data, 3, 12, &metrics,
+                        1, false, face & 3, (0, 0), None, y, x) >= 128 {
+                        base.insert((x, y));
+                    }
+                } }
+                base.extend(classic_textedit_underline_ink(3, 12, *byte, face).unwrap());
+                let radius = if face & 24 == 24 { 3 } else if face & 16 != 0 { 2 } else { 1 };
+                let mut halo = BTreeSet::new();
+                for &(x, y) in &base {
+                    for dy in -1..=radius { for dx in -1..=radius {
+                        let target = (x + dx, y + dy);
+                        // Classic's Everything style restricts horizontal smear
+                        // at baseline and first underline row, before exclusion.
+                        if face & 31 == 31 && matches!(target.1, 0 | 1) && dx > 1 { continue; }
+                        if !base.contains(&target) { halo.insert(target); }
+                    } }
+                }
+                let (_, native) = classic_textedit_glyph_ink(3, 12, *byte, face).unwrap();
+                assert_eq!(halo, native.into_iter().collect(), "face={face}, byte={byte}");
+            }
+        }
+        assert!(classic_textedit_underline_ink(3, 12, b'g', 128).is_none());
+    }
+
+    #[test]
+    fn ppc_halo_underline_recipe_preserves_run_extent_and_per_glyph_exclusion() {
+        use std::collections::BTreeSet;
+        let bytes = b"g W\x8e";
+        for face in (0u8..128).filter(|face| face & 4 != 0 && face & 24 != 0) {
+            let (advance, native) = ppc_styled_run_ink(3, 12, face, bytes);
+            let ribbon = ppc_styled_run_halo_underline_ink(3, 12, face, i32::from(advance));
+            assert!(!ribbon.is_empty());
+            let radius = if face & 24 == 24 { 3 } else if face & 16 != 0 { 2 } else { 1 };
+            let mut actual = BTreeSet::new();
+            let mut pen = 0;
+            for byte in bytes {
+                let (_, glyph) = ppc_styled_run_ink(3, 12, face & 3, &[*byte]);
+                let mut base: BTreeSet<_> = glyph.into_iter().map(|(x, y)| (pen + x, y)).collect();
+                base.extend(ribbon.iter().copied());
+                for &(x, y) in &base {
+                    for dy in -1..=radius { for dx in -1..=radius {
+                        let target = (x + dx, y + dy);
+                        if !base.contains(&target) { actual.insert(target); }
+                    } }
+                }
+                pen += i32::from(ppc_styled_run_ink(3, 12, face, &[*byte]).0);
+            }
+            assert_eq!(pen, i32::from(advance));
+            assert_eq!(actual, native.into_iter().collect(), "face={face}");
+        }
+        assert!(ppc_styled_run_halo_underline_ink(3, 12, 4, 10).is_empty());
+        assert!(ppc_styled_run_halo_underline_ink(3, 12, 12, 0).is_empty());
+    }
 
     #[test]
     fn shared_classic_coverage_honors_continuous_underline_breaks() {
