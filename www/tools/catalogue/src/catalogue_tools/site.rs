@@ -38,6 +38,12 @@ fn buttons(values: &[Button]) -> String {
 fn artifact(e: &CompiledEntry, role: ArtifactRole) -> Option<&CompiledAsset> {
     e.assets.iter().find(|a| a.role == role)
 }
+fn default_archive(e: &CompiledEntry) -> Option<&CompiledAsset> {
+    e.architecture_archives
+        .get(&e.default_architecture)
+        .and_then(|id| e.assets.iter().find(|a| &a.id == id))
+        .or_else(|| artifact(e, ArtifactRole::Archive))
+}
 fn asset(e: &CompiledEntry, role: ArtifactRole) -> Option<&str> {
     artifact(e, role).map(|a| a.url.as_str())
 }
@@ -77,16 +83,35 @@ pub fn rust_games(c: &CompiledCatalogue) -> Result<String> {
             e.content_html,
             license_html(e)?
         )?;
-        let archive = artifact(e, ArtifactRole::Archive);
+        let archive = default_archive(e);
+        let architecture_archives = e
+            .architecture_archives
+            .iter()
+            .map(|(architecture, id)| {
+                let asset = e
+                    .assets
+                    .iter()
+                    .find(|a| &a.id == id)
+                    .expect("validated archive binding");
+                format!(
+                    "({}, {:?}, {:?})",
+                    arch(*architecture),
+                    asset.url,
+                    download_name(&e.id, Some(id), asset.format)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
         write!(
             out,
-            "assets: GameAssets {{ archive_path: {:?}, archive_download_name: {:?}, web_pack_path: {:?}, screenshot_path: {:?} }},",
+            "assets: GameAssets {{ archive_path: {:?}, archive_download_name: {:?}, web_pack_path: {:?}, screenshot_path: {:?}, architecture_archives: &[{}] }},",
             archive.map(|a| a.url.as_str()).unwrap_or(""),
             archive
                 .map(|a| download_name(&e.id, None, a.format))
                 .unwrap_or_default(),
             asset(e, ArtifactRole::WebPack),
-            asset(e, ArtifactRole::Screenshot).unwrap_or("")
+            asset(e, ArtifactRole::Screenshot).unwrap_or(""),
+            architecture_archives
         )?;
         write!(
             out,
@@ -402,7 +427,7 @@ pub fn pages(
             escape(&image),
             escape(&e.title)
         );
-        if let Some(download) = artifact(e, ArtifactRole::Archive) {
+        if let Some(download) = default_archive(e) {
             write!(
                 body,
                 "<p><a href=\"{}\" download=\"{}\">Download {}</a></p>",

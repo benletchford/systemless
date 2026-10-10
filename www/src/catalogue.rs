@@ -57,6 +57,20 @@ pub struct GameAssets {
     pub archive_download_name: &'static str,
     pub web_pack_path: Option<&'static str>,
     pub screenshot_path: &'static str,
+    pub architecture_archives: &'static [(GameArchitecture, &'static str, &'static str)],
+}
+
+impl GameAssets {
+    pub fn archive_for(self, architecture: GameArchitecture) -> (&'static str, &'static str) {
+        if self.architecture_archives.is_empty() {
+            return (self.archive_path, self.archive_download_name);
+        }
+        self.architecture_archives
+            .iter()
+            .find(|(arch, _, _)| *arch == architecture)
+            .map(|(_, path, name)| (*path, *name))
+            .expect("validated architecture archive binding")
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

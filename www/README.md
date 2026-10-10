@@ -253,3 +253,21 @@ Same-build 1×/3× gameplay comparisons include the additional host bitmap
 callback and show reduced high-DPI host work without material guest-progress
 regression in the tested workload. It remains opt-in; see
 [RESPONSIVENESS.md](RESPONSIVENESS.md) for measurements and coverage limits.
+
+### Separate original archives by architecture
+
+An entry with separate original ports may declare multiple `archive` artifacts and
+bind their IDs with `architecture_archives`, for example:
+
+```yaml
+architecture_archives:
+  68k: classic-archive
+  ppc: powerpc-archive
+```
+
+Bindings must cover exactly the entry's supported architectures and reference every
+archive artifact. Each archive retains its own provenance, rights, digest and asset
+promotion. An empty mapping preserves the existing single-archive behavior, including
+FAT applications. The launch and download selection follow the chosen architecture;
+static pages and prefetch use the default architecture. Distinct original archives
+cannot share a single web pack. The compiled catalogue schema is version 3.
