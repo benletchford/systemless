@@ -22,3 +22,9 @@ Physical IME, broader modal/file overflow coverage and release gates remain open
 (28.20 seconds), including retained transactions and preservation of styled
 guest gaps in all four CPU/depth modes. The merged-range commit is covered
 by state tests; it has no separate production-worker qualification yet.
+
+The subsequent `merged-worker.log` closes the dedicated document worker gap:
+merged candidate replacement passes all four modes (32.30 seconds), with
+original owner guards, exact text/caret, suffix bytes and untouched suffix style
+runs. `merged-worker-source-hashes.json` pins this later test checkpoint.
+Modal/file merged transactions and physical IME remain unqualified.
