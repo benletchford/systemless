@@ -44,6 +44,22 @@ compatibility:
       remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4444
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: ec812923f4ac82d91745bc03e3770eb23c9149e8
+    architecture: 68k
+    environment: >-
+      Actual public systemless.org route on v0.94.0, ordinary Chrome worker/WebGL
+      runtime, 800-by-600 guest canvas and 25 MHz pacing. Game > Practice 1 and
+      a normal click start the race. Right then left mouse input visibly steers
+      the skier while the course and timer advance; actual captures inspected.
+      Passive actual player archive response is HTTP 200 with original SHA-256
+      and 309448-byte size verified, without interception or preview fixtures.
+      Public crossOriginIsolated is false. All six native release platforms and
+      their twelve published archive/checksum assets passed whole-pipeline acceptance.
+      Full courses, cups, editor, saves and audio remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4444
 runtime:
   executable_path: Ingemar's skiing game 1.0.3.cpt/Ingemar's Skiing Game 1.0.3 ƒ/Ingemar's skiing game 1.0.3
   screen_depth: 8
@@ -111,4 +127,5 @@ slice is present.
 Bounded native testing covers starting a practice race, visible left/right
 steering and advancing course/timer. Ordinary worker/WebGL browser testing also
 covers practice start and right/left steering with the original archive.
-Public-route gameplay, full courses, cups, editing, saves and audio remain unverified.
+Public-route practice start and right/left steering are verified on v0.94.0.
+Full courses, cups, editing, saves and audio remain unverified.
