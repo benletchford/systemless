@@ -1026,9 +1026,36 @@ pub(super) fn ppc_dispatch_legacy_control(
             } else {
                 cpu.gpr[5]
             };
-            let v = (cpu.gpr[4] >> 16) as u16 as i16;
-            let h = cpu.gpr[4] as u16 as i16;
-            let part = ppc_control_part_at_point(memory, controls, cpu.gpr[3], v, h).unwrap_or(0);
+            let mut v = (cpu.gpr[4] >> 16) as u16 as i16;
+            let mut h = cpu.gpr[4] as u16 as i16;
+            let mut part =
+                ppc_control_part_at_point(memory, controls, cpu.gpr[3], v, h).unwrap_or(0);
+            if part == 0 && input.mouse_button {
+                if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
+                    let owner = memory.read_u32_be(control + PPC_CONTROL_OWNER_OFFSET)?;
+                    let rect = ppc_read_rect(memory, control + PPC_CONTROL_RECT_OFFSET)?;
+                    let proc_id = controls
+                        .iter()
+                        .find(|record| record.handle == cpu.gpr[3])
+                        .map_or(-1, |record| record.proc_id);
+                    if let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, owner) {
+                        let (left, top) = surface.local_point((0, 0));
+                        (v, h) = crate::control_manager::standard_button_tracking_start_point(
+                            rect,
+                            (v, h),
+                            (input.mouse_v, input.mouse_h),
+                            (
+                                ppc_i32_to_i16_saturating(top),
+                                ppc_i32_to_i16_saturating(left),
+                            ),
+                            input.mouse_button,
+                            proc_id,
+                        );
+                        part = ppc_control_part_at_point(memory, controls, cpu.gpr[3], v, h)
+                            .unwrap_or(0);
+                    }
+                }
+            }
             if crate::trap::dispatch::trace_input_enabled() {
                 eprintln!(
                     "[INPUT] PPC TrackControl control=${:08X} point=({}, {}) action=${:08X} -> {}",

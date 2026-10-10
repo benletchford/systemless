@@ -4265,3 +4265,39 @@ fn getcvariant_function_protocol_pops_handle_and_writes_integer_result() {
         "trap must not write past the 2-byte INTEGER result slot"
     );
 }
+
+#[test]
+fn track_control_global_live_button_point_preserves_release_cancellation() {
+    for release_inside in [true, false] {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let window = *disp.current_port;
+        bus.write_word(window + 8, (-100i16) as u16);
+        bus.write_word(window + 10, (-80i16) as u16);
+        let (handle, _) = alloc_button_control(&mut disp, &mut bus, window, (20, 20, 40, 80));
+        disp.input_state.set_mouse_button_for_test(true);
+        disp.input_state.set_mouse_position_for_test((130, 110));
+        let sp = 0x300000;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, 0);
+        bus.write_word(sp + 4, 130);
+        bus.write_word(sp + 6, 110);
+        bus.write_long(sp + 8, handle);
+        bus.write_word(sp + 12, 0xbeef);
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(disp.control_tracking.is_some());
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        if !release_inside {
+            disp.input_state.set_mouse_position_for_test((110, 90));
+        }
+        disp.input_state.set_mouse_button_for_test(false);
+        bus.write_byte(crate::memory::globals::addr::MB_STATE, 0x80);
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(sp + 12), if release_inside { 10 } else { 0 });
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        assert!(disp.control_tracking.is_none());
+    }
+}

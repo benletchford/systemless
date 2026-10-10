@@ -1,5 +1,36 @@
 //! Architecture-neutral Control Manager records and list operations.
 
+/// Accept a global start point from legacy callers only when it is exactly
+/// the live, held mouse over a standard button. Correct local points retain
+/// their ordinary meaning. Executor ctlMouse.cpp documents a GetMouse fallback
+/// for this calling pattern; this narrower form cannot accept an arbitrary miss.
+pub(crate) fn standard_button_tracking_start_point(
+    rect: (i16, i16, i16, i16),
+    start: (i16, i16),
+    live_global: (i16, i16),
+    owner_origin: (i16, i16),
+    button_down: bool,
+    proc_id: i16,
+) -> (i16, i16) {
+    let inside = |(v, h): (i16, i16)| v >= rect.0 && v < rect.2 && h >= rect.1 && h < rect.3;
+    if inside(start)
+        || !button_down
+        || !matches!(proc_id & 0x0fff, 0 | 1 | 2)
+        || start != live_global
+    {
+        return start;
+    }
+    let local = (
+        live_global.0.wrapping_sub(owner_origin.0),
+        live_global.1.wrapping_sub(owner_origin.1),
+    );
+    if inside(local) {
+        local
+    } else {
+        start
+    }
+}
+
 /// Tagged property associated with a ControlRef in Appearance Manager / Carbon.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ProcessControlProperty {
@@ -793,5 +824,22 @@ mod tests {
 
         state.set_drag_tracking_enabled(10, true);
         assert!(state.drag_tracking_enabled(10));
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn track_control_start_point_fallback_requires_live_standard_button() {
+    let rect = (20, 20, 40, 80);
+    let choose = |start, live, down, proc| {
+        standard_button_tracking_start_point(rect, start, live, (100, 80), down, proc)
+    };
+    assert_eq!(choose((130, 110), (130, 110), true, 0), (30, 30));
+    assert_eq!(choose((30, 30), (130, 110), true, 0), (30, 30));
+    assert_eq!(choose((130, 110), (130, 110), false, 0), (130, 110));
+    assert_eq!(choose((130, 111), (130, 110), true, 0), (130, 111));
+    assert_eq!(choose((110, 90), (110, 90), true, 0), (110, 90));
+    for proc in [16, 1008, -1] {
+        assert_eq!(choose((130, 110), (130, 110), true, proc), (130, 110));
     }
 }
