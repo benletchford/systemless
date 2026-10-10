@@ -1,0 +1,11 @@
+   Packaging systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+warning: ignoring test `gpui_coverage` as `tests/gpui_coverage.rs` is not included in the published package
+warning: ignoring test `headless_play` as `tests/headless_play.rs` is not included in the published package
+warning: ignoring test `macintosh_clipboard` as `tests/macintosh_clipboard.rs` is not included in the published package
+warning: ignoring test `macintosh_modal_text` as `tests/macintosh_modal_text.rs` is not included in the published package
+warning: ignoring test `macintosh_styled_halos` as `tests/macintosh_styled_halos.rs` is not included in the published package
+warning: ignoring test `macintosh_styled_spacing` as `tests/macintosh_styled_spacing.rs` is not included in the published package
+warning: ignoring test `presentation_performance` as `tests/presentation_performance.rs` is not included in the published package
+warning: ignoring test `toolbox_showcase` as `tests/toolbox_showcase.rs` is not included in the published package
+warning: package `yoke-derive v0.8.3` in Cargo.lock is yanked in registry `crates-io`, consider updating to a version that is not yanked
+    Packaged 444 files, 33.4MiB (7.2MiB compressed)
