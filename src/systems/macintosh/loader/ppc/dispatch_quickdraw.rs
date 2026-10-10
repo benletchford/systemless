@@ -823,6 +823,46 @@ pub(super) fn dispatch_quickdraw_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::EraseRoundRect => {
+            if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
+                let oval_width = cpu.gpr[4] as u16 as i16;
+                let oval_height = cpu.gpr[5] as u16 as i16;
+                if let Some(commands) = ppc_open_picture_commands(toolbox_startup, current_gworld) {
+                    pict::recording_push_round_rect(
+                        commands,
+                        0x0042,
+                        rect,
+                        oval_width,
+                        oval_height,
+                    );
+                } else if toolbox_startup.open_region_port == current_gworld {
+                    let shape = Rect {
+                        top: rect.0,
+                        left: rect.1,
+                        bottom: rect.2,
+                        right: rect.3,
+                    };
+                    let rows = TrapDispatcher::compute_rrect_spans(&shape, oval_width, oval_height)
+                        .into_iter()
+                        .map(|(left, right)| vec![left, right])
+                        .collect();
+                    ppc_open_region_include_rows(toolbox_startup, rect.0, rows);
+                } else {
+                    ppc_erase_round_rect(
+                        memory,
+                        gworlds,
+                        current_gworld,
+                        rect,
+                        oval_width,
+                        oval_height,
+                        *quickdraw_fore_color,
+                        *quickdraw_back_color,
+                        toolbox_startup,
+                    );
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::FrameRoundRect | PpcImportDispatcherTarget::PaintRoundRect => {
             let paint = matches!(
                 binding.dispatcher_target,
@@ -1016,6 +1056,71 @@ pub enum PpcQuickDrawCompatibilityOperation {
     SetItemStyle,
     SetStdCProcs,
     SetStdProcs,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_erase_round_rect(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    rect: (i16, i16, i16, i16),
+    oval_width: i16,
+    oval_height: i16,
+    fore_color: PpcRgbColor,
+    back_color: PpcRgbColor,
+    toolbox_startup: &PpcToolboxStartupState,
+) {
+    // Imaging With QuickDraw, p. 3-66: erase uses bkPat in patCopy mode,
+    // without changing the pen. Keep the original shape before clipping.
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
+        return;
+    };
+    let shape = Rect {
+        top: rect.0,
+        left: rect.1,
+        bottom: rect.2,
+        right: rect.3,
+    };
+    let rows = TrapDispatcher::compute_rrect_spans(&shape, oval_width, oval_height);
+    let pattern = ppc_quickdraw_background_pattern(
+        memory,
+        current_gworld,
+        toolbox_startup.quickdraw_back_pattern,
+    );
+    let (fore_color, back_color) =
+        ppc_port_rgb_colors(memory, current_gworld).unwrap_or((fore_color, back_color));
+    let vis = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+        .and_then(|handle| ppc_region_storage(memory, handle));
+    let clip = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+        .and_then(|handle| ppc_region_storage(memory, handle));
+    for (row, (left, right)) in rows.into_iter().enumerate() {
+        let (x0, y) = surface.local_point((i32::from(left), i32::from(rect.0) + row as i32));
+        let (x1, _) = surface.local_point((i32::from(right), i32::from(rect.0) + row as i32));
+        if y < 0 || y >= surface.front_buffer.height as i32 {
+            continue;
+        }
+        for x in x0.max(0)..x1.min(surface.front_buffer.width as i32) {
+            if !ppc_local_point_in_port_regions(surface, (x, y), vis.as_deref(), clip.as_deref()) {
+                continue;
+            }
+            if let Some(pixel) = ppc_quickdraw_surface_background_pixel(
+                memory,
+                surface,
+                (x, y),
+                fore_color,
+                back_color,
+                toolbox_startup
+                    .quickdraw_back_indices
+                    .get(&current_gworld)
+                    .copied(),
+                pattern,
+            ) {
+                let _ = ppc_quickdraw_write_raw_pixel(memory, surface.front_buffer, (x, y), pixel);
+            }
+        }
+    }
 }
 
 pub(super) fn ppc_quickdraw_background_pattern(
