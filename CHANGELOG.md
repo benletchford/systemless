@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.84.1](https://github.com/benletchford/systemless/compare/v0.84.0...v0.84.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* load original compressed UDIF game packages ([4289b74](https://github.com/benletchford/systemless/commit/4289b742b67be5240f114a3d698f706f41559d83))
+
+
+### Code Refactoring
+
+* **macintosh:** centralize Disk Initialization Manager operations evaluation ([6639836](https://github.com/benletchford/systemless/commit/6639836261d31fbf5fd5c3de57d62aa409f2ace3))
+
 ## [0.84.0](https://github.com/benletchford/systemless/compare/v0.83.0...v0.84.0) (2026-10-10)
 
 
