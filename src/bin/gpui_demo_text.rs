@@ -55,7 +55,7 @@ mod tests {
 
     #[test]
     fn smooth_basic_menu_faces_keep_native_pens_and_continuous_underline() {
-        for (font, size) in [(0, 12), (3, 12), (4, 10)] { for face in 0..=7 {
+        for (font, size) in [(0, 12), (3, 12), (4, 10)] { for face in (0..=127).filter(|face| smooth_label_style_supported(*face)) {
             let bytes = b"g W\x8e";
             let line = super::ClassicLine::styled(bytes, font, size, face);
             let mut pen = 0;
@@ -73,8 +73,54 @@ mod tests {
                 assert!(super::resolve_smooth_run(&line, raster).is_some());
             }
         } }
-        for face in 8..=127 {
+        for face in (8..=127).filter(|face| !smooth_label_style_supported(*face)) {
             assert!(super::resolve_smooth_run(&super::ClassicLine::styled(b"Menu", 0, 12, face), 2).is_none());
+        }
+    }
+
+    #[test]
+    fn smooth_condensed_extended_textedit_preserves_native_paint_and_insertion_positions() {
+        let bytes = b"g W\x8e";
+        let positions = vec![0, 100, 200, 300, 400];
+        for ppc in [false, true] {
+            for face in (32..=127).filter(|face| smooth_basic_style_supported(*face)) {
+                let (line, paint_advance) = if ppc {
+                    ClassicLine::ppc_styled_run_with_paint_advance(bytes, 3, 12, face, positions.clone())
+                } else {
+                    ClassicLine::classic_textedit_run_with_paint_advance(bytes, 3, 12, face, positions.clone())
+                }.unwrap();
+                assert_eq!(line.positions, positions);
+                let base = if ppc {
+                    ClassicLine::ppc_styled_run(bytes, 3, 12, face & 31, positions.clone())
+                } else {
+                    ClassicLine::classic_textedit_run(bytes, 3, 12, face & 31, positions.clone())
+                }.unwrap();
+                let advances: Vec<_> = bytes.iter().map(|&byte| if ppc {
+                    i32::from(systemless::quickdraw::text::ppc_styled_run_ink(3, 12, face, &[byte]).0)
+                } else {
+                    systemless::quickdraw::text::classic_textedit_glyph_ink(3, 12, byte, face).unwrap().0
+                }).collect();
+                assert_eq!(paint_advance, advances.iter().sum::<i32>(), "PPC={ppc} face={face}");
+                for raster in 1..=8 {
+                    let masks = resolve_smooth_run(&line, raster).unwrap();
+                    let base_masks = resolve_smooth_run(&base, raster).unwrap();
+                    let mut pen = 0;
+                    for (index, &byte) in bytes.iter().enumerate() {
+                        assert_eq!(line.smooth_sources[index].0, pen);
+                        let mask = &masks[index].1;
+                        let original = &base_masks[index].1;
+                        assert_eq!(masks[index].0, pen);
+                        assert_eq!(mask.guest_advance, advances[index]);
+                        assert_eq!((mask.left, mask.top, mask.width, mask.height),
+                            (original.left, original.top, original.width, original.height));
+                        assert_eq!(mask.pixels, original.pixels, "spacing must not stretch the source glyph");
+                        if byte != b' ' {
+                            assert!(mask.pixels.iter().any(|&alpha| alpha > 0 && alpha < 255));
+                        }
+                        pen += advances[index];
+                    }
+                }
+            }
         }
     }
 
@@ -728,6 +774,8 @@ pub(crate) struct ClassicLine {
     smooth_italic: Option<(i16, i16)>,
     smooth_strokes: Vec<(i32, i32)>,
     smooth_halo: Option<i32>,
+    smooth_spacing_adjustment: i32,
+    smooth_clamp_advance: bool,
 }
 
 impl std::fmt::Debug for ClassicLine {
@@ -755,10 +803,10 @@ impl ClassicLine {
     /// Exact guest strike and QuickDraw style synthesis. Underline spans the
     /// complete line, including spaces, just as the framebuffer painter does.
     pub fn styled(bytes: &[u8], font: i16, point_size: i16, face: u8) -> Self {
-        let mut result = Self { positions: vec![0], ink: Vec::new(), smooth_sources: Vec::new(), smooth_bold: false, smooth_italic: None, smooth_strokes: Vec::new(), smooth_halo: None };
+        let mut result = Self { positions: vec![0], ink: Vec::new(), smooth_sources: Vec::new(), smooth_bold: false, smooth_italic: None, smooth_strokes: Vec::new(), smooth_halo: None, smooth_spacing_adjustment: smooth_spacing_adjustment(face), smooth_clamp_advance: false };
         let mut pen = 0;
         for &byte in bytes {
-            if face <= 7 && (face & 2 == 0
+            if smooth_label_style_supported(face) && (face & 2 == 0
                 || systemless::quickdraw::text::get_glyph_italic(font, point_size, byte as char).is_none()) {
                 if let Some((glyph, data)) = systemless::quickdraw::text::get_glyph(font, point_size, byte as char) {
                     result.smooth_sources.push((pen, glyph, data));
@@ -785,7 +833,7 @@ impl ClassicLine {
         if face & 4 != 0 && pen > 0 {
             for y in 1..=systemless::quickdraw::text::get_underline_thickness(font, point_size).max(1) {
                 result.ink.push((0, i32::from(y), pen));
-                if face <= 7 { result.smooth_strokes.extend((0..pen).map(|x| (x, i32::from(y)))); }
+                if smooth_label_style_supported(face) { result.smooth_strokes.extend((0..pen).map(|x| (x, i32::from(y)))); }
             }
         }
         result
@@ -821,9 +869,9 @@ impl ClassicLine {
                     smooth_sources.push((pen, glyph, data));
                 }
             }
-            if face <= 7 && strike_scale == 1 {
+            if smooth_label_style_supported(face) && strike_scale == 1 {
                 smooth_strokes.extend(systemless::quickdraw::text::classic_textedit_underline_ink(
-                    font, point_size, byte, face)?.into_iter().map(|(x, y)| (pen + i32::from(x), i32::from(y))));
+                    font, point_size, byte, face & 7)?.into_iter().map(|(x, y)| (pen + i32::from(x), i32::from(y))));
             }
             let (advance, ink) = systemless::quickdraw::text::classic_textedit_glyph_ink(font, point_size, byte, face)?;
             pixels.extend(ink.into_iter().map(|(x, y)| (pen + i32::from(x), i32::from(y))));
@@ -833,7 +881,7 @@ impl ClassicLine {
         pixels.dedup();
         let mut result = Self { positions, ink: Vec::new(), smooth_sources, smooth_bold: face & 1 != 0,
             smooth_italic: (face & 2 != 0).then_some((font, point_size)), smooth_strokes,
-            smooth_halo: smooth_style_halo(face) };
+            smooth_halo: smooth_style_halo(face), smooth_spacing_adjustment: smooth_spacing_adjustment(face), smooth_clamp_advance: false };
         for (x, y) in pixels {
             if let Some(last) = result.ink.last_mut() {
                 if last.1 == y && last.0 + last.2 == x {
@@ -876,8 +924,9 @@ impl ClassicLine {
                     if face & 2 == 0 || systemless::quickdraw::text::get_glyph_italic(font, strike.size, byte as char).is_none() {
                         smooth_sources.push((pen, glyph, data));
                     }
-                    pen += i32::from(glyph.advance) + i32::from(face & 1 != 0)
-                        + i32::from(face & 8 != 0) + 2 * i32::from(face & 16 != 0);
+                    pen += (i32::from(glyph.advance) + i32::from(face & 1 != 0)
+                        + i32::from(face & 8 != 0) + 2 * i32::from(face & 16 != 0)
+                        + smooth_spacing_adjustment(face)).max(1);
                 } else { pen += 6; }
             }
             if face & 4 != 0 {
@@ -889,7 +938,7 @@ impl ClassicLine {
         pixels.sort_unstable_by_key(|&(x, y)| (y, x));
         let mut result = Self { positions, ink: Vec::new(), smooth_sources, smooth_bold: face & 1 != 0,
             smooth_italic: (face & 2 != 0).then_some((font, strike.size)), smooth_strokes,
-            smooth_halo: smooth_style_halo(face) };
+            smooth_halo: smooth_style_halo(face), smooth_spacing_adjustment: smooth_spacing_adjustment(face), smooth_clamp_advance: true };
         for (x, y) in pixels {
             if let Some(last) = result.ink.last_mut() {
                 if last.1 == y && last.0 + last.2 == x {
@@ -931,6 +980,8 @@ impl ClassicLine {
             smooth_italic: None,
             smooth_strokes: Vec::new(),
             smooth_halo: None,
+            smooth_spacing_adjustment: 0,
+            smooth_clamp_advance: false,
         };
         let mut pen = 0;
         for resolved in glyphs {
@@ -1817,6 +1868,8 @@ fn resolve_smooth_run(
         if let Some((font, size)) = line.smooth_italic { mask = smooth_italic_mask(mask, font, size)?; }
         if line.smooth_bold { mask = smooth_bold_mask(mask)?; }
         if let Some(radius) = line.smooth_halo { mask = smooth_halo_mask(mask, radius)?; }
+        mask.guest_advance = mask.guest_advance.checked_add(line.smooth_spacing_adjustment)?;
+        if line.smooth_clamp_advance { mask.guest_advance = mask.guest_advance.max(1); }
         Some((pen, mask))
     }).collect::<Option<Vec<_>>>()?;
     if !line.smooth_strokes.is_empty() {
@@ -1840,8 +1893,16 @@ fn resolve_smooth_run(
     Some(glyphs)
 }
 
+fn smooth_label_style_supported(face: u8) -> bool {
+    face < 128 && face & 0x18 == 0
+}
+
+fn smooth_spacing_adjustment(face: u8) -> i32 {
+    -i32::from(face & 0x20 != 0) + i32::from(face & 0x40 != 0)
+}
+
 fn smooth_basic_style_supported(face: u8) -> bool {
-    face < 32 && (face & 4 == 0 || face <= 7)
+    face < 128 && (face & 4 == 0 || smooth_label_style_supported(face))
 }
 
 fn smooth_style_halo(face: u8) -> Option<i32> {

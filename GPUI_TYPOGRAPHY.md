@@ -70,9 +70,17 @@ identity, baseline, height, advances and clipping. Higher-raster ink samples
 are not claimed to reproduce the original bitmap pixels.
 
 Non-underlined supported outline/shadow styles use the native smear/exclusion
-policy. Underline/halo combinations, condensed/extended styles, ratio-scaled
-strikes and bitmap-only sources still need faithful smooth support. Their
-existing fallback remains part of the GPUI frontend.
+policy. Condensed/extended styles preserve the current guest recipe's spacing
+adjustment without stretching the resolved glyph. Native paint pens and guest
+insertion positions remain separate; PPC's minimum advance remains intact.
+Both flags together cancel their spacing adjustments. The original outline
+coverage and its bounds remain unchanged. Supported basic label and TextEdit
+styles, plus non-underlined TextEdit halos, use this spacing policy.
+
+Underline/halo combinations, ratio-scaled strikes and bitmap-only sources still
+need faithful smooth support. Their existing fallback remains part of the GPUI
+frontend. Condensed/extended support has native recipe and smooth-mask tests;
+composed appearance and actual editing with those styles remain unqualified.
 
 ## Evidence and completion gate
 

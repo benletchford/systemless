@@ -1,0 +1,12 @@
+{
+  "base_source_commit": "b41bb6c4bf2cc8e1083ba60c81065e37f5586f5a",
+  "outcome": "22 production frontend text tests passed in11.89s",
+  "source_sha256": {
+    "src/bin/gpui_demo_text.rs": "3e8870b2a2ab33cabd04300be212e1f558f656484478dc3f632256d1983b1c8b"
+  },
+  "source_hash_timing": "Pinned while final test job ran, verified after terminal success. Candidate uncommitted during execution.",
+  "test_executable": "target/debug/deps/systemless-4c6b108506f367df",
+  "test_executable_sha256": "fa585e3b797a2928202346cfca78bda8244fcab5fc893080c1495ae9498d5de9",
+  "binary_hash_timing": "After successful execution without another rebuild before hashing. Separate old example executable remains unchanged for live pointer regression.",
+  "scope": "Smooth condensed/extended spacing for supported original outline labels and classic/PPC TextEdit, rasters1..8. Native per-glyph paint advance compared to guest recipes; insertion positions retained; masks and bounds equal corresponding non-spacing style so no host stretch/substitution. Basic underline policies retained; outline/shadow supported only without underline in TextEdit, not labels. Both spacing flags together cancel as guest recipes specify. Composed condensed/extended captures, actual guest edit/pointer with those styles, independent native-font oracle and performance remain open. Existing integrated pointer job covers pre-spacing source."
+}
