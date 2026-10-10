@@ -236,6 +236,9 @@ mod desktop {
         capture_styled_text_edit_multiline: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_styled_scroll: bool,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_styled_text_edit_caret: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true, default_value_t = 26)]
@@ -4638,7 +4641,7 @@ mod desktop {
     #[cfg(feature = "gpui-demo-test")]
     fn capture_styled_text_edit_ink(
         game: &std::path::Path, output: &std::path::Path,
-        prefer_powerpc: bool, depth: Option<u16>, scale: f32, selected: bool, caret_offset: Option<usize>, activation: &[bool], caret_state: &str, multiline: bool, spacing_style: &str, halo_style: &str,
+        prefer_powerpc: bool, depth: Option<u16>, scale: f32, selected: bool, caret_offset: Option<usize>, activation: &[bool], caret_state: &str, multiline: bool, scrolled: bool, spacing_style: &str, halo_style: &str,
     ) {
         use gpui_kit::{platform, HeadlessAppContext};
         let caret = caret_offset.is_some();
@@ -4771,6 +4774,49 @@ mod desktop {
             }
             record = selected;
         }
+        if scrolled {
+            assert!(multiline, "scroll qualification uses the multiline guest field");
+            let before = record.clone();
+            for input in [
+                MacintoshInput::KeyDown { mac_key: 0x3a, character: 0 },
+                MacintoshInput::KeyDown { mac_key: 9, character: b'v' },
+                MacintoshInput::KeyUp { mac_key: 9, character: b'v' },
+                MacintoshInput::KeyUp { mac_key: 0x3a, character: 0 },
+            ] { session.deliver_input(input); }
+            record = (0..300).find_map(|_| {
+                session.runner_mut().run_steps(10_000, None);
+                let settled = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
+                session.runner_mut().text_edit_snapshot().records.into_iter().find(|next|
+                    settled && next.guest_id == before.guest_id && next.drawing_intact
+                        && next.dest_rect.0 == before.dest_rect.0 - 12)
+            }).expect("actual guest TEScroll moves the styled viewport");
+            assert_eq!(record.text, before.text);
+            assert_eq!(record.style_runs, before.style_runs);
+            assert_eq!(record.selection, before.selection);
+            assert_eq!(record.view_rect, before.view_rect);
+            assert_eq!(record.generation, before.generation);
+            let geometry = record.guest_styled_line_geometry(1).unwrap().0;
+            let start = record.line_starts.as_ref().unwrap()[1];
+            let offset = start + 1;
+            let dest = record.global_dest_rect.unwrap();
+            let vertical = dest.0 - record.dest_rect.0 + geometry.top + geometry.ascent;
+            let horizontal = dest.1 - record.dest_rect.1 + geometry.left
+                + record.guest_styled_range_width(start..offset).unwrap();
+            for input in [MacintoshInput::MouseDown { vertical, horizontal },
+                MacintoshInput::MouseUp { vertical, horizontal }] {
+                session.deliver_input(input);
+                for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
+            }
+            record = (0..300).find_map(|_| {
+                session.runner_mut().run_steps(10_000, None);
+                let settled = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
+                session.runner_mut().text_edit_snapshot().records.into_iter().find(|next|
+                    settled && next.guest_id == before.guest_id && next.drawing_intact
+                        && next.selection == (offset, offset) && next.caret_visible)
+            }).expect("guest click at the scrolled glyph boundary reaches the same byte offset");
+            assert_eq!(record.text, before.text);
+            assert_eq!(record.style_runs, before.style_runs);
+        }
         if !multiline && (selected || caret) {
             assert!(insertion <= record.text.len(), "caret offset is a guest byte boundary");
             let before = record.clone();
@@ -4833,7 +4879,7 @@ mod desktop {
         let mut evidence = serde_json::json!({
             "runtime_powerpc": runtime_powerpc,
             "caret_state": if caret { caret_state } else { "not-requested" },
-            "insertion_offset": caret_offset, "multiline": multiline, "selection": record.selection,
+            "insertion_offset": caret_offset, "multiline": multiline, "scrolled": scrolled, "selection": record.selection,
             "spacing_style": spacing_style,
             "halo_style": halo_style,
             "compositor": "shared Demo renderer",
@@ -5505,37 +5551,37 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_multiline.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[], "visible", true, &args.capture_styled_spacing, &args.capture_styled_halo);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[], "visible", true, args.capture_styled_scroll, &args.capture_styled_spacing, &args.capture_styled_halo);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_selected_suspended.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[false], "visible", false, &args.capture_styled_spacing, &args.capture_styled_halo);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[false], "visible", false, false, &args.capture_styled_spacing, &args.capture_styled_halo);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_selected_resumed.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[false, true], "visible", false, &args.capture_styled_spacing, &args.capture_styled_halo);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[false, true], "visible", false, false, &args.capture_styled_spacing, &args.capture_styled_halo);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_selected.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[], "visible", false, &args.capture_styled_spacing, &args.capture_styled_halo);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[], "visible", false, false, &args.capture_styled_spacing, &args.capture_styled_halo);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_caret.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), false, Some(args.capture_styled_caret_offset), &[], &args.capture_styled_caret_state, false, &args.capture_styled_spacing, &args.capture_styled_halo);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), false, Some(args.capture_styled_caret_offset), &[], &args.capture_styled_caret_state, false, false, &args.capture_styled_spacing, &args.capture_styled_halo);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_ink.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), false, None, &[], "visible", false, &args.capture_styled_spacing, &args.capture_styled_halo);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), false, None, &[], "visible", false, false, &args.capture_styled_spacing, &args.capture_styled_halo);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -6268,6 +6314,7 @@ mod desktop {
                         capture_text_edit: None,
                         capture_styled_text_edit_ink: None,
                         capture_styled_text_edit_multiline: None,
+                        capture_styled_scroll: false,
                         capture_styled_text_edit_caret: None,
                         capture_styled_caret_offset: 26,
                         capture_styled_caret_state: "visible".into(),
