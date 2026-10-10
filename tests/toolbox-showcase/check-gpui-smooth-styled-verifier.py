@@ -35,6 +35,13 @@ checks={
  'boolean-active-type':lambda m,c,e:e.update(active=int(e['active'])),
  'boolean-preflight-type':lambda m,c,e:(c.update(smooth_raster_support_1_through_8=[1]*8),e.update(smooth_raster_support_1_through_8=[1]*8)),
 }
+if 'runtime_cpu_evidence' in base:
+ checks.update({
+  'runtime-cpu':lambda m,c,e:e.update(runtime_powerpc=not e['runtime_powerpc']),
+  'runtime-cpu-type':lambda m,c,e:e.update(runtime_powerpc=int(e['runtime_powerpc'])),
+  'runtime-cpu-missing':lambda m,c,e:e.pop('runtime_powerpc'),
+  'runtime-cpu-evidence':lambda m,c,e:m.update(runtime_cpu_evidence='requested only'),
+ })
 with tempfile.TemporaryDirectory(prefix='systemless-styled-verifier-') as temporary:
  out=pathlib.Path(temporary)
  for key in ['rendered','guest']:(out/case[key]).symlink_to((args.source/case[key]).resolve())
