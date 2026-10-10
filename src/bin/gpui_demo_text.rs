@@ -741,6 +741,7 @@ pub(crate) struct ClassicListCellPaintPlan {
     pub pixels: std::collections::BTreeMap<(i16, i16), [u8; 3]>,
     pub background: [u8; 3],
     pub clip: (i16, i16, i16, i16),
+    smooth: (ClassicLine, i16, i16, [u8; 3]),
 }
 
 impl ClassicListCellPaintPlan {
@@ -799,7 +800,8 @@ impl ClassicListCellPaintPlan {
             }
         } }
         Some(Self { pixels: pixels.into_iter().map(|point| (point, foreground)).collect(),
-            background, clip: paint.clip })
+            background, clip: paint.clip,
+            smooth: (layout.label(&paint.bytes), layout.left, layout.baseline, foreground) })
     }
 
     /// The caller must establish standard painter ownership and intact drawing;
@@ -825,7 +827,8 @@ impl ClassicListCellPaintPlan {
             let at = (gy as usize * width as usize + gx as usize) * 4;
             if native[at..at + 3] != pixels.get(&(x, y)).copied().unwrap_or(background) { return None; }
         } }
-        Some(Self { pixels, background, clip: layout.clip })
+        Some(Self { pixels, background, clip: layout.clip,
+            smooth: (layout.label(bytes), layout.left, layout.baseline, foreground) })
     }
 }
 
@@ -833,11 +836,19 @@ impl ClassicListCellPaintPlan {
 pub(crate) fn classic_list_cell(
     plan: ClassicListCellPaintPlan, scale: f32, port_origin: (f32, f32),
 ) -> Option<impl gpui_kit::IntoElement> {
-    classic_styled_text_pixels_with_background(plan.pixels, scale, port_origin,
-        Some((plan.clip, plan.background)))
+    classic_text_pixels_with_smooth(plan.pixels, scale, port_origin,
+        Some((plan.clip, plan.background)), Some(plan.smooth))
 }
 
 impl ClassicListCellLayout {
+    /// Preserve the native stop-before pen policy, including the final glyph
+    /// that starts inside the boundary and is then clipped by the owned cell.
+    fn label(self, bytes: &[u8]) -> ClassicLine {
+        let line = ClassicLine::plain(bytes, self.font, self.size);
+        let count = line.positions.iter().take(bytes.len()).take_while(|&&pen|
+            self.stop_before.is_none_or(|stop| i32::from(self.left) + pen < i32::from(stop))).count();
+        ClassicLine::plain(&bytes[..count], self.font, self.size)
+    }
     /// Bytes are the owning CPU painter's actual input, after its decoding
     /// policy. Do not substitute the snapshot's decoded display label.
     /// Bitmap ink only. Physical paint and intact cell ownership must be
@@ -1093,6 +1104,15 @@ fn classic_styled_text_pixels_with_background(
     scale: f32, port_origin: (f32, f32),
     background: Option<((i16, i16, i16, i16), [u8; 3])>,
 ) -> Option<impl gpui_kit::IntoElement> {
+    classic_text_pixels_with_smooth(pixels, scale, port_origin, background, None)
+}
+
+fn classic_text_pixels_with_smooth(
+    pixels: std::collections::BTreeMap<(i16, i16), [u8; 3]>,
+    scale: f32, port_origin: (f32, f32),
+    background: Option<((i16, i16, i16, i16), [u8; 3])>,
+    smooth: Option<(ClassicLine, i16, i16, [u8; 3])>,
+) -> Option<impl gpui_kit::IntoElement> {
     if !scale.is_finite() || scale <= 0. || !port_origin.0.is_finite() || !port_origin.1.is_finite() {
         return None;
     }
@@ -1114,6 +1134,11 @@ fn classic_styled_text_pixels_with_background(
                 let ink: Hsla = rgb((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)).into();
                 window.paint_quad(fill(Bounds::new(point(left, top), size(right - left, bottom - top)), ink));
             }
+        }
+        if let Some((line, left, baseline, [r, g, b])) = &smooth {
+            let ink: Hsla = rgb((u32::from(*r) << 16) | (u32::from(*g) << 8) | u32::from(*b)).into();
+            if paint_smooth_label(line, px(port_origin.0 + f32::from(*left) * scale),
+                px(port_origin.1 + f32::from(*baseline) * scale), scale, ink, window) { return; }
         }
         for (color, pixels) in &paths {
             let mut path = PathBuilder::fill();

@@ -198,6 +198,9 @@ mod desktop {
         capture_lists_selected: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_lists_retain_native_source: bool,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_lists_held: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -2825,6 +2828,7 @@ mod desktop {
         RadioSelected,
         Lists,
         ListsSelected,
+        ListsSelectedNativeSource,
         ListsHeld,
         ListsCancelled,
         ListsScrolled,
@@ -2998,7 +3002,7 @@ mod desktop {
                 | CaptureCase::WindowsPromoted
                 | CaptureCase::WindowsMainPromoted
         );
-        let lists_page = matches!(capture, CaptureCase::Lists | CaptureCase::ListsSelected | CaptureCase::ListsHeld | CaptureCase::ListsCancelled
+        let lists_page = matches!(capture, CaptureCase::Lists | CaptureCase::ListsSelected | CaptureCase::ListsSelectedNativeSource | CaptureCase::ListsHeld | CaptureCase::ListsCancelled
             | CaptureCase::ListsScrolled | CaptureCase::ListsInactive | CaptureCase::ListsReactivated | CaptureCase::ListsMutated | CaptureCase::ListsResized);
         let text_edit_page = matches!(
             capture,
@@ -3808,7 +3812,7 @@ mod desktop {
                 .iter()
                 .any(|control| control.visible && control.proc_id == 16 && control.value > 0));
         }
-        if matches!(capture, CaptureCase::ListsSelected | CaptureCase::ListsScrolled | CaptureCase::ListsInactive | CaptureCase::ListsReactivated | CaptureCase::ListsMutated | CaptureCase::ListsResized) {
+        if matches!(capture, CaptureCase::ListsSelected | CaptureCase::ListsSelectedNativeSource | CaptureCase::ListsScrolled | CaptureCase::ListsInactive | CaptureCase::ListsReactivated | CaptureCase::ListsMutated | CaptureCase::ListsResized) {
             let list = session
                 .runner_mut()
                 .list_manager_snapshot()
@@ -4184,6 +4188,7 @@ mod desktop {
         let actual_depth = session.runner().presented_screen_depth();
         let mut source_pixels = frame.pixels;
         if lists_page {
+            let retain_native_source = matches!(capture, CaptureCase::ListsSelectedNativeSource);
             // Remove only visible, qualified ownership from the source texture.
             // A composed capture must prove the shared renderer supplies these
             // pixels; application borders and declined cells stay untouched.
@@ -4199,7 +4204,9 @@ mod desktop {
                         for y in region.top..region.bottom {
                             for x in region.left..region.right {
                                 let offset = ((y as u32 * frame.width + x as u32) * 4) as usize;
-                                source_pixels[offset..offset + 4].copy_from_slice(&[255, 0, 255, 255]);
+                                if !retain_native_source {
+                                    source_pixels[offset..offset + 4].copy_from_slice(&[255, 0, 255, 255]);
+                                }
                             }
                         }
                         erased_regions.push((piece.list, cell, (region.top, region.left, region.bottom, region.right)));
@@ -4208,12 +4215,13 @@ mod desktop {
             }
             assert!(!erased_regions.is_empty(), "list capture requires visible GPUI text ownership");
             std::fs::write(output.with_extension("json"), serde_json::to_vec_pretty(&serde_json::json!({
-                "compositor": "shared Demo renderer", "source_mask": "magenta qualified visible regions",
+                "compositor": "shared Demo renderer", "source_mask": if retain_native_source { "retained native source; appearance only" } else { "magenta qualified visible regions" },
                 "prefer_powerpc": prefer_powerpc, "requested_depth": screen_depth,
                 "paint_depths": lists.iter().flat_map(|list| list.standard_cell_paint.values()
                     .map(|paint| paint.depth)).collect::<std::collections::BTreeSet<_>>(),
                 "scale": capture_scale, "guest_tick": session.runner().guest_tick(),
-                "erased_regions": erased_regions,
+                "erased_regions": if retain_native_source { None } else { Some(&erased_regions) },
+                "owned_regions": &erased_regions,
                 "list_state": lists.iter().map(|list| serde_json::json!({
                     "id": list.guest_id, "generation": list.generation, "active": list.active,
                     "visible": list.visible, "selected": list.selected,
@@ -4308,7 +4316,7 @@ mod desktop {
                 "guest_dimensions": [frame.width, frame_height],
                 "viewport_dimensions": [f32::from(capture_size.width), f32::from(capture_size.height)],
                 "composed_dimensions": [composed.width(), composed.height()],
-                "typography": "resolved outline coverage for supported plain system text; binary fallback for unsupported sources and styled/list recipes",
+                "typography": "resolved outline coverage for supported plain system text and qualified standard list cells; binary fallback for unsupported sources and styled recipes",
                 "scope": "Capture provenance only; no automatic smooth visual, font fidelity or performance qualification",
             })).unwrap()).unwrap();
         composed.save(output).unwrap();
@@ -4923,7 +4931,7 @@ mod desktop {
                 output,
                 args.prefer_powerpc,
                 args.screen_depth,
-                CaptureCase::ListsSelected,
+                if args.capture_lists_retain_native_source { CaptureCase::ListsSelectedNativeSource } else { CaptureCase::ListsSelected },
                 args.capture_scale,
             );
             return;
@@ -5656,6 +5664,7 @@ mod desktop {
                         capture_radio_selected: None,
                         capture_lists: None,
                         capture_lists_selected: None,
+                        capture_lists_retain_native_source: false,
                         capture_lists_held: None,
                         capture_lists_cancelled: None,
                         capture_lists_transition: None,
