@@ -1,0 +1,10 @@
+{
+  "base": "ce7e6c62b3759d32fb25529f1806423a46c2950c",
+  "result": "PASS, 4.69s",
+  "scope": "PPC8/PPC16 actual wrapped guest field uses compositor ownership guards, accepts Mac Roman e-acute and Z through DialogSelect, retains exact text/selection, rejects stale owner. Includes prior first-line click and outside-field caret assertions.",
+  "limits": "Host composition synchronization, range geometry, marked surface and physical IME remain unconnected/unqualified.",
+  "sha256": {
+    "test.log": "e005fea61f09b25a9ae53804e3df1a26a269709c6082017eb179ecd4d2898f90",
+    "source.patch": "56a9616f57c1de547ceb197858b05c8b4d53114a80ae086742424da33abc764a"
+  }
+}

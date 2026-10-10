@@ -456,6 +456,31 @@ pub(crate) fn dialog_text_owner(
     Some(DialogTextOwner { content_revision: dialog.content_revision, identity: (dialog.guest_id, dialog.generation), item: item.number, text, selection })
 }
 
+/// Admit an internal dialog TERec only through the same ownership and paint
+/// guards used by the shared compositor. The dialog remains the event target.
+pub(crate) fn dialog_text_owner_with_records(
+    dialogs: &[systemless::runner::DialogSnapshot],
+    windows: &[systemless::runner::WindowFrameSnapshot],
+    records: &[systemless::runner::TextEditSnapshot],
+    controls: &[systemless::runner::ControlSnapshot],
+) -> Option<DialogTextOwner> {
+    if let Some(owner) = dialog_text_owner(dialogs, windows) { return Some(owner); }
+    let viewport = super::frames::Rect { top: i16::MIN as i32, left: i16::MIN as i32,
+        bottom: i16::MAX as i32, right: i16::MAX as i32 };
+    let pieces = super::frames::text_edit_pieces(records, dialogs, controls, windows, viewport);
+    let mut candidates = pieces.iter().filter_map(|piece| {
+        let record = &records[piece.record];
+        let dialog = dialogs.iter().find(|dialog| dialog.guest_id == record.owner_port)?;
+        let item = dialog.items.iter().find(|item| Some(item.number) == dialog.edit_field)?;
+        Some(DialogTextOwner { identity: (dialog.guest_id, dialog.generation),
+            content_revision: dialog.content_revision, item: item.number,
+            text: record.text.clone(), selection: record.selection.0..record.selection.1 })
+    });
+    let owner = candidates.next()?;
+    // Clipping can produce several pieces for one record, but never several owners.
+    candidates.all(|other| other == owner).then_some(owner)
+}
+
 pub(crate) fn guest_dialog_commit_inputs(
     session: &mut systemless::systems::macintosh::session::MacintoshSession,
     owner: &DialogTextOwner,
@@ -468,7 +493,9 @@ pub(crate) fn guest_dialog_commit_inputs(
         keys[usize::from(*key / 8)] & (1 << (*key % 8)) != 0) { return None; }
     let dialogs = session.runner_mut().dialog_snapshot();
     let windows = session.runner_mut().window_frame_snapshot();
-    if dialog_text_owner(&dialogs, &windows).as_ref() != Some(owner) { return None; }
+    let records = session.runner_mut().text_edit_snapshot().records;
+    let controls = session.runner_mut().control_snapshot();
+    if dialog_text_owner_with_records(&dialogs, &windows, &records, &controls).as_ref() != Some(owner) { return None; }
     // Return/Tab/Escape are modal actions, never characters in a text commit.
     let delete = [8u8];
     let bytes = if bytes.is_empty() && !owner.selection.is_empty() { &delete[..] } else { bytes };

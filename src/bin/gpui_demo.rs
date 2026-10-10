@@ -622,7 +622,9 @@ mod desktop {
                                     super::input::TextInputTarget::Dialog { item, content_revision } => {
                                         let dialogs = session.runner_mut().dialog_snapshot();
                                         let windows = session.runner_mut().window_frame_snapshot();
-                                        super::input::dialog_text_owner(&dialogs, &windows).is_some_and(|actual|
+                                        let records = session.runner_mut().text_edit_snapshot().records;
+                                        let controls = session.runner_mut().control_snapshot();
+                                        super::input::dialog_text_owner_with_records(&dialogs, &windows, &records, &controls).is_some_and(|actual|
                                             actual.identity == owner.identity && actual.item == item && actual.content_revision == content_revision)
                                     }
                                 };
@@ -3598,9 +3600,24 @@ mod desktop {
                     let tick = session.runner().guest_tick().saturating_add(1);
                     session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
                 }
+                let record = session.runner_mut().text_edit_snapshot().records.into_iter()
+                    .find(|record| record.owner_port == id && record.active && record.line_count > 1).unwrap();
+                let geometry = composition::text_line_geometry(&record, 0).unwrap();
+                let dest = record.global_dest_rect.unwrap();
+                let horizontal = dest.1 - record.dest_rect.1 + geometry.left
+                    + composition::text_range_width(&record, 0..20).unwrap();
+                let vertical = dest.0 - record.dest_rect.0 + geometry.top + geometry.ascent;
+                for input in [MacintoshInput::MouseDown { vertical, horizontal }, MacintoshInput::MouseUp { vertical, horizontal }] {
+                    session.deliver_input(input);
+                    for _ in 0..10 {
+                        let tick = session.runner().guest_tick().saturating_add(1);
+                        session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                    }
+                }
                 dialogs = session.runner_mut().dialog_snapshot();
                 assert!(session.runner_mut().text_edit_snapshot().records.iter()
-                    .any(|record| record.owner_port == id && record.active && record.line_count > 1));
+                    .any(|record| record.owner_port == id && record.active && record.line_count > 1
+                        && record.selection == (20, 20)));
             }
             if matches!(capture, CaptureCase::ModalDialogChecked | CaptureCase::ModalDialogCheckboxCheckedHeld) {
                 for input in [
@@ -4519,6 +4536,41 @@ mod desktop {
                 "scope": "Capture provenance only; no automatic smooth visual, font fidelity or performance qualification",
             })).unwrap()).unwrap();
         composed.save(output).unwrap();
+        if matches!(capture, CaptureCase::ModalDialogMultiline) {
+            use gpui_kit::EntityInputHandler;
+            visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                demo.host_active = Some(true);
+                window.focus(&demo.focus, cx);
+                demo.synchronize_composition(window, cx);
+                assert_eq!(demo.composition.owner().unwrap().selection, 20..20);
+                assert!(demo.composition.mark("日😀", 1..3));
+                cx.notify();
+            })).unwrap();
+            visual.run_until_parked();
+            let marked = visual.capture_screenshot(window.into()).unwrap();
+            assert_ne!(marked, composed, "wrapped dialog marked text must paint");
+            visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                let bounds = demo.bounds_for_range(21..23, Bounds::default(), window, cx).unwrap();
+                assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+                assert_eq!(demo.character_index_for_point(point(bounds.origin.x, bounds.origin.y + px(1.)), window, cx), Some(21));
+                assert!(demo.bounds_for_range(21..22, Bounds::default(), window, cx).is_none(),
+                    "marked geometry cannot split a surrogate pair");
+                let saved = demo.text_edits.clone();
+                let owner = demo.composition.owner().unwrap().identity.0;
+                let record = demo.text_edits.iter_mut().find(|record| record.owner_port == owner).unwrap();
+                record.dest_rect.0 = record.dest_rect.0.saturating_add(1);
+                assert!(demo.bounds_for_range(21..23, Bounds::default(), window, cx).is_none(),
+                    "changed guest scroll geometry must invalidate painted marked bounds");
+                demo.text_edits = saved;
+                demo.composition.cancel();
+                cx.notify();
+            })).unwrap();
+            marked.save(output.with_extension("marked.png")).unwrap();
+            visual.run_until_parked();
+            let restored = visual.capture_screenshot(window.into()).unwrap();
+            assert_eq!(restored, composed, "marked cancellation must restore exact wrapped dialog pixels");
+            eprintln!("PASS wrapped dialog painted marked geometry and exact cancellation");
+        }
         eprintln!("saved composed GPUI capture to {}", output.display());
     }
 
@@ -11750,8 +11802,11 @@ mod desktop {
             }
         }
 
-        #[test]
-        fn active_multiline_dialog_uses_guest_textedit_candidates() {
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn active_multiline_dialog_uses_guest_textedit_candidates(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::{AppContext, EntityInputHandler, Bounds, point, px};
+            cx.update(gpui_kit::init);
             for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
                 let mut session = MacintoshSession::new(true, if powerpc { None } else { Some(depth) });
                 session.runner_mut().set_prefer_powerpc_executables(powerpc);
@@ -11805,6 +11860,79 @@ mod desktop {
                     super::super::frames::Rect::from((0, 0, 600, 800)));
                 assert!(pieces.iter().any(|piece| records[piece.record].guest_id == record.guest_id),
                     "actual guest multiline field must reach shared renderer: PPC={powerpc} depth={depth}");
+                let geometry = super::composition::text_line_geometry(record, 0).unwrap();
+                let dest = record.global_dest_rect.unwrap();
+                let line = super::super::text::ClassicLine::plain(
+                    &record.text[..record.line_starts.as_ref().unwrap()[1]], record.font, record.size);
+                let identity = (record.guest_id, record.generation);
+                let original_text = record.text.clone();
+                for offset in [3usize, 10, 20] {
+                    let horizontal = dest.1 - record.dest_rect.1 + geometry.left
+                        + i16::try_from(line.positions[offset]).unwrap();
+                    let vertical = dest.0 - record.dest_rect.0 + geometry.top + geometry.ascent;
+                    session.deliver_input(MacintoshInput::MouseDown { vertical, horizontal });
+                    settle(&mut session);
+                    session.deliver_input(MacintoshInput::MouseUp { vertical, horizontal });
+                    settle(&mut session);
+                    let clicked = session.runner_mut().text_edit_snapshot().records.into_iter()
+                        .find(|current| (current.guest_id, current.generation) == identity).unwrap();
+                    assert_eq!(clicked.selection, (offset, offset),
+                        "wrapped dialog glyph boundary must match guest TEClick: depth={depth}, offset={offset}");
+                    assert_eq!(clicked.text, original_text);
+                    assert!(clicked.drawing_intact);
+                }
+                let dialogs = session.runner_mut().dialog_snapshot();
+                let records = session.runner_mut().text_edit_snapshot().records;
+                let controls = session.runner_mut().control_snapshot();
+                let owner = super::super::input::dialog_text_owner_with_records(
+                    &dialogs, &windows, &records, &controls).expect("wrapped dialog has one qualified owner");
+                let (sender, _receiver) = std::sync::mpsc::channel();
+                let (window, view) = cx.update(|cx| gpui_kit::open_window(Default::default(), cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap());
+                cx.update_window(window.into(), |_, window, cx| {
+                    view.update(cx, |demo, cx| {
+                        demo.width = 800; demo.height = 600;
+                        demo.text_edits = records.clone(); demo.dialogs = dialogs.clone();
+                        demo.windows = windows.clone(); demo.controls = controls.clone();
+                        demo.host_active = Some(true);
+                        window.focus(&demo.focus, cx);
+                        demo.synchronize_composition(window, cx);
+                        assert!(matches!(demo.composition.owner().unwrap().target,
+                            super::super::input::TextInputTarget::Dialog { item: 9, .. }));
+                        let record = records.iter().find(|record| (record.guest_id, record.generation) == identity).unwrap();
+                        let geometry = super::composition::text_line_geometry(record, 0).unwrap();
+                        let dest = record.global_dest_rect.unwrap();
+                        let x = i32::from(dest.1) - i32::from(record.dest_rect.1) + i32::from(geometry.left)
+                            + i32::from(super::composition::text_range_width(record, 0..20).unwrap());
+                        let y = i32::from(dest.0) - i32::from(record.dest_rect.0) + i32::from(geometry.top);
+                        for scale in [0.75, 1., 1.5, 2.] {
+                            demo.display_origin = (37., 29.); demo.display_scale = scale;
+                            let rect = demo.bounds_for_range(20..20, Bounds::default(), window, cx).unwrap();
+                            assert_eq!(f32::from(rect.origin.x), 37. + x as f32 * scale);
+                            assert_eq!(demo.character_index_for_point(
+                                point(px(37. + x as f32 * scale), px(29. + (y as f32 + 1.) * scale)), window, cx), Some(20));
+                            assert!(demo.bounds_for_range(72..72, Bounds::default(), window, cx).is_none(),
+                                "off-view wrapped caret must not supply a candidate anchor");
+                            demo.replace_and_mark_text_in_range(None, "日😀", Some(1..3), window, cx);
+                            assert!(demo.composition_surface(cx).is_some());
+                            demo.composition.cancel();
+                        }
+                        assert_eq!(demo.text_edits, records);
+                        assert_eq!(demo.dialogs, dialogs);
+                    });
+                }).unwrap();
+                cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
+                let inputs = super::super::input::guest_dialog_commit_inputs(&mut session, &owner, &[0x8e, b'Z'])
+                    .expect("wrapped dialog commits must retain DialogSelect ownership");
+                for input in inputs { session.deliver_input(input); settle(&mut session); }
+                let after = session.runner_mut().text_edit_snapshot().records.into_iter()
+                    .find(|current| (current.guest_id, current.generation) == identity).unwrap();
+                let mut expected = original_text;
+                expected.splice(20..20, [0x8e, b'Z']);
+                assert_eq!(after.text, expected);
+                assert_eq!(after.selection, (22, 22));
+                assert!(super::super::input::guest_dialog_commit_inputs(&mut session, &owner, b"x").is_none(),
+                    "old wrapped dialog text/selection must reject stale commits");
             }
         }
 
