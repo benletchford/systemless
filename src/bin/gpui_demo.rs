@@ -48,6 +48,8 @@ mod coverage;
 #[cfg(target_os = "macos")]
 #[path = "gpui_demo_input.rs"]
 mod input;
+#[path = "gpui_demo_marked_document.rs"]
+mod marked_document;
 
 #[cfg(target_os = "macos")]
 #[path = "gpui_demo_scroll.rs"]
@@ -949,7 +951,9 @@ mod desktop {
         popup_tracking: Option<(u32, u64)>,
         composition: super::input::GuestComposition,
         text_commit_rejection_revision: u64,
+        composition_stack_scroll: std::cell::RefCell<(String, f32)>,
         composition_geometry: std::rc::Rc<std::cell::RefCell<Option<composition::PaintedComposition>>>,
+        retained_composition_geometry: std::cell::RefCell<Vec<std::rc::Rc<std::cell::RefCell<Option<composition::PaintedComposition>>>>>,
         keyboard: super::input::KeyboardState,
         wheel: super::scroll::WheelAccumulator,
         _window_activation: Option<Subscription>,
@@ -1162,7 +1166,9 @@ mod desktop {
                 popup_tracking: None,
                 composition: Default::default(),
                 text_commit_rejection_revision: 0,
+                composition_stack_scroll: Default::default(),
                 composition_geometry: Default::default(),
+                retained_composition_geometry: Default::default(),
                 keyboard: super::input::KeyboardState::default(),
                 wheel: super::scroll::WheelAccumulator::default(),
                 _window_activation: None,
@@ -10635,6 +10641,29 @@ mod desktop {
                 assert_eq!(final_record.style_runs.as_ref(), Some(&shifted_styles));
                 eprintln!("PASS worker-disjoint-replacement powerpc={powerpc} depth={actual_depth}");
 
+                let mut retained_stage = super::super::input::GuestComposition::default();
+                let retained_owner = super::super::input::TextInputOwner { identity: pinned.identity,
+                    target: pinned.target, text: final_record.text.clone(),
+                    selection: final_record.selection.0..final_record.selection.1 };
+                retained_stage.synchronize(Some(retained_owner.clone()));
+                assert!(retained_stage.mark("éé", 2..2));
+                assert!(retained_stage.mark_disjoint_range(0..1, "R", 1..1));
+                let requests = retained_stage.commit_marked_spans("R").unwrap();
+                let retained_expected = retained_stage.owner().unwrap().text.clone();
+                for request in requests {
+                    worker.0.send(Command::ReplaceText(request.expected, request.range,
+                        request.bytes, request.caret)).unwrap();
+                }
+                let retained_update = wait("retained marked transaction", &updates, |update|
+                    update.text_edits.iter().any(|record| (record.guest_id, record.generation) == pinned.identity
+                        && record.text == retained_expected && record.selection == (1, 1)));
+                let mut retained_styles = final_record.style_runs.clone().unwrap();
+                for run in &mut retained_styles { if run.start >= retained_owner.selection.end { run.start += 2; } }
+                let final_record = retained_update.text_edits.iter().find(|record|
+                    (record.guest_id, record.generation) == pinned.identity).unwrap();
+                assert_eq!(final_record.style_runs.as_ref(), Some(&retained_styles));
+                eprintln!("PASS worker-retained-marked-transaction powerpc={powerpc} depth={actual_depth}");
+
                 let initial_mark = super::super::input::TextInputOwner {
                     identity: pinned.identity, target: pinned.target,
                     text: final_record.text.clone(), selection: final_record.selection.0..final_record.selection.1,
@@ -11321,7 +11350,7 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
         fn platform_text_commit_reaches_guest_without_duplicate_character_events(cx: &mut gpui_kit::TestAppContext) {
-            use gpui_kit::{AppContext, EntityInputHandler, test::TestWindowExt};
+            use gpui_kit::{AppContext, EntityInputHandler, InputEvent, Bounds, point, px, test::TestWindowExt};
             cx.update(gpui_kit::init);
             for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
                 let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
@@ -11437,6 +11466,81 @@ mod desktop {
                 }).unwrap();
                 assert!(!receiver.try_iter().any(|command| matches!(command, super::Command::Input(_) | super::Command::CommitText(..))),
                     "cancelling host preedit must preserve guest text");
+
+                cx.update_window(window.into(), |_, window, cx| {
+                    view.update(cx, |demo, cx| {
+                        let owner = demo.composition.owner().unwrap().clone();
+                        assert!(demo.composition.mark("éééééééééééé", 12..12));
+                        let guest = owner.selection.end + 4;
+                        let virtual_start = demo.composition.virtual_document().unwrap().virtual_index(guest).unwrap();
+                        use gpui_kit::EntityInputHandler;
+                        demo.replace_and_mark_text_in_range(Some(virtual_start..virtual_start + 1), "ZZ", Some(2..2), window, cx);
+                        assert_eq!(demo.composition.retained_spans().len(), 1);
+                        cx.notify();
+                    });
+                    window.render_frame(cx);
+                    view.update(cx, |demo, cx| {
+                        use gpui_kit::{EntityInputHandler, Bounds, point, px};
+                        let owner = demo.composition.retained_spans()[0].0.clone();
+                        let retained = demo.composition.virtual_document().unwrap().marked_range(&owner.selection).unwrap();
+                        let active = demo.composition.active_virtual_range().unwrap();
+                        let a = demo.bounds_for_range(active.start..active.start, Bounds::default(), window, cx).unwrap();
+                        let b = demo.bounds_for_range(retained.start + 8..retained.start + 8, Bounds::default(), window, cx).unwrap();
+                        assert!(a.bottom() <= b.top() || b.bottom() <= a.top(), "marked surfaces must not obscure one another");
+                        assert_eq!(demo.character_index_for_point(point(b.origin.x, b.origin.y + px(1.)), window, cx),
+                            Some(retained.start + 8));
+                        assert_eq!(demo.text_edits.iter().find(|record| record.guest_id == before.guest_id).unwrap(), &before);
+                    });
+                    let height = view.read(cx).height;
+                    view.update(cx, |demo, cx| { demo.height = 30; cx.notify(); });
+                    window.render_frame(cx);
+                    let position = view.update(cx, |demo, cx| {
+                        let active = demo.composition.active_virtual_range().unwrap();
+                        let bounds = demo.bounds_for_range(active.start..active.start, Bounds::default(), window, cx)
+                            .expect("overflow must retain the active stage");
+                        point(bounds.origin.x + px(1.), bounds.origin.y + px(1.))
+                    });
+                    window.dispatch_event(gpui_kit::MouseMoveEvent {
+                        position, pressed_button: None, modifiers: Default::default(),
+                    }.to_platform_input(), cx);
+                    window.render_frame(cx);
+                    window.dispatch_event(gpui_kit::ScrollWheelEvent {
+                        position, delta: gpui_kit::ScrollDelta::Lines(point(0., -1.)),
+                        modifiers: Default::default(), touch_phase: gpui_kit::TouchPhase::Moved,
+                    }.to_platform_input(), cx);
+                    assert!(view.read(cx).composition_stack_scroll.borrow().1 > 0.,
+                        "the actual wheel event must scroll overflowing staging");
+                    view.update(cx, |demo, cx| {
+                        let active = demo.composition.active_virtual_range().unwrap();
+                        assert!(demo.bounds_for_range(active.start..active.start, Bounds::default(), window, cx).is_none(),
+                            "scrolling invalidates painted geometry until the next frame");
+                    });
+                    for delta in [1., -1.] {
+                        window.dispatch_event(gpui_kit::ScrollWheelEvent {
+                            position, delta: gpui_kit::ScrollDelta::Lines(point(0., delta)),
+                            modifiers: Default::default(), touch_phase: gpui_kit::TouchPhase::Moved,
+                        }.to_platform_input(), cx);
+                        assert_eq!(view.read(cx).composition_stack_scroll.borrow().1 > 0., delta < 0.,
+                            "successive wheel events before repaint must remain within staging");
+                    }
+                    assert!(!receiver.try_iter().any(|command| matches!(command,
+                        super::Command::Wheel(..) | super::Command::FileWheel(..))),
+                        "staging scroll must not move the guest document");
+                    window.render_frame(cx);
+                    view.update(cx, |demo, cx| {
+                        let owner = &demo.composition.retained_spans()[0].0;
+                        let retained = demo.composition.virtual_document().unwrap().marked_range(&owner.selection).unwrap();
+                        let bounds = demo.bounds_for_range(retained.start..retained.start, Bounds::default(), window, cx).unwrap();
+                        assert_eq!(demo.character_index_for_point(point(bounds.origin.x, bounds.origin.y + px(1.)), window, cx),
+                            Some(retained.start), "scrolled staging geometry must match displayed glyphs");
+                        demo.height = height;
+                        demo.composition.cancel();
+                        cx.notify();
+                    });
+                    window.render_frame(cx);
+                }).unwrap();
+                assert!(!receiver.try_iter().any(|command| matches!(command, super::Command::ReplaceText(..) | super::Command::CommitText(..))),
+                    "multiple staged spans must not alter guest storage before commit");
 
                 cx.update_window(window.into(), |_, window, cx| {
                     view.update(cx, |demo, cx| {

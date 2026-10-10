@@ -5347,3 +5347,47 @@ composed images were reviewed. Logs, sidecars and source/executable hashes are
 in `reference/gpui-demo/inactive-control-fonts`. These selected button/checkbox
 scenes do not prove physical host observer integration, full fonts/widgets/scales
 or independent Macintosh parity. All eight release gates remain open.
+
+### Retained marked-text transaction and overflow work (2026-10-11, uncommitted)
+
+The composition model now retains disjoint Unicode stages without changing guest
+storage. A shared virtual document maps UTF-16 ranges around retained stages;
+commits validate every payload for lossless Mac Roman conversion before
+predicting edits, preserve untouched gaps, and commit the active insertion last
+so the guest worker can retain its corrected caret. Cancellation restores the
+original guest owner and selection. The 18 composition state tests pass,
+including rejection of an unrepresentable correction without discarding staging
+and preservation of a retained suffix with the caret before it.
+
+Before the subsequent overflow changes, the actual GPUI platform-handler test
+passed across monochrome 68k, colour 68k, PPC8 and PPC16 (51.39 seconds). It
+checks disjoint marked requests, separate painted bounds, point-to-index mapping,
+and guest-state preservation on cancellation. This is test-window evidence,
+not physical IME qualification.
+
+Current overflow work retains a vertically scrollable panel stack, clips queried
+geometry to the scene, and invalidates cached geometry immediately on scroll.
+Wheel events over staging are consumed there rather than moving the guest
+editor. Current frontend compilation passes (7.18 seconds). The expanded
+integration regression is still pending; its earlier binary does not include
+all later wheel/freshness assertions. This checkpoint does not qualify overflow
+interaction, physical IME, multi-stage overlap merging, or the full release gate.
+
+The menu-reserved overflow checkpoint subsequently passed its actual GPUI
+platform regression across all four modes (58.02 seconds), including wheel
+consumption, rejection of stale geometry before repaint, and scrolled glyph
+hit-testing. A later rapid-wheel routing fix additionally consumes input over
+the last displayed panels while text-service bounds remain invalid; compilation
+passes (4.20 seconds), but that later path still needs its updated regression.
+The 20 state tests pass after adding cross-candidate replacements, preserving
+outer Unicode fragments and the original guest owner. The subsequent unified
+retained-range path remains under test. None of these results establishes
+physical IME behavior or closes the complete host-input gate.
+
+The latest rapid-wheel platform regression passes (54.01 seconds) across all
+four modes, including alternating wheel events before repaint and absence of
+guest scroll requests. Final-source worker retained transactions pass (28.20
+seconds), and all 20 state tests pass after the merged commit correction.
+Logs and source hashes are archived under `retained-marked-composition` with
+explicit binary/source checkpoint limits. Cross-candidate merged commits still
+need dedicated worker and modal/file qualification; physical IME remains open.
