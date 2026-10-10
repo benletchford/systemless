@@ -76,6 +76,45 @@ fn appearance_control_data_round_trips_tag_and_actual_size() {
 }
 
 #[test]
+fn reregistered_control_definition_declines_completed_guest_ink() {
+    let (mut disp, mut cpu, mut bus) = setup_with_port();
+    let window = bus.read_long(bus.read_long(cpu.read_reg(Register::A5)));
+    let base = bus.read_long(window + 2);
+    let rows = u32::from(bus.read_word(window + 6) & 0x3fff);
+    disp.set_screen_mode_for_test(base, rows, 512, 342, 1);
+    let pointer = bus.alloc(296);
+    let handle = bus.alloc(4);
+    bus.write_long(handle, pointer);
+    let bounds = (30, 30, 70, 240);
+    disp.initialize_control_record(&mut bus, pointer, window, bounds,
+        b"Sound", true, 0, 0, 1, 0, 0);
+    disp.control_manager.register(handle, pointer, 0, 0);
+    clear_1bpp_screen(&mut bus, base, rows, 342);
+    disp.draw_control(&mut cpu, &mut bus, pointer);
+    let (generation, paint) = disp.control_manager.with_ref(|manager| {
+        let record = manager.iter().find(|record| record.pointer == pointer).unwrap();
+        (record.generation, record.paint.clone())
+    });
+    let (top, left, _, _) = TrapDispatcher::dialog_screen_bounds(&bus, window);
+    let global = (bounds.0 + top, bounds.1 + left, bounds.2 + top, bounds.3 + left);
+    let (identity, pixels) = disp.capture_standard_control_pixels(&bus, window, generation, pointer, global).unwrap();
+    let backdrop = paint.backdrop(identity, &pixels).expect("actual guest draw owns its ink");
+    disp.control_manager.register(handle, pointer, 0, 0);
+    assert_eq!(paint.backdrop(identity, &pixels), Some(backdrop));
+    disp.control_manager.register(handle, pointer, 1, 0);
+    disp.control_manager.with_ref(|manager| {
+        let record = manager.iter().find(|record| record.pointer == pointer).unwrap();
+        assert_eq!(record.generation, generation);
+        assert_eq!(record.proc_id, 1);
+    });
+    let (unchanged_identity, unchanged_pixels) = disp.capture_standard_control_pixels(&bus, window, generation, pointer, global).unwrap();
+    assert_eq!(unchanged_identity, identity);
+    assert_eq!(unchanged_pixels, pixels, "registration must not alter guest raster");
+    assert!(paint.backdrop(unchanged_identity, &unchanged_pixels).is_none(),
+        "the new definition cannot claim the old guest button ink");
+}
+
+#[test]
 fn appearance_control_font_overrides_change_classic_ink_and_restore_default() {
     let (mut disp, mut cpu, mut bus) = setup_with_port();
     let window = bus.read_long(bus.read_long(cpu.read_reg(Register::A5)));
