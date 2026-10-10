@@ -915,6 +915,7 @@ mod desktop {
         cursor: Option<systemless::runner::CursorSnapshot>,
         cursor_inside: bool,
         cursor_host_position: Option<(f32, f32)>,
+        cursor_pointer_mapping: Option<super::cursor::PointerMapping>,
         cursor_unsupported: Option<super::cursor::UnsupportedCursor>,
         host_cursor: super::cursor::HostCursorVisibility,
         text_pointer_map: std::rc::Rc<std::cell::RefCell<Option<super::text::TextPointerMap>>>,
@@ -1124,6 +1125,7 @@ mod desktop {
                 cursor: None,
                 cursor_inside: false,
                 cursor_host_position: None,
+                cursor_pointer_mapping: None,
                 cursor_unsupported: None,
                 host_cursor: Default::default(),
                 image: None,
@@ -1173,6 +1175,13 @@ mod desktop {
         }
 
         fn text_pointer(&mut self, position: Point<Pixels>, begin: bool) -> (i16, i16) {
+            let visual = self.pointer(position);
+            let forwarded = self.map_text_pointer(position, begin);
+            self.cursor_pointer_mapping = Some(super::cursor::PointerMapping { visual, forwarded });
+            forwarded
+        }
+
+        fn map_text_pointer(&mut self, position: Point<Pixels>, begin: bool) -> (i16, i16) {
             let point = self.pointer(position);
             let map = self.text_pointer_map.borrow();
             let Some(map) = map.as_ref() else { return point; };
@@ -2958,7 +2967,9 @@ mod desktop {
                 && self.open_menus.is_empty() && self.composition.preedit.is_none() && cursor_plan.is_some();
             self.host_cursor.set_hidden(cursor_owned && !cx.is_test());
             let cursor_element = if cursor_owned {
-                cursor_plan.and_then(|plan| plan.element(self.cursor.as_ref().unwrap().position,
+                let guest = self.cursor.as_ref().unwrap().position;
+                let position = self.cursor_pointer_mapping.map_or(guest, |mapping| mapping.paint_position(guest));
+                cursor_plan.and_then(|plan| plan.element(position,
                     self.display_origin, scene_scale, (self.width, self.height)))
             } else { None };
             let menu_hovered = (self.menu_hovered || !self.open_menus.is_empty())
@@ -2994,6 +3005,7 @@ mod desktop {
                         return;
                     }
                     let (vertical, horizontal) = this.pointer(event.position);
+                    this.cursor_pointer_mapping = None;
                     this.mouse_position = (vertical, horizontal);
                     if this.scrollbar_drag.is_some() {
                         cx.notify();
@@ -5583,6 +5595,20 @@ mod desktop {
         })); visual.run_until_parked();
         let active = visual.capture_screenshot(window.into()).unwrap();
         assert!(active != baseline, "guest arrow must change shared compositor pixels"); active.save(output).unwrap();
+        visual.update(|cx| view.update(cx, |demo, cx| {
+            demo.cursor.as_mut().unwrap().position = (80, 420);
+            demo.cursor_pointer_mapping = Some(super::cursor::PointerMapping {
+                visual: (80, 120), forwarded: (80, 420),
+            });
+            cx.notify();
+        })); visual.run_until_parked();
+        let remapped = visual.capture_screenshot(window.into()).unwrap();
+        assert!(remapped == active, "glyph-aligned input must not shift the painted cursor");
+        remapped.save(output.with_extension("remapped.png")).unwrap();
+        visual.update(|cx| view.update(cx, |demo, cx| {
+            demo.cursor_pointer_mapping = None;
+            demo.cursor.as_mut().unwrap().position = (80, 120); cx.notify();
+        })); visual.run_until_parked();
         for state in ["hidden", "inactive", "outside"] {
             visual.update(|cx| view.update(cx, |demo, cx| {
                 demo.cursor.as_mut().unwrap().visible = state != "hidden";
@@ -5602,7 +5628,7 @@ mod desktop {
         std::fs::write(output.with_extension("capture.json"), serde_json::to_vec_pretty(&serde_json::json!({
             "compositor": "shared Demo renderer", "powerpc": args.prefer_powerpc, "actual_depth": actual_depth,
             "scene_scale": scene_scale, "scene_origin": origin, "cursor_hotspot": plan.hotspot,
-            "scope": "Actual guest arrow snapshot, simulated frontend pointer/focus/hide states. Exact hidden/inactive/outside restoration. Not physical host hide, inversion or warp qualification."
+            "scope": "Actual guest arrow snapshot, simulated frontend pointer/focus/hide/remap states. Remapped cursor equals active pixels; hidden/inactive/outside restore exact pixels. Not physical host hide, inversion or warp qualification."
         })).unwrap()).unwrap();
         eprintln!("PASS cursor-shared-compositor depth={actual_depth:?} powerpc={} scale={scene_scale}", args.prefer_powerpc);
     }
@@ -11743,6 +11769,13 @@ mod desktop {
                                 _ => MouseUpEvent { position, button: MouseButton::Left, click_count: 1, ..Default::default() }.to_platform_input(),
                             };
                             window.dispatch_event(event, cx);
+                            if phase < 3 {
+                                view.update(cx, |demo, _| {
+                                    let mapping = demo.cursor_pointer_mapping.expect("forwarded text pointer");
+                                    assert_eq!(mapping.forwarded, demo.mouse_position);
+                                    assert_eq!(mapping.paint_position(mapping.forwarded), demo.pointer(position));
+                                });
+                            }
                             if phase >= 3 {
                                 window.dispatch_event(gpui_kit::KeyUpEvent {
                                     keystroke: gpui_kit::Keystroke { key: if phase == 3 { "up" } else { "down" }.into(), ..Default::default() },
@@ -15431,10 +15464,19 @@ mod desktop {
                     let map = demo.text_pointer_map.borrow().clone().expect("painted glyph positions");
                     assert_eq!(map.positions.len(), 16);
                     let y = demo.display_origin.1 + f32::from((folder_layout.name.0 + folder_layout.name.2) / 2) * demo.display_scale;
+                    let mut remapped = false;
                     for (x, guest) in &map.positions {
                         demo.text_pointer_capture = None;
-                        assert_eq!(demo.text_pointer(gpui_kit::point(gpui_kit::px(*x), gpui_kit::px(y)), true).1, *guest);
+                        let host = gpui_kit::point(gpui_kit::px(*x), gpui_kit::px(y));
+                        let forwarded = demo.text_pointer(host, true);
+                        assert_eq!(forwarded.1, *guest);
+                        let mapping = demo.cursor_pointer_mapping.unwrap();
+                        remapped |= forwarded != demo.pointer(host);
+                        assert_eq!(mapping.paint_position(forwarded), demo.pointer(host));
+                        let warped = (forwarded.0 + 1, forwarded.1 + 1);
+                        assert_eq!(mapping.paint_position(warped), warped);
                     }
+                    assert!(remapped, "exercise a glyph position distinct from visual pointer coordinates");
                     // Drag ownership continues beyond the field, including mouse-up.
                     assert_eq!(demo.text_pointer(gpui_kit::point(gpui_kit::px(map.positions[0].0 - 40.), gpui_kit::px(y)), false).1, map.positions[0].1);
                     demo.text_pointer_capture = None;

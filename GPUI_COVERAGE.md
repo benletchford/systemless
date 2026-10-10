@@ -5132,3 +5132,24 @@ failures. These checks do not prove fresh-download builds, packaged linking or
 runtime, packaged tests, publication or physical GUI qualification. Existing
 warnings and a cached yanked yoke-derive lock entry are recorded; dependencies
 are unchanged. All broad release gates remain open.
+
+
+### Cursor placement after glyph-aligned pointer input
+
+New Folder hit-testing can map a displayed glyph point to a different guest
+horizontal coordinate. Painting that forwarded coordinate displaced the cursor.
+Demo now retains the visual and forwarded positions separately: a snapshot matching the
+forwarded position paints at its visual point, while a distinct guest position
+remains authoritative. The mapping survives mouse-up; raw out-of-pane motion
+clears it. Guest event routing and text selection coordinates are unchanged.
+
+The remapped-glyph platform test passes (5.13s), including a distinct simulated
+guest warp. Actual guest New Folder pointer/selection checks pass (398.23s) on
+mono68k, colour68k, PPC8/PPC16 at scales .75/1/1.5/2 with short/scrolled names,
+clicks and held drags. A shared Demo colour68k scale1.5 cursor capture asserts
+whole-image equality before/after a simulated remap; its remapped image was
+reviewed. Production compile check passes (1m01s), and the capture frontend
+builds (9.19s). Evidence: `tests/toolbox-showcase/reference/gpui-demo/cursor-pointer-mapping`.
+Physical pointer latency, actual warp lifecycle, host cursor hiding, inversion
+and the complete release gates remain open. Earlier release/package evidence
+continues to pin its recorded source; this is not a new optimized package run.

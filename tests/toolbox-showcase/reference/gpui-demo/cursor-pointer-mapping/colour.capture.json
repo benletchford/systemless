@@ -1,0 +1,15 @@
+{
+  "compositor": "shared Demo renderer",
+  "powerpc": false,
+  "actual_depth": 8,
+  "scene_scale": 1.5,
+  "scene_origin": [
+    0.0,
+    0.0
+  ],
+  "cursor_hotspot": [
+    1,
+    1
+  ],
+  "scope": "Actual guest arrow snapshot, simulated frontend pointer/focus/hide/remap states. Remapped cursor equals active pixels; hidden/inactive/outside restore exact pixels. Not physical host hide, inversion or warp qualification."
+}

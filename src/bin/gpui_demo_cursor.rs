@@ -3,6 +3,18 @@ use gpui_kit::{canvas, fill, point, px, rgb, size, AnyElement, Bounds, IntoEleme
 use systemless::systems::macintosh::display::CursorImage;
 use systemless::runner::CursorSnapshot;
 
+/// Keep visual pointer coordinates separate from glyph-aligned guest input.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PointerMapping {
+    pub visual: (i16, i16),
+    pub forwarded: (i16, i16),
+}
+impl PointerMapping {
+    pub fn paint_position(self, guest: (i16, i16)) -> (i16, i16) {
+        if guest == self.forwarded { self.visual } else { guest }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum UnsupportedCursor { Inversion, InvalidImage }
 
