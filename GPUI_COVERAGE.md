@@ -71,9 +71,13 @@ qualification limits. Styled fields and list cells require current native paint
 evidence; partial fixture coverage does not qualify arbitrary guest fonts,
 custom backgrounds, definitions, clipping or lifecycle behavior. Broader layout,
 interaction, accessibility and production qualification remain unfinished.
-The pixelated appearance of these glyph canvases is an explicit classic bitmap
-policy; the user's smooth-versus-bitmap preference remains unanswered. Any smooth
-path must preserve guest metrics and undergo its own qualification.
+The user has requested crisp GPUI typography. The current binary glyph canvases
+remain an unfinished visual state. The smooth path must use display-resolution
+outline rendering where the resolved guest font has outlines, preserving guest
+advances, line breaks, baseline, clipping, selection and caret geometry. A host
+font substitution requires an explicit policy and qualification; it cannot
+silently change layout. Bitmap-only fonts require a separately stated fidelity
+policy. Existing binary-pixel comparisons do not qualify smooth rendering.
 
 The plain-document text component paints binary glyph spans through GPUI,
 using the same resolved guest FONT/NFNT/sfnt, explicit override, or bundled
@@ -4237,3 +4241,7 @@ Guest list disposal snapshot qualification: `cargo test --locked --example gpui-
 Guest list mutation/resize paint qualification: `guest_list_mutation_and_resize_refresh_qualified_paint` passes in mono 68k, colour 68k, PPC8 and PPC16 (8.68 s). It selects row zero through guest mouse events, clicks Update Selected Row, shrinks and restores via Resize List, checks exact appended bytes, retained handle/generation/owner and selection, and requires the updated row to pass production native-frame paint qualification after each change. This does not replace the pending 32 composed lifecycle captures or qualify arbitrary custom LDEFs, clipping, host clicks, or in-process handle reuse.
 
 Standard File replacement message migration: the Replace existing filename prompt now uses the shared wrapped guest prompt painter (system font 0/12, baseline 12, line advance 16) inside the existing message rectangle, replacing inherited host text shaping. This matches the PPC dialog text recipe; guest Cancel/Replace routing is unchanged. Example check and `themed_standard_file_actions_forward_guest_clicks` pass (0.79 s). CPU/scale replacement-message raster captures and long-name wrapping parity remain pending.
+
+Smooth typography candidate: the shared plain label, wrapped prompt and Standard File row canvases now request antialiased coverage from the already resolved outline source at scene/device resolution. They retain guest advances, baselines, wrapping and clipping; missing/scaled/bitmap sources and unsupported styles retain the binary path. This candidate is not visually or performance qualified. The pinned f565b695 capture matrix still checks the previous bitmap binary. Exact binary guest-pixel verifiers do not qualify these changed outline edges; smooth rendering requires separate visual and interaction evidence. The depth accessor regression passed all four display modes (13.29 s); replacement capture tooling remains unqualified.
+
+Smooth candidate validation: the example check passes and all 13 `text::tests` pass (8.17 s), including outline fractional coverage and unchanged guest advances for font 0/12, font 1/9 and font 3/12 at raster scales 1–4. These tests do not establish composed smooth glyph appearance, all styles, application-specific resource fonts, pointer parity or acceptable quad cost. Window titles, editable fields and retained whole-field/list paint still need smooth-path integration.

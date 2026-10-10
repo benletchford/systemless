@@ -124,6 +124,36 @@ pub fn get_font_metrics(font_id: i16, size: i16) -> FontMetrics {
     get_font_face_or_default(font_id, size).metrics
 }
 
+/// Antialiased coverage from the already resolved guest font outline.
+/// Bitmap-only sources return None; this never substitutes a different face.
+#[derive(Clone, Debug)]
+pub struct SmoothGlyphSnapshot {
+    pub pixels: std::sync::Arc<[u8]>,
+    pub width: i32,
+    pub height: i32,
+    pub left: i32,
+    pub top: i32,
+    pub guest_advance: i32,
+    pub raster_scale: u32,
+}
+
+pub fn smooth_unicode_glyph(font: i16, size: i16, ch: char, scale: u32) -> Option<SmoothGlyphSnapshot> {
+    if !(1..=8).contains(&scale) { return None; }
+    let (glyph, data) = get_unicode_glyph(font, size, ch)?;
+    smooth_resolved_glyph(glyph, data, scale)
+}
+
+/// Smooth only the supplied resolved glyph, preserving font resource precedence.
+pub fn smooth_resolved_glyph(glyph: &Glyph, data: &[u8], scale: u32) -> Option<SmoothGlyphSnapshot> {
+    if !(1..=8).contains(&scale) { return None; }
+    let mask = crate::quickdraw::fonts::outline::presentation_glyph(glyph, data, scale)?;
+    Some(SmoothGlyphSnapshot {
+        pixels: mask.pixels, width: mask.width, height: mask.height,
+        left: mask.left, top: mask.top, guest_advance: i32::from(glyph.advance),
+        raster_scale: scale,
+    })
+}
+
 /// Look up decoded host text, as opposed to guest bytes cast directly to char.
 /// Unicode Latin-1 overlaps the Mac Roman byte range with different meanings
 /// (for example, U+00AE is registered, but Mac Roman byte AE is AE ligature).

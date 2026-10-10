@@ -23,6 +23,30 @@ impl TextPointerMap {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn smooth_label_sources_preserve_guest_advances_and_have_fractional_coverage() {
+        for (font, size) in [(0, 12), (1, 9), (3, 12)] {
+            let line = super::ClassicLine::plain(b"Systemless", font, size);
+            assert_eq!(line.smooth_sources.len() + 1, line.positions.len());
+            for raster in [1, 2, 3, 4] {
+                let mut fractional = false;
+                for (index, &(pen, glyph, data)) in line.smooth_sources.iter().enumerate() {
+                    let mask = systemless::quickdraw::text::smooth_resolved_glyph(glyph, data, raster)
+                        .expect("resolved bundled outline");
+                    assert_eq!(pen, line.positions[index]);
+                    assert_eq!(mask.guest_advance, line.positions[index + 1] - pen);
+                    assert_eq!(mask.raster_scale, raster);
+                    assert_eq!(mask.pixels.len(), (mask.width * mask.height) as usize);
+                    fractional |= mask.pixels.iter().any(|&coverage| coverage > 0 && coverage < 255);
+                }
+                assert!(fractional, "outline edges must be antialiased: {font}/{size}/{raster}");
+            }
+            assert_eq!(super::ClassicLine::styled(b"Systemless", font, size, 0).positions, line.positions);
+        }
+        assert!(systemless::quickdraw::text::smooth_unicode_glyph(0, 12, 'A', 0).is_none());
+        assert!(systemless::quickdraw::text::smooth_unicode_glyph(0, 12, 'A', 9).is_none());
+    }
+
+    #[test]
     fn list_cell_qualification_requires_complete_native_evidence() {
         use super::{ClassicListCellLayout, ClassicListCellPaintPlan};
         let layout = ClassicListCellLayout { font: 3, size: 12, left: 3, baseline: 10,
@@ -358,11 +382,19 @@ pub(crate) fn single_line(
 /// Guest Font Manager glyphs, not host shaping. The same resolved strikes and
 /// binary ink threshold serve QuickDraw on both CPU paths. Keep byte offsets:
 /// decoded Unicode byte indices are not TextEdit insertion offsets.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct ClassicLine {
     pub positions: Vec<i32>,
     // Horizontal spans of binary ink, relative to the baseline.
     pub ink: Vec<(i32, i32, i32)>,
+    smooth_sources: Vec<(i32, &'static systemless::quickdraw::fonts::Glyph, &'static [u8])>,
+}
+
+impl std::fmt::Debug for ClassicLine {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("ClassicLine").field("positions", &self.positions)
+            .field("ink", &self.ink).field("smooth_sources", &self.smooth_sources.len()).finish()
+    }
 }
 
 impl ClassicLine {
@@ -379,7 +411,7 @@ impl ClassicLine {
     /// Exact guest strike and QuickDraw style synthesis. Underline spans the
     /// complete line, including spaces, just as the framebuffer painter does.
     pub fn styled(bytes: &[u8], font: i16, point_size: i16, face: u8) -> Self {
-        let mut result = Self { positions: vec![0], ink: Vec::new() };
+        let mut result = Self { positions: vec![0], ink: Vec::new(), smooth_sources: Vec::new() };
         let mut pen = 0;
         for &byte in bytes {
             let (advance, pixels) = systemless::quickdraw::text::classic_styled_glyph(
@@ -397,6 +429,9 @@ impl ClassicLine {
             }
             pen += advance;
             result.positions.push(pen);
+        }
+        if face == 0 {
+            result.smooth_sources = Self::plain(bytes, font, point_size).smooth_sources;
         }
         if face & 4 != 0 && pen > 0 {
             for y in 1..=systemless::quickdraw::text::get_underline_thickness(font, point_size).max(1) {
@@ -433,7 +468,7 @@ impl ClassicLine {
         }
         pixels.sort_unstable_by_key(|&(x, y)| (y, x));
         pixels.dedup();
-        let mut result = Self { positions, ink: Vec::new() };
+        let mut result = Self { positions, ink: Vec::new(), smooth_sources: Vec::new() };
         for (x, y) in pixels {
             if let Some(last) = result.ink.last_mut() {
                 if last.1 == y && last.0 + last.2 == x {
@@ -467,7 +502,7 @@ impl ClassicLine {
         }
         let (paint_advance, mut pixels) = systemless::quickdraw::text::ppc_styled_run_ink(font, point_size, face, bytes);
         pixels.sort_unstable_by_key(|&(x, y)| (y, x));
-        let mut result = Self { positions, ink: Vec::new() };
+        let mut result = Self { positions, ink: Vec::new(), smooth_sources: Vec::new() };
         for (x, y) in pixels {
             if let Some(last) = result.ink.last_mut() {
                 if last.1 == y && last.0 + last.2 == x {
@@ -504,10 +539,12 @@ impl ClassicLine {
         let mut result = Self {
             positions: vec![0],
             ink: Vec::new(),
+            smooth_sources: Vec::new(),
         };
         let mut pen = 0;
         for resolved in glyphs {
             if let Some((glyph, data)) = resolved {
+                if scale == 1 { result.smooth_sources.push((pen, glyph, data)); }
                 let width = usize::from(glyph.width);
                 for row in 0..usize::from(glyph.height) {
                     let mut column = 0;
@@ -1127,6 +1164,7 @@ pub(crate) fn classic_menu_label(
     let right = line.ink.iter().map(|&(x, _, width)| x + width).max().unwrap_or(0)
         .max(line.positions.last().copied().unwrap_or(0));
     for ink in &mut line.ink { ink.0 -= left; }
+    for source in &mut line.smooth_sources { source.0 -= left; }
     let width = (right - left).max(1);
     div().w(px(width as f32 * scale)).h(px(18. * scale)).flex_shrink_0()
         .overflow_hidden().child(classic_label_canvas(line, false, scale, foreground))
@@ -1212,6 +1250,39 @@ pub(crate) fn classic_popup_control_label(
     }).size_full()
 }
 
+/// Outline coverage changes ink only; guest advances and baseline remain authoritative.
+fn paint_smooth_label(
+    line: &ClassicLine, left: gpui_kit::Pixels, baseline: gpui_kit::Pixels,
+    scale: f32, foreground: gpui_kit::Hsla, window: &mut gpui_kit::Window,
+) -> bool {
+    use gpui_kit::*;
+    if line.smooth_sources.is_empty() || line.smooth_sources.len() + 1 != line.positions.len() { return false; }
+    let raster = (scale * window.scale_factor()).ceil().max(1.) as u32;
+    let Some(glyphs) = line.smooth_sources.iter().map(|&(pen, glyph, data)| {
+        systemless::quickdraw::text::smooth_resolved_glyph(glyph, data, raster).map(|mask| (pen, mask))
+    }).collect::<Option<Vec<_>>>() else { return false; };
+    let unit = scale / raster as f32;
+    for (pen, glyph) in glyphs {
+        for y in 0..glyph.height {
+            let mut x = 0;
+            while x < glyph.width {
+                let alpha = glyph.pixels[(y * glyph.width + x) as usize];
+                let start = x;
+                x += 1;
+                while x < glyph.width && glyph.pixels[(y * glyph.width + x) as usize] == alpha { x += 1; }
+                if alpha == 0 { continue; }
+                let mut ink = foreground;
+                ink.a *= f32::from(alpha) / 255.;
+                window.paint_quad(fill(Bounds::new(point(
+                    left + px(pen as f32 * scale + (glyph.left + start) as f32 * unit),
+                    baseline + px((glyph.top + y) as f32 * unit)),
+                    size(px((x - start) as f32 * unit), px(unit))), ink));
+            }
+        }
+    }
+    true
+}
+
 fn classic_label_canvas(
     line: ClassicLine, centered: bool, scale: f32, foreground: gpui_kit::Hsla,
 ) -> impl gpui_kit::IntoElement {
@@ -1238,6 +1309,8 @@ fn classic_label_canvas_with_font(
             };
             let baseline = (height - i32::from(metrics.ascent) - i32::from(metrics.descent)) / 2
                 + i32::from(metrics.ascent);
+            if paint_smooth_label(&line, bounds.left() + px(x as f32 * scale),
+                bounds.top() + px(baseline as f32 * scale), scale, foreground, window) { return; }
             for &(ink_x, ink_y, ink_width) in &line.ink {
                 window.paint_quad(fill(
                     Bounds::new(
@@ -1454,6 +1527,8 @@ fn classic_wrapped_text(
                 {
                     break;
                 }
+                if paint_smooth_label(line, bounds.left() + px(f32::from(layout.0) * scale),
+                    bounds.top() + px(baseline as f32 * scale), scale, foreground, window) { continue; }
                 for &(x, y, width) in &line.ink {
                     window.paint_quad(fill(
                         Bounds::new(
@@ -1484,6 +1559,8 @@ pub(crate) fn classic_file_row(
     canvas(
         move |bounds, _, _| bounds,
         move |_, bounds, window, _| {
+            if paint_smooth_label(&line, bounds.left() + px(f32::from(origin.0) * scale),
+                bounds.top() + px(f32::from(origin.1) * scale), scale, foreground, window) { return; }
             for &(x, y, width) in &line.ink {
                 window.paint_quad(fill(
                     Bounds::new(

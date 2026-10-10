@@ -4168,6 +4168,19 @@ mod desktop {
             .unwrap();
             eprintln!("saved guest frame to {}", guest_output.display());
         }
+        if matches!(capture, CaptureCase::StandardFileReplaceComposed) {
+            let panel = session.runner().standard_file_snapshot().unwrap();
+            let layout = systemless::runner::StandardFileReplacementLayout::new(panel.bounds);
+            std::fs::write(output.with_extension("json"), serde_json::to_vec_pretty(&serde_json::json!({
+                "compositor": "shared Demo renderer", "prefer_powerpc": prefer_powerpc,
+                "requested_depth": screen_depth, "scale": capture_scale,
+                "actual_depth": session.runner().presented_screen_depth(),
+                "confirming_replace": panel.confirming_replace, "name": panel.name,
+                "message_bounds": layout.message, "panel_bounds": layout.bounds,
+                "guest_tick": session.runner().guest_tick(),
+                "scope": "Replacement prompt fixture; source native frame retained, no native Macintosh oracle qualification",
+            })).unwrap()).unwrap();
+        }
         let mut source_pixels = frame.pixels;
         if lists_page {
             // Remove only visible, qualified ownership from the source texture.
@@ -7411,6 +7424,7 @@ mod desktop {
                 assert!(session.runner_mut().select_guest_menu_item(129, 9));
                 wait_for_menu(&mut session, 129, 9, true);
                 settle(&mut session);
+                assert_eq!(session.runner().presented_screen_depth(), Some(u32::from(depth)));
                 let list = session.runner_mut().list_manager_snapshot().into_iter()
                     .find(|list| list.definition_id == 0 && list.draw_enabled && !list.cells.is_empty()).unwrap();
                 let local = list.view_rect;

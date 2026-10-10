@@ -3209,6 +3209,16 @@ impl FixtureRunner {
         self.config.screen_depth
     }
 
+    /// Depth of the current guest presentation surface, rather than launch configuration.
+    #[doc(hidden)]
+    pub fn presented_screen_depth(&self) -> Option<u32> {
+        if let Some(app) = self.native.application() {
+            app.presented_front_buffer().map(|buffer| buffer.depth)
+        } else {
+            Some(u32::from(self.dispatcher.screen_mode.4))
+        }
+    }
+
     /// Explicitly select the display depth used by subsequently loaded native
     /// PowerPC applications. Leaving this unset preserves the historical
     /// 16-bit PowerPC architecture default, independently of the configured
