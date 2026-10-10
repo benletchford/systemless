@@ -5415,3 +5415,14 @@ and colour 68k. Fresh button and checkbox paint evidence reaches the actual
 frontend snapshots, with guest held checkbox/value and scrollbar behavior
 preserved (6.36s). Evidence is `control-state-freshness/four-mode-snapshots.log`;
 this is snapshot/interaction qualification, not a composed image comparison.
+
+### Current styled controls after guest redraw (2026-10-11)
+
+At `0edfd2a1`, shared composed captures after guest Geneva18bold override and a
+real guest checkbox title click pass mono68k0.75, colour68k1.5, PPC8scale1 and
+PPC16scale1.5, with actual depth verified from sidecars. All four images were
+reviewed: smooth standard labels and checked value persist after redraw, while
+application-drawn headings retain guest ink. Captures and failed CLI/service
+attempts are archived in `current-styled-control-redraw`. These selected cases
+verify the new paint-state recovery path; full font/state/scale coverage,
+physical integration and independent native fidelity remain open.

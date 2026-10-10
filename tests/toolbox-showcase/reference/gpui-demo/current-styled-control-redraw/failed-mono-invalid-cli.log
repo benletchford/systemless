@@ -1,0 +1,7 @@
+error: unexpected argument '--prefer-classic-68k' found
+
+  tip: to pass '--prefer-classic-68k' as a value, use '-- --prefer-classic-68k'
+
+Usage: gpui-menu-demo <GAME>
+
+For more information, try '--help'.
