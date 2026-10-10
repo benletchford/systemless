@@ -1,0 +1,59 @@
+diff --git a/src/bin/gpui_demo.rs b/src/bin/gpui_demo.rs
+index 559c979d..f30d2953 100644
+--- a/src/bin/gpui_demo.rs
++++ b/src/bin/gpui_demo.rs
+@@ -9113,6 +9113,54 @@ mod desktop {
+                 assert_eq!(actual.name.as_deref(), Some(expected_text.as_str()));
+                 assert_eq!(actual.entries, before.entries);
+                 eprintln!("PASS worker-standard-file-rapid-composition-and-rejection powerpc={powerpc} depth={actual_depth}");
++                worker.0.send(Command::ActivateFile(actual.guest_id, actual.generation,
++                    super::super::activation::FileAction::NewFolder)).unwrap();
++                let opened = wait("New Folder", &updates, |update| update.standard_file.as_ref().is_some_and(|panel| panel.new_folder.is_some()));
++                let folder_panel = opened.standard_file.unwrap();
++                assert_ne!(folder_panel.generation, actual.generation);
++                let folder_owner = super::super::input::standard_file_text_owner(&folder_panel).unwrap();
++                assert!(folder_owner.new_folder);
++                let folder_owner = super::super::input::TextInputOwner { identity: folder_owner.identity,
++                    target: super::super::input::TextInputTarget::StandardFile { new_folder: true },
++                    text: folder_owner.text, selection: folder_owner.selection };
++                composition.synchronize(Some(folder_owner.clone()));
++                let mut expected_folder = folder_owner.text.clone(); expected_folder.splice(folder_owner.selection.clone(), [0x8e, b'Z']);
++                for text in ["é", "Z"] {
++                    let (owner, bytes) = composition.commit(text).unwrap();
++                    worker.0.send(Command::CommitText(owner, bytes)).unwrap();
++                }
++                let expected_folder = systemless::systems::macintosh::mac_roman::decode_mac_roman(&expected_folder);
++                let edited = wait("New Folder commits", &updates, |update| update.standard_file.as_ref().is_some_and(|panel|
++                    panel.new_folder.as_ref().is_some_and(|folder| folder.name == expected_folder)));
++                let edited = edited.standard_file.unwrap();
++                assert_eq!(edited.name, actual.name, "subsidiary editor must preserve Save filename");
++                assert_eq!(edited.new_folder.as_ref().unwrap().selection,
++                    (folder_owner.selection.start + 2, folder_owner.selection.start + 2));
++                worker.0.send(Command::ActivateFile(edited.guest_id, edited.generation,
++                    super::super::activation::FileAction::CancelNewFolder)).unwrap();
++                let returned = wait("return to Save", &updates, |update| update.standard_file.as_ref().is_some_and(|panel|
++                    panel.new_folder.is_none() && panel.generation != edited.generation));
++                let returned = returned.standard_file.unwrap();
++                assert_eq!(returned.name, actual.name);
++                assert_eq!(returned.name_selection, Some((0, expected.len())), "guest return selects the complete Save filename");
++                assert_eq!(returned.entries, actual.entries); assert_eq!(returned.directory_id, actual.directory_id);
++                // An already queued request for the disposed subsidiary editor
++                // must not insert into the parent filename after focus returns.
++                worker.0.send(Command::CommitText(folder_owner.clone(), vec![b'x'])).unwrap();
++                let rejected = wait("disposed folder rejection", &updates, |update| update.text_commit_rejection.as_ref()
++                    .is_some_and(|(_, rejected)| rejected == &folder_owner));
++                assert_eq!(rejected.standard_file.unwrap().name, actual.name);
++                let parent_owner = super::super::input::standard_file_text_owner(&returned).unwrap();
++                composition.synchronize(Some(super::super::input::TextInputOwner { identity: parent_owner.identity,
++                    target: super::super::input::TextInputTarget::StandardFile { new_folder: false },
++                    text: parent_owner.text, selection: parent_owner.selection }));
++                let (parent_owner, bytes) = composition.commit("Q").unwrap();
++                worker.0.send(Command::CommitText(parent_owner, bytes)).unwrap();
++                let resumed = wait("typing after modal return", &updates, |update| update.standard_file.as_ref()
++                    .is_some_and(|panel| panel.name.as_deref() == Some("Q")));
++                assert_eq!(resumed.standard_file.unwrap().name_selection, Some((1, 1)));
++
++                eprintln!("PASS worker-new-folder-composition-and-return powerpc={powerpc} depth={actual_depth}");
+                 drop(worker);
+             }
+         }
