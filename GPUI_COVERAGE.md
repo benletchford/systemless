@@ -5026,3 +5026,18 @@ Shutdown/disconnection and guest termination. Periodic persistence may also have
 occurred, so this test does not isolate the final flush timing. Physical window
 close delivery, guest Quit, crash durability and audio qualification remain open;
 audio output could not initialize in this environment.
+
+
+### Guest Quit after New Folder creation
+
+Production worker persistence coverage now cancels the Save parent after creating
+a folder and selects the guest File menu Quit command through the existing menu
+identity/generation route. It observes normal Guest stopped status, joins the
+worker and launches an independent reader that finds the directory in the guest
+Save panel. The complete 12-case exit/mode test passes (63.14s): explicit
+Shutdown, sender disconnection and guest Quit across mono68k, colour68k, PPC8
+and PPC16. Logs, exit-mode mapping and source provenance are archived in
+`reference/gpui-demo/worker-folder-quit`. This supersedes the earlier guest-Quit
+gap for this fixture workflow; physical host close, crash durability, complete
+filesystem qualification and audio remain open. It does not isolate periodic
+persistence from final flush timing.
