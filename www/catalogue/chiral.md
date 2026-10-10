@@ -27,7 +27,7 @@ artifacts:
   format: sit
   source:
     type: url
-    url: https://www.vintageapplemac.com/files/games/Chiral%201.0.0%20%C6%92.sit
+    url: https://github.com/benletchford/systemless/releases/download/catalogue-intake-20261010/chiral-100-folder.sit
     expected_sha256: b4c289ac4e8ee67836281d94ce54a9a724a49802106adb49a57741c5570b81d3
     expected_size: 1043239
   provenance:
@@ -35,6 +35,7 @@ artifacts:
     original: true
     sources:
     - https://www.vintageapplemac.com/software/games/c/
+    - https://www.vintageapplemac.com/files/games/Chiral%201.0.0%20%C6%92.sit
     license: Ambrosia Software nonprofit distribution licence
     rights_holder: Ambrosia Software, Inc.
     permission: >-
