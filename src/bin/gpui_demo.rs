@@ -366,6 +366,18 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=60))]
         capture_application_timeout_seconds: u64,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, requires_all = ["capture_application", "capture_application_mouse_h"], conflicts_with = "capture_application_key")]
+        capture_application_mouse_v: Option<i16>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, requires = "capture_application_mouse_v")]
+        capture_application_mouse_h: Option<i16>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, default_value_t = 120, value_parser = clap::value_parser!(u32).range(1..=10000))]
+        capture_application_input_after: u32,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, default_value_t = 60, value_parser = clap::value_parser!(u32).range(1..=1000))]
+        capture_application_hold_updates: u32,
 
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -5126,7 +5138,11 @@ mod desktop {
         let powerpc = args.prefer_powerpc;
         let archive = args.game.clone();
         let input = args.capture_application_key.map(|key| (key, args.capture_application_character));
-        let target_observations = args.capture_application_updates.max(if input.is_some() { 240 } else { 1 });
+        let pointer = args.capture_application_mouse_v.zip(args.capture_application_mouse_h);
+        let input_after = args.capture_application_input_after;
+        let release_after = input_after + args.capture_application_hold_updates;
+        let target_observations = args.capture_application_updates.max(
+            if input.is_some() || pointer.is_some() { release_after + 60 } else { 1 });
         let observation_timeout = Duration::from_secs(args.capture_application_timeout_seconds);
         let (sender, receiver) = mpsc::channel();
         let updates = Arc::new(Mutex::new(None));
@@ -5146,14 +5162,26 @@ mod desktop {
             if let Some(update) = updates.lock().unwrap().take() {
                 assert!(update.frame.is_some(), "application worker failed: {}", update.status);
                 observations += 1;
-                if let Some((mac_key, character)) = input {
-                    if observations == 120 {
+                if input.is_some() || pointer.is_some() {
+                    if observations == input_after {
                         let (width, height, pixels) = update.frame.as_ref().unwrap();
                         image::save_buffer(output.with_extension("before.guest.png"), pixels, *width, *height,
                             image::ColorType::Rgba8).unwrap();
-                        worker.0.send(Command::Input(MacintoshInput::KeyDown { mac_key, character })).unwrap();
-                    } else if observations == 180 {
-                        worker.0.send(Command::Input(MacintoshInput::KeyUp { mac_key, character })).unwrap();
+                        let event = if let Some((mac_key, character)) = input {
+                            MacintoshInput::KeyDown { mac_key, character }
+                        } else {
+                            let (vertical, horizontal) = pointer.unwrap();
+                            MacintoshInput::MouseDown { vertical, horizontal }
+                        };
+                        worker.0.send(Command::Input(event)).unwrap();
+                    } else if observations == release_after {
+                        let event = if let Some((mac_key, character)) = input {
+                            MacintoshInput::KeyUp { mac_key, character }
+                        } else {
+                            let (vertical, horizontal) = pointer.unwrap();
+                            MacintoshInput::MouseUp { vertical, horizontal }
+                        };
+                        worker.0.send(Command::Input(event)).unwrap();
                     }
                 }
                 if observations == target_observations { break update; }
@@ -5168,7 +5196,9 @@ mod desktop {
                     std::fs::write(output.with_extension("timeout.json"), serde_json::to_vec_pretty(&serde_json::json!({
                         "status": "failed", "worker_status": last.status,
                         "observed_worker_updates": observations, "requested_worker_updates": target_observations,
-                        "guest_key_input": input, "observation_timeout_seconds": observation_timeout.as_secs(),
+                        "guest_key_input": input, "guest_mouse_input_v_h": pointer,
+                        "input_after_updates": input_after, "release_after_updates": release_after,
+                        "observation_timeout_seconds": observation_timeout.as_secs(),
                         "reason": "observation deadline exceeded",
                     })).unwrap()).unwrap();
                 }
@@ -5211,11 +5241,12 @@ mod desktop {
             "compositor": "shared Demo renderer", "worker": "production run_guest with host services disabled",
             "archive": archive, "prefer_powerpc": powerpc, "requested_depth": requested_depth,
             "observed_worker_updates": observations, "observation_elapsed_ms": observed_ms,
-            "guest_key_input": input,
+            "guest_key_input": input, "guest_mouse_input_v_h": pointer,
+            "input_after_updates": input_after, "release_after_updates": release_after,
             "observation_timeout_seconds": observation_timeout.as_secs(),
             "status": status, "guest_dimensions": [width,height], "scene_scale": scene_scale,
             "scene_origin": scene_origin, "menu_presented": menu_presented, "menu_height": menu_height,
-            "scope": "Real application worker snapshot, optionally after held guest key input. Observed updates are not frontend ticks or frame latency. No physical input, live frame delivery, audio continuity or persistence qualification."
+            "scope": "Real application worker snapshot, optionally after held guest key or mouse input. Observed updates are not frontend ticks or frame latency. No physical input, live frame delivery, audio continuity or persistence qualification."
         })).unwrap()).unwrap();
         drop(worker);
         eprintln!("PASS application-shared-compositor capture={}", output.display());
@@ -6433,6 +6464,10 @@ mod desktop {
                         capture_application_character: 0,
                         capture_application_updates: 120,
                         capture_application_timeout_seconds: 30,
+                        capture_application_mouse_v: None,
+                        capture_application_mouse_h: None,
+                        capture_application_input_after: 120,
+                        capture_application_hold_updates: 60,
                         capture_windows_moved: None,
                         capture_windows_activated: None,
                         capture_windows_grown: None,
