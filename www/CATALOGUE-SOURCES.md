@@ -900,8 +900,11 @@ Ordinary v0.94.0 Chrome worker/WebGL preview at `4a82241cde8baff0f577dcab845acd9
 accepts the mine-count dialog and reveals the first and several adjacent numbered
 hexes with ordinary input; actual captures inspected. Local-origin CORS uses only
 an unchanged integrity-checked archive fixture. Launch is explicitly approved.
-Actual public replay, marking, complete paths, wins, settings, saves and audio
-remain unverified.
+Actual public v0.95.0 at `bf46037bda4d6eded0b8d05efc574c3a7d5798d0` accepts
+the mine-count dialog and reveals adjacent numbered hexes with ordinary input.
+The real HTTP 200 archive body matches its original hash and 79058-byte size,
+without interception. [Public evidence](https://github.com/benletchford/systemless/issues/4454#issuecomment-6102907187).
+Marking, complete paths, wins, settings, saves and audio remain unverified.
 [Delivery evidence and remaining stages](https://github.com/benletchford/systemless/issues/4454).
 
 ### Skiing release follow-through
@@ -946,7 +949,12 @@ is patched. Owned browsers closed.
 
 Both routes are explicitly launch-approved after native and browser qualification.
 Assets were promoted through CI; hosted archive and screenshot hashes independently
-match. Full levels, saves, audio and actual public follow-through remain unverified.
+match. Actual public v0.95.0 at `bf46037bda4d6eded0b8d05efc574c3a7d5798d0`
+passes ordinary mouse movement and collection on both routes: score 0→10 on
+68K and 0→20 on PPC. The real HTTP 200 archive body independently matches
+its original hash and 213248-byte size. Worker/WebGL and actual architecture
+attributes were verified; public isolation is false. Full levels, saves and
+audio remain unverified. [Public evidence](https://github.com/benletchford/systemless/issues/4452#issuecomment-6102945362).
 [Delivery tracking](https://github.com/benletchford/systemless/issues/4452).
 
 ## Slime Invaders provisional original intake
@@ -965,3 +973,40 @@ mouse input moves the cannon while enemies advance; inspected captures and a
 fresh six-assertion replay pass at 929 frontend / 1504 guest ticks with zero
 exhausted frames. Shooting, completed waves, browser and public gameplay remain
 unverified. Original archive, forks and scenarios stay outside Git.
+
+## v0.95.0 publication acceptance
+
+The [normal release pipeline](https://github.com/benletchford/systemless/actions/runs/38091483306)
+passed website deployment, all six native platform builds and final publication.
+The release inventory contains twelve nonempty uploaded assets: macOS and Linux
+`.tgz` packages and Windows `.zip` packages for aarch64 and x86_64, each with its
+`.sha256` file. Hexmines and both HeartQuest routes have actual public original
+archive receipts and inspected ordinary gameplay. Their fulfilled intake issues
+are closed. This establishes fourteen qualified new live additions; it does not
+establish qualification of the full 188-record baseline or the 1,000-game goal.
+
+## Solitaire House additional original intake
+
+[Solitaire-House-111.hqx](https://ftp.lysator.liu.se/pub/mac/games/Solitaire-House-111.hqx)
+is 1598124 bytes, SHA-256 `5627ff827b495113126dce477026e23bab2c0ce2a2a78cea3f9990f567d46831`.
+All six forks of its three files match independently between current production
+BinHex/Compact Pro decoding and unar, including the original Register program.
+The main fat game has 278678-byte pwpc PEF data and a 2031276-byte resource fork
+with eleven CODE resources and cfrg. [Intake and receipts](https://github.com/benletchford/systemless/issues/4458).
+
+The embedded documentation permits complete unchanged online-service/CD-ROM
+shareware distribution with Register retained, shareware presentation and only
+cost-recovery distribution charges. It names version 1.0.1 despite being bundled
+with 1.1.1; version scope and separate artwork-copying restrictions remain under
+review. No archive or image is hosted or launch-approved.
+
+Original native 68K v0.93.0 setup reaches Klondike, moves A♦ to its foundation
+and drags 4♠ onto 5♥, revealing 2♣. A fresh twelve-assertion replay passes at
+1881 frontend / 2460 guest ticks, zero exhausted frames. The original PPC v0.93.0
+setup halts at unsupported FillRoundRect after player-name acceptance;
+[focused blocker #4460](https://github.com/benletchford/systemless/issues/4460).
+A separate [PICT metadata fix #4461](https://github.com/benletchford/systemless/pull/4461)
+repairs the original registration text on both slices in rebuilt native v0.95.0;
+three measured prompt assertions pass on each route. That fix is ready for review
+and remains subject to CI/merge. Prompt repair does not qualify PPC card gameplay.
+Browser, distribution/screenshot scope, hosting and publication remain pending.

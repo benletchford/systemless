@@ -78,6 +78,30 @@ compatibility:
       menu/settings coverage, saves and audio remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4452
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: 0.95.0
+    architecture: 68k
+    environment: >-
+      Public systemless.org at bf46037bda4d, actual 68k worker/WebGL,
+      800 by 600, 25 MHz and max two ticks per paint. Ordinary original menu/start
+      and sustained mouse steering produce movement and collection, score 0 to 10.
+      Actual HTTP 200 archive bytes match the original hash and size without
+      interception. Captures inspected; full playthroughs and audio unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4452
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: 0.95.0
+    architecture: ppc
+    environment: >-
+      Public systemless.org at bf46037bda4d, actual ppc worker/WebGL,
+      800 by 600, 25 MHz and max two ticks per paint. Ordinary original menu/start
+      and sustained mouse steering produce movement and collection, score 0 to 20.
+      Actual HTTP 200 archive bytes match the original hash and size without
+      interception. Captures inspected; full playthroughs and audio unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4452
 runtime:
   executable_path: HeartQuest-fat-11.cpt/HeartQuest (fat) 1.1
   screen_depth: 8
