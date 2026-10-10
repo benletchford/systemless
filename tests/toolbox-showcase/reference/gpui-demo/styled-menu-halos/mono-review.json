@@ -1,0 +1,243 @@
+{
+  "actual_depth": 1,
+  "prefer_powerpc": false,
+  "runtime_powerpc": false,
+  "styled": true,
+  "menu_id": 129,
+  "requested_scale": 1.0,
+  "items": [
+    {
+      "text": "Graphics",
+      "style": 8,
+      "smooth_raster_support": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "text": "Controls",
+      "style": 16,
+      "smooth_raster_support": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "text": "Windows",
+      "style": 28,
+      "smooth_raster_support": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "text": "Drawing & 3D Bevels",
+      "style": 31,
+      "smooth_raster_support": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "text": "Game Preferences",
+      "style": 0,
+      "smooth_raster_support": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "text": "Dialogs & Alerts",
+      "style": 0,
+      "smooth_raster_support": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "text": "TextEdit",
+      "style": 0,
+      "smooth_raster_support": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "text": "Palettes",
+      "style": 0,
+      "smooth_raster_support": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "text": "Lists & Inventory",
+      "style": 0,
+      "smooth_raster_support": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "text": "Sound & Channels",
+      "style": 0,
+      "smooth_raster_support": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "text": "Styled Text & Fonts",
+      "style": 0,
+      "smooth_raster_support": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "text": "Standard File",
+      "style": 0,
+      "smooth_raster_support": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "text": "Resource Browser",
+      "style": 0,
+      "smooth_raster_support": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "text": "Sprites, Masks & Scrolling",
+      "style": 0,
+      "smooth_raster_support": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "text": "Events & Cursors",
+      "style": 0,
+      "smooth_raster_support": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "text": "Popup & Dropdown Lists",
+      "style": 0,
+      "smooth_raster_support": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    }
+  ],
+  "display_scale": 1.0,
+  "display_origin": [
+    0.0,
+    0.0
+  ],
+  "viewport": [
+    800.0,
+    600.0
+  ]
+}

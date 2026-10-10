@@ -5100,6 +5100,16 @@ static void DoEvent(EventRecord *event)
             key = (char)(event->message & charCodeMask);
             if ((event->modifiers & cmdKey) != 0) {
                 DoMenuChoice(MenuKey(key));
+            } else if (gPage == pageStyledText &&
+                       (event->modifiers & optionKey) != 0 && key == 'm') {
+                MenuHandle styledMenu;
+                styledMenu = GetMenuHandle(mPages);
+                if (styledMenu != nil) {
+                    SetItemStyle(styledMenu, 1, outline);
+                    SetItemStyle(styledMenu, 2, shadow);
+                    SetItemStyle(styledMenu, 3, underline | outline | shadow);
+                    SetItemStyle(styledMenu, 4, bold | italic | underline | outline | shadow);
+                }
             } else if (gPage == pageStyledText && gStyledTE != nil &&
                        (event->modifiers & optionKey) != 0 &&
                        (key == 'c' || key == 'e' || key == 'b' || key == 'n' ||

@@ -1,0 +1,15 @@
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1A8 bkLim=$0044A1A8 zcbFree=2400616 (2.3MB)
+[INIT] Set MainDevice=$00226184, TheGDevice=$00226184 (ptr=$00226150)
+[INIT] GDevice chain: $8A4→$00226184→$00226150 gdPMap→$0022614C→$00226118
+[INIT]   PixMap: rowBytes=$8070 bounds=(0,0,600,800) pixelSize=1
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAF0A randSeed_addr=$003FAE8C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=112 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$002261E0 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00226ADC bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00226ADC pixmap=$002057E8 bounds=(50,40,420,600) goAway=true
+saved composed GPUI menu capture to target/gpui-qualification/styled-menu-probes/mono.png

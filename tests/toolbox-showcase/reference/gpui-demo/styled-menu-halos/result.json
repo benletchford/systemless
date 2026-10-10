@@ -1,0 +1,180 @@
+{
+  "base_commit": "52f263b44177da53c10d5e249f89cdabd6ccef8c",
+  "source_state": "base plus source.patch; rebuilt fixture pinned separately",
+  "status": "passed",
+  "cases": [
+    {
+      "name": "mono-0.75",
+      "size": [
+        1200,
+        900
+      ],
+      "rgba_sha256": "411d62e1417891fd192d235c8e1d1993b487a4971d5513951f2de3a947def467",
+      "png_sha256": "83773ce2c317768e4a8cd3f11c8575e09563287b21b7884035a1abd59a740d00"
+    },
+    {
+      "name": "mono-1",
+      "size": [
+        1600,
+        1200
+      ],
+      "rgba_sha256": "5917143218532cd60e3f2f0db4243131f02162563594ac398c6d79287a243213",
+      "png_sha256": "d0f94fd46ba7a268f129735666e3fc4190126fc6cf0cdcd508c520f028966ca9"
+    },
+    {
+      "name": "mono-1.5",
+      "size": [
+        2400,
+        1800
+      ],
+      "rgba_sha256": "5a924c7186f242f05133b63825284a4d083f6db0ee8a28a3f0aec9be43aabee1",
+      "png_sha256": "71db5866f0c8e7e19740d380138ce32e87b7aea61ade26df3620b236a9e33cbe"
+    },
+    {
+      "name": "mono-2",
+      "size": [
+        3200,
+        2400
+      ],
+      "rgba_sha256": "328e618053c7757e01cdf70ebdaeee7a23011ebf011942f9c82d493edb247c70",
+      "png_sha256": "f9b9f0b63fda5ac7f3d406b128a5a72132f7f10eb8b58d174a89fda0a3d34cf5"
+    },
+    {
+      "name": "colour-0.75",
+      "size": [
+        1200,
+        900
+      ],
+      "rgba_sha256": "886080938e0b164905e63615dedd614f9414388f4c0dfd844fc93e138bc4bc2d",
+      "png_sha256": "30c6806f7652d67a970b253776f50020318da213db384f161366134bb041600d"
+    },
+    {
+      "name": "colour-1",
+      "size": [
+        1600,
+        1200
+      ],
+      "rgba_sha256": "271ab1f6ba7a94ff8b782ae9c8257c32c259984c567e33a2be3f6bef8db23a74",
+      "png_sha256": "5a5879bad97bab4004ace44eb697d7ca5a95196484da0ac11812429a38ae24eb"
+    },
+    {
+      "name": "colour-1.5",
+      "size": [
+        2400,
+        1800
+      ],
+      "rgba_sha256": "0cf4c8b0ccbed4dfa140fcb6618020d466de8d19923d8fec83d8ddd579dcb354",
+      "png_sha256": "9ffca3d1d9abc866d817e84be03c38466f61abe81d62853457a519b3b138e8ba"
+    },
+    {
+      "name": "colour-2",
+      "size": [
+        3200,
+        2400
+      ],
+      "rgba_sha256": "7bbb95b31648de5fd658a40bdd9dcc5b39978e5faea3dc9d1d795d9329ed2398",
+      "png_sha256": "f4429daceb768a5a78079fb1b4e3bbd14ca8239a02e3f9bb24c6cfe7fa03f1cd"
+    },
+    {
+      "name": "ppc8-0.75",
+      "size": [
+        1200,
+        900
+      ],
+      "rgba_sha256": "886080938e0b164905e63615dedd614f9414388f4c0dfd844fc93e138bc4bc2d",
+      "png_sha256": "30c6806f7652d67a970b253776f50020318da213db384f161366134bb041600d"
+    },
+    {
+      "name": "ppc8-1",
+      "size": [
+        1600,
+        1200
+      ],
+      "rgba_sha256": "271ab1f6ba7a94ff8b782ae9c8257c32c259984c567e33a2be3f6bef8db23a74",
+      "png_sha256": "5a5879bad97bab4004ace44eb697d7ca5a95196484da0ac11812429a38ae24eb"
+    },
+    {
+      "name": "ppc8-1.5",
+      "size": [
+        2400,
+        1800
+      ],
+      "rgba_sha256": "0cf4c8b0ccbed4dfa140fcb6618020d466de8d19923d8fec83d8ddd579dcb354",
+      "png_sha256": "9ffca3d1d9abc866d817e84be03c38466f61abe81d62853457a519b3b138e8ba"
+    },
+    {
+      "name": "ppc8-2",
+      "size": [
+        3200,
+        2400
+      ],
+      "rgba_sha256": "7bbb95b31648de5fd658a40bdd9dcc5b39978e5faea3dc9d1d795d9329ed2398",
+      "png_sha256": "f4429daceb768a5a78079fb1b4e3bbd14ca8239a02e3f9bb24c6cfe7fa03f1cd"
+    },
+    {
+      "name": "ppc16-0.75",
+      "size": [
+        1200,
+        900
+      ],
+      "rgba_sha256": "b473d3d7fc42e1a9f3db3407bf2ae6268f7ac2177478af11de1c2ed3e81803ec",
+      "png_sha256": "a42441fee2b6f0e36b6ab05eec44de0adf65741452739b3bbc9d1565537c3092"
+    },
+    {
+      "name": "ppc16-1",
+      "size": [
+        1600,
+        1200
+      ],
+      "rgba_sha256": "5ed76e11f03e5d7594ac6ea06b881c7588a9101ef099ca96505c4a448c812320",
+      "png_sha256": "d655ffbcc8d422ca417d465b6d354b570a54f9c88c31157c8c11ace2fd42d3a2"
+    },
+    {
+      "name": "ppc16-1.5",
+      "size": [
+        2400,
+        1800
+      ],
+      "rgba_sha256": "7a5b14111a6db1a69925095759107640093b648c57389c860a4ac54608d907fc",
+      "png_sha256": "4012155a7ba25e08be27e26d317725c64732dc67271b6dd4eab40eac0beacdab"
+    },
+    {
+      "name": "ppc16-2",
+      "size": [
+        3200,
+        2400
+      ],
+      "rgba_sha256": "64f0dac7e40afbb661012d524ccf12586bd09156c1b626168610bb99fcd260e1",
+      "png_sha256": "8b594943ff172b01a10a54b267aec5e51546fda78614d5dec352cbaf27f5b07b"
+    }
+  ],
+  "checks": [
+    "actual CPU/depth and display scale",
+    "guest SetItemStyle changes exactly four item styles; other menu fields unchanged",
+    "all original-source raster plans supported at 1..8",
+    "lossless archive preserves all decoded RGBA pixels"
+  ],
+  "visual_review": [
+    {
+      "name": "mono",
+      "scope": "additional scale1 full1600x1200 capture viewed without resize; not in 16-case archive"
+    },
+    {
+      "name": "colour-1.5",
+      "scope": "full2400x1800 capture tool-resized to1824x1368"
+    },
+    {
+      "name": "ppc8-0.75",
+      "scope": "full1200x900 capture without resize"
+    },
+    {
+      "name": "ppc16-2",
+      "scope": "full3200x2400 capture tool-resized to1824x1368"
+    }
+  ],
+  "limits": [
+    "No styled menu item selection/keyboard tracking qualification",
+    "Not all16 images directly reviewed",
+    "No independent native font oracle or production performance qualification"
+  ]
+}

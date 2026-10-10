@@ -1,0 +1,15 @@
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1A8 bkLim=$0044A1A8 zcbFree=2400616 (2.3MB)
+[INIT] Set MainDevice=$00226974, TheGDevice=$00226974 (ptr=$00226940)
+[INIT] GDevice chain: $8A4→$00226974→$00226940 gdPMap→$0022693C→$00226908
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAF0A randSeed_addr=$003FAE8C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=816 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$002269D0 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$002272CC bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$002272CC pixmap=$002057E8 bounds=(50,40,420,600) goAway=true
+saved composed GPUI menu capture to target/gpui-qualification/styled-menu-probes/colour-2.png

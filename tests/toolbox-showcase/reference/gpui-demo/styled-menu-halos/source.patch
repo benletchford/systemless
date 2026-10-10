@@ -1,0 +1,108 @@
+diff --git a/src/bin/gpui_demo.rs b/src/bin/gpui_demo.rs
+index 2cc6f381..c6f8dc34 100644
+--- a/src/bin/gpui_demo.rs
++++ b/src/bin/gpui_demo.rs
+@@ -334,6 +334,9 @@ mod desktop {
+         capture_standard_menu_id: i16,
+         #[cfg(feature = "gpui-demo-test")]
+         #[arg(long, hide = true)]
++        capture_standard_menu_styled: bool,
++        #[cfg(feature = "gpui-demo-test")]
++        #[arg(long, hide = true)]
+         capture_windows: Option<PathBuf>,
+         #[cfg(feature = "gpui-demo-test")]
+         #[arg(long, hide = true)]
+@@ -4703,7 +4706,7 @@ mod desktop {
+         }
+         #[cfg(feature = "gpui-demo-test")]
+         if let Some(output) = args.capture_standard_menu.as_ref() {
+-            capture_standard_menu(&args.game, output, args.prefer_powerpc, args.screen_depth, args.capture_standard_menu_id, args.capture_scale);
++            capture_standard_menu(&args.game, output, args.prefer_powerpc, args.screen_depth, args.capture_standard_menu_id, args.capture_scale, args.capture_standard_menu_styled);
+             return;
+         }
+         #[cfg(feature = "gpui-demo-test")]
+@@ -5486,6 +5489,7 @@ mod desktop {
+         screen_depth: Option<u16>,
+         menu_id: i16,
+         capture_scale: Option<f32>,
++        styled: bool,
+     ) {
+         use gpui_kit::{platform, test::TestWindowExt, HeadlessAppContext};
+ 
+@@ -5496,7 +5500,7 @@ mod desktop {
+         }
+         let app = session.load_path(game).unwrap();
+         session.initialize(&app);
+-        let menus = (0..300)
++        let mut menus = (0..300)
+             .find_map(|_| {
+                 session.runner_mut().run_steps(100_000, None);
+                 let menus = session.runner_mut().guest_menu_snapshot();
+@@ -5504,11 +5508,37 @@ mod desktop {
+                     .then_some(menus)
+             })
+             .expect("showcase standard menu should become available");
++        assert_eq!(session.runner().is_powerpc_app(), prefer_powerpc);
++        if styled {
++            assert_eq!(menu_id, 129, "styled fixture control targets Pages");
++            assert!(session.runner_mut().select_guest_menu_item(129, 11));
++            menus = (0..300).find_map(|_| {
++                session.runner_mut().run_steps(10_000, None);
++                let settled = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
++                let menus = session.runner_mut().guest_menu_snapshot();
++                (settled && menus.menus.iter().any(|menu| menu.id == 129 && menu.items[10].checked)).then_some(menus)
++            }).expect("guest styled page selection must settle");
++            let mut expected = menus.menus.iter().find(|menu| menu.id == 129).unwrap().clone();
++            for (item, style) in expected.items.iter_mut().zip([8, 16, 28, 31]) { item.style = style; }
++            for input in [
++                MacintoshInput::KeyDown { mac_key: 0x3a, character: 0 },
++                MacintoshInput::KeyDown { mac_key: 0x2e, character: b'm' },
++                MacintoshInput::KeyUp { mac_key: 0x2e, character: b'm' },
++                MacintoshInput::KeyUp { mac_key: 0x3a, character: 0 },
++            ] { session.deliver_input(input); }
++            menus = (0..300).find_map(|_| {
++                session.runner_mut().run_steps(10_000, None);
++                let settled = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
++                let menus = session.runner_mut().guest_menu_snapshot();
++                (settled && menus.menus.iter().any(|menu| menu == &expected)).then_some(menus)
++            }).expect("guest SetItemStyle retains menu identity, text and interaction intent");
++        }
+         assert!(!menus.requires_guest_menu_rendering());
+         let menu = menus.menus.iter().find(|menu| menu.id == menu_id).unwrap();
+         let metadata = serde_json::json!({
+             "actual_depth": session.runner().presented_screen_depth(),
+-            "prefer_powerpc": prefer_powerpc, "menu_id": menu_id,
++            "prefer_powerpc": prefer_powerpc, "runtime_powerpc": session.runner().is_powerpc_app(),
++            "styled": styled, "menu_id": menu_id,
+             "requested_scale": capture_scale,
+             "items": menu.items.iter().map(|item| serde_json::json!({
+                 "text": item.text, "style": item.style,
+@@ -5849,6 +5879,7 @@ mod desktop {
+                         capture_custom_menu_fallback: None,
+                         capture_standard_menu: None,
+                         capture_standard_menu_id: 129,
++                        capture_standard_menu_styled: false,
+                         capture_windows: None,
+                         capture_windows_moved: None,
+                         capture_windows_activated: None,
+diff --git a/tests/toolbox-showcase/showcase.c b/tests/toolbox-showcase/showcase.c
+index e7011fff..775096b2 100644
+--- a/tests/toolbox-showcase/showcase.c
++++ b/tests/toolbox-showcase/showcase.c
+@@ -5100,6 +5100,16 @@ static void DoEvent(EventRecord *event)
+             key = (char)(event->message & charCodeMask);
+             if ((event->modifiers & cmdKey) != 0) {
+                 DoMenuChoice(MenuKey(key));
++            } else if (gPage == pageStyledText &&
++                       (event->modifiers & optionKey) != 0 && key == 'm') {
++                MenuHandle styledMenu;
++                styledMenu = GetMenuHandle(mPages);
++                if (styledMenu != nil) {
++                    SetItemStyle(styledMenu, 1, outline);
++                    SetItemStyle(styledMenu, 2, shadow);
++                    SetItemStyle(styledMenu, 3, underline | outline | shadow);
++                    SetItemStyle(styledMenu, 4, bold | italic | underline | outline | shadow);
++                }
+             } else if (gPage == pageStyledText && gStyledTE != nil &&
+                        (event->modifiers & optionKey) != 0 &&
+                        (key == 'c' || key == 'e' || key == 'b' || key == 'n' ||
