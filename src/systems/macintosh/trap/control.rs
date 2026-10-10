@@ -3800,10 +3800,21 @@ impl super::TrapDispatcher {
                             let r_left = bus.read_word(ctrl_ptr + 10) as i16;
                             let r_bottom = bus.read_word(ctrl_ptr + 12) as i16;
                             let r_right = bus.read_word(ctrl_ptr + 14) as i16;
+                            let proc_id = self.control_manager.proc_id(ctrl_ptr);
+                            let owner = bus.read_long(ctrl_ptr + 4);
+                            let (top, left, _, _) = Self::dialog_screen_bounds(bus, owner);
+                            let (pt_v, pt_h) =
+                                crate::control_manager::standard_button_tracking_start_point(
+                                    (r_top, r_left, r_bottom, r_right),
+                                    (pt_v, pt_h),
+                                    self.control_tracking_mouse_pos(bus),
+                                    (top, left),
+                                    self.control_tracking_button_down(bus),
+                                    proc_id,
+                                );
                             outcome = "outside_control";
                             if pt_v >= r_top && pt_v < r_bottom && pt_h >= r_left && pt_h < r_right
                             {
-                                let proc_id = self.control_manager.proc_id(ctrl_ptr);
                                 if proc_id == 16 {
                                     part = self.standard_scrollbar_testcontrol_part_code(
                                         bus, ctrl_ptr, pt_v, pt_h,
