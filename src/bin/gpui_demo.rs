@@ -767,19 +767,25 @@ mod desktop {
                 // SAFETY: invoked only on the macOS UI thread; these AppKit
                 // accessors return retained/read-only pasteboard state.
                 let board = unsafe { objc2_app_kit::NSPasteboard::generalPasteboard() };
-                Some(unsafe {
-                    (board.changeCount(), board.types().is_some_and(|types| types.count() != 0))
-                })
+                Some(super::clipboard::native_stamp(&board))
             };
+            Self::read_host_clipboard_with_stamp(cx, stamp)
+        }
+
+        fn read_host_clipboard_with_stamp(
+            cx: &App,
+            mut stamp: impl FnMut() -> Option<(isize, bool)>,
+        ) -> super::clipboard::HostSample {
             for _ in 0..3 {
                 let before = stamp();
                 let mut sample = super::clipboard::HostSample {
                     text: None,
-                    text_only: before.is_none_or(|(_, has_types)| !has_types),
+                    text_only: before.is_none_or(|(_, native_text_only)| native_text_only),
                     revision: before.map(|(count, _)| count),
                 };
                 if let Some(item) = cx.read_from_clipboard() {
-                    sample.text_only = true;
+                    // A decoded string can conceal native rich/unknown formats.
+                    // Preserve the full inventory verdict while reading entries.
                     for entry in item.entries() {
                         match entry {
                             ClipboardEntry::String(value) => {
@@ -11405,6 +11411,39 @@ mod desktop {
                 })
             ));
             assert!(!view.read_with(cx, |demo, _| demo.mouse_down));
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn host_clipboard_reader_preserves_native_inventory_and_rejects_unstable_copies(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            cx.update(|cx| {
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("same plain string".into()));
+                for text_only in [false, true] {
+                    let sample = super::Demo::read_host_clipboard_with_stamp(
+                        cx, || Some((10, text_only)),
+                    );
+                    assert_eq!(sample.text.as_deref(), Some("same plain string"));
+                    assert_eq!(sample.text_only, text_only);
+                    assert_eq!(sample.revision, Some(10));
+                    let mut clipboard = super::super::clipboard::HostClipboard::default();
+                    clipboard.suspend(1, sample.clone());
+                    assert_eq!(clipboard.export(1, b"guest copy", sample).is_some(), text_only);
+                }
+                let mut revision = 0;
+                let unstable = super::Demo::read_host_clipboard_with_stamp(cx, || {
+                    revision += 1;
+                    Some((revision, true))
+                });
+                assert_eq!(revision, 7, "three bounded attempts plus final stamp");
+                assert_eq!(unstable.text, None);
+                assert!(!unstable.text_only);
+                assert_eq!(unstable.revision, Some(7));
+                let empty = super::Demo::read_host_clipboard_with_stamp(cx, || None);
+                assert_eq!(empty.text.as_deref(), Some("same plain string"));
+                assert!(empty.text_only, "test platform uses decoded entries");
+            });
         }
 
         #[cfg(feature = "gpui-demo-test")]
