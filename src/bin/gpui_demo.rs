@@ -1991,6 +1991,7 @@ mod desktop {
                                 )),
                         );
                     }
+                    let accessible_line_ids = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
                     screen = screen.child(super::a11y::AccessibleState::new(
                         div()
                             .id(format!("guest-text-field-{}-{}-{}-{}", record.guest_id, record.generation, clip.top, clip.left))
@@ -2008,15 +2009,26 @@ mod desktop {
                                         && matches!(owner.target, super::input::TextInputTarget::Document { .. })).cloned()
                                     else { return field; };
                                 let sender = self.commands.clone();
+                                let selection_sender = self.commands.clone();
+                                let selection_owner = owner.clone();
+                                let selection_lines = accessible_line_ids.clone();
                                 field.on_a11y_action(gpui_kit::accesskit::Action::SetValue, move |data, _, _| {
                                     if let Some(gpui_kit::accesskit::ActionData::Value(value)) = data {
                                         if let Some((expected, range, bytes)) = super::input::accessibility_text_replacement(owner.clone(), value, true) {
                                             let _ = sender.send(Command::ReplaceText(expected, range, bytes, None));
                                         }
                                     }
+                                }).on_a11y_action(gpui_kit::accesskit::Action::SetTextSelection, move |data, _, _| {
+                                    if let Some(gpui_kit::accesskit::ActionData::SetTextSelection(selection)) = data {
+                                        if let Some(range) = super::a11y::guest_multiline_range(selection, &selection_lines.borrow(), selection_owner.text.len()) {
+                                            let _ = selection_sender.send(Command::SelectText(selection_owner.clone(), range));
+                                        }
+                                    }
                                 })
                             }), false,
-                    ).text_value(systemless::systems::macintosh::mac_roman::decode_mac_roman(&record.text), record.line_count > 1));
+                    ).text_value(systemless::systems::macintosh::mac_roman::decode_mac_roman(&record.text), record.line_count > 1)
+                        .guest_line_ids(accessible_line_ids)
+                        .guest_text_lines(&record.text, record.line_starts.as_deref().unwrap_or(&[]), record.selection.0..record.selection.1));
                 }
                 // Styled fields use the owning CPU's strikes and paint order.
                 // Visibility establishes the standard owner; exact native pixels
@@ -2035,6 +2047,7 @@ mod desktop {
                         plan.clone(), scene_scale, origin,
                     ) else { continue; };
                     let clip = piece.clip;
+                    let accessible_line_ids = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
                     screen = screen.child(super::a11y::AccessibleState::new(
                         div().id(format!("guest-styled-text-field-{}-{}-{}-{}", record.guest_id, record.generation, clip.top, clip.left))
                         .absolute().overflow_hidden()
@@ -2048,15 +2061,26 @@ mod desktop {
                                         && matches!(owner.target, super::input::TextInputTarget::Document { .. })).cloned()
                                     else { return field; };
                                 let sender = self.commands.clone();
+                                let selection_sender = self.commands.clone();
+                                let selection_owner = owner.clone();
+                                let selection_lines = accessible_line_ids.clone();
                                 field.on_a11y_action(gpui_kit::accesskit::Action::SetValue, move |data, _, _| {
                                     if let Some(gpui_kit::accesskit::ActionData::Value(value)) = data {
                                         if let Some((expected, range, bytes)) = super::input::accessibility_text_replacement(owner.clone(), value, true) {
                                             let _ = sender.send(Command::ReplaceText(expected, range, bytes, None));
                                         }
                                     }
+                                }).on_a11y_action(gpui_kit::accesskit::Action::SetTextSelection, move |data, _, _| {
+                                    if let Some(gpui_kit::accesskit::ActionData::SetTextSelection(selection)) = data {
+                                        if let Some(range) = super::a11y::guest_multiline_range(selection, &selection_lines.borrow(), selection_owner.text.len()) {
+                                            let _ = selection_sender.send(Command::SelectText(selection_owner.clone(), range));
+                                        }
+                                    }
                                 })
                             }), false,
-                    ).text_value(systemless::systems::macintosh::mac_roman::decode_mac_roman(&record.text), record.line_count > 1));
+                    ).text_value(systemless::systems::macintosh::mac_roman::decode_mac_roman(&record.text), record.line_count > 1)
+                        .guest_line_ids(accessible_line_ids)
+                        .guest_text_lines(&record.text, record.line_starts.as_deref().unwrap_or(&[]), record.selection.0..record.selection.1));
                 }
                 // CDEF-owned standard controls can use Kit components while their
                 // ControlRecord state and tracking remain guest-owned.
@@ -10547,6 +10571,20 @@ mod desktop {
                     .is_some_and(|(_, actual)| actual == &owner));
                 assert_eq!(rejected.text_edits.iter().find(|record| (record.guest_id, record.generation) == pinned.identity).unwrap().text, expected);
                 eprintln!("PASS worker-accessible-document-value powerpc={powerpc} depth={actual_depth}");
+                let selection_owner = super::super::input::TextInputOwner { identity: pinned.identity,
+                    target: initial_mark.target, text: edited.text.clone(), selection: edited.selection.0..edited.selection.1 };
+                worker.0.send(Command::SelectText(selection_owner.clone(), 2..7)).unwrap();
+                let selected = wait("accessible document selection", &updates, |update| update.text_edits.iter().any(|record|
+                    (record.guest_id, record.generation) == pinned.identity && record.selection == (2, 7)));
+                let selected_record = selected.text_edits.iter().find(|record| (record.guest_id, record.generation) == pinned.identity).unwrap();
+                assert_eq!(selected_record.text, edited.text); assert_eq!(selected_record.style_runs, edited.style_runs);
+                assert_eq!(selected_record.view_rect, edited.view_rect); assert_eq!(selected_record.owner_port, edited.owner_port);
+                worker.0.send(Command::SelectText(selection_owner.clone(), 0..1)).unwrap();
+                let rejected = wait("stale accessible document selection", &updates, |update| update.text_commit_rejection.as_ref()
+                    .is_some_and(|(_, owner)| owner == &selection_owner));
+                assert_eq!(rejected.text_edits.iter().find(|record| (record.guest_id, record.generation) == pinned.identity).unwrap().selection, (2, 7));
+                eprintln!("PASS worker-accessible-document-selection powerpc={powerpc} depth={actual_depth}");
+
 
 
                 drop(worker);
