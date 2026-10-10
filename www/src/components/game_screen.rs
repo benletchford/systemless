@@ -40,7 +40,7 @@ pub fn prefetch_game_archive(game: &Game) {
     if !game.approved || game.assets.archive_path.is_empty() {
         return;
     }
-    prefetch_archive(&primary_archive_url(game));
+    prefetch_archive(&primary_archive_url(game, game.default_architecture));
 }
 
 #[component]
@@ -54,6 +54,12 @@ pub fn GameScreen(game: &'static Game) -> impl IntoView {
     });
 
     view! {
+        <a class="game-download"
+            href=move || asset_path(game.assets.archive_for(selected_architecture.get()).0)
+            target="_blank" rel="noopener noreferrer"
+            download=move || game.assets.archive_for(selected_architecture.get()).1
+            aria-label=move || format!("Download {} for {}", game.title, selected_architecture.get().label())
+        >"Download game"</a>
         {if game.architectures.len() > 1 {
             view! {
                 <div class="game-architecture" role="group" aria-label="Choose game architecture">
@@ -348,11 +354,11 @@ fn GameRuntime(
         let Some(canvas) = canvas_ref.get() else {
             return;
         };
-        let primary_url = primary_archive_url(game);
+        let primary_url = primary_archive_url(game, architecture);
         let fallback_url = game
             .assets
             .web_pack_path
-            .map(|_| asset_path(game.assets.archive_path));
+            .map(|_| asset_path(game.assets.archive_for(architecture).0));
         let arrows_as_numpad = game.settings.arrows_as_numpad;
         let launch_modifiers = game.settings.launch_modifiers;
         let show_menu_bar = game.settings.show_menu_bar;
@@ -1352,11 +1358,11 @@ fn prefetched_archive_promise(url: &str) -> Option<js_sys::Promise> {
     }
 }
 
-fn primary_archive_url(game: &Game) -> String {
+fn primary_archive_url(game: &Game, architecture: GameArchitecture) -> String {
     asset_path(
         game.assets
             .web_pack_path
-            .unwrap_or(game.assets.archive_path),
+            .unwrap_or(game.assets.archive_for(architecture).0),
     )
 }
 
