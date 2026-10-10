@@ -1,0 +1,8 @@
+{
+  "base_head": "40527121f360956b8df3934db21b3460e6ac62ce",
+  "scope": "Dialog disjoint stage worker completion in four modes plus wrapped PPC8/PPC16, caret and sibling preservation. Four-mode GPUI handler checks two pinned ordered requests. Save/New Folder disjoint, physical input, visual and native reference qualification remain open.",
+  "sha256": {
+    "worker.log": "ebeb967afe9d34666a245a094dbc28eda1f366e49b831255fee93240b10fe89b",
+    "platform.log": "5436054c5e680843d52eb74d78476b5421ceb322ad4a6aca0bf37c5d9031c44a"
+  }
+}
