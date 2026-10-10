@@ -1,0 +1,136 @@
+warning: method `instrument` is never used
+   --> src/systems/macintosh/sound.rs:609:19
+    |
+403 | impl SndChannel {
+    | --------------- method in this implementation
+...
+609 |     pub(crate) fn instrument(&self) -> Option<&SampledInstrument> {
+    |                   ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `dispatch_toolbox` is never used
+    --> src/systems/macintosh/trap/toolbox.rs:6210:19
+     |
+1169 | impl super::TrapDispatcher {
+     | -------------------------- method in this implementation
+...
+6210 |     pub(crate) fn dispatch_toolbox<C: CpuOps>(
+     |                   ^^^^^^^^^^^^^^^^
+
+warning: `systemless` (lib) generated 2 warnings
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+warning: unused variable: `window`
+    --> src/bin/gpui_demo.rs:4757:53
+     |
+4757 |             visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+     |                                                     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_window`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `cx`
+     --> src/bin/gpui_demo.rs:11193:65
+      |
+11193 |                     cx.update_window(window.into(), |_, window, cx| window.remove_window()).unwrap();
+      |                                                                 ^^ help: if this is intentional, prefix it with an underscore: `_cx`
+
+warning: fields `game`, `prefer_powerpc`, `screen_depth`, and `debug_socket` are never read
+  --> src/bin/gpui_demo.rs:4:9
+   |
+ 3 | pub(crate) struct LaunchOptions {
+   |                   ------------- fields in this struct
+ 4 |     pub game: std::path::PathBuf,
+   |         ^^^^
+ 5 |     pub prefer_powerpc: bool,
+   |         ^^^^^^^^^^^^^^
+ 6 |     pub screen_depth: Option<u16>,
+   |         ^^^^^^^^^^^^
+...
+12 |     pub debug_socket: Option<std::path::PathBuf>,
+   |         ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `launch` is never used
+  --> src/bin/gpui_demo.rs:17:15
+   |
+17 | pub(crate) fn launch(options: LaunchOptions) {
+   |               ^^^^^^
+
+warning: field `geometry` is never read
+    --> src/bin/gpui_demo_text.rs:1435:9
+     |
+1434 | pub(crate) struct StyledTextEditLine {
+     |                   ------------------ field in this struct
+1435 |     pub geometry: systemless::runner::TextEditLineGeometry,
+     |         ^^^^^^^^
+     |
+     = note: `StyledTextEditLine` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `pixels_with_selection` is never used
+    --> src/bin/gpui_demo_text.rs:1823:12
+     |
+1789 | impl StyledTextEditLine {
+     | ----------------------- method in this implementation
+...
+1823 |     pub fn pixels_with_selection(
+     |            ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_ink` is never used
+    --> src/bin/gpui_demo_text.rs:1886:15
+     |
+1886 | pub(crate) fn classic_styled_text_edit_ink(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_selection` is never used
+    --> src/bin/gpui_demo_text.rs:1892:15
+     |
+1892 | pub(crate) fn classic_styled_text_edit_selection(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_solid_caret` is never used
+    --> src/bin/gpui_demo_text.rs:1901:15
+     |
+1901 | pub(crate) fn classic_styled_text_edit_solid_caret(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_pixels` is never used
+    --> src/bin/gpui_demo_text.rs:1919:4
+     |
+1919 | fn classic_styled_text_pixels(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_pixels_with_background` is never used
+    --> src/bin/gpui_demo_text.rs:1926:4
+     |
+1926 | fn classic_styled_text_pixels_with_background(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `launch` is never used
+    --> src/bin/gpui_demo.rs:5469:19
+     |
+5469 |     pub(super) fn launch(options: super::LaunchOptions) {
+     |                   ^^^^^^
+
+warning: `systemless` (example "gpui-menu-demo" test) generated 12 warnings (run `cargo fix --example "gpui-menu-demo" -p systemless --tests` to apply 2 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.63s
+     Running unittests src/bin/gpui_demo.rs (target/debug/examples/gpui_menu_demo-86e8ad501bd72ccf)
+
+running 14 tests
+test input::composition_tests::explicit_mark_preserves_guest_baseline_and_cancel_restores_selection ... ok
+test input::composition_tests::composition_cancels_on_guest_mutation_focus_loss_and_identity_reuse ... ok
+test input::composition_tests::composition_replaces_marked_subranges_without_changing_guest_ownership ... ok
+test input::composition_tests::explicit_mark_commit_pins_original_selection_without_rewriting_surrounding_text ... ok
+test input::composition_tests::explicit_replacement_pins_prior_selection_until_guest_acknowledges ... ok
+test input::composition_tests::geometry_queries_split_at_stage_boundaries_and_reject_surrogate_splits ... ok
+test input::composition_tests::disjoint_stage_replacement_keeps_two_pinned_edits ... ok
+test input::composition_tests::crossing_replacement_retains_stage_fragments_and_rejects_invalid_unicode_atomically ... ok
+test input::composition_tests::composition_rejection_recovers_guest_selection_without_inheriting_stale_feedback ... ok
+test input::composition_tests::composition_keeps_unicode_preedit_and_commits_mac_roman_atomically ... ok
+test input::composition_tests::modal_stage_correction_keeps_caret_before_retained_suffix ... ok
+test input::composition_tests::overlapping_mark_rejects_surrogate_splits_without_changing_staged_state ... ok
+test input::composition_tests::overlapping_mark_expands_only_replaced_guest_range_and_retains_unicode_fragments ... ok
+test input::composition_tests::surrounding_ranges_keep_guest_offsets_without_crossing_unicode_stage ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 164 filtered out; finished in 0.00s
+

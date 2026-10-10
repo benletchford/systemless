@@ -4868,6 +4868,25 @@ mod desktop {
             visual.run_until_parked();
             assert!(visual.capture_screenshot(window.into()).unwrap() == baseline,
                 "initial marked focus return must restore exact active pixels without resurrecting the stage");
+            visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                demo.replace_and_mark_text_in_range(Some(0..0), "RS", Some(1..1), window, cx);
+                demo.replace_and_mark_text_in_range(Some(0..3), "日😀", Some(1..3), window, cx);
+                assert_eq!(demo.composition.owner().unwrap().selection, 0..1);
+                assert_eq!(demo.composition.marked_base(), Some(&initial));
+                assert_eq!(demo.marked_text_range(window, cx), Some(0..3)); cx.notify();
+            })).unwrap();
+            visual.run_until_parked();
+            let expanded = visual.capture_screenshot(window.into()).unwrap();
+            assert!(expanded == marked, "overlapping expansion must paint the same resulting stage");
+            expanded.save(output.with_extension("overlapping-mark.png")).unwrap();
+            visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                let bounds = demo.bounds_for_range(1..3, Bounds::default(), window, cx).unwrap();
+                assert_eq!(demo.character_index_for_point(point(bounds.origin.x, bounds.origin.y + px(1.)), window, cx), Some(1));
+                demo.composition.cancel(); assert_eq!(demo.composition.owner(), Some(&initial)); cx.notify();
+            })).unwrap();
+            visual.run_until_parked();
+            assert!(visual.capture_screenshot(window.into()).unwrap() == baseline);
+            eprintln!("PASS overlapping marked expansion geometry and exact cancellation");
             std::fs::write(output.with_extension("initial-mark.json"), serde_json::to_vec_pretty(&serde_json::json!({
                 "target": format!("{:?}", initial.target), "guest_selection": [initial.selection.start, initial.selection.end],
                 "replacement": [0, 1], "marked_selection_utf16": [1, 3],
@@ -10157,7 +10176,10 @@ mod desktop {
             assert_ne!(owner.selection, 0..1);
             assert!(stage.mark_range(Some(&(0..1)), "日", 1..1));
             stage.cancel(); assert_eq!(stage.owner(), Some(&owner));
-            assert!(stage.mark_range(Some(&(0..1)), "R", 1..1));
+            assert!(stage.mark_range(Some(&(0..0)), "RS", 1..1));
+            assert!(stage.mark_range(Some(&(0..3)), "R", 1..1));
+            assert_eq!(stage.owner().unwrap().selection, 0..1);
+            assert_eq!(stage.preedit.as_ref().unwrap().text, "R");
             let expected = stage.marked_base().unwrap().clone();
             assert_eq!(expected, owner);
             let (request, bytes, caret) = stage.commit_replacement(None, "R").unwrap();
@@ -10296,6 +10318,28 @@ mod desktop {
                     (record.guest_id, record.generation) == pinned.identity).unwrap();
                 assert_eq!(completed.style_runs, final_record.style_runs);
                 eprintln!("PASS worker-initial-explicit-mark powerpc={powerpc} depth={actual_depth}");
+                let overlap_owner = super::super::input::TextInputOwner {
+                    identity: pinned.identity, target: initial_mark.target,
+                    text: completed.text.clone(), selection: completed.selection.0..completed.selection.1,
+                };
+                let mut overlap = super::super::input::GuestComposition::default();
+                overlap.synchronize(Some(overlap_owner.clone()));
+                assert!(overlap.mark_range(Some(&(2..3)), "RS", 1..1));
+                assert!(overlap.mark_range(Some(&(1..3)), "K", 1..1));
+                assert_eq!(overlap.preedit.as_ref().unwrap().text, "KS");
+                let expected = overlap.marked_base().unwrap().clone();
+                assert_eq!(expected, overlap_owner);
+                let (request, bytes, caret) = overlap.commit_replacement(None, "KS").unwrap();
+                assert_eq!(request.selection, 1..3);
+                let mut expected_text = overlap_owner.text.clone(); expected_text.splice(1..3, *b"KS");
+                worker.0.send(Command::ReplaceText(expected, request.selection, bytes, Some(caret))).unwrap();
+                let result = wait("overlapping marked expansion", &updates, |update|
+                    update.text_edits.iter().any(|record| (record.guest_id, record.generation) == pinned.identity
+                        && record.text == expected_text && record.selection == (3, 3)));
+                let result = result.text_edits.iter().find(|record|
+                    (record.guest_id, record.generation) == pinned.identity).unwrap();
+                assert_eq!(result.style_runs, completed.style_runs);
+                eprintln!("PASS worker-overlapping-mark powerpc={powerpc} depth={actual_depth}");
 
                 drop(worker);
             }
@@ -13081,6 +13125,18 @@ mod desktop {
                 let super::Command::ReplaceText(expected, range, bytes, caret) = &requests[1] else { unreachable!() };
                 assert_eq!(expected.text, b"\x8ecdef"); assert_eq!(expected.selection, 1..1);
                 assert_eq!(*range, 1..3); assert_eq!(bytes, b"Q"); assert_eq!(*caret, Some(2));
+                cx.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                    demo.composition.synchronize(Some(initial.clone()));
+                    demo.replace_and_mark_text_in_range(Some(2..3), "RS", Some(1..1), window, cx);
+                    demo.replace_and_mark_text_in_range(Some(1..3), "K", Some(1..1), window, cx);
+                    assert_eq!(demo.marked_text_range(window, cx), Some(1..3));
+                    assert_eq!(demo.selected_text_range(false, window, cx).unwrap().range, 2..2);
+                    demo.replace_text_in_range(None, "KS", window, cx);
+                })).unwrap();
+                let request = receiver.try_iter().find(|request| matches!(request, super::Command::ReplaceText(..))).unwrap();
+                let super::Command::ReplaceText(expected, range, bytes, caret) = request else { unreachable!() };
+                assert_eq!(expected, initial); assert_eq!(range, 1..3);
+                assert_eq!(bytes, b"KS"); assert_eq!(caret, Some(3));
                 cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
             }
         }

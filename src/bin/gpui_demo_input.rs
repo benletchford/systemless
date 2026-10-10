@@ -289,9 +289,28 @@ impl GuestComposition {
         let Some(range) = range else { return false; };
         let Some(owner) = self.owner.clone() else { return false; };
         if range.start > range.end { return false; }
-        // An existing stage may require multiple disjoint edits to preserve
-        // intervening style runs. Do not widen a single guest replacement.
-        if self.preedit.is_some() || range.end > owner.text.len() || range.end > i16::MAX as usize { return false; }
+        if let Some(preedit) = &self.preedit {
+            if self.geometry_ranges(range.clone()).is_none() { return false; }
+            let units: Vec<_> = preedit.text.encode_utf16().collect();
+            let start = owner.selection.start;
+            let Some(end) = start.checked_add(units.len()) else { return false; };
+            // Only overlapping edits form one contiguous replacement. Disjoint
+            // edits need separate guarded requests to retain intervening styles.
+            if range.end <= start || range.start >= end { return false; }
+            let Ok(prefix) = String::from_utf16(&units[..range.start.saturating_sub(start)]) else { return false; };
+            let Ok(suffix) = String::from_utf16(&units[range.end.saturating_sub(start).min(units.len())..]) else { return false; };
+            let Some(guest_end) = owner.selection.end.checked_add(range.end.saturating_sub(end)) else { return false; };
+            if guest_end > owner.text.len() || guest_end > i16::MAX as usize { return false; }
+            let offset = prefix.encode_utf16().count();
+            let mut candidate = self.clone();
+            let base = candidate.marked_base.clone().unwrap_or_else(|| owner.clone());
+            candidate.owner.as_mut().unwrap().selection = range.start.min(start)..guest_end;
+            if !candidate.mark(&(prefix + text + &suffix), offset + selected.start..offset + selected.end) { return false; }
+            candidate.marked_base = (candidate.owner.as_ref() != Some(&base)).then_some(base);
+            *self = candidate;
+            return true;
+        }
+        if range.end > owner.text.len() || range.end > i16::MAX as usize { return false; }
         let mut candidate = self.clone();
         let base = candidate.marked_base.clone().unwrap_or_else(|| owner.clone());
         candidate.owner.as_mut().unwrap().selection = range.clone();
@@ -519,6 +538,46 @@ mod composition_tests {
         assert_eq!(state.owner().unwrap().text, b"Rbcdef");
         state.synchronize(Some(original.clone())); assert_eq!(state.owner().unwrap().selection, 1..1);
         state.reject(&original); assert!(state.owner().is_none());
+    }
+
+    #[test]
+    fn overlapping_mark_expands_only_replaced_guest_range_and_retains_unicode_fragments() {
+        for (range, payload, guest, selection) in [
+            (1..3, "KZ", 1..4, 0..1),
+            (3..5, "éK", 2..5, 1..2),
+            (1..5, "K", 1..5, 0..1),
+        ] {
+            let mut original = owner(); original.text = b"abcdef".to_vec(); original.selection = 2..4;
+            let mut state = GuestComposition::default(); state.synchronize(Some(original.clone()));
+            assert!(state.mark("éZ", 1..2));
+            assert!(state.mark_range(Some(&range), "K", 0..1));
+            assert_eq!(state.owner().unwrap().selection, guest);
+            assert_eq!(state.preedit.as_ref().unwrap().text, payload);
+            assert_eq!(state.preedit.as_ref().unwrap().selection_utf16, selection);
+            assert_eq!(state.marked_base(), Some(&original));
+            state.synchronize(Some(original.clone())); assert!(state.preedit.is_some());
+            let mut cancelled = state.clone(); cancelled.cancel(); assert_eq!(cancelled.owner(), Some(&original));
+            let (_, bytes, _) = state.commit_replacement(None, payload).unwrap();
+            assert_eq!(bytes, payload.chars().map(systemless::systems::macintosh::mac_roman::encode_mac_roman_char).collect::<Option<Vec<_>>>().unwrap());
+            assert_eq!(state.owner().unwrap().text.first(), Some(&b'a'));
+            assert_eq!(state.owner().unwrap().text.last(), Some(&b'f'));
+        }
+    }
+
+    #[test]
+    fn overlapping_mark_rejects_surrogate_splits_without_changing_staged_state() {
+        let mut original = owner(); original.text = b"abcdef".to_vec(); original.selection = 2..4;
+        let mut state = GuestComposition::default(); state.synchronize(Some(original.clone()));
+        assert!(state.mark("😀Z", 2..3));
+        for range in [1..3, 3..6] {
+            assert!(!state.mark_range(Some(&range), "K", 0..1));
+            assert_eq!(state.owner(), Some(&original));
+            assert_eq!(state.preedit.as_ref().unwrap().text, "😀Z");
+            assert!(state.marked_base().is_none());
+        }
+        assert!(!state.mark_range(Some(&(1..4)), "😀", 1..1));
+        assert_eq!(state.owner(), Some(&original));
+        assert_eq!(state.preedit.as_ref().unwrap().text, "😀Z");
     }
 
     fn owner() -> TextInputOwner {
