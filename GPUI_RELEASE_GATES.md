@@ -32,7 +32,8 @@ stays guest-rendered until ownership and faithful replacement are proven.
 
 Classic integer-scaled strikes now have original-outline support with passing
 helper checks; actual guest large-font scene and composed interaction evidence
-remain open. PPC non-unit ratios still decline smooth TextEdit plans. These
+remain open. Plain PPC non-unit ratios now have passing original-outline helper
+checks; styled non-unit recipes still decline smooth TextEdit plans. These
 gaps do not justify changing font metrics; unsupported paint retains guest
 rendering. Broader font resources, scaled appearance and independent native
 font fidelity remain open.

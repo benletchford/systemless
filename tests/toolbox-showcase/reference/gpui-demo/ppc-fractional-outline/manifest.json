@@ -1,0 +1,14 @@
+{
+  "base": "0607d1f1011636867381ca13a16cd7b3e50e2aaf",
+  "sha256": {
+    "src/bin/gpui_demo_text.rs": "4ca05228cfd11ebfff070c4111aeb1f962486286d8ef851b1941c78ca177a49f",
+    "src/systems/macintosh/quickdraw/text.rs": "bb87015fe386ef35cd868fd71f6d6faaaae68b5926e6aa9839df5bbd547114ce",
+    "src/systems/macintosh/quickdraw/fonts/outline.rs": "382f02c1e262f26b164756d5f86547b200f0f745f02a1b960270dd1197331b46",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "41cf3aa93f2b41d0ce1d49b2bace8572140e9692d37239a749a471744ca5c09f"
+  },
+  "scope": "Helper qualification: constructed plain Geneva145/96 run at raster1/2/4, supplied insertion positions, exact PPC binary ink/run advance, pen phase and integral translation. No guest fractional-font scene, composed visuals/hit-testing, styled non-unit recipe, native oracle or performance qualification.",
+  "test_binaries": {
+    "target/ci-test/examples/gpui_menu_demo-957ebf4d71285d8e": "0a4157ecc92ad9feacfeb5772173d3b7de4e458d288d34cf988f76c87a11108b",
+    "target/ci-test/examples/gpui_menu_demo-9e8a8abfde68f05d": "8535ad66a3f45cc8618fb355b5d92e7e3b27cd05058fe11a49c814ad88843335"
+  }
+}

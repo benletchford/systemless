@@ -167,6 +167,25 @@ pub fn smooth_resolved_scaled_glyph(glyph: &Glyph, data: &[u8], strike_scale: u3
         raster_scale })
 }
 
+/// PPC outline placement preserves the fractional source pen before rasterization.
+/// The returned integer pen and mask phase together locate the original glyph.
+#[doc(hidden)]
+pub fn smooth_resolved_ratio_glyph(glyph: &Glyph, data: &[u8], numerator: u32, denominator: u32,
+    source_pen: i32, raster_scale: u32) -> Option<(i32, SmoothGlyphSnapshot)> {
+    if numerator == 0 || denominator == 0 || u64::from(numerator) > u64::from(denominator)*8
+        || !(1..=8).contains(&raster_scale) || source_pen < 0 { return None; }
+    let scaled_pen = i64::from(source_pen).checked_mul(i64::from(numerator))?;
+    let pen = i32::try_from(scaled_pen / i64::from(denominator)).ok()?;
+    let remainder = u32::try_from(scaled_pen % i64::from(denominator)).ok()?;
+    let physical_remainder = remainder.checked_mul(raster_scale)?;
+    let mask = crate::quickdraw::fonts::outline::presentation_glyph_ratio(glyph, data,
+        numerator.checked_mul(raster_scale)?, denominator, physical_remainder % denominator)?;
+    let advance = (u64::from(glyph.advance)*u64::from(numerator)+u64::from(denominator)/2)/u64::from(denominator);
+    Some((pen, SmoothGlyphSnapshot { pixels: mask.pixels, width: mask.width, height: mask.height,
+        left: mask.left.checked_add(i32::try_from(physical_remainder/denominator).ok()?)?, top: mask.top,
+        guest_advance: i32::try_from(advance).ok()?, raster_scale }))
+}
+
 /// Look up decoded host text, as opposed to guest bytes cast directly to char.
 /// Unicode Latin-1 overlaps the Mac Roman byte range with different meanings
 /// (for example, U+00AE is registered, but Mac Roman byte AE is AE ligature).
