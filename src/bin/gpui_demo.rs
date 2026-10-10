@@ -4706,6 +4706,34 @@ mod desktop {
 
             eprintln!("PASS wrapped dialog painted marked geometry and exact cancellation");
         }
+        if matches!(capture, CaptureCase::StandardFileSaveComposed | CaptureCase::StandardFileNewFolderComposed) {
+            use gpui_kit::EntityInputHandler;
+            let pinned = visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                demo.host_active = Some(true); window.focus(&demo.focus, cx);
+                demo.synchronize_composition(window, cx);
+                let owner = demo.composition.owner().unwrap().clone();
+                assert!(matches!(owner.target, super::input::TextInputTarget::StandardFile { .. }));
+                assert!(demo.composition.mark(&format!("{}日😀", "W".repeat(100)), 101..103));
+                cx.notify(); owner
+            })).unwrap();
+            visual.run_until_parked();
+            let marked = visual.capture_screenshot(window.into()).unwrap();
+            assert_ne!(marked, composed);
+            visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                let start = pinned.selection.start + 101;
+                let bounds = demo.bounds_for_range(start..start + 2, Bounds::default(), window, cx)
+                    .expect("revealed filename stage must have painted bounds");
+                assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+                assert_eq!(demo.character_index_for_point(point(bounds.origin.x, bounds.origin.y + px(1.)), window, cx), Some(start));
+                assert_eq!(demo.composition.owner(), Some(&pinned));
+                demo.composition.cancel(); cx.notify();
+            })).unwrap();
+            marked.save(output.with_extension("long-marked.png")).unwrap();
+            visual.run_until_parked();
+            assert_eq!(visual.capture_screenshot(window.into()).unwrap(), composed,
+                "filename composition cancellation must restore exact pixels");
+            eprintln!("PASS Standard File long marked geometry and exact cancellation");
+        }
         eprintln!("saved composed GPUI capture to {}", output.display());
     }
 

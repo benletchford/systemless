@@ -1,0 +1,14 @@
+{
+  "base_head": "d2fbba91809d00d35b0af940a82ac3044e07b7c4",
+  "scope": "Shared Demo Save mono68k scale1.5 and New Folder PPC16 scale0.75: long marked selection reveal, bounds/point mapping, pinned owner and exact cancellation. Both marked images reviewed. Other CPU/scale/editor variants, physical input and native reference qualification remain open.",
+  "sha256": {
+    "mono-save.png": "7776aef080b485014ab5d73de073095dcf2a8e35f0624de1d3c952b0ec792b4e",
+    "mono-save.long-marked.png": "30943b7759158449d54ceb324bc8b7d11257f544d0bcc2a6878eba93a3380952",
+    "mono-save.capture.json": "65c10120274c34f676a4ce67ab81aea93b8b3e9f1303ad54396640a0cc27e610",
+    "mono-save.log": "64389028f8290425658c19e1a25983b58af54c0abaa9d48ee6fa4ef9f23664a1",
+    "ppc16-folder.png": "cea55fea48b21ded40d644a4fcec8b0171a808e4925d010cea59189bb891c346",
+    "ppc16-folder.long-marked.png": "27ef423c68279a9b4c209018f01d3760948a5fa3791aa4aad6cfb4982dea5187",
+    "ppc16-folder.capture.json": "0fe79b8e3af943c736136e954282c7cd2c239449e72c21c40eb23987a1f9072d",
+    "ppc16-folder.log": "cc9bfb6a5b46bf7f51381b67ea3edb73375092569e05093b8e412211b453a5e7"
+  }
+}

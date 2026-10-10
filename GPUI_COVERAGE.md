@@ -4940,3 +4940,14 @@ depth/scale sidecars and both reviewed long-stage images are archived in
 the separate Unicode staging surface reveals its selected suffix. Other
 CPU/scale/modal variants, file-panel staging and physical/native qualification
 remain open. These two cases do not establish broad visual readiness.
+
+
+### Long marked-text Standard File captures
+
+Shared Demo Save/New Folder capture paths now check a long marked row, selection
+reveal, painted bounds, point mapping, pinned field ownership and exact pixel
+restoration after cancellation. Monochrome Save scale1.5 and PPC16 New Folder
+scale0.75 pass; both marked images were reviewed. Actual depth/scale sidecars,
+images and logs are archived in `reference/gpui-demo/file-long-stage`. Other
+CPU/scale/editor variants, physical IME and native reference qualification remain
+open. These two captures do not close a broad production gate.
