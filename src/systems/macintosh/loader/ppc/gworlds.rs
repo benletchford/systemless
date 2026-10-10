@@ -2144,10 +2144,62 @@ pub(crate) fn ppc_legacy_qd_color_to_rgb(color: u32) -> PpcRgbColor {
 }
 
 pub(crate) fn ppc_rgb_color_to_rgb555(color: PpcRgbColor) -> u16 {
-    fn component(value: u16) -> u16 {
-        (((u32::from(value) * 31) + 32_767) / 65_535) as u16
+    // Color QuickDraw keeps the most significant five bits of each field,
+    // leaving the high pixel bit unused (Imaging With QuickDraw, p. 4-16).
+    ((color.red >> 11) << 10) | ((color.green >> 11) << 5) | (color.blue >> 11)
+}
+
+#[cfg(test)]
+mod rgb555_conversion_tests {
+    use super::*;
+
+    #[test]
+    fn direct_rgb555_retains_exactly_the_highest_five_component_bits() {
+        // Apple Imaging With QuickDraw (1994), pp. 4-11 and 4-16:
+        // direct devices discard the low bits; RGB555 leaves bit 15 unused.
+        for component in 0..=u16::MAX {
+            for (color, expected) in [
+                (
+                    PpcRgbColor {
+                        red: component,
+                        green: 0,
+                        blue: 0,
+                    },
+                    (component >> 11) << 10,
+                ),
+                (
+                    PpcRgbColor {
+                        red: 0,
+                        green: component,
+                        blue: 0,
+                    },
+                    (component >> 11) << 5,
+                ),
+                (
+                    PpcRgbColor {
+                        red: 0,
+                        green: 0,
+                        blue: component,
+                    },
+                    component >> 11,
+                ),
+            ] {
+                assert_eq!(
+                    ppc_rgb_color_to_rgb555(color),
+                    expected,
+                    "component {component:#06x}, colour {color:?}"
+                );
+            }
+        }
+        assert_eq!(
+            ppc_rgb_color_to_rgb555(PpcRgbColor {
+                red: 0xffff,
+                green: 0xffff,
+                blue: 0xffff
+            }),
+            0x7fff
+        );
     }
-    (component(color.red) << 10) | (component(color.green) << 5) | component(color.blue)
 }
 
 
