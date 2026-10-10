@@ -1,0 +1,15 @@
+{
+  "base_commit": "a196cc2cc834d08512cb791eba580b9579aaeaa3",
+  "scope": "Actual PPC TESetStyle(false) retains guest stored line origins before TECalText; shared geometry matches TEGetPoint before and after recalculation. 38 TextEdit tests pass. PPC16 shared Demo scrolled selection capture passes at scale1.5 and was visually reviewed.",
+  "limitations": "The capture checks recalculated scrolled state, not the deferred-style state; deferred origins are covered by actual import regression. No physical host input, independent Macintosh oracle or complete production qualification.",
+  "reference": "https://dev.os9.ca/techpubs/mac/pdf/Text/TextEdit.pdf",
+  "files": {
+    "gpui-deferred-text-layout-test.log": "1b15ec53cc725810032a54f6ad1bda31f2a41d677f1d71d66efdfa87a41327ae",
+    "source.patch": "dda7fcdc43857ed4336f46150249be48a56501b2c4ef0dac54a55b1e37be0e24",
+    "gpui-deferred-scroll-ppc16.json": "c1872c176b417ae6696b134b729e4c0e3c62fff93ad3ab6347adf28aeef60f0f",
+    "gpui-deferred-scroll-ppc16.log": "d38037291f07cb2a23f25810540c2aa16c281a2e3e8fb199c13f68d53b84697d",
+    "gpui-deferred-scroll-ppc16.png": "98fa665c853c8eb34ce76fe06d5b83f76a07c3337d3916c1b11a8fb5a5367fac",
+    "gpui-deferred-scroll-ppc16.guest.png": "862241cd8845b07b27649d521a9399980f74db360cb413c0400dabdb8d8a7537",
+    "gpui-deferred-text-layout-build.log": "b8998e997e37893b570c62963d47ab2e72a77b0f82654cecc68ab9b9d2400a40"
+  }
+}

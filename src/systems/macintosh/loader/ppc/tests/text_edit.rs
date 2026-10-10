@@ -1366,6 +1366,17 @@ fn styled_mixed_line_heights_match_guest_points_and_shared_geometry() {
         loaded.cpu.gpr[5] = 0; loaded.cpu.gpr[6] = handle;
         run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetStyle);
     }
+    // Inside Macintosh TextEdit p. 2-102: TESetStyle(false) intentionally
+    // retains line breaks/heights until TECalText. Shared presentation must
+    // not silently replace those stored origins with newly resolved metrics.
+    let mut deferred = crate::text_edit::snapshot_guest_records(&[(handle, 1)],
+        &mut |address| loaded.memory.read_u8(address)).records;
+    deferred[0].line_layout_policy = crate::text_edit::TextEditLineLayoutPolicy::PpcRunMetrics;
+    for (line, offset) in [(0, 0), (1, 2), (2, 4)] {
+        let point = ppc_te_get_point(&mut loaded.memory, test_handles!(loaded), handle, offset);
+        assert_eq!(deferred[0].guest_styled_line_geometry(line).unwrap().0.top,
+            (point >> 16) as i16, "deferred style layout must retain guest line origin {line}");
+    }
     // Batch style updates deliberately skipped redraw; finish guest layout
     // before comparing the point table with painting and shared geometry.
     loaded.cpu.gpr[3] = handle;

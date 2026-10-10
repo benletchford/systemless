@@ -481,11 +481,12 @@ mod tests {
         layout.justification = -1;
         assert_eq!(layout.line_geometry(1, 80).unwrap().left, 120);
         layout.line_layout_policy = super::TextEditLineLayoutPolicy::PpcRunMetrics;
-        // Native drawing stacks resolved run metrics instead of reading LHTable.
+        // Deferred style changes retain stored origins but paint new run metrics.
         layout.line_metrics = Some(vec![(42, 40), (60, 59)]);
         assert_eq!(layout.line_geometry(1, 80), Some(super::TextEditLineGeometry {
-            top: 24, left: 120, height: 18, ascent: 13,
+            top: 52, left: 120, height: 18, ascent: 13,
         }));
+        layout.line_metrics = Some(vec![(14, 11), (18, 13)]);
         layout.active = true;
         layout.selection = (0, 4);
         let first = layout.guest_styled_selection_rect(0).unwrap().unwrap();
@@ -882,7 +883,13 @@ impl TextEditSnapshot {
         match self.line_layout_policy {
             _ if self.styled => {
                 for previous in 0..index {
-                    top = top.saturating_add(self.metrics_for_line(previous)?.0);
+                    // PPC painting and point lookup stack the stored LHTable.
+                    // TESetStyle(false) changes runs without recalculating it.
+                    let height = if self.line_layout_policy == TextEditLineLayoutPolicy::PpcRunMetrics {
+                        self.line_metrics.as_ref()?.get(previous)?.0
+                    } else { self.metrics_for_line(previous)?.0 };
+                    if height <= 0 { return None; }
+                    top = top.saturating_add(height);
                 }
             }
             TextEditLineLayoutPolicy::CumulativeGuestMetrics => {
