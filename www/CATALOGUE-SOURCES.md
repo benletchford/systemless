@@ -881,3 +881,31 @@ release inventory confirms all twelve nonempty platform archives/checksums.
 [Final pipeline evidence](https://github.com/benletchford/systemless/issues/4441#issuecomment-6102041775)
 closes the fulfilled intake issue. Combat, sustained play, saves and audio remain
 unverified.
+
+## Hexmines original-author intake
+
+[Hexmines-204.hqx](https://ftp.lysator.liu.se/pub/mac/games/Hexmines-204.hqx) is
+79058 bytes, SHA-256 `5bad2fac69ad0e3b2006853bc3cf3bdb9f45010088e38f63e99ee4a29f8058cd`.
+The original docs permit noncommercial redistribution, prohibit sale/commercial
+distribution without written permission, and require a complimentary copy for
+shareware CD inclusion. Preserve the complete unchanged package and notices.
+The original application and docs each match independent unar extraction in both
+forks; the application has four CODE resources and no cfrg/PEF, so this package
+is 68K-only. Native v0.93.0 at emulator implementation `0f4ee1ae9fa59ab6d6be0c511aee0c5d920e4142`
+accepts the mine-count dialog and reveals two numbered hexes with ordinary clicks.
+Actual captures inspected; a fresh six-assertion replay passes at 926 frontend /
+1526 guest ticks with zero exhausted frames. Gameplay image is a lossless crop
+to the original content surface. Browser/public qualification, launch approval,
+marking, complete paths, wins, settings, saves and audio remain unverified.
+[Delivery evidence and remaining stages](https://github.com/benletchford/systemless/issues/4454).
+
+### Skiing release follow-through
+
+[Skiing #4445](https://github.com/benletchford/systemless/pull/4445) and
+[release #4446](https://github.com/benletchford/systemless/pull/4446) are merged.
+The actual public v0.94.0 route passes practice start, right/left steering and
+advancing timer/course; actual archive response bytes match original hash and
+size without interception. The complete release pipeline passed and all twelve
+native package/checksum assets are published.
+[Public evidence](https://github.com/benletchford/systemless/issues/4444#issuecomment-6102259582),
+[whole-pipeline acceptance](https://github.com/benletchford/systemless/issues/4444#issuecomment-6102297326).
