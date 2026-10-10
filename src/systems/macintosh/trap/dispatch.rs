@@ -878,6 +878,26 @@ pub(crate) struct ControlTrackingState {
     pub scrollbar_callback_pending: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CustomControlTrackingPhase {
+    Test { released: bool },
+    Draw,
+    Idle,
+    Restore { part: u16 },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CustomControlTrackingState {
+    pub handle: u32,
+    pub pointer: u32,
+    pub stack_ptr: u32,
+    pub trap_pc: u32,
+    pub saved_hilite: u8,
+    pub initial_part: Option<u16>,
+    pub sampled_mouse: (i16, i16),
+    pub phase: CustomControlTrackingPhase,
+}
+
 /// Retained state for TrackControl while dragging a scrollbar indicator thumb.
 #[derive(Clone, Debug)]
 pub(crate) struct ScrollbarThumbTrackingState {
@@ -1830,6 +1850,7 @@ pub struct TrapDispatcher {
     pub(crate) pending_native_menu_event_tick: Option<u32>,
     /// Active control tracking state (currently popup-menu TrackControl).
     pub(crate) control_tracking: Option<ControlTrackingState>,
+    pub(crate) custom_control_tracking: Option<CustomControlTrackingState>,
     /// Active scrollbar thumb indicator tracking state.
     pub(crate) scrollbar_thumb_tracking: Option<ScrollbarThumbTrackingState>,
     /// Active DragWindow tracking state.
@@ -3914,6 +3935,7 @@ impl TrapDispatcher {
             pending_native_menu_event: None,
             pending_native_menu_event_tick: None,
             control_tracking: None,
+            custom_control_tracking: None,
             scrollbar_thumb_tracking: None,
             window_tracking: None,
             go_away_tracking: None,
@@ -4142,7 +4164,7 @@ impl TrapDispatcher {
 
     /// Whether TrackControl is actively tracking a control.
     pub fn is_control_tracking(&self) -> bool {
-        self.control_tracking.is_some()
+        self.control_tracking.is_some() || self.custom_control_tracking.is_some()
     }
 
     /// Whether DragWindow is actively tracking the mouse.
@@ -4166,12 +4188,14 @@ impl TrapDispatcher {
     }
 
     /// Whether TrackControl has redirected execution into a guest scrollbar
-    /// action procedure. The runner must let that callback return to the
-    /// retained A968 trap instead of immediately rewinding over it.
+    /// action procedure or custom definition. The runner must let that
+    /// callback return to the retained A968 trap instead of rewinding over it.
     pub(crate) fn is_control_action_callback_pending(&self) -> bool {
-        self.control_tracking
-            .as_ref()
-            .is_some_and(|tracking| tracking.scrollbar_callback_pending)
+        (self.custom_control_tracking.is_some() && !self.control_callback_stack.is_empty())
+            || self
+                .control_tracking
+                .as_ref()
+                .is_some_and(|tracking| tracking.scrollbar_callback_pending)
     }
 
     /// Whether retained menu tracking has entered an application MDEF and
