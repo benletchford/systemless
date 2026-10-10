@@ -685,6 +685,7 @@ pub enum PpcImportDispatcherTarget {
     OpenDeskAcc,
     CloseDeskAcc,
     AEInstallEventHandler,
+    AEInstallSpecialHandler,
     AEProcessAppleEvent,
     LNew,
     LDispose,
@@ -2416,6 +2417,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("StdCLib", "exit") => PpcImportDispatcherTarget::ExitToShell,
         ("StdCLib", "_BreakPoint") | ("StdCLib", "__NubAt3") => {
             PpcImportDispatcherTarget::NoOpPreserve
+        }
+        ("InterfaceLib", "AEInstallSpecialHandler") => {
+            PpcImportDispatcherTarget::AEInstallSpecialHandler
         }
         ("InterfaceLib", "AEInstallEventHandler") => {
             PpcImportDispatcherTarget::AEInstallEventHandler
