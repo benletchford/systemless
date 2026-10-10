@@ -5216,3 +5216,7 @@ Inactive wheel boundary (2026-10-11): the shared wheel handler now declines inac
 ### Scrolled Open shared compositor (2026-10-11)
 
 A reproducible `--capture-standard-file-open-scrolled` path populates an actual guest directory, scrolls through guarded arrow clicks and records guest first-visible row, selection and entries alongside composed images. Selected mono68k scale0.75, colour68k scale1, PPC8 scale2 and PPC16 scale1.5 runs all exit0 and images were reviewed; rows/selection match sidecars. Capture and test builds pass. Production behavior is unchanged. Evidence: `reference/gpui-demo/open-scrolled-compositor`. This is selected visual evidence, not complete state/scale coverage, native-reference fidelity or physical wheel qualification.
+
+### Standard File row accessibility action backend (2026-10-11)
+
+Visible standard Open/Save rows now register AccessKit Click actions carrying panel identity, index and the expected complete entry snapshot. The worker validates the current entry and invokes ordinary guest row clicks; offscreen rows and stale entry data decline. Nested modal panels decline row actions, and inactive painted rows do not register them. Actual guest backend tests pass Open4 and Save4 CPU/depth cases, preserving directory/entries and selecting the expected visible row; default production compilation passes. Evidence: `reference/gpui-demo/file-entry-actions`. These tests invoke the guarded action backend and do not prove native accessibility request delivery, assistive-technology interaction or physical host lifecycle.
