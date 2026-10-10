@@ -25,8 +25,10 @@ compatibility:
       guest ticks with zero exhausted frames. Both original files and both forks
       independently match unar extraction byte-for-byte. PPC startup and movement work with
       compatibility fixes, but sustained steering and heart collection remain under
-      investigation; PPC is not launch-approved. Browser/public gameplay, complete levels,
-      saves and audio remain unverified.
+      investigation; PPC is not launch-approved. Browser v0.94.0 at promoted head 1451faa8e2be starts level 1 and
+      responds to horizontal mouse steering, but sustained vertical steering and heart
+      collection were not established. Launch remains disabled. Public gameplay, complete
+      levels, saves and audio remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4452
 runtime:
@@ -94,5 +96,6 @@ its documentation and copyright notices. This entry uses its verified 68K versio
 the package also includes a PowerPC version whose support is still being tested.
 
 Bounded native testing verifies starting play, steering and collecting a heart
-with score advancement. Browser and public gameplay, full levels, saves and audio
-remain unverified.
+with score advancement. Browser testing starts level 1 and shows horizontal movement, but reliable vertical
+steering and heart collection remain under investigation. Launch approval is pending.
+Public gameplay, full levels, saves and audio remain unverified.
