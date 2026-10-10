@@ -177,6 +177,7 @@ pub(crate) fn guest_key(keystroke: &Keystroke) -> Option<(u8, u8)> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TextInputTarget {
     Document { port: u32 },
+    StandardFile { new_folder: bool },
     Dialog { item: i16, content_revision: u64 },
 }
 
@@ -382,6 +383,11 @@ pub(crate) fn guest_commit_inputs(
     owner: &TextInputOwner,
     bytes: &[u8],
 ) -> Option<Vec<MacintoshInput>> {
+    if let TextInputTarget::StandardFile { new_folder } = owner.target {
+        return guest_standard_file_commit_inputs(session, &StandardFileTextOwner {
+            identity: owner.identity, new_folder, text: owner.text.clone(), selection: owner.selection.clone(),
+        }, bytes);
+    }
     if let TextInputTarget::Dialog { item, content_revision } = owner.target {
         return guest_dialog_commit_inputs(session, &DialogTextOwner {
             identity: owner.identity, item, content_revision,
@@ -464,6 +470,57 @@ pub(crate) fn guest_dialog_commit_inputs(
     let windows = session.runner_mut().window_frame_snapshot();
     if dialog_text_owner(&dialogs, &windows).as_ref() != Some(owner) { return None; }
     // Return/Tab/Escape are modal actions, never characters in a text commit.
+    let delete = [8u8];
+    let bytes = if bytes.is_empty() && !owner.selection.is_empty() { &delete[..] } else { bytes };
+    Some(bytes.iter().flat_map(|&character| [
+        MacintoshInput::KeyDown { mac_key: 0, character },
+        MacintoshInput::KeyUp { mac_key: 0, character },
+    ]).collect())
+}
+
+/// Standard File owns its filename independently of application dialog TERecs.
+/// The panel generation changes when a subsidiary modal panel takes ownership.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StandardFileTextOwner {
+    pub identity: (u32, u64),
+    pub new_folder: bool,
+    pub text: Vec<u8>,
+    pub selection: std::ops::Range<usize>,
+}
+
+pub(crate) fn standard_file_text_owner(panel: &systemless::runner::StandardFileSnapshot) -> Option<StandardFileTextOwner> {
+    if !panel.standard_entry_point || panel.confirming_replace { return None; }
+    let (name, selection, new_folder) = if let Some(folder) = &panel.new_folder {
+        if folder.error.is_some() { return None; }
+        (&folder.name, folder.selection, true)
+    } else {
+        if panel.kind != systemless::runner::StandardFileKind::Put || panel.name_has_focus != Some(true)
+            || panel.name_text_layout.is_none() { return None; }
+        (panel.name.as_ref()?, panel.name_selection?, false)
+    };
+    let text: Vec<u8> = name.chars().map(systemless::systems::macintosh::mac_roman::encode_mac_roman_char)
+        .collect::<Option<_>>()?;
+    if selection.0 > selection.1 || selection.1 > text.len() { return None; }
+    Some(StandardFileTextOwner { identity: (panel.guest_id, panel.generation), new_folder,
+        text, selection: selection.0..selection.1 })
+}
+
+pub(crate) fn guest_standard_file_commit_inputs(
+    session: &mut systemless::systems::macintosh::session::MacintoshSession,
+    owner: &StandardFileTextOwner,
+    bytes: &[u8],
+) -> Option<Vec<MacintoshInput>> {
+    // Control characters invoke panel actions; DEL is not printable Mac Roman.
+    if bytes.iter().any(|byte| *byte < 32 || *byte == 127) { return None; }
+    let keys = session.runner().event_manager_snapshot().key_map;
+    if [0u8, 0x37, 0x3a, 0x3b].iter().any(|key|
+        keys[usize::from(*key / 8)] & (1 << (*key % 8)) != 0) { return None; }
+    let panel = session.runner().standard_file_snapshot()?;
+    if standard_file_text_owner(&panel).as_ref() != Some(owner) { return None; }
+    // Preserve each guest editor limit and reject filtered New Folder bytes atomically.
+    let limit = if owner.new_folder { 31 } else { 63 };
+    if owner.text.len() - owner.selection.len() + bytes.len() > limit
+        || bytes.contains(&b':') || (!owner.new_folder && bytes.contains(&b'/')) { return None; }
     let delete = [8u8];
     let bytes = if bytes.is_empty() && !owner.selection.is_empty() { &delete[..] } else { bytes };
     Some(bytes.iter().flat_map(|&character| [

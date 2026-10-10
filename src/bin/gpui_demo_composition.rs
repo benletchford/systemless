@@ -49,6 +49,7 @@ struct MarkedRow { start: usize, positions: Vec<(usize, f32)>, origin: (f32, f32
 enum PaintedSource {
     Document(systemless::runner::TextEditSnapshot),
     Dialog(systemless::runner::DialogSnapshot),
+    StandardFile(systemless::runner::StandardFileSnapshot),
 }
 
 #[derive(Clone)]
@@ -64,11 +65,15 @@ pub(super) struct PaintedComposition {
 impl Demo {
     pub(super) fn synchronize_composition(&mut self, window: &Window, _: &mut Context<Self>) {
         let eligible = self.focus.is_focused(window) && self.host_active != Some(false)
-            && self.open_menus.is_empty() && !self.guest_menu_tracking && self.guest_popup.is_none()
-            && self.standard_file.is_none();
+            && self.open_menus.is_empty() && !self.guest_menu_tracking && self.guest_popup.is_none();
         let mut records = self.text_edits.iter().filter(|record| record.active && record.drawing_intact);
         let record = records.next();
-        let owner = if eligible && self.dialogs.iter().any(|dialog| dialog.visible && dialog.active) {
+        let owner = if eligible && self.standard_file.is_some() {
+            self.standard_file.as_ref().and_then(super::super::input::standard_file_text_owner).map(|owner|
+                super::super::input::TextInputOwner { identity: owner.identity,
+                    target: super::super::input::TextInputTarget::StandardFile { new_folder: owner.new_folder },
+                    text: owner.text, selection: owner.selection })
+        } else if eligible && self.dialogs.iter().any(|dialog| dialog.visible && dialog.active) {
             super::super::input::dialog_text_owner(&self.dialogs, &self.windows).map(|owner|
                 super::super::input::TextInputOwner { identity: owner.identity,
                     target: super::super::input::TextInputTarget::Dialog { item: owner.item, content_revision: owner.content_revision },
@@ -79,6 +84,48 @@ impl Demo {
                     target: super::super::input::TextInputTarget::Document { port: record.owner_port }, text: record.text.clone(), selection: record.selection.0..record.selection.1 })
         } else { None };
         self.composition.synchronize(owner);
+    }
+
+    fn file_geometry(&self) -> Option<((i16, i16, i16, i16), Vec<i32>, i16, i16)> {
+        let owner = self.composition.owner()?;
+        let panel = self.standard_file.as_ref()?;
+        let actual = super::super::input::standard_file_text_owner(panel)?;
+        let super::super::input::TextInputTarget::StandardFile { new_folder } = owner.target else { return None; };
+        if actual.identity != owner.identity || actual.new_folder != new_folder || actual.text != owner.text { return None; }
+        if new_folder {
+            let folder = panel.new_folder.as_ref()?;
+            return Some((folder.layout.name, folder.insertion_positions.iter().map(|x| i32::from(*x)).collect(),
+                folder.layout.name.0.saturating_add(2), 16));
+        }
+        let bounds = panel.put_layout.as_ref()?.name;
+        let layout = panel.name_text_layout.as_ref()?;
+        let line = super::super::text::ClassicLine::plain(&owner.text, layout.font.0, layout.font.1);
+        Some((bounds, line.positions.iter().map(|x| i32::from(bounds.1) + i32::from(layout.origin.0) + x).collect(),
+            bounds.0.saturating_add(layout.selection_top), layout.selection_height))
+    }
+
+    fn file_bounds(&self, range: Range<usize>) -> Option<Bounds<Pixels>> {
+        if !self.display_scale.is_finite() || self.display_scale <= 0. || range.start > range.end { return None; }
+        let (bounds, positions, top, height) = self.file_geometry()?;
+        let left = (*positions.get(range.start)?).max(i32::from(bounds.1));
+        let right = (*positions.get(range.end)? + i32::from(range.is_empty())).min(i32::from(bounds.3));
+        let bottom = top.saturating_add(height).min(bounds.2);
+        let top = top.max(bounds.0);
+        if left >= right || top >= bottom { return None; }
+        Some(Bounds::new(point(px(self.display_origin.0 + left as f32 * self.display_scale),
+            px(self.display_origin.1 + f32::from(top) * self.display_scale)),
+            size(px((right-left) as f32 * self.display_scale), px(f32::from(bottom-top) * self.display_scale))))
+    }
+
+    fn file_index_for_point(&self, point: Point<Pixels>) -> Option<usize> {
+        if !self.display_scale.is_finite() || self.display_scale <= 0. { return None; }
+        let (bounds, positions, _, _) = self.file_geometry()?;
+        let x = (f32::from(point.x)-self.display_origin.0)/self.display_scale;
+        let y = (f32::from(point.y)-self.display_origin.1)/self.display_scale;
+        if !x.is_finite() || !y.is_finite() || x < f32::from(bounds.1) || x >= f32::from(bounds.3)
+            || y < f32::from(bounds.0) || y >= f32::from(bounds.2) { return None; }
+        positions.iter().enumerate().filter(|(_, position)| **position >= i32::from(bounds.1) && **position < i32::from(bounds.3))
+            .min_by(|a,b| (*a.1 as f32-x).abs().total_cmp(&(*b.1 as f32-x).abs())).map(|(index,_)| index)
     }
 
     fn dialog_field(&self, owner: &super::super::input::TextInputOwner)
@@ -132,7 +179,11 @@ impl Demo {
         let owner = self.composition.owner()?;
         let preedit = self.composition.preedit.clone()?;
         if !self.display_scale.is_finite() || self.display_scale <= 0. { return None; }
-        let (x, y, line_height, view, cache_record) = if matches!(owner.target, super::super::input::TextInputTarget::Dialog { .. }) {
+        let (x, y, line_height, view, cache_record) = if matches!(owner.target, super::super::input::TextInputTarget::StandardFile { .. }) {
+            let (bounds, positions, top, height) = self.file_geometry()?;
+            (*positions.get(owner.selection.start)?, i32::from(top), height, bounds,
+                PaintedSource::StandardFile(self.standard_file.as_ref()?.clone()))
+        } else if matches!(owner.target, super::super::input::TextInputTarget::Dialog { .. }) {
             let (dialog, field) = self.dialog_field(owner)?;
             let layout = field.edit_text_layout.as_ref()?;
             if layout.wrap { return None; }
@@ -233,6 +284,7 @@ impl Demo {
             && match &painted.record {
                 PaintedSource::Document(expected) => self.text_edits.iter().any(|record| record == expected),
                 PaintedSource::Dialog(expected) => self.dialogs.iter().any(|dialog| dialog == expected),
+                PaintedSource::StandardFile(expected) => self.standard_file.as_ref() == Some(expected),
             }).then_some(painted)
     }
 
@@ -333,6 +385,7 @@ impl EntityInputHandler for Demo {
     fn bounds_for_range(&mut self, range: Range<usize>, _: Bounds<Pixels>,
         _: &mut Window, _: &mut Context<Self>) -> Option<Bounds<Pixels>> {
         if self.composition.preedit.is_some() { return self.marked_bounds(range); }
+        if matches!(self.composition.owner()?.target, super::super::input::TextInputTarget::StandardFile { .. }) { return self.file_bounds(range); }
         if matches!(self.composition.owner()?.target, super::super::input::TextInputTarget::Dialog { .. }) { return self.dialog_bounds(range); }
         let owner = self.composition.owner()?;
         let record = self.text_edits.iter().find(|record| (record.guest_id, record.generation) == owner.identity)?;
@@ -365,6 +418,7 @@ impl EntityInputHandler for Demo {
     }
     fn character_index_for_point(&mut self, point: Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
         if self.composition.preedit.is_some() { return self.marked_index_for_point(point); }
+        if matches!(self.composition.owner()?.target, super::super::input::TextInputTarget::StandardFile { .. }) { return self.file_index_for_point(point); }
         if matches!(self.composition.owner()?.target, super::super::input::TextInputTarget::Dialog { .. }) { return self.dialog_index_for_point(point); }
         let owner = self.composition.owner()?;
         let record = self.text_edits.iter().find(|record| (record.guest_id, record.generation) == owner.identity)?;

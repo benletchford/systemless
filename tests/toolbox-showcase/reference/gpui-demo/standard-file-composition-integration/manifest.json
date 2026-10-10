@@ -1,0 +1,14 @@
+{
+  "base": "0701d454d002a48dcbff5742910f088db52f1e40",
+  "sha256": {
+    "src/bin/gpui_demo.rs": "d6179b8b9d02128967c6dba950814c76225a308aa7712b450087f7ceab4ad0df",
+    "src/bin/gpui_demo_composition.rs": "d53eb2bc767b812adc40ebd4b30de7e612b6c17f746a403baa73fb5c577d7e1b",
+    "src/bin/gpui_demo_input.rs": "ebae414bfb9af0ced7f5f18c52cd2f8f7970dc7695a988c5bdd3b88c05d5ef9f",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "41cf3aa93f2b41d0ce1d49b2bace8572140e9692d37239a749a471744ca5c09f"
+  },
+  "scope": "Actual Save/New Folder GPUI test-window handlers, explicit host activation, guest event commits; actual Save worker rapid commits/rejection. Modal cancellation assertion uses a constructed confirming_replace transition. No physical IME, pixel/scale, native accessibility, durable file persistence or New Folder worker claim.",
+  "test_binaries": {
+    "target/ci-test/examples/gpui_menu_demo-957ebf4d71285d8e": "191347b7cff1aabaf0476cb5463b2b55ba5d884613683c0acebbf525cfe0c357",
+    "target/ci-test/examples/gpui_menu_demo-9e8a8abfde68f05d": "1210293933b5b733c41a68a5aece9d2e21e4fe77daf28887fc746b1cf8f9d6e4"
+  }
+}

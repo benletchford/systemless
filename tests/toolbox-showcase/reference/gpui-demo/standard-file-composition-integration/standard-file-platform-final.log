@@ -1,0 +1,274 @@
+warning: method `instrument` is never used
+   --> src/systems/macintosh/sound.rs:609:19
+    |
+403 | impl SndChannel {
+    | --------------- method in this implementation
+...
+609 |     pub(crate) fn instrument(&self) -> Option<&SampledInstrument> {
+    |                   ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `dispatch_toolbox` is never used
+    --> src/systems/macintosh/trap/toolbox.rs:6187:19
+     |
+1169 | impl super::TrapDispatcher {
+     | -------------------------- method in this implementation
+...
+6187 |     pub(crate) fn dispatch_toolbox<C: CpuOps>(
+     |                   ^^^^^^^^^^^^^^^^
+
+warning: `systemless` (lib) generated 2 warnings
+warning: unused variable: `cx`
+    --> src/bin/gpui_demo.rs:9514:65
+     |
+9514 |                     cx.update_window(window.into(), |_, window, cx| window.remove_window()).unwrap();
+     |                                                                 ^^ help: if this is intentional, prefix it with an underscore: `_cx`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `game`, `prefer_powerpc`, `screen_depth`, and `debug_socket` are never read
+  --> src/bin/gpui_demo.rs:4:9
+   |
+ 3 | pub(crate) struct LaunchOptions {
+   |                   ------------- fields in this struct
+ 4 |     pub game: std::path::PathBuf,
+   |         ^^^^
+ 5 |     pub prefer_powerpc: bool,
+   |         ^^^^^^^^^^^^^^
+ 6 |     pub screen_depth: Option<u16>,
+   |         ^^^^^^^^^^^^
+...
+12 |     pub debug_socket: Option<std::path::PathBuf>,
+   |         ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `launch` is never used
+  --> src/bin/gpui_demo.rs:17:15
+   |
+17 | pub(crate) fn launch(options: LaunchOptions) {
+   |               ^^^^^^
+
+warning: field `geometry` is never read
+    --> src/bin/gpui_demo_text.rs:1277:9
+     |
+1276 | pub(crate) struct StyledTextEditLine {
+     |                   ------------------ field in this struct
+1277 |     pub geometry: systemless::runner::TextEditLineGeometry,
+     |         ^^^^^^^^
+     |
+     = note: `StyledTextEditLine` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `pixels_with_selection` is never used
+    --> src/bin/gpui_demo_text.rs:1669:12
+     |
+1631 | impl StyledTextEditLine {
+     | ----------------------- method in this implementation
+...
+1669 |     pub fn pixels_with_selection(
+     |            ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_ink` is never used
+    --> src/bin/gpui_demo_text.rs:1732:15
+     |
+1732 | pub(crate) fn classic_styled_text_edit_ink(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_selection` is never used
+    --> src/bin/gpui_demo_text.rs:1738:15
+     |
+1738 | pub(crate) fn classic_styled_text_edit_selection(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_solid_caret` is never used
+    --> src/bin/gpui_demo_text.rs:1747:15
+     |
+1747 | pub(crate) fn classic_styled_text_edit_solid_caret(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_pixels` is never used
+    --> src/bin/gpui_demo_text.rs:1765:4
+     |
+1765 | fn classic_styled_text_pixels(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_pixels_with_background` is never used
+    --> src/bin/gpui_demo_text.rs:1772:4
+     |
+1772 | fn classic_styled_text_pixels_with_background(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `launch` is never used
+    --> src/bin/gpui_demo.rs:4918:19
+     |
+4918 |     pub(super) fn launch(options: super::LaunchOptions) {
+     |                   ^^^^^^
+
+warning: `systemless` (example "gpui-menu-demo" test) generated 11 warnings (run `cargo fix --example "gpui-menu-demo" -p systemless --tests` to apply 1 suggestion)
+    Finished `ci-test` profile [optimized + debuginfo] target(s) in 0.80s
+     Running unittests src/bin/gpui_demo.rs (target/ci-test/examples/gpui_menu_demo-957ebf4d71285d8e)
+
+running 3 tests
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1A8 bkLim=$0044A1A8 zcbFree=2400616 (2.3MB)
+[INIT] Set MainDevice=$00226184, TheGDevice=$00226184 (ptr=$00226150)
+[INIT] GDevice chain: $8A4→$00226184→$00226150 gdPMap→$0022614C→$00226118
+[INIT]   PixMap: rowBytes=$8070 bounds=(0,0,600,800) pixelSize=1
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1A8 bkLim=$0044A1A8 zcbFree=2400616 (2.3MB)
+[INIT] Set MainDevice=$00226184, TheGDevice=$00226184 (ptr=$00226150)
+[INIT] GDevice chain: $8A4→$00226184→$00226150 gdPMap→$0022614C→$00226118
+[INIT]   PixMap: rowBytes=$8070 bounds=(0,0,600,800) pixelSize=1
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1A8 bkLim=$0044A1A8 zcbFree=2400616 (2.3MB)
+[INIT] Set MainDevice=$00226184, TheGDevice=$00226184 (ptr=$00226150)
+[INIT] GDevice chain: $8A4→$00226184→$00226150 gdPMap→$0022614C→$00226118
+[INIT]   PixMap: rowBytes=$8070 bounds=(0,0,600,800) pixelSize=1
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAF0A randSeed_addr=$003FAE8C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=112 bounds=(0,0,600,800)
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] qd.thePort=$002261E0 (default screen port)
+[INITGRAF] global_ptr=$003FAF0A randSeed_addr=$003FAE8C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=112 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$002261E0 (default screen port)
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAF0A randSeed_addr=$003FAE8C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=112 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$002261E0 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00226ADC bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00226ADC pixmap=$002057E8 bounds=(50,40,420,600) goAway=true
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00226ADC bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00226ADC bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00226ADC pixmap=$002057E8 bounds=(50,40,420,600) goAway=true
+[WINDOW] CGrafWindow: window=$00226ADC pixmap=$002057E8 bounds=(50,40,420,600) goAway=true
+[TRAP] GetNewDialog(129)
+[TRAP] GetNewDialog(129) bounds=(100,130,315,470) raw_bounds=(100,130,315,470) position=$0000 len=40 procID=1 items=10 title="Game Preferences"
+[TRAP]   item 1: type=button(4) rect=(175,240,195,310) text="OK"
+[TRAP]   item 2: type=button(4) rect=(175,150,195,220) text="Cancel"
+[TRAP]   item 3: type=statText(136) rect=(15,20,35,320) text="Game Engine Configuration"
+[TRAP]   item 4: type=checkbox(5) rect=(45,20,65,320) text="Enable 3D Hardware Acceleration"
+[TRAP]   item 5: type=checkbox(5) rect=(70,20,90,320) text="High-Resolution Texture Filtering"
+[TRAP]   item 6: type=statText(136) rect=(100,20,120,100) text="Pilot name:"
+[TRAP]   item 7: type=editText(16) rect=(100,105,120,300) text="Cade Connelly"
+[TRAP]   item 8: type=statText(136) rect=(125,20,145,100) text="Nickname:"
+[TRAP]   item 9: type=editText(16) rect=(125,105,145,300) text="Maverick"
+[TRAP]   item 10: type=editText(144) rect=(300,105,320,300) text="Hidden Edit Text"
+[WINDOW-INIT] init_cgraf_window: window=$0023CF00 bounds=(100,130,315,470) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023CF00 pixmap=$0023CFAC bounds=(100,130,315,470) goAway=false
+PASS platform-text-commit powerpc=false depth=1
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1A8 bkLim=$0044A1A8 zcbFree=2400616 (2.3MB)
+[INIT] Set MainDevice=$00226974, TheGDevice=$00226974 (ptr=$00226940)
+[INIT] GDevice chain: $8A4→$00226974→$00226940 gdPMap→$0022693C→$00226908
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAF0A randSeed_addr=$003FAE8C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=816 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$002269D0 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$002272CC bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$002272CC pixmap=$002057E8 bounds=(50,40,420,600) goAway=true
+PASS modal-platform-composition powerpc=false depth=1
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1A8 bkLim=$0044A1A8 zcbFree=2400616 (2.3MB)
+[INIT] Set MainDevice=$00226974, TheGDevice=$00226974 (ptr=$00226940)
+[INIT] GDevice chain: $8A4→$00226974→$00226940 gdPMap→$0022693C→$00226908
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAF0A randSeed_addr=$003FAE8C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=816 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$002269D0 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$002272CC bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$002272CC pixmap=$002057E8 bounds=(50,40,420,600) goAway=true
+PASS platform-text-commit powerpc=false depth=8
+[TRAP] GetNewDialog(129)
+[TRAP] GetNewDialog(129) bounds=(100,130,315,470) raw_bounds=(100,130,315,470) position=$0000 len=40 procID=1 items=10 title="Game Preferences"
+[TRAP]   item 1: type=button(4) rect=(175,240,195,310) text="OK"
+[TRAP]   item 2: type=button(4) rect=(175,150,195,220) text="Cancel"
+[TRAP]   item 3: type=statText(136) rect=(15,20,35,320) text="Game Engine Configuration"
+[TRAP]   item 4: type=checkbox(5) rect=(45,20,65,320) text="Enable 3D Hardware Acceleration"
+[TRAP]   item 5: type=checkbox(5) rect=(70,20,90,320) text="High-Resolution Texture Filtering"
+[TRAP]   item 6: type=statText(136) rect=(100,20,120,100) text="Pilot name:"
+[TRAP]   item 7: type=editText(16) rect=(100,105,120,300) text="Cade Connelly"
+[TRAP]   item 8: type=statText(136) rect=(125,20,145,100) text="Nickname:"
+[TRAP]   item 9: type=editText(16) rect=(125,105,145,300) text="Maverick"
+[TRAP]   item 10: type=editText(144) rect=(300,105,320,300) text="Hidden Edit Text"
+[WINDOW-INIT] init_cgraf_window: window=$0023D700 bounds=(100,130,315,470) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023D700 pixmap=$0023D7AC bounds=(100,130,315,470) goAway=false
+PASS standard-file-platform-composition powerpc=false depth=1 new_folder=false
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1A8 bkLim=$0044A1A8 zcbFree=2400616 (2.3MB)
+[INIT] Set MainDevice=$00226184, TheGDevice=$00226184 (ptr=$00226150)
+[INIT] GDevice chain: $8A4→$00226184→$00226150 gdPMap→$0022614C→$00226118
+[INIT]   PixMap: rowBytes=$8070 bounds=(0,0,600,800) pixelSize=1
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAF0A randSeed_addr=$003FAE8C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=112 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$002261E0 (default screen port)
+PASS platform-text-commit powerpc=true depth=8
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00226ADC bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00226ADC pixmap=$002057E8 bounds=(50,40,420,600) goAway=true
+PASS modal-platform-composition powerpc=false depth=8
+PASS platform-text-commit powerpc=true depth=16
+test desktop::tests::platform_text_commit_reaches_guest_without_duplicate_character_events ... ok
+PASS modal-platform-composition powerpc=true depth=8
+PASS modal-platform-composition powerpc=true depth=16
+test desktop::tests::modal_platform_composition_commits_to_active_guest_item ... ok
+PASS standard-file-platform-composition powerpc=false depth=1 new_folder=true
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1A8 bkLim=$0044A1A8 zcbFree=2400616 (2.3MB)
+[INIT] Set MainDevice=$00226974, TheGDevice=$00226974 (ptr=$00226940)
+[INIT] GDevice chain: $8A4→$00226974→$00226940 gdPMap→$0022693C→$00226908
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAF0A randSeed_addr=$003FAE8C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=816 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$002269D0 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$002272CC bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$002272CC pixmap=$002057E8 bounds=(50,40,420,600) goAway=true
+PASS standard-file-platform-composition powerpc=false depth=8 new_folder=false
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1A8 bkLim=$0044A1A8 zcbFree=2400616 (2.3MB)
+[INIT] Set MainDevice=$00226974, TheGDevice=$00226974 (ptr=$00226940)
+[INIT] GDevice chain: $8A4→$00226974→$00226940 gdPMap→$0022693C→$00226908
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAF0A randSeed_addr=$003FAE8C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=816 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$002269D0 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$002272CC bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$002272CC pixmap=$002057E8 bounds=(50,40,420,600) goAway=true
+PASS standard-file-platform-composition powerpc=false depth=8 new_folder=true
+PASS standard-file-platform-composition powerpc=true depth=8 new_folder=false
+PASS standard-file-platform-composition powerpc=true depth=8 new_folder=true
+PASS standard-file-platform-composition powerpc=true depth=16 new_folder=false
+PASS standard-file-platform-composition powerpc=true depth=16 new_folder=true
+test desktop::tests::standard_file_platform_composition_commits_to_active_filename ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 144 filtered out; finished in 2.50s
+
