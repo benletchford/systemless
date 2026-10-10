@@ -1,0 +1,13 @@
+{
+  "base": "16104e271d0d38be7a5c9ae5a33d4d0d583be810",
+  "sha256": {
+    "src/bin/gpui_demo_text.rs": "c20c5f1df852a0226ce62f145a2c7dee301cda14d9ebfa8f86276c27fd4e3535",
+    "src/systems/macintosh/quickdraw/text.rs": "f49a16a510f4f7d80127f88c29847de3a6cce5762c7adf58f40015e6352c68b6",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "41cf3aa93f2b41d0ce1d49b2bace8572140e9692d37239a749a471744ca5c09f"
+  },
+  "scope": "Text-helper qualification. Constructed Geneva192/96 integer enlargement2, faces plain/bold/underline/condensed/extended at raster1/2/4; supplied guest insertion positions, exact binary ink/paint advance, outline mask equality and fractional edges. No actual guest large-font scene, composed visual/hit-test, native oracle or PPC non-unit ratio claim.",
+  "test_binaries": {
+    "target/ci-test/examples/gpui_menu_demo-957ebf4d71285d8e": "ced2186b49cbdbb3e7aa03bf5c5e54239574c5edc002129fb91f6fd14a6eaf93",
+    "target/ci-test/examples/gpui_menu_demo-9e8a8abfde68f05d": "8535ad66a3f45cc8618fb355b5d92e7e3b27cd05058fe11a49c814ad88843335"
+  }
+}

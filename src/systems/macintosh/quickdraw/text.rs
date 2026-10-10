@@ -154,6 +154,19 @@ pub fn smooth_resolved_glyph(glyph: &Glyph, data: &[u8], scale: u32) -> Option<S
     })
 }
 
+/// Resolve the original font outline at the guest's integer strike enlargement
+/// and host raster density, without substituting a host font or its metrics.
+#[doc(hidden)]
+pub fn smooth_resolved_scaled_glyph(glyph: &Glyph, data: &[u8], strike_scale: u32, raster_scale: u32) -> Option<SmoothGlyphSnapshot> {
+    if !(1..=8).contains(&strike_scale) || !(1..=8).contains(&raster_scale) { return None; }
+    let physical_scale = strike_scale.checked_mul(raster_scale)?;
+    let mask = crate::quickdraw::fonts::outline::presentation_glyph(glyph, data, physical_scale)?;
+    Some(SmoothGlyphSnapshot { pixels: mask.pixels, width: mask.width, height: mask.height,
+        left: mask.left, top: mask.top,
+        guest_advance: i32::from(glyph.advance).checked_mul(i32::try_from(strike_scale).ok()?)?,
+        raster_scale })
+}
+
 /// Look up decoded host text, as opposed to guest bytes cast directly to char.
 /// Unicode Latin-1 overlaps the Mac Roman byte range with different meanings
 /// (for example, U+00AE is registered, but Mac Roman byte AE is AE ligature).
@@ -1113,8 +1126,8 @@ fn classic_underline_has_descender(
 /// Native per-character underline strokes, independent of glyph coverage.
 /// Presentation can smooth the glyph without changing descender gaps or making
 /// overlapping underline pixels translucent. Outline/shadow callers apply the
-/// effect after combining these strokes with the basic glyph. Only unscaled
-/// strikes qualify; descender gaps use basic glyph ink before halo synthesis.
+/// effect after combining these strokes with the basic glyph. Descender gaps
+/// use the same integer-scaled basic glyph ink as the guest before halo synthesis.
 #[doc(hidden)]
 pub fn classic_textedit_underline_ink(
     font: i16, size: i16, byte: u8, face: u8,
@@ -1122,13 +1135,14 @@ pub fn classic_textedit_underline_ink(
     if face >= 128 { return None; }
     if face & 4 == 0 { return Some(Vec::new()); }
     let (_, scale) = crate::quickdraw::fonts::get_font_face_scaled(font, size);
-    if scale != 1 { return None; }
     let (hit, precaptured) = if face & 2 != 0 {
         get_glyph_italic(font, size, byte as char).map(|hit| (Some(hit), true))
             .unwrap_or_else(|| (get_glyph(font, size, byte as char), false))
     } else { (get_glyph(font, size, byte as char), false) };
     let Some((glyph, data)) = hit else { return Some(Vec::new()); };
     let metrics = get_font_metrics(font, size);
+    i16::try_from(i32::from(metrics.ascent) * i32::from(scale)).ok()?;
+    i16::try_from(i32::from(metrics.descent) * i32::from(scale)).ok()?;
     let synthetic = face & 2 != 0 && !precaptured;
     let extend = if synthetic {
         crate::quickdraw::fonts::style::get_italic_underline_extend_left(font, size, face & 1 != 0, precaptured)
@@ -1138,7 +1152,7 @@ pub fn classic_textedit_underline_ink(
         crate::quickdraw::fonts::style::get_italic_underline_extend_right(font, size)
     } else { 0 };
     let coverage = |y, x| classic_glyph_coverage(glyph, data, font, size, &metrics,
-        1, precaptured, face & 3, (0, 0), None, y, x);
+        scale, precaptured, face & 3, (0, 0), None, y, x);
     let mut ink = Vec::new();
     for x in -extend + offset..i16::from(glyph.advance) + i16::from(face & 1 != 0) + offset + right_extend {
         if !classic_underline_has_descender(0, x, metrics.descent, coverage) {

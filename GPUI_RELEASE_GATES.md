@@ -30,11 +30,12 @@ change advances. Bitmap-only sources and unsupported paint must retain guest
 rendering unless faithful replacement is established. Application-drawn text
 stays guest-rendered until ownership and faithful replacement are proven.
 
-Current `ClassicLine` source rejects classic scaled strikes and PPC non-unit
-ratios from smooth TextEdit plans. That is an implementation gap for faithful
-smooth support, not evidence that changing font metrics is acceptable. The
-existing guest fallback preserves behavior. Broader font resources, scaled
-strikes, styled widget appearance and independent font fidelity remain open.
+Classic integer-scaled strikes now have original-outline support with passing
+helper checks; actual guest large-font scene and composed interaction evidence
+remain open. PPC non-unit ratios still decline smooth TextEdit plans. These
+gaps do not justify changing font metrics; unsupported paint retains guest
+rendering. Broader font resources, scaled appearance and independent native
+font fidelity remain open.
 
 ## Next work in release-risk order
 
