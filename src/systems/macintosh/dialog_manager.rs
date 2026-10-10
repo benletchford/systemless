@@ -7620,10 +7620,11 @@ pub fn is_dialog_event(
 /// Validates whether a character is an editable character accepted by dialog edit fields.
 ///
 /// Macintosh Toolbox Essentials (1992), p. 6-139:
-/// Accepts backspace (0x08), printable ASCII and extended Mac Roman bytes.
+/// Accepts backspace, caret-navigation arrows, printable ASCII and Mac Roman.
+/// Arrow movement follows Inside Macintosh: Text (1993), pp. 2-12--2-13.
 /// Return, Escape, Tab and ASCII DEL remain modal/control actions.
 pub fn is_dialog_edit_text_character(character: u8) -> bool {
-    matches!(character, 0x08 | 0x20..=0x7E | 0x80..=0xFF)
+    matches!(character, 0x08 | 0x1C..=0x1F | 0x20..=0x7E | 0x80..=0xFF)
 }
 
 /// Describes the action that the host environment must take in response to a `DialogSelect` event.
@@ -7908,8 +7909,10 @@ pub fn textedit_key_result(
     match key {
         0x1c => return (existing.to_vec(), if s != e { s } else { s.saturating_sub(1) }),
         0x1d => return (existing.to_vec(), if s != e { e } else { e.saturating_add(1).min(text_len) }),
-        // Multiline vertical movement is resolved by the owning TERec gateway.
-        0x1e | 0x1f => return (existing.to_vec(), s),
+        // This recordless editor is a single line. Wrapped fields resolve
+        // vertical movement through their owning TERec gateway instead.
+        0x1e => return (existing.to_vec(), 0),
+        0x1f => return (existing.to_vec(), text_len),
         _ => {}
     }
 
@@ -9224,6 +9227,13 @@ mod tests {
 
         // is_dialog_edit_text_character tests
         assert!(is_dialog_edit_text_character(0x08)); // backspace
+        for arrow in 0x1c..=0x1f { assert!(is_dialog_edit_text_character(arrow)); }
+        assert!(!is_dialog_edit_text_character(0x09)); // Tab stays modal navigation
+        for (key, expected) in [(0x1c, 2), (0x1d, 4), (0x1e, 0), (0x1f, 6)] {
+            let (text, caret) = textedit_key_result(b"abcdef", 3, 3, key);
+            assert_eq!(text, b"abcdef");
+            assert_eq!(caret, expected);
+        }
         assert!(is_dialog_edit_text_character(b' ')); // space (0x20)
         assert!(is_dialog_edit_text_character(b'A'));
         assert!(is_dialog_edit_text_character(b'~')); // 0x7E

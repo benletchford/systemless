@@ -4678,3 +4678,20 @@ cross-line selection, typing/deletion and native paint-order qualification in
 that test continue after navigation. The final-source log and scope are archived
 with the vertical-arrow evidence. This qualifies these styled guest event cases;
 modal end-to-end, physical host input and composed navigation captures remain open.
+
+
+### Modal arrow event admission and recordless editing
+
+An actual modal guest-event test found classic arrows were discarded by the
+edit-character predicate. Admitting arrow bytes to the existing modal editing
+path now preserves guest filter/default/cancel ownership. The classic recordless
+single-line editor handles Up/Down as beginning/end, while TERec-backed wrapped
+editors use the guest geometry path. Horizontal arrows remain caret navigation.
+Return, Tab and Escape remain modal actions rather than editable characters.
+
+The public-fixture modal Down/Up regression passes all four CPU/depth modes
+(10.36s), preserving text, active edit field and dialog generation, reaching both
+text boundaries. Shared event/text-key classification and modal keyboard
+navigation/default/cancel/filter regressions also pass. Both earlier failures
+are retained with logs and provenance in `reference/gpui-demo/modal-arrow-navigation`.
+Physical input and composed modal navigation captures remain unqualified.

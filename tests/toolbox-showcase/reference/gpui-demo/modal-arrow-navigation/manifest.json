@@ -1,0 +1,16 @@
+{
+  "base_head": "a408025ea4e91463eefd679175ff1d99f225cecc",
+  "scope": "public fixture modal Down/Up guest events via GPUI key translation across mono68k, colour68k, PPC8 and PPC16 preserve text/field/dialog identity and reach boundaries; shared classification/text-key and default/cancel/filter regressions pass",
+  "guest_test_seconds": 10.36,
+  "limitations": [
+    "Physical host input and composed navigation captures remain unqualified",
+    "Recordless editor fallback is single-line; TERec-backed wrapped fields retain geometry path"
+  ],
+  "hashes": {
+    "initial-failure.log": "74052df5bff3efd8aac538f78a6cc5f8b9874ab6654a2111682e2aed076a5cb0",
+    "default-cancel.log": "266e7c0eb5d62a7bd74b38556bcf9d83eb3c42d55dca88f88544b887e368a65e",
+    "guest-events.log": "3da72bbd85f9db514ff51dfc8297aecfea68e976ffa0a92cb7fda5ed6ab32677",
+    "classification.log": "089ad7f3d07038a6d66e5e629b4bd39ee9b1242a081e09a0ad9d2f0e5cacd846",
+    "filter-failure.log": "80473a60e4e509223cc897d0995b618a92122cda21c3f7f24a9ef28b4f53dd1b"
+  }
+}

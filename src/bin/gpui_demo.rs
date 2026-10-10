@@ -12290,6 +12290,48 @@ mod desktop {
         }
 
         #[test]
+        fn modal_arrow_guest_events_preserve_text_and_active_field_across_cpu_modes() {
+            for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app); wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(132, 6)); settle(&mut session);
+                let dialog = session.runner_mut().dialog_snapshot().into_iter()
+                    .find(|dialog| dialog.visible && dialog.items.len() == 10).unwrap();
+                let bounds = dialog.items[8].bounds;
+                for input in [MacintoshInput::MouseDown { vertical: bounds.0 + 5, horizontal: bounds.1 + 1 },
+                    MacintoshInput::MouseUp { vertical: bounds.0 + 5, horizontal: bounds.1 + 1 }] {
+                    session.deliver_input(input); settle(&mut session);
+                }
+                let original = session.runner_mut().dialog_snapshot().into_iter()
+                    .find(|current| current.guest_id == dialog.guest_id).unwrap();
+                let text = original.items[8].text.clone();
+                assert!(!text.is_empty());
+                for (key, expected) in [("down", text.chars().count()), ("up", 0)] {
+                    for _ in 0..text.chars().count() + 1 {
+                        let stroke = gpui_kit::Keystroke { key: key.into(), key_char: None, modifiers: Default::default() };
+                        let (mac_key, character) = super::super::input::guest_key(&stroke).unwrap();
+                        session.deliver_input(MacintoshInput::KeyDown { mac_key, character });
+                        session.deliver_input(MacintoshInput::KeyUp { mac_key, character });
+                        settle(&mut session);
+                        let actual = session.runner_mut().dialog_snapshot().into_iter()
+                            .find(|current| current.guest_id == dialog.guest_id && current.visible).unwrap();
+                        assert_eq!(actual.items[8].text, text, "modal arrow cannot insert bytes: PPC={powerpc}, depth={depth}");
+                        assert_eq!(actual.edit_field, original.edit_field);
+                        assert_eq!(actual.generation, original.generation);
+                    }
+                    let actual = session.runner_mut().dialog_snapshot().into_iter()
+                        .find(|current| current.guest_id == dialog.guest_id).unwrap();
+                    assert_eq!(actual.items[8].selection, Some((expected as i16, expected as i16)));
+                }
+                eprintln!("PASS modal-arrow-guest-events powerpc={powerpc} depth={depth}");
+            }
+        }
+
+        #[test]
         fn modal_composed_commit_pins_active_dialog_item_and_rejects_stale_input() {
             use super::super::input::{dialog_text_owner, guest_dialog_commit_inputs};
             for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {

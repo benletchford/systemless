@@ -1,0 +1,9 @@
+    Blocking waiting for file lock on artifact directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 22.18s
+     Running unittests src/lib.rs (target/debug/deps/systemless-fb1873a31fc5e0eb)
+
+running 1 test
+test systems::macintosh::dialog_manager::tests::modal_dialog_keyboard_navigation_and_filter_evaluation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6698 filtered out; finished in 0.00s
+
