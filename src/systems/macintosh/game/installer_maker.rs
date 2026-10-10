@@ -1,13 +1,16 @@
 //! StuffIt InstallerMaker container helpers.
 //!
 //! InstallerMaker 4.x self-extracting applications store the install payload
-//! in the application data fork.  Gridz 1.2 uses an `ST46` data fork with
+//! in the application data fork. Gridz 1.2 uses `ST46`, while Sigma Chess
+//! 5.1.3 uses `ST65`. Both contain
 //! classic StuffIt-style 112-byte file headers followed by compressed
 //! resource and data fork streams.
 
 use crate::trap::types::decode_mac_roman;
 
 const ST46_MAGIC: &[u8; 4] = b"ST46";
+const ST65_MAGIC: &[u8; 4] = b"ST65";
+const ST65_HEADER_LEN: usize = 22;
 const ST46_ENTRY_COUNT_OFFSET: usize = 0x44;
 const ST46_FIRST_ENTRY_OFFSET_OFFSET: usize = 0x54;
 const ST46_ENTRY_HEADER_LEN: usize = 112;
@@ -56,6 +59,42 @@ pub fn parse_installer_maker_st46(data: &[u8]) -> Option<InstallerMakerContainer
     parse_installer_maker_st46_result(data).ok()
 }
 
+pub fn parse_installer_maker(data: &[u8]) -> Option<InstallerMakerContainer<'_>> {
+    if data.starts_with(ST65_MAGIC) {
+        parse_installer_maker_st65_result(data).ok()
+    } else {
+        parse_installer_maker_st46(data)
+    }
+}
+
+pub fn parse_installer_maker_st65_result(
+    data: &[u8],
+) -> Result<InstallerMakerContainer<'_>, String> {
+    let header = get_range(data, 0, ST65_HEADER_LEN, "ST65 header")?;
+    if !header.starts_with(ST65_MAGIC) || &header[10..14] != b"rLau" {
+        return Err("missing ST65 archive signature".to_string());
+    }
+    let entry_count = usize::from(read_u16_be(header, 4, "ST65 entry count")?);
+    let archive_len = read_u32_be(header, 6, "ST65 archive length")? as usize;
+    if archive_len < ST65_HEADER_LEN || archive_len > data.len() {
+        return Err("ST65 archive length exceeds bounds".to_string());
+    }
+    let mut entries = Vec::new();
+    let end = parse_st46_entries(
+        data,
+        ST65_HEADER_LEN,
+        archive_len,
+        Some(entry_count),
+        "",
+        0,
+        &mut entries,
+    )?;
+    if end != archive_len {
+        return Err("ST65 entry count does not cover archive payload".to_string());
+    }
+    Ok(InstallerMakerContainer { entries })
+}
+
 pub fn parse_installer_maker_st46_result(
     data: &[u8],
 ) -> Result<InstallerMakerContainer<'_>, String> {
@@ -87,7 +126,7 @@ fn parse_st46_entries<'a>(
     prefix: &str,
     depth: usize,
     entries: &mut Vec<InstallerMakerEntry<'a>>,
-) -> Result<(), String> {
+) -> Result<usize, String> {
     if depth > ST46_MAX_FOLDER_DEPTH || end > data.len() {
         return Err("ST46 folder depth or bounds exceeded".to_string());
     }
@@ -125,7 +164,7 @@ fn parse_st46_entries<'a>(
             if count.is_some() || header_offset + ST46_ENTRY_HEADER_LEN != end {
                 return Err("unexpected ST46 folder end marker".to_string());
             }
-            return Ok(());
+            return Ok(header_offset + ST46_ENTRY_HEADER_LEN);
         }
         let name = if prefix.is_empty() {
             local_name
@@ -232,7 +271,7 @@ fn parse_st46_entries<'a>(
         header_offset = next_header_offset;
         index += 1;
     }
-    Ok(())
+    Ok(header_offset)
 }
 
 pub fn decode_installer_method14(data: &[u8], expected_len: usize) -> Result<Vec<u8>, String> {
@@ -695,6 +734,81 @@ fn sit14_update(first: usize, last: usize, code: &mut [u8; 308], freq: &mut [u16
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn st65_nested_archive() -> Vec<u8> {
+        let mut data = vec![0u8; ST65_HEADER_LEN];
+        data[..4].copy_from_slice(ST65_MAGIC);
+        data[4..6].copy_from_slice(&1u16.to_be_bytes());
+        data[10..14].copy_from_slice(b"rLau");
+        data[14] = 6;
+        let mut folder = [0u8; ST46_ENTRY_HEADER_LEN];
+        folder[0] = ST46_FOLDER_START;
+        folder[1] = ST46_FOLDER_START;
+        folder[2] = 6;
+        folder[3..9].copy_from_slice(b"Folder");
+        folder[96..100].copy_from_slice(&(229u32).to_be_bytes());
+        data.extend_from_slice(&folder);
+        let mut file = [0u8; ST46_ENTRY_HEADER_LEN];
+        file[2] = 4;
+        file[3..7].copy_from_slice(b"Game");
+        file[66..70].copy_from_slice(b"APPL");
+        file[70..74].copy_from_slice(b"TEST");
+        file[84..88].copy_from_slice(&2u32.to_be_bytes());
+        file[88..92].copy_from_slice(&3u32.to_be_bytes());
+        file[92..96].copy_from_slice(&2u32.to_be_bytes());
+        file[96..100].copy_from_slice(&3u32.to_be_bytes());
+        data.extend_from_slice(&file);
+        data.extend_from_slice(b"rsdat");
+        let mut end = [0u8; ST46_ENTRY_HEADER_LEN];
+        end[0] = ST46_FOLDER_END;
+        end[1] = ST46_FOLDER_END;
+        data.extend_from_slice(&end);
+        let archive_len = data.len() as u32;
+        data[6..10].copy_from_slice(&archive_len.to_be_bytes());
+        data
+    }
+
+    #[test]
+    fn parses_st65_nested_original_forks_and_metadata() {
+        let data = st65_nested_archive();
+        let parsed = parse_installer_maker(&data).expect("ST65 should parse");
+        assert_eq!(parsed.entries.len(), 1);
+        let entry = &parsed.entries[0];
+        assert_eq!(entry.name, "Folder/Game");
+        assert_eq!(entry.file_type, *b"APPL");
+        assert_eq!(entry.creator, *b"TEST");
+        assert_eq!(entry.rsrc_packed, b"rs");
+        assert_eq!(entry.data_packed, b"dat");
+        assert_eq!(entry.rsrc_unpacked_len, 2);
+        assert_eq!(entry.data_unpacked_len, 3);
+    }
+
+    #[test]
+    fn rejects_st65_truncation_bad_signature_count_and_folder_bounds() {
+        let original = st65_nested_archive();
+        for len in 0..original.len() {
+            assert!(parse_installer_maker_st65_result(&original[..len]).is_err());
+        }
+        let mut bad = original.clone();
+        bad[10] = 0;
+        assert!(parse_installer_maker_st65_result(&bad).is_err());
+        for count in [0u16, 2] {
+            let mut bad = original.clone();
+            bad[4..6].copy_from_slice(&count.to_be_bytes());
+            assert!(parse_installer_maker_st65_result(&bad).is_err());
+        }
+        let mut bad = original.clone();
+        bad[6..10].copy_from_slice(&21u32.to_be_bytes());
+        assert!(parse_installer_maker_st65_result(&bad).is_err());
+        let mut bad = original.clone();
+        bad[ST65_HEADER_LEN + 96..ST65_HEADER_LEN + 100].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(parse_installer_maker_st65_result(&bad).is_err());
+        let mut bad = original;
+        let end = bad.len() - ST46_ENTRY_HEADER_LEN;
+        bad[end] = 0;
+        bad[end + 1] = 0;
+        assert!(parse_installer_maker_st65_result(&bad).is_err());
+    }
 
     #[test]
     fn parses_st46_entry_table_and_fork_ranges() {
