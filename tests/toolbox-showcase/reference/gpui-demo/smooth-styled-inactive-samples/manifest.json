@@ -1,0 +1,402 @@
+{
+  "base_commit": "a35180bd027b0a32ab0736254749020b024df62a",
+  "source_state": "uncommitted capture-diagnostics patch on base commit",
+  "pins": {
+    "src/bin/gpui_demo.rs": "2c8497c5c92dd75fe03a986157cc96db8bbc339a93b1365da333dbb7735290dc",
+    "src/bin/gpui_demo_text.rs": "58cdc47d3a28e07f16493ebd60caa4afc3a05de6a9e31eb0a9cccf108b3778c2",
+    "src/systems/macintosh/quickdraw/text.rs": "ea9da39c50261b463329d17ec45b3faac49b7fd4a57fef75812d9c6f0fc8d242",
+    "target/debug/examples/gpui-menu-demo": "1b0b8e871c1bae176bdb240c199c0a0b7ac29f1b940dec0b0b4c065f293426f1",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "17e3cd4dd1a2510627b55487db166773759319f93454bb9141ad8a80bc40d4b8"
+  },
+  "cases": [
+    {
+      "name": "mono",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "0.75",
+        "--capture-styled-text-edit-ink",
+        "/tmp/systemless-styled-support-a35180bd/mono.png"
+      ],
+      "depth": 1,
+      "smooth_raster_support_1_through_8": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "style_runs": [
+        {
+          "start": 0,
+          "font": 3,
+          "size": 10,
+          "face": 0
+        },
+        {
+          "start": 7,
+          "font": 3,
+          "size": 12,
+          "face": 1
+        },
+        {
+          "start": 11,
+          "font": 3,
+          "size": 10,
+          "face": 0
+        },
+        {
+          "start": 13,
+          "font": 4,
+          "size": 10,
+          "face": 0
+        },
+        {
+          "start": 18,
+          "font": 3,
+          "size": 10,
+          "face": 0
+        },
+        {
+          "start": 20,
+          "font": 4,
+          "size": 14,
+          "face": 2
+        },
+        {
+          "start": 24,
+          "font": 3,
+          "size": 10,
+          "face": 0
+        },
+        {
+          "start": 26,
+          "font": 3,
+          "size": 10,
+          "face": 4
+        }
+      ],
+      "png_sha256": "902f10f778ea63e4dabd77916e4a628e1a5bf3d415793c54649a03d3a90cc2a5",
+      "archive_files": [
+        {
+          "file": "mono.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "source_sha256": "902f10f778ea63e4dabd77916e4a628e1a5bf3d415793c54649a03d3a90cc2a5",
+          "archive_sha256": "f2fcfa33842cdcdaa4af967f23ff5fc3de7fb02ca1592138c1c727713ab756f6",
+          "decoded_rgba_preserved": true
+        },
+        {
+          "file": "mono.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "source_sha256": "e88087c39f02d9e3d9d504718b0ee5bcf424cafb1e050216f9ebc41b4dac953a",
+          "archive_sha256": "4427a3d6a7a6df1b193c43130a47ea222c8cc9c0b1c865738e6d0e1ebe58b24e",
+          "decoded_rgba_preserved": true
+        }
+      ]
+    },
+    {
+      "name": "colour68k",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "0.75",
+        "--capture-styled-text-edit-ink",
+        "/tmp/systemless-styled-support-a35180bd/colour68k.png"
+      ],
+      "depth": 8,
+      "smooth_raster_support_1_through_8": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "style_runs": [
+        {
+          "start": 0,
+          "font": 3,
+          "size": 10,
+          "face": 0
+        },
+        {
+          "start": 7,
+          "font": 3,
+          "size": 12,
+          "face": 1
+        },
+        {
+          "start": 11,
+          "font": 3,
+          "size": 10,
+          "face": 0
+        },
+        {
+          "start": 13,
+          "font": 4,
+          "size": 10,
+          "face": 0
+        },
+        {
+          "start": 18,
+          "font": 3,
+          "size": 10,
+          "face": 0
+        },
+        {
+          "start": 20,
+          "font": 4,
+          "size": 14,
+          "face": 2
+        },
+        {
+          "start": 24,
+          "font": 3,
+          "size": 10,
+          "face": 0
+        },
+        {
+          "start": 26,
+          "font": 3,
+          "size": 10,
+          "face": 4
+        }
+      ],
+      "png_sha256": "25c8ae7eacf8adf0ed71ba6b64887d61e509fc9ff948040f7c370f64303871f7",
+      "archive_files": [
+        {
+          "file": "colour68k.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "source_sha256": "25c8ae7eacf8adf0ed71ba6b64887d61e509fc9ff948040f7c370f64303871f7",
+          "archive_sha256": "155c7813a86ed19a5c6197158080c2a6ce75fa9863739a0d7e15382810972e2a",
+          "decoded_rgba_preserved": true
+        },
+        {
+          "file": "colour68k.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "source_sha256": "8e61a5e819675982c7be3f37ec612eb3163e253a81ea4ff609fcf3ee614d8950",
+          "archive_sha256": "a733be4f8942d903a2dd3143ef2b81669953210a54023b1daea6f5d2efc9d596",
+          "decoded_rgba_preserved": true
+        }
+      ]
+    },
+    {
+      "name": "ppc8",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "0.75",
+        "--capture-styled-text-edit-ink",
+        "/tmp/systemless-styled-support-a35180bd/ppc8.png"
+      ],
+      "depth": 8,
+      "smooth_raster_support_1_through_8": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "style_runs": [
+        {
+          "start": 0,
+          "font": 3,
+          "size": 10,
+          "face": 0
+        },
+        {
+          "start": 7,
+          "font": 3,
+          "size": 12,
+          "face": 1
+        },
+        {
+          "start": 11,
+          "font": 3,
+          "size": 10,
+          "face": 0
+        },
+        {
+          "start": 13,
+          "font": 4,
+          "size": 10,
+          "face": 0
+        },
+        {
+          "start": 18,
+          "font": 3,
+          "size": 10,
+          "face": 0
+        },
+        {
+          "start": 20,
+          "font": 4,
+          "size": 14,
+          "face": 2
+        },
+        {
+          "start": 24,
+          "font": 3,
+          "size": 10,
+          "face": 0
+        },
+        {
+          "start": 26,
+          "font": 3,
+          "size": 10,
+          "face": 4
+        }
+      ],
+      "png_sha256": "25c8ae7eacf8adf0ed71ba6b64887d61e509fc9ff948040f7c370f64303871f7",
+      "archive_files": [
+        {
+          "file": "ppc8.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "source_sha256": "25c8ae7eacf8adf0ed71ba6b64887d61e509fc9ff948040f7c370f64303871f7",
+          "archive_sha256": "155c7813a86ed19a5c6197158080c2a6ce75fa9863739a0d7e15382810972e2a",
+          "decoded_rgba_preserved": true
+        },
+        {
+          "file": "ppc8.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "source_sha256": "8e61a5e819675982c7be3f37ec612eb3163e253a81ea4ff609fcf3ee614d8950",
+          "archive_sha256": "a733be4f8942d903a2dd3143ef2b81669953210a54023b1daea6f5d2efc9d596",
+          "decoded_rgba_preserved": true
+        }
+      ]
+    },
+    {
+      "name": "ppc16",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "0.75",
+        "--capture-styled-text-edit-ink",
+        "/tmp/systemless-styled-support-a35180bd/ppc16.png"
+      ],
+      "depth": 16,
+      "smooth_raster_support_1_through_8": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "style_runs": [
+        {
+          "start": 0,
+          "font": 3,
+          "size": 10,
+          "face": 0
+        },
+        {
+          "start": 7,
+          "font": 3,
+          "size": 12,
+          "face": 1
+        },
+        {
+          "start": 11,
+          "font": 3,
+          "size": 10,
+          "face": 0
+        },
+        {
+          "start": 13,
+          "font": 4,
+          "size": 10,
+          "face": 0
+        },
+        {
+          "start": 18,
+          "font": 3,
+          "size": 10,
+          "face": 0
+        },
+        {
+          "start": 20,
+          "font": 4,
+          "size": 14,
+          "face": 2
+        },
+        {
+          "start": 24,
+          "font": 3,
+          "size": 10,
+          "face": 0
+        },
+        {
+          "start": 26,
+          "font": 3,
+          "size": 10,
+          "face": 4
+        }
+      ],
+      "png_sha256": "799efd805c6d051548eb678ec2e0dc3ba39b7c473e5fe36cae1ed41ea17c638c",
+      "archive_files": [
+        {
+          "file": "ppc16.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "source_sha256": "799efd805c6d051548eb678ec2e0dc3ba39b7c473e5fe36cae1ed41ea17c638c",
+          "archive_sha256": "5f5c955beb5372f135507dbd194708c42a6c36a7fb7412ccd6ece56b1b445657",
+          "decoded_rgba_preserved": true
+        },
+        {
+          "file": "ppc16.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "source_sha256": "5a4038bb10fb3e1766d21513333ff673999b737d37f90c26ef6e9e418671e16b",
+          "archive_sha256": "98d91cfc971d8c810ff29d60bf2e91f1976e2a7c006923ffd6f5b9e6d82ec04a",
+          "decoded_rgba_preserved": true
+        }
+      ]
+    }
+  ],
+  "failed_attempt": "Explicit --screen-depth 16 is rejected by classic-depth CLI validation; corrected PPC16 uses the established implicit PPC default."
+}
