@@ -4623,3 +4623,11 @@ pixels on cancellation. The four CRLF images are byte-identical to the archived
 prior captures. Logs, metadata and hashes are in
 `reference/gpui-demo/surrounding-marked-text`. Broader surrounding selection,
 modal/file geometry, other scales and physical text services remain unqualified.
+
+
+At `20d6a2f0`, all three existing GPUI platform-handler regressions also pass:
+document commits across four modes (7.14s), and modal dialog plus Save/New Folder
+composition across four modes (27.39s for the two parent tests). These check guest
+text/selection, corrected staging, cancellation and commits through existing guest
+paths. Logs and pinned source head are in the surrounding-text evidence archive.
+They do not establish physical host IME or surrounding modal/file painted geometry.
