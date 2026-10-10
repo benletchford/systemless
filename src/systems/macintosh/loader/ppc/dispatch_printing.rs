@@ -1,4 +1,5 @@
 use super::*;
+use crate::printing_manager::{self, PrintingArchitecture};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcPrintingCompatibilityOperation {
@@ -29,7 +30,8 @@ pub(crate) fn ppc_dispatch_printing_compatibility(
             // PrSetError stores the current Printing Manager error.
             // PROCEDURE PrSetError(iErr: Integer);
             // Inside Macintosh: Imaging With QuickDraw (1994), p. 9-78.
-            startup.printing_error = cpu.gpr[3] as u16 as i16;
+            startup.printing_error =
+                printing_manager::evaluate_pr_set_error(cpu.gpr[3] as u16 as i16);
             PpcImportAction::ReturnPreserve
         }
         PpcPrintingCompatibilityOperation::PrGeneral => {
@@ -38,29 +40,39 @@ pub(crate) fn ppc_dispatch_printing_compatibility(
             // PROCEDURE PrGeneral(pData: Ptr);
             // Inside Macintosh: Imaging With QuickDraw (1994), pp. 9-72--9-73.
             let data = cpu.gpr[3];
-            if data != 0 && memory.read_u16_be(data).is_some()
-                && memory.write_u16_be(data + 2, 2).is_some()
-            {
-                startup.printing_error = 2; // opNotImpl
+            let memory_writable = data != 0
+                && memory.read_u16_be(data).is_some()
+                && memory.write_u16_be(data + 2, 2).is_some();
+            if let Some(err) = printing_manager::evaluate_pr_general(memory_writable) {
+                startup.printing_error = err;
             }
             PpcImportAction::ReturnPreserve
         }
         PpcPrintingCompatibilityOperation::PrJobDialog
-        | PpcPrintingCompatibilityOperation::PrStlDialog
-        | PpcPrintingCompatibilityOperation::PrOpenDoc => PpcImportAction::Return(0),
+        | PpcPrintingCompatibilityOperation::PrStlDialog => {
+            let confirmed = printing_manager::evaluate_pr_dialog(PrintingArchitecture::PowerPc);
+            PpcImportAction::Return(u32::from(confirmed))
+        }
+        PpcPrintingCompatibilityOperation::PrOpenDoc => {
+            PpcImportAction::Return(printing_manager::evaluate_pr_open_doc())
+        }
         PpcPrintingCompatibilityOperation::PrError => {
             // FUNCTION PrError: Integer;
             // Inside Macintosh: Imaging With QuickDraw (1994), p. 9-75.
-            PpcImportAction::Return(ppc_i16_result(startup.printing_error))
+            PpcImportAction::Return(ppc_i16_result(printing_manager::evaluate_pr_error(
+                startup.printing_error,
+            )))
         }
         PpcPrintingCompatibilityOperation::PrValidate => {
             // PrValidate returns FALSE when the existing TPrint needs no
             // printer-specific changes. No printer driver is installed here.
             // FUNCTION PrValidate(hPrint: THPrint): Boolean;
             // Inside Macintosh: Imaging With QuickDraw (1994), p. 9-60.
-            PpcImportAction::Return(0)
+            PpcImportAction::Return(u32::from(printing_manager::evaluate_pr_validate()))
         }
-        PpcPrintingCompatibilityOperation::PrintDefault => PpcImportAction::Return(0),
+        PpcPrintingCompatibilityOperation::PrintDefault => {
+            PpcImportAction::Return(printing_manager::evaluate_print_default())
+        }
         PpcPrintingCompatibilityOperation::PrClose
         | PpcPrintingCompatibilityOperation::PrCloseDoc
         | PpcPrintingCompatibilityOperation::PrClosePage
@@ -69,3 +81,4 @@ pub(crate) fn ppc_dispatch_printing_compatibility(
         | PpcPrintingCompatibilityOperation::PrPicFile => PpcImportAction::ReturnPreserve,
     }
 }
+

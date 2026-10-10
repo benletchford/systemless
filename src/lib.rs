@@ -131,6 +131,7 @@ pub mod menu_model {
 pub(crate) use systems::macintosh::mixed_mode;
 pub(crate) use systems::macintosh::process_context;
 pub(crate) use systems::macintosh::process_manager;
+pub(crate) use systems::macintosh::printing_manager;
 #[deprecated(note = "use `systemless::systems::macintosh::quickdraw`")]
 pub mod quickdraw {
     pub use crate::systems::macintosh::quickdraw::*;
