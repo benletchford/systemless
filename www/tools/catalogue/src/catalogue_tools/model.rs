@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 /// Authoring version; publication and storage/journal versions are independent.
 pub const SCHEMA_VERSION: u32 = 1;
 /// Resolved entries, asset records, launch policy and generic plugin declarations.
-pub const COMPILED_SCHEMA_VERSION: u32 = 2;
+pub const COMPILED_SCHEMA_VERSION: u32 = 3;
 /// Stable category labels exposed by the public library filters.
 pub const CATEGORIES: &[&str] = &[
     "Arcade",
@@ -49,6 +49,9 @@ pub struct Entry {
     pub year: u16,
     pub architectures: Vec<Architecture>,
     pub default_architecture: Architecture,
+    /// Original archive artifact selected for each architecture; empty uses the single archive.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub architecture_archives: BTreeMap<Architecture, String>,
     pub category: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<String>,

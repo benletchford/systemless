@@ -460,14 +460,40 @@ pub fn entry(e: &Entry) -> Result<()> {
             }
         }
     }
-    ensure!(
-        e.artifacts
-            .iter()
-            .filter(|a| a.role == ArtifactRole::Archive)
-            .count()
-            <= 1,
-        "at most one Archive artifact per entry"
-    );
+    let archives: BTreeSet<_> = e
+        .artifacts
+        .iter()
+        .filter(|a| a.role == ArtifactRole::Archive)
+        .map(|a| a.id.as_str())
+        .collect();
+    if e.architecture_archives.is_empty() {
+        ensure!(
+            archives.len() <= 1,
+            "at most one Archive artifact per entry without architecture_archives"
+        );
+    } else {
+        ensure!(
+            e.architecture_archives
+                .keys()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                == e.architectures.iter().copied().collect(),
+            "architecture_archives must cover exactly the supported architectures"
+        );
+        let assigned: BTreeSet<_> = e
+            .architecture_archives
+            .values()
+            .map(String::as_str)
+            .collect();
+        ensure!(
+            assigned == archives,
+            "architecture_archives must reference every Archive artifact and no other artifact"
+        );
+        ensure!(
+            archives.len() <= 1 || !e.artifacts.iter().any(|a| a.role == ArtifactRole::WebPack),
+            "separate architecture archives cannot share a single WebPack"
+        );
+    }
     Ok(())
 }
 
