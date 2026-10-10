@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.88.0](https://github.com/benletchford/systemless/compare/v0.87.0...v0.88.0) (2026-10-10)
+
+
+### Features
+
+* **catalogue:** add playable Swoop original shareware ([71e690d](https://github.com/benletchford/systemless/commit/71e690d90195605f06d39c3f35c64b3e6a7291fe))
+* load Smaller Installer game payloads ([54dec2a](https://github.com/benletchford/systemless/commit/54dec2a9d8600a61d4e6e5046e477b69d7fbb6da))
+
 ## [0.87.0](https://github.com/benletchford/systemless/compare/v0.86.0...v0.87.0) (2026-10-10)
 
 
