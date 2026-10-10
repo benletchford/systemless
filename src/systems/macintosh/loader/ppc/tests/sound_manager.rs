@@ -1178,6 +1178,20 @@ use crate::sound::PendingSoundCallback;
             }]
         );
 
+        let path = "Data/Audio/Valid.aiff";
+        loaded.push_test_open_file(PpcFileRecord {
+            ref_num: 128,
+            path: path.to_string(),
+            position: 0,
+        });
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: path.to_string(),
+            data: aiff_header_api_fixture(false).into(),
+            creator: u32::from_be_bytes(*b"ttxt"),
+            file_type: u32::from_be_bytes(*b"AIFF"),
+            finder_flags: 0,
+            dirty: false,
+        });
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::SndStartFilePlay;
         loaded.cpu.gpr[3] = channel;
@@ -1207,8 +1221,22 @@ use crate::sound::PendingSoundCallback;
                 completion: PPC_CODE_BASE + 0x40,
                 completion_command: None,
                 async_play: true,
-                aiff: None,
-                decoded_aiff: None,
+                aiff: Some(PpcAiffMetadata {
+                    form_type: u32::from_be_bytes(*b"AIFF"),
+                    channel_count: 2,
+                    sample_frame_count: 2,
+                    sample_size: 16,
+                    sample_rate_hz: 22_051,
+                    compression_type: u32::from_be_bytes(*b"NONE"),
+                    sound_data_offset: 54,
+                    sound_data_size: 8,
+                }),
+                decoded_aiff: Some(PpcDecodedAiffSamples {
+                    sample_rate_fixed: (22_050u32 << 16) + 32_768,
+                    sample_count: 2,
+                    preview_len: 2,
+                    preview: [128, 128, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                }),
             })
         );
 
@@ -1514,67 +1542,70 @@ use crate::sound::PendingSoundCallback;
     #[test]
     fn hle_import_runner_decodes_snd_resource_for_file_playback() {
         let pef = synthetic_pef_with_import(b"SndStartFilePlay");
-        let mut loaded = load_pef_application(&pef).unwrap();
-        let resource_id = 200i16;
-        let channel = 0x0500_1000;
-        let samples = [0x80, 0x90, 0x70, 0x80];
-        let mut resource = vec![0; 40];
-        write_u16(&mut resource, 0, 2); // format 2
-        write_u16(&mut resource, 2, 0); // refCount
-        write_u16(&mut resource, 4, 1); // numCommands
-        write_u16(&mut resource, 6, 0x8050); // soundCmd + dataOffsetFlag
-        write_u16(&mut resource, 8, 0);
-        write_u32(&mut resource, 10, 14); // SoundHeader offset
-        write_u32(&mut resource, 14, 0); // samplePtr = NIL, data follows header
-        write_u32(&mut resource, 18, samples.len() as u32);
-        write_u32(&mut resource, 22, crate::sound::OUTPUT_RATE << 16);
-        write_u32(&mut resource, 26, 0); // loopStart
-        write_u32(&mut resource, 30, 0); // loopEnd
-        resource[34] = 0; // stdSH
-        resource[35] = 60; // baseFrequency
-        resource[36..40].copy_from_slice(&samples);
-        let current_resource_refnum = *loaded.process_file_system.current_resource_file;
-        loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
-            ref_num: current_resource_refnum,
-            path: "Test App".to_string(),
-            res_type: u32::from_be_bytes(*b"snd "),
-            res_id: resource_id,
-            name: b"Roar".to_vec(),
-            data: resource,
-            raw_data: None,
-            raw_attrs: None,
-            attrs: 0,
-            handle: 0,
-        });
-        loaded.cpu.gpr[3] = channel;
-        loaded.cpu.gpr[4] = 0;
-        loaded.cpu.gpr[5] = resource_id as u16 as u32;
-        loaded.cpu.gpr[6] = 0;
-        loaded.cpu.gpr[7] = 0;
-        loaded.cpu.gpr[8] = 0;
-        loaded.cpu.gpr[9] = 0;
-        loaded.cpu.gpr[10] = 1;
+        for resource_id in [0i16, 200] {
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let channel = 0x0500_1000;
+            let samples = [0x80, 0x90, 0x70, 0x80];
+            let mut resource = vec![0; 40];
+            write_u16(&mut resource, 0, 2); // format 2
+            write_u16(&mut resource, 2, 0); // refCount
+            write_u16(&mut resource, 4, 1); // numCommands
+            write_u16(&mut resource, 6, 0x8050); // soundCmd + dataOffsetFlag
+            write_u16(&mut resource, 8, 0);
+            write_u32(&mut resource, 10, 14); // SoundHeader offset
+            write_u32(&mut resource, 14, 0); // samplePtr = NIL, data follows header
+            write_u32(&mut resource, 18, samples.len() as u32);
+            write_u32(&mut resource, 22, crate::sound::OUTPUT_RATE << 16);
+            write_u32(&mut resource, 26, 0); // loopStart
+            write_u32(&mut resource, 30, 0); // loopEnd
+            resource[34] = 0; // stdSH
+            resource[35] = 60; // baseFrequency
+            resource[36..40].copy_from_slice(&samples);
+            let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+            loaded
+                .process_file_system
+                .push_vfs_resource(PpcVfsResourceRecord {
+                    ref_num: current_resource_refnum,
+                    path: "Test App".to_string(),
+                    res_type: u32::from_be_bytes(*b"snd "),
+                    res_id: resource_id,
+                    name: b"Roar".to_vec(),
+                    data: resource,
+                    raw_data: None,
+                    raw_attrs: None,
+                    attrs: 0,
+                    handle: 0,
+                });
+            loaded.cpu.gpr[3] = channel;
+            loaded.cpu.gpr[4] = 0;
+            loaded.cpu.gpr[5] = resource_id as u16 as u32;
+            loaded.cpu.gpr[6] = 0;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = 0;
+            loaded.cpu.gpr[9] = 0;
+            loaded.cpu.gpr[10] = 1;
 
-        let probe = loaded.run_with_hle_imports(64);
+            let probe = loaded.run_with_hle_imports(64);
 
-        assert_eq!(probe.handled_import_count, 1);
-        assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
-        assert_eq!(loaded.sound.start_count, 1);
-        let playback = loaded.sound.file_playbacks.last().unwrap();
-        assert_eq!(playback.channel, channel);
-        assert_eq!(playback.ref_num, 0);
-        assert_eq!(playback.resource_id, resource_id);
-        assert_eq!(playback.decoded_aiff.unwrap().sample_count, 4);
-        assert_eq!(
-            loaded.sound.decoded_file_playbacks,
-            vec![PpcDecodedAiffPlaybackRecord {
-                file_playback_index: 0,
-                channel,
-                sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
-                samples: samples.to_vec(),
-            }]
-        );
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+            assert_eq!(loaded.sound.start_count, 1);
+            let playback = loaded.sound.file_playbacks.last().unwrap();
+            assert_eq!(playback.channel, channel);
+            assert_eq!(playback.ref_num, 0);
+            assert_eq!(playback.resource_id, resource_id);
+            assert_eq!(playback.decoded_aiff.unwrap().sample_count, 4);
+            assert_eq!(
+                loaded.sound.decoded_file_playbacks,
+                vec![PpcDecodedAiffPlaybackRecord {
+                    file_playback_index: 0,
+                    channel,
+                    sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
+                    samples: samples.to_vec(),
+                }]
+            );
+        }
     }
 
     #[test]
@@ -2121,6 +2152,56 @@ fn file_playback_rejects_a_data_fork_that_is_not_aiff() {
         .channels
         .iter()
         .any(|candidate| candidate.guest_ptr == channel && candidate.has_active_playback()));
+}
+
+#[test]
+fn sound_file_playback_rejects_missing_sources_without_scheduling_completion() {
+    let pef = synthetic_pef_with_import(b"SndStartFilePlay");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.push_test_open_file(PpcFileRecord {
+        ref_num: 128,
+        path: "Missing.aiff".to_string(),
+        position: 0,
+    });
+    let current = *loaded.process_file_system.current_resource_file;
+    loaded
+        .process_file_system
+        .push_vfs_resource(PpcVfsResourceRecord {
+            ref_num: current,
+            path: "Test App".to_string(),
+            res_type: u32::from_be_bytes(*b"snd "),
+            res_id: 7,
+            name: Vec::new(),
+            data: vec![0],
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+    for (reference, resource, expected) in [
+        (0, 0, PPC_RES_PROBLEM),
+        (0, 1234, PPC_RES_PROBLEM),
+        (0, 7, PPC_BAD_FORMAT),
+        (222, 0, PPC_RF_NUM_ERR),
+        (128, 0, PPC_FNF_ERR),
+    ] {
+        loaded.cpu.gpr[3] = 0x0500_1000;
+        loaded.cpu.gpr[4] = reference;
+        loaded.cpu.gpr[5] = resource;
+        loaded.cpu.gpr[9] = PPC_CODE_BASE + 0x80;
+        loaded.cpu.gpr[10] = 1;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SndStartFilePlay);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(expected));
+        assert_eq!(loaded.sound.start_count, 0);
+        assert!(loaded.sound.file_playbacks.is_empty());
+        assert!(loaded.sound.decoded_file_playbacks.is_empty());
+        loaded.sound.manager.with_mut(|manager| {
+            manager.mix_frame(8);
+            assert_eq!(manager.debug_file_play_count, 0);
+            assert!(manager.pending_sound_callbacks.is_empty());
+            assert!(manager.channels.is_empty());
+        });
+    }
 }
 
 fn aiff_header_api_fixture(compressed: bool) -> Vec<u8> {
