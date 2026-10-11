@@ -8,7 +8,8 @@ Stages: **rights** = applicable affirmative archive redistribution terms; **arch
 
 ## Active intake
 
-- **Gryversi (additional discovery):** [intake #4584](https://github.com/benletchford/systemless/issues/4584). Author-hosted GPLv2-only 1.0.1c ZIP includes source and licence. Original 68K game has no native PPC slice. All six HFS files/twelve forks, supported Finder metadata and outer checksum receipt match production packing. Native White placement, disc flipping and computer reply pass eight measured assertions. The normal CI pipeline promoted the complete original ZIP and content-only screenshot. Actual hosted-archive Chrome placement, flipping and computer reply pass eight checks; browser launch approved. Catalogue merge, human release and public replay remain pending. No qualified-live increment.
+- **Gryversi (additional discovery):** [intake #4584](https://github.com/benletchford/systemless/issues/4584). Author-hosted GPLv2-only 1.0.1c ZIP includes source and licence. Original 68K game has no native PPC slice. All six HFS files/twelve forks, supported Finder metadata and outer checksum receipt match production packing. Native White placement, disc flipping and computer reply pass eight measured assertions. The normal CI pipeline promoted the complete original ZIP and content-only screenshot. Actual hosted-archive Chrome placement, flipping and computer reply pass eight checks; browser launch approved. [Catalogue PR #4585](https://github.com/benletchford/systemless/pull/4585) merged with launch enabled. Human release and public replay remain pending. No qualified-live increment.
+- **Pegged (primary 104):** [intake #4586](https://github.com/benletchford/systemless/issues/4586). Exact original 2.13 resource-only 68K game; production both-fork/Finder parity verified. Five ordinary drags solve the six-peg starting puzzle and show the original win message; a fresh pinned-source replay passes 33 cell checks. Original author registration terms do not establish redistribution permission. Keep unhosted; other puzzles, browser, CI promotion and public qualification remain pending.
 
 - **Arashi (reserve R99):** [catalogue PR #4473](https://github.com/benletchford/systemless/pull/4473) and SetPort repair #4472 merged. Original 68K-only archive has affirmative non-profit distribution permission; all twenty forks match. Native movement/firing and ordinary preview passed. Public v0.96.0 loaded the exact hosted archive and verified level selection, pause, both movement directions and firing. This is the fifteenth independently qualified new live game. [Public evidence](https://github.com/benletchford/systemless/issues/4471#issuecomment-6103836720).
 
@@ -145,7 +146,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 101 | Shanghai Dynasty | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 102 | Mahjong | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 103 | MacTaipei | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 104 | Pegged | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 104 | Pegged | [Original shareware; grant pending](CATALOGUE-SOURCES.md#pegged-213--target-292-primary-slot-104) | [Exact 2.13; both forks/Finder matched](CATALOGUE-SOURCES.md#pegged-213--target-292-primary-slot-104) | Starting puzzle solved; 33 cell assertions | N/A: original CODE, no cfrg | Pending | Pending | Pending |
 | 105 | Powerball | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 106 | Brickles Plus | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 107 | Brick Attack | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
