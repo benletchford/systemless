@@ -1811,6 +1811,7 @@ struct ProcessNotificationQueue {
     next_instance: u64,
     completed_responses: std::collections::BTreeSet<u64>,
     delivered_sounds: std::collections::BTreeSet<u64>,
+    sound_channels: std::collections::BTreeMap<u64, Option<u32>>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SharedProcessNotificationQueue(SharedProcessValue<ProcessNotificationQueue>);
@@ -1837,6 +1838,7 @@ impl SharedProcessNotificationQueue {
             if let Some(instance) = queue.instances.remove(&request) {
                 queue.completed_responses.remove(&instance);
                 queue.delivered_sounds.remove(&instance);
+                queue.sound_channels.remove(&instance);
             }
             request
         })
@@ -1858,8 +1860,19 @@ impl SharedProcessNotificationQueue {
         self.0.with_mut(|queue| queue.instances.get(&request) == Some(&instance)
             && queue.delivered_sounds.insert(instance))
     }
+    pub(crate) fn set_sound_channel(&self, request: u32, instance: u64, channel: Option<u32>) {
+        self.0.with_mut(|queue| {
+            if queue.instances.get(&request) == Some(&instance) {
+                queue.sound_channels.insert(instance, channel);
+            }
+        });
+    }
+    pub(crate) fn sound_channel(&self, request: u32, instance: u64) -> Option<Option<u32>> {
+        self.0.with_ref(|queue| (queue.instances.get(&request) == Some(&instance))
+            .then(|| queue.sound_channels.get(&instance).copied()).flatten())
+    }
     pub(crate) fn clear(&self) {
-        self.0.with_mut(|queue| { queue.requests.clear(); queue.instances.clear(); queue.completed_responses.clear(); queue.delivered_sounds.clear(); });
+        self.0.with_mut(|queue| { queue.requests.clear(); queue.instances.clear(); queue.completed_responses.clear(); queue.delivered_sounds.clear(); queue.sound_channels.clear(); });
     }
     pub(crate) fn attach_to(&mut self, process_state: &Self) {
         if self.0.ptr_eq(&process_state.0) { return; }
@@ -3430,6 +3443,9 @@ impl SharedProcessSoundManager {
 
     pub(crate) fn play_sys_beep(&self, volume: u32) {
         self.with_mut(|manager| manager.play_sys_beep(volume));
+    }
+    pub(crate) fn queue_sys_beep(&self, volume: u32) -> Option<u32> {
+        self.with_mut(|manager| manager.queue_sys_beep(volume))
     }
 
     pub(crate) fn play_file_buffer(

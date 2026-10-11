@@ -802,14 +802,14 @@ pascal void ShowcaseNotificationResponse(NMRecPtr request)
     request->nmRefCon++;
 }
 
-static void InstallShowcaseNotification(Boolean withResponse, Boolean withSound)
+static void InstallShowcaseNotification(Boolean withResponse, Boolean withSound, Boolean soundOnly)
 {
     NMRemove(&gNotification);
     gNotification.qType = 8;
     gNotification.nmMark = 0;
     gNotification.nmIcon = nil;
     gNotification.nmSound = withSound ? (Handle)-1 : nil;
-    gNotification.nmStr = "\pNotification Caf\216";
+    gNotification.nmStr = soundOnly ? nil : "\pNotification Caf\216";
     gNotification.nmRefCon = 0;
     if (withResponse && gNotificationResponse == nil)
         gNotificationResponse = NewNMUPP(ShowcaseNotificationResponse);
@@ -5214,8 +5214,8 @@ static void DoEvent(EventRecord *event)
             key = (char)(event->message & charCodeMask);
             if ((event->modifiers & cmdKey) != 0) {
                 DoMenuChoice(MenuKey(key));
-            } else if (gPage == pageGraphics && (key == 'n' || key == 'r' || key == 'b')) {
-                InstallShowcaseNotification(key == 'r', key == 'b');
+            } else if (gPage == pageGraphics && (key == 'n' || key == 'r' || key == 'b' || key == 's' || key == 't')) {
+                InstallShowcaseNotification(key == 'r' || key == 't', key == 'b' || key == 's' || key == 't', key == 's' || key == 't');
             } else if ((gPage == pageControls || gPage == pagePreferences) &&
                        (event->modifiers & optionKey) != 0 && (key == 'f' || key == 'n')) {
                 SetShowcaseControlFonts(key == 'f');

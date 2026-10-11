@@ -2274,18 +2274,43 @@ impl FixtureRunner {
             app.parked_interrupt_callback.is_some() || app.notification_response_context.is_some()) {
             return false;
         }
-        if expected.sound_handle == u32::MAX {
-            if let Some(app) = self.native.application_mut() {
-                if app.toolbox_startup.notification_requests.begin_sound(expected.guest_id, expected.instance_id) {
-                    let volume = app.sound.manager.sys_beep_volume();
-                    app.sound.manager.play_sys_beep(volume);
-                }
-            } else if self.dispatcher.notification_requests.begin_sound(expected.guest_id, expected.instance_id) {
-                self.dispatcher.play_sys_beep(&mut self.bus);
-            }
-        }
+        if expected.sound_handle == u32::MAX { self.queue_notification_system_sound(expected); }
         self.notification_alert = Some(expected.clone());
         true
+    }
+
+    fn queue_notification_system_sound(&mut self, expected: &NotificationSnapshot) {
+        if let Some(app) = self.native.application_mut() {
+            let queue = &app.toolbox_startup.notification_requests;
+            if queue.begin_sound(expected.guest_id, expected.instance_id) {
+                let volume = app.sound.manager.sys_beep_volume();
+                let channel = app.sound.manager.queue_sys_beep(volume);
+                queue.set_sound_channel(expected.guest_id, expected.instance_id, channel);
+            }
+        } else if self.dispatcher.notification_requests.begin_sound(expected.guest_id, expected.instance_id) {
+            let channel = self.dispatcher.queue_sys_beep(&mut self.bus);
+            self.dispatcher.notification_requests.set_sound_channel(expected.guest_id, expected.instance_id, channel);
+        }
+    }
+
+    /// Advance sound-only system notifications without creating an alert or
+    /// pausing foreground processing. Responses wait for their own tone to end.
+    pub fn advance_notification_system_sounds(&mut self) {
+        if self.notification_alert.is_some() || self.is_ui_tracking_active()
+            || self.deferred_tracking_refire_pc.is_some()
+            || self.active_interrupt_callback.is_some()
+            || self.native.application().is_some_and(|app| app.parked_interrupt_callback.is_some()
+                || app.notification_response_context.is_some()) { return; }
+        let Some(expected) = self.notification_snapshot().into_iter().find(|notice| !notice.response_started) else { return; };
+        if expected.mark != 0 || expected.icon_handle != 0 || expected.text.is_some()
+            || expected.sound_handle != u32::MAX { return; }
+        self.queue_notification_system_sound(&expected);
+        let channel = if let Some(app) = self.native.application() {
+            app.toolbox_startup.notification_requests.sound_channel(expected.guest_id, expected.instance_id)
+        } else { self.dispatcher.notification_requests.sound_channel(expected.guest_id, expected.instance_id) };
+        let Some(channel) = channel else { return; };
+        if channel.is_some_and(|pointer| self.dispatcher.sound_manager.channel_busy(pointer).unwrap_or(false)) { return; }
+        self.complete_notification_delivery(&expected);
     }
 
     /// Return the currently owned alert, retiring stale or removed guest records.

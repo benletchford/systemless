@@ -5,6 +5,44 @@ use crate::process_context::PendingFileCompletion;
 use crate::trap::dispatch::TrapTableProfile;
 
 #[test]
+fn notification_sound_only_waits_for_its_channel_before_auto_removal() {
+    for native_mode in [false, true] { for muted in [false, true] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        if native_mode { runner.init_app(&halted_ppc_app_with_sound(PpcSoundState::default())); }
+        if muted { runner.dispatcher.sound_manager.set_sys_beep_volume(0); }
+        let request = if native_mode { PPC_DATA_BASE + 0x6000 } else { runner.bus.alloc(128) };
+        if native_mode {
+            let native = runner.native.application_mut().unwrap();
+            native.memory.add_region(request, vec![0; 128]);
+            native.memory.write_u16_be(request + 4, 8).unwrap();
+            native.memory.write_u32_be(request + 20, u32::MAX).unwrap();
+            native.memory.write_u32_be(request + 28, u32::MAX).unwrap();
+            native.toolbox_startup.notification_requests.push(request);
+        } else {
+            runner.bus.write_word(request + 4, 8);
+            runner.bus.write_long(request + 20, u32::MAX);
+            runner.bus.write_long(request + 28, u32::MAX);
+            runner.dispatcher.notification_requests.push(request);
+        }
+        runner.advance_notification_system_sounds();
+        assert!(!runner.guest_work_is_suspended());
+        assert!(runner.notification_alert_snapshot().is_none());
+        if !muted {
+            assert_eq!(runner.notification_snapshot().len(), 1);
+            runner.mix_audio(128);
+            assert!(runner.drain_audio().iter().any(|sample| *sample != 0x80));
+            runner.advance_notification_system_sounds();
+            assert!(!runner.notification_snapshot()[0].response_started);
+            runner.mix_audio(crate::sound::synth_sys_beep_samples().len());
+            runner.advance_notification_system_sounds();
+        }
+        assert!(runner.notification_snapshot().is_empty());
+        runner.advance_notification_system_sounds();
+        assert!(runner.notification_snapshot().is_empty());
+    } }
+}
+
+#[test]
 fn notification_system_sound_plays_while_alert_retains_foreground_on_both_cpus() {
     for native_mode in [false, true] {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());

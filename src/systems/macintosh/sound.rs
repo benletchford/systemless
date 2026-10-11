@@ -931,10 +931,15 @@ impl SoundManager {
     /// PCM still belongs to this process manager and is released by the same
     /// idle-channel lifecycle as a 68K internal beep.
     pub(crate) fn play_sys_beep(&mut self, volume: u32) {
+        let _ = self.queue_sys_beep(volume);
+    }
+
+    pub(crate) fn queue_sys_beep(&mut self, volume: u32) -> Option<u32> {
         if volume & 0xFFFF == 0 && (volume >> 16) & 0xFFFF == 0 {
-            return;
+            return None;
         }
-        let mut channel = SndChannel::new_internal(self.allocate_internal_channel_ptr());
+        let pointer = self.allocate_internal_channel_ptr();
+        let mut channel = SndChannel::new_internal(pointer);
         channel.set_volume(volume);
         channel.mark_auto_dispose_when_idle();
         channel.play_buffer(
@@ -944,6 +949,7 @@ impl SoundManager {
             0,
         );
         self.channels.push(channel);
+        Some(pointer)
     }
 
     /// Start decoded file playback on the canonical process channel.

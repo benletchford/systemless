@@ -1,0 +1,19 @@
+{
+  "scope": "Both CPU runner paths, muted/unmuted sound-only system tone autoremove. Actual guest NMInstall across mono68k, colour68k, PPC8/PPC16: text alerts plus sound-only autoremove and compiled callbacks, non-silent AudioBackend samples, no sound-only alert, subsequent menu interaction, callback refCon once. No physical audio, complete notification-stage ordering or release qualification.",
+  "library_tests": 24,
+  "library_elapsed_seconds": 0.28,
+  "frontend_tests": 5,
+  "frontend_elapsed_seconds": 29.1,
+  "sha256": {
+    "src/bin/gpui_demo.rs": "0dcf807ed6e6d45e5c9d89a56c0e0af107287c3ad65e595130261f574a48af14",
+    "src/systems/macintosh/process_context.rs": "0b1c739585cda01b147dcb4bfb3102d29c2d01735d0c0566744d4d3cbd9311f7",
+    "src/systems/macintosh/runner/mod.rs": "99ca867a1beeda1da44bfb649bfdf0960dc0372aa152f2face931ef766b00ec6",
+    "src/systems/macintosh/runner/tests/trap_dispatch.rs": "ff4b73469c704a7b5096ac3cf29c7b18f1ae444af53428076ffb9801c9ecaf04",
+    "src/systems/macintosh/sound.rs": "c92c2ff00cc7af0dc1d3bb9fc5cc3f6f7dcf194507f54acb4ed76ec5783b449f",
+    "src/systems/macintosh/trap/sound.rs": "6f3c65845836be350fff51cf46dfb6f50aba15c09599829047110c1c50dfe903",
+    "tests/toolbox-showcase/showcase.c": "d5f5fea8711552058ced87941775ce38108149d97fa59cd9d1b03356986c1b4c",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "7e9259cf65889bd1097a34439278ef4ecc1e69ec6272009488b169adeb72bb59"
+  },
+  "guest_workflow_cases": 20,
+  "guest_workflow_elapsed_seconds": 23.73
+}

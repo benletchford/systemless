@@ -1,5 +1,7 @@
 # GPUI production release gates
 
+Sound-only system notifications: the worker services records with no text, mark or icon and the system-sound sentinel. It queues one tone per installation, keeps foreground processing available and waits for that specific channel to finish before response delivery. Muted tones complete without an alert. The corrected library run passes all 24 notification tests (0.28s), including muted/unmuted autoremove on both CPUs. Five frontend notification tests pass (29.10s); those retain their existing text-alert scope. Evidence is under `reference/gpui-demo/notification-sound-only`. The rebuilt dual-CPU fixture and expanded 20-case guest/worker/GPUI workflow pass (23.73s), including sound-only autoremove and compiled callbacks across mono68k, colour68k, PPC8/PPC16, AudioBackend output, no alert and subsequent guest menu interaction. Physical audio and complete notification-stage ordering remain unqualified. All eight production gates remain open.
+
 Guest-installed system-sound workflow: the dual-CPU fixture now requests the
 system alert sound through NMInstall (`b` on Graphics). Twelve actual worker
 and GPUI cases pass across mono68k, colour68k, PPC8 and explicit PPC16 (16.75s).
