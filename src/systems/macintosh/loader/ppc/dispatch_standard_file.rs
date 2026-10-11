@@ -31,6 +31,7 @@ pub(super) struct PpcStandardFileEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PpcStandardFileGetTrackingState {
+    pub(super) generation: u64,
     pub(super) call: PpcStandardFileCall,
     pub(super) entries: Vec<PpcStandardFileEntry>,
     pub(super) current_dir_id: u32,
@@ -61,6 +62,7 @@ pub(super) struct PpcStandardFileFilteringState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PpcStandardFilePutTrackingState {
+    pub(super) generation: u64,
     pub(super) call: PpcStandardFileCall,
     pub(super) vref: i16,
     pub(super) dir_id: u32,
@@ -1532,7 +1534,9 @@ fn ppc_standard_file_get_start(
             include_directories: operation == PpcStandardFileOperation::CustomGetFile
                 && num_types == -1,
         });
+    startup.next_standard_file_generation = startup.next_standard_file_generation.saturating_add(1);
     let tracking = PpcStandardFileGetTrackingState {
+        generation: startup.next_standard_file_generation,
         call: ppc_standard_file_call(mode, cpu),
         entries,
         current_dir_id,
@@ -1598,7 +1602,9 @@ fn ppc_standard_file_put_start(
         PPC_STANDARD_FILE_PUT_DIALOG_HEIGHT,
         requested_origin,
     );
+    startup.next_standard_file_generation = startup.next_standard_file_generation.saturating_add(1);
     let tracking = PpcStandardFilePutTrackingState {
+        generation: startup.next_standard_file_generation,
         call: ppc_standard_file_call(mode, cpu),
         vref: PPC_BOOT_VOLUME_REF_NUM,
         dir_id: default_dir_id,

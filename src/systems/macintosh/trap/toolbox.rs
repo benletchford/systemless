@@ -2467,7 +2467,9 @@ impl super::TrapDispatcher {
         let entries = self.standard_file_get_candidates(bus, num_types, type_list_ptr);
         let bounds = self.standard_file_get_dialog_bounds(requested_origin);
         let saved_pixels = self.save_dialog_pixels(bus, bounds);
+        self.next_standard_file_generation = self.next_standard_file_generation.saturating_add(1);
         let tracking = StandardFileGetTrackingState {
+            generation: self.next_standard_file_generation,
             modern_reply,
             reply_ptr,
             stack_ptr,
@@ -3075,7 +3077,9 @@ impl super::TrapDispatcher {
         let name_len = name.len().min(i16::MAX as usize) as i16;
         let current_dir_id = *self.default_dir_id;
         let entries = self.standard_file_get_candidates_in_directory(current_dir_id, None);
+        self.next_standard_file_generation = self.next_standard_file_generation.saturating_add(1);
         let tracking = StandardFilePutTrackingState {
+            generation: self.next_standard_file_generation,
             modern_reply,
             reply_ptr,
             stack_ptr,

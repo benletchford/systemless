@@ -1933,6 +1933,118 @@ mod desktop {
         }
 
         #[test]
+        fn standard_file_snapshots_follow_modal_guest_state_on_both_cpus() {
+            use systemless::runner::StandardFileKind;
+
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session
+                    .load_path(
+                        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("tests/toolbox-showcase/toolbox-showcase.sit"),
+                    )
+                    .unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 12));
+                wait_for_menu(&mut session, 129, 12, true);
+                settle(&mut session);
+                let tick = session.runner().guest_tick().saturating_add(1);
+                session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                session.deliver_input(MacintoshInput::MouseDown {
+                    vertical: 266,
+                    horizontal: 126,
+                });
+                session.deliver_input(MacintoshInput::MouseUp {
+                    vertical: 266,
+                    horizontal: 126,
+                });
+                let opened = (0..100)
+                    .find_map(|_| {
+                        let tick = session.runner().guest_tick().saturating_add(1);
+                        session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                        session.runner_mut().standard_file_snapshot()
+                    })
+                    .expect("StandardGetFile should retain its modal panel state");
+                assert_eq!(opened.kind, StandardFileKind::Get);
+                assert_ne!(opened.guest_id, 0);
+                assert_ne!(opened.generation, 0);
+                assert!(opened.bounds.2 > opened.bounds.0 && opened.bounds.3 > opened.bounds.1);
+                assert!(opened.entries.as_ref().is_some_and(|entries| !entries.is_empty()));
+                let stable = session.runner_mut().standard_file_snapshot().unwrap();
+                assert_eq!((stable.guest_id, stable.generation), (opened.guest_id, opened.generation));
+                session.deliver_input(MacintoshInput::KeyDown {
+                    mac_key: 0x35,
+                    character: 27,
+                });
+                session.deliver_input(MacintoshInput::KeyUp {
+                    mac_key: 0x35,
+                    character: 27,
+                });
+                assert!((0..100).any(|_| {
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                    session.runner_mut().standard_file_snapshot().is_none()
+                }));
+                session.deliver_input(MacintoshInput::MouseDown {
+                    vertical: 266,
+                    horizontal: 400,
+                });
+                session.deliver_input(MacintoshInput::MouseUp {
+                    vertical: 266,
+                    horizontal: 400,
+                });
+                let saving = (0..100)
+                    .find_map(|_| {
+                        let tick = session.runner().guest_tick().saturating_add(1);
+                        session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                        session.runner_mut().standard_file_snapshot()
+                    })
+                    .expect("StandardPutFile should retain its modal panel state");
+                assert_eq!(saving.kind, StandardFileKind::Put);
+                assert!(saving.generation > opened.generation);
+                if powerpc {
+                    assert!(saving.entries.is_none(), "native Save entries are not extracted yet");
+                } else {
+                    assert!(saving.entries.as_ref().is_some_and(|entries| !entries.is_empty()));
+                }
+                assert!(saving.name.as_ref().is_some_and(|name| !name.is_empty()));
+                assert_eq!(saving.name_selection, Some((0, saving.name.as_ref().unwrap().len())));
+                session.deliver_input(MacintoshInput::KeyDown {
+                    mac_key: 0x00,
+                    character: b'S',
+                });
+                session.deliver_input(MacintoshInput::KeyUp {
+                    mac_key: 0x00,
+                    character: b'S',
+                });
+                let edited = (0..100)
+                    .find_map(|_| {
+                        let tick = session.runner().guest_tick().saturating_add(1);
+                        session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                        session.runner_mut().standard_file_snapshot()
+                            .filter(|panel| panel.name.as_deref() == Some("S"))
+                    })
+                    .expect("guest StandardPutFile should own save-name editing");
+                assert_eq!(edited.generation, saving.generation);
+                session.deliver_input(MacintoshInput::KeyDown {
+                    mac_key: 0x35,
+                    character: 27,
+                });
+                session.deliver_input(MacintoshInput::KeyUp {
+                    mac_key: 0x35,
+                    character: 27,
+                });
+                assert!((0..100).any(|_| {
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                    session.runner_mut().standard_file_snapshot().is_none()
+                }));
+            }
+        }
+
+        #[test]
         fn text_edit_snapshots_resolve_guest_port_geometry_on_both_cpus() {
             for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
                 let mut session = MacintoshSession::new(true, depth);
