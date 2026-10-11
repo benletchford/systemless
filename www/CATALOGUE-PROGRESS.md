@@ -465,7 +465,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 423 | Jailbreak | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 424 | Kalah | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 425 | Lunar Commando | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 426 | MacSolitaire | [Installer terms uninspected; held](CATALOGUE-SOURCES.md#macsolitaire-16--target-614-original-installer-intake) | Original 1.6; both installed game forks matched | N/A: installed game is PPC-only | [Initialization advances; menu import and accessor ABI held](https://github.com/benletchford/systemless/issues/4500#issuecomment-6105690236) | Pending | Grow-zone, Internet Config and CarbonLib fixes merged; unhosted | Pending |
+| 426 | MacSolitaire | [Installer terms uninspected; held](CATALOGUE-SOURCES.md#macsolitaire-16--target-614-original-installer-intake) | Original 1.6; both installed game forks matched | N/A: installed game is PPC-only | [Initialization advances; global mouse/accessor ABI held](https://github.com/benletchford/systemless/issues/4500#issuecomment-6105884436) | Pending | Grow-zone, Internet Config, CarbonLib, OSL and menu-query fixes merged; unhosted | Pending |
 | 427 | Nethergate | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 428 | Oilcap Pro | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 429 | Project Magellan | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
