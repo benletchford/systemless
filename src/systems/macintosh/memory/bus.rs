@@ -1407,6 +1407,14 @@ impl RamStorage {
 impl MacMemoryBus {
     #[inline]
     fn boot_rom_shadow_byte(address: u32) -> Option<u8> {
+        let header_address = crate::machine_profile::CLASSIC_ROM_BASE + 8;
+        if let Some(offset) = address.checked_sub(header_address) {
+            if let Some(byte) = crate::machine_profile::CLASSIC_ROM_VERSION
+                .to_be_bytes().get(offset as usize)
+            {
+                return Some(*byte);
+            }
+        }
         let offset = address.checked_sub(BOOT_ROM_SHADOW_BASE)? as usize;
         BOOT_ROM_SHADOW.get(offset).copied()
     }
@@ -4263,6 +4271,21 @@ mod tests {
         assert_eq!(bus.read_byte(0x4081_0008), 0);
     }
 
+    #[test]
+    fn classic_rom_version_metadata_is_narrow_and_read_only() {
+        let mut bus = MacMemoryBus::new(1024);
+        let base = crate::machine_profile::CLASSIC_ROM_BASE;
+        assert_eq!(bus.read_word(base + 8), 0x067C);
+        assert_eq!(bus.read_byte(base + 7), 0);
+        assert_eq!(bus.read_byte(base + 10), 0);
+        bus.write_byte(base + 8, 0);
+        bus.write_word(base + 8, 0xA55A);
+        bus.write_long(base + 8, 0xFFFF_FFFF);
+        assert_eq!(bus.read_word(base + 8), 0x067C);
+        assert_eq!(bus.read_word(base + 10), 0);
+        // Original ROMVersion-style code uses the low byte for the version.
+        assert!(bus.read_word(base + 8) & 0x00FF >= 0x75);
+    }
     #[test]
     fn boot_rom_shadow_ignores_writes() {
         let mut bus = MacMemoryBus::new(1024);
