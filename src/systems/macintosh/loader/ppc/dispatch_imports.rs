@@ -1516,6 +1516,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::DSpContextRelease
         | PpcImportDispatcherTarget::DSpContextSetState
         | PpcImportDispatcherTarget::DSpContextGetState
+        | PpcImportDispatcherTarget::DSpContextGetMonitorFrequency
         | PpcImportDispatcherTarget::DSpContextGetDirtyRectGridUnits
         | PpcImportDispatcherTarget::DSpContextGetDirtyRectGridSize
         | PpcImportDispatcherTarget::DSpContextSetDirtyRectGridSize

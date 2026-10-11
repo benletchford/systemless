@@ -600,6 +600,7 @@ pub enum PpcImportDispatcherTarget {
     DSpContextRelease,
     DSpContextSetState,
     DSpContextGetState,
+    DSpContextGetMonitorFrequency,
     DSpContextGetDirtyRectGridUnits,
     DSpContextGetDirtyRectGridSize,
     DSpContextSetDirtyRectGridSize,
@@ -2506,6 +2507,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("DrawSprocketLib", "DSpContext_Release") => PpcImportDispatcherTarget::DSpContextRelease,
         ("DrawSprocketLib", "DSpContext_SetState") => PpcImportDispatcherTarget::DSpContextSetState,
         ("DrawSprocketLib", "DSpContext_GetState") => PpcImportDispatcherTarget::DSpContextGetState,
+        ("DrawSprocketLib", "DSpContext_GetMonitorFrequency") => {
+            PpcImportDispatcherTarget::DSpContextGetMonitorFrequency
+        }
         ("DrawSprocketLib", "DSpContext_GetDirtyRectGridUnits") => {
             PpcImportDispatcherTarget::DSpContextGetDirtyRectGridUnits
         }

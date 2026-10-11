@@ -267,6 +267,23 @@ pub(super) fn dispatch_drawsprocket_import(
         PpcImportDispatcherTarget::DSpContextSetDirtyRectGridSize => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_dsp_context_set_dirty_grid(cpu, draw_sprocket)),
         )),
+        PpcImportDispatcherTarget::DSpContextGetMonitorFrequency => {
+            // Apple Game Sprockets Guide: OSStatus (context, Fixed *frequency).
+            // Return the context's complete signed 16.16 bit pattern, not Hz.
+            let result = if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
+                error
+            } else if cpu.gpr[4] == 0 || !ppc_memory_can_write_bytes(memory, cpu.gpr[4], 4) {
+                PPC_PARAM_ERR
+            } else if memory
+                .write_u32_be(cpu.gpr[4], draw_sprocket.context_attributes.frequency)
+                .is_none()
+            {
+                PPC_PARAM_ERR
+            } else {
+                PPC_NO_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         PpcImportDispatcherTarget::DSpContextGetState => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_dsp_context_get_state(cpu, memory, draw_sprocket)),
         )),

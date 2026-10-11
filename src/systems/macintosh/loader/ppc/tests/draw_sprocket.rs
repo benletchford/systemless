@@ -2769,3 +2769,45 @@ fn draw_sprocket_dirty_grid_rejects_bad_outputs_and_sizes_without_partial_change
         assert_eq!(loaded.draw_sprocket.dirty_grid_size, (32, 32));
     }
 }
+
+#[test]
+fn draw_sprocket_monitor_frequency_import_returns_full_fixed_context_value() {
+    let pef =
+        synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_GetMonitorFrequency");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let out = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(out, vec![0xA5; 8]);
+    loaded.draw_sprocket.context_attributes.frequency = (75 << 16) | 0x8000;
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = out;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(out), Some(0x004B_8000));
+    assert_eq!(loaded.memory.read_u32_be(out + 4), Some(0xA5A5_A5A5));
+}
+
+#[test]
+fn draw_sprocket_monitor_frequency_errors_preserve_caller_output() {
+    let pef =
+        synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_GetMonitorFrequency");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let out = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(out, vec![0xA5; 4]);
+    for (context, ptr, expected) in [
+        (0, out, PPC_DSP_CONTEXT_NOT_FOUND_ERR),
+        (PPC_DSP_CONTEXT, 0, PPC_PARAM_ERR),
+        (PPC_DSP_CONTEXT, out + 1, PPC_PARAM_ERR),
+        (PPC_DSP_CONTEXT, 0xFFFF_FFFC, PPC_PARAM_ERR),
+    ] {
+        loaded.cpu.gpr[3] = context;
+        loaded.cpu.gpr[4] = ptr;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::DSpContextGetMonitorFrequency,
+        );
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(expected));
+        assert_eq!(loaded.memory.read_u32_be(out), Some(0xA5A5_A5A5));
+    }
+}
