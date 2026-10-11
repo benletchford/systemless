@@ -60,6 +60,22 @@ impl TextEditDrawing {
             && self.editor_recipe == other.editor_recipe
     }
 
+    #[cfg(feature = "test-support")]
+    pub(crate) fn ownership_diagnostic(&self, other: &Self) -> String {
+        let recipe = |drawing: &Self| drawing.editor_recipe.as_ref().map(|r|
+            (r.guest_id, r.owner_port, r.selection, r.active, r.caret_visible,
+                r.text.len(), r.font, r.size, r.face, r.line_count, r.line_height, r.font_ascent));
+        let differences = self.pixels.iter().zip(&other.pixels).enumerate()
+            .filter(|(_, (held, current))| held != current)
+            .take(8).map(|(index, (held, current))| (index, *held, *current)).collect::<Vec<_>>();
+        format!("surface={} pixels={} recipe={} regions={} held={:?} current={:?} held_surface={:?} current_surface={:?} byte_differences={differences:?}",
+            self.same_surface(other), self.pixels == other.pixels,
+            self.editor_recipe == other.editor_recipe, self.painted_regions.len(),
+            recipe(self), recipe(other),
+            (self.base, self.port, self.bitmap, self.row_bytes, self.depth, self.bounds, self.view),
+            (other.base, other.port, other.bitmap, other.row_bytes, other.depth, other.bounds, other.view))
+    }
+
     /// Keep every unchanged pixel of a completed native draw. Application
     /// modifications stay native, including borders crossing standard cells.
     pub(crate) fn unchanged_painted_regions(&self, other: &Self) -> Vec<(i16, i16, i16, i16)> {

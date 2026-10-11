@@ -151,7 +151,14 @@ impl PresentationSlot {
 
     pub(crate) fn text_edit_drawing_regions(&self, handle: u32, drawing: Option<crate::text_edit::TextEditDrawing>, screen_base: u32) -> Vec<(i16, i16, i16, i16)> {
         let Some(drawing) = drawing else { return Vec::new(); };
-        self.1.borrow().get(&handle).filter(|held| drawing.base == screen_base && held.same_pixels(&drawing))
+        let drawings = self.1.borrow();
+        #[cfg(feature = "test-support")]
+        if std::env::var_os("SYSTEMLESS_TRACE_TEXT_OWNERSHIP").is_some() {
+            eprintln!("TE ownership handle={handle:#x} screen={screen_base:#x}: {}",
+                drawings.get(&handle).map(|held| held.ownership_diagnostic(&drawing))
+                    .unwrap_or_else(|| "no retained drawing".into()));
+        }
+        drawings.get(&handle).filter(|held| drawing.base == screen_base && held.same_pixels(&drawing))
             .map(|held| held.painted_regions.clone()).unwrap_or_default()
     }
 

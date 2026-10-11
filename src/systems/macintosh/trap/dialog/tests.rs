@@ -10795,7 +10795,7 @@
         );
         bus.write_byte(animation_probe, 0);
         bus.write_byte(scene_outside_user, 0);
-        disp.refresh_dialog_tracking_snapshot(&mut bus, None);
+        disp.refresh_dialog_tracking_snapshot(&mut cpu, &mut bus, None);
         assert_eq!(bus.read_byte(animation_probe), 0x93);
         assert_eq!(bus.read_byte(scene_outside_user), 0x62);
     }

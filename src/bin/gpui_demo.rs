@@ -4477,7 +4477,6 @@ mod desktop {
                 })
                 .expect("modal preferences dialog should expose a live checkbox");
             if matches!(capture, CaptureCase::ModalDialogMultiline) {
-                assert!(prefer_powerpc, "multiline dialog capture requires the PPC TERec painter");
                 let dialog = dialogs.iter().find(|dialog| dialog.visible && dialog.active).unwrap();
                 let id = dialog.guest_id;
                 let bounds = dialog.items[8].bounds;
@@ -5754,7 +5753,7 @@ mod desktop {
             });
         });
         visual.run_until_parked();
-        if matches!(capture, CaptureCase::StandardFileSaveComposed | CaptureCase::StandardFileNewFolderComposed
+        if matches!(capture, CaptureCase::ModalDialogMultiline | CaptureCase::StandardFileSaveComposed | CaptureCase::StandardFileNewFolderComposed
             | CaptureCase::StandardFileOpenComposed | CaptureCase::StandardFileVolumePopupComposed | CaptureCase::StandardFileVolumeManyComposed { .. } | CaptureCase::StandardFileOpenScrolled) {
             visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
                 demo.host_active = Some(true); window.focus(&demo.focus, cx);
@@ -5852,7 +5851,7 @@ mod desktop {
             marked.save(output.with_extension("marked.png")).unwrap();
             visual.run_until_parked();
             let restored = visual.capture_screenshot(window.into()).unwrap();
-            assert_eq!(restored, composed, "marked cancellation must restore exact wrapped dialog pixels");
+            assert!(restored == composed, "marked cancellation must restore exact wrapped dialog pixels");
             let long_stage = format!("{}日😀", "W".repeat(100));
             visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
                 assert!(demo.composition.mark(&long_stage, 101..103)); cx.notify();
@@ -15919,16 +15918,8 @@ mod desktop {
                 let dialogs = session.runner_mut().dialog_snapshot();
                 let records = session.runner_mut().text_edit_snapshot().records;
                 let windows = session.runner_mut().window_frame_snapshot();
-                if !powerpc {
-                    // The classic Dialog Manager owns its editor directly;
-                    // it does not create a caller-owned TERec for this field.
-                    assert!(!records.iter().any(|record| record.owner_port == dialog.guest_id));
-                    assert!(dialogs.iter().find(|current| current.guest_id == dialog.guest_id)
-                        .unwrap().items[8].edit_text_layout.is_some());
-                    continue;
-                }
                 let record = records.iter().find(|record| record.active && record.owner_port == dialog.guest_id)
-                    .expect("PPC dialog TERec must be discoverable by the shared renderer");
+                    .expect("dialog TERec must be discoverable by the shared renderer");
                 assert!(record.line_count > 1, "guest must actually wrap: PPC={powerpc} depth={depth}");
                 let after = session.video_frame().unwrap();
                 assert_eq!((before.width, before.height), (after.width, after.height));
@@ -15944,7 +15935,11 @@ mod desktop {
                 let pieces = super::super::frames::text_edit_pieces(&records, &dialogs, &[], &windows,
                     super::super::frames::Rect::from((0, 0, 600, 800)));
                 assert!(pieces.iter().any(|piece| records[piece.record].guest_id == record.guest_id),
-                    "actual guest multiline field must reach shared renderer: PPC={powerpc} depth={depth}");
+                    "actual guest multiline field must reach shared renderer: PPC={powerpc} depth={depth}; intact={} regions={:?} view={:?} font={:?} owner_generation={:?} item_layout={:?}",
+                    record.drawing_intact, record.painted_regions, record.global_view_rect,
+                    (record.font, record.size, record.face, record.styled, record.line_height),
+                    windows.iter().find(|window| window.guest_id == dialog.guest_id).map(|window| window.generation),
+                    dialogs.iter().find(|current| current.guest_id == dialog.guest_id).unwrap().items[8].edit_text_layout);
                 let geometry = super::composition::text_line_geometry(record, 0).unwrap();
                 let dest = record.global_dest_rect.unwrap();
                 let line = super::super::text::ClassicLine::plain(

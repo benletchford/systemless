@@ -2751,6 +2751,10 @@ impl FixtureRunner {
                         let text_handle = self.bus.read_long(guest_id + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
                         let text_ptr = if text_handle != 0 { self.bus.read_long(text_handle) } else { 0 };
                         let caret_visible = (text_ptr != 0).then(|| self.bus.read_word(text_ptr + 0x38) == 0);
+                        // TERec.nLines is at 0x5E (Inside Macintosh: Text,
+                        // TERec layout). A wrapped active field belongs to the
+                        // actual editor painter, not the single-line item path.
+                        let active_edit_multiline = text_ptr != 0 && self.bus.read_word(text_ptr + 0x5E) > 1;
                         let snapshots = items
                             .iter()
                             .enumerate()
@@ -2758,7 +2762,9 @@ impl FixtureRunner {
                                 let number = (index + 1) as i16;
                                 DialogItemSnapshot {
                                     static_text_layout: self.dispatcher.dialog_static_text_layout(&self.bus, guest_id, index, item.rect),
-                                    edit_text_layout: item.is_edit_text().then(|| self.dispatcher.dialog_edit_text_layout()).flatten(),
+                                    edit_text_layout: (item.is_edit_text()
+                                        && !(active_edit_multiline && index as u16 == edit_index))
+                                        .then(|| self.dispatcher.dialog_edit_text_layout()).flatten(),
                                     // DITL item handles may change without replacing the dialog.
                                     // MTE (1992), pp. 6-122--6-123; ControlRecord, pp. 5-60--5-64.
                                     control_identity: TrapDispatcher::dialog_item_handle_addr(&self.bus, guest_id, number)
@@ -3554,7 +3560,18 @@ impl FixtureRunner {
             }
             crate::text_edit::snapshot_guest_records(&handles, &mut |addr| app.memory.read_u8(addr))
         } else {
-            let handles = self.dispatcher.textedit_states.identities();
+            let mut handles = self.dispatcher.textedit_states.identities();
+            // Classic Dialog Manager also allocates internal TERecs without
+            // TENew registration. Their identity follows the owning dialog,
+            // rather than inventing a persistent standalone editor lifetime.
+            for dialog in &dialog_owners {
+                if !dialog.visible || !dialog.active || dialog.edit_field.is_none() { continue; }
+                let handle = self.bus.read_long(dialog.guest_id
+                    + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+                if handle != 0 && !handles.iter().any(|(known, _)| *known == handle) {
+                    handles.push((handle, dialog.generation));
+                }
+            }
             crate::text_edit::snapshot_guest_records(&handles, &mut |addr| {
                 Some(self.bus.read_byte(addr))
             })

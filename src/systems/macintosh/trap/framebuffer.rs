@@ -6219,10 +6219,19 @@ impl super::TrapDispatcher {
                         let active = ptr != 0 && bus.read_word(ptr + 0x24) != 0;
                         let selection = (active && start < end).then_some((start, end));
                         let cursor = (active && start == end && bus.read_word(ptr + 0x38) == 0).then_some(start);
-                        self.draw_edit_text_with_cursor(
-                            bus, abs_top, abs_left, abs_bottom, abs_right,
-                            &tracking.edit_text, selection, cursor, item.is_enabled(),
-                        );
+                        // Wrapped editors were painted by TextEdit before the
+                        // snapshot was retained. Repainting them here with the
+                        // single-line fallback changes both glyph layout and
+                        // the ownership pixels on every compositor pass.
+                        let wrapped_editor = ptr != 0
+                            && bus.read_long(ptr + 0x52) == tracking.dialog_ptr
+                            && bus.read_word(ptr + 0x5e) > 1;
+                        if !wrapped_editor {
+                            self.draw_edit_text_with_cursor(
+                                bus, abs_top, abs_left, abs_bottom, abs_right,
+                                &tracking.edit_text, selection, cursor, item.is_enabled(),
+                            );
+                        }
                     }
                 }
 

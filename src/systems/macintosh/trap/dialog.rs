@@ -7059,6 +7059,7 @@ impl super::TrapDispatcher {
         self.capture_gui_frame(bus, &format!("draw_dialog_{:08X}", dialog_ptr));
     }
 
+    #[cfg_attr(feature = "test-support", track_caller)]
     fn redraw_standard_dialog_items(
         &self,
         bus: &mut MacMemoryBus,
@@ -7070,6 +7071,11 @@ impl super::TrapDispatcher {
         dialog_ptr: u32,
         only_item: Option<i16>,
     ) {
+        #[cfg(feature = "test-support")]
+        if std::env::var_os("SYSTEMLESS_TRACE_TEXT_OWNERSHIP").is_some() {
+            eprintln!("[DIALOG-STANDARD-REPAINT] caller={} dialog={:#x} edit={} only={:?}",
+                std::panic::Location::caller(), dialog_ptr, edit_item, only_item);
+        }
         let (top, left, _bottom, _right) = bounds;
         // Apply default chrome after restoring guest-owned pixels and
         // redrawing live standard controls so retained composition cannot
@@ -7336,7 +7342,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn refresh_dialog_tracking_snapshot(&mut self, bus: &mut MacMemoryBus, only_item: Option<i16>) {
+    fn refresh_dialog_tracking_snapshot(&mut self, cpu: &mut impl CpuOps, bus: &mut MacMemoryBus, only_item: Option<i16>) {
         let Some(tracking) = self.dialog_tracking.as_ref() else {
             return;
         };
@@ -7367,6 +7373,23 @@ impl super::TrapDispatcher {
             dialog_ptr,
             only_item,
         );
+        // Standard dialog repaint must retain the active editor's
+        // wrapping, rather than leaving the single-line fallback
+        // painted over a wrapped TERec. This runs only where the
+        // Toolbox already owns the standard field repaint, before
+        // caching its image; custom/game-managed draws stay intact.
+        let text_handle = bus.read_long(
+            dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET,
+        );
+        let text_ptr = Self::te_record_ptr(bus, text_handle);
+        if only_item.is_none_or(|item| item == edit_item)
+            && text_ptr != 0
+            && bus.read_long(text_ptr + Self::TE_IN_PORT_OFFSET) == dialog_ptr
+            && bus.read_word(text_ptr + Self::TE_ACTIVE_OFFSET) != 0
+            && bus.read_word(text_ptr + Self::TE_N_LINES_OFFSET) > 1
+        {
+            self.draw_te_contents(cpu, bus, text_handle, true);
+        }
         self.redraw_dialog_popup_controls(bus, &popup_draws);
         let rendered = self.save_dialog_pixels(bus, bounds);
         if let Some(tracking) = self.dialog_tracking.as_mut() {
@@ -13335,7 +13358,7 @@ impl super::TrapDispatcher {
                                             }
                                         }
                                         if switched {
-                                            self.refresh_dialog_tracking_snapshot(bus, None);
+                                            self.refresh_dialog_tracking_snapshot(cpu, bus, None);
                                         }
                                     }
                                     crate::dialog_manager::DialogFilterDecision::Unhandled => {
@@ -13434,7 +13457,7 @@ impl super::TrapDispatcher {
                                             enabled_edit_text,
                                         )) = text_trace
                                         {
-                                            self.refresh_dialog_tracking_snapshot(bus, None);
+                                            self.refresh_dialog_tracking_snapshot(cpu, bus, None);
                                             let outcome = if enabled_edit_text {
                                                 "enabled_edittext_item_hit"
                                             } else {
@@ -16994,7 +17017,7 @@ impl super::TrapDispatcher {
                         }
                     }
                     if refresh_tracking {
-                        self.refresh_dialog_tracking_snapshot(bus, Some(item_no));
+                        self.refresh_dialog_tracking_snapshot(cpu, bus, Some(item_no));
                     } else {
                         redraw_text_item = Some((dlg_ptr, item_no));
                     }

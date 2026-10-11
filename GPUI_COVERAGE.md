@@ -6575,3 +6575,40 @@ snapshot has no intact region. A read-only guest probe confirms the screen base
 matches and the ownership remains absent through subsequent caret blink phases.
 The guard is retained. Neither this clipping fix nor the earlier colour68k
 capture establishes complete cross-CPU wrapped-dialog GPUI readiness.
+
+### Wrapped classic dialog editor ownership (2026-10-12)
+
+Classic Dialog Manager's internal TERecs now follow the live owning dialog's
+identity, matching the PPC discovery path. An active wrapped field declines
+the single-line dialog-item overlay and reaches the actual TextEdit compositor.
+The strict painted-pixel ownership guard remains unchanged.
+
+A mono68k write watchpoint and caller trace identified two incompatible paints:
+the standard dialog cache refresh and the chrome compositor's per-frame
+single-line field redraw. The cache refresh now paints the validated active
+wrapped TERec before retaining its image. Chrome keeps that TextEdit image
+instead of writing single-line glyphs over it. Game-managed dialogs and partial
+refreshes of other items retain their existing paths. Optional test-support
+ownership diagnostics report bounded recipe/surface/pixel differences and call
+sites, without dumping field text or full pixel buffers.
+
+The exact mono68k probe passes after typing and through 40 subsequent idle ticks,
+including a caret phase change. Its original 800x600 guest frame was reviewed;
+the line stays within the Nickname view without the extra glyph tail. Producer
+hashes and scope are recorded in
+`target/gpui-qualification/classic-wrapped-dialog/compositor-probe-review.json`.
+The GPUI wrapped-dialog interaction test passes across mono68k, colour68k, PPC8
+and PPC16 (17.52 seconds), checking glyph-boundary clicks, guest commits,
+composition, stale identity rejection, caret anchors and transforms at scales
+0.75, 1, 1.5 and 2. Headless wrapped captures establish simulated host focus
+before taking the baseline used for composition cancellation.
+
+These are selected dialog-editor checks, not complete update-event, activation,
+custom-dialog or native accessibility qualification. All 428 root dialog regressions pass (0.62 seconds). Four composed scale1
+captures pass, including marked expansion and exact cancellation; original-pixel
+field crops across six composition/focus states were reviewed in all four modes,
+with a full mono68k marked scene review. The smooth field text stays bounded.
+Hashes are in `target/gpui-qualification/classic-wrapped-dialog/cross-cpu-review.json`.
+This preserves the selected guest metrics; it does not establish original Apple
+bitmap-font appearance equivalence. Native EV frame smoothness/audio and
+all broad release gates remain open.
