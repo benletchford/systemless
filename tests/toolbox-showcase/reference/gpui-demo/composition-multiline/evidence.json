@@ -1,0 +1,28 @@
+{
+  "base": "25370fa972c0ab055dd2c198150739dcbc6f34a7",
+  "sha256": {
+    "src/bin/gpui_demo.rs": "6bb8bcef7ee42aa1d63c26e8eb606b49ded04fd98fd2c13f709fc68f5901008c",
+    "src/bin/gpui_demo_composition.rs": "060f474b3ef71455724bd8b4d2230a9db4a18cec3e2eda828ecc18826afb9c8a",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "41cf3aa93f2b41d0ce1d49b2bace8572140e9692d37239a749a471744ca5c09f",
+    "target/ci-test/examples/gpui-menu-demo": "1210293933b5b733c41a68a5aece9d2e21e4fe77daf28887fc746b1cf8f9d6e4"
+  },
+  "image_sha256": {
+    "true-16-baseline.png": "11730bab9c8560bd75bb26ba09f9aeaed4f58846636616b3b6598f504439b5c7",
+    "false-8-multiline-marked.png": "ff09b98e988b3c0ccd997ccf5babe9d7174cd8b4ce78c274b59b2737aaff55df",
+    "true-8-baseline.png": "c863c2078195848f659836e2291321f6ce5e10c64995da73d95c63339ee77e3d",
+    "false-1-single-marked.png": "2bab97bb0bf49caa6514d9dae8538ab5f2bbbfaabc5a5328d048ae62eeb9dc26",
+    "true-8-single-marked.png": "1dbf85c11d2e5cb1b28bb5f7cdcb023f97dd622662101134777034e18435d5e1",
+    "false-8-baseline.png": "98876890e6ffa3db4624fd785ab5c5a4e8dc2ca2b3624f28820b74a00bea2bd8",
+    "true-8-multiline-marked.png": "cab71ab987bf53e11c908b7602e17e7b1e63af456f26349153bcc7e6716f4745",
+    "false-8-single-marked.png": "33b6ce03dcd0fa42110fb060dca3db511f029b54f237e22b634c5ea20cbd8b5c",
+    "false-1-baseline.png": "a12152e39547f0187ea356338b350d23811cda7e46bebbf1f7319f2bfdffa36b",
+    "true-16-single-marked.png": "d5bc7d93eeaa42e1f45b1a38e09ce1038e249df133442a45bca1915c32b9c6d5",
+    "false-1-multiline-marked.png": "b4145fddadeccb63c744129695146192bd99099752ee28409e6861405247eb51",
+    "true-16-multiline-marked.png": "fc5fa65f0c6ca77a64f2bfcf6e432146a58af28625c32f4d70dda31e4a08c125"
+  },
+  "scope": "Mixed CR/LF/CRLF UTF16 parser test plus four actual CPU/depth capture modes, single and twenty-row CRLF composition; scrolled selected emoji bounds/point queries, surrogate rejection, guest snapshots unchanged, exact cancellation restoration.",
+  "direct_review": [
+    "true-16-multiline-marked.png"
+  ],
+  "limits": "Fixed scale1, explicit capture activation/focus, separate host-font staging. No physical IME, inline guest reflow, modal editors, arbitrary replacement ranges, soft wrapping or independent native fidelity."
+}
