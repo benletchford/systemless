@@ -282,12 +282,67 @@ mod tests {
     }
 
     #[test]
+    fn styled_snapshot_preserves_runs_colors_line_metrics_and_rejects_bad_indices() {
+        fn word(memory: &mut [u8], address: usize, value: u16) {
+            memory[address..address + 2].copy_from_slice(&value.to_be_bytes());
+        }
+        fn long(memory: &mut [u8], address: usize, value: u32) {
+            memory[address..address + 4].copy_from_slice(&value.to_be_bytes());
+        }
+        let mut memory = vec![0; 0x800];
+        for (address, value) in [(0x100, 0x200), (0x110, 0x300), (0x120, 0x400),
+            (0x130, 0x500), (0x140, 0x600), (0x23e, 0x110), (0x24a, 0x120),
+            (0x404, 0x130), (0x408, 0x140)] {
+            long(&mut memory, address, value);
+        }
+        for (address, value) in [(0x218, 0xffff), (0x250, 0xffff), (0x23c, 4),
+            (0x25e, 2), (0x260, 0), (0x262, 2), (0x264, 4), (0x220, 1), (0x222, 3),
+            (0x400, 2), (0x402, 2), (0x414, 0), (0x416, 0), (0x418, 2), (0x41a, 1),
+            (0x502, 14), (0x504, 11), (0x506, 3), (0x50a, 9),
+            (0x514, 18), (0x516, 13), (0x518, 0), (0x51c, 12), (0x51e, 0xffff),
+            (0x600, 14), (0x602, 11), (0x604, 18), (0x606, 13)] {
+            word(&mut memory, address, value);
+        }
+        memory[0x51a] = 3;
+        memory[0x300..0x304].copy_from_slice(b"a\rb\x8e");
+        let snapshot = super::snapshot_guest_records(&[(0x100, 7)], &mut |address| memory.get(address as usize).copied());
+        let record = &snapshot.records[0];
+        assert!(record.styled);
+        assert_eq!(record.selection, (1, 3));
+        assert_eq!(record.line_starts, Some(vec![0, 2, 4]));
+        assert_eq!(record.line_metrics, Some(vec![(14, 11), (18, 13)]));
+        let runs = record.style_runs.as_ref().unwrap();
+        assert_eq!((runs[0].start, runs[0].font, runs[0].size), (0, 3, 9));
+        assert_eq!((runs[1].start, runs[1].face, runs[1].color), (2, 3, (0xffff, 0, 0)));
+        word(&mut memory, 0x41a, 2);
+        let invalid = super::snapshot_guest_records(&[(0x100, 7)], &mut |address| memory.get(address as usize).copied());
+        assert_eq!(invalid.records[0].text, record.text);
+        assert!(invalid.records[0].style_runs.is_none());
+        assert!(invalid.records[0].line_metrics.is_none());
+        long(&mut memory, 0x120, u32::MAX);
+        assert!(super::snapshot_guest_records(&[(0x100, 7)], &mut |address| memory.get(address as usize).copied()).records[0].style_runs.is_none());
+    }
+
+    #[test]
     fn alignment_is_shared_for_every_guest_adapter() {
         assert_eq!(aligned_line_left(20, 200, 80, 0, 1), 21);
         assert_eq!(aligned_line_left(20, 200, 80, -2, 1), 21);
         assert_eq!(aligned_line_left(20, 200, 80, 1, 1), 70);
         assert_eq!(aligned_line_left(20, 200, 80, -1, 1), 120);
     }
+}
+
+/// One canonical style run, indexed by Macintosh Roman byte offset.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TextEditStyleRunSnapshot {
+    pub start: usize,
+    pub font: i16,
+    pub face: u8,
+    pub size: i16,
+    pub color: (u16, u16, u16),
+    pub line_height: i16,
+    pub ascent: i16,
 }
 
 /// Immutable guest TextEdit contents for fixture and diagnostic assertions.
@@ -321,6 +376,10 @@ pub struct TextEditSnapshot {
     pub face: u8,
     pub size: i16,
     pub styled: bool,
+    /// None if the canonical style tables are absent or inconsistent.
+    pub style_runs: Option<Vec<TextEditStyleRunSnapshot>>,
+    /// Guest LHElement (height, ascent) for each displayed line.
+    pub line_metrics: Option<Vec<(i16, i16)>>,
 }
 
 impl TextEditSnapshot {
@@ -352,16 +411,59 @@ pub(crate) fn snapshot_guest_records(
     read: &mut dyn FnMut(u32) -> Option<u8>,
 ) -> TextEditManagerSnapshot {
     fn word(read: &mut dyn FnMut(u32) -> Option<u8>, addr: u32) -> Option<u16> {
-        Some(u16::from_be_bytes([read(addr)?, read(addr + 1)?]))
+        Some(u16::from_be_bytes([read(addr)?, read(addr.checked_add(1)?)?]))
     }
     fn long(read: &mut dyn FnMut(u32) -> Option<u8>, addr: u32) -> Option<u32> {
         Some(u32::from_be_bytes([
             read(addr)?,
-            read(addr + 1)?,
-            read(addr + 2)?,
-            read(addr + 3)?,
+            read(addr.checked_add(1)?)?,
+            read(addr.checked_add(2)?)?,
+            read(addr.checked_add(3)?)?,
         ]))
     }
+    fn styled_tables(
+        read: &mut dyn FnMut(u32) -> Option<u8>, ptr: u32, length: usize, lines: usize,
+    ) -> Option<(Vec<TextEditStyleRunSnapshot>, Vec<(i16, i16)>)> {
+        let style_handle = long(read, ptr + 0x4a).filter(|value| *value != 0)?;
+        let style = long(read, style_handle).filter(|value| *value != 0 && value.checked_add(0x14 + 4096 * 4).is_some())?;
+        let runs = usize::from(word(read, style)?);
+        let styles = usize::from(word(read, style + 2)?);
+        if runs == 0 || runs > 4096 || styles == 0 || styles > 4096 || lines > 4096 {
+            return None;
+        }
+        let table_handle = long(read, style + 4).filter(|value| *value != 0)?;
+        let table = long(read, table_handle).filter(|value| *value != 0 && value.checked_add(4096 * 18).is_some())?;
+        let lh_handle = long(read, style + 8).filter(|value| *value != 0)?;
+        let lh = long(read, lh_handle).filter(|value| *value != 0 && value.checked_add(4096 * 4).is_some())?;
+        let mut result = Vec::with_capacity(runs);
+        for index in 0..runs {
+            let run = style + 0x14 + index as u32 * 4;
+            let start = usize::from(word(read, run)?);
+            let style_index = usize::from(word(read, run + 2)?);
+            if start > length || style_index >= styles
+                || (index == 0 && start != 0)
+                || result.last().is_some_and(|last: &TextEditStyleRunSnapshot| last.start >= start)
+            {
+                return None;
+            }
+            let element = table + style_index as u32 * 18;
+            result.push(TextEditStyleRunSnapshot {
+                start,
+                font: word(read, element + 6)? as i16,
+                face: read(element + 8)?,
+                size: word(read, element + 10)? as i16,
+                color: (word(read, element + 12)?, word(read, element + 14)?, word(read, element + 16)?),
+                line_height: word(read, element + 2)? as i16,
+                ascent: word(read, element + 4)? as i16,
+            });
+        }
+        let metrics = (0..lines).map(|index| {
+            let element = lh + index as u32 * 4;
+            Some((word(read, element)? as i16, word(read, element + 2)? as i16))
+        }).collect::<Option<Vec<_>>>()?;
+        Some((result, metrics))
+    }
+
     // TERec fields and private scrap are canonical guest memory on both
     // architectures. Inside Macintosh: Text (1993), pp. 2-64--2-69, 2-98.
     let records = handles
@@ -392,6 +494,9 @@ pub(crate) fn snapshot_guest_records(
                 });
             let line_height = word(read, ptr + 0x18)? as i16;
             let size = word(read, ptr + 0x50)? as i16;
+            let styled = size == -1 || line_height == -1;
+            let tables = styled.then(|| styled_tables(read, ptr, length, line_count)).flatten();
+            let (style_runs, line_metrics) = tables.map_or((None, None), |(runs, metrics)| (Some(runs), Some(metrics)));
             Some(TextEditSnapshot {
                 drawing_intact: false,
                 painted_regions: Vec::new(),
@@ -428,7 +533,9 @@ pub(crate) fn snapshot_guest_records(
                 font: word(read, ptr + 0x4a)? as i16,
                 face: read(ptr + 0x4c)?,
                 size,
-                styled: size == -1 || line_height == -1,
+                styled,
+                style_runs,
+                line_metrics,
             })
         })
         .collect();

@@ -2597,3 +2597,17 @@ style-specific composed captures, paint-time font mutation, CPU/scale/activation
 coverage, styled TextEdit, colour styles and native font fidelity remain open.
 Default and JIT/headless checks pass, as does the existing monochrome 68k,
 colour 68k and PPC dialog identity/layout regression (4.50 seconds).
+
+Styled TextEdit snapshots now include canonical STElement font, face, point
+size, RGB colour, height/ascent and byte-indexed style runs, plus each guest
+LHElement line height/ascent. Both CPU paths read these tables through the
+same snapshot decoder. Missing/inconsistent tables, non-monotonic runs,
+out-of-range style indices, excessive counts and overflowed table pointers
+produce absent style metadata while retaining the text snapshot and guest
+rendering. The mixed-run GPUI replacement guard remains closed until its
+renderer, selections/caret and hit geometry use these values faithfully.
+The synthetic decoder test passes (0.01 seconds). The real Styled Text & Fonts
+fixture verifies bold blue Geneva 12, italic green Monaco 14 and underline
+runs and line metrics in monochrome 68k, colour 68k and PPC (2.69 seconds).
+This proves state extraction, not mixed-run GPUI rendering or native font
+fidelity. Default and JIT/headless checks pass.
