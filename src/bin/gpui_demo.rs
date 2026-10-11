@@ -20,6 +20,7 @@ mod desktop {
     //! Opt-in GPUI Kit presentation experiment for live guest menus.
 
     use std::{
+        collections::HashMap,
         path::PathBuf,
         sync::{mpsc, Arc, Mutex},
         time::{Duration, Instant},
@@ -145,7 +146,6 @@ mod desktop {
 
     enum Command {
         Menu(i16, i16, u32, u64),
-        Shortcut(u8, u8),
         Input(MacintoshInput),
     }
 
@@ -190,7 +190,6 @@ mod desktop {
             let mut previous = epoch;
             loop {
                 let start = Instant::now();
-                let mut shortcut_release = None;
                 loop {
                     match commands.try_recv() {
                         Ok(Command::Menu(menu, item, guest_id, generation)) => {
@@ -203,22 +202,13 @@ mod desktop {
                                 session.runner_mut().select_guest_menu_item(menu, item);
                             }
                         }
-                        Ok(Command::Shortcut(mac_key, character)) => {
-                            // The application receives a Command-modified
-                            // keyDown and calls MenuKey itself (IM:I, I-356).
-                            session.deliver_input(MacintoshInput::KeyDown {
-                                mac_key: 0x37,
-                                character: 0,
-                            });
-                            session.deliver_input(MacintoshInput::KeyDown { mac_key, character });
-                            shortcut_release = Some((mac_key, character));
-                            break;
-                        }
                         Ok(Command::Input(input)) => {
                             session.deliver_input(input);
-                            // Tracking calls must observe the held button before
-                            // a queued release clears it (Inside Macintosh I, I-288).
-                            if matches!(input, MacintoshInput::MouseDown { .. }) {
+                            // Tracking and autoKey must observe a held input
+                            // before a queued release clears it (IM:I, I-246).
+                            if matches!(input, MacintoshInput::MouseDown { .. })
+                                || matches!(input, MacintoshInput::KeyDown { mac_key, .. } if mac_key != 0x37)
+                            {
                                 break;
                             }
                         }
@@ -235,13 +225,6 @@ mod desktop {
                 session
                     .runner_mut()
                     .run_gui_slice_with_audio(100_000, deadline, 367);
-                if let Some((mac_key, character)) = shortcut_release {
-                    session.deliver_input(MacintoshInput::KeyUp { mac_key, character });
-                    session.deliver_input(MacintoshInput::KeyUp {
-                        mac_key: 0x37,
-                        character: 0,
-                    });
-                }
                 session.drain_audio();
                 let menus = session.runner_mut().guest_menu_snapshot();
                 let guest_menu_fallback = menus.requires_guest_menu_rendering();
@@ -318,6 +301,10 @@ mod desktop {
         mouse_position: (i16, i16),
         scrollbar_drag: Option<(u32, u64, (i16, i16))>,
         popup_tracking: Option<(u32, u64)>,
+        command_down: bool,
+        held_keys: HashMap<u8, u8>,
+        _focus_out: Option<Subscription>,
+        _focus_lost: Option<Subscription>,
         _poll: Task<()>,
     }
 
@@ -395,6 +382,10 @@ mod desktop {
                 mouse_position: (0, 0),
                 scrollbar_drag: None,
                 popup_tracking: None,
+                command_down: false,
+                held_keys: HashMap::new(),
+                _focus_out: None,
+                _focus_lost: None,
                 _poll: poll,
             }
         }
@@ -421,6 +412,47 @@ mod desktop {
 
         fn guest_menu_fallback(&self) -> bool {
             self.menus.requires_guest_menu_rendering()
+        }
+
+        fn sync_command_key(&mut self, down: bool) {
+            if self.command_down == down {
+                return;
+            }
+            self.command_down = down;
+            let input = if down {
+                MacintoshInput::KeyDown { mac_key: 0x37, character: 0 }
+            } else {
+                MacintoshInput::KeyUp { mac_key: 0x37, character: 0 }
+            };
+            let _ = self.commands.send(Command::Input(input));
+        }
+
+        fn press_host_key(&mut self, mac_key: u8, character: u8) {
+            if let std::collections::hash_map::Entry::Vacant(entry) = self.held_keys.entry(mac_key) {
+                entry.insert(character);
+                let _ = self.commands.send(Command::Input(MacintoshInput::KeyDown {
+                    mac_key,
+                    character,
+                }));
+            }
+        }
+
+        fn release_host_key(&mut self, mac_key: u8) {
+            if let Some(character) = self.held_keys.remove(&mac_key) {
+                let _ = self.commands.send(Command::Input(MacintoshInput::KeyUp {
+                    mac_key,
+                    character,
+                }));
+            }
+        }
+
+        fn release_all_host_keys(&mut self) {
+            let mut keys: Vec<u8> = self.held_keys.keys().copied().collect();
+            keys.sort_unstable();
+            for mac_key in keys {
+                self.release_host_key(mac_key);
+            }
+            self.sync_command_key(false);
         }
 
         fn scrollbar_at(&self, point: (i16, i16)) -> Option<(u32, u64, (i16, i16))> {
@@ -564,6 +596,16 @@ mod desktop {
 
     impl Render for Demo {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            if self._focus_out.is_none() {
+                self._focus_out = Some(cx.on_focus_out(&self.focus, window, |this, _, _, _| {
+                    this.release_all_host_keys();
+                }));
+            }
+            if self._focus_lost.is_none() {
+                self._focus_lost = Some(cx.on_focus_lost(window, |this, _, _| {
+                    this.release_all_host_keys();
+                }));
+            }
             let mut bar = div()
                 .flex()
                 .items_center()
@@ -1861,30 +1903,26 @@ mod desktop {
                         }));
                 }))
                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                    this.sync_command_key(event.keystroke.modifiers.platform);
                     if event.keystroke.modifiers.platform {
-                        if !event.is_held {
-                            if let Some((mac_key, character)) = guest_key(&event.keystroke) {
-                                let _ = this.commands.send(Command::Shortcut(mac_key, character));
-                                cx.stop_propagation();
-                            }
+                        if let Some((mac_key, character)) = guest_key(&event.keystroke) {
+                            this.press_host_key(mac_key, character);
+                            cx.stop_propagation();
                         }
                         return;
                     }
                     if let Some((mac_key, character)) = guest_key(&event.keystroke) {
-                        let _ = this.commands.send(Command::Input(MacintoshInput::KeyDown {
-                            mac_key,
-                            character,
-                        }));
+                        this.press_host_key(mac_key, character);
                     }
                 }))
                 .on_key_up(cx.listener(|this, event: &KeyUpEvent, _, _| {
-                    if !event.keystroke.modifiers.platform {
-                        if let Some((mac_key, character)) = guest_key(&event.keystroke) {
-                            let _ = this
-                                .commands
-                                .send(Command::Input(MacintoshInput::KeyUp { mac_key, character }));
-                        }
+                    if let Some((mac_key, _)) = guest_key(&event.keystroke) {
+                        this.release_host_key(mac_key);
                     }
+                    this.sync_command_key(event.keystroke.modifiers.platform);
+                }))
+                .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, _| {
+                    this.sync_command_key(event.modifiers.platform);
                 }))
                 .when(!guest_menu_fallback, |root| root.child(bar))
                 .child(screen)
@@ -2930,13 +2968,32 @@ mod desktop {
                 )
             });
             wait(&updates, |u| u.menus.menus.iter().any(|m| m.id == 129));
-            tx.send(Command::Shortcut(0x23, b'p')).unwrap();
+            tx.send(Command::Input(MacintoshInput::KeyDown {
+                mac_key: 0x37,
+                character: 0,
+            }))
+            .unwrap();
+            tx.send(Command::Input(MacintoshInput::KeyDown {
+                mac_key: 0x23,
+                character: b'p',
+            }))
+            .unwrap();
             let update = wait(&updates, |u| {
                 u.menus.menus.iter().any(|menu| {
                     menu.id == 129
                         && menu.items.iter().any(|item| item.number == 5 && item.checked)
                 })
             });
+            tx.send(Command::Input(MacintoshInput::KeyUp {
+                mac_key: 0x23,
+                character: b'p',
+            }))
+            .unwrap();
+            tx.send(Command::Input(MacintoshInput::KeyUp {
+                mac_key: 0x37,
+                character: 0,
+            }))
+            .unwrap();
             let menu = update.menus.menus.iter().find(|menu| menu.id == 129).unwrap();
             tx.send(Command::Menu(129, 3, menu.guest_id, menu.generation))
                 .unwrap();
@@ -3707,7 +3764,7 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
         fn gpui_key_event_reaches_guest_queue(cx: &mut gpui_kit::TestAppContext) {
-            use gpui_kit::{test::TestWindowExt, AppContext, Bounds, InputEvent, KeyDownEvent, KeyUpEvent, WindowBounds, WindowOptions};
+            use gpui_kit::{test::TestWindowExt, AppContext, Bounds, InputEvent, KeyDownEvent, KeyUpEvent, ModifiersChangedEvent, WindowBounds, WindowOptions};
             use systemless::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
 
             let (sender, receiver) = std::sync::mpsc::channel();
@@ -3781,6 +3838,13 @@ mod desktop {
             cx.update_window(window.into(), |_, window, cx| {
                 view.update(cx, |demo, cx| demo.focus.focus(window, cx));
                 window.render_frame(cx);
+                window.dispatch_event(ModifiersChangedEvent {
+                    modifiers: gpui_kit::Modifiers {
+                        platform: true,
+                        ..Default::default()
+                    },
+                    capslock: gpui_kit::Capslock { on: false },
+                }.to_platform_input(), cx);
                 window.dispatch_event(KeyDownEvent {
                     keystroke: gpui_kit::Keystroke {
                         key: "p".into(),
@@ -3793,8 +3857,77 @@ mod desktop {
                     is_held: false,
                     prefer_character_input: false,
                 }.to_platform_input(), cx);
+                window.dispatch_event(KeyDownEvent {
+                    keystroke: gpui_kit::Keystroke {
+                        key: "p".into(),
+                        modifiers: gpui_kit::Modifiers {
+                            platform: true,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    is_held: true,
+                    prefer_character_input: false,
+                }.to_platform_input(), cx);
             }).unwrap();
-            assert!(matches!(receiver.try_recv(), Ok(super::Command::Shortcut(0x23, b'p'))));
+            assert!(matches!(receiver.try_recv(), Ok(super::Command::Input(
+                MacintoshInput::KeyDown { mac_key: 0x37, character: 0 }
+            ))));
+            assert!(matches!(receiver.try_recv(), Ok(super::Command::Input(
+                MacintoshInput::KeyDown { mac_key: 0x23, character: b'p' }
+            ))));
+            assert!(receiver.try_recv().is_err());
+            cx.update_window(window.into(), |_, window, cx| {
+                window.dispatch_event(KeyUpEvent {
+                    keystroke: gpui_kit::Keystroke {
+                        key: "p".into(),
+                        modifiers: gpui_kit::Modifiers {
+                            platform: true,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                }.to_platform_input(), cx);
+                window.dispatch_event(ModifiersChangedEvent {
+                    modifiers: gpui_kit::Modifiers::default(),
+                    capslock: gpui_kit::Capslock { on: false },
+                }.to_platform_input(), cx);
+            }).unwrap();
+            assert!(matches!(receiver.try_recv(), Ok(super::Command::Input(
+                MacintoshInput::KeyUp { mac_key: 0x23, character: b'p' }
+            ))));
+            assert!(matches!(receiver.try_recv(), Ok(super::Command::Input(
+                MacintoshInput::KeyUp { mac_key: 0x37, character: 0 }
+            ))));
+            cx.update_window(window.into(), |_, window, cx| {
+                view.update(cx, |demo, cx| demo.focus.focus(window, cx));
+                window.render_frame(cx);
+                window.dispatch_event(KeyDownEvent {
+                    keystroke: gpui_kit::Keystroke {
+                        key: "p".into(),
+                        modifiers: gpui_kit::Modifiers {
+                            platform: true,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    is_held: false,
+                    prefer_character_input: false,
+                }.to_platform_input(), cx);
+                window.blur(cx);
+            }).unwrap();
+            cx.update_window(window.into(), |_, window, cx| window.render_frame(cx)).unwrap();
+            cx.run_until_parked();
+            let remaining: Vec<_> = receiver.try_iter().filter_map(|command| match command {
+                super::Command::Input(input) => Some(input),
+                _ => None,
+            }).collect();
+            assert!(matches!(remaining.as_slice(), [
+                MacintoshInput::KeyDown { mac_key: 0x37, character: 0 },
+                MacintoshInput::KeyDown { mac_key: 0x23, character: b'p' },
+                MacintoshInput::KeyUp { mac_key: 0x23, character: b'p' },
+                MacintoshInput::KeyUp { mac_key: 0x37, character: 0 },
+            ]), "{remaining:?}");
         }
 
         #[test]
