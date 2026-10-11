@@ -38,7 +38,7 @@ strikes, styled widget appearance and independent font fidelity remain open.
 
 ## Next work in release-risk order
 
-1. Qualify native Standard File modal transitions and New Folder worker input,
+1. Qualify native host Standard File integration and physical modal input,
    dialog/file rendering/geometry, complete inline/wrapped staging and qualify physical IME/focus
    boundaries. Audit native accessibility alongside it.
 2. Reconcile the system UI inventory and close remaining real workflow/lifecycle
