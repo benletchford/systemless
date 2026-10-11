@@ -297,6 +297,13 @@ before and after a guest selection: [68K initial](tests/toolbox-showcase/referen
 [PowerPC initial](tests/toolbox-showcase/reference/gpui-demo/15-lists-ppc.png), and
 [PowerPC selected](tests/toolbox-showcase/reference/gpui-demo/15-lists-selected-ppc.png).
 
+Use `--capture-lists-held` and `--capture-lists-cancelled` to exercise a standard
+list thumb drag through guest input and capture the live composition. Both
+assert unchanged list origin and selection. Add `--prefer-powerpc` for PPC or
+`--screen-depth 1` for monochrome 68K. The held capture currently exposes a
+clipped right edge on the GPUI drag outline; it is diagnostic evidence, not an
+approved visual reference.
+
 For the Standard File Save panel, capture either its guest framebuffer or the
 composed GPUI surface:
 
