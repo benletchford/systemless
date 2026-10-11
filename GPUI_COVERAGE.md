@@ -4918,3 +4918,13 @@ verifying separate ordered requests and exact intermediate text. Evidence is
 archived in `reference/gpui-demo/disjoint-file-replacement`. Physical IME,
 composed visual/native fidelity, broader lifecycle and release qualification
 remain open. No broad production gate is closed.
+
+
+### Post-replacement build checkpoint
+
+At `43ee32a1`, the default application check passes (10.73s) and the
+no-default-features public library check passes (9.21s). Logs/provenance are
+archived in `reference/gpui-demo/post-replacement-builds`. These are cached
+compile checks; final linking, package tests and runtime qualification remain
+open. The release checklist now reflects disjoint worker evidence across all
+editor targets without claiming visual/physical or broad gate completion.
