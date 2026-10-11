@@ -1251,9 +1251,13 @@ faces and must not be confused with the scored roll. Fresh bounded replay
 passes 152 checks of original icon pixels and measured score changes at
 2535 frontend / 3119 guest ticks, zero exhausted frames; captures inspected.
 This qualifies one 68K scoring turn, not a full match, saves, audio or independent
-ROM fidelity. Compatibility CI/merge, distribution delivery review, hosted
-browser qualification, catalogue approval, human release and public replay
-remain pending. No hosted archive, catalogue entry or live-qualified increment.
+ROM fidelity. [Compatibility PR #4662](https://github.com/benletchford/systemless/pull/4662)
+passed all nine exact-head CI checks at `3802c17b90b77b0ed05313bbb3f80bfde7e100e4`
+and merged as `186841d43e139d94a775986325f039973d20cb1b` on 11 October 2026
+20:33:19 UTC. Both 4×/1× icon reference corrections were independently derived
+from the fixture bitmap, with no differences outside the blank icon pixels.
+Distribution delivery review, hosted browser qualification, catalogue approval,
+human release and public replay remain pending. No release was triggered. No hosted archive, catalogue entry or live-qualified increment.
 
 ## Bugdom — target 46, publisher free-use clarification
 
@@ -1973,7 +1977,7 @@ baseline evidence.
 Fresh 68K replay on native `ed9db4de2310b638252f7d5d8f43158896e45598`
 passes the same twelve placement assertions at 786/1,386 ticks, zero exhaustion;
 inspected six of hearts, next ace of clubs and Score 100 remain correct.
-Real Chrome 151 preview at integrated source `b3b61ca5` (promoted candidate plus
+Real Chrome 151 preview at integrated source `b3b61ca5510101a1eace9afb7e497d3a7bba65db` (promoted candidate plus
 signed Random fix), WebGL worker, 800×600/depth 8/default 25 MHz, completes the
 same turn through ordinary File/New Game and pointer input. Twelve fresh
 before/after browser pixel assertions pass. Production-origin frontend files are

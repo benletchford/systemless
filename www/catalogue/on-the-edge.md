@@ -60,7 +60,7 @@ compatibility:
     evidence: https://github.com/benletchford/systemless/pull/4665
   - date: "2026-10-12"
     tester: Catalogue maintainer
-    systemless_version: b3b61ca5
+    systemless_version: b3b61ca5510101a1eace9afb7e497d3a7bba65db
     architecture: 68k
     environment: >-
       Real Chrome 151 preview, WebGL worker, 800x600 guest display and 8-bit depth,
