@@ -1,0 +1,16 @@
+{
+  "base_head": "7798ef90b206a48a2d4b7688c72ececf7d490f74",
+  "scope": "Guarded retained standard Save/New Folder selection operation; eight CPU/depth/editor cases; stale generation, prior selection and invalid range rejection; text, parent name, bounds, entries and directory preserved; selection restored before existing modality regression",
+  "results": {
+    "library_check": "PASS11.25s",
+    "platform_parent": "PASS26.95s, eight editor cases"
+  },
+  "limitations": [
+    "Frontend explicit file replacement command wiring remains unfinished",
+    "No new composed visual, physical input or independent native oracle evidence"
+  ],
+  "hashes": {
+    "library-check.log": "5edb2510140f396f7e0e3e82d31ac1130f761340239674427f61856b285bc5b7",
+    "guest-selection.log": "89189dd3c8f320af32f1ac2d5aee42afcd0e2adaa97f4489ad8d651c92db9d3e"
+  }
+}
