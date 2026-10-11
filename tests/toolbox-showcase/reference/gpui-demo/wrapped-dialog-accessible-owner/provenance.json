@@ -1,0 +1,8 @@
+{
+  "sources": {
+    "src/bin/gpui_demo.rs": "03a219ae16e506fb3bc53c9438a9804acccf93410297d261be3679ed79fcdead",
+    "src/bin/gpui_demo_composition.rs": "0520d54ca0d0e518bab17ee5daeaf6acc9e2f820b59bd8cb1835d4b05bf42c33"
+  },
+  "scope": "Actual wrapped PPC8/PPC16 ownership mapping/stale generation and existing4-scale text-service geometry; classic direct-editor discovery retained. Frontend AX dispatch/composed node geometry unqualified",
+  "result": "1 passed20.88s; production4.07s"
+}

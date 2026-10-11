@@ -2004,17 +2004,15 @@ mod desktop {
                             .child(overlay)
                             .when(self.composition.preedit.is_none() && self.host_active != Some(false)
                                 && self.focus.is_focused(window) && self.open_menus.is_empty() && !self.guest_menu_tracking && self.guest_popup.is_none(), |field| {
-                                let Some(owner) = self.composition.owner().filter(|owner|
-                                    owner.identity == (record.guest_id, record.generation)
-                                        && matches!(owner.target, super::input::TextInputTarget::Document { .. })).cloned()
-                                    else { return field; };
+                                let Some(owner) = self.accessible_record_owner(record) else { return field; };
+                                let multiline_commit = matches!(owner.target, super::input::TextInputTarget::Document { .. });
                                 let sender = self.commands.clone();
                                 let selection_sender = self.commands.clone();
                                 let selection_owner = owner.clone();
                                 let selection_lines = accessible_line_ids.clone();
                                 field.on_a11y_action(gpui_kit::accesskit::Action::SetValue, move |data, _, _| {
                                     if let Some(gpui_kit::accesskit::ActionData::Value(value)) = data {
-                                        if let Some((expected, range, bytes)) = super::input::accessibility_text_replacement(owner.clone(), value, true) {
+                                        if let Some((expected, range, bytes)) = super::input::accessibility_text_replacement(owner.clone(), value, multiline_commit) {
                                             let _ = sender.send(Command::ReplaceText(expected, range, bytes, None));
                                         }
                                     }
@@ -2057,17 +2055,15 @@ mod desktop {
                         .child(ink)
                             .when(self.composition.preedit.is_none() && self.host_active != Some(false)
                                 && self.focus.is_focused(window) && self.open_menus.is_empty() && !self.guest_menu_tracking && self.guest_popup.is_none(), |field| {
-                                let Some(owner) = self.composition.owner().filter(|owner|
-                                    owner.identity == (record.guest_id, record.generation)
-                                        && matches!(owner.target, super::input::TextInputTarget::Document { .. })).cloned()
-                                    else { return field; };
+                                let Some(owner) = self.accessible_record_owner(record) else { return field; };
+                                let multiline_commit = matches!(owner.target, super::input::TextInputTarget::Document { .. });
                                 let sender = self.commands.clone();
                                 let selection_sender = self.commands.clone();
                                 let selection_owner = owner.clone();
                                 let selection_lines = accessible_line_ids.clone();
                                 field.on_a11y_action(gpui_kit::accesskit::Action::SetValue, move |data, _, _| {
                                     if let Some(gpui_kit::accesskit::ActionData::Value(value)) = data {
-                                        if let Some((expected, range, bytes)) = super::input::accessibility_text_replacement(owner.clone(), value, true) {
+                                        if let Some((expected, range, bytes)) = super::input::accessibility_text_replacement(owner.clone(), value, multiline_commit) {
                                             let _ = sender.send(Command::ReplaceText(expected, range, bytes, None));
                                         }
                                     }
@@ -14117,6 +14113,11 @@ mod desktop {
                         assert!(matches!(demo.composition.owner().unwrap().target,
                             super::super::input::TextInputTarget::Dialog { item: 9, .. }));
                         let record = records.iter().find(|record| (record.guest_id, record.generation) == identity).unwrap();
+                        let accessible_owner = demo.accessible_record_owner(record).expect("wrapped dialog accessibility must retain dialog ownership");
+                        assert_eq!(accessible_owner.identity, owner.identity);
+                        assert!(matches!(accessible_owner.target, super::super::input::TextInputTarget::Dialog { item: 9, .. }));
+                        let mut stale = record.clone(); stale.generation += 1;
+                        assert!(demo.accessible_record_owner(&stale).is_none());
                         let geometry = super::composition::text_line_geometry(record, 0).unwrap();
                         let dest = record.global_dest_rect.unwrap();
                         let x = i32::from(dest.1) - i32::from(record.dest_rect.1) + i32::from(geometry.left)
