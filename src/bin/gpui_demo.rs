@@ -1851,6 +1851,49 @@ mod desktop {
         }
 
         #[test]
+        fn text_edit_snapshots_resolve_guest_port_geometry_on_both_cpus() {
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session
+                    .load_path(
+                        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("tests/toolbox-showcase/toolbox-showcase.sit"),
+                    )
+                    .unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 7));
+                wait_for_menu(&mut session, 129, 7, true);
+                let first = (0..100)
+                    .find_map(|_| {
+                        session.runner_mut().run_steps(100_000, None);
+                        session
+                            .runner_mut()
+                            .text_edit_snapshot()
+                            .records
+                            .into_iter()
+                            .find(|record| record.view_rect == (76, 34, 211, 326))
+                    })
+                    .expect("TextEdit page should create its guest TEHandle");
+                assert_ne!(first.guest_id, 0);
+                assert_ne!(first.generation, 0);
+                assert_ne!(first.owner_port, 0);
+                assert_eq!(first.global_view_rect, Some((126, 74, 261, 366)));
+                settle(&mut session);
+                let next = session
+                    .runner_mut()
+                    .text_edit_snapshot()
+                    .records
+                    .into_iter()
+                    .find(|record| record.guest_id == first.guest_id)
+                    .unwrap();
+                assert_eq!(next.generation, first.generation);
+                assert_eq!(next.global_view_rect, first.global_view_rect);
+            }
+        }
+
+        #[test]
         fn list_snapshots_preserve_identity_and_guest_visibility_on_both_cpus() {
             for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
                 let mut session = MacintoshSession::new(true, depth);
