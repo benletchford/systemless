@@ -459,7 +459,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 417 | DragonMaze | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 418 | ExaChess_Lite | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 419 | Fanorona | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 420 | GL Tron | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 420 | GL Tron | [Program GPL grant; library/source and soundtrack checks held](CATALOGUE-SOURCES.md#gltron-061--target-608-original-ppc-package-intake) | Official/mirror originals; ninety-four installed files/188 forks identical; production 274 files/548 forks matched | N/A: original game is PPC-only | [Fragment classification fails before startup](https://github.com/benletchford/systemless/issues/4517) | Pending | Intake documented; unhosted | Pending |
 | 421 | HipHop | [No grant in bundled ReadMe; held](CATALOGUE-SOURCES.md#hiphop-101--target-609-original-68k-installer-intake) | Original 1.0.1; four files/eight forks matched | [Runtime alert recurs after dismissal](https://github.com/benletchford/systemless/issues/4504#issuecomment-6105410319) | N/A: no PEF/cfrg in installed game | Pending | Intake documented; unhosted | Pending |
 | 422 | Imp Fodder | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 423 | Jailbreak | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
