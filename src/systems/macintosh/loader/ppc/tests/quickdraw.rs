@@ -5819,6 +5819,12 @@ fn classic_carbon_port_buffering_weak_imports_use_documented_mac_os_9_contract()
         ),
     ] {
         for spelling in [symbol.to_owned(), symbol.to_ascii_lowercase()] {
+            for unavailable_library in ["InterfaceLib", "AppearanceLib"] {
+                assert_eq!(
+                    dispatcher_target_for_import(unavailable_library, &spelling),
+                    PpcImportDispatcherTarget::Unsupported,
+                );
+            }
             let loader = synthetic_loader_with_symbol_class(
                 b"CarbonLib",
                 spelling.as_bytes(),

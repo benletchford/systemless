@@ -1336,6 +1336,13 @@ pub(crate) fn dispatcher_target_for_import(
         // (1994), pp. 6-10--6-11 (sqrt), 10-17--10-19 (pow),
         // 10-29--10-30 (cos).
         ("CarbonLib", "cos" | "pow" | "round" | "sqrt") => "MathLib",
+        // These classic port-buffering routines are Carbon-only exports.
+        (
+            "CarbonLib",
+            "QDIsPortBuffered" | "qdisportbuffered"
+            | "QDIsPortBufferDirty" | "qdisportbufferdirty"
+            | "QDFlushPortBuffer" | "qdflushportbuffer",
+        ) => "CarbonLib",
         ("CarbonLib", _) => "InterfaceLib",
         // Director's CFM runtime exports these ISO C entry points with the
         // same PowerPC signatures as StdCLib. Leave its private symbols
