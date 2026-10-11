@@ -1,0 +1,12 @@
+{
+  "source_hashes": {
+    "src/systems/macintosh/runner/mod.rs": "0f9c7adbc42ef8c44c6b2d3cde15baa8520738661d39d60bda2aca7ec86a39c2",
+    "src/systems/macintosh/runner/tests/trap_dispatch.rs": "5c42583a891eead9fd7bd3a0789deecc401c303c025f11db8ef8cd444fa41f1c"
+  },
+  "scope": "Runner alert-only ownership on classic and native CPUs, exact acknowledgment, stale removal and foreground pause. No visual/layout/input qualification. Mixed mark/icon/sound requests explicitly decline until delivery ordering exists.",
+  "result": {
+    "passed": 21,
+    "failed": 0,
+    "seconds": 0.18
+  }
+}

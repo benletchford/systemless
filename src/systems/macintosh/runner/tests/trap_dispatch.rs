@@ -5,6 +5,58 @@ use crate::process_context::PendingFileCompletion;
 use crate::trap::dispatch::TrapTableProfile;
 
 #[test]
+fn notification_alert_owns_foreground_until_exact_acknowledgment_on_both_cpus() {
+    for native_mode in [false, true] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let request;
+        if native_mode {
+            runner.init_app(&halted_ppc_app_with_sound(PpcSoundState::default()));
+            request = PPC_DATA_BASE + 0x6000;
+            let native = runner.native.application_mut().unwrap();
+            native.memory.add_region(request, vec![0; 128]);
+            native.memory.write_u16_be(request + 4, 8).unwrap();
+            native.memory.write_u32_be(request + 24, request + 64).unwrap();
+            native.toolbox_startup.notification_requests.push(request);
+        } else {
+            request = runner.bus.alloc(128);
+            runner.bus.write_word(request + 4, 8);
+            runner.bus.write_long(request + 24, request + 64);
+            runner.dispatcher.notification_requests.push(request);
+        }
+        let notice = runner.notification_snapshot().pop().unwrap();
+        assert!(runner.begin_notification_alert(&notice));
+        assert!(!runner.begin_notification_alert(&notice));
+        assert_eq!(runner.run_realtime_steps_with_audio(32, 0), (0, true));
+        assert!(!runner.complete_notification_delivery(&notice));
+        assert!(!runner.notification_snapshot().pop().unwrap().response_started);
+        let mut stale = notice.clone();
+        stale.instance_id += 1;
+        assert!(!runner.dismiss_notification_alert(&stale));
+        assert!(runner.guest_work_is_suspended());
+        assert!(runner.dismiss_notification_alert(&notice));
+        assert!(!runner.guest_work_is_suspended());
+        assert!(!runner.dismiss_notification_alert(&notice));
+        assert!(runner.notification_snapshot().pop().unwrap().response_started);
+    }
+}
+
+#[test]
+fn notification_alert_removal_releases_foreground_without_delivering_response() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let request = runner.bus.alloc(128);
+    runner.bus.write_word(request + 4, 8);
+    runner.bus.write_long(request + 24, request + 64);
+    runner.dispatcher.notification_requests.push(request);
+    let notice = runner.notification_snapshot().pop().unwrap();
+    assert!(runner.begin_notification_alert(&notice));
+    runner.dispatcher.notification_requests.remove(0);
+    assert_eq!(runner.run_realtime_steps_with_audio(0, 0), (0, true));
+    assert!(runner.notification_alert_snapshot().is_none());
+    assert!(!runner.guest_work_is_suspended());
+    assert!(!runner.dismiss_notification_alert(&notice));
+}
+
+#[test]
 fn notification_runner_delivers_direct_m68k_response_and_restores_native_context() {
     use crate::guest_procedure::*;
     use crate::mixed_mode::proc_info;
