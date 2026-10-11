@@ -23,6 +23,12 @@ pub(super) fn text_line_geometry(record: &systemless::runner::TextEditSnapshot, 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct MarkedLine { text: String, start: usize, end: usize }
 
+fn marked_caret_end(lines: &[MarkedLine], index: usize) -> usize {
+    // A CRLF has a valid UTF-16 insertion boundary between its two units.
+    // It occupies the preceding line end without introducing a painted glyph.
+    lines.get(index + 1).map_or(lines[index].end, |next| next.start - 1)
+}
+
 fn marked_lines(text: &str) -> Vec<MarkedLine> {
     let mut result = Vec::new();
     let mut chars = text.char_indices().peekable();
@@ -304,8 +310,8 @@ impl Demo {
         Some(div().id("guest-composition-surface").absolute().left(px(left)).top(px(top))
             .w(px(width)).h(px(height)).bg(cx.theme().background).border_1().border_color(foreground)
             .overflow_hidden().child(canvas(move |bounds, _, _| bounds, move |_, bounds, window, cx| {
-                let caret_line = lines.iter().position(|line| preedit.selection_utf16.end >= line.start
-                    && preedit.selection_utf16.end <= line.end).unwrap_or(lines.len() - 1);
+                let caret_line = lines.iter().enumerate().position(|(index, line)| preedit.selection_utf16.end >= line.start
+                    && preedit.selection_utf16.end <= marked_caret_end(&lines, index)).unwrap_or(lines.len() - 1);
                 let vertical_scroll = (caret_line as f32 * 20. - (height - 28.).max(0.)).max(0.);
                 let mut rows = Vec::new();
                 for (index, marked) in lines.iter().enumerate() {
@@ -338,7 +344,7 @@ impl Demo {
                     }
                     let _ = line.paint(origin, px(20.), TextAlign::Left, None, window, cx);
                     window.paint_quad(fill(Bounds::new(point(origin.x, origin.y + px(19.)), size(line.width(), px(1.))), foreground));
-                    if preedit.selection_utf16.end >= utf16_start && preedit.selection_utf16.end <= utf16_start + length {
+                    if preedit.selection_utf16.end >= utf16_start && preedit.selection_utf16.end <= marked_caret_end(&lines, index) {
                         window.paint_quad(fill(Bounds::new(point(origin.x + caret, origin.y), size(px(1.), px(20.))), foreground));
                     }
                     let mut positions = Vec::new();
@@ -348,6 +354,10 @@ impl Demo {
                         unit += ch.len_utf16();
                     }
                     positions.push((length, f32::from(line.x_for_index(text.len()))));
+                    let caret_end = marked_caret_end(&lines, index) - utf16_start;
+                    if caret_end > length {
+                        positions.push((caret_end, f32::from(line.x_for_index(text.len()))));
+                    }
                     rows.push(MarkedRow { start: utf16_start, positions,
                         origin: (f32::from(origin.x), f32::from(origin.y)) });
                 }
@@ -507,6 +517,18 @@ impl EntityInputHandler for Demo {
 
 #[cfg(test)]
 mod marked_line_tests {
+    #[test]
+    fn crlf_internal_caret_boundary_stays_at_preceding_line_end() {
+        let lines = super::marked_lines("日😀\r\nx\ry\nz\n");
+        let ends: Vec<_> = (0..lines.len()).map(|index| super::marked_caret_end(&lines, index)).collect();
+        assert_eq!(ends, vec![4, 6, 8, 10, 11]);
+        for caret in 0..=11 {
+            let owners: Vec<_> = lines.iter().enumerate().filter(|(index, line)|
+                caret >= line.start && caret <= ends[*index]).map(|(index, _)| index).collect();
+            assert_eq!(owners.len(), 1, "each insertion offset has exactly one visual row: {caret}");
+        }
+        assert_eq!(ends[0], 4, "CRLF interior must not scroll to the last row");
+    }
     #[test]
     fn preserves_original_utf16_offsets_across_all_line_endings() {
         let lines = super::marked_lines("日😀\r\nx\ry\nz\n");
