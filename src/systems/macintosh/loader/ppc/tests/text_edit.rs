@@ -1145,6 +1145,10 @@ fn te_update_clips_partial_glyphs_at_the_view_bottom() {
 #[test]
 fn textedit_idle_uses_the_same_guest_caret_interval_as_get_caret_time() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TENew")).unwrap();
+    // Detached fixtures default to one clock tick per instruction. Keep this
+    // short import call within its explicitly chosen guest tick so the exact
+    // pre-boundary and boundary assertions exercise the interval itself.
+    loaded.set_clock_cycle_timing(1_000_000, 0);
     let rects = PPC_DATA_BASE + 0x1000;
     loaded.memory.add_region(rects, vec![0; 16]);
     ppc_write_rect(&mut loaded.memory, rects, 0, 0, 100, 200).unwrap();
