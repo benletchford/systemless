@@ -1,0 +1,19 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 44s
+     Running unittests src/lib.rs (target/debug/deps/systemless-257ba83b63f6679f)
+
+running 11 tests
+test systems::macintosh::trap::memory::tests::nminstall_returns_noerr_for_nominal_notification_request ... ok
+test systems::macintosh::trap::memory::tests::nmremove_returns_noerr_for_nominal_notification_request ... ok
+test systems::macintosh::trap::memory::tests::nminstall_arms_pascal_response_with_notification_record_argument ... ok
+test systems::macintosh::trap::memory::tests::notification_delivery_defer_response_and_auto_removal ... ok
+test systems::macintosh::trap::memory::tests::notification_queue_links_requests_and_nmremove_unlinks_them ... ok
+test systems::macintosh::trap::memory::tests::notification_response_executes_and_can_be_explicitly_removed ... ok
+test systems::macintosh::loader::ppc::tests::process_services::notification_response_executes_guest_descriptor_and_restores_return_state ... ok
+test systems::macintosh::loader::ppc::tests::process_services::notification_queue_imports_preserve_links_errors_and_auto_removal ... ok
+test systems::macintosh::loader::ppc::tests::process_services::notification_response_executes_m68k_descriptor_through_guest_gateway ... ok
+test systems::macintosh::loader::ppc::tests::process_services::notification_queue_is_shared_across_classic_and_native_install_remove ... ok
+test systems::macintosh::loader::ppc::tests::process_services::notification_delivery_defer_native_response_and_auto_removal ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 6714 filtered out; finished in 0.18s
+

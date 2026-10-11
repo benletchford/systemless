@@ -4765,6 +4765,7 @@ impl FixtureRunner {
         assert!(self.native.reset_for_launch(app.ppc.is_some()));
         self.debug_advance_generation();
         self.process_context.reset_cfm_for_launch();
+        self.process_context.reset_notifications_for_launch();
         if let Some((ppc_app, migrated_services)) = native_launch {
             self.init_ppc_app_with_services(ppc_app, migrated_services);
             return;
@@ -5568,6 +5569,7 @@ impl FixtureRunner {
         // that capability and a fresh process-wide OAPP claim so a prior
         // application cannot suppress or duplicate delivery. Inside
         // Macintosh: Toolbox Essentials (1992), pp. 2-30--2-32 and 5-90.
+        self.process_context.reset_notifications_for_launch();
         self.process_context.reset_application_size(
             ppc_app.application_size.with_ref(|size| *size),
         );

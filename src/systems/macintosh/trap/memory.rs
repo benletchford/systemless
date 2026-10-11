@@ -723,6 +723,12 @@ impl super::TrapDispatcher {
         bus.write_long(nm_rec, 0);
         self.notification_requests.push(nm_rec);
 
+        // A response cannot precede alert acknowledgement or sound completion
+        // (Inside Macintosh: Processes, Notification Manager, p.5-9).
+        if bus.read_word(nm_rec + 14) != 0 || bus.read_long(nm_rec + 16) != 0
+            || bus.read_long(nm_rec + 20) != 0 || bus.read_long(nm_rec + 24) != 0 {
+            return 0;
+        }
         match bus.read_long(nm_rec + 28) {
             u32::MAX => {
                 self.remove_notification_request(bus, nm_rec);

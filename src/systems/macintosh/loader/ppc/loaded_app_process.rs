@@ -98,6 +98,7 @@ impl PpcLoadedApp {
         context.attach_control_manager(&mut self.controls);
         context.attach_list_manager(&mut self.list_manager);
         context.attach_collection_manager(&mut self.collections);
+        context.attach_notification_queue(&mut self.toolbox_startup.notification_requests);
         context.attach_dialog_text(&mut self.param_text);
         context.attach_cursor_state(&mut self.cursor_state);
         context.activate_quickdraw_selection(&mut self.current_gworld, &mut self.current_gdevice);

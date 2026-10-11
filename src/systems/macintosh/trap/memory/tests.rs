@@ -5188,6 +5188,29 @@ fn deferuserfn_three_call_composition_preserves_stack_across_varying_args() {
 }
 
 #[test]
+fn notification_delivery_defer_response_and_auto_removal() {
+    for field in [14, 16, 20, 24] {
+        for response in [u32::MAX, 0x123400] {
+            let (mut dispatcher, mut cpu, mut bus) = setup();
+            let request = bus.alloc(36);
+            bus.write_word(request + 4, 8);
+            if field == 14 { bus.write_word(request + field, 1); }
+            else { bus.write_long(request + field, 0x567800); }
+            bus.write_long(request + 28, response);
+            cpu.write_reg(Register::A0, request);
+            let pc = cpu.read_reg(Register::PC);
+            let sp = cpu.read_reg(Register::A7);
+            dispatcher.dispatch_memory(false, 0x5E, &mut cpu, &mut bus)
+                .unwrap().unwrap();
+            assert_eq!(cpu.read_reg(Register::D0), 0);
+            assert_eq!(cpu.read_reg(Register::PC), pc);
+            assert_eq!(cpu.read_reg(Register::A7), sp);
+            assert_eq!(dispatcher.notification_requests, vec![request]);
+        }
+    }
+}
+
+#[test]
 fn nminstall_returns_noerr_for_nominal_notification_request() {
     // Inside Macintosh Volume VI (1991), p. 24-10:
     // NMInstall returns noErr for valid notification requests.

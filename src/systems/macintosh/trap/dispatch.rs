@@ -1466,7 +1466,7 @@ pub struct TrapDispatcher {
     pub(crate) defer_user_fn_trampoline: u32,
     /// Notification Manager requests in queue order. Each entry is the guest
     /// address of its static NMRec; qLink mirrors this order in guest memory.
-    pub(crate) notification_requests: Vec<u32>,
+    pub(crate) notification_requests: crate::process_context::SharedProcessNotificationQueue,
     pub(crate) collection_callback_stack: Vec<super::collection::CollectionCallbackState>,
     pub(crate) collection_callback_trampoline: u32,
     /// Ports that have already been queried through QDDone. BasiliskII
@@ -2746,6 +2746,7 @@ impl TrapDispatcher {
         context.attach_control_manager(&mut self.control_manager);
         context.attach_list_manager(&mut self.list_states);
         context.attach_collection_manager(&mut self.collections);
+        context.attach_notification_queue(&mut self.notification_requests);
         context.attach_text_edit_manager(&mut self.textedit_states);
         context.attach_dialog_text(&mut self.param_text);
         context.attach_cursor_state(&mut self.cursor_state);
@@ -3819,7 +3820,7 @@ impl TrapDispatcher {
             control_def_trampoline_chain: Vec::new(),
             control_callback_stack: Vec::new(),
             defer_user_fn_trampoline: 0,
-            notification_requests: Vec::new(),
+            notification_requests: crate::process_context::SharedProcessNotificationQueue::default(),
             collection_callback_stack: Vec::new(),
             collection_callback_trampoline: 0,
             qddone_seen_ports: HashSet::default(),

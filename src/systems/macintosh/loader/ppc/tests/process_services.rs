@@ -1917,6 +1917,7 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
         ("MIDISignOut", PpcSystemCompatibilityOperation::MidiSignOut),
         ("MIDIWritePacket", PpcSystemCompatibilityOperation::MidiWritePacket),
         ("Munger", PpcSystemCompatibilityOperation::Munger),
+        ("NMInstall", PpcSystemCompatibilityOperation::NmInstall),
         ("NMRemove", PpcSystemCompatibilityOperation::NmRemove),
         ("ObscureCursor", PpcSystemCompatibilityOperation::ObscureCursor),
         ("OpenDefaultComponent", PpcSystemCompatibilityOperation::OpenDefaultComponent),
@@ -1963,4 +1964,157 @@ fn iu_equal_string_uses_primary_mac_roman_ordering() {
         ),
     );
     assert_eq!(loaded.cpu.gpr[3], 1);
+}
+
+#[test]
+fn notification_delivery_defer_native_response_and_auto_removal() {
+    for field in [14, 16, 20, 24] {
+        for response in [u32::MAX, PPC_DATA_BASE + 0x1840] {
+            let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NMInstall")).unwrap();
+            let request = PPC_DATA_BASE + 0x1800;
+            loaded.memory.add_region(request, vec![0; 128]);
+            loaded.memory.write_u16_be(request + 4, 8).unwrap();
+            if field == 14 { loaded.memory.write_u16_be(request + field, 1).unwrap(); }
+            else { loaded.memory.write_u32_be(request + field, request + 96).unwrap(); }
+            loaded.memory.write_u32_be(request + 28, response).unwrap();
+            loaded.cpu.gpr[3] = request;
+            let result = loaded.run_with_hle_imports(64);
+            assert_eq!(result.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            assert_eq!(loaded.toolbox_startup.notification_requests, vec![request]);
+            assert!(loaded.guest_calls().is_empty());
+        }
+    }
+}
+
+#[test]
+fn notification_queue_imports_preserve_links_errors_and_auto_removal() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NMInstall")).unwrap();
+    let first = PPC_DATA_BASE + 0x1800;
+    let second = first + 64;
+    loaded.memory.add_region(first, vec![0; 128]);
+    for request in [first, second] { loaded.memory.write_u16_be(request + 4, 8).unwrap(); }
+    for request in [first, second, first] {
+        loaded.cpu.pc = loaded.entry_pc; loaded.cpu.lr = PPC_HALT_PC; loaded.cpu.gpr[3] = request;
+        let result = loaded.run_with_hle_imports(64);
+        assert_eq!(result.handled_import_count, 1); assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+    assert_eq!(loaded.toolbox_startup.notification_requests, vec![first, second]);
+    assert_eq!(loaded.memory.read_u32_be(first), Some(second));
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::NmRemove);
+    for (request, expected) in [(first, 0i16), (first, -1), (0, -299), (second, 0)] {
+        loaded.cpu.pc = loaded.entry_pc; loaded.cpu.lr = PPC_HALT_PC; loaded.cpu.gpr[3] = request;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.cpu.gpr[3] as u16 as i16, expected);
+    }
+    assert!(loaded.toolbox_startup.notification_requests.is_empty());
+    // An invalid record must not enter or mutate the queue.
+    loaded.memory.write_u16_be(first + 4, 7).unwrap();
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::NmInstall);
+    loaded.cpu.pc = loaded.entry_pc; loaded.cpu.lr = PPC_HALT_PC; loaded.cpu.gpr[3] = first;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3] as u16 as i16, -299);
+    assert!(loaded.toolbox_startup.notification_requests.is_empty());
+    loaded.memory.write_u16_be(first + 4, 8).unwrap();
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::NmInstall);
+    loaded.memory.write_u32_be(first + 28, u32::MAX).unwrap();
+    loaded.cpu.pc = loaded.entry_pc; loaded.cpu.lr = PPC_HALT_PC; loaded.cpu.gpr[3] = first;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert!(loaded.toolbox_startup.notification_requests.is_empty());
+}
+
+#[test]
+fn notification_response_executes_guest_descriptor_and_restores_return_state() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NMInstall")).unwrap();
+    let request = PPC_DATA_BASE + 0x1800;
+    let descriptor = request + 48;
+    let callback = request + 64;
+    let rtoc = request + 96;
+    loaded.memory.add_region(request, vec![0; 128]);
+    loaded.memory.write_u16_be(request + 4, 8).unwrap();
+    loaded.memory.write_u32_be(request + 28, descriptor).unwrap();
+    loaded.memory.write_u32_be(descriptor, callback).unwrap();
+    loaded.memory.write_u32_be(descriptor + 4, rtoc).unwrap();
+    // stw r3,0(r2); li r3,-99; blr
+    for (offset, instruction) in [0x9062_0000u32, 0x3860_ff9d, 0x4e80_0020].into_iter().enumerate() {
+        loaded.memory.write_u32_be(callback + offset as u32 * 4, instruction).unwrap();
+    }
+    let original_rtoc = loaded.cpu.gpr[2];
+    loaded.cpu.gpr[3] = request;
+    let result = loaded.run_with_hle_imports(64);
+    assert_eq!(result.handled_import_count, 1);
+    assert_eq!(result.unsupported_import_index, None);
+    assert_eq!(loaded.memory.read_u32_be(rtoc), Some(request), "response receives NMRecPtr and descriptor TOC");
+    assert_eq!(loaded.cpu.gpr[2], original_rtoc);
+    assert_eq!(loaded.cpu.gpr[3], 0, "procedure callback result must not replace NMInstall noErr");
+    assert_eq!(loaded.toolbox_startup.notification_requests, vec![request]);
+}
+
+#[test]
+fn notification_response_executes_m68k_descriptor_through_guest_gateway() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NMInstall")).unwrap();
+    let request = PPC_DATA_BASE + 0x1800;
+    let output = request + 64;
+    let descriptor = PPC_HEAP_BASE + 0x1000;
+    let callback = PPC_HEAP_BASE + 0x2000;
+    loaded.memory.add_region(request, vec![0; 128]);
+    install_test_m68k_callback(&mut loaded, descriptor, callback,
+        test_stack_proc_info(0, &[PPC_PROCINFO_SIZE_FOUR]), 0,
+        &[0x202f, 0x0004, // MOVE.L 4(SP),D0
+          0x23c0, (output >> 16) as u16, output as u16, // MOVE.L D0,output
+          0x4e74, 0x0004]); // RTD #4
+    loaded.memory.write_u16_be(request + 4, 8).unwrap();
+    loaded.memory.write_u32_be(request + 28, descriptor).unwrap();
+    let original_rtoc = loaded.cpu.gpr[2];
+    loaded.cpu.gpr[3] = request;
+    let result = loaded.run_with_hle_imports(64);
+    assert_eq!(result.handled_import_count, 1);
+    assert!(loaded.guest_calls().activate_m68k().is_some());
+    drain_test_m68k_guest_calls(&mut loaded);
+    assert_eq!(loaded.memory.read_u32_be(output), Some(request));
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.cpu.gpr[2], original_rtoc);
+    assert!(loaded.guest_calls().is_empty());
+    assert_eq!(loaded.toolbox_startup.notification_requests, vec![request]);
+}
+
+#[test]
+fn notification_queue_is_shared_across_classic_and_native_install_remove() {
+    let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+    let mut native = load_pef_application(&synthetic_pef_with_import(b"NMInstall")).unwrap();
+    let mut context = ProcessContext::default();
+    classic.attach_unconverted_process_services(&mut context);
+    native.attach_unconverted_process_services(&mut context);
+    let shared = classic_bus.shared_ram_region(0, 0x100000).unwrap();
+    context.attach_memory(0, shared, &mut native.memory);
+    let first = 0x8000;
+    let second = 0x8040;
+    classic_bus.write_word(first + 4, 8);
+    classic_bus.write_word(second + 4, 8);
+    classic_bus.write_long(first + 28, 0);
+    classic_bus.write_long(second + 28, 0);
+    native.cpu.gpr[3] = first;
+    native.run_with_hle_imports(64);
+    assert_eq!(classic.notification_requests, vec![first]);
+    classic_cpu.write_reg(Register::A0, second);
+    assert!(classic.dispatch_memory(false, 0x5e, &mut classic_cpu, &mut classic_bus).unwrap().is_ok());
+    assert_eq!(native.toolbox_startup.notification_requests, vec![first, second]);
+    assert_eq!(native.memory.read_u32_be(first), Some(second));
+    classic_cpu.write_reg(Register::A0, first);
+    assert!(classic.dispatch_memory(false, 0x5f, &mut classic_cpu, &mut classic_bus).unwrap().is_ok());
+    assert_eq!(classic_cpu.read_reg(Register::D0), 0);
+    assert_eq!(native.toolbox_startup.notification_requests, vec![second]);
+    native.cpu.pc = native.entry_pc; native.cpu.lr = PPC_HALT_PC; native.cpu.gpr[3] = second;
+    native.imports[0].dispatcher_target = PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::NmRemove);
+    native.run_with_hle_imports(64);
+    assert_eq!(native.cpu.gpr[3], 0);
+    assert!(classic.notification_requests.is_empty());
+    classic_cpu.write_reg(Register::A0, first);
+    classic.dispatch_memory(false, 0x5e, &mut classic_cpu, &mut classic_bus)
+        .unwrap().unwrap();
+    assert_eq!(native.toolbox_startup.notification_requests, vec![first]);
+    context.reset_notifications_for_launch();
+    assert!(classic.notification_requests.is_empty());
+    assert!(native.toolbox_startup.notification_requests.is_empty());
 }

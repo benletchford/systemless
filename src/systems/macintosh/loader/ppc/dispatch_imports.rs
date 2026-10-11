@@ -2731,7 +2731,7 @@ pub(crate) fn dispatch_supported_import(
                 last_mem_error,
                 handles,
                 launched_app_path,
-                &mut toolbox_startup.kchr_cache_ptr,
+                toolbox_startup,
             ))
         }
         PpcImportDispatcherTarget::AppleTalkCompatibility(operation) => Some(

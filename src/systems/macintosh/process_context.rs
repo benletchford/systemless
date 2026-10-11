@@ -1799,11 +1799,32 @@ impl std::ops::Deref for SharedProcessSoundManager {
         &self.0
     }
 }
-/// Detached-by-default attachment handle for process-owned Collection Manager state.
+/// Detached-by-default attachment handle for process-owned Notification Manager state.
 ///
 /// Ordinary clones are snapshots so cloning an adapter cannot couple two
 /// processes. Adapters share only through `attach_to`, under the same
 /// serialized runner ownership used for guest RAM and the Memory Manager.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SharedProcessNotificationQueue(SharedProcessValue<Vec<u32>>);
+impl std::ops::Deref for SharedProcessNotificationQueue {
+    type Target = Vec<u32>;
+    fn deref(&self) -> &Self::Target { &self.0 }
+}
+impl PartialEq<Vec<u32>> for SharedProcessNotificationQueue {
+    fn eq(&self, other: &Vec<u32>) -> bool { self.0.with_ref(|queue| queue == other) }
+}
+impl SharedProcessNotificationQueue {
+    pub(crate) fn push(&self, request: u32) { self.0.with_mut(|queue| queue.push(request)); }
+    pub(crate) fn remove(&self, index: usize) -> u32 { self.0.with_mut(|queue| queue.remove(index)) }
+    pub(crate) fn attach_to(&mut self, process_state: &Self) {
+        self.0.attach_to(&process_state.0, Vec::is_empty);
+    }
+}
+
+/// Detached-by-default attachment handle for process-owned Collection Manager state.
+///
+/// Ordinary clones are snapshots; adapters share only through explicit attachment
+/// under serialized runner ownership.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SharedProcessCollectionManager(
     SharedProcessValue<ProcessCollectionManagerState>,
@@ -10056,6 +10077,7 @@ pub(crate) struct ProcessContext {
     control_manager: SharedProcessControlManager,
     list_manager: SharedProcessListManager,
     collection_manager: SharedProcessCollectionManager,
+    notification_requests: SharedProcessNotificationQueue,
     text_edit_manager: SharedProcessTextEditManager,
     dialog_text: SharedProcessDialogText,
     cursor_state: SharedProcessCursorState,
@@ -10229,6 +10251,7 @@ impl Default for ProcessContext {
             control_manager: SharedProcessControlManager::default(),
             list_manager: SharedProcessListManager::default(),
             collection_manager: SharedProcessCollectionManager::default(),
+            notification_requests: SharedProcessNotificationQueue::default(),
             text_edit_manager: SharedProcessTextEditManager::default(),
             dialog_text: SharedProcessDialogText::default(),
             cursor_state: SharedProcessCursorState::default(),
@@ -10508,6 +10531,16 @@ impl ProcessContext {
 
     pub(crate) fn attach_list_manager(&self, adapter: &mut SharedProcessListManager) {
         adapter.attach_to(&self.list_manager);
+    }
+
+    pub(crate) fn reset_notifications_for_launch(&self) {
+        // Request pointers belong to the previous guest address space. Never
+        // dereference them or run responses after replacing that application.
+        self.notification_requests.0.with_mut(Vec::clear);
+    }
+
+    pub(crate) fn attach_notification_queue(&self, adapter: &mut SharedProcessNotificationQueue) {
+        adapter.attach_to(&self.notification_requests);
     }
 
     pub(crate) fn attach_collection_manager(&self, adapter: &mut SharedProcessCollectionManager) {

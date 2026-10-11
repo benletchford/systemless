@@ -33,3 +33,48 @@ and `PaintOne` on pp. 4-118 onward; *Inside Macintosh: Text* (1993), chapter 2;
 *Inside Macintosh: More Macintosh Toolbox* (1993), List Manager and Standard
 File chapters. Systemless's source paths above identify the current owners;
 none of the classifications grants the frontend authority to edit guest state.
+
+### Notification source audit (2026-10-11)
+
+Current source confirms a missing implementation, not merely missing captures.
+Classic `trap/memory.rs::install_notification_request` validates qType8, links
+requests, treats response -1 as automatic removal and arms guest response
+procedures. `remove_notification_request` unlinks and returns qErr for absent
+requests. The request list is local to the classic dispatcher. No shared
+notification model or GPUI notification presenter is established by this path.
+
+PPC `import_targets.rs` binds NMRemove to SystemCompatibility::NmRemove;
+`dispatch_system.rs` treats it as ReturnPreserve, leaving the guest return
+register unchanged. There is no InterfaceLib NMInstall binding. Thus PPC
+notification installation, queue lifetime, error returns, callbacks and visible
+notice behavior are incomplete. A host-font toast is not an equivalent fix.
+
+Implementation must establish validated guest record ownership and queue
+lifecycle on both CPU paths, then use the existing guest callback machinery for
+response procedures. Presentation needs guest text/resource recipes, icon/sound
+and acknowledgement state without consuming application-owned drawing. Tests
+must cover invalid qType, duplicate install, head/middle/tail removal, absent
+request, response -1/null/procedure, callback-triggered removal/reinstall and
+CPU parity. Visible notices then require shared-compositor interaction evidence.
+This audit closes no release gate and does not claim Macintosh oracle parity.
+
+Apple's original Notification Manager reference (Processes, p.5-9):
+https://developer.apple.com/library/archive/documentation/mac/pdf/Processes/Notification_Manager.pdf
+requires response execution after delivery, including alert OK acknowledgement
+and sound completion. The existing classic immediate-response behavior does not
+establish faithful visible-notice timing. Requests with nmStr/nmSound now remain
+pending in the local work until a real delivery/completion path is implemented.
+This is an unfinished path, not notification qualification.
+
+### Shared Notification Manager queue checkpoint (2026-10-11)
+
+PPC NMInstall/NMRemove now implement record validation, queue links, duplicate
+installation, error returns and response callbacks. Classic and PPC adapters
+attach to one process-owned request queue. Native PPC and Mixed Mode 68k
+responses execute through existing guest call machinery. Alert/sound requests
+remain queued without prematurely executing responses or automatic removal.
+Eleven targeted tests pass (0.08s; build58.66s), including cross-CPU install/remove.
+Evidence is under `reference/gpui-demo/notification-queue` with source hashes.
+Visible alert delivery, menu/icon notices, sound completion, acknowledgment and
+post-delivery callbacks remain unfinished; this is not GPUI notification
+qualification and closes no production gate.

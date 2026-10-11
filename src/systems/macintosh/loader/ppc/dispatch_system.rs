@@ -36,6 +36,7 @@ pub enum PpcSystemCompatibilityOperation {
     MidiSignOut,
     MidiWritePacket,
     Munger,
+    NmInstall,
     NmRemove,
     ObscureCursor,
     OpenDefaultComponent,
@@ -213,9 +214,64 @@ pub(crate) fn ppc_dispatch_system_compatibility(
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
     launched_app_path: Option<&str>,
-    kchr_cache_ptr: &mut u32,
+    toolbox_startup: &mut PpcToolboxStartupState,
 ) -> PpcImportAction {
     match operation {
+        PpcSystemCompatibilityOperation::NmInstall | PpcSystemCompatibilityOperation::NmRemove => {
+            let request = cpu.gpr[3];
+            let result = if request == 0 || memory.read_u16_be(request.wrapping_add(4)) != Some(8)
+                || !ppc_memory_can_write_bytes(memory, request, 32) { -299 }
+            else if operation == PpcSystemCompatibilityOperation::NmRemove {
+                ppc_remove_notification(memory, &mut toolbox_startup.notification_requests, request)
+            } else if toolbox_startup.notification_requests.contains(&request) { 0 }
+            else {
+                if let Some(&tail) = toolbox_startup.notification_requests.last() { let _ = memory.write_u32_be(tail, request); }
+                let _ = memory.write_u32_be(request, 0);
+                toolbox_startup.notification_requests.push(request);
+                // Response is the final notification stage (Inside Macintosh:
+                // Processes, Notification Manager, p.5-9). Alert/sound requests
+                // must remain pending until actual delivery/acknowledgement.
+                if memory.read_u16_be(request + 14).unwrap_or(0) != 0
+                    || memory.read_u32_be(request + 16).unwrap_or(0) != 0
+                    || memory.read_u32_be(request + 20).unwrap_or(0) != 0
+                    || memory.read_u32_be(request + 24).unwrap_or(0) != 0 {
+                    return PpcImportAction::Return(0);
+                }
+                let response = memory.read_u32_be(request + 28).unwrap_or(0);
+                if response == u32::MAX {
+                    ppc_remove_notification(memory, &mut toolbox_startup.notification_requests, request);
+                } else if response != 0 {
+                    if let Some(target) = resolve_guest_procedure(memory, response, cpu.gpr[2], None,
+                        GuestIsa::PowerPc, GuestIsa::PowerPc) {
+                        if target.isa == GuestIsa::M68k && target.proc_info != 0 {
+                            let saved = toolbox_startup.mixed_mode_m68k.snapshot();
+                            if let Some(action) = ppc_begin_m68k_universal_proc(cpu,
+                                Some(process_memory_manager), memory, heap_cursor, heap_limit,
+                                toolbox_startup, target, target.proc_info, None, vec![request],
+                                cpu.lr, PpcNativeReturnGpr3::Set(0)) {
+                                return action;
+                            }
+                            toolbox_startup.mixed_mode_m68k.restore_snapshot(saved);
+                        }
+                        if target.isa != GuestIsa::PowerPc {
+                            return PpcImportAction::Return(0);
+                        }
+                        let restore_rtoc = cpu.gpr[2];
+                        let final_pc = cpu.lr;
+                        if install_powerpc_call_arguments(cpu, memory, &[request]).is_some() {
+                            return GuestCallEffect::call_guest(
+                                GuestCallRequest::new(GuestCallTarget { isa: GuestIsa::PowerPc,
+                                    entry: target.entry, rtoc: target.rtoc }),
+                                GuestCallContinuation::to_powerpc(PPC_GUEST_CALL_RETURN_PC,
+                                    final_pc, restore_rtoc, PpcNativeReturnGpr3::Set(0)),
+                            ).into_ppc_import_action().unwrap();
+                        }
+                    }
+                }
+                0
+            };
+            PpcImportAction::Return(ppc_i16_result(result))
+        }
         PpcSystemCompatibilityOperation::Munger => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
@@ -419,7 +475,7 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             // KeyTranslate to map virtual keys through the keyboard layout.
             // Inside Macintosh: Text (1993), pp. 6-61 and C-18--C-20.
             let result = if cpu.gpr[3] as u16 == 38 {
-                if *kchr_cache_ptr == 0 {
+                if toolbox_startup.kchr_cache_ptr == 0 {
                     let bytes = crate::trap::dispatch::standard_us_kchr_bytes();
                     let ptr = ppc_process_heap_alloc(
                         process_memory_manager,
@@ -429,12 +485,12 @@ pub(crate) fn ppc_dispatch_system_compatibility(
                         false,
                     );
                     if ptr != 0 && memory.write_bytes(ptr, &bytes).is_some() {
-                        *kchr_cache_ptr = ptr;
+                        toolbox_startup.kchr_cache_ptr = ptr;
                     } else {
                         *last_mem_error = PPC_MEM_FULL_ERR;
                     }
                 }
-                *kchr_cache_ptr
+                toolbox_startup.kchr_cache_ptr
             } else {
                 0
             };
@@ -462,7 +518,14 @@ pub(crate) fn ppc_dispatch_system_compatibility(
         | PpcSystemCompatibilityOperation::DiUnload
         | PpcSystemCompatibilityOperation::Debugger
         | PpcSystemCompatibilityOperation::InitCrm
-        | PpcSystemCompatibilityOperation::InitCtbUtilities
-        | PpcSystemCompatibilityOperation::NmRemove => PpcImportAction::ReturnPreserve,
+        | PpcSystemCompatibilityOperation::InitCtbUtilities => PpcImportAction::ReturnPreserve,
     }
+}
+
+fn ppc_remove_notification(memory: &mut PpcSectionMem, requests: &mut crate::process_context::SharedProcessNotificationQueue, request: u32) -> i16 {
+    let Some(index) = requests.iter().position(|&entry| entry == request) else { return -1; };
+    requests.remove(index);
+    let _ = memory.write_u32_be(request, 0);
+    if index > 0 { let _ = memory.write_u32_be(requests[index - 1], requests.get(index).copied().unwrap_or(0)); }
+    0
 }

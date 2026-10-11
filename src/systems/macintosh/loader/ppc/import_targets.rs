@@ -5673,6 +5673,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "Munger") => {
             PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::Munger)
         }
+        ("InterfaceLib", "NMInstall") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::NmInstall,
+        ),
         ("InterfaceLib", "NMRemove") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::NmRemove,
         ),
