@@ -199,6 +199,12 @@ mod tests {
                 }
                 assert_eq!(painted, expected);
                 assert_eq!(paint_advance, pen);
+                if face != 0 { assert!(line.smooth_sources.is_empty()); }
+                if face == 0 && size == 12 {
+                    assert_eq!(line.smooth_sources.len(), bytes.len());
+                    assert_eq!(line.smooth_sources[0].0, 0);
+                    assert_ne!(line.smooth_sources[1].0, positions[1], "native paint pens must not be replaced by insertion metrics");
+                }
             }
         }
         assert!(ClassicLine::classic_textedit_run(bytes, 3, 12, 0, vec![0, 1]).is_none());
@@ -221,6 +227,17 @@ mod tests {
                 let (expected_advance, expected) = systemless::quickdraw::text::ppc_styled_run_ink(3, size, face, bytes);
                 assert_eq!(paint_advance, i32::from(expected_advance));
                 assert_eq!(painted, expected.into_iter().collect());
+                if face != 0 { assert!(line.smooth_sources.is_empty()); }
+                if face == 0 && size == 12 {
+                    assert_eq!(line.smooth_sources.len(), bytes.len());
+                    let mut native_pen = 0;
+                    for (source, byte) in line.smooth_sources.iter().zip(bytes) {
+                        let (glyph, _) = systemless::quickdraw::text::get_glyph(3, size, *byte as char).unwrap();
+                        assert_eq!(source.0, native_pen);
+                        assert!(std::ptr::eq(source.1, glyph));
+                        native_pen += i32::from(glyph.advance);
+                    }
+                }
             }
         }
         assert!(ClassicLine::ppc_styled_run(bytes, 3, 12, 0, vec![0, 1]).is_none());
@@ -470,15 +487,22 @@ impl ClassicLine {
             return None;
         }
         let mut pixels = Vec::new();
+        let mut smooth_sources = Vec::new();
+        let (_, strike_scale) = systemless::quickdraw::fonts::get_font_face_scaled(font, point_size);
         let mut pen: i32 = 0;
         for &byte in bytes {
+            if face == 0 && strike_scale == 1 {
+                if let Some((glyph, data)) = systemless::quickdraw::text::get_glyph(font, point_size, byte as char) {
+                    smooth_sources.push((pen, glyph, data));
+                }
+            }
             let (advance, ink) = systemless::quickdraw::text::classic_textedit_glyph_ink(font, point_size, byte, face)?;
             pixels.extend(ink.into_iter().map(|(x, y)| (pen + i32::from(x), i32::from(y))));
             pen = pen.saturating_add(advance);
         }
         pixels.sort_unstable_by_key(|&(x, y)| (y, x));
         pixels.dedup();
-        let mut result = Self { positions, ink: Vec::new(), smooth_sources: Vec::new() };
+        let mut result = Self { positions, ink: Vec::new(), smooth_sources };
         for (x, y) in pixels {
             if let Some(last) = result.ink.last_mut() {
                 if last.1 == y && last.0 + last.2 == x {
@@ -511,8 +535,19 @@ impl ClassicLine {
             return None;
         }
         let (paint_advance, mut pixels) = systemless::quickdraw::text::ppc_styled_run_ink(font, point_size, face, bytes);
+        let mut smooth_sources = Vec::new();
+        let (strike, numerator, denominator) = systemless::quickdraw::fonts::get_font_face_scale_ratio(font, point_size);
+        if face == 0 && numerator == denominator {
+            let mut pen = 0;
+            for &byte in bytes {
+                if let Some((glyph, data)) = systemless::quickdraw::text::get_glyph(font, strike.size, byte as char) {
+                    smooth_sources.push((pen, glyph, data));
+                    pen += i32::from(glyph.advance);
+                } else { pen += 6; }
+            }
+        }
         pixels.sort_unstable_by_key(|&(x, y)| (y, x));
-        let mut result = Self { positions, ink: Vec::new(), smooth_sources: Vec::new() };
+        let mut result = Self { positions, ink: Vec::new(), smooth_sources };
         for (x, y) in pixels {
             if let Some(last) = result.ink.last_mut() {
                 if last.1 == y && last.0 + last.2 == x {
