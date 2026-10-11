@@ -234,6 +234,9 @@ mod desktop {
         capture_popup_controls_selected: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_popup_controls_host_suspended: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_popup_controls_open: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -2780,6 +2783,7 @@ mod desktop {
         TextEditHostResumed,
         PopupControls,
         PopupControlsSelected,
+        PopupControlsHostSuspended,
         PopupControlsOpen,
         PopupControlsScrolled,
         StandardFileSave,
@@ -2922,7 +2926,7 @@ mod desktop {
         );
         let popup_page = matches!(
             capture,
-            CaptureCase::PopupControls | CaptureCase::PopupControlsSelected | CaptureCase::PopupControlsOpen | CaptureCase::PopupControlsScrolled
+            CaptureCase::PopupControls | CaptureCase::PopupControlsSelected | CaptureCase::PopupControlsHostSuspended | CaptureCase::PopupControlsOpen | CaptureCase::PopupControlsScrolled
         );
         let standard_file_save = matches!(
             capture,
@@ -3763,7 +3767,7 @@ mod desktop {
             for _ in 0..20 { runner.run_steps(50_000, None); }
             assert_eq!(runner.guest_popup_snapshot().unwrap().highlighted_item, 4);
         }
-        if matches!(capture, CaptureCase::PopupControlsSelected) {
+        if matches!(capture, CaptureCase::PopupControlsSelected | CaptureCase::PopupControlsHostSuspended) {
             select_showcase_resource_popup_long(&mut session);
             let controls = session.runner_mut().control_snapshot();
             let menus = session.runner_mut().guest_menu_snapshot();
@@ -3968,7 +3972,28 @@ mod desktop {
                 }), "guest must finish painting the host transition");
             }
         }
-        let activation_capture = activation_capture || host_activation_capture;
+        let popup_host_suspended = matches!(capture, CaptureCase::PopupControlsHostSuspended);
+        if popup_host_suspended {
+            let owner = session.runner_mut().control_snapshot().iter()
+                .find(|control| control.visible && control.popup_menu_id == Some(143))
+                .expect("selected popup must retain its owner").owner_id;
+            session.request_foreground(false);
+            assert!((0..300).any(|_| {
+                session.runner_mut().run_steps(10_000, None);
+                session.runner_mut().window_frame_snapshot().iter()
+                    .any(|frame| frame.guest_id == owner && frame.window.visible && !frame.window.active)
+            }), "popup owner must become inactive through guest suspend events");
+            assert!((0..300).any(|_| {
+                session.runner_mut().run_steps(10_000, None);
+                session.runner().event_manager_snapshot().last_record
+                    .is_some_and(|event| event.what == 0)
+            }), "guest must finish its popup-owner suspend handling");
+            let current = session.runner_mut().control_snapshot();
+            assert!(current.iter().any(|control| control.visible
+                && control.popup_menu_id == Some(143) && control.value == 4));
+            assert!(session.runner_mut().guest_popup_snapshot().is_none());
+        }
+        let activation_capture = activation_capture || host_activation_capture || popup_host_suspended;
         let windows = if activation_capture { session.runner_mut().window_frame_snapshot() } else { windows };
         let dialogs = if activation_capture { session.runner_mut().dialog_snapshot() } else { dialogs };
         let text_edits = session.runner_mut().text_edit_snapshot().records;
@@ -4523,6 +4548,12 @@ mod desktop {
         if let Some(output) = args.capture_popup_controls_open.as_ref() {
             capture_fixture_screen(&args.game, output, args.prefer_powerpc,
                 args.screen_depth, CaptureCase::PopupControlsOpen, args.capture_scale);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_popup_controls_host_suspended.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc,
+                args.screen_depth, CaptureCase::PopupControlsHostSuspended, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -5111,6 +5142,7 @@ mod desktop {
                         capture_text_edit_host_resumed: None,
                         capture_popup_controls: None,
                         capture_popup_controls_selected: None,
+                        capture_popup_controls_host_suspended: None,
                         capture_popup_controls_open: None,
                         capture_popup_controls_scrolled: None,
                         capture_standard_file_save: None,
@@ -9133,6 +9165,9 @@ mod desktop {
                                 saw_os_event && session.runner_mut().text_edit_snapshot().records.iter()
                                     .any(|record| record.guest_id == text.guest_id && record.active == foreground)
                             }), "host transition was not handled: PPC={powerpc}, depth={depth:?}, foreground={foreground}, osEvt={saw_os_event}");
+                    let frames = session.runner_mut().window_frame_snapshot();
+                    assert_eq!(frames.iter().any(|frame| frame.window.visible && frame.window.active),
+                        foreground, "presentation activation must follow guest HiliteWindow: PPC={powerpc}, depth={depth:?}");
                     let current = session
                         .runner_mut()
                         .text_edit_snapshot()

@@ -3154,3 +3154,32 @@ combinations (281.96 seconds), including press, held movement, release, exact
 guest coordinates, highlighted row, committed control value and popup closure.
 No native host pointer-capture or inactive/disabled/chrome qualification follows
 from this result. The full production migration remains incomplete.
+
+### Popup guest suspend capture route
+
+A new host-suspended popup capture selects the long label through retained
+guest tracking, then requests foreground suspension through MacintoshSession.
+It waits for the actual visible owner window to become inactive and for a null
+event after suspend handling, checks selected value 4 is preserved and confirms
+no open popup remains. This uses guest activation state rather than changing
+GPUI snapshot booleans. The reusable scale script accepts this state for popup
+controls. Capture execution and visual review remain pending; this route does
+not prove native host observer integration or native application switching.
+
+The first monochrome 0.75 capture failed its inactive-owner assertion before
+composition (`/tmp/gpui-popup-host-suspended-scales`). Investigation found that
+the diagnostic stack marks the front window active regardless of its guest
+`hilited` byte. The presentation snapshot now additionally requires that byte
+to be set, preserving ordering while permitting guest HiliteWindow suspension.
+The three-mode TextEdit suspend/resume regression now asserts presentation
+activation after each guest-handled transition. The failed capture is not visual evidence.
+
+The updated three-mode `showcase_text_selection_survives_host_suspend_resume`
+regression passes (38.20 s), including presentation activation, preserved text
+and selection, repeated suspension/resumption, and subsequent typing. The
+modeless-window activation regression also passes (7.84 s; both 68K display
+depths). The GPUI capture build passes. A fresh monochrome 0.75 suspended
+popup capture passes its owner-state and retained-value assertions; visual
+review confirms an inactive title and retained/clipped selected guest text.
+The complete twelve-capture suspended matrix is still pending. These checks
+do not establish native host observer or native Macintosh parity.

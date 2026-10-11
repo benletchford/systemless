@@ -5,7 +5,7 @@ Build first: cargo build --locked --example gpui-menu-demo --features gpui-demo-
 Run with an empty output directory; this never replaces reference captures.
 Use --surface modal for nickname selection (offsets 3..6) and field focus changes.
 Modal host-suspended states are not yet included.
-Use --surface popup for closed selected labels; inactive popup captures are pending.
+Use --surface popup for closed selected labels; host-suspended captures drive guest activation events.
 Uses only the Python standard library. Visual review remains required.
 """
 import argparse
@@ -48,7 +48,8 @@ def main():
               [('active', '--capture-modal-dialog-selection'),
                ('inactive', '--capture-modal-dialog-selection-inactive')])
     if arguments.surface == 'popup':
-        states = [('active', '--capture-popup-controls-selected')]
+        states = [('active', '--capture-popup-controls-selected'),
+                  ('host-suspended', '--capture-popup-controls-host-suspended')]
     if arguments.state != 'all':
         states = [(state, flag) for state, flag in states if state == arguments.state]
         if not states:
