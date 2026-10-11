@@ -5901,3 +5901,49 @@ fn classic_port_drawing_is_visible_without_a_quartz_flush() {
         Some(0xED)
     );
 }
+
+#[test]
+fn qd_global_white_weak_import_copies_live_pattern_and_guards_destination() {
+    for library in ["InterfaceLib", "CarbonLib"] {
+        for symbol in ["GetQDGlobalsWhite", "getqdglobalswhite"] {
+            let loader = synthetic_loader_with_symbol_class(
+                library.as_bytes(), symbol.as_bytes(), 0x82, &[run_reloc(0x23, 1)],
+            );
+            let mut loaded = load_pef_application(&synthetic_pef_with_loader(loader)).unwrap();
+            let target = PpcImportDispatcherTarget::GetQDGlobalsWhite;
+            assert!(loaded.imports[0].weak);
+            assert_ne!(loaded.imports[0].address, 0);
+            assert_eq!(loaded.imports[0].dispatcher_target, target);
+            let destination = PPC_DATA_BASE + 0x2400;
+            loaded.memory.add_region(destination - 1, vec![0xA5; 10]);
+            loaded.cpu.gpr[3] = destination;
+            run_test_import(&mut loaded, target.clone());
+            assert_eq!(loaded.cpu.gpr[3], destination);
+            assert_eq!(ppc_memory_read_bytes(&mut loaded.memory, destination, 8), Some(vec![0; 8]));
+            let globals = PPC_DATA_BASE + 0x2800;
+            loaded.memory.add_region(globals - 126, vec![0; 130]);
+            loaded.cpu.gpr[3] = globals;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::InitGraf);
+            let pattern = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0];
+            loaded.memory.write_bytes(globals - 8, &pattern).unwrap();
+            loaded.cpu.gpr[3] = destination;
+            run_test_import(&mut loaded, target.clone());
+            assert_eq!(loaded.cpu.gpr[3], destination);
+            assert_eq!(ppc_memory_read_bytes(&mut loaded.memory, destination, 8), Some(pattern.to_vec()));
+            assert_eq!(loaded.memory.read_u8(destination - 1), Some(0xA5));
+            assert_eq!(loaded.memory.read_u8(destination + 8), Some(0xA5));
+            // Reading precedes writing even when caller and global overlap.
+            loaded.cpu.gpr[3] = globals - 7;
+            run_test_import(&mut loaded, target.clone());
+            assert_eq!(ppc_memory_read_bytes(&mut loaded.memory, globals - 7, 8), Some(pattern.to_vec()));
+            let short = 0x70000000;
+            loaded.memory.add_region(short, vec![0x5A; 7]);
+            for invalid in [0, short, u32::MAX - 3] {
+                loaded.cpu.gpr[3] = invalid;
+                run_test_import(&mut loaded, target.clone());
+                assert_eq!(loaded.cpu.gpr[3], 0);
+            }
+            assert_eq!(ppc_memory_read_bytes(&mut loaded.memory, short, 7), Some(vec![0x5A; 7]));
+        }
+    }
+}
