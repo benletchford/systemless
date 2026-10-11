@@ -10841,3 +10841,66 @@ fn pb_get_cat_info_preserves_literal_slash_and_macroman_basename() {
         }
     }
 }
+
+
+#[test]
+fn hierarchical_create_resolves_registered_working_directory_and_preserves_exclusive_errors() {
+    for (requested_dir, expected_path) in
+        [(0, "Lock Folder/Player.0"), (PPC_ROOT_DIR_ID, "Player.0")]
+    {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"HCreate")).unwrap();
+        let folder_id = PPC_FIRST_DYNAMIC_DIR_ID;
+        loaded.vfs_directories.push(PpcVfsDirectory {
+            dir_id: folder_id,
+            parent_dir_id: PPC_ROOT_DIR_ID,
+            path: "Lock Folder".to_string(),
+            creator: PPC_DIRECTORY_CREATOR,
+            file_type: PPC_DIRECTORY_FILE_TYPE,
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.working_directories.with_mut(|directories| {
+            directories.insert(
+                32,
+                ProcessWorkingDirectory {
+                    ref_num: 32,
+                    volume_ref_num: PPC_BOOT_VOLUME_REF_NUM,
+                    dir_id: folder_id,
+                    proc_id: 0,
+                },
+            );
+        });
+        let name = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(name, b"\x08Player.0".to_vec());
+        loaded.cpu.gpr[3] = 32;
+        loaded.cpu.gpr[4] = requested_dir;
+        loaded.cpu.gpr[5] = name;
+        loaded.cpu.gpr[6] = u32::from_be_bytes(*b"nhck");
+        loaded.cpu.gpr[7] = u32::from_be_bytes(*b"LEVL");
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::HCreate);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        let file = loaded
+            .vfs_files
+            .iter()
+            .find(|file| file.path == expected_path)
+            .unwrap();
+        assert_eq!(file.creator, u32::from_be_bytes(*b"nhck"));
+        assert_eq!(file.file_type, u32::from_be_bytes(*b"LEVL"));
+        assert!(file.data.is_empty());
+        assert!(file.dirty);
+        let count = loaded.vfs_files.len();
+        loaded.cpu.gpr[3] = 32;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::HCreate);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_DUP_FN_ERR));
+        assert_eq!(loaded.vfs_files.len(), count);
+        loaded.cpu.gpr[3] = 33;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::HCreate);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NSV_ERR));
+        assert_eq!(loaded.vfs_files.len(), count);
+        loaded.cpu.gpr[3] = 32;
+        loaded.cpu.gpr[4] = 0x7fff_ffff;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::HCreate);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_DIR_NF_ERR));
+        assert_eq!(loaded.vfs_files.len(), count);
+    }
+}
