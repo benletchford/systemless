@@ -338,6 +338,8 @@ mod tests {
 
     fn apple_menu(about_title: &str) -> GuestMenu {
         GuestMenu {
+            guest_id: 1,
+            generation: 1,
             id: 1,
             title: "Apple".to_owned(),
             enabled: true,

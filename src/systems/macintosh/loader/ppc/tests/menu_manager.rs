@@ -8560,11 +8560,17 @@ fn menu_creation_disposal_loading_and_sizing_commands_dispatch_with_canonical_ev
             let pef = synthetic_pef_with_library_import(lib, b"DisposeMenu");
             let mut loaded = load_pef_application(&pef).unwrap();
             let menu = install_test_menu(&mut loaded, 0x60000, 202, b"\x04Help", b"");
+            let generation = loaded.guest_menu_snapshot().menus[0].generation;
+            assert_ne!(generation, 0);
             loaded.cpu.gpr[3] = menu;
             let probe = loaded.run_with_hle_imports(64);
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(loaded.memory.read_u32_be(menu), Some(0));
+            loaded.process_file_system.resource_manager.with_mut(|resources| {
+                assert!(!resources.menu_generations.contains_key(&menu));
+                assert_ne!(resources.menu_generation(menu), generation);
+            });
 
             // Null menu handle in DisposeMenu handles gracefully
             let pef = synthetic_pef_with_library_import(lib, b"DisposeMenu");

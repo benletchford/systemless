@@ -566,6 +566,8 @@ mod tests {
         let mut menus = GuestMenuSnapshot::default();
         assert_eq!(popup_control_label(&popup, &menus), None);
         menus.menus.push(GuestMenu {
+            guest_id: 143,
+            generation: 1,
             id: 143,
             title: "Loadout".into(),
             enabled: true,

@@ -3511,6 +3511,8 @@ impl MenuList {
                     })
                     .collect();
                 Some(GuestMenu {
+                    guest_id: handle,
+                    generation: 0,
                     id: record.id,
                     title,
                     enabled,
@@ -5815,6 +5817,8 @@ mod tests {
         });
 
         assert_eq!(snapshot.menus.len(), 2);
+        assert_eq!(snapshot.menus[0].guest_id, 0x1000);
+        assert_eq!(snapshot.menus[1].guest_id, 0x2000);
         assert_eq!(snapshot.menus[0].title, "Systemless");
         assert!(snapshot.menus[0].visible_in_menu_bar);
         assert_eq!(snapshot.menus[0].items[0].submenu_id, Some(200));

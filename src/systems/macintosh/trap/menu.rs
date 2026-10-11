@@ -716,7 +716,7 @@ impl super::TrapDispatcher {
     /// procedures can mutate guest-owned MenuInfo records directly, so this
     /// reads those records instead of the adapter's presentation cache.
     pub(crate) fn guest_menu_snapshot(&mut self, bus: &MacMemoryBus) -> GuestMenuSnapshot {
-        self.current_menu_list(bus)
+        let mut snapshot = self.current_menu_list(bus)
             .unwrap_or_default()
             .guest_snapshot(|menu_handle| {
                 let menu = bus.read_long(menu_handle);
@@ -730,7 +730,13 @@ impl super::TrapDispatcher {
                     standard_definition: self.menu_uses_standard_definition(bus, menu),
                     items: menu_items_from_memory(bus, menu_handle)?,
                 })
-            })
+            });
+        self.with_resource_manager_mut(|resources| {
+            for menu in &mut snapshot.menus {
+                menu.generation = resources.menu_generation(menu.guest_id);
+            }
+        });
+        snapshot
     }
 
     /// Validate and stage a host-native selection, returning a point inside
@@ -3114,6 +3120,7 @@ impl super::TrapDispatcher {
                     }
                     self.forget_resource_handle_index_for_handle(menu_handle);
                     self.with_resource_manager_mut(|resource_manager| {
+                        resource_manager.forget_menu_generation(menu_handle);
                         resource_manager.loaded_handles.remove(&menu_handle);
                         resource_manager.detached_handles.remove(&menu_handle);
                         resource_manager.resource_handle_files.remove(&menu_handle);
