@@ -823,7 +823,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 776 | Jack Nicklaus 4 | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 777 | Knockoff | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 778 | Lost Crystal | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 779 | MacCheckers | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 779 | MacCheckers | [No affirmative hosting grant found](https://github.com/benletchford/systemless/issues/4618) | [Publisher original; seven files/fourteen forks/Finder matched](https://github.com/benletchford/systemless/issues/4618#issuecomment-6109947535) | Original colour selection/status reached; pieces and legal move unverified | N/A: three CODE resources, no cfrg | Pending | Unhosted; rights held | Pending |
 | 780 | NotAdventure II | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 781 | O!Kay! CD-ROMs 2002 | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 782 | PerTetride | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
