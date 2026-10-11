@@ -28,6 +28,10 @@ mod frames;
 mod metrics;
 
 #[cfg(target_os = "macos")]
+#[path = "gpui_demo_checkbox.rs"]
+mod checkbox;
+
+#[cfg(target_os = "macos")]
 #[path = "desktop/desktop_save_store.rs"]
 mod desktop_save_store;
 
@@ -47,7 +51,6 @@ mod desktop {
     use gpui_kit::{
         component::{
             button::{Button, ButtonVariants},
-            checkbox::Checkbox,
             popover::Popover,
             radio::Radio,
             ActiveTheme, Disableable, Sizable,
@@ -95,6 +98,15 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_modal_dialog_button_outside: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_modal_dialog_checkbox_held: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_modal_dialog_checkbox_checked_held: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_modal_dialog_checkbox_outside: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_modeless_dialog: Option<PathBuf>,
@@ -1475,21 +1487,11 @@ mod desktop {
                         }
                         1 => {
                             overlay = overlay.child(
-                                Checkbox::new(format!(
-                                    "guest-control-checkbox-{}-{}",
-                                    control.guest_id, control.generation
-                                ))
-                                    .label(control.title.clone())
-                                    .checked(control.value != 0)
-                                    .disabled(!control.enabled)
-                                    .tab_stop(false)
-                                    .small()
-                                    // Toolbox Essentials (1992), Control Manager,
-                                    // NewControl: standard titles use the 12-point system font.
-                                    .gap_x(guest_px(4.))
-                                    .text_size(guest_px(12.))
-                                    .w_full()
-                                    .h_full(),
+                                super::checkbox::guest_checkbox(
+                                    format!("guest-control-checkbox-{}-{}", control.guest_id, control.generation),
+                                    control.title.clone(), control.value != 0, control.enabled,
+                                    control.hilite == 11, scene_scale, cx,
+                                ),
                             );
                         }
                         2 => {
@@ -1740,19 +1742,11 @@ mod desktop {
                             overlay.child(field.child(suffix))
                         }
                         DialogItemKind::Checkbox => overlay.child(
-                            Checkbox::new(format!(
-                                "guest-dialog-checkbox-{}-{}-{}",
-                                dialog.guest_id, dialog.generation, item.number
-                            ))
-                            .label(item.text.clone())
-                            .checked(item.value.unwrap() != 0)
-                            .disabled(!item.enabled)
-                            .tab_stop(false)
-                            .small()
-                            .gap_x(guest_px(4.))
-                            .text_size(guest_px(12.))
-                            .w_full()
-                            .h_full(),
+                            super::checkbox::guest_checkbox(
+                                format!("guest-dialog-checkbox-{}-{}-{}", dialog.guest_id, dialog.generation, item.number),
+                                item.text.clone(), item.value.unwrap() != 0, item.enabled,
+                                dialog.active && item.pressed, scene_scale, cx,
+                            ),
                         ),
                         DialogItemKind::RadioButton => overlay.child(
                             Radio::new(format!(
@@ -2286,6 +2280,9 @@ mod desktop {
         ModalDialogCaretHidden,
         ModalDialogButtonHeld,
         ModalDialogButtonOutside,
+        ModalDialogCheckboxHeld,
+        ModalDialogCheckboxCheckedHeld,
+        ModalDialogCheckboxOutside,
         ModelessDialog,
         NestedModalDialog,
         Controls,
@@ -2411,7 +2408,7 @@ mod desktop {
             CaptureCase::ModelessDialog | CaptureCase::NestedModalDialog
         ) {
             (132, 7)
-        } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked | CaptureCase::ModalDialogCaretVisible | CaptureCase::ModalDialogCaretHidden | CaptureCase::ModalDialogButtonHeld | CaptureCase::ModalDialogButtonOutside) {
+        } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked | CaptureCase::ModalDialogCaretVisible | CaptureCase::ModalDialogCaretHidden | CaptureCase::ModalDialogButtonHeld | CaptureCase::ModalDialogButtonOutside | CaptureCase::ModalDialogCheckboxHeld | CaptureCase::ModalDialogCheckboxCheckedHeld | CaptureCase::ModalDialogCheckboxOutside) {
             (129, 6)
         } else if lists_page {
             (129, 9)
@@ -2739,7 +2736,7 @@ mod desktop {
             } else {
                 modeless
             }
-        } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked | CaptureCase::ModalDialogCaretVisible | CaptureCase::ModalDialogCaretHidden | CaptureCase::ModalDialogButtonHeld | CaptureCase::ModalDialogButtonOutside) {
+        } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked | CaptureCase::ModalDialogCaretVisible | CaptureCase::ModalDialogCaretHidden | CaptureCase::ModalDialogButtonHeld | CaptureCase::ModalDialogButtonOutside | CaptureCase::ModalDialogCheckboxHeld | CaptureCase::ModalDialogCheckboxCheckedHeld | CaptureCase::ModalDialogCheckboxOutside) {
             assert!((0..300).any(|_| {
                 session.runner_mut().run_steps(100_000, None);
                 session.runner_mut().guest_menu_snapshot().menus.iter().any(|menu| {
@@ -2767,7 +2764,7 @@ mod desktop {
                     }).then_some(dialogs)
                 })
                 .expect("modal preferences dialog should expose a live checkbox");
-            if matches!(capture, CaptureCase::ModalDialogChecked) {
+            if matches!(capture, CaptureCase::ModalDialogChecked | CaptureCase::ModalDialogCheckboxCheckedHeld) {
                 for input in [
                     MacintoshInput::MouseDown { vertical: 155, horizontal: 300 },
                     MacintoshInput::MouseUp { vertical: 155, horizontal: 300 },
@@ -2805,15 +2802,18 @@ mod desktop {
                     None
                 }).expect("modal edit field should reach the requested guest caret phase");
             }
-            if matches!(capture, CaptureCase::ModalDialogButtonHeld | CaptureCase::ModalDialogButtonOutside) {
+            if matches!(capture, CaptureCase::ModalDialogButtonHeld | CaptureCase::ModalDialogButtonOutside | CaptureCase::ModalDialogCheckboxHeld | CaptureCase::ModalDialogCheckboxCheckedHeld | CaptureCase::ModalDialogCheckboxOutside) {
                 let dialog = dialogs.iter().find(|dialog| dialog.visible && dialog.active).unwrap();
-                let cancel = dialog.items.iter().find(|item| item.kind == DialogItemKind::Button && item.text == "Cancel").unwrap();
-                let (dialog_id, item_number, rect) = (dialog.guest_id, cancel.number, cancel.bounds);
+                let checkbox = matches!(capture, CaptureCase::ModalDialogCheckboxHeld | CaptureCase::ModalDialogCheckboxCheckedHeld | CaptureCase::ModalDialogCheckboxOutside);
+                let target = dialog.items.iter().find(|item| if checkbox {
+                    item.kind == DialogItemKind::Checkbox
+                } else { item.kind == DialogItemKind::Button && item.text == "Cancel" }).unwrap();
+                let (dialog_id, item_number, rect) = (dialog.guest_id, target.number, target.bounds);
                 session.deliver_input(MacintoshInput::MouseDown {
                     vertical: (rect.0 + rect.2) / 2, horizontal: (rect.1 + rect.3) / 2,
                 });
                 for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
-                let outside = matches!(capture, CaptureCase::ModalDialogButtonOutside);
+                let outside = matches!(capture, CaptureCase::ModalDialogButtonOutside | CaptureCase::ModalDialogCheckboxOutside);
                 if outside {
                     session.deliver_input(MacintoshInput::MouseMove { vertical: rect.0 - 10, horizontal: rect.1 - 10 });
                     for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
@@ -3425,6 +3425,24 @@ mod desktop {
                 &args.game, output, args.prefer_powerpc, args.screen_depth,
                 CaptureCase::ModalDialogCaretHidden,
             );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_modal_dialog_checkbox_checked_held.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc,
+                args.screen_depth, CaptureCase::ModalDialogCheckboxCheckedHeld);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_modal_dialog_checkbox_held.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc,
+                args.screen_depth, CaptureCase::ModalDialogCheckboxHeld);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_modal_dialog_checkbox_outside.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc,
+                args.screen_depth, CaptureCase::ModalDialogCheckboxOutside);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -4102,6 +4120,9 @@ mod desktop {
                         capture_modal_dialog_caret_hidden: None,
                         capture_modal_dialog_button_held: None,
                         capture_modal_dialog_button_outside: None,
+                        capture_modal_dialog_checkbox_held: None,
+                        capture_modal_dialog_checkbox_checked_held: None,
+                        capture_modal_dialog_checkbox_outside: None,
                         capture_modeless_dialog: None,
                         capture_nested_modal_dialog: None,
                         capture_controls: None,
