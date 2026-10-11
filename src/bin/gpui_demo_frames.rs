@@ -1089,6 +1089,7 @@ mod tests {
             styled: false,
             style_runs: None,
             line_metrics: None,
+            line_layout_policy: systemless::runner::TextEditLineLayoutPolicy::CumulativeGuestMetrics,
         };
         let mut boundary = record.clone();
         boundary.text = b"ab \rcd".to_vec();

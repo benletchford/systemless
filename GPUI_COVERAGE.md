@@ -3444,3 +3444,70 @@ selection and tracking after re-enabling. The shared shape helper and guest
 painters are unchanged by the subsequent PPC live-theme metadata correction.
 This is interaction evidence; the full composed state/scale matrix remains
 running and is not yet qualified.
+
+### CPU-owned TextEdit line geometry candidate
+
+Styled TextEdit still retains guest drawing while its GPUI run ink, colour,
+selection and editing proof remain unfinished. A new shared snapshot geometry
+API preserves the existing CPU line-layout rules: classic 68K stacks canonical
+LHElement heights cumulatively; PPC recomputes mixed-run height/ascent and uses
+the current line's height times its index. The CPU adapter explicitly records
+that policy instead of relying on a host paragraph engine. Geometry also uses
+the shared guest justification helper and supports styled caret ownership at
+wrap/scroll boundaries. PPC run metrics are resolved by intersecting run byte
+ranges, avoiding repeated per-byte style searches in the frontend.
+
+The ordinary GPUI document component now consumes this API for its eligible
+plain lines, retaining its guest-font ink, selection inset and Toolbox input
+routes. Styled/justified eligibility remains guarded until faithful run
+painting and interactions are established. The extended snapshot test covers
+different line heights, native metrics independent of LHTable, justification
+and styled caret boundaries. Real three-mode snapshot/TEClick tests now derive
+the clicked glyph boundary from the shared geometry. Checks and tests are
+running; no rendering or editing qualification is claimed for this candidate.
+The simultaneous popup matrix remains on the fixed `d46a9f65` capture binary;
+its source fingerprints refer to that committed source, before these edits.
+
+### Completed classic indicator matrix and line-geometry checks
+
+The fixed `d46a9f65` popup matrix completed all 36 captures: monochrome
+68K, colour 68K and PPC; active, host-suspended and disabled; scales 0.75,
+1, 1.5 and 2 at host density 2. All 72 original guest/composed artifacts
+are archived as `popup-classic-indicator-*`, with capture commands, hashes,
+dimensions and twelve source fingerprints in
+[`popup-classic-indicator-review.json`](tests/toolbox-showcase/reference/gpui-demo/popup-classic-indicator-review.json).
+The source fingerprints were checked against that committed source, independently
+of the newer TextEdit edits. Binary and fixture hashes were unchanged.
+
+All 144 selected-label and classic-indicator regions exactly match nonempty
+raw guest ink masks after independently snapping guest pixel edges to device
+pixels. The twelve disabled raw guest images remain pixel-identical to the
+previous canonical disabled matrix. All 36 popup-region crops were visually
+reviewed in three contact sheets; the full compositions were not reviewed for
+this matrix. This establishes these selected text and classic indicator regions
+in the shared compositor, not native Macintosh font parity, arbitrary palettes,
+full chrome, clipping/letterboxing, themed indicators or release readiness.
+
+The CPU-owned TextEdit geometry unit regression passes, including mixed-run
+metrics, canonical 68K LHTable placement, PPC run placement, justification,
+visible styled caret ownership and deep negative scrolling origins. Deep-scroll
+placement deliberately preserves the current CPU arithmetic difference rather
+than normalizing it to host typography. Both actual guest snapshot/TEClick
+tests pass (232.29s together), and the existing owner/front-window clipping and
+custom fallback test passes. The latest example check (8.37s) and public
+no-default-features check (14.47s) pass. Styled presentation remains guest-owned;
+these results do not establish styled GPUI painting or editing qualification.
+The production command check passes (41.38s). The actual GPUI document
+click/drag scale regression is running against the latest geometry source.
+
+Reproduce the scoped popup proof without regenerating references:
+
+```sh
+python3 tests/toolbox-showcase/verify-gpui-popup-indicators.py \
+  tests/toolbox-showcase/reference/gpui-demo/popup-classic-indicator-review.json
+```
+
+The verifier passes all 72 artifact hashes/dimensions, committed source
+fingerprints, 144 nonempty exact ink regions and twelve unchanged disabled
+guest rasters. Binary/fixture fingerprints were independently verified at
+matrix completion; the archived verifier does not require that old executable.
