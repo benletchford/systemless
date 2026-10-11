@@ -4477,7 +4477,7 @@ fn appearance_theme_color_query_follows_theme_device_and_narrow_argument_abi() {
     for library in ["CarbonLib", "AppearanceLib", "InterfaceLib"] {
         for symbol in ["IsThemeInColor", "isthemeincolor"] {
             let loader = synthetic_loader_with_symbol_class(
-                library.as_bytes(), symbol.as_bytes(), 0x82, &[sm_index_reloc(0x30, 0)],
+                library.as_bytes(), symbol.as_bytes(), 0x82, &[run_reloc(0x23, 1)],
             );
             let mut loaded = load_pef_application(&synthetic_pef_with_loader(loader)).unwrap();
             let target = PpcImportDispatcherTarget::IsThemeInColor;
