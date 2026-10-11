@@ -5151,6 +5151,24 @@ fn ppc_modal_dialog(
                     | crate::dialog_manager::DialogItemKind::RadioButton)
             }) {
                 let release_index = event_queue.iter().position(|event| event.what == 2);
+                let held_inside = release_index.is_none() && input.mouse_button
+                    && ppc_dialog_item_at_global_point(memory, controls, &items, bounds,
+                        input.mouse_v, input.mouse_h) == Some(hit);
+                let handle = items[usize::from(hit) - 1].handle;
+                if let Some(pointer) = ppc_control_ptr(memory, handle) {
+                    // Toolbox Essentials (1992), pp. 5-89, 5-95:
+                    // contrlHilite stores the tracked part code, not a Boolean.
+                    let highlight = if held_inside {
+                        ppc_control_part_at_point(memory, controls, handle,
+                            input.mouse_v.saturating_sub(bounds.0),
+                            input.mouse_h.saturating_sub(bounds.1)).unwrap_or(0) as u8
+                    } else { 0 };
+                    if memory.read_u8(pointer + PPC_CONTROL_HILITE_OFFSET) != Some(highlight) {
+                        let _ = memory.write_u8(pointer + PPC_CONTROL_HILITE_OFFSET, highlight);
+                        let _ = ppc_draw_dialog_selected(memory, handles, controls, gworlds,
+                            screen_clut, vfs_resources, current_resource_refnum, dialog, Some(hit as i16));
+                    }
+                }
                 if release_index.is_none() && input.mouse_button {
                     event_queue.push_front(event.take().unwrap());
                     return Done(PpcImportAction::Yield(u64::MAX));

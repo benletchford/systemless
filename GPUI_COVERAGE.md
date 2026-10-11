@@ -449,3 +449,21 @@ All 633 library dialog tests also pass. The optional-button StandardAlert
 regression now sends a real press/release sequence, checks that the alert and
 output remain unchanged while held, and verifies the queued release selects
 the correct button even after the current pointer has moved elsewhere.
+
+Dialog item snapshots now carry the guest-owned tracking highlight. Classic
+snapshots read retained Dialog Manager button tracking; PPC updates the live
+ControlRecord highlight while its modal import is held, repainting only when
+that state changes. GPUI push buttons follow this snapshot, gated by active
+and enabled state, rather than inferring a press from host pointer position.
+The three-mode regression checks highlighted-inside and unhighlighted-outside
+states before release; all seven GPUI dialog tests pass.
+`--capture-modal-dialog-button-held <png>` and
+`--capture-modal-dialog-button-outside <png>` exercise these states through the
+existing composed capture path with real guest pointer events. Keyboard flash,
+checkbox/radio pressed presentation and custom filter tracking remain open.
+Six composed captures were generated and reviewed: the held Cancel button is
+shaded and returns to normal when the pointer leaves, while the dialog remains
+open, on monochrome 68K, colour 68K and PPC. The library dialog suite passed
+633 tests; after correcting PPC highlight storage to the documented control
+part code, the focused StandardAlert test also verifies `inButton` (10) while
+held and completes the release normally. The final seven GPUI dialog tests pass.

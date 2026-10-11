@@ -65,6 +65,10 @@ impl PpcLoadedApp {
                     })
                     .flatten();
                     crate::dialog_manager::DialogItemSnapshot {
+                        pressed: matches!(kind, crate::dialog_manager::DialogItemKind::Button
+                            | crate::dialog_manager::DialogItemKind::Checkbox
+                            | crate::dialog_manager::DialogItemKind::RadioButton)
+                            && ppc_control_hilited(&mut self.memory, item.handle),
                         number: (index + 1) as i16,
                         kind,
                         bounds: crate::dialog_manager::dialog_rect_to_global(bounds, item.rect),

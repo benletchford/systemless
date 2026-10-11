@@ -43,6 +43,7 @@ mod desktop {
     };
 
     use clap::Parser;
+    use gpui_kit::base::Selectable;
     use gpui_kit::{
         component::{
             button::{Button, ButtonVariants},
@@ -88,6 +89,12 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_modal_dialog_caret_hidden: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_modal_dialog_button_held: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_modal_dialog_button_outside: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_modeless_dialog: Option<PathBuf>,
@@ -1661,6 +1668,7 @@ mod desktop {
                             // HIG (1992), p. 205: distinguish the guest's default
                             // action visually; Return still follows guest event handling.
                             .when(dialog.active && item.enabled && dialog.default_item == Some(item.number), |button| button.primary())
+                            .selected(dialog.active && item.enabled && item.pressed)
                             .label(item.text.clone())
                             .small()
                             .compact()
@@ -2276,6 +2284,8 @@ mod desktop {
         ModalDialogChecked,
         ModalDialogCaretVisible,
         ModalDialogCaretHidden,
+        ModalDialogButtonHeld,
+        ModalDialogButtonOutside,
         ModelessDialog,
         NestedModalDialog,
         Controls,
@@ -2401,7 +2411,7 @@ mod desktop {
             CaptureCase::ModelessDialog | CaptureCase::NestedModalDialog
         ) {
             (132, 7)
-        } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked | CaptureCase::ModalDialogCaretVisible | CaptureCase::ModalDialogCaretHidden) {
+        } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked | CaptureCase::ModalDialogCaretVisible | CaptureCase::ModalDialogCaretHidden | CaptureCase::ModalDialogButtonHeld | CaptureCase::ModalDialogButtonOutside) {
             (129, 6)
         } else if lists_page {
             (129, 9)
@@ -2729,7 +2739,7 @@ mod desktop {
             } else {
                 modeless
             }
-        } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked | CaptureCase::ModalDialogCaretVisible | CaptureCase::ModalDialogCaretHidden) {
+        } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked | CaptureCase::ModalDialogCaretVisible | CaptureCase::ModalDialogCaretHidden | CaptureCase::ModalDialogButtonHeld | CaptureCase::ModalDialogButtonOutside) {
             assert!((0..300).any(|_| {
                 session.runner_mut().run_steps(100_000, None);
                 session.runner_mut().guest_menu_snapshot().menus.iter().any(|menu| {
@@ -2794,6 +2804,23 @@ mod desktop {
                     session.runner_mut().run_steps(1_000, None);
                     None
                 }).expect("modal edit field should reach the requested guest caret phase");
+            }
+            if matches!(capture, CaptureCase::ModalDialogButtonHeld | CaptureCase::ModalDialogButtonOutside) {
+                let dialog = dialogs.iter().find(|dialog| dialog.visible && dialog.active).unwrap();
+                let cancel = dialog.items.iter().find(|item| item.kind == DialogItemKind::Button && item.text == "Cancel").unwrap();
+                let (dialog_id, item_number, rect) = (dialog.guest_id, cancel.number, cancel.bounds);
+                session.deliver_input(MacintoshInput::MouseDown {
+                    vertical: (rect.0 + rect.2) / 2, horizontal: (rect.1 + rect.3) / 2,
+                });
+                for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
+                let outside = matches!(capture, CaptureCase::ModalDialogButtonOutside);
+                if outside {
+                    session.deliver_input(MacintoshInput::MouseMove { vertical: rect.0 - 10, horizontal: rect.1 - 10 });
+                    for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
+                }
+                dialogs = session.runner_mut().dialog_snapshot();
+                let current = dialogs.iter().find(|dialog| dialog.guest_id == dialog_id && dialog.visible).unwrap();
+                assert_eq!(current.items.iter().find(|item| item.number == item_number).unwrap().pressed, !outside);
             }
             dialogs
         } else if standard_file_page {
@@ -3401,6 +3428,18 @@ mod desktop {
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_modal_dialog_button_held.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc,
+                args.screen_depth, CaptureCase::ModalDialogButtonHeld);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_modal_dialog_button_outside.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc,
+                args.screen_depth, CaptureCase::ModalDialogButtonOutside);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_modal_dialog_checked.as_ref() {
             capture_fixture_screen(
                 &args.game,
@@ -3736,6 +3775,7 @@ mod desktop {
                     cancel_item: None,
                     edit_field: None,
                     items: vec![DialogItemSnapshot {
+                        pressed: false,
                         number: 1,
                         kind: DialogItemKind::StaticText,
                         bounds: (105, 100, 135, 210),
@@ -4060,6 +4100,8 @@ mod desktop {
                         capture_modal_dialog_checked: None,
                         capture_modal_dialog_caret_visible: None,
                         capture_modal_dialog_caret_hidden: None,
+                        capture_modal_dialog_button_held: None,
+                        capture_modal_dialog_button_outside: None,
                         capture_modeless_dialog: None,
                         capture_nested_modal_dialog: None,
                         capture_controls: None,
@@ -5993,6 +6035,7 @@ mod desktop {
                 mixed.items[1].kind = DialogItemKind::Checkbox;
                 mixed.items[1].value = Some(1);
                 mixed.items.push(systemless::runner::DialogItemSnapshot {
+                    pressed: false,
                     number: 3,
                     kind: DialogItemKind::EditText,
                     bounds: (250, 320, 270, 430),
@@ -6197,9 +6240,17 @@ mod desktop {
                 assert!(session.runner_mut().dialog_snapshot().iter().any(|current| {
                     current.guest_id == dialog.guest_id && current.generation == dialog.generation && current.visible
                 }), "modal Cancel fired before release: PPC={powerpc}, depth={depth:?}");
+                assert!(session.runner_mut().dialog_snapshot().iter()
+                    .find(|current| current.guest_id == dialog.guest_id).unwrap()
+                    .items.iter().find(|item| item.number == cancel.number).unwrap().pressed,
+                    "held modal button must expose its guest highlight: PPC={powerpc}");
                 let outside = (cancel.bounds.0 - 10, cancel.bounds.1 - 10);
                 session.deliver_input(MacintoshInput::MouseMove { vertical: outside.0, horizontal: outside.1 });
                 settle(&mut session);
+                assert!(!session.runner_mut().dialog_snapshot().iter()
+                    .find(|current| current.guest_id == dialog.guest_id).unwrap()
+                    .items.iter().find(|item| item.number == cancel.number).unwrap().pressed,
+                    "modal highlight must clear outside the button: PPC={powerpc}");
                 session.deliver_input(MacintoshInput::MouseUp { vertical: outside.0, horizontal: outside.1 });
                 settle(&mut session);
                 assert!(session.runner_mut().dialog_snapshot().iter().any(|current| {
@@ -7118,6 +7169,7 @@ mod desktop {
                         cancel_item: None,
                         edit_field: None,
                         items: vec![DialogItemSnapshot {
+                            pressed: false,
                             number: 1,
                             kind: super::DialogItemKind::Button,
                             bounds: (220, 360, 240, 430),
@@ -7222,6 +7274,7 @@ mod desktop {
                         edit_field: Some(2),
                         items: vec![
                             DialogItemSnapshot {
+                                pressed: false,
                                 number: 1,
                                 kind: super::DialogItemKind::Checkbox,
                                 bounds: (145, 150, 165, 450),
@@ -7233,6 +7286,7 @@ mod desktop {
                                 caret_visible: Some(true),
                             },
                             DialogItemSnapshot {
+                                pressed: false,
                                 number: 2,
                                 kind: super::DialogItemKind::EditText,
                                 bounds: (200, 235, 220, 430),
