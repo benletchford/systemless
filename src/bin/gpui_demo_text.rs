@@ -420,7 +420,11 @@ fn classic_wrapped_text(
                 })
                 .into_iter()
                 .map(|line| {
-                    ClassicLine::plain(&bytes[line.start..line.visible_end], guest_font.0, guest_font.1)
+                    ClassicLine::plain(
+                        &bytes[line.start..line.visible_end],
+                        guest_font.0,
+                        guest_font.1,
+                    )
                 })
                 .collect::<Vec<_>>();
             (bounds, lines)
@@ -490,4 +494,98 @@ pub(crate) fn file_row_name(name: &str, limit: Option<usize>) -> String {
         }
         _ => name.to_owned(),
     }
+}
+
+/// Guest glyph positions and selection geometry for the Save filename field.
+pub(crate) fn classic_save_name(
+    name: &str,
+    selection: (usize, usize),
+    focused: bool,
+    layout: &systemless::runner::StandardFileNameTextLayout,
+    scale: f32,
+    foreground: gpui_kit::Hsla,
+    selection_color: gpui_kit::Hsla,
+) -> impl gpui_kit::IntoElement {
+    use gpui_kit::{prelude::*, *};
+    let bytes: Vec<_> = name
+        .chars()
+        .map(|ch| {
+            systemless::systems::macintosh::mac_roman::encode_mac_roman_char(ch).unwrap_or(b'?')
+        })
+        .collect();
+    let layout = layout.clone();
+    let line = ClassicLine::plain(&bytes, layout.font.0, layout.font.1);
+    let start = selection.0.min(bytes.len());
+    let end = selection.1.max(start).min(bytes.len());
+    canvas(
+        move |bounds, _, _| bounds,
+        move |_, bounds, window, _| {
+            let width = f32::from(bounds.size.width) / scale;
+            let position = |index: usize| f32::from(layout.origin.0) + line.positions[index] as f32;
+            if focused && start < end {
+                let left = if layout.selection_to_edge && start == 0 {
+                    0.
+                } else {
+                    position(start)
+                };
+                let right = if layout.selection_to_edge && end == bytes.len() {
+                    width
+                } else {
+                    position(end)
+                };
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(
+                            bounds.left() + px(left * scale),
+                            bounds.top() + px(f32::from(layout.selection_top) * scale),
+                        ),
+                        size(
+                            px((right - left).max(0.) * scale),
+                            px(f32::from(layout.selection_height) * scale),
+                        ),
+                    ),
+                    selection_color,
+                ));
+            }
+            let visible_end = if layout.wraps {
+                systemless::quickdraw::text::wrap_classic_text(
+                    &bytes,
+                    width.max(1.) as i16,
+                    |index, _| (line.positions[index + 1] - line.positions[index]) as i16,
+                )
+                .first()
+                .map_or(0, |line| line.visible_end)
+            } else {
+                bytes.len()
+            };
+            let painted = ClassicLine::plain(&bytes[..visible_end], layout.font.0, layout.font.1);
+            for &(x, y, width) in &painted.ink {
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(
+                            bounds.left() + px((x + i32::from(layout.origin.0)) as f32 * scale),
+                            bounds.top() + px((y + i32::from(layout.origin.1)) as f32 * scale),
+                        ),
+                        size(px(width as f32 * scale), px(scale)),
+                    ),
+                    foreground,
+                ));
+            }
+            // Preserve the existing frontend's static insertion feedback until
+            // the guest's Save-field CaretTime state is exposed.
+            if focused && start == end {
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(
+                            bounds.left() + px(position(start) * scale),
+                            bounds.top() + px(2. * scale),
+                        ),
+                        size(px(scale), (bounds.size.height - px(3. * scale)).max(px(0.))),
+                    ),
+                    foreground,
+                ));
+            }
+        },
+    )
+    .size_full()
 }
