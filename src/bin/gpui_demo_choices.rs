@@ -141,9 +141,17 @@ fn choice_content(
         .child(
             div()
                 .flex_1()
+                .h_full()
                 .overflow_hidden()
-                .line_height(relative(1.25))
-                .child(label),
+                .child(super::text::classic_choice_label(
+                    &label,
+                    scale,
+                    if enabled {
+                        theme.foreground
+                    } else {
+                        theme.muted_foreground
+                    },
+                )),
         )
 }
 
