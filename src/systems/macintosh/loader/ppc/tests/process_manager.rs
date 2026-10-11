@@ -372,3 +372,35 @@ fn import_bindings_classify_process_manager_imports() {
         PpcImportDispatcherTarget::ExitToShell
     );
 }
+
+#[test]
+fn get_process_information_reports_shared_launch_size_policy() {
+    for flags in [0, 0x4000, 0x4800, 0x5a40] {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_import(b"GetProcessInformation")).unwrap();
+        let context = crate::process_context::ProcessContext::default();
+        context.attach_application_size(&mut loaded.application_size);
+        context.reset_application_size(Some(ApplicationSizeResource {
+            flags,
+            preferred_size: 2 * 1024 * 1024,
+            minimum_size: 1024 * 1024,
+        }));
+        let psn_ptr = PPC_DATA_BASE + 0x1000;
+        let info_ptr = PPC_DATA_BASE + 0x1100;
+        loaded.memory.add_region(psn_ptr, vec![0; 8]);
+        loaded.memory.add_region(info_ptr, vec![0; 60]);
+        loaded.memory.write_u32_be(psn_ptr + 4, 2).unwrap();
+        loaded.memory.write_u32_be(info_ptr, 60).unwrap();
+        loaded.cpu.gpr[3] = psn_ptr;
+        loaded.cpu.gpr[4] = info_ptr;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::GetProcessInformation,
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(
+            loaded.memory.read_u32_be(info_ptr + 24),
+            Some(u32::from(flags))
+        );
+    }
+}

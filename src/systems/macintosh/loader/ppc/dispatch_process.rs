@@ -11,6 +11,7 @@ pub(super) struct PpcProcessDispatchContext<'a> {
     pub(super) vfs_files: &'a [PpcVfsFileRecord],
     pub(super) vfs_resource_files: &'a [PpcVfsResourceFileRecord],
     pub(super) launched_app_path: Option<&'a str>,
+    pub(super) process_mode: u32,
 }
 
 pub(super) fn dispatch_process_import(
@@ -25,6 +26,7 @@ pub(super) fn dispatch_process_import(
         vfs_files,
         vfs_resource_files,
         launched_app_path,
+        process_mode,
     } = context;
 
     let result = match binding.dispatcher_target {
@@ -39,6 +41,7 @@ pub(super) fn dispatch_process_import(
             vfs_files,
             vfs_resource_files,
             launched_app_path,
+            process_mode,
         ),
         _ => return None,
     };
@@ -128,6 +131,7 @@ fn ppc_get_process_information(
     vfs_files: &[PpcVfsFileRecord],
     vfs_resource_files: &[PpcVfsResourceFileRecord],
     launched_app_path: Option<&str>,
+    process_mode: u32,
 ) -> i16 {
     // GetProcessInformation (_OSDispatch, selector $003A)
     // Returns metadata for the process identified by its serial number.
@@ -185,7 +189,7 @@ fn ppc_get_process_information(
             .is_none()
         || memory.write_u32_be(info_ptr + 16, app.file_type).is_none()
         || memory.write_u32_be(info_ptr + 20, app.creator).is_none()
-        || memory.write_u32_be(info_ptr + 24, 0).is_none()
+        || memory.write_u32_be(info_ptr + 24, process_mode).is_none()
         || memory.write_u32_be(info_ptr + 28, PPC_CODE_BASE).is_none()
         || memory.write_u32_be(info_ptr + 32, process_size).is_none()
         || memory

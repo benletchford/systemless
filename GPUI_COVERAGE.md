@@ -1961,6 +1961,14 @@ suspend/resume and owning activation: the ownership bit alone must not suppress
 Window Manager activation events. These queries are not yet connected to host
 transition scheduling.
 
+Launch SIZE is now retained in process-owned state shared by the classic and
+native adapters. Both GetProcessInformation paths report those flags instead
+of a constant zero. Four focused tests cover the same flag combinations through
+both guest ABIs, adapter attachment and detached snapshots, and successive
+68k/PPC/68k launches ending with an application without SIZE. This establishes
+the shared policy source; it does not implement suspend/resume event delivery
+or background scheduling.
+
 The existing Window Manager adapters already own activation delivery through
 `CurActivate`/`CurDeactive` and coalesced activation records. A new host bridge
 must use those lifecycle paths, rather than directly modifying TERec.active

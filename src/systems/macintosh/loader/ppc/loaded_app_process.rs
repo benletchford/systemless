@@ -143,6 +143,7 @@ impl PpcLoadedApp {
             .attach_native_menu_selection(&mut self.toolbox_startup.pending_native_menu_selection);
         context.attach_mixed_mode_m68k_state(&mut self.toolbox_startup.mixed_mode_m68k);
         context.attach_apple_event_handlers(&mut self.apple_events.handlers);
+        context.attach_application_size(&mut self.application_size);
         context.attach_apple_event_launch_state(&mut self.apple_events.apple_event_launch_state);
         context.attach_apple_event_descriptors(&mut self.apple_events.descriptors);
     }

@@ -39,6 +39,7 @@ fn ppc_imports_are_recorded_in_oracle_events_when_enabled() {
         file_completion_context: None,
         parked_interrupt_callback: None,
         interrupt_callback_parks: 0,
+        application_size: Default::default(),
         apple_events: Default::default(),
         cfm: Some(crate::cfm::CfmState::default()),
         controls: Default::default(),
