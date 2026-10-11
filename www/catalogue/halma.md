@@ -12,6 +12,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -23,10 +24,26 @@ compatibility:
       Exact original 1.2 BinHex/Compact Pro archive, explicit 68K and 8-bit display.
       Ordinary OK accepts the optional name prompt, then Cmd-N opens the original 6x4
       board. Ordinary mouse selection and a legal diagonal single step move a piece to
-      an empty cell; inspected move count advances from 0 to 1. Four measured
-      before/after pixel assertions pass at 968 frontend / 1568 guest ticks with zero exhaustion.
+      an empty cell; inspected move count advances from 0 to 1. A subsequent legal jump moves a piece over its neighbour without removing
+      that neighbour. Seven measured step/jump assertions pass at 1092 frontend /
+      1692 guest ticks with zero exhaustion.
       Full-board completion, save/load, audio and browser launch qualification remain
       unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4553
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: 4746a9751103b1fe17320dc32991680ef8d1ffa3
+    architecture: 68k
+    environment: >-
+      Optimized Chrome preview with local frontend responses under the production
+      origin. Actual managed game fetch untouched, HTTP 200, original SHA-256 and
+      107312-byte body verified. Isolated 800x600 68K worker/WebGL, 25 MHz and max
+      two ticks per paint. Ordinary OK, Command-N and mouse input open the original
+      6x4 board and perform a legal step plus jump, preserving the jumped piece.
+      Ten measured before/after pixel checks pass; captures inspected and step
+      counter advances 0 to 1. Managed corresponding-source link verified.
+      Complete-board solutions, larger boards, save/load and audio remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4553
 runtime:
@@ -58,7 +75,7 @@ artifacts:
       Original-format receipt MD5 1bb050cdecb5568d8997cc8688bc52fd matches. The
       original resource-only game has five CODE resources and no PPC slice. Both original
       files/all four forks and every Finder field match independent extraction. Browser
-      launch approval remains pending.
+      step/jump input is verified and launch approved.
 - id: source-code
   role: supplement
   format: hqx
@@ -116,4 +133,4 @@ or jump over another piece into an empty square. Chains of jumps count as one mo
 This original release is free software under GNU GPL version 2 or later.
 [Download its complete original source](https://assets.systemless.org/catalogue/objects/sha256/4d/4ded773e6a0ea802a6dc66d72c1685222797f6ecbef2d635c1e4d78f83ac401d.hqx).
 
-Browser launch approval is pending. Complete-board play, saving and audio remain unverified.
+Browser step and jump input is verified. Complete-board play, larger boards, saving and audio remain unverified.
