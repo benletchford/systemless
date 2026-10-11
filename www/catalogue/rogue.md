@@ -9,6 +9,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Role-Playing
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -23,6 +24,19 @@ compatibility:
       exhaustion; captures inspected. Independent unar matches all three original files, six
       forks and supported Finder metadata against production packing. Browser, broader
       progression, combat, saving and audio remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4612
+  - date: "2026-10-12"
+    tester: Catalogue maintainer
+    systemless_version: 8b9cf04b439f2fd3122935e62b70386fdf15a704
+    architecture: 68k
+    environment: >-
+      Production-origin browser preview with only frontend assets supplied locally.
+      Actual managed original archive returned HTTP 200, 127671 bytes and the expected
+      SHA-256 without interception. Cross-origin isolation, an actual runtime worker
+      and an 800x600 canvas were verified. Ordinary H moves the player one cell left;
+      eight measured before/after pixel checks pass with the pointer outside the canvas.
+      Captures inspected. Broader progression, combat, saving and audio remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4612
 runtime:
@@ -96,7 +110,7 @@ This product includes software developed by the University of California,
 Berkeley and its contributors. The complete BSD conditions and disclaimer are
 retained in the original Rogue Manual supplied with the game.
 
-Native first-dungeon movement is verified. Browser qualification, broader
-progression, combat, saving and audio remain pending.
+Native and browser first-dungeon movement are verified. Broader progression,
+combat, saving and audio remain unverified.
 
 ![Rogue dungeon after moving left](https://assets.systemless.org/catalogue/media/sha256/6b/6b0ef05acd158ba935d6ffc813aa426a79279173e80e9c6b4d48d3e0a6a06e5c.png)
