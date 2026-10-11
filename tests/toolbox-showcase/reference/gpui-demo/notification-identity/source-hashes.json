@@ -1,0 +1,6 @@
+{
+  "src/systems/macintosh/process_context.rs": "e63d19492a3185826ff34e3d1d78aa957f7753e0244aca77c54f6a44bfe6f74d",
+  "src/systems/macintosh/runner/mod.rs": "4fb48dda3dfd6d1f51252580a91e00121f68d696ec3bcd3dd9a024cce977ee8d",
+  "src/systems/macintosh/runner/notification.rs": "00415bd23b7d83e784714407bd83ac63ff2bead77bf54e13c7f1e7de94036cdc",
+  "src/systems/macintosh/loader/ppc/tests/process_services.rs": "c7de5fe6c84d06c4d324e8776d61c80514ff83f204c21bcc7671502ae667a2d8"
+}

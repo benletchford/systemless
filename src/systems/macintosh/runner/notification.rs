@@ -3,6 +3,8 @@
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NotificationSnapshot {
     pub guest_id: u32,
+    /// Changes on removal/reinstallation, including reuse after a guest launch.
+    pub instance_id: u64,
     pub mark: i16,
     pub icon_handle: u32,
     pub sound_handle: u32,
@@ -14,6 +16,7 @@ pub struct NotificationSnapshot {
 
 pub(super) fn snapshot_request(
     guest_id: u32,
+    instance_id: u64,
     mut read: impl FnMut(u32) -> Option<u8>,
 ) -> Option<NotificationSnapshot> {
     if guest_id == 0 { return None; }
@@ -33,7 +36,7 @@ pub(super) fn snapshot_request(
         Some(bytes)
     };
     Some(NotificationSnapshot {
-        guest_id,
+        guest_id, instance_id,
         mark: i16::from_be_bytes([record[14], record[15]]),
         icon_handle: long(16), sound_handle: long(20), text,
         response: long(28), ref_con: long(32),
@@ -50,12 +53,13 @@ mod tests {
         memory[8 + 14..8 + 16].copy_from_slice(&(-1i16).to_be_bytes());
         memory[8 + 24..8 + 28].copy_from_slice(&64u32.to_be_bytes());
         memory[64..68].copy_from_slice(&[3, b'A', 0x8e, b'\r']);
-        let snapshot = snapshot_request(8, |address| memory.get(address as usize).copied()).unwrap();
+        let snapshot = snapshot_request(8, 42, |address| memory.get(address as usize).copied()).unwrap();
         assert_eq!(snapshot.mark, -1);
+        assert_eq!(snapshot.instance_id, 42);
         assert_eq!(snapshot.text, Some(vec![b'A', 0x8e, b'\r']));
-        assert!(snapshot_request(8, |address| (address < 67).then(|| memory[address as usize])).is_none());
+        assert!(snapshot_request(8, 42, |address| (address < 67).then(|| memory[address as usize])).is_none());
         memory[8 + 5] = 7;
-        assert!(snapshot_request(8, |address| memory.get(address as usize).copied()).is_none());
-        assert!(snapshot_request(u32::MAX, |_| Some(0)).is_none());
+        assert!(snapshot_request(8, 42, |address| memory.get(address as usize).copied()).is_none());
+        assert!(snapshot_request(u32::MAX, 42, |_| Some(0)).is_none());
     }
 }
