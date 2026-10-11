@@ -3578,6 +3578,7 @@ impl super::TrapDispatcher {
         }
     }
 
+    #[cfg(test)]
     fn scriptutil_measure_text_range_width(
         &self,
         bus: &MacMemoryBus,
@@ -3594,57 +3595,6 @@ impl super::TrapDispatcher {
         width
     }
 
-    fn scriptutil_fixed_to_pixels(raw: u32) -> i32 {
-        let signed = raw as i32;
-        if (raw & 0xFFFF_0000) != 0 {
-            signed >> 16
-        } else {
-            signed
-        }
-    }
-
-    fn scriptutil_pixels_to_width_like(raw: u32, pixels: i32) -> u32 {
-        let pixels = pixels.clamp(0, 0x7FFF);
-        if (raw & 0xFFFF_0000) != 0 {
-            ((pixels as i32) << 16) as u32
-        } else {
-            pixels as u32
-        }
-    }
-
-    fn scriptutil_is_roman_break_space(byte: u8) -> bool {
-        matches!(byte, b' ' | b'\t' | b'\r' | b'\n')
-    }
-
-    fn scriptutil_last_space_break(
-        bus: &MacMemoryBus,
-        text_ptr: u32,
-        start: u32,
-        fit_end: u32,
-        text_end: u32,
-    ) -> Option<u32> {
-        let mut break_offset = None;
-        let mut offset = start;
-        while offset < fit_end {
-            let byte = bus.read_byte(text_ptr.wrapping_add(offset));
-            if Self::scriptutil_is_roman_break_space(byte) {
-                let mut after_spaces = offset + 1;
-                while after_spaces < text_end
-                    && Self::scriptutil_is_roman_break_space(
-                        bus.read_byte(text_ptr.wrapping_add(after_spaces)),
-                    )
-                {
-                    after_spaces += 1;
-                }
-                break_offset = Some(after_spaces);
-                offset = after_spaces;
-            } else {
-                offset += 1;
-            }
-        }
-        break_offset
-    }
-
     fn handle_scriptutil_styled_line_break<C: CpuOps>(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -3658,8 +3608,6 @@ impl super::TrapDispatcher {
         let text_len = (bus.read_long(sp + 24) as i32).max(0) as u32;
         let text_ptr = bus.read_long(sp + 28);
 
-        let text_start = text_start_arg.min(text_len);
-        let text_end = text_end_arg.max(text_start).min(text_len);
         let input_offset = if text_offset_ptr != 0 {
             bus.read_long(text_offset_ptr)
         } else {
@@ -3671,68 +3619,34 @@ impl super::TrapDispatcher {
         } else {
             0x7FFF
         };
-        let available = Self::scriptutil_fixed_to_pixels(width_raw).max(0);
+        let available = crate::text_utils::fixed_to_pixels(width_raw).max(0);
 
-        let run_width =
-            self.scriptutil_measure_text_range_width(bus, text_ptr, text_start, text_end);
-        let (result, output_offset, consumed_width) = if run_width <= available {
-            (2u16, text_end, run_width)
-        } else {
-            let (_, font_scale) = get_font_face_scaled(self.tx_font, self.tx_size);
-            let mut width = 0i32;
-            let mut fit_offset = text_start;
-            for offset in text_start..text_end {
-                let byte_width = self.scriptutil_text_byte_width(
-                    bus.read_byte(text_ptr.wrapping_add(offset)),
-                    font_scale,
-                );
-                if width.saturating_add(byte_width) > available {
-                    break;
-                }
-                width = width.saturating_add(byte_width);
-                fit_offset = offset + 1;
-            }
+        let mut text_bytes = Vec::with_capacity(text_len as usize);
+        for offset in 0..text_len {
+            text_bytes.push(bus.read_byte(text_ptr.wrapping_add(offset)));
+        }
 
-            if let Some(word_offset) =
-                Self::scriptutil_last_space_break(bus, text_ptr, text_start, fit_offset, text_end)
-            {
-                let word_width = self.scriptutil_measure_text_range_width(
-                    bus,
-                    text_ptr,
-                    text_start,
-                    word_offset,
-                );
-                (0u16, word_offset, word_width)
-            } else if first_style_run_on_line {
-                let char_offset = if fit_offset > text_start {
-                    fit_offset
-                } else {
-                    (text_start + 1).min(text_end)
-                };
-                let char_width = self.scriptutil_measure_text_range_width(
-                    bus,
-                    text_ptr,
-                    text_start,
-                    char_offset,
-                );
-                (1u16, char_offset, char_width)
-            } else {
-                (0u16, text_start, 0)
-            }
-        };
+        let (_, font_scale) = get_font_face_scaled(self.tx_font, self.tx_size);
+        let eval = crate::text_utils::evaluate_styled_line_break(
+            &text_bytes,
+            text_start_arg,
+            text_end_arg,
+            available,
+            first_style_run_on_line,
+            |byte| self.scriptutil_text_byte_width(byte, font_scale),
+        );
 
         if text_offset_ptr != 0 {
-            bus.write_long(text_offset_ptr, output_offset);
+            bus.write_long(text_offset_ptr, eval.output_offset);
         }
         if text_width_ptr != 0 {
-            let remaining = available.saturating_sub(consumed_width);
             bus.write_long(
                 text_width_ptr,
-                Self::scriptutil_pixels_to_width_like(width_raw, remaining),
+                crate::text_utils::pixels_to_width_like(width_raw, eval.remaining_width),
             );
         }
-        bus.write_word(sp + 32, result);
-        cpu.write_reg(Register::D0, u32::from(result));
+        bus.write_word(sp + 32, eval.code);
+        cpu.write_reg(Register::D0, u32::from(eval.code));
         cpu.write_reg(Register::A7, sp + 32);
         Ok(())
     }
