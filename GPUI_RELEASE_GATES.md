@@ -1,5 +1,14 @@
 # GPUI production release gates
 
+Notification inactivity correction: OK pointer/accessibility handlers now
+revalidate current exact ownership and host activity; Return is also excluded
+while inactive. The inactive button is not presented as primary. The shared
+pointer/key regression passes active focus restoration and inactive click/Return
+exclusion (0.15s); the other four notification regressions passed in the preceding
+run (9.84s total, whose pointer case failed before explicit simulated host
+activation was corrected). Physical activation and native accessibility remain
+unqualified. The capture option's test argument initializer is also corrected.
+
 Notification visual checkpoint: actual worker-owned mono68k/scale1 and default
 PPC16/scale2 alerts were captured through the shared offscreen Demo renderer and
 both images reviewed. The accented Mac Roman message is smooth and legible;
