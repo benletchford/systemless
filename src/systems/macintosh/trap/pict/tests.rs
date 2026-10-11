@@ -2891,3 +2891,60 @@ fn recorded_round_rect_honors_ovsize_when_scaled() {
     assert_eq!(bus.read_byte(screen + 60 + 1), 0);
     assert_eq!(bus.read_byte(screen + 6 * 60 + 6), 255);
 }
+
+#[test]
+fn pict_shape_erasure_preserves_background_pattern_bit_colors() {
+    // Apple's Imaging With QuickDraw chapter 3 defines white (zero bits)
+    // as the default background pattern. Set bits still use foreground color.
+    let rect = [0, 1, 0, 1, 0, 7, 0, 7];
+    for opcode in [0x32, 0x42, 0x52, 0x62, 0x72, 0x82] {
+        for pattern in [0x00, 0xAA, 0xFF] {
+            for swapped in [false, true] {
+                let mut commands = vec![0x02];
+                commands.extend_from_slice(&[pattern; 8]);
+                if swapped {
+                    commands.extend_from_slice(&[0x0E, 0, 0, 0, 30, 0x0F, 0, 0, 0, 33]);
+                }
+                commands.push(opcode);
+                match opcode {
+                    0x72 => {
+                        commands.extend_from_slice(&[0, 30]);
+                        commands.extend_from_slice(&rect);
+                        for point in [
+                            [0, 1, 0, 1],
+                            [0, 1, 0, 7],
+                            [0, 7, 0, 7],
+                            [0, 7, 0, 1],
+                            [0, 1, 0, 1],
+                        ] {
+                            commands.extend_from_slice(&point);
+                        }
+                    }
+                    0x82 => {
+                        commands.extend_from_slice(&[0, 10]);
+                        commands.extend_from_slice(&rect);
+                    }
+                    _ => {
+                        commands.extend_from_slice(&rect);
+                        if opcode == 0x62 {
+                            commands.extend_from_slice(&[0, 0, 1, 104]); // full 360-degree arc
+                        }
+                    }
+                }
+                let picture = finish_v1_picture((0, 0, 8, 8), &commands);
+                let pixels = render_text_picture(&picture, 8, 8);
+                let expected = if (pattern & 0x08 != 0) ^ swapped {
+                    255
+                } else {
+                    0
+                };
+                assert_eq!(
+                    pixels[4 * 8 + 4],
+                    expected,
+                    "opcode={opcode:02X}, pattern={pattern:02X}, swapped={swapped}"
+                );
+                assert_eq!(pixels[0], 0, "outside shape must remain unchanged");
+            }
+        }
+    }
+}
