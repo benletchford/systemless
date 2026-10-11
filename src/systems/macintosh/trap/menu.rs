@@ -2138,8 +2138,11 @@ impl super::TrapDispatcher {
                         let handle = self.load_menu_resource(bus, menu_id);
                         (handle != 0).then_some(handle)
                     });
+                    // The MBAR ID selects the resource; the new list uses the
+                    // standard MBDF until InitProcMenu changes mbResID.
+                    // Macintosh Toolbox Essentials (1992), pp. 3-104, 3-111.
                     let mut menu_list =
-                        SharedMenuList::from_regular_handles(mbar_id, menu_handles.iter().copied());
+                        SharedMenuList::from_regular_handles(0, menu_handles.iter().copied());
                     self.relayout_menu_list(bus, &mut menu_list);
                     let list_bytes = menu_list.encode();
                     let list_block = bus.alloc(list_bytes.len() as u32);

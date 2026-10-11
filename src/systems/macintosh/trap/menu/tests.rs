@@ -3135,7 +3135,7 @@ fn getnewmbar_present_resource_returns_handle_and_setmenubar_installs_it() {
     assert_ne!(mbar_handle, 0, "GetNewMBar should return a non-NIL handle");
     let menu_list = menu_list_from_memory(&bus, mbar_handle)
         .expect("returned handle should contain a DynamicMenuList");
-    assert_eq!(menu_list.mb_res_id, 900);
+    assert_eq!(menu_list.mb_res_id, 0, "MBAR ID is not an MBDF ID");
     assert_eq!(menu_list.regular.len(), 2);
     assert!(menu_list.regular.iter().all(|entry| entry.handle != 0));
     let file_handle = menu_list.regular[0].handle;

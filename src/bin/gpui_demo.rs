@@ -2557,7 +2557,7 @@ mod desktop {
         let frame = session.video_frame().unwrap();
         let guest_menu_tracking = session.runner().guest_menu_tracking_active();
         if matches!(capture, CaptureCase::NestedModalDialog) {
-            assert!(menus.requires_guest_menu_rendering());
+            assert!(!menus.requires_guest_menu_rendering());
             assert!(!guest_menu_tracking, "nested dialog capture must compose GPUI overlays");
         }
         let top = if menus.requires_guest_menu_rendering() {

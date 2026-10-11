@@ -73,10 +73,12 @@ whole guest framebuffer so its dropdown can cover windows. The
 `--capture-nested-modal-dialog` headless case asserts that tracking has ended
 and records actual GPUI composition on both CPUs. The captures show matching
 modal controls and edit caret above a clipped, inactive modeless dialog.
-The PowerPC guest menu title remains highlighted while the fixture blocks in
-ModalDialog before calling HiliteMenu(0), whereas the 68K title does not;
-this guest-menu fallback difference still needs investigation. Nonrectangular
-visible regions and arbitrary nested-modal layouts remain unqualified.
+The showcase now uses GPUI's standard menu bar on both CPUs. Previously,
+GetNewMBar copied its MBAR resource ID into the new list's MBDF field and
+incorrectly classified that standard bar as custom. The true custom-MBDF
+guest fallback remains synthetic-capture verified; a real custom definition
+still needs qualification. Nonrectangular visible regions and arbitrary
+nested-modal layouts remain unqualified.
 The `--capture-modeless-dialog-layout` headless case composes an inactive standard
 dialog behind a front window and checks that its covered item keeps guest
 pixels while the exposed part uses the GPUI overlay. The showcase also opens

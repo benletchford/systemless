@@ -6305,6 +6305,13 @@ fn native_getnewmbar_rebuilds_menu_color_state_from_loaded_menus() {
 
     assert_ne!(loaded.cpu.gpr[3], 0);
     assert_eq!(
+        ppc_menu_list_definition(&mut loaded.memory, loaded.cpu.gpr[3])
+            .unwrap()
+            .mb_res_id,
+        0,
+        "MBAR ID must not become the MBDF definition ID"
+    );
+    assert_eq!(
         loaded
             .memory
             .read_u32_be(crate::memory::globals::addr::MENU_C_INFO),
