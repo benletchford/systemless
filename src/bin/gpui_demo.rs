@@ -82,6 +82,9 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_standard_file_open_composed: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_standard_file_save_edited_composed: Option<PathBuf>,
     }
 
     fn parse_depth(value: &str) -> Result<u16, String> {
@@ -92,6 +95,27 @@ mod desktop {
             "8" => Ok(8),
             _ => Err("expected 1, 2, 4 or 8".into()),
         }
+    }
+
+    fn save_name_segments(
+        name: &str,
+        selection: (usize, usize),
+        focused: bool,
+    ) -> (String, String, String) {
+        if !focused {
+            return (name.to_string(), String::new(), String::new());
+        }
+        // TextEdit selections use source-buffer byte offsets. In this Roman
+        // field each source byte becomes one character, even when its host
+        // UTF-8 encoding uses multiple bytes (Inside Macintosh: Text, TESetSelect).
+        let chars: Vec<char> = name.chars().collect();
+        let start = selection.0.min(chars.len());
+        let end = selection.1.max(start).min(chars.len());
+        (
+            chars[..start].iter().collect(),
+            chars[start..end].iter().collect(),
+            chars[end..].iter().collect(),
+        )
     }
 
     enum Command {
@@ -1363,34 +1387,43 @@ mod desktop {
                             .child(panel.prompt.clone().unwrap_or_default()),
                     );
                     let name = panel.name.as_deref().unwrap_or_default();
-                    let (selection_start, selection_end) = panel.name_selection.unwrap_or((0, 0));
-                    let selected_name = panel.name_has_focus == Some(true)
-                        && selection_start == 0
-                        && selection_end == name.len();
-                    overlay = overlay.child(
-                        at(layout.name)
-                            .id(format!(
-                                "guest-standard-save-name-{}-{}",
-                                panel.guest_id, panel.generation
-                            ))
-                            .test_support()
-                            .overflow_hidden()
-                            .flex()
-                            .items_center()
-                            .px_1()
-                            .border_1()
-                            .border_color(if panel.name_has_focus == Some(true) {
-                                cx.theme().accent
-                            } else {
-                                cx.theme().border
-                            })
-                            .bg(if selected_name {
-                                cx.theme().accent
-                            } else {
-                                cx.theme().background
-                            })
-                            .child(name.to_string()),
+                    let focused = panel.name_has_focus == Some(true);
+                    let (prefix, selected, suffix) = save_name_segments(
+                        name,
+                        panel.name_selection.unwrap_or((0, 0)),
+                        focused,
                     );
+                    let mut name_field = at(layout.name)
+                        .id(format!(
+                            "guest-standard-save-name-{}-{}",
+                            panel.guest_id, panel.generation
+                        ))
+                        .test_support()
+                        .overflow_hidden()
+                        .flex()
+                        .items_center()
+                        .px_1()
+                        .border_1()
+                        .border_color(if focused {
+                            cx.theme().accent
+                        } else {
+                            cx.theme().border
+                        })
+                        .bg(cx.theme().background)
+                        .child(prefix);
+                    if focused && !selected.is_empty() {
+                        name_field = name_field.child(
+                            div()
+                                .bg(cx.theme().accent)
+                                .text_color(cx.theme().foreground)
+                                .child(selected),
+                        );
+                    } else if focused {
+                        name_field = name_field.child(
+                            div().w(px(1.)).h(px(14.)).bg(cx.theme().foreground),
+                        );
+                    }
+                    overlay = overlay.child(name_field.child(suffix));
                     for (label, rect) in [
                         ("Desktop", layout.desktop),
                         ("Cancel", layout.cancel),
@@ -1585,6 +1618,7 @@ mod desktop {
         StandardFileSave,
         StandardFileSaveComposed,
         StandardFileOpenComposed,
+        StandardFileSaveEditedComposed,
     }
 
     #[cfg(feature = "gpui-demo-test")]
@@ -1607,7 +1641,9 @@ mod desktop {
         let lists_page = matches!(capture, CaptureCase::Lists | CaptureCase::ListsSelected);
         let standard_file_save = matches!(
             capture,
-            CaptureCase::StandardFileSave | CaptureCase::StandardFileSaveComposed
+            CaptureCase::StandardFileSave
+                | CaptureCase::StandardFileSaveComposed
+                | CaptureCase::StandardFileSaveEditedComposed
         );
         let standard_file_open = matches!(capture, CaptureCase::StandardFileOpenComposed);
         let standard_file_page = standard_file_save || standard_file_open;
@@ -1679,6 +1715,24 @@ mod desktop {
                         && panel.entries.as_ref().is_some_and(|entries| !entries.is_empty())
                 })
             }));
+            if matches!(capture, CaptureCase::StandardFileSaveEditedComposed) {
+                session.deliver_input(MacintoshInput::KeyDown {
+                    mac_key: 0x00,
+                    character: b'S',
+                });
+                session.deliver_input(MacintoshInput::KeyUp {
+                    mac_key: 0x00,
+                    character: b'S',
+                });
+                assert!((0..100).any(|_| {
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                    session
+                        .runner_mut()
+                        .standard_file_snapshot()
+                        .is_some_and(|panel| panel.name.as_deref() == Some("S"))
+                }));
+            }
             Vec::new()
         } else if lists_page {
             for _ in 0..300 {
@@ -2033,6 +2087,17 @@ mod desktop {
             );
             return;
         }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_standard_file_save_edited_composed.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::StandardFileSaveEditedComposed,
+            );
+            return;
+        }
         let (commands, receiver) = mpsc::channel();
         let updates = Arc::new(Mutex::new(None));
         let worker_updates = updates.clone();
@@ -2078,6 +2143,18 @@ mod desktop {
         use super::{MacintoshInput, MacintoshSession, PathBuf};
 
         #[test]
+        fn save_selection_offsets_follow_mac_roman_characters_after_decoding() {
+            assert_eq!(
+                super::save_name_segments("Résumé", (1, 4), true),
+                ("R".into(), "ésu".into(), "mé".into())
+            );
+            assert_eq!(
+                super::save_name_segments("Résumé", (1, 4), false),
+                ("Résumé".into(), String::new(), String::new())
+            );
+        }
+
+        #[test]
         fn worker_preserves_rapid_close_button_press_and_release() {
             use super::{run_guest, Args, Command, Update};
             use std::{
@@ -2119,6 +2196,7 @@ mod desktop {
                         capture_standard_file_save: None,
                         capture_standard_file_save_composed: None,
                         capture_standard_file_open_composed: None,
+                        capture_standard_file_save_edited_composed: None,
                     },
                     rx,
                     worker_updates,

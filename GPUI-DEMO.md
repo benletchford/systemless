@@ -102,8 +102,8 @@ state need separate qualification before themed editable fields can replace
 those pixels.
 
 The Open and Save overlays are limited to modern standard entry points on both
-CPUs. Legacy and custom panels retain guest pixels. The filename field currently
-shows whole-field selection and focus; partial selection, caret rendering,
+CPUs. Legacy and custom panels retain guest pixels. The Save filename field now
+shows the guest's selection span and caret; caret blink, text composition,
 replacement confirmation, New Folder, and full keyboard navigation need more
 work before this can replace the ordinary frontend.
 
@@ -187,6 +187,9 @@ reviewed guest captures are
 and [PowerPC Save](tests/toolbox-showcase/reference/gpui-demo/17-standard-file-save-ppc-guest.png).
 The composed captures are [68K Save](tests/toolbox-showcase/reference/gpui-demo/17-standard-file-save-68k.png)
 and [PowerPC Save](tests/toolbox-showcase/reference/gpui-demo/17-standard-file-save-ppc.png).
+Use `--capture-standard-file-save-edited-composed` to capture the same field
+after the guest replaces its initial selection with `S`: [68K edited](tests/toolbox-showcase/reference/gpui-demo/17-standard-file-save-edited-68k.png)
+and [PowerPC edited](tests/toolbox-showcase/reference/gpui-demo/17-standard-file-save-edited-ppc.png).
 Use `--capture-standard-file-open-composed` for the corresponding standard
 Open panel: [68K Open](tests/toolbox-showcase/reference/gpui-demo/17-standard-file-open-68k.png)
 and [PowerPC Open](tests/toolbox-showcase/reference/gpui-demo/17-standard-file-open-ppc.png).
