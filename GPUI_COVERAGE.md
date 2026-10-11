@@ -14,6 +14,13 @@ The guest remains authoritative for state, hit regions, event order, and
 callbacks. Unknown or application-defined definitions retain guest pixels.
 The opt-in implementation is staged in a draft PR and must not be merged.
 
+On macOS with a working GPUI graphics context, reproduce the popup capture
+matrix with `sh .github/scripts/capture-gpui-popups.sh output/gpui-popups`. It runs
+scrolled and selected checkpoints in monochrome 68k, colour 68k and PPC,
+retaining paired guest/composed PNGs, per-checkpoint logs and a manifest with
+the fixture hash, image hashes and dimensions. These are review artifacts,
+not an automatic visual-parity verdict.
+
 | System UI | Existing state and presentation path | Missing GPUI work | Status |
 | --- | --- | --- | --- |
 | Menu bar and standard menus | `menu_model.rs` supplies `GuestMenuSnapshot`, including live, resource-aware standard MDEF classification on both CPUs, the current menu list's MBDF ID, and each MenuHandle with a process-shared lifetime generation. GPUI menu button identity and queued command validation follow the handle and generation instead of the reusable menu ID; both CPU menu disposal, resource-release, and direct handle-disposal paths invalidate the generation. `gpui_demo.rs` retains a Systemless-owned GPUI Kit popup and reconciles its selected guest item when the menu snapshot changes, renders standard menu buttons and items, and dispatches selected items to the guest. A headless GPUI interaction test confirms live item text, dismissal/reopening, and removal when the guest menu disappears. Translatable Command-key presses and releases enter the guest KeyMap/event path instead of synthesizing a menu click; the showcase responds to Command+P on both CPUs, and a held-key test checks that both guest KeyMap bits remain set through further execution and clear on release. GPUI modifier changes and focus loss clear held keys, and host repeat callbacks do not duplicate guest keyDown events. A custom MDEF or MBDF selects the full guest framebuffer at original coordinates so GPUI chrome cannot cover it. Classic `InitProcMenu` retains the ID and loads its MBDF resource. A synthetic headless composed capture checks placement and pointer translation. Focused guest tests confirm fallback selection during a real 68K MDEF callback in a PowerPC app and during a native PowerPC MDEF invocation; the cross-CPU tracking test confirms live menu pixels and save-under restoration. | Custom MBDF message execution is not implemented: Inside Macintosh V-250 defines Draw, Hit, Calc, Init, Dispose, Hilite, Height, Save, Restore, Rect, SaveAlt, ResetAlt, and MenuRgn messages. Verify a real guest composed capture and standalone 68K custom MDEF tracking; qualify guest autoKey timing during real held shortcuts, submenus, and tracking order. Qualify submenu contents, hover selection, disabled-state transitions, focus, and menu scrolling in composed and interaction tests across real applications. | Demo only |
@@ -1103,3 +1110,22 @@ and restored desktop/window pixels. This resolves the specific clipping by
 host composition exposed by the preceding paired captures. Broad nested
 custom-definition visual qualification and automatic popup sizing remain
 open.
+
+
+### Reproducible popup matrix and current integration checks
+
+All eight GPUI popup integration tests pass on the current implementation
+(151.66 seconds), including pointer routing, live control/menu linkage,
+scrolling to the final item, reverse scrolling, release on an arrow, reopening
+and cancellation over outside/disabled/separator targets. The existing tests
+exercise monochrome 68k, colour 68k and PPC guest paths.
+
+The new capture script completed locally with six checkpoints and twelve PNGs.
+All manifest hashes were independently rechecked; composed frames are
+1800×1480 and guest frames 800×600. The scrolling pairs in all modes and the
+PPC selected pair exactly match their reviewed predecessors; monochrome and
+colour selected composed frames also match the earlier reviewed captures.
+The macOS CI job now runs this matrix after its interaction tests and uploads
+captures, logs and the manifest, retaining evidence even on a failed run.
+Hosted-runner execution remains unverified until that workflow runs; local
+success does not prove hosted graphics availability or complete UI coverage.

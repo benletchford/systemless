@@ -140,6 +140,18 @@ jobs:
           RUST_BACKTRACE: 1
         run: cargo test --locked --no-default-features --features gpui-demo-test --example gpui-menu-demo
 
+      - name: Capture paired guest and GPUI popup checkpoints
+        run: sh .github/scripts/capture-gpui-popups.sh output/gpui-popups
+
+      - name: Preserve GPUI capture evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gpui-popup-captures
+          path: output/gpui-popups/
+          if-no-files-found: warn
+          retention-days: 7
+
   checks:
     name: headless & package
     runs-on: ubuntu-latest
