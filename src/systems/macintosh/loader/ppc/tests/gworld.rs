@@ -2533,3 +2533,58 @@ fn carbon_window_port_accessors_use_the_window_grafport() {
     run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPort);
     assert_eq!(loaded.memory.read_u32_be(bounds_ptr + 16), Some(window));
 }
+
+#[test]
+fn port_bitmap_accessor_import_returns_live_basic_and_color_copybits_aliases() {
+    for library in ["InterfaceLib", "CarbonLib"] {
+        for symbol in ["GetPortBitMapForCopyBits", "getportbitmapforcopybits"] {
+            let loader = synthetic_loader_with_symbol_class(
+                library.as_bytes(), symbol.as_bytes(), 0x82, &[run_reloc(0x23, 1)],
+            );
+            let mut loaded = load_pef_application(&synthetic_pef_with_loader(loader)).unwrap();
+            let accessor = PpcImportDispatcherTarget::GetPortBitMapForCopyBits;
+            assert_eq!(loaded.imports[0].dispatcher_target, accessor);
+            assert!(loaded.imports[0].weak);
+            assert_ne!(loaded.imports[0].address, 0);
+            let basic = PPC_DATA_BASE + 0x2800;
+            loaded.memory.add_region(basic, vec![0; 128]);
+            loaded.memory.write_u32_be(basic + 2, basic + 112).unwrap();
+            loaded.memory.write_u16_be(basic + 6, 2).unwrap();
+            ppc_write_rect(&mut loaded.memory, basic + 8, 0, 0, 4, 16).unwrap();
+            let scratch = PPC_DATA_BASE + 0x3000;
+            loaded.memory.add_region(scratch, vec![0; 64]);
+            ppc_write_rect(&mut loaded.memory, scratch, 5, 7, 9, 23).unwrap();
+            loaded.cpu.gpr[3] = scratch + 16;
+            loaded.cpu.gpr[4] = 16;
+            loaded.cpu.gpr[5] = scratch;
+            loaded.cpu.gpr[6] = 0;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = 0;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::NewGWorld);
+            let color = loaded.memory.read_u32_be(scratch + 16).unwrap();
+            assert_ne!(color, 0);
+            for (port, depth) in [(basic, 1), (color, 16)] {
+                let before = ppc_memory_read_bytes(&mut loaded.memory, port, 16).unwrap();
+                loaded.cpu.gpr[3] = port;
+                run_test_import(&mut loaded, accessor.clone());
+                assert_eq!(loaded.cpu.gpr[3], port + 2);
+                assert_eq!(ppc_memory_read_bytes(&mut loaded.memory, port, 16).unwrap(), before);
+                let worlds = loaded.gworlds.clone();
+                let bits = ppc_resolve_pixmap_bits(&mut loaded.memory, &worlds, port + 2).unwrap();
+                assert_eq!(bits.depth, depth);
+                assert_eq!((bits.width, bits.height), (16, 4));
+                if port == color {
+                    let handle = loaded.memory.read_u32_be(port + 2).unwrap();
+                    let pixmap = loaded.memory.read_u32_be(handle).unwrap();
+                    assert_ne!(loaded.cpu.gpr[3], handle);
+                    assert_ne!(loaded.cpu.gpr[3], pixmap);
+                }
+            }
+            for invalid in [0, 0xffff_fffc, 0xffff_ffff] {
+                loaded.cpu.gpr[3] = invalid;
+                run_test_import(&mut loaded, accessor.clone());
+                assert_eq!(loaded.cpu.gpr[3], 0);
+            }
+        }
+    }
+}
