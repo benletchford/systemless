@@ -2462,3 +2462,20 @@ every insertion boundary in `é£S`, asserts guest selection offsets, and checks
 the final encoded FSSpec reply. This does not qualify held or Shift selection,
 caret blinking, horizontal scrolling, GPUI glyph pointer mapping or field
 painting; the Save field still uses host typography.
+
+
+### Save filename held and Shift selection
+
+Both CPU handlers retain a guest selection anchor after name-field mouseDown,
+track the moving Mac Roman insertion boundary while the button is held, and
+consume release before returning to the panel event loop. Shift extends from
+the existing selection boundary. Tracking continues outside the field and ends
+on mouseUp or loss of the held-button state. Stationary tracking redraws only
+on selection changes/release (or disturbed 68k guest pixels).
+
+The final three-mode Save/replacement regression passes (37.87 seconds), covering
+Shift extension, held movement, movement outside the field, release stopping
+further selection changes, accented editing and encoded FSSpec replies. This
+is guest-event evidence, not qualification of native pointer capture or GPUI
+glyph mapping. Save field painting, caret blinking, horizontal scrolling,
+keyboard navigation/clipboard and the scale/activation matrix remain unfinished.
