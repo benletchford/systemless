@@ -195,17 +195,44 @@ pub(crate) struct Preedit {
     pub selection_utf16: std::ops::Range<usize>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct StagedCommit {
+    pub expected: TextInputOwner,
+    pub range: std::ops::Range<usize>,
+    pub bytes: Vec<u8>,
+    pub caret: Option<usize>,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct GuestComposition {
     owner: Option<TextInputOwner>,
     marked_base: Option<TextInputOwner>,
     pending_commits: Vec<(TextInputOwner, Vec<u8>, Option<TextInputOwner>, Option<usize>)>,
     pub preedit: Option<Preedit>,
+    retained_spans: Vec<(TextInputOwner, Preedit)>,
 }
 
 impl GuestComposition {
     pub fn owner(&self) -> Option<&TextInputOwner> { self.owner.as_ref() }
     pub fn marked_base(&self) -> Option<&TextInputOwner> { self.marked_base.as_ref() }
+    pub fn retained_spans(&self) -> &[(TextInputOwner, Preedit)] { &self.retained_spans }
+
+    /// Retain a separate candidate at an untouched virtual document range.
+    /// Preserve the original guest owner until a guarded multi-edit commit.
+    pub fn mark_disjoint_range(&mut self, range: std::ops::Range<usize>, text: &str,
+        selected: std::ops::Range<usize>) -> bool {
+        let Some(owner) = self.owner.clone() else { return false; };
+        let Some(preedit) = self.preedit.clone() else { return false; };
+        let Some(document) = self.virtual_document() else { return false; };
+        let Some(guest) = document.guest_range(range) else { return false; };
+        let mut candidate = self.clone();
+        candidate.owner.as_mut().unwrap().selection = guest;
+        if !candidate.mark(text, selected) { return false; }
+        candidate.marked_base = Some(self.marked_base.clone().unwrap_or_else(|| owner.clone()));
+        candidate.retained_spans.push((owner, preedit));
+        *self = candidate;
+        true
+    }
 
     /// Focus loss, modality changes, selection changes and disposal invalidate
     /// preedit. A recycled address cannot inherit another field's composition.
@@ -244,7 +271,7 @@ impl GuestComposition {
         }
         self.pending_commits.clear();
         self.marked_base = None;
-        if self.owner != owner { self.preedit = None; }
+        if self.owner != owner { self.preedit = None; self.retained_spans.clear(); }
         self.owner = owner;
     }
 
@@ -255,6 +282,7 @@ impl GuestComposition {
             self.pending_commits.clear();
             self.owner = None;
             self.preedit = None;
+            self.retained_spans.clear();
             self.marked_base = None;
         }
     }
@@ -275,6 +303,7 @@ impl GuestComposition {
 
     pub fn cancel(&mut self) {
         self.preedit = None;
+        self.retained_spans.clear();
         if let Some(base) = self.marked_base.take() { self.owner = Some(base); }
     }
 
@@ -292,19 +321,44 @@ impl GuestComposition {
         if let Some(preedit) = &self.preedit {
             if self.geometry_ranges(range.clone()).is_none() { return false; }
             let units: Vec<_> = preedit.text.encode_utf16().collect();
-            let start = owner.selection.start;
-            let Some(end) = start.checked_add(units.len()) else { return false; };
-            // Only overlapping edits form one contiguous replacement. Disjoint
-            // edits need separate guarded requests to retain intervening styles.
-            if range.end <= start || range.start >= end { return false; }
+            let Some(active) = self.active_virtual_range() else { return false; };
+            let start = active.start;
+            let end = active.end;
+            let Some(document) = self.virtual_document() else { return false; };
+            if let Some((guest, payload, offset, touched)) = document.replacement_plan(range.clone(), text) {
+                if touched.len() > 1 || !touched.contains(&owner.selection) {
+                    let mut candidate = self.clone();
+                    candidate.retained_spans.retain(|(owner, _)| !touched.contains(&owner.selection));
+                    if !touched.contains(&owner.selection) {
+                        candidate.retained_spans.push((owner.clone(), preedit.clone()));
+                    }
+                    candidate.owner.as_mut().unwrap().selection = guest;
+                    if !candidate.mark(&payload, offset + selected.start..offset + selected.end) { return false; }
+                    candidate.marked_base = Some(self.marked_base.clone().unwrap_or_else(|| owner.clone()));
+                    *self = candidate;
+                    return true;
+                }
+            }
+            // Keep disjoint edits separate instead of absorbing guest styles.
+            if range.end <= start || range.start >= end {
+                return self.mark_disjoint_range(range.clone(), text, selected);
+            }
             let Ok(prefix) = String::from_utf16(&units[..range.start.saturating_sub(start)]) else { return false; };
             let Ok(suffix) = String::from_utf16(&units[range.end.saturating_sub(start).min(units.len())..]) else { return false; };
-            let Some(guest_end) = owner.selection.end.checked_add(range.end.saturating_sub(end)) else { return false; };
+            let Some(document) = self.virtual_document() else { return false; };
+            let guest_start = if range.start < start {
+                let Some(guest) = document.guest_range(range.start..start) else { return false; };
+                guest.start
+            } else { owner.selection.start };
+            let guest_end = if range.end > end {
+                let Some(guest) = document.guest_range(end..range.end) else { return false; };
+                guest.end
+            } else { owner.selection.end };
             if guest_end > owner.text.len() || guest_end > i16::MAX as usize { return false; }
             let offset = prefix.encode_utf16().count();
             let mut candidate = self.clone();
             let base = candidate.marked_base.clone().unwrap_or_else(|| owner.clone());
-            candidate.owner.as_mut().unwrap().selection = range.start.min(start)..guest_end;
+            candidate.owner.as_mut().unwrap().selection = guest_start..guest_end;
             if !candidate.mark(&(prefix + text + &suffix), offset + selected.start..offset + selected.end) { return false; }
             candidate.marked_base = (candidate.owner.as_ref() != Some(&base)).then_some(base);
             *self = candidate;
@@ -320,61 +374,43 @@ impl GuestComposition {
         true
     }
 
+    pub fn active_virtual_range(&self) -> Option<std::ops::Range<usize>> {
+        self.preedit.as_ref()?;
+        self.virtual_document()?.marked_range(&self.owner.as_ref()?.selection)
+    }
+
+    pub fn virtual_document(&self) -> Option<super::marked_document::MarkedDocument> {
+        let owner = self.owner.as_ref()?;
+        let source = systemless::systems::macintosh::mac_roman::decode_mac_roman(&owner.text);
+        let mut document = super::marked_document::MarkedDocument::new(&source);
+        for (owner, preedit) in &self.retained_spans {
+            if !document.replace_guest(owner.selection.clone(), &preedit.text) { return None; }
+        }
+        if let Some(preedit) = &self.preedit {
+            if !document.replace_guest(owner.selection.clone(), &preedit.text) { return None; }
+        }
+        Some(document)
+    }
+
     /// Map an untouched guest glyph position to the virtual UTF-16 document.
     /// Positions inside the replaced guest selection have no surrounding ink.
     pub fn surrounding_virtual_index(&self, index: usize) -> Option<usize> {
-        let owner = self.owner.as_ref()?;
-        let preedit = self.preedit.as_ref()?;
-        if index > owner.text.len() { return None; }
-        if index < owner.selection.start { return Some(index); }
-        if index >= owner.selection.end {
-            return owner.selection.start.checked_add(preedit.text.encode_utf16().count())?
-                .checked_add(index - owner.selection.end);
-        }
-        None
+        self.preedit.as_ref()?;
+        self.virtual_document()?.virtual_index(index)
     }
 
     /// Map untouched surrounding text back to the still-painted guest record.
     /// Stage-intersecting ranges must use separate Unicode geometry.
     pub fn surrounding_guest_range(&self, range: std::ops::Range<usize>) -> Option<std::ops::Range<usize>> {
-        let owner = self.owner.as_ref()?;
-        let preedit = self.preedit.as_ref()?;
-        if range.start > range.end { return None; }
-        let stage_end = owner.selection.start.checked_add(preedit.text.encode_utf16().count())?;
-        let mapped = if range.end <= owner.selection.start && range.start < owner.selection.start {
-            range
-        } else if range.start >= stage_end && range.end > stage_end {
-            let start = owner.selection.end.checked_add(range.start - stage_end)?;
-            let end = owner.selection.end.checked_add(range.end - stage_end)?;
-            start..end
-        } else { return None; };
-        (mapped.end <= owner.text.len()).then_some(mapped)
+        self.preedit.as_ref()?;
+        self.virtual_document()?.guest_range(range)
     }
 
     /// Split candidate geometry requests at guest/stage ownership boundaries.
     /// Return source order so the platform receives the first painted rectangle.
     pub fn geometry_ranges(&self, range: std::ops::Range<usize>) -> Option<Vec<std::ops::Range<usize>>> {
-        let owner = self.owner.as_ref()?;
-        let preedit = self.preedit.as_ref()?;
-        let units: Vec<_> = preedit.text.encode_utf16().collect();
-        let start = owner.selection.start;
-        let end = start.checked_add(units.len())?;
-        let length = end.checked_add(owner.text.len().checked_sub(owner.selection.end)?)?;
-        if range.start > range.end || range.end > length { return None; }
-        for offset in [range.start, range.end] {
-            if offset >= start && offset <= end {
-                String::from_utf16(&units[..offset - start]).ok()?;
-            }
-        }
-        if range.is_empty() { return Some(vec![range]); }
-        let mut boundaries = vec![range.start];
-        for boundary in [start, end] {
-            if boundary > range.start && boundary < range.end && boundaries.last() != Some(&boundary) {
-                boundaries.push(boundary);
-            }
-        }
-        boundaries.push(range.end);
-        Some(boundaries.windows(2).map(|pair| pair[0]..pair[1]).collect())
+        self.preedit.as_ref()?;
+        self.virtual_document()?.geometry_ranges(range)
     }
 
     /// Host replacement ranges use document UTF-16 offsets. A range inside
@@ -387,8 +423,9 @@ impl GuestComposition {
         let Some(preedit) = &self.preedit else {
             return (range == &owner.selection).then(|| (text.into(), 0));
         };
-        let start = range.start.checked_sub(owner.selection.start)?;
-        let end = range.end.checked_sub(owner.selection.start)?;
+        let stage_start = self.active_virtual_range()?.start;
+        let start = range.start.checked_sub(stage_start)?;
+        let end = range.end.checked_sub(stage_start)?;
         if start > end { return None; }
         let units: Vec<_> = preedit.text.encode_utf16().collect();
         // Decoding the slices rejects ranges that split a surrogate pair.
@@ -462,6 +499,76 @@ impl GuestComposition {
         Some((first, second))
     }
 
+    pub fn commit_marked_replacement(&mut self, range: Option<&std::ops::Range<usize>>, text: &str)
+        -> Option<Vec<StagedCommit>> {
+        let mut candidate = self.clone();
+        let end = text.encode_utf16().count();
+        if !candidate.mark_range(range, text, end..end) { return None; }
+        let stage = candidate.preedit.as_ref()?;
+        let units: Vec<_> = stage.text.encode_utf16().collect();
+        let prefix = String::from_utf16(units.get(..stage.selection_utf16.end)?).ok()?;
+        let insertion = prefix.replace("\r\n", "\r").replace('\n', "\r").chars().count();
+        let payload = stage.text.clone();
+        let mut requests = if candidate.retained_spans.is_empty() {
+            let range = candidate.owner.as_ref()?.selection.clone();
+            candidate.preedit = None;
+            let (expected, request, bytes) = candidate.commit_range(range, &payload)?;
+            vec![StagedCommit { expected, range: request.selection, bytes, caret: None }]
+        } else { candidate.commit_marked_spans(&payload)? };
+        let caret = requests.last()?.range.start.checked_add(insertion)?;
+        if caret > candidate.owner.as_ref()?.text.len() { return None; }
+        candidate.owner.as_mut()?.selection = caret..caret;
+        candidate.pending_commits.last_mut()?.3 = Some(caret);
+        requests.last_mut()?.caret = Some(caret);
+        *self = candidate;
+        Some(requests)
+    }
+
+    /// Validate the whole marked transaction before predicting any guest edit.
+    /// Replace retained spans from right to left, then the active span at its
+    /// mapped range, so untouched styles and the worker caret contract survive.
+    pub fn commit_marked_spans(&mut self, active_text: &str) -> Option<Vec<StagedCommit>> {
+        if self.retained_spans.is_empty() || self.preedit.is_none() { return None; }
+        let active = self.owner.as_ref()?.clone();
+        let mut spans = self.retained_spans.iter().map(|(owner, preedit)|
+            (owner.selection.clone(), preedit.text.clone())).collect::<Vec<_>>();
+        let encoded = |text: &str| text.replace("\r\n", "\r").replace('\n', "\r").chars()
+            .map(systemless::systems::macintosh::mac_roman::encode_mac_roman_char).collect::<Option<Vec<_>>>();
+        let mut caret = i64::try_from(active.selection.start).ok()?
+            .checked_add(i64::try_from(encoded(active_text)?.len()).ok()?)?;
+        for (range, text) in &spans {
+            let bytes = encoded(text)?;
+            if range.end <= active.selection.start && *range != active.selection {
+                caret = caret.checked_add(i64::try_from(bytes.len()).ok()?
+                    - i64::try_from(range.len()).ok()?)?;
+            }
+        }
+        let caret = usize::try_from(caret).ok()?;
+        spans.sort_by(|a, b| b.0.start.cmp(&a.0.start));
+        let mut predicted = self.clone();
+        predicted.owner = Some(self.marked_base.clone().unwrap_or_else(|| active.clone()));
+        predicted.marked_base = None;
+        predicted.preedit = None;
+        predicted.retained_spans.clear();
+        let mut requests = Vec::new();
+        for (range, text) in spans {
+            let (expected, request, bytes) = predicted.commit_range(range, &text)?;
+            requests.push(StagedCommit { expected, range: request.selection, bytes, caret: None });
+        }
+        // The worker caret override is inside its final insertion. Commit the
+        // active candidate last after mapping retained edits before its range.
+        let start = caret.checked_sub(encoded(active_text)?.len())?;
+        let end = start.checked_add(active.selection.len())?;
+        let (expected, request, bytes) = predicted.commit_range(start..end, active_text)?;
+        requests.push(StagedCommit { expected, range: request.selection, bytes, caret: Some(caret) });
+        if caret > predicted.owner.as_ref()?.text.len() || caret > i16::MAX as usize { return None; }
+        predicted.owner.as_mut()?.selection = caret..caret;
+        predicted.pending_commits.last_mut()?.3 = Some(caret);
+        requests.last_mut()?.caret = Some(caret);
+        *self = predicted;
+        Some(requests)
+    }
+
     /// Pin both the original selection and an explicit guest replacement.
     /// Old frames remain valid while the guest consumes the selection request.
     pub fn commit_range(&mut self, range: std::ops::Range<usize>, text: &str)
@@ -488,6 +595,9 @@ impl GuestComposition {
     /// Return a pinned request for the guest event path. Reject the entire
     /// commit on unrepresentable Unicode; never synthesize replacement glyphs.
     pub fn commit(&mut self, text: &str) -> Option<(TextInputOwner, Vec<u8>)> {
+        // Multi-span staging must use the guarded multi-edit commit path;
+        // committing only the active candidate would silently lose the others.
+        if !self.retained_spans.is_empty() { return None; }
         let owner = self.owner.as_ref()?.clone();
         let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
         let bytes = normalized.chars()
@@ -524,6 +634,116 @@ mod composition_tests {
     use super::{GuestComposition, TextInputOwner, TextInputTarget};
 
     #[test]
+    fn disjoint_mark_retains_candidates_and_cancellation_restores_original_guest_owner() {
+        let mut original = owner(); original.text = b"abcdef".to_vec(); original.selection = 1..2;
+        let mut state = GuestComposition::default(); state.synchronize(Some(original.clone()));
+        assert!(state.mark("😀", 2..2));
+        assert!(state.mark_range(Some(&(5..6)), "éΩ", 2..2));
+        assert_eq!(state.virtual_document().unwrap().text().as_deref(), Some("a😀cdéΩf"));
+        assert_eq!(state.retained_spans().len(), 1);
+        assert_eq!(state.owner().unwrap().text, original.text);
+        assert_eq!(state.owner().unwrap().selection, 4..5);
+        assert_eq!(state.active_virtual_range(), Some(5..7));
+        assert_eq!(state.replacement_text(Some(&(5..6)), "K"), Some(("KΩ".into(), 0)));
+        assert_eq!(state.geometry_ranges(0..8), Some(vec![0..1, 1..3, 3..5, 5..7, 7..8]));
+        state.synchronize(Some(original.clone()));
+        assert_eq!(state.retained_spans().len(), 1, "guest baseline acknowledgement retains staged edits");
+        state.cancel();
+        assert_eq!(state.owner(), Some(&original));
+        assert!(state.retained_spans().is_empty());
+        assert!(state.preedit.is_none());
+    }
+
+    #[test]
+    fn retained_marked_commits_preserve_gap_and_validate_all_payloads_before_prediction() {
+        let mut original = owner(); original.text = b"abcdef".to_vec(); original.selection = 1..2;
+        let mut state = GuestComposition::default(); state.synchronize(Some(original.clone()));
+        assert!(state.mark("éé", 2..2));
+        assert!(state.mark_disjoint_range(5..6, "K", 1..1));
+        let before = state.virtual_document().unwrap().text();
+        assert!(state.commit_marked_spans("😀").is_none());
+        assert_eq!(state.virtual_document().unwrap().text(), before);
+        let requests = state.commit_marked_spans("K").unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].expected, original);
+        assert_eq!(requests[0].range, 1..2);
+        assert_eq!(requests[0].bytes, [0x8e, 0x8e]);
+        assert_eq!(requests[1].range, 5..6);
+        assert_eq!(requests[1].bytes, b"K");
+        assert_eq!(requests[1].caret, Some(6));
+        assert_eq!(state.owner().unwrap().text, [b'a', 0x8e, 0x8e, b'c', b'd', b'K', b'f']);
+        assert_eq!(state.owner().unwrap().selection, 6..6);
+        assert!(state.retained_spans().is_empty());
+        assert!(state.preedit.is_none());
+        state.synchronize(Some(requests[1].expected.clone()));
+        assert_eq!(state.owner().unwrap().selection, 6..6, "intermediate guest frame must retain the predicted final caret");
+    }
+
+    #[test]
+    fn replacement_crossing_candidates_retains_outer_fragments_and_original_owner() {
+        let mut original = owner(); original.text = b"abcdef".to_vec(); original.selection = 1..2;
+        let mut state = GuestComposition::default(); state.synchronize(Some(original.clone()));
+        assert!(state.mark("XY", 2..2));
+        assert!(state.mark_range(Some(&(5..6)), "KL", 2..2));
+        let mut committed = state.clone();
+        let requests = committed.commit_marked_replacement(Some(&(2..6)), "Q").unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].expected, original);
+        assert_eq!(requests[0].range, 1..5);
+        assert_eq!(requests[0].bytes, b"XQL");
+        assert_eq!(requests[0].caret, Some(3));
+        assert_eq!(committed.owner().unwrap().text, b"aXQLf");
+        assert!(state.mark_range(Some(&(2..6)), "Q", 1..1));
+        assert_eq!(state.virtual_document().unwrap().text().as_deref(), Some("aXQLf"));
+        assert!(state.retained_spans().is_empty());
+        assert_eq!(state.owner().unwrap().selection, 1..5);
+        assert_eq!(state.preedit.as_ref().unwrap().selection_utf16, 2..2);
+        assert_eq!(state.owner().unwrap().text, original.text);
+        state.cancel();
+        assert_eq!(state.owner(), Some(&original));
+    }
+
+    #[test]
+    fn correcting_retained_candidate_preserves_other_stage_and_guest_baseline() {
+        let mut original = owner(); original.text = b"abcdef".to_vec(); original.selection = 1..2;
+        let mut state = GuestComposition::default(); state.synchronize(Some(original.clone()));
+        assert!(state.mark("😀é", 3..3));
+        assert!(state.mark_range(Some(&(6..7)), "KL", 2..2));
+        let before = state.virtual_document().unwrap().text();
+        assert!(!state.mark_range(Some(&(2..3)), "Q", 1..1));
+        assert_eq!(state.virtual_document().unwrap().text(), before);
+        assert!(state.mark_range(Some(&(1..3)), "R", 1..1));
+        assert_eq!(state.virtual_document().unwrap().text().as_deref(), Some("aRécdKLf"));
+        assert_eq!(state.owner().unwrap().text, original.text);
+        assert_eq!(state.active_virtual_range(), Some(1..3));
+        let requests = state.commit_marked_replacement(None, "S").unwrap();
+        assert_eq!(requests[0].range, 4..5);
+        assert_eq!(requests[0].bytes, b"KL");
+        assert_eq!(requests[1].range, 1..2);
+        assert_eq!(requests[1].bytes, b"S");
+        assert_eq!(state.owner().unwrap().text, b"aScdKLf");
+    }
+
+    #[test]
+    fn retained_marked_replacement_preserves_suffix_and_corrected_caret() {
+        let mut original = owner(); original.text = b"abcdef".to_vec(); original.selection = 1..2;
+        let mut state = GuestComposition::default(); state.synchronize(Some(original.clone()));
+        assert!(state.mark("éé", 2..2));
+        assert!(state.mark_range(Some(&(5..6)), "KL", 2..2));
+        let before = state.virtual_document().unwrap().text();
+        assert!(state.commit_marked_replacement(Some(&(5..6)), "😀").is_none());
+        assert_eq!(state.virtual_document().unwrap().text(), before);
+        let requests = state.commit_marked_replacement(Some(&(5..6)), "Q").unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].expected, original);
+        assert_eq!(requests[1].bytes, b"QL");
+        assert_eq!(requests[1].range, 5..6);
+        assert_eq!(requests[1].caret, Some(6));
+        assert_eq!(state.owner().unwrap().text, [b'a', 0x8e, 0x8e, b'c', b'd', b'Q', b'L', b'f']);
+        assert_eq!(state.owner().unwrap().selection, 6..6);
+    }
+
+    #[test]
     fn explicit_mark_preserves_guest_baseline_and_cancel_restores_selection() {
         let mut original = owner(); original.text = b"abcdef".to_vec(); original.selection = 3..3;
         let mut state = GuestComposition::default(); state.synchronize(Some(original.clone()));
@@ -542,7 +762,10 @@ mod composition_tests {
         let mut original = owner(); original.text = b"abcdef".to_vec(); original.selection = 2..3;
         let mut state = GuestComposition::default(); state.synchronize(Some(original.clone()));
         assert!(state.mark_range(Some(&(0..1)), "Q", 1..1));
-        assert!(!state.mark_range(Some(&(2..3)), "other", 1..1));
+        let mut disjoint = state.clone();
+        assert!(disjoint.mark_range(Some(&(2..3)), "other", 1..1));
+        assert_eq!(disjoint.retained_spans().len(), 1);
+        assert_eq!(disjoint.owner().unwrap().text, original.text);
         assert_eq!(state.owner().unwrap().selection, 0..1);
         assert_eq!(state.preedit.as_ref().unwrap().text, "Q");
         assert_eq!(state.marked_base(), Some(&original));

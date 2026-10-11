@@ -1,0 +1,6 @@
+{
+  "src/bin/gpui_demo.rs": "c66ac9bd4d1d91f402744b754f7d4cdc351254ae5d498bb835f46514feaf95d3",
+  "src/bin/gpui_demo_input.rs": "1a546d0de6d4c504eb739933974239e595011ea07526f0b0f269176d7a51f040",
+  "src/bin/gpui_demo_composition.rs": "16e604f60698e9967adf9da21513fe4416f05744b4a927131834d30340e68f77",
+  "src/bin/gpui_demo_marked_document.rs": "63f37eda6ea575bee55043807a1fe0322b2f80589c9e9fe1d58b8980fb03df64"
+}

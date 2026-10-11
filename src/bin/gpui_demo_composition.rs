@@ -96,6 +96,7 @@ pub(super) struct PaintedComposition {
     preedit: super::super::input::Preedit,
     record: PaintedSource,
     transform: ((f32, f32), f32),
+    stack_scroll: f32,
     clip: (f32, f32, f32, f32),
     rows: Vec<MarkedRow>,
 }
@@ -299,7 +300,71 @@ impl Demo {
     pub(super) fn composition_surface(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let owner = self.composition.owner()?;
         let preedit = self.composition.preedit.clone()?;
-        if !self.display_scale.is_finite() || self.display_scale <= 0. { return None; }
+        let spans = self.composition.retained_spans();
+        let menu_height = if self.menu_presented { f32::from(self.menu_height.max(1)) * self.display_scale } else { 0. };
+        let scene_top = self.display_origin.1 + menu_height;
+        let scene_height = (self.height as f32 * self.display_scale - menu_height).max(0.);
+        let height = |stage: &super::super::input::Preedit|
+            (marked_lines(&stage.text).len().max(1) as f32 * 20. + 8.).min(168.).min(scene_height);
+        let total = height(&preedit) + spans.iter().map(|(_, stage)| height(stage) + 4.).sum::<f32>();
+        if !total.is_finite() || scene_height <= 0. { return None; }
+        let maximum_scroll = (total - scene_height).max(0.);
+        let signature = format!("{:?}:{:?}", self.composition.virtual_document()?.text()?, preedit.selection_utf16);
+        let mut scrolling = self.composition_stack_scroll.borrow_mut();
+        if scrolling.0 != signature { *scrolling = (signature, 0.); }
+        scrolling.1 = scrolling.1.clamp(0., maximum_scroll);
+        let scroll = scrolling.1;
+        drop(scrolling);
+        let (_, y, line_height, _, _) = self.composition_anchor(owner)?;
+        let top = (self.display_origin.1 + (y + i32::from(line_height)) as f32 * self.display_scale)
+            .min(scene_top + (scene_height - total).max(0.)).max(scene_top) - scroll;
+        let active = self.composition_span_surface(owner, preedit.clone(),
+            self.composition_geometry.clone(), true, 0, Some(top), cx)?;
+        let mut caches = self.retained_composition_geometry.borrow_mut();
+        caches.resize_with(spans.len(), Default::default);
+        let mut surfaces = Vec::new();
+        let mut offset = height(&preedit) + 4.;
+        for (index, (owner, stage)) in spans.iter().enumerate() {
+            surfaces.push(self.composition_span_surface(owner, stage.clone(), caches[index].clone(),
+                false, index + 1, Some(top + offset), cx)?);
+            offset += height(stage) + 4.;
+        }
+        surfaces.push(active);
+        Some(div().absolute().size_full().children(surfaces)
+            .on_scroll_wheel(cx.listener(move |this, event: &ScrollWheelEvent, _, cx| {
+                let point = (f32::from(event.position.x), f32::from(event.position.y));
+                // Consume successive wheel events over the last displayed
+                // panels even while text-service geometry awaits repaint.
+                let covers = |painted: &PaintedComposition| {
+                    let (left, top, right, bottom) = painted.clip;
+                    painted.transform == (this.display_origin, this.display_scale)
+                        && point.0 >= left && point.0 < right && point.1 >= top && point.1 < bottom
+                };
+                let active_hit = this.composition_geometry.borrow().as_ref().is_some_and(|painted|
+                    this.composition.owner() == Some(&painted.owner)
+                        && this.composition.preedit.as_ref() == Some(&painted.preedit) && covers(painted));
+                let retained_hit = this.retained_composition_geometry.borrow().iter().enumerate().any(|(index, cache)|
+                    cache.borrow().as_ref().is_some_and(|painted|
+                        this.composition.retained_spans().get(index).is_some_and(|(owner, preedit)|
+                            owner == &painted.owner && preedit == &painted.preedit) && covers(painted)));
+                let over_stage = active_hit || retained_hit;
+                if !over_stage { return; }
+                cx.stop_propagation();
+                let delta = match event.delta {
+                    ScrollDelta::Lines(delta) => delta.y * 20.,
+                    ScrollDelta::Pixels(delta) => f32::from(delta.y),
+                };
+                if delta.is_finite() {
+                    let mut scrolling = this.composition_stack_scroll.borrow_mut();
+                    scrolling.1 = (scrolling.1 - delta).clamp(0., maximum_scroll);
+                    drop(scrolling);
+                    cx.notify();
+                }
+            })).into_any_element())
+    }
+
+    fn composition_anchor(&self, owner: &super::super::input::TextInputOwner)
+        -> Option<(i32, i32, i16, (i16, i16, i16, i16), PaintedSource)> {
         let (x, y, line_height, view, cache_record) = if matches!(owner.target, super::super::input::TextInputTarget::StandardFile { .. }) {
             let (bounds, positions, top, height) = self.file_geometry()?;
             (*positions.get(owner.selection.start)?, i32::from(top), height, bounds,
@@ -339,17 +404,32 @@ impl Demo {
         let y = i32::from(dest.0) - i32::from(record.dest_rect.0) + i32::from(geometry.top);
         (x, y, geometry.height, view, PaintedSource::Document(record.clone()))
         };
+        Some((x, y, line_height, view, cache_record))
+    }
+
+    fn composition_span_surface(&self, owner: &super::super::input::TextInputOwner,
+        preedit: super::super::input::Preedit,
+        cache: std::rc::Rc<std::cell::RefCell<Option<PaintedComposition>>>,
+        active: bool, slot: usize, top_override: Option<f32>, cx: &Context<Self>) -> Option<AnyElement> {
+        if !self.display_scale.is_finite() || self.display_scale <= 0. { return None; }
+        let (x, y, line_height, view, cache_record) = self.composition_anchor(owner)?;
         if x < i32::from(view.1) || x >= i32::from(view.3) || y < i32::from(view.0) || y >= i32::from(view.2) { return None; }
         let width = 240f32.min(self.width as f32 * self.display_scale).max(1.);
         let lines = marked_lines(&preedit.text);
-        let height = (lines.len().max(1) as f32 * 20. + 8.).min(168.).min(self.height as f32 * self.display_scale);
+        let menu_height = if self.menu_presented { f32::from(self.menu_height.max(1)) * self.display_scale } else { 0. };
+        let height = (lines.len().max(1) as f32 * 20. + 8.).min(168.)
+            .min((self.height as f32 * self.display_scale - menu_height).max(0.));
         let left = (self.display_origin.0 + x as f32 * self.display_scale)
             .min(self.display_origin.0 + self.width as f32 * self.display_scale - width);
-        let top = (self.display_origin.1 + (y + i32::from(line_height)) as f32 * self.display_scale)
-            .min(self.display_origin.1 + self.height as f32 * self.display_scale - height);
-        let cache = self.composition_geometry.clone();
+        let top = top_override.unwrap_or_else(||
+            (self.display_origin.1 + (y + i32::from(line_height)) as f32 * self.display_scale)
+                .min(self.display_origin.1 + self.height as f32 * self.display_scale - height));
         let cache_owner = owner.clone();
+        let scene_clip = (self.display_origin.0, self.display_origin.1 + menu_height,
+            self.display_origin.0 + self.width as f32 * self.display_scale,
+            self.display_origin.1 + self.height as f32 * self.display_scale);
         let transform = (self.display_origin, self.display_scale);
+        let stack_scroll = self.composition_stack_scroll.borrow().1;
         let foreground = cx.theme().foreground;
         let selection = cx.theme().selection;
         Some(div().id("guest-composition-surface").absolute().left(px(left)).top(px(top))
@@ -386,14 +466,14 @@ impl Demo {
                         (f32::from(caret) - (width - 12.)).max(0.)
                     } else { 0. };
                     let origin = point(bounds.origin.x + px(4. - scroll), bounds.origin.y + px(row_top));
-                    if selected_start < selected_end {
+                    if active && selected_start < selected_end {
                         let a = line.x_for_index(byte_at(selected_start));
                         let b = line.x_for_index(byte_at(selected_end));
                         window.paint_quad(fill(Bounds::new(point(origin.x + a, origin.y), size(b - a, px(20.))), selection));
                     }
                     let _ = line.paint(origin, px(20.), TextAlign::Left, None, window, cx);
                     window.paint_quad(fill(Bounds::new(point(origin.x, origin.y + px(19.)), size(line.width(), px(1.))), foreground));
-                    if preedit.selection_utf16.end >= utf16_start && preedit.selection_utf16.end <= marked_caret_end(&lines, index) {
+                    if active && preedit.selection_utf16.end >= utf16_start && preedit.selection_utf16.end <= marked_caret_end(&lines, index) {
                         window.paint_quad(fill(Bounds::new(point(origin.x + caret, origin.y), size(px(1.), px(20.))), foreground));
                     }
                     let mut positions = Vec::new();
@@ -411,9 +491,10 @@ impl Demo {
                         origin: (f32::from(origin.x), f32::from(origin.y)) });
                 }
                 *cache.borrow_mut() = Some(PaintedComposition {
-                    owner: cache_owner.clone(), preedit: preedit.clone(), record: cache_record.clone(), transform,
-                    clip: (f32::from(bounds.origin.x), f32::from(bounds.origin.y),
-                        f32::from(bounds.origin.x + bounds.size.width), f32::from(bounds.origin.y + bounds.size.height)), rows,
+                    owner: cache_owner.clone(), preedit: preedit.clone(), record: cache_record.clone(), transform, stack_scroll,
+                    clip: (f32::from(bounds.origin.x).max(scene_clip.0), f32::from(bounds.origin.y).max(scene_clip.1),
+                        f32::from(bounds.origin.x + bounds.size.width).min(scene_clip.2),
+                        f32::from(bounds.origin.y + bounds.size.height).min(scene_clip.3)), rows,
                 });
             }).size_full()).into_any_element())
     }
@@ -423,6 +504,7 @@ impl Demo {
         (self.composition.owner() == Some(&painted.owner)
             && self.composition.preedit.as_ref() == Some(&painted.preedit)
             && painted.transform == (self.display_origin, self.display_scale)
+            && painted.stack_scroll == self.composition_stack_scroll.borrow().1
             && match &painted.record {
                 PaintedSource::Document(expected) => self.text_edits.iter().any(|record| record == expected),
                 PaintedSource::Dialog(expected) => self.dialogs.iter().any(|dialog| dialog == expected),
@@ -432,10 +514,40 @@ impl Demo {
             }).then_some(painted)
     }
 
+    fn painted_compositions(&self) -> Option<Vec<(usize, PaintedComposition)>> {
+        let document = self.composition.virtual_document()?;
+        let active = self.painted_composition()?;
+        let mut result = vec![(document.marked_range(&active.owner.selection)?.start, active)];
+        let caches = self.retained_composition_geometry.borrow();
+        let spans = self.composition.retained_spans();
+        if caches.len() != spans.len() { return None; }
+        for (index, (owner, preedit)) in spans.iter().enumerate().rev() {
+            let painted = caches[index].borrow().clone()?;
+            if &painted.owner != owner || &painted.preedit != preedit
+                || painted.transform != (self.display_origin, self.display_scale)
+                || painted.stack_scroll != self.composition_stack_scroll.borrow().1 { return None; }
+            let current = match &painted.record {
+                PaintedSource::Document(expected) => self.text_edits.iter().any(|record| record == expected),
+                PaintedSource::Dialog(expected) => self.dialogs.iter().any(|dialog| dialog == expected),
+                PaintedSource::DialogRecord(expected, record) => self.dialogs.iter().any(|dialog| dialog == expected)
+                    && self.text_edits.iter().any(|actual| actual == record),
+                PaintedSource::StandardFile(expected) => self.standard_file.as_ref() == Some(expected),
+            };
+            if !current { return None; }
+            result.push((document.marked_range(&owner.selection)?.start, painted));
+        }
+        Some(result)
+    }
+
     fn marked_bounds(&self, range: Range<usize>) -> Option<Bounds<Pixels>> {
-        let painted = self.painted_composition()?;
-        let start = range.start.checked_sub(painted.owner.selection.start)?;
-        let end = range.end.checked_sub(painted.owner.selection.start)?;
+        self.painted_compositions()?.into_iter().find_map(|(start, painted)|
+            Self::marked_span_bounds(&painted, start, range.clone()))
+    }
+
+    fn marked_span_bounds(painted: &PaintedComposition, virtual_start: usize,
+        range: Range<usize>) -> Option<Bounds<Pixels>> {
+        let start = range.start.checked_sub(virtual_start)?;
+        let end = range.end.checked_sub(virtual_start)?;
         if start > end || end > painted.preedit.text.encode_utf16().count() { return None; }
         let boundaries: std::collections::BTreeSet<_> = std::iter::once(0).chain(painted.preedit.text.chars().scan(0, |units, ch| {
             *units += ch.len_utf16(); Some(*units)
@@ -464,25 +576,20 @@ impl Demo {
     }
 
     fn marked_index_for_point(&self, point: Point<Pixels>) -> Option<usize> {
-        let painted = self.painted_composition()?;
         let x = f32::from(point.x); let y = f32::from(point.y);
-        if !x.is_finite() || !y.is_finite() || x < painted.clip.0 || x >= painted.clip.2
-            || y < painted.clip.1 || y >= painted.clip.3 { return None; }
-        let row = painted.rows.iter().find(|row| y >= row.origin.1 && y < row.origin.1 + 20.)?;
-        let (unit, _) = row.positions.iter().min_by(|a, b|
-            (row.origin.0 + a.1 - x).abs().total_cmp(&(row.origin.0 + b.1 - x).abs()))?;
-        Some(painted.owner.selection.start + row.start + unit)
+        if !x.is_finite() || !y.is_finite() { return None; }
+        for (start, painted) in self.painted_compositions()? {
+            if x < painted.clip.0 || x >= painted.clip.2 || y < painted.clip.1 || y >= painted.clip.3 { continue; }
+            let Some(row) = painted.rows.iter().find(|row| y >= row.origin.1 && y < row.origin.1 + 20.) else { continue; };
+            let (unit, _) = row.positions.iter().min_by(|a, b|
+                (row.origin.0 + a.1 - x).abs().total_cmp(&(row.origin.0 + b.1 - x).abs()))?;
+            return Some(start + row.start + unit);
+        }
+        None
     }
 
     fn composition_text(&self) -> Option<String> {
-        let owner = self.composition.owner()?;
-        let mut text = systemless::systems::macintosh::mac_roman::decode_mac_roman(&owner.text);
-        if let Some(preedit) = &self.composition.preedit {
-            let start = text.char_indices().nth(owner.selection.start).map_or(text.len(), |(offset, _)| offset);
-            let end = text.char_indices().nth(owner.selection.end).map_or(text.len(), |(offset, _)| offset);
-            text.replace_range(start..end, &preedit.text);
-        }
-        Some(text)
+        self.composition.virtual_document()?.text()
     }
 
 }
@@ -499,14 +606,14 @@ impl EntityInputHandler for Demo {
     }
     fn selected_text_range(&mut self, _: bool, _: &mut Window, _: &mut Context<Self>) -> Option<UTF16Selection> {
         let owner = self.composition.owner()?;
-        let range = self.composition.preedit.as_ref().map_or_else(|| owner.selection.clone(), |preedit|
-            owner.selection.start + preedit.selection_utf16.start..owner.selection.start + preedit.selection_utf16.end);
+        let range = if let Some(preedit) = self.composition.preedit.as_ref() {
+            let start = self.composition.active_virtual_range()?.start;
+            start + preedit.selection_utf16.start..start + preedit.selection_utf16.end
+        } else { owner.selection.clone() };
         Some(UTF16Selection { range, reversed: false })
     }
     fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
-        let owner = self.composition.owner()?;
-        let preedit = self.composition.preedit.as_ref()?;
-        Some(owner.selection.start..owner.selection.start + preedit.text.encode_utf16().count())
+        self.composition.active_virtual_range()
     }
     fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = self.composition.preedit.as_ref().map(|preedit| preedit.text.clone()) {
@@ -515,6 +622,18 @@ impl EntityInputHandler for Demo {
     }
     fn replace_text_in_range(&mut self, range: Option<Range<usize>>, text: &str,
         _: &mut Window, cx: &mut Context<Self>) {
+        if !self.composition.retained_spans().is_empty() {
+            // The marked transaction remains pinned until every payload passes
+            // conversion. Each request uses the existing guest replacement path.
+            if let Some(requests) = self.composition.commit_marked_replacement(range.as_ref(), text) {
+                for request in requests {
+                    let _ = self.commands.send(Command::ReplaceText(request.expected, request.range,
+                        request.bytes, request.caret));
+                }
+                cx.notify();
+            }
+            return;
+        }
         if self.composition.preedit.is_some() && self.composition.owner().is_some() {
             if let Some(range) = range.clone() {
                 let marked_base = self.composition.marked_base().cloned();
@@ -574,7 +693,7 @@ impl EntityInputHandler for Demo {
     fn bounds_for_range(&mut self, range: Range<usize>, _: Bounds<Pixels>,
         window: &mut Window, cx: &mut Context<Self>) -> Option<Bounds<Pixels>> {
         let range = if self.composition.preedit.is_some() {
-            self.painted_composition()?;
+            self.painted_compositions()?;
             let pieces = self.composition.geometry_ranges(range.clone())?;
             if pieces.len() > 1 {
                 for piece in pieces {
@@ -603,9 +722,10 @@ impl EntityInputHandler for Demo {
         if staged {
             if let Some(index) = self.marked_index_for_point(point) { return Some(index); }
             // The stage masks the underlying guest pixels even at its border.
-            let painted = self.painted_composition()?;
+            let painted = self.painted_compositions()?;
             let (x, y) = (f32::from(point.x), f32::from(point.y));
-            if x >= painted.clip.0 && x < painted.clip.2 && y >= painted.clip.1 && y < painted.clip.3 { return None; }
+            if painted.iter().any(|(_, span)| x >= span.clip.0 && x < span.clip.2
+                && y >= span.clip.1 && y < span.clip.3) { return None; }
         }
         let owner = self.composition.owner()?;
         let index = match owner.target {
