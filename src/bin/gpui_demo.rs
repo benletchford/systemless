@@ -210,7 +210,7 @@ mod desktop {
         lists: Vec<ListManagerSnapshot>,
         text_edits: Vec<TextEditSnapshot>,
         standard_file: Option<StandardFileSnapshot>,
-        frame: Option<(u32, u32, u32, Vec<u8>)>,
+        frame: Option<(u32, u32, Vec<u8>)>,
         status: String,
     }
 
@@ -330,7 +330,7 @@ mod desktop {
                 let menu_height = session.runner().bus().read_word(MBAR_HEIGHT);
                 let guest_menu_tracking = session.runner().guest_menu_tracking_active();
                 let frame = session.video_frame().map(|frame| {
-                    (frame.width, frame.height, 0, gpui_pixels(frame.pixels))
+                    (frame.width, frame.height, gpui_pixels(frame.pixels))
                 });
                 let running = session.status().running;
                 let windows = session.runner_mut().window_frame_snapshot();
@@ -391,7 +391,6 @@ mod desktop {
         logo: Arc<RenderImage>,
         width: u32,
         height: u32,
-        crop_top: u32,
         display_origin: (f32, f32),
         display_scale: f32,
         display_size: (f32, f32),
@@ -433,10 +432,9 @@ mod desktop {
                             this.text_edits = update.text_edits;
                             this.standard_file = update.standard_file;
                             this.status = update.status;
-                            if let Some((width, height, top, pixels)) = update.frame {
+                            if let Some((width, height, pixels)) = update.frame {
                                 this.width = width;
                                 this.height = height;
-                                this.crop_top = top;
                                 if this.image.as_ref().is_none_or(|image| {
                                     image.as_bytes(0) != Some(pixels.as_slice())
                                         || image.size(0).width.0 != width as i32
@@ -483,7 +481,6 @@ mod desktop {
                 )])),
                 width: 640,
                 height: 460,
-                crop_top: 20,
                 display_origin: (0., 0.),
                 display_scale: 1.,
                 display_size: (640., 460.),
@@ -503,38 +500,21 @@ mod desktop {
 
         fn pointer(&self, position: Point<Pixels>) -> (i16, i16) {
             // Convert the aspect-fit host position back to guest coordinates.
-            // Cropped fixture captures retain the host-bar offset; live frames do not.
             let x = ((f32::from(position.x) - self.display_origin.0) / self.display_scale)
                 .clamp(0., self.width.saturating_sub(1) as f32);
-            let bar_height = if self.crop_top == 0
-                || self.guest_menu_fallback()
-                || !self.menu_presented
-            {
-                0.
-            } else {
-                36.
-            };
-            let y = ((f32::from(position.y) - self.display_origin.1 - bar_height)
+            let y = ((f32::from(position.y) - self.display_origin.1)
                 / self.display_scale)
                 .clamp(0., self.height.saturating_sub(1) as f32);
-            ((y as u32 + self.crop_top) as i16, x as i16)
+            (y as i16, x as i16)
         }
 
         fn inside_guest_pane(&self, position: Point<Pixels>) -> bool {
             let x = f32::from(position.x);
             let y = f32::from(position.y);
-            let bar_height = if self.crop_top == 0
-                || self.guest_menu_fallback()
-                || !self.menu_presented
-            {
-                0.
-            } else {
-                36.
-            };
             x >= self.display_origin.0
                 && x < self.display_origin.0 + self.display_size.0
-                && y >= self.display_origin.1 + bar_height
-                && y < self.display_origin.1 + bar_height + self.display_size.1
+                && y >= self.display_origin.1
+                && y < self.display_origin.1 + self.display_size.1
         }
 
         fn guest_menu_fallback(&self) -> bool {
@@ -594,9 +574,9 @@ mod desktop {
 
         fn scrollbar_at(&self, point: (i16, i16)) -> Option<(u32, u64, (i16, i16))> {
             let viewport = super::frames::Rect {
-                top: self.crop_top as i32,
+                top: 0,
                 left: 0,
-                bottom: (self.crop_top + self.height) as i32,
+                bottom: self.height as i32,
                 right: self.width as i32,
             };
             super::frames::control_pieces(&self.controls, &self.menus, &self.windows, viewport)
@@ -632,9 +612,9 @@ mod desktop {
 
         fn popup_at(&self, point: (i16, i16)) -> Option<(u32, u64)> {
             let viewport = super::frames::Rect {
-                top: self.crop_top as i32,
+                top: 0,
                 left: 0,
-                bottom: (self.crop_top + self.height) as i32,
+                bottom: self.height as i32,
                 right: self.width as i32,
             };
             super::frames::control_pieces(&self.controls, &self.menus, &self.windows, viewport)
@@ -717,6 +697,7 @@ mod desktop {
             let mut bar = div()
                 .id("guest-menu-bar")
                 .test_support()
+                .occlude()
                 .flex()
                 .items_center()
                 .h(px(bar_height))
@@ -822,7 +803,6 @@ mod desktop {
             }
             let guest_menu_fallback = self.guest_menu_fallback();
             let fill_display = self.image.is_some()
-                && self.crop_top == 0
                 && !guest_menu_fallback
                 && self.windows.is_empty()
                 && self.dialogs.is_empty()
@@ -860,10 +840,6 @@ mod desktop {
                 .when(fill_display, |screen| {
                     screen.ml(px(self.display_origin.0)).mt(px(self.display_origin.1))
                 })
-                .when(
-                    self.crop_top > 0 && self.menu_presented && !self.guest_menu_fallback(),
-                    |screen| screen.mt(px(36.)),
-                )
                 .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
                     let (vertical, horizontal) = this.pointer(event.position);
                     this.mouse_position = (vertical, horizontal);
@@ -934,9 +910,9 @@ mod desktop {
             // Macintosh Toolbox Essentials (1992), pp. 3-3, 3-87.
             if !self.guest_menu_fallback() || !self.guest_menu_tracking {
                 let viewport = super::frames::Rect {
-                    top: self.crop_top as i32,
+                    top: 0,
                     left: 0,
-                    bottom: (self.crop_top + self.height) as i32,
+                    bottom: self.height as i32,
                     right: self.width as i32,
                 };
                 for piece in super::frames::frame_pieces(&self.windows, viewport) {
@@ -1030,7 +1006,7 @@ mod desktop {
                             .absolute()
                             .overflow_hidden()
                             .left(px(clip.left as f32))
-                            .top(px((clip.top - self.crop_top as i32) as f32))
+                            .top(px(clip.top as f32))
                             .w(px(clip.width() as f32))
                             .h(px(clip.height() as f32))
                             .child(strip),
@@ -1085,7 +1061,7 @@ mod desktop {
                             .absolute()
                             .overflow_hidden()
                             .left(px(clip.left as f32))
-                            .top(px((clip.top - self.crop_top as i32) as f32))
+                            .top(px(clip.top as f32))
                             .w(px(clip.width() as f32))
                             .h(px(clip.height() as f32))
                             .child(gutter),
@@ -1159,7 +1135,7 @@ mod desktop {
                             .absolute()
                             .overflow_hidden()
                             .left(px(clip.left as f32))
-                            .top(px((clip.top - self.crop_top as i32) as f32))
+                            .top(px(clip.top as f32))
                             .w(px(clip.width() as f32))
                             .h(px(clip.height() as f32))
                             .child(overlay),
@@ -1236,7 +1212,7 @@ mod desktop {
                             .absolute()
                             .overflow_hidden()
                             .left(px(clip.left as f32))
-                            .top(px((clip.top - self.crop_top as i32) as f32))
+                            .top(px(clip.top as f32))
                             .w(px(clip.width() as f32))
                             .h(px(clip.height() as f32))
                             .child(overlay),
@@ -1476,7 +1452,7 @@ mod desktop {
                             .absolute()
                             .overflow_hidden()
                             .left(px(clip.left as f32))
-                            .top(px((clip.top - self.crop_top as i32) as f32))
+                            .top(px(clip.top as f32))
                             .w(px(clip.width() as f32))
                             .h(px(clip.height() as f32))
                             .child(overlay),
@@ -1609,7 +1585,7 @@ mod desktop {
                             .absolute()
                             .overflow_hidden()
                             .left(px(clip.left as f32))
-                            .top(px((clip.top - self.crop_top as i32) as f32))
+                            .top(px(clip.top as f32))
                             .w(px(clip.width() as f32))
                             .h(px(clip.height() as f32))
                             .child(overlay),
@@ -1637,7 +1613,7 @@ mod desktop {
                             .id(format!("guest-standard-open-{}-{}", panel.guest_id, panel.generation))
                             .test_support()
                             .absolute()
-                            .top(px((bounds.top - self.crop_top as i32) as f32))
+                            .top(px(bounds.top as f32))
                             .left(px(bounds.left as f32))
                             .w(px(bounds.width() as f32))
                             .h(px(bounds.height() as f32))
@@ -1828,7 +1804,7 @@ mod desktop {
                             .id(format!("guest-standard-save-{}-{}", panel.guest_id, panel.generation))
                             .test_support()
                             .absolute()
-                            .top(px((bounds.top - self.crop_top as i32) as f32))
+                            .top(px(bounds.top as f32))
                             .left(px(bounds.left as f32))
                             .w(px(bounds.width() as f32))
                             .h(px(bounds.height() as f32))
@@ -3081,7 +3057,7 @@ mod desktop {
                 }
                 demo.width = frame.width;
                 demo.height = frame_height;
-                demo.crop_top = 0;
+
                 demo.menu_presented = menu_presented;
                 demo.menu_height = menu_height;
                 demo.status = format!(
@@ -3517,7 +3493,7 @@ mod desktop {
             view.update(cx, |demo, cx| {
                 demo.width = 300;
                 demo.height = 220;
-                demo.crop_top = 0;
+
                 demo.windows = vec![
                     WindowFrameSnapshot {
                         guest_id: 2,
@@ -3660,7 +3636,7 @@ mod desktop {
                 demo.standard_file = standard_file;
                 demo.width = frame_width;
                 demo.height = frame_height;
-                demo.crop_top = 0;
+
                 demo.menu_presented = menu_presented;
                 demo.menu_height = menu_height;
                 demo.status = format!(
@@ -3729,7 +3705,7 @@ mod desktop {
                 demo.guest_menu_tracking = true;
                 demo.width = 64;
                 demo.height = 64;
-                demo.crop_top = 0;
+
                 // This standard frame crosses the guest menu/content boundary.
                 // Fallback must keep its GPUI overlay off the guest pixels.
                 demo.windows = vec![WindowFrameSnapshot {
@@ -4712,7 +4688,7 @@ mod desktop {
                     demo.menu_presented = false;
                     demo.width = 800;
                     demo.height = 600;
-                    demo.crop_top = 0;
+
                     demo.image = Some(std::sync::Arc::new(gpui_kit::RenderImage::new(vec![
                         image::Frame::new(image::RgbaImage::new(800, 600)),
                     ])));
@@ -5870,11 +5846,11 @@ mod desktop {
                 let to = (from.0 + 12, from.1 + 16);
                 let frame = session.video_frame().expect("showcase framebuffer");
                 let width = frame.width;
-                let height = frame.height - 20;
+                let height = frame.height;
                 let host = |point: (i16, i16)| {
                     gpui_kit::point(
                         gpui_kit::px(f32::from(point.1)),
-                        gpui_kit::px(f32::from(point.0 - 20 + 36)),
+                        gpui_kit::px(f32::from(point.0)),
                     )
                 };
                 let (sender, receiver) = std::sync::mpsc::channel();
@@ -5899,7 +5875,7 @@ mod desktop {
                         demo.windows = before.clone();
                         demo.width = width;
                         demo.height = height;
-                        demo.crop_top = 20;
+
                         cx.notify();
                     });
                 });
@@ -6208,15 +6184,15 @@ mod desktop {
                         grow_icon_drawn: false,
                     }];
                     demo.width = 800;
-                    demo.height = 580;
-                    demo.crop_top = 20;
+                    demo.height = 600;
+
                     cx.notify();
                 });
             });
             cx.update_window(window.into(), |_, window, cx| {
                 window.drag(
-                    gpui_kit::point(gpui_kit::px(300.), gpui_kit::px(57.)),
-                    gpui_kit::point(gpui_kit::px(316.), gpui_kit::px(69.)),
+                    gpui_kit::point(gpui_kit::px(300.), gpui_kit::px(41.)),
+                    gpui_kit::point(gpui_kit::px(316.), gpui_kit::px(53.)),
                     cx,
                 );
             })
@@ -6287,8 +6263,8 @@ mod desktop {
             cx.update(|cx| {
                 view.update(cx, |demo, cx| {
                     demo.width = 800;
-                    demo.height = 580;
-                    demo.crop_top = 20;
+                    demo.height = 600;
+
                     cx.notify();
                 });
             });
@@ -6356,8 +6332,8 @@ mod desktop {
             cx.update(|cx| {
                 view.update(cx, |demo, cx| {
                     demo.width = 800;
-                    demo.height = 580;
-                    demo.crop_top = 20;
+                    demo.height = 600;
+
                     cx.notify();
                 });
             });
@@ -6393,7 +6369,7 @@ mod desktop {
             assert!(matches!(
                 inputs.last(),
                 Some(MacintoshInput::MouseUp {
-                    vertical: 20,
+                    vertical: 0,
                     horizontal: 0
                 })
             ));
@@ -6508,8 +6484,8 @@ mod desktop {
                         }],
                     }];
                     demo.width = 800;
-                    demo.height = 580;
-                    demo.crop_top = 20;
+                    demo.height = 600;
+
                     cx.notify();
                 });
             });
@@ -6622,8 +6598,8 @@ mod desktop {
                         ],
                     }];
                     demo.width = 800;
-                    demo.height = 580;
-                    demo.crop_top = 20;
+                    demo.height = 600;
+
                     cx.notify();
                 });
             });
@@ -6722,8 +6698,8 @@ mod desktop {
             cx.update(|cx| {
                 view.update(cx, |demo, cx| {
                     demo.width = 800;
-                    demo.height = 580;
-                    demo.crop_top = 20;
+                    demo.height = 600;
+
                     demo.standard_file = Some(StandardFileSnapshot {
                         guest_id: 7,
                         generation: 1,
@@ -6901,8 +6877,8 @@ mod desktop {
                         horizontal_scrollbar: None,
                     }];
                     demo.width = 800;
-                    demo.height = 580;
-                    demo.crop_top = 20;
+                    demo.height = 600;
+
                     cx.notify();
                 });
             });
@@ -7007,8 +6983,8 @@ mod desktop {
                         popup_title_width: None,
                     }];
                     demo.width = 800;
-                    demo.height = 580;
-                    demo.crop_top = 20;
+                    demo.height = 600;
+
                     cx.notify();
                 });
             });
