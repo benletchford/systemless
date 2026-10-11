@@ -2437,6 +2437,7 @@ impl FixtureRunner {
                     crate::control_manager::snapshot_control_record(
                         record.handle,
                         record.pointer,
+                        record.generation,
                         record.proc_id,
                         |owner| owners.get(&owner).copied(),
                         |address| app.memory.read_u8(address),
@@ -2454,6 +2455,7 @@ impl FixtureRunner {
                     crate::control_manager::snapshot_control_record(
                         record.handle,
                         record.pointer,
+                        record.generation,
                         record.proc_id,
                         |owner| owners.get(&owner).copied(),
                         |address| Some(self.bus.read_byte(address)),

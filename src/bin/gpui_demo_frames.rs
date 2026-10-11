@@ -331,6 +331,7 @@ mod tests {
     fn control(owner_id: u32, proc_id: i16, bounds: (i16, i16, i16, i16)) -> ControlSnapshot {
         ControlSnapshot {
             guest_id: 10,
+            generation: 1,
             owner_id,
             proc_id,
             local_bounds: bounds,
