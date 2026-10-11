@@ -12,6 +12,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -30,6 +31,23 @@ compatibility:
       Browser input, larger boards, save/load and audio remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4547
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: 894399266237262d458d9fa3911ba04666a9bd65
+    architecture: 68k
+    environment: >-
+      Optimized Chrome preview from the promoted catalogue revision with its
+      local launch switch enabled. Local frontend files delivered under controlled
+      production-origin responses; actual managed game archive fetch untouched,
+      HTTP 200 and original body SHA-256/122888-byte size verified. Isolated
+      800x600 worker/WebGL, 25 MHz, maximum two ticks per paint. Ordinary OK,
+      Cmd-N, number keys, Right Arrow and Space verify placement/movement/erase
+      with eight capture pixel checks. Ordinary mouse/number keys complete the
+      minimum-piece 5x5 solution and its original win screen. Captures inspected.
+      Larger boards, save/load, audio and post-release public replay unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4547
+
 runtime:
   executable_path: Lose Your Marbles! 1.0.cpt/Lose Your Marbles! 1.0
   screen_depth: 8
@@ -118,4 +136,4 @@ a square with the mouse. Space erases the selected marble.
 This original release is free software under GNU GPL version 2 or later.
 [Download its complete original source](https://assets.systemless.org/catalogue/objects/sha256/a5/a5b2f95a39a1ca64e4ecf8fea8525e32ebd7b6aa7619e13986efd916932a9663.hqx).
 
-Browser launch approval is pending.
+Browser play is verified for the 5×5 board. Larger boards, save/load and audio have not been checked.
