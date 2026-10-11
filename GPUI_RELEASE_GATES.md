@@ -157,3 +157,15 @@ WindowManager104 passed before the FrameRect change. Failed, partial and final
 images/provenance are under `reference/gpui-demo/movable-dialog-drag`. Physical
 input, broader lifecycle, performance and final-candidate qualification remain
 open; no production gate is closed by this selected workflow.
+
+### Replacement Save independent-process readback (2026-10-11)
+
+Create/replace/read now passes twelve distinct OS-process phases across mono68k,
+colour68k, PPC8 and PPC16. Persisted old data and a nonempty binary resource fork
+are verified before guest replacement; guest Save requires confirmation and
+updates data while preserving the resource fork. Fresh-process guest Open/read
+verifies exact bytes, both forks and metadata before/after close. Stronger final
+run passes20.99s; evidence is under `reference/gpui-demo/replacement-process-restart`.
+This covers explicit production-store flush; actual worker shutdown/periodic
+flush for replacement, crash durability and physical desktop close remain open.
+All eight production gates remain open.
