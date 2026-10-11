@@ -2681,7 +2681,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "OpenResFile") => PpcImportDispatcherTarget::OpenResFile,
         ("InterfaceLib", "OpenRFPerm") => PpcImportDispatcherTarget::OpenRFPerm,
         ("InterfaceLib", "HOpenResFile") => PpcImportDispatcherTarget::HOpenResFile,
-        ("InterfaceLib", "ResError") => PpcImportDispatcherTarget::ResError,
+        ("InterfaceLib", "ResError" | "LMGetResErr") => PpcImportDispatcherTarget::ResError,
         ("InterfaceLib", "SetResLoad") => PpcImportDispatcherTarget::SetResLoad,
         ("InterfaceLib", "LMGetResLoad") => PpcImportDispatcherTarget::LMGetResLoad,
         ("InterfaceLib", "LoadResource") => PpcImportDispatcherTarget::LoadResource,
@@ -5937,7 +5937,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "PrClosePage") => PpcImportDispatcherTarget::PrintingCompatibility(
             PpcPrintingCompatibilityOperation::PrClosePage,
         ),
-        ("InterfaceLib", "PrError") => PpcImportDispatcherTarget::PrintingCompatibility(
+        ("InterfaceLib", "PrError" | "LMGetPrintErr") => PpcImportDispatcherTarget::PrintingCompatibility(
             PpcPrintingCompatibilityOperation::PrError,
         ),
         ("InterfaceLib", "PrGeneral") => PpcImportDispatcherTarget::PrintingCompatibility(
