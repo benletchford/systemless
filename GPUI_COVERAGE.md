@@ -1,5 +1,25 @@
 # GPUI Kit system-interface coverage
 
+### Current Marathon gameplay fidelity check (2026-10-11)
+
+The verified catalogue archive (a8ddcadc...) reaches an active 3D scene, HUD and
+weapon through the actual worker: Begin Game at observations800/802, Space at
+1100/1102. The 60-second run terminated at1271/1350 and is retained as a failure.
+An explicit120-second capture budget reached1350 in69.34s, then rendered the
+shared Demo scene800x600 at origin(0,0), scale1 with menus hidden/height0. The
+hidden capture deadline now permits longer explicit workflows, retaining its
+30-second default; this is not a changed production performance threshold.
+Reviewed guest/shared images show distorted custom HUD lettering compared with
+`.github/assets/marathon-gameplay.png`. The earlier PR gameplay guest capture
+has the same discrepancy; this is not attributed to recent volume/selection
+changes. The defect is present before GPUI composition. Application-drawn text
+remains guest-rendered and faithful font/resource/raster diagnosis is required.
+Local failed/successful images, logs and hashes are under
+`target/gpui-qualification/current-marathon`. Observed updates are not FPS;
+physical input, sustained live delivery, audio and saves remain unqualified.
+No production gate closes.
+
+
 ### Oversized popup shared-compositor review (2026-10-11)
 
 Reusable hidden capture flags now install debug-only read-only mounted roots,

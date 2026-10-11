@@ -425,7 +425,9 @@ mod desktop {
         #[arg(long, hide = true, default_value_t = 120, value_parser = clap::value_parser!(u32).range(1..))]
         capture_application_updates: u32,
         #[cfg(feature = "gpui-demo-test")]
-        #[arg(long, hide = true, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=60))]
+        // Long application workflows need an explicit capture budget; this is
+        // an observation deadline, not a production frame-delivery threshold.
+        #[arg(long, hide = true, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=3600))]
         capture_application_timeout_seconds: u64,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true, requires_all = ["capture_application", "capture_application_mouse_h"])]
