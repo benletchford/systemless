@@ -19534,7 +19534,9 @@ impl super::TrapDispatcher {
         self.tx_face = state.tx_face;
         self.tx_mode = state.tx_mode;
         self.tx_size = state.tx_size;
-        self.sync_port_draw_state(bus, port);
+        // SetPort selects an existing record; initialization belongs to
+        // OpenPort/InitPort. Restoring cached host state must not overwrite
+        // guest fields when this record cannot be decoded as a CGrafPort.
     }
 
     fn write_port_op_color(&mut self, bus: &mut MacMemoryBus, port: u32, color: (u16, u16, u16)) {
