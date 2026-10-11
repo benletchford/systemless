@@ -31,7 +31,6 @@ mod desktop {
         component::{
             button::{Button, ButtonVariants},
             checkbox::Checkbox,
-            menu::{PopupMenu, PopupMenuItem},
             popover::Popover,
             radio::Radio,
             ActiveTheme, Disableable, Sizable,
@@ -45,6 +44,8 @@ mod desktop {
         runner::{ControlSnapshot, DialogItemKind, DialogSnapshot, ListManagerSnapshot, StandardFileKind, StandardFileSnapshot, TextEditSnapshot, WindowFrameSnapshot},
         systems::macintosh::session::{MacintoshInput, MacintoshSession},
     };
+
+    include!("gpui_demo_menu.rs");
 
     #[derive(Parser)]
     #[command(about = "Experimental GPUI Kit guest menu runner (no audio or persistent saves)")]
@@ -119,6 +120,9 @@ mod desktop {
         capture_custom_menu_fallback: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_standard_menu: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_modeless_dialog_layout: Option<PathBuf>,
     }
 
@@ -160,7 +164,7 @@ mod desktop {
 
     #[derive(Default)]
     struct LiveMenuState {
-        menu: Option<Entity<PopupMenu>>,
+        menu: Option<Entity<GuestMenuPopup>>,
         rendered: Option<Vec<GuestMenu>>,
     }
 
@@ -541,63 +545,6 @@ mod desktop {
         }
     }
 
-    fn populate_menu(
-        mut popup: PopupMenu,
-        snapshot: &GuestMenuSnapshot,
-        id: i16,
-        commands: &mpsc::Sender<Command>,
-        ancestors: &[i16],
-        window: &mut Window,
-        cx: &mut Context<PopupMenu>,
-    ) -> PopupMenu {
-        if ancestors.contains(&id) {
-            return popup;
-        }
-        let Some(menu) = snapshot.menus.iter().find(|menu| menu.id == id) else {
-            return popup;
-        };
-        let mut ancestors = ancestors.to_vec();
-        ancestors.push(id);
-        for item in &menu.items {
-            if item.separator {
-                popup = popup.separator();
-                continue;
-            }
-            if let Some(submenu_id) = item.submenu_id {
-                let submenu = PopupMenu::build(window, cx, |popup, window, cx| {
-                    populate_menu(
-                        popup, snapshot, submenu_id, commands, &ancestors, window, cx,
-                    )
-                });
-                let enabled = item.enabled
-                    && snapshot
-                        .menus
-                        .iter()
-                        .any(|m| m.id == submenu_id && m.enabled);
-                popup = popup
-                    .item(PopupMenuItem::submenu(item.text.clone(), submenu).disabled(!enabled));
-            } else {
-                let commands = commands.clone();
-                let number = item.number;
-                let guest_id = menu.guest_id;
-                let generation = menu.generation;
-                let label = match item.key_equivalent {
-                    Some(key) => format!("{}    ⌘{}", item.text, key.to_uppercase()),
-                    None => item.text.clone(),
-                };
-                popup = popup.item(
-                    PopupMenuItem::new(label)
-                        .checked(item.checked)
-                        .disabled(!menu.enabled || !item.enabled)
-                        .on_click(move |_, _, _| {
-                            let _ = commands.send(Command::Menu(id, number, guest_id, generation));
-                        }),
-                );
-            }
-        }
-        popup
-    }
-
     fn rendered_menu_tree(snapshot: &GuestMenuSnapshot, id: i16) -> Vec<GuestMenu> {
         fn visit(snapshot: &GuestMenuSnapshot, id: i16, tree: &mut Vec<GuestMenu>) {
             if tree.iter().any(|menu| menu.id == id) {
@@ -680,7 +627,18 @@ mod desktop {
                 bar = bar.child(
                     Popover::new(format!("popover-{identity}"))
                         .appearance(false)
-                        .overlay_closable(false)
+                        .overlay_closable(true)
+                        .on_open_change({
+                            let state = state.downgrade();
+                            move |open, _, cx| {
+                                if !*open {
+                                    _ = state.update(cx, |state, _| {
+                                        state.menu = None;
+                                        state.rendered = None;
+                                    });
+                                }
+                            }
+                        })
                         .trigger(
                             Button::new(identity)
                                 .label(menu.title.clone())
@@ -693,17 +651,7 @@ mod desktop {
                             if let Some(open_menu) = state.read(cx).menu.clone() {
                                 if state.read(cx).rendered.as_ref() != Some(&menu_tree) {
                                     open_menu.update(cx, |popup, cx| {
-                                        popup.rebuild(window, cx, |popup, window, cx| {
-                                            populate_menu(
-                                                popup.scrollable(true).max_h(px(420.)),
-                                                &snapshot,
-                                                id,
-                                                &commands,
-                                                &[],
-                                                window,
-                                                cx,
-                                            )
-                                        });
+                                        popup.update_snapshot(id, snapshot.clone(), cx);
                                     });
                                     state.update(cx, |state, _| {
                                         state.rendered = Some(menu_tree);
@@ -711,16 +659,8 @@ mod desktop {
                                 }
                                 return open_menu;
                             }
-                            let open_menu = PopupMenu::build(window, cx, |popup, window, cx| {
-                                populate_menu(
-                                    popup.scrollable(true).max_h(px(420.)),
-                                    &snapshot,
-                                    id,
-                                    &commands,
-                                    &[],
-                                    window,
-                                    cx,
-                                )
+                            let open_menu = cx.new(|cx| {
+                                GuestMenuPopup::new(id, snapshot.clone(), commands.clone(), cx)
                             });
                             state.update(cx, |state, _| {
                                 state.menu = Some(open_menu.clone());
@@ -1944,7 +1884,15 @@ mod desktop {
                 }))
                 .when(!guest_menu_fallback, |root| root.child(bar))
                 .child(screen)
-                .child(div().px_3().py_1().text_xs().child(self.status.clone()))
+                .child(
+                    div()
+                        .id("guest-status")
+                        .test_support()
+                        .px_3()
+                        .py_1()
+                        .text_xs()
+                        .child(self.status.clone()),
+                )
         }
     }
 
@@ -2641,6 +2589,11 @@ mod desktop {
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_standard_menu.as_ref() {
+            capture_standard_menu(&args.game, output, args.prefer_powerpc, args.screen_depth);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_modeless_dialog_layout.as_ref() {
             capture_modeless_dialog_layout(output);
             return;
@@ -3007,6 +2960,93 @@ mod desktop {
     }
 
     #[cfg(feature = "gpui-demo-test")]
+    fn capture_standard_menu(
+        game: &std::path::Path,
+        output: &std::path::Path,
+        prefer_powerpc: bool,
+        screen_depth: Option<u16>,
+    ) {
+        use gpui_kit::{platform, test::TestWindowExt, HeadlessAppContext};
+
+        let mut session = MacintoshSession::new(true, screen_depth.or(Some(8)));
+        session.runner_mut().set_prefer_powerpc_executables(prefer_powerpc);
+        let app = session.load_path(game).unwrap();
+        session.initialize(&app);
+        let menus = (0..300)
+            .find_map(|_| {
+                session.runner_mut().run_steps(100_000, None);
+                let menus = session.runner_mut().guest_menu_snapshot();
+                menus.menus.iter().any(|menu| menu.id == 129 && !menu.items.is_empty())
+                    .then_some(menus)
+            })
+            .expect("showcase standard menu should become available");
+        assert!(!menus.requires_guest_menu_rendering());
+        let menu = menus.menus.iter().find(|menu| menu.id == 129).unwrap();
+        let trigger = format!("guest-menu-{}-{}", menu.guest_id, menu.generation);
+        let top = u32::from(session.runner().bus().read_word(MBAR_HEIGHT));
+        let frame = session.video_frame().expect("showcase video frame");
+        let top = top.min(frame.height.saturating_sub(1));
+        let mut pixels = frame.pixels[(top * frame.width * 4) as usize..].to_vec();
+        for pixel in pixels.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+        let (frame_width, frame_height) = (frame.width, frame.height - top);
+        let windows = session.runner_mut().window_frame_snapshot();
+        let dialogs = session.runner_mut().dialog_snapshot();
+        let controls = session.runner_mut().control_snapshot();
+        let lists = session.runner_mut().list_manager_snapshot();
+        let text_edits = session.runner_mut().text_edit_snapshot().records;
+        let standard_file = session.runner_mut().standard_file_snapshot();
+
+        let mut visual = HeadlessAppContext::with_platform(
+            platform::current_platform(true).text_system(),
+            Arc::new(gpui_kit::assets::Assets),
+            platform::current_headless_renderer,
+        );
+        visual.update(gpui_kit::init);
+        let (sender, _receiver) = mpsc::channel();
+        let updates = Arc::new(Mutex::new(None));
+        let mut view = None;
+        let window = visual
+            .open_window(size(px(900.), px(740.)), |_, cx| {
+                let entity = cx.new(|cx| Demo::new(sender, updates, cx));
+                view = Some(entity.clone());
+                entity
+            })
+            .unwrap();
+        visual.update(|cx| {
+            view.unwrap().update(cx, |demo, cx| {
+                demo.menus = menus;
+                demo.windows = windows;
+                demo.dialogs = dialogs;
+                demo.controls = controls;
+                demo.lists = lists;
+                demo.text_edits = text_edits;
+                demo.standard_file = standard_file;
+                demo.width = frame_width;
+                demo.height = frame_height;
+                demo.crop_top = top;
+                demo.status = format!(
+                    "{} · Running · GPUI Kit UI demo",
+                    if prefer_powerpc { "PowerPC" } else { "68k" }
+                );
+                demo.image = Some(Arc::new(RenderImage::new(vec![image::Frame::new(
+                    image::RgbaImage::from_raw(frame_width, frame_height, pixels).unwrap(),
+                )])));
+                cx.notify();
+            });
+        });
+        visual.run_until_parked();
+        visual.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click(trigger, cx);
+        }).unwrap();
+        visual.run_until_parked();
+        visual.capture_screenshot(window.into()).unwrap().save(output).unwrap();
+        eprintln!("saved composed GPUI menu capture to {}", output.display());
+    }
+
+    #[cfg(feature = "gpui-demo-test")]
     fn capture_custom_menu_fallback(output: &std::path::Path) {
         use gpui_kit::{platform, AppContext, HeadlessAppContext, RenderImage};
         use std::sync::{mpsc, Arc, Mutex};
@@ -3206,6 +3246,7 @@ mod desktop {
                         capture_standard_file_open_composed: None,
                         capture_standard_file_save_edited_composed: None,
                         capture_custom_menu_fallback: None,
+                        capture_standard_menu: None,
                         capture_modeless_dialog_layout: None,
                     },
                     rx,
@@ -4004,6 +4045,9 @@ mod desktop {
             });
             cx.update(|cx| {
                 view.update(cx, |demo, cx| {
+                    demo.status = "Ready".into();
+                    demo.width = 320;
+                    demo.height = 240;
                     demo.menus = GuestMenuSnapshot {
                         custom_bar_definition: false,
                         menus: vec![GuestMenu {
@@ -4032,34 +4076,51 @@ mod desktop {
             cx.update_window(window.into(), |_, window, cx| {
                 window.render_frame(cx);
                 window.click("guest-menu-4096-1", cx);
-                assert_eq!(window.within("popup-menu").find(0usize).label(), Some("Open"));
+                assert_eq!(window.find("guest-popup-item-129-1").label(), Some("Open"));
+                window.hover("guest-popup-item-129-1", cx);
+                assert_eq!(window.find("guest-popup-item-129-1").selected(), Some(true));
             })
             .unwrap();
             cx.update(|cx| {
                 view.update(cx, |demo, cx| {
                     demo.menus.menus[0].items[0].text = "Open recent".into();
                     demo.menus.menus[0].items[0].checked = true;
+                    cx.notify();
+                });
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                let item = window.find("guest-popup-item-129-1");
+                assert_eq!(item.label(), Some("Open recent"));
+                assert_eq!(item.selected(), Some(true));
+            })
+            .unwrap();
+            cx.update(|cx| {
+                view.update(cx, |demo, cx| {
                     demo.menus.menus[0].items[0].enabled = false;
                     cx.notify();
                 });
             });
             cx.update_window(window.into(), |_, window, cx| {
                 window.render_frame(cx);
-                let item = window.within("popup-menu").find(0usize);
-                assert_eq!(item.label(), Some("Open recent"));
-                window.within("popup-menu").press("escape", cx);
+                assert_eq!(window.find("guest-popup-item-129-1").selected(), Some(false));
+                window.within("guest-popup-menu").press("escape", cx);
             })
             .unwrap();
             cx.wait_for(window.into(), Duration::from_secs(1), |window, _| {
-                window.try_find("popup-menu").is_none()
+                window.try_find("guest-popup-menu").is_none()
             })
             .await;
             cx.update_window(window.into(), |_, window, cx| {
                 window.click("guest-menu-4096-1", cx);
                 assert_eq!(
-                    window.within("popup-menu").find(0usize).label(),
+                    window.find("guest-popup-item-129-1").label(),
                     Some("Open recent")
                 );
+                window.click("guest-status", cx);
+                assert!(window.try_find("guest-popup-menu").is_none());
+                window.click("guest-menu-4096-1", cx);
+                assert_eq!(window.find("guest-popup-item-129-1").selected(), Some(false));
             })
             .unwrap();
             cx.update(|cx| {
@@ -4070,14 +4131,14 @@ mod desktop {
             });
             cx.update_window(window.into(), |_, window, cx| {
                 window.render_frame(cx);
-                assert!(window.try_find("popup-menu").is_none());
+                assert!(window.try_find("guest-popup-menu").is_none());
             })
             .unwrap();
         }
 
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
-        fn unrelated_menu_update_preserves_keyboard_selection(cx: &mut gpui_kit::TestAppContext) {
+        fn live_menu_update_preserves_keyboard_selection(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::{test::TestWindowExt, AppContext, Bounds, WindowBounds, WindowOptions};
             use systemless::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
 
@@ -4133,8 +4194,8 @@ mod desktop {
             cx.update_window(window.into(), |_, window, cx| {
                 window.render_frame(cx);
                 window.click("guest-menu-4096-1", cx);
-                window.within("popup-menu").press("down", cx);
-                window.within("popup-menu").press("down", cx);
+                window.within("guest-popup-menu").press("down", cx);
+                window.within("guest-popup-menu").press("down", cx);
             })
             .unwrap();
             cx.update(|cx| {
@@ -4145,17 +4206,115 @@ mod desktop {
                     other.title = "Edit".into();
                     other.items[0].text = "Undo".into();
                     demo.menus.menus.push(other);
+                    demo.menus.menus[0].items[0].text = "Open recent".into();
+                    demo.menus.menus[0].items[0].checked = true;
+                    demo.menus.menus[0].items[0].enabled = false;
                     cx.notify();
                 });
             });
             cx.update_window(window.into(), |_, window, cx| {
                 window.render_frame(cx);
-                window.within("popup-menu").press("enter", cx);
+                window.click("guest-popup-item-129-1", cx);
+                window.within("guest-popup-menu").press("enter", cx);
+            })
+            .unwrap();
+            let received = receiver.try_recv().expect("menu selection should queue a command");
+            assert!(matches!(
+                received,
+                super::Command::Menu(129, 2, 0x1000, 1)
+            ));
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn hierarchical_menu_keyboard_selection_reaches_guest(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::{test::TestWindowExt, AppContext, Bounds, WindowBounds, WindowOptions};
+            use systemless::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
+
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            cx.update(gpui_kit::init);
+            let (window, view) = cx.update(|cx| {
+                gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                            None,
+                            gpui_kit::size(gpui_kit::px(640.), gpui_kit::px(480.)),
+                            cx,
+                        ))),
+                        ..Default::default()
+                    },
+                    cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(sender, updates, cx)),
+                )
+                .unwrap()
+            });
+            let item = |number, text: &str, submenu_id| GuestMenuItem {
+                number,
+                text: text.into(),
+                enabled: true,
+                checked: false,
+                key_equivalent: None,
+                submenu_id,
+                separator: false,
+            };
+            cx.update(|cx| {
+                view.update(cx, |demo, cx| {
+                    demo.menus = GuestMenuSnapshot {
+                        custom_bar_definition: false,
+                        menus: vec![
+                            GuestMenu {
+                                guest_id: 0x1000,
+                                generation: 1,
+                                id: 129,
+                                title: "File".into(),
+                                enabled: true,
+                                standard_definition: true,
+                                hierarchical: false,
+                                visible_in_menu_bar: true,
+                                items: vec![item(1, "Recent", Some(130)), item(2, "Save", None)],
+                            },
+                            GuestMenu {
+                                guest_id: 0x2000,
+                                generation: 1,
+                                id: 130,
+                                title: "Recent".into(),
+                                enabled: true,
+                                standard_definition: true,
+                                hierarchical: true,
+                                visible_in_menu_bar: false,
+                                items: vec![item(1, "Example", None)],
+                            },
+                        ],
+                    };
+                    cx.notify();
+                });
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window.click("guest-menu-4096-1", cx);
+                window.within("guest-popup-menu").press("down", cx);
+                window.within("guest-popup-menu").press("right", cx);
+                window.render_frame(cx);
+                assert_eq!(window.find("guest-popup-item-130-1").label(), Some("Example"));
+            })
+            .unwrap();
+            cx.update(|cx| {
+                view.update(cx, |demo, cx| {
+                    demo.menus.menus[1].generation = 2;
+                    cx.notify();
+                });
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window.within("guest-popup-menu").press("enter", cx);
+                assert!(receiver.try_recv().is_err(), "replaced submenu must not run stale item");
+                window.within("guest-popup-menu").press("enter", cx);
             })
             .unwrap();
             assert!(matches!(
                 receiver.try_recv(),
-                Ok(super::Command::Menu(129, 2, 0x1000, 1))
+                Ok(super::Command::Menu(130, 1, 0x2000, 2))
             ));
         }
 
