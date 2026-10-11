@@ -1,0 +1,6 @@
+saved guest frame to /tmp/gpui-overlapping-mark-captures/ppc8-folder.guest.png
+PASS Standard File staging focus loss and restored ownership
+PASS Standard File long marked geometry and exact cancellation
+PASS overlapping marked expansion geometry and exact cancellation
+PASS initial explicit marked range painted geometry and exact cancellation
+saved composed GPUI capture to /tmp/gpui-overlapping-mark-captures/ppc8-folder.png
