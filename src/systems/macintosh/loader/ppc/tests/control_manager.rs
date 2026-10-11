@@ -4471,3 +4471,42 @@ fn control_lookup_interaction_and_tracking_commands_dispatch_with_canonical_eval
         assert_eq!(loaded.memory.read_u8(out_tracks_ptr), Some(1));
     }
 }
+
+#[test]
+fn appearance_theme_color_query_follows_theme_device_and_narrow_argument_abi() {
+    for library in ["CarbonLib", "AppearanceLib", "InterfaceLib"] {
+        for symbol in ["IsThemeInColor", "isthemeincolor"] {
+            let loader = synthetic_loader_with_symbol_class(
+                library.as_bytes(), symbol.as_bytes(), 0x82, &[sm_index_reloc(0x30, 0)],
+            );
+            let mut loaded = load_pef_application(&synthetic_pef_with_loader(loader)).unwrap();
+            let target = PpcImportDispatcherTarget::IsThemeInColor;
+            assert!(loaded.imports[0].weak);
+            assert_ne!(loaded.imports[0].address, 0);
+            assert_eq!(loaded.imports[0].dispatcher_target, target);
+            let output = PPC_DATA_BASE + 0x2400;
+            loaded.memory.add_region(output, vec![0xA5; 8]);
+            for (theme, depth, color, expected) in [
+                (UiThemeId::ClassicSystem7, 8, 1, 0),
+                (UiThemeId::SystemlessDefault, 8, 1, 1),
+                (UiThemeId::SystemlessDefault, 16, 1, 1),
+                (UiThemeId::SystemlessDefault, 1, 1, 0),
+                (UiThemeId::SystemlessDefault, 0, 1, 0),
+                (UiThemeId::SystemlessDefault, 0xFFFF, 1, 0),
+                (UiThemeId::SystemlessDefault, 8, 0, 0),
+                (UiThemeId::SystemlessDefault, 8, 0x100, 0),
+                (UiThemeId::SystemlessDefault, 0xDEAD0008, 0xFFFFFF01, 1),
+                (UiThemeId::ClassicSystem7, 16, 1, 0),
+            ] {
+                loaded.set_ui_theme(theme);
+                loaded.cpu.gpr[3] = depth;
+                loaded.cpu.gpr[4] = color;
+                loaded.cpu.gpr[5] = output;
+                run_test_import(&mut loaded, target.clone());
+                assert_eq!(loaded.cpu.gpr[3], expected, "{library}:{symbol} {theme:?} {depth:#x} {color:#x}");
+                assert_eq!(loaded.cpu.gpr[4], color);
+                assert_eq!(ppc_memory_read_bytes(&mut loaded.memory, output, 8), Some(vec![0xA5; 8]));
+            }
+        }
+    }
+}

@@ -109,6 +109,7 @@ pub enum PpcImportDispatcherTarget {
     Gestalt,
     NewGestaltValue,
     RegisterAppearanceClient,
+    IsThemeInColor,
     ActivateControl,
     DeactivateControl,
     IsControlActive,
@@ -3614,6 +3615,9 @@ pub(crate) fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::NewDialog,
         ("InterfaceLib" | "AppearanceLib", "RegisterAppearanceClient") => {
             PpcImportDispatcherTarget::RegisterAppearanceClient
+        }
+        ("InterfaceLib" | "AppearanceLib", "IsThemeInColor" | "isthemeincolor") => {
+            PpcImportDispatcherTarget::IsThemeInColor
         }
         ("InterfaceLib" | "AppearanceLib", "UnregisterAppearanceClient") => {
             PpcImportDispatcherTarget::UnregisterAppearanceClient
