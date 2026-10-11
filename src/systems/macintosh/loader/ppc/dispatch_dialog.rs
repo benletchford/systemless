@@ -5398,7 +5398,7 @@ fn ppc_modal_dialog(
                     handled_edit_event = true;
                 }
                 None
-            } else if matches!(character, 0x08 | 0x20..=0x7e) {
+            } else if crate::dialog_manager::is_dialog_edit_text_character(character) {
                 let te_handle = memory
                     .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
                     .unwrap_or(0);

@@ -1,0 +1,196 @@
+diff --git a/src/bin/gpui_demo.rs b/src/bin/gpui_demo.rs
+index dbccfa3c..ddf0ddc9 100644
+--- a/src/bin/gpui_demo.rs
++++ b/src/bin/gpui_demo.rs
+@@ -11085,6 +11085,51 @@ mod desktop {
+             }
+         }
+ 
++        #[test]
++        fn modal_composed_commit_pins_active_dialog_item_and_rejects_stale_input() {
++            use super::super::input::{dialog_text_owner, guest_dialog_commit_inputs};
++            for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
++                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
++                session.runner_mut().set_prefer_powerpc_executables(powerpc);
++                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
++                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
++                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
++                session.initialize(&app); wait_for_menu(&mut session, 129, 1, true);
++                assert!(session.runner_mut().select_guest_menu_item(132, 6)); settle(&mut session);
++                let dialog = session.runner_mut().dialog_snapshot().into_iter()
++                    .find(|dialog| dialog.visible && dialog.items.len() == 10).unwrap();
++                let bounds = dialog.items[8].bounds;
++                for input in [MacintoshInput::MouseDown { vertical: bounds.0 + 5, horizontal: bounds.1 + 1 },
++                    MacintoshInput::MouseUp { vertical: bounds.0 + 5, horizontal: bounds.1 + 1 }] {
++                    session.deliver_input(input); settle(&mut session);
++                }
++                let dialogs = session.runner_mut().dialog_snapshot();
++                let windows = session.runner_mut().window_frame_snapshot();
++                let owner = dialog_text_owner(&dialogs, &windows).expect("standard active modal item");
++                for mutation in 0..4 {
++                    let mut stale = owner.clone();
++                    match mutation { 0 => stale.identity.1 += 1, 1 => stale.item = 7,
++                        2 => stale.text.push(b'x'), _ => stale.selection = 0..1 }
++                    assert!(guest_dialog_commit_inputs(&mut session, &stale, b"x").is_none());
++                }
++                for bytes in [&b"\r"[..], &b"\t"[..], &b"\x1b"[..]] {
++                    assert!(guest_dialog_commit_inputs(&mut session, &owner, bytes).is_none());
++                }
++                let inputs = guest_dialog_commit_inputs(&mut session, &owner, &[0x8e, b'Z']).unwrap();
++                for pair in inputs.chunks_exact(2) {
++                    session.deliver_input(pair[0]); session.deliver_input(pair[1]); settle(&mut session);
++                }
++                let after = session.runner_mut().dialog_snapshot().into_iter().find(|next| next.guest_id == dialog.guest_id).unwrap();
++                let mut expected = owner.text.clone(); expected.splice(owner.selection.clone(), [0x8e, b'Z']);
++                assert_eq!(after.items[8].text, systemless::systems::macintosh::mac_roman::decode_mac_roman(&expected));
++                assert_eq!(after.items[8].selection, Some(((owner.selection.start + 2) as i16, (owner.selection.start + 2) as i16)));
++                assert_eq!(after.items[6].text, dialog.items[6].text);
++                assert_eq!(after.items[8].bounds, dialog.items[8].bounds);
++                assert!(guest_dialog_commit_inputs(&mut session, &owner, b"x").is_none());
++                eprintln!("PASS modal-composition-commit powerpc={powerpc} depth={depth}");
++            }
++        }
++
+         #[test]
+         fn modal_dialog_edit_fields_switch_and_keep_independent_text_across_modes() {
+             for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+diff --git a/src/bin/gpui_demo_input.rs b/src/bin/gpui_demo_input.rs
+index 661a9003..a770bb83 100644
+--- a/src/bin/gpui_demo_input.rs
++++ b/src/bin/gpui_demo_input.rs
+@@ -405,3 +405,55 @@ pub(crate) fn guest_commit_inputs(
+         MacintoshInput::KeyUp { mac_key: 0x00, character },
+     ]).collect())
+ }
++
++/// Modal text commits pin the dialog lifetime and active item independently of
++/// document TERec ownership. Characters still travel through DialogSelect.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub(crate) struct DialogTextOwner {
++    pub identity: (u32, u64),
++    pub item: i16,
++    pub text: Vec<u8>,
++    pub selection: std::ops::Range<usize>,
++}
++
++pub(crate) fn dialog_text_owner(
++    dialogs: &[systemless::runner::DialogSnapshot],
++    windows: &[systemless::runner::WindowFrameSnapshot],
++) -> Option<DialogTextOwner> {
++    let mut active = dialogs.iter().filter(|dialog| dialog.visible && dialog.active);
++    let dialog = active.next()?;
++    if active.next().is_some() || !windows.iter().any(|window|
++        (window.guest_id, window.generation) == (dialog.guest_id, dialog.generation)
++            && window.presentation_definition_id() == Some(1)) { return None; }
++    let item = dialog.items.iter().find(|item| Some(item.number) == dialog.edit_field
++        && item.kind == systemless::runner::DialogItemKind::EditText && item.enabled && item.visible
++        && item.edit_text_layout.is_some())?;
++    let text: Vec<u8> = item.text.chars().map(systemless::systems::macintosh::mac_roman::encode_mac_roman_char)
++        .collect::<Option<_>>()?;
++    let (start, end) = item.selection?;
++    let selection = usize::try_from(start).ok()?..usize::try_from(end).ok()?;
++    if selection.start > selection.end || selection.end > text.len() { return None; }
++    Some(DialogTextOwner { identity: (dialog.guest_id, dialog.generation), item: item.number, text, selection })
++}
++
++pub(crate) fn guest_dialog_commit_inputs(
++    session: &mut systemless::systems::macintosh::session::MacintoshSession,
++    owner: &DialogTextOwner,
++    bytes: &[u8],
++) -> Option<Vec<MacintoshInput>> {
++    if session.runner().is_non_dialog_ui_tracking_active() || session.runner().standard_file_snapshot().is_some()
++        || bytes.iter().any(|byte| *byte < 32) { return None; }
++    let keys = session.runner().event_manager_snapshot().key_map;
++    if [0u8, 0x37, 0x3a, 0x3b].iter().any(|key|
++        keys[usize::from(*key / 8)] & (1 << (*key % 8)) != 0) { return None; }
++    let dialogs = session.runner_mut().dialog_snapshot();
++    let windows = session.runner_mut().window_frame_snapshot();
++    if dialog_text_owner(&dialogs, &windows).as_ref() != Some(owner) { return None; }
++    // Return/Tab/Escape are modal actions, never characters in a text commit.
++    let delete = [8u8];
++    let bytes = if bytes.is_empty() && !owner.selection.is_empty() { &delete[..] } else { bytes };
++    Some(bytes.iter().flat_map(|&character| [
++        MacintoshInput::KeyDown { mac_key: 0, character },
++        MacintoshInput::KeyUp { mac_key: 0, character },
++    ]).collect())
++}
+diff --git a/src/systems/macintosh/dialog_manager.rs b/src/systems/macintosh/dialog_manager.rs
+index 5c682486..f5f6e6ed 100644
+--- a/src/systems/macintosh/dialog_manager.rs
++++ b/src/systems/macintosh/dialog_manager.rs
+@@ -7618,9 +7618,10 @@ pub fn is_dialog_event(
+ /// Validates whether a character is an editable character accepted by dialog edit fields.
+ ///
+ /// Macintosh Toolbox Essentials (1992), p. 6-139:
+-/// Accepts backspace (0x08) and printable ASCII / Mac Roman characters (0x20..=0x7E).
++/// Accepts backspace (0x08), printable ASCII and extended Mac Roman bytes.
++/// Return, Escape, Tab and ASCII DEL remain modal/control actions.
+ pub fn is_dialog_edit_text_character(character: u8) -> bool {
+-    matches!(character, 0x08 | 0x20..=0x7E)
++    matches!(character, 0x08 | 0x20..=0x7E | 0x80..=0xFF)
+ }
+ 
+ /// Describes the action that the host environment must take in response to a `DialogSelect` event.
+@@ -9220,7 +9221,9 @@ mod tests {
+         assert!(!is_dialog_edit_text_character(0x0D)); // CR
+         assert!(!is_dialog_edit_text_character(0x1B)); // ESC
+         assert!(!is_dialog_edit_text_character(0x7F)); // DEL
+-        assert!(!is_dialog_edit_text_character(0x80));
++        assert!(is_dialog_edit_text_character(0x80));
++        assert!(is_dialog_edit_text_character(0x8E)); // Mac Roman é
++        assert!(is_dialog_edit_text_character(0xFF));
+ 
+         // textedit_key_result tests
+         let initial = b"Hello World";
+diff --git a/src/systems/macintosh/loader/ppc/dispatch_dialog.rs b/src/systems/macintosh/loader/ppc/dispatch_dialog.rs
+index 10c3adf4..93e0f77b 100644
+--- a/src/systems/macintosh/loader/ppc/dispatch_dialog.rs
++++ b/src/systems/macintosh/loader/ppc/dispatch_dialog.rs
+@@ -5398,7 +5398,7 @@ fn ppc_modal_dialog(
+                     handled_edit_event = true;
+                 }
+                 None
+-            } else if matches!(character, 0x08 | 0x20..=0x7e) {
++            } else if crate::dialog_manager::is_dialog_edit_text_character(character) {
+                 let te_handle = memory
+                     .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
+                     .unwrap_or(0);
+diff --git a/src/systems/macintosh/runner/mod.rs b/src/systems/macintosh/runner/mod.rs
+index 27111458..62c4c62a 100644
+--- a/src/systems/macintosh/runner/mod.rs
++++ b/src/systems/macintosh/runner/mod.rs
+@@ -3956,9 +3956,14 @@ impl FixtureRunner {
+     }
+ 
+     pub fn is_ui_tracking_active(&self) -> bool {
++        self.dispatcher.is_dialog_tracking() || self.is_non_dialog_ui_tracking_active()
++    }
++
++    /// Modal text input may enter the retained DialogSelect loop, but must not
++    /// interrupt another pointer/menu tracking operation or frozen execution.
++    pub fn is_non_dialog_ui_tracking_active(&self) -> bool {
+         self.frozen_ticks.is_some()
+             || self.process_context.menu_tracking().is_some()
+-            || self.dispatcher.is_dialog_tracking()
+             || self.dispatcher.is_control_tracking()
+             || self.dispatcher.is_window_tracking()
+             || self.dispatcher.is_grow_window_tracking()
+diff --git a/src/systems/macintosh/trap/dialog.rs b/src/systems/macintosh/trap/dialog.rs
+index eeb1ed89..efbcd340 100644
+--- a/src/systems/macintosh/trap/dialog.rs
++++ b/src/systems/macintosh/trap/dialog.rs
+@@ -13239,11 +13239,11 @@ impl super::TrapDispatcher {
+                                         let char_code = (e.message & 0xFF) as u8;
+                                         let key_code = ((e.message >> 8) & 0xFF) as u8;
+                                         let command_printable =
+-                                            (e.modifiers & 0x0100) != 0 && matches!(char_code, 0x20..=0x7E);
++                                            (e.modifiers & 0x0100) != 0 && matches!(char_code, 0x20..=0x7E | 0x80..=0xFF);
+                                         if !command_printable {
+                                             match char_code {
+-                                                // Backspace/Delete or printable ASCII.
+-                                                0x08 | 0x20..=0x7E => {
++                                                // Backspace or printable Macintosh Roman.
++                                                character if crate::dialog_manager::is_dialog_edit_text_character(character) => {
+                                         let mut text_trace = None;
+                                         let mut modified_key_to_set = None;
+                                         let mut te_update = None;

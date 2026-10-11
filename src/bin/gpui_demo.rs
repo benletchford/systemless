@@ -11086,6 +11086,51 @@ mod desktop {
         }
 
         #[test]
+        fn modal_composed_commit_pins_active_dialog_item_and_rejects_stale_input() {
+            use super::super::input::{dialog_text_owner, guest_dialog_commit_inputs};
+            for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app); wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(132, 6)); settle(&mut session);
+                let dialog = session.runner_mut().dialog_snapshot().into_iter()
+                    .find(|dialog| dialog.visible && dialog.items.len() == 10).unwrap();
+                let bounds = dialog.items[8].bounds;
+                for input in [MacintoshInput::MouseDown { vertical: bounds.0 + 5, horizontal: bounds.1 + 1 },
+                    MacintoshInput::MouseUp { vertical: bounds.0 + 5, horizontal: bounds.1 + 1 }] {
+                    session.deliver_input(input); settle(&mut session);
+                }
+                let dialogs = session.runner_mut().dialog_snapshot();
+                let windows = session.runner_mut().window_frame_snapshot();
+                let owner = dialog_text_owner(&dialogs, &windows).expect("standard active modal item");
+                for mutation in 0..4 {
+                    let mut stale = owner.clone();
+                    match mutation { 0 => stale.identity.1 += 1, 1 => stale.item = 7,
+                        2 => stale.text.push(b'x'), _ => stale.selection = 0..1 }
+                    assert!(guest_dialog_commit_inputs(&mut session, &stale, b"x").is_none());
+                }
+                for bytes in [&b"\r"[..], &b"\t"[..], &b"\x1b"[..]] {
+                    assert!(guest_dialog_commit_inputs(&mut session, &owner, bytes).is_none());
+                }
+                let inputs = guest_dialog_commit_inputs(&mut session, &owner, &[0x8e, b'Z']).unwrap();
+                for pair in inputs.chunks_exact(2) {
+                    session.deliver_input(pair[0]); session.deliver_input(pair[1]); settle(&mut session);
+                }
+                let after = session.runner_mut().dialog_snapshot().into_iter().find(|next| next.guest_id == dialog.guest_id).unwrap();
+                let mut expected = owner.text.clone(); expected.splice(owner.selection.clone(), [0x8e, b'Z']);
+                assert_eq!(after.items[8].text, systemless::systems::macintosh::mac_roman::decode_mac_roman(&expected));
+                assert_eq!(after.items[8].selection, Some(((owner.selection.start + 2) as i16, (owner.selection.start + 2) as i16)));
+                assert_eq!(after.items[6].text, dialog.items[6].text);
+                assert_eq!(after.items[8].bounds, dialog.items[8].bounds);
+                assert!(guest_dialog_commit_inputs(&mut session, &owner, b"x").is_none());
+                eprintln!("PASS modal-composition-commit powerpc={powerpc} depth={depth}");
+            }
+        }
+
+        #[test]
         fn modal_dialog_edit_fields_switch_and_keep_independent_text_across_modes() {
             for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
                 let mut session = MacintoshSession::new(true, depth);

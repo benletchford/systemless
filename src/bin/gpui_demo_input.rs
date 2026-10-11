@@ -405,3 +405,55 @@ pub(crate) fn guest_commit_inputs(
         MacintoshInput::KeyUp { mac_key: 0x00, character },
     ]).collect())
 }
+
+/// Modal text commits pin the dialog lifetime and active item independently of
+/// document TERec ownership. Characters still travel through DialogSelect.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DialogTextOwner {
+    pub identity: (u32, u64),
+    pub item: i16,
+    pub text: Vec<u8>,
+    pub selection: std::ops::Range<usize>,
+}
+
+pub(crate) fn dialog_text_owner(
+    dialogs: &[systemless::runner::DialogSnapshot],
+    windows: &[systemless::runner::WindowFrameSnapshot],
+) -> Option<DialogTextOwner> {
+    let mut active = dialogs.iter().filter(|dialog| dialog.visible && dialog.active);
+    let dialog = active.next()?;
+    if active.next().is_some() || !windows.iter().any(|window|
+        (window.guest_id, window.generation) == (dialog.guest_id, dialog.generation)
+            && window.presentation_definition_id() == Some(1)) { return None; }
+    let item = dialog.items.iter().find(|item| Some(item.number) == dialog.edit_field
+        && item.kind == systemless::runner::DialogItemKind::EditText && item.enabled && item.visible
+        && item.edit_text_layout.is_some())?;
+    let text: Vec<u8> = item.text.chars().map(systemless::systems::macintosh::mac_roman::encode_mac_roman_char)
+        .collect::<Option<_>>()?;
+    let (start, end) = item.selection?;
+    let selection = usize::try_from(start).ok()?..usize::try_from(end).ok()?;
+    if selection.start > selection.end || selection.end > text.len() { return None; }
+    Some(DialogTextOwner { identity: (dialog.guest_id, dialog.generation), item: item.number, text, selection })
+}
+
+pub(crate) fn guest_dialog_commit_inputs(
+    session: &mut systemless::systems::macintosh::session::MacintoshSession,
+    owner: &DialogTextOwner,
+    bytes: &[u8],
+) -> Option<Vec<MacintoshInput>> {
+    if session.runner().is_non_dialog_ui_tracking_active() || session.runner().standard_file_snapshot().is_some()
+        || bytes.iter().any(|byte| *byte < 32) { return None; }
+    let keys = session.runner().event_manager_snapshot().key_map;
+    if [0u8, 0x37, 0x3a, 0x3b].iter().any(|key|
+        keys[usize::from(*key / 8)] & (1 << (*key % 8)) != 0) { return None; }
+    let dialogs = session.runner_mut().dialog_snapshot();
+    let windows = session.runner_mut().window_frame_snapshot();
+    if dialog_text_owner(&dialogs, &windows).as_ref() != Some(owner) { return None; }
+    // Return/Tab/Escape are modal actions, never characters in a text commit.
+    let delete = [8u8];
+    let bytes = if bytes.is_empty() && !owner.selection.is_empty() { &delete[..] } else { bytes };
+    Some(bytes.iter().flat_map(|&character| [
+        MacintoshInput::KeyDown { mac_key: 0, character },
+        MacintoshInput::KeyUp { mac_key: 0, character },
+    ]).collect())
+}
