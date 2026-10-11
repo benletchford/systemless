@@ -1,0 +1,10 @@
+{
+  "commit": "e389b81445be853b29fa758d73c96a89d41a2068",
+  "sha256": {
+    "src/bin/gpui_demo.rs": "dbb6d868beb3c9f1961d03cb7c3f9be82e08efaea7636c763456b8ea5bec43eb",
+    "src/bin/gpui_demo_text.rs": "911b5548145eba7e9d4aaf9bf23f81e8249a3d0bd95abb09001eea5e78ae41d8",
+    "src/systems/macintosh/quickdraw/text.rs": "13d48af835cb1f3a45162c877caf0e98439a355d672d4a88b861cacfa1be6ab3",
+    "target/ci-test/examples/gpui-menu-demo": "4a7167815e1f1328f06dfbc8b8406bf29734329397c562c7424d55d694e001a0",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "ab6ea5665bb0e3743122b51b7035475275ce88c48c040f3e52b536a581123bbc"
+  }
+}
