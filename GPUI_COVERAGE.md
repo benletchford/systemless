@@ -1712,3 +1712,16 @@ caret positions after actual guest Up/Down events; all six scenarios pass
 across monochrome 68k, colour 68k and PPC (30.26 seconds).
 Pointer selection and multiline TextEdit navigation are separate unfinished
 paths, not covered by this single-line correction.
+
+
+The `standard-file-monochrome` native replay now resolves the black-panel
+question above. BasiliskII/Mac OS 8.1 at saved `displaycolordepth 1` paints the
+same solid black application panel as Systemless. The reviewed screenshot has
+black-on-black checkpoint text and visible controls below it. All five retained
+capture-file identities and the replay identity match the manifest. This is
+native one-bit fixture behaviour, not a GPUI compositor defect; do not change
+RGBForeColor/painting semantics to make this fixture look like its colour mode.
+The existing `one_bit_color_port_light_gray_fill_matches_native_pattern_fallback`
+regression covers the RGBForeColor(0xeeee)/PaintRect operation. The native replay
+is deliberately BasiliskII-only so a colour PPC run cannot masquerade as
+monochrome evidence. Other monochrome UI qualification remains necessary.
