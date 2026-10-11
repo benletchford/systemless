@@ -285,8 +285,23 @@ fn native_list_manager_stores_cells_rows_selection_and_geometry_in_public_record
         Some(3)
     );
 
+    // Disposal must remove transient feedback before dropping its saved pixels.
+    let front = ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    assert!(ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (2, 2), 99));
+    loaded.list_manager.with_mut(|manager| manager.scroll_tracking = Some(crate::list_manager::ListScrollbarTracking {
+        list, generation: 1, control: vertical_scroll, pointer: vertical_scroll_ptr,
+        control_generation: 1, vertical: true, classic: false, frame: (0, 0),
+        bounds: (10, 220, 90, 236), part: 129, last_tick: 0,
+        start_mouse: (30, 228), start_limits: (0, 0, 3),
+        outline: Some(crate::list_manager::ListScrollbarOutline {
+            rect: (2, 2, 3, 3), surface: (front.base_addr, front.row_bytes, front.width, front.height, front.depth),
+            pixels: crate::list_manager::ListScrollbarPixels::Samples(vec![(2, 2, 42)].into()),
+        }),
+    }));
     loaded.cpu.gpr[3] = list;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::LDispose);
+    assert_eq!(ppc_quickdraw_read_pixel(&mut loaded.memory, front, (2, 2)), Some(42));
+    assert!(loaded.list_manager.with_ref(|manager| manager.scroll_tracking.is_none()));
     assert_eq!(loaded.memory.read_u32_be(vertical_scroll), Some(0));
     assert!(!loaded.controls.contains_handle(vertical_scroll));
 }
