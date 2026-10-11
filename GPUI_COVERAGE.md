@@ -21,7 +21,21 @@ timeout image still at the main menu and no pilot loaded. Maximum resident
 size was 209,108,992 bytes and peak footprint 3,969,030,384 bytes; those are
 failed-workflow resource observations, not gameplay measurements. Its paired
 after run was not launched. Revised matching runs use 30-update minimum held
-inputs; results remain pending. Optimized/native gameplay qualification remains
+inputs. Both revised runs pass all 14 actions over 2,900 observed updates with
+zero readiness delay; reviewed composed images show flight, complete custom
+HUD and hidden guest menus. Baseline `b2a0f0c1` peak footprint is 2,355,417,024
+bytes; patched `d35819cc` is 184,714,272 bytes (92.16% lower). Maximum resident
+sizes are 347,521,024 and 121,602,048 bytes respectively. Elapsed observation
+times are 90.79s and 94.65s, so these runs do not establish faster gameplay.
+For 614 final-flight scene submissions each, wall-clock elapsed mean/p95/max
+are 0.919/1.437/45.344ms before and 0.790/1.471/5.167ms after. Those intervals
+exclude snapshot copying, readback and GPU completion and include scheduling.
+This is an unoptimized-root functional offscreen comparison on a shared host.
+The live raw-image update already ran outside window callbacks; the matching
+capture fix and shared button-preparation fix are both included. These figures
+must not be presented as native production memory or frame-rate measurements.
+Evidence is pinned in ignored `target/gpui-qualification/escape-velocity/`
+`image-retirement-review.json`. Optimized/native gameplay qualification remains
 open.
 
 ### Current-window GPU image retirement (2026-10-12)
