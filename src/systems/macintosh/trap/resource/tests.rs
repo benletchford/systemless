@@ -1869,11 +1869,17 @@ fn release_resource_invalidates_handle_and_getresource_allocates_fresh_handle() 
     let (mut disp, mut cpu, mut bus) = setup();
     let data_ptr = setup_resources(&mut disp, &mut bus, b"DLOG", 200, &[0xAB; 8]);
     let handle = disp.get_or_create_resource_handle(&mut bus, *b"DLOG", 200, data_ptr);
+    let generation = disp.with_resource_manager_mut(|resources| resources.menu_generation(handle));
 
     let sp = TEST_SP;
     bus.write_long(sp, handle);
 
     call(&mut disp, true, 0x1A3, &mut cpu, &mut bus).unwrap();
+
+    disp.with_resource_manager_mut(|resources| {
+        assert!(!resources.menu_generations.contains_key(&handle));
+        assert_ne!(resources.menu_generation(handle), generation);
+    });
 
     assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
     assert_eq!(bus.read_long(handle), 0);
