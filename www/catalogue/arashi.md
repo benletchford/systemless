@@ -11,6 +11,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -28,6 +29,23 @@ compatibility:
       keyboard inputs retains the crawler position and has no corresponding projectile
       stream. All twenty original forks independently match unar extraction. Browser
       gameplay, full playthroughs, saves and audio pending.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4471
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: 020125c43384
+    architecture: 68k
+    environment: >-
+      Ordinary Chrome preview v0.95.2 with the merged SetPort correction, actual
+      68K worker/WebGL, 800-by-600/8-bit display, 25 MHz and maximum two ticks per
+      paint, crossOriginIsolated true. Ordinary mouse input starts the game and
+      selects level 9. P opens pause; the original dialog assigns A/D/F. Inspected
+      captures show movement in both directions and a projectile stream while F
+      is held. Only localhost archive delivery uses an integrity-checked original
+      byte fixture; the managed download independently matches the original hash.
+      No archive or guest state is patched. The pause Continue button has no visible
+      label but its default action resumes play. Public replay, full playthroughs,
+      saves and audio remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4471
 runtime:
@@ -87,4 +105,6 @@ keys. Native testing used A for left, D for right and F for fire.
 
 This is the complete original **Arashi 1.1** package, distributed under its
 original permission for free, non-profit distribution. This version is 68K-only.
-Browser launch approval is pending.
+Bounded native and ordinary browser testing verify starting a level, pausing,
+assigning keys, moving in both directions and firing. Full playthroughs, saves
+and audio remain unverified.
