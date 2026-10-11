@@ -1966,7 +1966,8 @@ mod desktop {
                                 .items_center()
                                 .overflow_hidden()
                                 .text_ellipsis()
-                                .child(panel.directory_label.clone().unwrap_or_default()),
+                                .child(div().w_full().min_w_0().overflow_hidden().text_ellipsis()
+                                    .child(panel.directory_label.clone().unwrap_or_default())),
                         );
                         let entries = panel.entries.as_ref().unwrap();
                         let list_width = i32::from(layout.list.3 - layout.list.1);
@@ -2087,17 +2088,10 @@ mod desktop {
                         ] {
                             overlay = overlay.child(
                                 at(rect).child(
-                                    Button::new(format!(
-                                        "guest-standard-open-{}-{}-{}",
-                                        panel.guest_id, panel.generation, label
-                                    ))
-                                    .label(label)
-                                    .small()
-                                    .compact()
-                                    .disabled(!enabled)
-                                    .tab_stop(false)
-                                    .w_full()
-                                    .h_full(),
+                                    super::a11y::AccessibleComponent::new(super::choices::guest_button(
+                                        format!("guest-standard-open-{}-{}-{}", panel.guest_id, panel.generation, label),
+                                        label.into(), enabled, true, false, false, scene_scale, cx,
+                                    ).w_full().h_full(), !enabled),
                                 ),
                             );
                         }
@@ -2142,7 +2136,8 @@ mod desktop {
                                 .items_center()
                                 .overflow_hidden()
                                 .text_ellipsis()
-                                .child(panel.directory_label.clone().unwrap_or_default()),
+                                .child(div().w_full().min_w_0().overflow_hidden().text_ellipsis()
+                                    .child(panel.directory_label.clone().unwrap_or_default())),
                         );
                         let entries = panel.entries.as_ref().unwrap();
                         let list_width = i32::from(layout.list.3 - layout.list.1);
@@ -2301,16 +2296,10 @@ mod desktop {
                         ] {
                             overlay = overlay.child(
                                 at(rect).child(
-                                    Button::new(format!(
-                                        "guest-standard-save-{}-{}-{}",
-                                        panel.guest_id, panel.generation, label
-                                    ))
-                                    .label(label)
-                                    .small()
-                                    .compact()
-                                    .tab_stop(false)
-                                    .w_full()
-                                    .h_full(),
+                                    super::a11y::AccessibleComponent::new(super::choices::guest_button(
+                                        format!("guest-standard-save-{}-{}-{}", panel.guest_id, panel.generation, label),
+                                        label.into(), true, true, false, false, scene_scale, cx,
+                                    ).w_full().h_full(), false),
                                 ),
                             );
                         }
@@ -8445,6 +8434,21 @@ mod desktop {
                 MacintoshInput::MouseDown { vertical: 238..=258, horizontal: 358..=437 },
                 MacintoshInput::MouseUp { vertical: 238..=258, horizontal: 358..=437 },
             ]), "{open_inputs:?}");
+
+            cx.update_window(window.into(), |_, window, cx| {
+                view.update(cx, |demo, cx| {
+                    demo.standard_file.as_mut().unwrap().selected = None;
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                assert_eq!(window.find("guest-standard-open-7-1-Open").focused(), None);
+                window.click("guest-standard-open-7-1-Open", cx);
+            }).unwrap();
+            let disabled_inputs: Vec<_> = receiver.try_iter().filter_map(|command| match command {
+                super::Command::Input(input) => Some(input), _ => None,
+            }).collect();
+            assert_eq!(disabled_inputs.iter().filter(|input| matches!(input, MacintoshInput::MouseDown { .. })).count(), 1);
+            assert_eq!(disabled_inputs.iter().filter(|input| matches!(input, MacintoshInput::MouseUp { .. })).count(), 1);
 
             cx.update(|cx| {
                 view.update(cx, |demo, cx| {

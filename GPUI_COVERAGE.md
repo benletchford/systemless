@@ -1331,3 +1331,14 @@ checks Open selection, an empty Save list, populated Save selection changes,
 and no generated guest input when presenting those changes. Existing Open/Save
 button press/release assertions still pass. This qualifies metadata and input
 non-interference, not native screen-reader navigation or activation.
+
+
+Open/Save action buttons now share the guest button presentation with document
+and dialog controls. Disabled Open suppresses host focus but still forwards one
+guest press/release so the guest retains event ownership; the focused Standard
+File regression passes. Four composed captures (Open/Save on colour 68K and PPC)
+were reviewed: button labels fit their guest bounds. Panel borders and Save
+layout still differ by backend; these remain visual parity gaps. The initially
+clipped 68K Open directory label now uses a width-constrained text child, and a
+fresh composed capture confirms proper ellipsis within the guest bounds. Keyboard and explicit accessibility action
+routing for Standard File buttons remains unfinished.
