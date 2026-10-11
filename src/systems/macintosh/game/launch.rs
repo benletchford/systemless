@@ -121,8 +121,8 @@ pub fn load_game(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedA
 /// The packed format stores fully decompressed data/resource forks for each file,
 /// so loading avoids runtime archive decompression in Wasm.
 pub fn pack_stuffit_for_web(file_data: &[u8]) -> Result<Vec<u8>, String> {
-    let archive =
-        SitArchive::parse(file_data).map_err(|e| format!("Failed to parse StuffIt: {:?}", e))?;
+    let archive = super::stuffit_paths::parse(file_data)
+        .map_err(|e| format!("Failed to parse StuffIt: {e}"))?;
 
     let payload = payload_from_stuffit_archive(&archive, 1)?;
     pack_payload_for_web(payload)
@@ -146,8 +146,8 @@ pub fn pack_game_sources_for_web(
     };
     for source in sources {
         let source_payload = if is_stuffit_archive(source) {
-            let archive = SitArchive::parse(source)
-                .map_err(|e| format!("Failed to parse StuffIt: {:?}", e))?;
+            let archive = super::stuffit_paths::parse(source)
+                .map_err(|e| format!("Failed to parse StuffIt: {e}"))?;
             payload_from_stuffit_archive(&archive, 1)?
         } else if let Some(image) = crate::disk_image::extract_dc42_or_hfs(source)? {
             payload_from_disk_image(image, 1)?
@@ -390,8 +390,8 @@ fn decompress_file_entries(entries: &[&SitEntry]) -> DecodedForks {
 }
 
 fn load_stuffit(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedApp, String> {
-    let archive =
-        SitArchive::parse(file_data).map_err(|e| format!("Failed to parse StuffIt: {:?}", e))?;
+    let archive = super::stuffit_paths::parse(file_data)
+        .map_err(|e| format!("Failed to parse StuffIt: {e}"))?;
 
     let file_entries: Vec<&SitEntry> = archive
         .entries
@@ -1637,8 +1637,8 @@ fn payload_from_stuffit_bytes(
     bytes: &[u8],
     executable_priority: u8,
 ) -> Result<Payload, String> {
-    let archive = SitArchive::parse(bytes)
-        .map_err(|e| format!("Nested StuffIt {name}: failed to parse: {:?}", e))?;
+    let archive = super::stuffit_paths::parse(bytes)
+        .map_err(|e| format!("Nested StuffIt {name}: failed to parse: {e}"))?;
     payload_from_stuffit_archive(&archive, executable_priority)
 }
 
