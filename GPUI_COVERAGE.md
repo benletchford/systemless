@@ -56,6 +56,14 @@ pass (32.51s), covering document, modal and Standard File commits across their C
 modes. The corrected example and ordinary desktop test builds pass. GPUI's optional
 test module requires `gpui-demo-test`; ordinary headless tests stay enabled.
 
+Application captures release the shared worker update lock before scene rendering
+and scripted input, matching live polling. The previous if-let temporary retained
+the lock through Metal submission and could delay publication; those observation
+intervals include this test-path contention. The corrected example builds (34.69s)
+and original EV completes `GPUI Pilot` with guest selection `[10,10]`, three guest
+commands and four completed actions. This is capture fidelity evidence, not a
+native gameplay stutter fix.
+
 Application captures accept an external `--capture-application-inputs` JSON array.
 `after_updates` counts observed worker publications, not guest/frontend ticks.
 Readiness waits shift subsequent action deadlines while preserving hold durations.

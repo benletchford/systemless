@@ -6673,7 +6673,11 @@ mod desktop {
         let mut input_delay = 0u32;
         let mut latest: Option<Update> = None;
         let update = loop {
-            if let Some(update) = updates.lock().unwrap().take() {
+            // Match live polling: release the publication slot before drawing.
+            // An if-let temporary would hold this lock through Metal submission
+            // and scripted input, delaying the worker's next publication.
+            let pending_update = updates.lock().unwrap().take();
+            if let Some(update) = pending_update {
                 assert!(update.frame.is_some(), "application worker failed: {}", update.status);
                 observations += 1;
                 if render_after.is_some_and(|after| observations >= after) {
