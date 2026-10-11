@@ -3278,6 +3278,8 @@ mod desktop {
                 let expected = plan.notice.clone();
                 let accessibility_sender = self.commands.clone();
                 let accessibility_notice = plan.notice.clone();
+                let pointer_focus = self.focus.clone();
+                let accessibility_focus = self.focus.clone();
                 let overlay = div().id("guest-notification-alert").test_support()
                     .role(gpui_kit::Role::AlertDialog).aria_label("Notification")
                     .absolute().top(guest_px(plan.bounds.top as f32))
@@ -3291,9 +3293,11 @@ mod desktop {
                     .child(at(plan.button).child(super::choices::guest_button(
                         "guest-notification-ok".into(), "OK".into(),
                         true, true, false, true, scene_scale, cx).w_full().h_full()
-                        .on_click(move |_, _, _| {
+                        .on_click(move |_, window, cx| {
+                            pointer_focus.focus(window, cx);
                             let _ = sender.send(Command::DismissNotificationAlert(expected.clone()));
-                        }).on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
+                        }).on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, window, cx| {
+                            accessibility_focus.focus(window, cx);
                             let _ = accessibility_sender.send(Command::DismissNotificationAlert(accessibility_notice.clone()));
                         })));
                 screen = screen.child(super::a11y::AccessibleState::new(overlay, false).modal(true));
@@ -16562,7 +16566,12 @@ mod desktop {
                     cx.notify();
                 });
                 window.render_frame(cx);
+                let displaced_focus = cx.focus_handle();
+                displaced_focus.focus(window, cx);
+                assert!(!view.read(cx).focus.is_focused(window));
                 window.click("guest-notification-ok", cx);
+                assert!(view.read(cx).focus.is_focused(window),
+                    "acknowledgment must return focus to the guest root");
             }).unwrap();
             let commands = receiver.try_iter().collect::<Vec<_>>();
             assert!(commands.iter().any(|command| matches!(command,
