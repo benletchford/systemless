@@ -1,0 +1,17 @@
+{
+  "bounds": [
+    223,
+    312,
+    239,
+    512
+  ],
+  "highlighted": 0,
+  "first_visible": 0,
+  "choices": [
+    {
+      "name": "MacintoshHD",
+      "ref_num": -1,
+      "root_dir_id": 2
+    }
+  ]
+}

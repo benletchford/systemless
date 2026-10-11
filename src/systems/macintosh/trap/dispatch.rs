@@ -797,6 +797,7 @@ pub(crate) struct StandardFileGetEntry {
 /// picks a visible file or cancels.
 #[derive(Clone, Debug)]
 pub(crate) struct StandardFileGetTrackingState {
+    pub(crate) volume_popup: Option<crate::standard_file_ui::StandardFileVolumePopup>,
     pub generation: u64,
     pub standard_entry_point: bool,
     pub modern_reply: bool,

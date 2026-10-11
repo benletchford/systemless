@@ -82,6 +82,8 @@ pub struct StandardFileSnapshot {
     pub list_name_limit: Option<usize>,
     /// Guest Open volume text and origin relative to its popup rectangle.
     pub volume_text: Option<(String, (i16, i16))>,
+    /// Guest-owned mounted-volume popup, when the Open selector is tracking.
+    pub volume_popup: Option<StandardFileVolumePopup>,
     /// Current guest-painted rightmost 19 columns of the Open selector.
     pub volume_indicator_rgba: Option<std::sync::Arc<[u8]>>,
     pub confirming_replace: bool,
@@ -881,3 +883,7 @@ impl StandardFileSnapshot {
         panel.volume_indicator_rgba = Some(pixels.into());
     }
 }
+
+mod volume_popup;
+pub use volume_popup::{StandardFileVolumeChoice, StandardFileVolumePopup};
+pub(crate) use volume_popup::StandardFileVolumeResult;

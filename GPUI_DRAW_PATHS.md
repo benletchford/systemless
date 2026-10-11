@@ -113,3 +113,14 @@ chrome is retained in the shared worker and capture path, with exact cross-mode
 pixel checks and two reviewed compositions. Classic `standard_file_get_mouse_action`
 and PPC `ppc_standard_file_get_service` do not dispatch a selector click, so
 volume switching remains a guest Toolbox implementation gap.
+
+## Standard File volume selector behavior audit (2026-10-11)
+
+Current source at `f6813f5b` draws an Open-panel selector without an associated tracking state. This is a guest Toolbox behavior gap, not a missing GPUI click callback:
+
+- Classic `trap/toolbox.rs::standard_file_get_mouse_action` handles Open, Cancel, Desktop, scrollbar and list rectangles, but never the volume rectangle. The painter supplies `BOOT_VOLUME_NAME` regardless of `tracking.current_dir_id`; the runner snapshot uses the same constant.
+- PPC `loader/ppc/dispatch_standard_file.rs::ppc_standard_file_get_service` likewise has no selector branch. Its painter and `toolbox_startup.rs` snapshot use literal `Maci...`; the directory label uses the boot-volume constant.
+- Both retained Get states preserve `current_dir_id` and entries but have no volume-popup selection/tracking state. Current volume choices are available through shared `ProcessVfsVolumeRecord` (ref number, name, root directory) and `ProcessVfsDirectory`; classic and PPC aliases use those same types.
+- The restored GPUI indicator is faithful current guest paint. It does not establish selector interaction, current-volume label correctness, or volume navigation. Earlier indicator/scale/host-state evidence must retain that scope.
+
+Required implementation: shared canonical selector choices/tracking state, guest-owned popup paint and event processing in both Get loops, current-directory/volume labels reflected by the same guest snapshots, and shared-compositor presentation of that tracked state. Cover pointer release/cancellation, keyboard navigation, mounted-volume identity/root changes, filtering and reply volume identity across both CPUs. Do not add a host-only chooser or treat a cycle-on-click shortcut as equivalent popup behavior. Save destination navigation must be audited separately. No production gate closes from this source audit.

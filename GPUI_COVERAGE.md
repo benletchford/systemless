@@ -24,6 +24,10 @@ capture run is archived in `styled-text-single-line-shared`, pinned to f565b695.
 All 192 fixture raster/state cases pass; this earlier bitmap evidence does not
 qualify the newer smooth typography or production readiness.
 
+### Guest-owned Open volume selector
+
+Open panels now retain shared mounted-volume choices and popup tracking in both CPU event loops. Directory ancestry supplies the current volume name; GPUI renders the guest snapshot with original-font smooth labels and preserves guest bounds and event ownership. Seven library selector tests pass (5.42s), including mounted-directory switching in mono68k, colour68k, PPC8 and PPC16. The GPUI pointer/keyboard regression passes (3.88s); window-scoped interception delivers Tab before Base Root bindings and excludes inactive/background semantic actions. All five notification regressions pass (43.87s). Four selected active compositions were reviewed at scales0.75/1/1.5/2 with exact active/reactivated restoration. Evidence: `reference/gpui-demo/volume-selector`. Capture provenance precedes subsequent keyboard/test edits. Multiple-choice visual scrolling, mounted-file replies/filter callbacks, Save destination navigation, physical input, native accessibility and independent font fidelity remain open. All eight release gates remain open.
+
 ### Current-state accessibility text dispatch
 
 Plain/styled TextEdit, dialog editors, Save filenames and New Folder names now revalidate current host activity, root focus, menu/composition boundaries and exact text ownership at accessibility callback invocation. Value and selection actions use weak Demo callbacks and retain guest worker validation. Two focused tests pass (0.02s), covering direct shared-helper rejection without rerendering across four target types and existing Mac Roman conversion. Evidence: `text-inactive-dispatch`. This is synthetic dispatch/helper evidence; native accessibility delivery and CPU-specific end-to-end qualification remain open. All eight broad production gates remain open.

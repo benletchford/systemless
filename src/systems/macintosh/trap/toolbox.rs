@@ -2151,7 +2151,12 @@ impl super::TrapDispatcher {
         )
     }
 
-    fn standard_file_get_dialog_items(tracking: &StandardFileGetTrackingState) -> Vec<DialogItem> {
+    pub(crate) fn standard_file_get_volume_name(&self, tracking: &StandardFileGetTrackingState) -> String {
+        crate::standard_file_ui::StandardFileVolumePopup::volume_for_directory(
+            &self.vfs_volumes, &self.vfs_directories, tracking.current_dir_id).name
+    }
+
+    fn standard_file_get_dialog_items(&self, tracking: &StandardFileGetTrackingState) -> Vec<DialogItem> {
         let open_enabled = tracking
             .entries
             .get(tracking.selected)
@@ -2184,13 +2189,13 @@ impl super::TrapDispatcher {
             DialogItem {
                 item_type: 8,
                 rect: STANDARD_FILE_GET_VOLUME_LABEL_RECT,
-                text: super::dispatch::BOOT_VOLUME_NAME.to_string(),
+                text: self.standard_file_get_volume_name(tracking),
                 ..DialogItem::default()
             },
             DialogItem {
                 item_type: 0,
                 rect: STANDARD_FILE_GET_VOLUME_RECT,
-                text: super::dispatch::BOOT_VOLUME_NAME.to_string(),
+                text: self.standard_file_get_volume_name(tracking),
                 ..DialogItem::default()
             },
             DialogItem {
@@ -2216,7 +2221,7 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         tracking: &StandardFileGetTrackingState,
     ) {
-        let items = Self::standard_file_get_dialog_items(tracking);
+        let items = self.standard_file_get_dialog_items(tracking);
         self.draw_dialog(
             bus,
             tracking.bounds,
@@ -2252,7 +2257,7 @@ impl super::TrapDispatcher {
             left + vleft,
             top + vbottom,
             left + vright,
-            super::dispatch::BOOT_VOLUME_NAME,
+            &self.standard_file_get_volume_name(tracking),
         );
         let (stop, sleft, sbottom, sright) = STANDARD_FILE_GET_SEPARATOR_RECT;
         self.draw_rect_border(
@@ -2263,6 +2268,21 @@ impl super::TrapDispatcher {
             left + sright,
         );
         self.draw_standard_file_get_list(bus, tracking);
+        if let Some(popup) = &tracking.volume_popup {
+            let (base, row_bytes, width, height, depth) = self.get_screen_params();
+            let (ptop, pleft, pbottom, pright) = popup.bounds;
+            Self::fb_fill_rect(bus, base, row_bytes, depth, width, height, ptop, pleft, pbottom, pright, false);
+            self.draw_rect_border(bus, ptop, pleft, pbottom, pright);
+            for (row, (index, choice)) in popup.choices.iter().enumerate().skip(popup.first_visible).take(popup.visible_rows).enumerate() {
+                let row_top = ptop + row as i16 * popup.row_height;
+                let selected = popup.highlighted == Some(index);
+                if selected { Self::fb_fill_rect(bus, base, row_bytes, depth, width, height,
+                    row_top + 1, pleft + 1, row_top + popup.row_height - 1, pright - 1, true); }
+                let label = Self::popup_control_display_title(&choice.name, (pright - pleft - 12).max(0), 0, 12);
+                Self::fb_draw_string_styled_ink(bus, base, row_bytes, depth, width, height,
+                    pleft + 6, row_top + 12, &label, 0, 12, 0, !selected);
+            }
+        }
         self.standard_file_drawn = bus.screen_mark();
     }
 
@@ -2493,6 +2513,7 @@ impl super::TrapDispatcher {
         let saved_pixels = self.save_dialog_pixels(bus, bounds);
         self.next_standard_file_generation = self.next_standard_file_generation.saturating_add(1);
         let tracking = StandardFileGetTrackingState {
+            volume_popup: None,
             generation: self.next_standard_file_generation,
             standard_entry_point,
             modern_reply,
@@ -2517,9 +2538,40 @@ impl super::TrapDispatcher {
         mut tracking: StandardFileGetTrackingState,
     ) {
         let mut action = None;
-        let mut consumed_event = false;
+        let mouse = self.mouse_position();
+        let mut consumed_event = tracking.volume_popup.as_mut().is_some_and(|popup| popup.hover(mouse.0, mouse.1));
         while let Some(event) = self.event_queue.pop_front() {
             consumed_event = true;
+            if let Some(popup) = tracking.volume_popup.as_mut() {
+                use crate::standard_file_ui::StandardFileVolumeResult;
+                let result = match event.what {
+                    1 | 2 => popup.pointer(event.where_v, event.where_h, event.what == 2),
+                    3 | 5 => popup.key(event.message as u8, (event.message >> 8) as u8, event.modifiers),
+                    _ => StandardFileVolumeResult::Pending,
+                };
+                match result {
+                    StandardFileVolumeResult::Pending => {},
+                    StandardFileVolumeResult::Cancel => tracking.volume_popup = None,
+                    StandardFileVolumeResult::Select { root_dir_id, .. } => {
+                        tracking.volume_popup = None;
+                        tracking.current_dir_id = root_dir_id;
+                        tracking.entries = self.standard_file_get_candidates_in_directory(root_dir_id, tracking.file_types.as_deref());
+                        tracking.selected = 0;
+                    }
+                }
+                break;
+            }
+            if event.what == 1 && Self::standard_file_point_in_rect(
+                event.where_v.saturating_sub(tracking.bounds.0), event.where_h.saturating_sub(tracking.bounds.1),
+                STANDARD_FILE_GET_VOLUME_RECT) {
+                let anchor = self.standard_file_get_layout(&tracking).volume;
+                tracking.volume_popup = crate::standard_file_ui::StandardFileVolumePopup::new(
+                    crate::standard_file_ui::StandardFileVolumePopup::mounted_choices(&self.vfs_volumes),
+                    crate::standard_file_ui::StandardFileVolumePopup::volume_for_directory(
+                        &self.vfs_volumes, &self.vfs_directories, tracking.current_dir_id).ref_num,
+                    anchor, tracking.bounds, 200);
+                break;
+            }
             match event.what {
                 1 => {
                     action = Self::standard_file_get_mouse_action(
