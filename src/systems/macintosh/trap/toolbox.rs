@@ -15821,6 +15821,27 @@ impl super::TrapDispatcher {
                 let selector = (raw_selector & 0xFF) as i32;
 
                 match raw_selector {
+                    // VisibleLength ($84080028): FUNCTION VisibleLength(
+                    //   textPtr: Ptr; textLen: LONGINT): LONGINT.
+                    // IM:VI 14-130..14-132; IM:Text 3-36..3-38, 3-82.
+                    // Roman left-to-right text excludes trailing spaces/tabs.
+                    // Stack: selector(4), textLen(4), textPtr(4), result(4).
+                    0x8408_0028 => {
+                        let text_ptr = bus.read_long(sp + 8);
+                        let mut visible = (bus.read_long(sp + 4) as i32).max(0) as u32;
+                        while visible > 0 {
+                            let Some(last_ptr) = text_ptr.checked_add(visible - 1) else {
+                                break;
+                            };
+                            if !matches!(bus.read_byte(last_ptr), b' ' | b'\t') {
+                                break;
+                            }
+                            visible -= 1;
+                        }
+                        bus.write_long(sp + 12, visible);
+                        cpu.write_reg(Register::A7, sp + 12);
+                        return Some(Ok(()));
+                    }
                     // ReplaceText ($820CFFDC): FUNCTION ReplaceText(
                     //   baseText, substitutionText: Handle; key: Str15): INTEGER.
                     // Stack: selector(4), key pointer(4), substitution handle(4),
