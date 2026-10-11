@@ -9,7 +9,6 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Strategy
-launch_enabled: false
 compatibility:
   status: playable
   verified:
@@ -19,16 +18,16 @@ compatibility:
     architecture: 68k
     environment: >-
       Optimized native build with STi3 extraction repair; unchanged original 1.0.5
-      International archive, exact runtime selector below, explicit 68K/depth 8.
-      Normal DEMO dismissal, New Game and three computer players deal a table.
-      Player discard produces computer responses and a visible North-wind meld.
-      Fresh replay passes fourteen measured before/after assertions at 1167 frontend
-      / 1767 guest ticks, zero exhausted frames. Captures inspected. Production
-      extraction matches all five installed files, ten original forks and supported
-      Finder metadata against independent unar. Six focused extraction tests pass.
-      Full deals/games, saves and audio fidelity remain unverified. Browser
-      qualification, asset promotion, launch approval, human release and independent
-      public replay remain pending. Trial restrictions are retained without patches.
+      International archive, exact runtime selector below, explicit 68K/depth 8. Normal
+      DEMO dismissal, New Game and three computer players deal a table. Player discard
+      produces computer responses and a visible North-wind meld. Fresh replay passes
+      fourteen measured before/after assertions at 1167 frontend / 1767 guest ticks, zero
+      exhausted frames. Captures inspected. Production extraction matches all five
+      installed files, ten original forks and supported Finder metadata against independent
+      unar. Six focused extraction tests pass. Full deals/games, saves and audio
+      fidelity remain unverified. Browser qualification, asset promotion, launch approval,
+      human release and independent public replay remain pending. Trial restrictions are
+      retained without patches.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4674
 runtime:
@@ -40,8 +39,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: incoming
-    path: catalogue/incoming/mahjong/original-1.0.5.sit
+    type: sha256
+    sha256: 8bcbe73e845f41a2318a00d50ebf55b977fb4bdee9b28e7603f8212736c30fa6
+    size_bytes: 201942
   provenance:
     redistribution: permitted
     original: true
@@ -53,24 +53,17 @@ artifacts:
     rights_holder: Matti Larborn
     permission: >-
       Original About Mahjong expressly permits distribution in shareware packages
-      without commercial interest. It also permits magazine CD-ROM/diskette
-      distribution; other commercial redistribution requires written permission.
-      Preserve the complete original package, notices and trial restrictions.
-    notes: >-
-      Unchanged original archive: 201942 bytes, SHA-256
-      8bcbe73e845f41a2318a00d50ebf55b977fb4bdee9b28e7603f8212736c30fa6.
-      Gratis noncommercial preservation delivery of the unchanged distribution,
-      separately from the emulator binary. All five installed files/ten forks and
-      Finder metadata match independent extraction. Actual game has resource-only
-      CODE 0/1/2/3 and no cfrg or native PPC slice. Trial allows one round, retains
-      reminders and locks saves; no registration patch or key. This is a distinct
-      four-player game, not MacTaipei solitaire or Exitdata's Mah Jong Parlour.
+      without commercial interest. It also permits magazine CD-ROM/diskette distribution;
+      other commercial redistribution requires written permission. Preserve the
+      complete original package, notices and trial restrictions.
+    notes: "Unchanged original archive: 201942 bytes, SHA-256 8bcbe73e845f41a2318a00d50ebf55b977fb4bdee9b28e7603f8212736c30fa6. Gratis noncommercial preservation delivery of the unchanged distribution, separately from the emulator binary. All five installed files/ten forks and Finder metadata match independent extraction. Actual game has resource-only CODE 0/1/2/3 and no cfrg or native PPC slice. Trial allows one round, retains reminders and locks saves; no registration patch or key. This is a distinct four-player game, not MacTaipei solitaire or Exitdata's Mah Jong Parlour."
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/mahjong/discard-and-replies.png
+    type: sha256
+    sha256: 54512df4f4980ad507ef9b04a887568a0a357292c1995db853ded37e1664232d
+    size_bytes: 9561
   provenance:
     redistribution: permitted
     content_only: true
@@ -97,4 +90,4 @@ Trial setup, a player discard and computer responses are verified natively.
 The original one-round trial, registration reminders and locked saves remain.
 Browser launch is awaiting qualification.
 
-![Mahjong after a discard and computer responses](incoming/mahjong/discard-and-replies.png)
+![Mahjong after a discard and computer responses](https://assets.systemless.org/catalogue/media/sha256/54/54512df4f4980ad507ef9b04a887568a0a357292c1995db853ded37e1664232d.png)
