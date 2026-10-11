@@ -1141,3 +1141,69 @@ fn te_update_clips_partial_glyphs_at_the_view_bottom() {
         ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)) != Some(103)
     })));
 }
+
+#[test]
+fn textedit_idle_uses_the_same_guest_caret_interval_as_get_caret_time() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TENew")).unwrap();
+    // Detached fixtures default to one clock tick per instruction. Keep this
+    // short import call within its explicitly chosen guest tick so the exact
+    // pre-boundary and boundary assertions exercise the interval itself.
+    loaded.set_clock_cycle_timing(1_000_000, 0);
+    let rects = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(rects, vec![0; 16]);
+    ppc_write_rect(&mut loaded.memory, rects, 0, 0, 100, 200).unwrap();
+    ppc_write_rect(&mut loaded.memory, rects + 8, 0, 0, 100, 200).unwrap();
+    loaded.cpu.gpr[3] = rects;
+    loaded.cpu.gpr[4] = rects + 8;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TENew);
+    let handle = loaded.cpu.gpr[3];
+    let record = loaded.memory.read_u32_be(handle).unwrap();
+    loaded
+        .memory
+        .write_u16_be(record + PPC_TE_ACTIVE_OFFSET, 1)
+        .unwrap();
+    loaded
+        .memory
+        .write_u16_be(record + PPC_TE_SEL_START_OFFSET, 0)
+        .unwrap();
+    loaded
+        .memory
+        .write_u16_be(record + PPC_TE_SEL_END_OFFSET, 0)
+        .unwrap();
+    for (interval, previous, next_state) in [(7, 100, 1), (40, 107, 0)] {
+        loaded
+            .memory
+            .write_u32_be(crate::memory::globals::addr::CARET_TIME, interval)
+            .unwrap();
+        loaded
+            .memory
+            .write_u32_be(record + PPC_TE_CARET_TIME_OFFSET, previous)
+            .unwrap();
+        loaded.set_tick_count(previous + interval - 1);
+        loaded.cpu.gpr[3] = handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TEIdle);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(record + PPC_TE_CARET_STATE_OFFSET),
+            Some(1 - next_state)
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(record + PPC_TE_CARET_TIME_OFFSET),
+            Some(previous)
+        );
+        loaded.set_tick_count(previous + interval);
+        loaded.cpu.gpr[3] = handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TEIdle);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(record + PPC_TE_CARET_STATE_OFFSET),
+            Some(next_state)
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(record + PPC_TE_CARET_TIME_OFFSET),
+            Some(previous + interval)
+        );
+    }
+}

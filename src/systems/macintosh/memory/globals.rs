@@ -74,6 +74,10 @@ pub mod addr {
     /// Inside Macintosh Volume I, I-260 documents the value and global name;
     /// MPW SysEqu.h defines `DoubleTime` at $02F0.
     pub const DOUBLE_TIME: u32 = 0x02F0;
+    /// CaretTime: suggested caret blink interval in TickCount ticks.
+    /// Inside Macintosh: Toolbox Essentials, Event Manager 2-113;
+    /// classic low-memory CaretTime long is at $02F4.
+    pub const CARET_TIME: u32 = 0x02F4;
     /// Lo3Bytes: constant mask for the low three bytes of a tagged address.
     /// Inside Macintosh Volume I (1985), p. I-85 gives $00FFFFFF;
     /// Volume III (1985), p. III-228 places the long at $031A.

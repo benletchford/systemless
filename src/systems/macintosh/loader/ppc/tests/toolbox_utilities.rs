@@ -994,3 +994,50 @@ fn qd_random_seed_weak_setter_updates_live_globals_and_random_sequence() {
         }
     }
 }
+
+
+#[test]
+fn get_caret_time_reads_original_low_memory_interval_without_clobbering_arguments() {
+    for library in ["CarbonLib", "InterfaceLib"] {
+        for symbol in ["GetCaretTime", "getcarettime"] {
+            let pef = super::mixed_mode::relocated_dialog_upp_test_pef(
+                library.as_bytes(),
+                symbol.as_bytes(),
+            );
+            let mut loaded = load_pef_application(&pef).unwrap();
+            assert_eq!(
+                loaded.imports[0].dispatcher_target,
+                PpcImportDispatcherTarget::GetCaretTime
+            );
+            assert_eq!(
+                loaded
+                    .memory
+                    .read_u32_be(crate::memory::globals::addr::CARET_TIME),
+                Some(32)
+            );
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 32);
+            for interval in [0, 7, 32, 0x1234_5678] {
+                loaded
+                    .memory
+                    .write_u32_be(crate::memory::globals::addr::CARET_TIME, interval)
+                    .unwrap();
+                let original_args = [0x1122_3344, 0x5566_7788, 0x99aa_bbcc];
+                loaded.cpu.gpr[4..7].copy_from_slice(&original_args);
+                let sp = loaded.cpu.gpr[1];
+                run_test_import(&mut loaded, PpcImportDispatcherTarget::GetCaretTime);
+                assert_eq!(loaded.cpu.gpr[3], interval);
+                assert_eq!(loaded.cpu.gpr[4..7], original_args);
+                assert_eq!(loaded.cpu.gpr[1], sp);
+                assert_eq!(
+                    loaded
+                        .memory
+                        .read_u32_be(crate::memory::globals::addr::CARET_TIME),
+                    Some(interval)
+                );
+            }
+        }
+    }
+}
