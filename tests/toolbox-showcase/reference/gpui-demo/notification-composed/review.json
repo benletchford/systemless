@@ -1,0 +1,18 @@
+{
+  "reviewed": [
+    "mono.png",
+    "ppc.png"
+  ],
+  "findings": "Smooth legible Notification Caf\u00e9, preserved accent, message and button contained in alert; application-drawn headings retain guest pixel ink.",
+  "scope": "Shared Demo offscreen renderer from actual worker-owned guest notification. Explicit capture acquisition, not automatic frontend acquisition. No physical interaction or independent Macintosh font/alert geometry oracle.",
+  "requested_scales": {
+    "mono": 1,
+    "ppc": 2
+  },
+  "sha256": {
+    "src/bin/gpui_demo.rs": "2149e3f32ee8af9e2052309020cb8718808175c4578600ffbf055a9978cea98a",
+    "src/bin/gpui_demo_notification.rs": "10831429177ee619cfe9cd8c89b0bff8ec6e23e2466169a2f05897ab2e3512c2",
+    "src/bin/gpui_demo_text.rs": "530e6c35efabe97ccd4ad3a1a7e335952c71eb7ac0bbce8788d74bc24369e252",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "f11709e86e439a67894dccedf7913231db6ae4aa12c6bcd7684cd9631f90e600"
+  }
+}

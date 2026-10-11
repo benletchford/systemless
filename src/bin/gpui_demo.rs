@@ -401,6 +401,9 @@ mod desktop {
         #[arg(long, hide = true)]
         capture_application: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, requires = "capture_application")]
+        capture_application_notification: bool,
+        #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_guest_cursor: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
@@ -6162,6 +6165,7 @@ mod desktop {
         let requested_depth = args.screen_depth;
         let powerpc = args.prefer_powerpc;
         let archive = args.game.clone();
+        let capture_notification = args.capture_application_notification;
         let input = args.capture_application_key.map(|key| (key, args.capture_application_character));
         let pointer = args.capture_application_mouse_v.zip(args.capture_application_mouse_h);
         let input_after = args.capture_application_input_after;
@@ -6192,6 +6196,11 @@ mod desktop {
             if let Some(update) = updates.lock().unwrap().take() {
                 assert!(update.frame.is_some(), "application worker failed: {}", update.status);
                 observations += 1;
+                if capture_notification && update.notification_alert.is_none() {
+                    if let Some(notice) = update.notifications.iter().find(|notice| !notice.response_started) {
+                        worker.0.send(Command::BeginNotificationAlert(notice.clone())).unwrap();
+                    }
+                }
                 if let Some((vertical, horizontal)) = pointer {
                     if observations == input_after {
                         let (width, height, pixels) = update.frame.as_ref().unwrap();
@@ -6213,7 +6222,8 @@ mod desktop {
                         worker.0.send(Command::Input(MacintoshInput::KeyUp { mac_key, character })).unwrap();
                     }
                 }
-                if observations == target_observations { break update; }
+                if observations >= target_observations
+                    && (!capture_notification || update.notification_alert.is_some()) { break update; }
                 latest = Some(update);
             }
             if start.elapsed() >= observation_timeout {
@@ -6241,6 +6251,8 @@ mod desktop {
         let (width, height) = (*width, *height);
         image::save_buffer(output.with_extension("guest.png"), pixels, width, height, image::ColorType::Rgba8).unwrap();
         let status = update.status.clone();
+        let notification_identity = update.notification_alert.as_ref()
+            .map(|notice| (notice.guest_id, notice.instance_id));
         let menu_presented = update.menu_presented;
         let menu_height = update.menu_height;
         let mut visual = HeadlessAppContext::with_platform(platform::current_platform(true).text_system(),
@@ -6275,6 +6287,7 @@ mod desktop {
             "archive": archive, "prefer_powerpc": powerpc, "requested_depth": requested_depth,
             "observed_worker_updates": observations, "observation_elapsed_ms": observed_ms,
             "guest_key_input": input, "guest_mouse_input_v_h": pointer,
+            "notification_identity": notification_identity,
             "input_after_updates": input_after, "release_after_updates": release_after,
             "key_after_updates": key_after, "key_release_after_updates": key_release_after,
             "observation_timeout_seconds": observation_timeout.as_secs(),
