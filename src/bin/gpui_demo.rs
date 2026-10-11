@@ -12411,6 +12411,21 @@ mod desktop {
                 }
                 let dialogs = session.runner_mut().dialog_snapshot();
                 let before = dialogs.iter().find(|next| next.guest_id == dialog.guest_id).unwrap().clone();
+                let mut stale = before.clone(); stale.generation += 1;
+                assert!(!session.runner_mut().select_dialog_text_range(&stale, 9, 0..1));
+                assert!(!session.runner_mut().select_dialog_text_range(&before, 9, 0..usize::MAX));
+                assert!(session.runner_mut().select_dialog_text_range(&before, 9, 0..1));
+                let selected = session.runner_mut().dialog_snapshot().into_iter()
+                    .find(|next| next.guest_id == dialog.guest_id).unwrap();
+                assert_eq!(selected.items[8].selection, Some((0, 1)));
+                assert_eq!(selected.items[8].text, before.items[8].text);
+                assert_eq!(selected.items[9], before.items[9]);
+                assert_eq!(selected.content_revision, before.content_revision);
+                assert!(!session.runner_mut().select_dialog_text_range(&before, 9, 1..1));
+                let previous = before.items[8].selection.unwrap();
+                assert!(session.runner_mut().select_dialog_text_range(&selected, 9, previous.0 as usize..previous.1 as usize));
+                eprintln!("PASS guarded-dialog-selection powerpc={powerpc} depth={depth}");
+
                 let (sender, receiver) = std::sync::mpsc::channel();
                 let (window, view) = cx.update(|cx| gpui_kit::open_window(Default::default(), cx,
                     |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap());
