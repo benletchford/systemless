@@ -2350,7 +2350,9 @@ pub(crate) fn dispatcher_target_for_import(
         // The emulated process has no external input method to initialize.
         ("InterfaceLib", "InitTSMAwareApplication")
         | ("InterfaceLib", "CloseTSMAwareApplication") => PpcImportDispatcherTarget::ReturnNoErr,
-        ("InterfaceLib", "SetScriptManagerVariable") => PpcImportDispatcherTarget::ReturnNoErr,
+        ("InterfaceLib", "SetScriptManagerVariable" | "SetEnvirons" | "SetScript" | "SetScriptVariable") => {
+            PpcImportDispatcherTarget::ReturnNoErr
+        }
         // No input method is active in the emulated process, so Text Services
         // Manager leaves each EventRecord for the application to handle.
         ("InterfaceLib", "TSMEvent") | ("InterfaceLib", "TSMMenuSelect") => {
@@ -5789,7 +5791,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetScript") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::GetScript,
         ),
-        ("InterfaceLib", "GetScriptManagerVariable") => {
+        ("InterfaceLib", "GetScriptManagerVariable" | "GetEnvirons") => {
             PpcImportDispatcherTarget::SystemCompatibility(
                 PpcSystemCompatibilityOperation::GetScriptManagerVariable,
             )
@@ -5833,6 +5835,9 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         ("InterfaceLib", "GetSysDirection") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::GetSysDirection,
+        ),
+        ("InterfaceLib", "SetSysDirection") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::SetSysDirection,
         ),
         ("InterfaceLib", "GetEvQHdr") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::GetEvQHdr,

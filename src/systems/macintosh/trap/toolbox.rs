@@ -15901,26 +15901,33 @@ impl super::TrapDispatcher {
                     }
                     // GetEnvirons (8): FUNCTION GetEnvirons(verb: INTEGER): LongInt
                     // Stack: selector(4), verb(2), result(4)
-                    8 => {
-                        bus.write_long(sp + 6, 0); // return 0
+                    crate::text_utils::GET_ENVIRONS_SELECTOR => {
+                        let verb = bus.read_word(sp + 4) as i16;
+                        let val = crate::text_utils::evaluate_script_manager_variable(verb, 0);
+                        bus.write_long(sp + 6, val);
                         cpu.write_reg(Register::A7, sp + 6); // pop selector + verb
+                        cpu.write_reg(Register::D0, val);
                     }
                     // SetEnvirons (10): FUNCTION SetEnvirons(verb: INTEGER; param: LongInt): OSErr
                     // Stack: selector(4), verb(2), param(4), result(2)
-                    10 => {
+                    crate::text_utils::SET_ENVIRONS_SELECTOR => {
                         bus.write_word(sp + 10, 0); // noErr
                         cpu.write_reg(Register::A7, sp + 10); // pop selector + verb + param
+                        cpu.write_reg(Register::D0, 0);
                     }
                     // GetScript (12): FUNCTION GetScript(script: INTEGER; verb: INTEGER): LongInt
                     // Stack: selector(4), script(2), verb(2), result(4)
-                    12 => {
-                        bus.write_long(sp + 8, 0); // return 0
+                    crate::text_utils::GET_SCRIPT_SELECTOR => {
+                        let verb = bus.read_word(sp + 4) as i16;
+                        let script = bus.read_word(sp + 6) as i16;
+                        let val = crate::text_utils::evaluate_script_variable(script, verb);
+                        bus.write_long(sp + 8, val);
                         cpu.write_reg(Register::A7, sp + 8); // pop selector + script + verb
-                        cpu.write_reg(Register::D0, 0);
+                        cpu.write_reg(Register::D0, val);
                     }
                     // SetScript (14): FUNCTION SetScript(script: INTEGER; verb: INTEGER; param: LongInt): OSErr
                     // Stack: selector(4), script(2), verb(2), param(4), result(2)
-                    14 => {
+                    crate::text_utils::SET_SCRIPT_SELECTOR => {
                         bus.write_word(sp + 12, 0); // noErr
                         cpu.write_reg(Register::A7, sp + 12);
                         cpu.write_reg(Register::D0, 0);
