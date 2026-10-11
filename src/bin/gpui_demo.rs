@@ -4639,6 +4639,48 @@ mod desktop {
         }
 
         #[test]
+        fn radio_tracking_preserves_guest_group_until_release() {
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 5));
+                wait_for_menu(&mut session, 129, 5, true);
+                let controls = session.runner_mut().control_snapshot();
+                let target = controls.iter().find(|c| c.visible && c.title == "Recruit (Easy)").unwrap();
+                assert_eq!((target.proc_id, target.value), (2, 0));
+                let id = target.guest_id;
+                let rect = target.bounds;
+                let inside = ((rect.0 + rect.2) / 2, (rect.1 + rect.3) / 2);
+                let outside = (rect.0 - 10, rect.1 - 10);
+                // HIG (1992), p. 205: track inside/outside; cancel an outside release.
+                for cancel in [true, false] {
+                    session.deliver_input(MacintoshInput::MouseDown { vertical: inside.0, horizontal: inside.1 });
+                    settle(&mut session);
+                    let held = session.runner_mut().control_snapshot();
+                    let target = held.iter().find(|c| c.guest_id == id).unwrap();
+                    assert_eq!((target.value, target.hilite), (0, 11), "held: powerpc={powerpc}, depth={depth:?}");
+                    assert_eq!(held.iter().find(|c| c.visible && c.title == "Veteran (Normal)").unwrap().value, 1);
+                    let release = if cancel { outside } else { inside };
+                    session.deliver_input(MacintoshInput::MouseMove { vertical: release.0, horizontal: release.1 });
+                    settle(&mut session);
+                    assert_eq!(session.runner_mut().control_snapshot().iter().find(|c| c.guest_id == id).unwrap().hilite,
+                        if cancel { 0 } else { 11 });
+                    session.deliver_input(MacintoshInput::MouseUp { vertical: release.0, horizontal: release.1 });
+                    settle(&mut session);
+                    let released = session.runner_mut().control_snapshot();
+                    let target = released.iter().find(|c| c.guest_id == id).unwrap();
+                    assert_eq!((target.value, target.hilite), (if cancel { 0 } else { 1 }, 0));
+                    assert_eq!(released.iter().find(|c| c.visible && c.title == "Veteran (Normal)").unwrap().value,
+                        if cancel { 1 } else { 0 });
+                }
+            }
+        }
+
+        #[test]
         fn live_controls_expose_guest_values_on_both_cpus() {
             for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
                 let mut session = MacintoshSession::new(true, depth);
@@ -4687,6 +4729,9 @@ mod desktop {
                     horizontal,
                 });
                 settle(&mut session);
+                let held = session.runner_mut().control_snapshot();
+                let held_checkbox = held.iter().find(|control| control.guest_id == checkbox_id).unwrap();
+                assert_eq!((held_checkbox.value, held_checkbox.hilite), (0, 11));
                 session.deliver_input(MacintoshInput::MouseUp {
                     vertical,
                     horizontal,

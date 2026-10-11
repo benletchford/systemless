@@ -504,3 +504,29 @@ Reviewed captures cover those three states and the existing
 the modal showcase at the existing capture scale and light theme; document
 checkbox tracking, other scales/themes, disabled-state captures, radio pressed
 presentation and operable accessibility still require qualification.
+
+Document radio tracking exposed two additional runtime gaps. Classic
+`TrackControl` stored a boolean highlight byte rather than its hit part; it now
+publishes 10 for a push button and 11 for a checkbox/radio. Its classic and themed
+control drawing accepts these part codes while retaining existing explicit
+highlight-1 rendering. The pressed-button provider regression checks the new
+part code and still verifies painted feedback.
+
+PPC `TrackControl` previously returned a nil-action standard button/checkbox/radio
+hit on mouse-down. It now retains the import frame until release, updates
+`contrlHilite` as the pointer crosses the control boundary, restores the prior
+highlight on release, and returns zero for an outside release. The application
+still owns value and radio-group changes. Retained tracking checks the control
+pointer, lifetime generation, active record and calling frame before resuming.
+Queued mouse-up coordinates take precedence over subsequent pointer movement.
+
+The new showcase regression verifies unchanged radio-group values during a held
+press, outside cancellation, highlight restoration and mutually exclusive values
+after an inside release in monochrome 68K, colour 68K and PPC. The existing document
+checkbox regression also asserts unchanged value and part-11 highlighting while
+held. All 242 library tests matching `control` pass. Radio GPUI pressed visuals,
+custom action-procedure repetition, classic PPC pressed-pixel rendering and
+retained-tracking disposal/identity-reuse qualification remain open.
+The full 58-test GPUI suite passes after these changes, including the new radio
+tracking regression and strengthened checkbox assertion. The ordinary desktop
+frontend also passes its build check.
