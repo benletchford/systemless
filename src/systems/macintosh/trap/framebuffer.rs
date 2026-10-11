@@ -5623,6 +5623,7 @@ impl super::TrapDispatcher {
         for (top, left, width, height, pixels) in preserved_front_pixels {
             self.restore_screen_rect_pixels(bus, top, left, width, height, &pixels);
         }
+        self.window_list.record_grow_icon(window_ptr, content);
     }
 
     /// Draw a 2-pixel thick rectangle border (FrameRect with PenSize 2,2).

@@ -1929,6 +1929,7 @@ pub(crate) struct SharedProcessMenuTracking(crate::guest_call::SharedMenuTrackin
 pub(crate) struct SharedProcessWindowList(
     SharedProcessValue<ProcessWindowListState>,
     SharedProcessValue<HashMap<u32, u64>>,
+    SharedProcessValue<HashMap<u32, (u64, crate::window_manager::WindowRect)>>,
 );
 
 #[derive(Clone, Default)]
@@ -4535,20 +4536,25 @@ impl SharedProcessWindowList {
         Self(SharedProcessValue::from_value(ProcessWindowListState {
             windows,
             classes: HashMap::new(),
-        }), Default::default())
+        }), Default::default(), Default::default())
     }
 
     pub(crate) fn shared_handle(&self) -> Self {
-        Self(self.0.shared_handle(), self.1.shared_handle())
+        Self(
+            self.0.shared_handle(),
+            self.1.shared_handle(),
+            self.2.shared_handle(),
+        )
     }
 
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
-        self.0.ptr_eq(&other.0) && self.1.ptr_eq(&other.1)
+        self.0.ptr_eq(&other.0) && self.1.ptr_eq(&other.1) && self.2.ptr_eq(&other.2)
     }
 
     pub(crate) fn attach_to(&mut self, process_state: &Self) {
         self.0.attach_to(&process_state.0, |state| state.windows.is_empty());
         self.1.attach_to(&process_state.1, HashMap::is_empty);
+        self.2.attach_to(&process_state.2, HashMap::is_empty);
     }
 
     /// Register a newly created WindowRecord, including caller-supplied
@@ -4557,7 +4563,32 @@ impl SharedProcessWindowList {
     pub(crate) fn register_new_window(&self, window: u32) -> u64 {
         let generation = new_window_generation();
         self.1.with_mut(|lifetimes| lifetimes.insert(window, generation));
+        self.2.with_mut(|icons| icons.remove(&window));
         generation
+    }
+
+    /// Record an actual guest DrawGrowIcon call, scoped to this window lifetime
+    /// and the bounds it painted. A resized or reused window needs a fresh call.
+    /// Macintosh Toolbox Essentials (1992), pp. 4-111--4-112.
+    pub(crate) fn record_grow_icon(&self, window: u32, bounds: crate::window_manager::WindowRect) {
+        let generation = self.generation_for_window(window);
+        self.2.with_mut(|icons| icons.insert(window, (generation, bounds)));
+    }
+
+    pub(crate) fn grow_icon_drawn_at(
+        &self,
+        window: u32,
+        bounds: crate::window_manager::WindowRect,
+    ) -> bool {
+        let generation = self.generation_for_window(window);
+        self.2.with_mut(|icons| {
+            if icons.get(&window) == Some(&(generation, bounds)) {
+                true
+            } else {
+                icons.remove(&window);
+                false
+            }
+        })
     }
 
     /// Seed windows installed by tests or older paths before snapshotting.
@@ -4571,6 +4602,8 @@ impl SharedProcessWindowList {
         let windows = self.windows();
         self.1
             .with_mut(|lifetimes| lifetimes.retain(|window, _| windows.contains(window)));
+        self.2
+            .with_mut(|icons| icons.retain(|window, _| windows.contains(window)));
     }
 
     pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&[u32]) -> R) -> R {
@@ -4659,6 +4692,7 @@ impl SharedProcessWindowList {
     pub(crate) fn clear(&self) {
         self.with_mut(Vec::clear);
         self.1.with_mut(HashMap::clear);
+        self.2.with_mut(HashMap::clear);
     }
 
     pub(crate) fn replace(&self, windows: Vec<u32>) {
@@ -4683,6 +4717,7 @@ impl SharedProcessWindowList {
         });
         if removed {
             self.1.with_mut(|lifetimes| lifetimes.remove(&window));
+            self.2.with_mut(|icons| icons.remove(&window));
         }
         removed
     }
@@ -14158,6 +14193,12 @@ mod tests {
 
         classic.push(0x1000);
         let first = classic.register_new_window(0x1000);
+        let bounds = (40, 50, 180, 270);
+        assert!(!native.grow_icon_drawn_at(0x1000, bounds));
+        classic.record_grow_icon(0x1000, bounds);
+        assert!(native.grow_icon_drawn_at(0x1000, bounds));
+        assert!(!native.grow_icon_drawn_at(0x1000, (40, 50, 200, 300)));
+        assert!(!classic.grow_icon_drawn_at(0x1000, bounds));
         native.bring_to_front(0x1000);
         assert_eq!(native.generation_for_window(0x1000), first);
 
@@ -14166,6 +14207,7 @@ mod tests {
         let second = native.register_new_window(0x1000);
         assert_ne!(first, second);
         assert_eq!(classic.generation_for_window(0x1000), second);
+        assert!(!classic.grow_icon_drawn_at(0x1000, bounds));
     }
 
     #[test]
