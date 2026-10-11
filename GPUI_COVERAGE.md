@@ -5790,3 +5790,17 @@ that test-boundary correction. Evidence: `notification-runner-procedure`.
 This does not prove direct Mixed Mode runner delivery, nested interruptions,
 thread yields, visible GPUI notices, sound completion or composed dismissal.
 All eight release gates remain open.
+
+### Direct Mixed Mode notification runner qualification (2026-10-11)
+
+A public runner regression now enters a native notification's direct 68k
+RoutineDescriptor response, executes the actual guest instructions, verifies
+the NMRecPtr argument by guest memory write and confirms exact native
+architectural context restoration. Duplicate acknowledgment declines. The first
+fixture used an already halted foreground entry; the corrected fixture keeps
+foreground code running during delivery. Both results are retained under
+`reference/gpui-demo/notification-direct-runner`. All19 notification tests pass.
+This establishes the selected runner handoff, not visible GPUI alert delivery,
+nested interruptions, thread switches or compositor interaction. The presentation
+boundary audit in `GPUI_DRAW_PATHS.md` identifies the missing system-alert model.
+All eight production gates remain open.

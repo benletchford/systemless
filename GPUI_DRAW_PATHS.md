@@ -78,3 +78,17 @@ Evidence is under `reference/gpui-demo/notification-queue` with source hashes.
 Visible alert delivery, menu/icon notices, sound completion, acknowledgment and
 post-delivery callbacks remain unfinished; this is not GPUI notification
 qualification and closes no production gate.
+
+### Notification presentation boundary audit (2026-10-11)
+
+At `ba5efecb`, validated snapshots travel through the worker into shared Demo
+state, but no paint, input, accessibility or composition path consumes the
+notification list. Snapshot text is raw Macintosh Roman and carries no alert
+window, font resource, bounds or layout. Existing standard dialog presentation
+requires guest Dialog/Window state, so feeding notification bytes to a host-font
+toast would bypass the required system-alert geometry and ownership model.
+The next presentation implementation must establish the system-owned alert
+recipe, delivery ordering and modality before wiring acknowledgment to the
+public runner completion entry. Queue/callback tests do not prove visible
+notification delivery. Menu marks, icon flashing and sound completion remain
+separate unfinished delivery stages.
