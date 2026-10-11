@@ -3901,3 +3901,26 @@ all field pixels through the shared compositor and confirm depth 16 in sidecars.
 Example build passes (85s), production check passes (98s). These smoke captures
 are temporary; the corrected complete CPU/scale/insertion/activation matrix
 and production styled ownership remain unfinished.
+
+A reusable macOS capture runner now checks the corrected styled matrix:
+
+```sh
+cargo build --locked --example gpui-menu-demo --features gpui-demo-test
+python3 tests/toolbox-showcase/capture-gpui-styled-text-matrix.py \
+  /tmp/systemless-styled-text-matrix-new
+```
+
+It requires a fresh output directory and a capture executable built from the
+current clean source. Its 192 cases cover four CPU/depth modes and four scales:
+16 inactive fields, 48 selected/suspended/resumed fields, and 128 caret fields
+at insertion offsets 0 and 26 in visible/blink-off/suspended/resumed states.
+Every case checks actual snapshot depth and state, preserved selection, intact
+native drawing and exact composed field pixels at device density 2. Each PNG,
+original guest PNG and state sidecar has a recorded hash, with source revision,
+fixture and unchanged executable hashes retained in progress.json. A failed
+case stops the run and retains its error; completed cases are not silently
+regenerated. This is field-raster qualification infrastructure, not proof of
+production ownership or arbitrary theme/background/custom-font policies.
+
+The corrected run is in progress against `d7c3e82f`; results must be archived
+and reviewed before replacing the invalidated full-matrix qualification.
