@@ -2479,3 +2479,17 @@ further selection changes, accented editing and encoded FSSpec replies. This
 is guest-event evidence, not qualification of native pointer capture or GPUI
 glyph mapping. Save field painting, caret blinking, horizontal scrolling,
 keyboard navigation/clipboard and the scale/activation matrix remain unfinished.
+
+
+### PPC Save partial-selection geometry
+
+PPC Save no longer highlights the whole filename field for every nonempty
+selection. Its painter computes the selected Mac Roman prefix bounds, clips
+them to the field and uses themed selection or classic QuickDraw inversion
+after drawing the text. List focus and subsidiary dialogs suppress selection.
+
+The focused maximum-length/name-selection regression passes (0.02 seconds),
+including an accented partial range and suppression for list, replacement and
+New Folder focus. The headless type-check passes. This is geometry and build
+evidence; new pixel captures, native parity, GPUI field glyph painting, caret
+blink and horizontal scrolling remain pending.

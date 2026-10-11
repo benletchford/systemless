@@ -3343,6 +3343,24 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         assert_eq!(tracking.name.len(), 62);
         assert_eq!(tracking.sel_start, 62);
         assert_eq!(tracking.sel_end, 62);
+
+        tracking.name = vec![0x8e, 0xa3, b'S'];
+        tracking.sel_start = 1;
+        tracking.sel_end = 2;
+        let bounds = (10, 20, 30, 326);
+        let rect = ppc_standard_file_name_selection_rect(&tracking, bounds).unwrap();
+        let advance = |bytes: &[u8]| ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes);
+        assert_eq!(rect, (12, 20 + advance(&[0x8e]), 28, 20 + advance(&[0x8e, 0xa3])));
+        assert!(rect.1 > bounds.1 && rect.3 < bounds.3, "partial selection must not highlight the whole field");
+        tracking.list_has_focus = true;
+        assert_eq!(ppc_standard_file_name_selection_rect(&tracking, bounds), None);
+        tracking.list_has_focus = false;
+        tracking.confirming_replace = true;
+        assert_eq!(ppc_standard_file_name_selection_rect(&tracking, bounds), None);
+        tracking.confirming_replace = false;
+        tracking.new_folder = Some(Default::default());
+        assert_eq!(ppc_standard_file_name_selection_rect(&tracking, bounds), None);
+
     }
 
     #[test]

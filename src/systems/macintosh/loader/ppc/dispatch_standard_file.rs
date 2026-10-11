@@ -1000,6 +1000,24 @@ fn ppc_standard_file_draw_get_dialog(
     );
 }
 
+pub(super) fn ppc_standard_file_name_selection_rect(
+    tracking: &PpcStandardFilePutTrackingState,
+    name: (i16, i16, i16, i16),
+) -> Option<(i16, i16, i16, i16)> {
+    if tracking.list_has_focus || tracking.confirming_replace || tracking.new_folder.is_some() {
+        return None;
+    }
+    let start = tracking.sel_start.min(tracking.name.len());
+    let end = tracking.sel_end.min(tracking.name.len());
+    if start >= end { return None; }
+    let x = |offset| name.1.saturating_add(ppc_text_width_bytes(
+        PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, &tracking.name[..offset],
+    ));
+    let rect = (name.0.saturating_add(2), x(start).max(name.1),
+        name.0.saturating_add(18).min(name.2), x(end).min(name.3));
+    (rect.0 < rect.2 && rect.1 < rect.3).then_some(rect)
+}
+
 fn ppc_standard_file_draw_put_dialog(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -1026,34 +1044,19 @@ fn ppc_standard_file_draw_put_dialog(
     );
     let _ = ppc_fill_front_rect(memory, front, name, PPC_RGB_WHITE);
     let _ = ppc_frame_front_rect(memory, front, name, PPC_RGB_BLACK, 1);
-    let selected = !tracking.list_has_focus && !tracking.confirming_replace && tracking.new_folder.is_none() && tracking.sel_start < tracking.sel_end;
-    let themed = ppc_ui_theme(gworlds) != UiThemeId::ClassicSystem7;
-    if selected && !themed {
-        let _ = ppc_fill_front_rect(
-            memory,
-            front,
-            (
-                name.0,
-                name.1.saturating_add(2),
-                name.2,
-                name.3.saturating_sub(2),
-            ),
-            PPC_RGB_BLACK,
-        );
-    }
     ppc_draw_dialog_text(
         memory,
         gworlds,
         (name.0.saturating_add(2), name.1, name.2, name.3),
         &tracking.name,
-        if selected && !themed {
-            PPC_RGB_WHITE
-        } else {
-            PPC_RGB_BLACK
-        },
+        PPC_RGB_BLACK,
     );
-    if selected && themed {
-        ppc_draw_themed_selection(memory, gworlds, PPC_MAIN_GWORLD, name);
+    if let Some(selection) = ppc_standard_file_name_selection_rect(tracking, name) {
+        let _ = ppc_with_unclipped_screen_port(memory, |memory| {
+            if !ppc_draw_themed_selection(memory, gworlds, PPC_MAIN_GWORLD, selection) {
+                ppc_invert_rect_bounds(memory, gworlds, PPC_MAIN_GWORLD, selection);
+            }
+        });
     }
     ppc_draw_dialog_text(
         memory,
