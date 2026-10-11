@@ -3400,6 +3400,17 @@ mod desktop {
                         cx.notify();
                     }
                 }))
+                .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                    let Some(notice) = &this.notification_alert else { return; };
+                    if this.host_active != Some(false) {
+                        this.focus.focus(window, cx);
+                        if matches!(event.keystroke.key.as_str(), "enter" | "return") {
+                            let _ = this.commands.send(Command::DismissNotificationAlert(notice.clone()));
+                        }
+                    }
+                    cx.stop_propagation();
+                    window.prevent_default();
+                }))
                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                     if let Some(notice) = &this.notification_alert {
                         if this.host_active != Some(false)
@@ -16599,8 +16610,9 @@ mod desktop {
                     "acknowledgment must return focus to the guest root");
             }).unwrap();
             let commands = receiver.try_iter().collect::<Vec<_>>();
-            assert!(commands.iter().any(|command| matches!(command,
-                super::Command::DismissNotificationAlert(expected) if expected == &notice)));
+            assert_eq!(commands.iter().filter(|command| matches!(command,
+                super::Command::DismissNotificationAlert(expected) if expected == &notice)).count(), 1,
+                "each acknowledgment gesture must send exactly one command");
             assert!(!commands.iter().any(|command| matches!(command, super::Command::Input(..))),
                 "guest inputs: {:?}", commands.iter().filter_map(|command| match command {
                     super::Command::Input(input) => Some(format!("{input:?}")), _ => None,
@@ -16616,13 +16628,18 @@ mod desktop {
                 "inactive alert must retain ownership without accepting input");
             view.update(cx, |demo, _| demo.host_active = Some(true));
             cx.update_window(window.into(), |_, window, cx| {
+                window.press("tab", cx);
+                assert!(view.read(cx).focus.is_focused(window));
+                window.press("shift-tab", cx);
+                assert!(view.read(cx).focus.is_focused(window));
                 window.press("a", cx);
                 window.press("shift-a", cx);
                 window.press("enter", cx);
             }).unwrap();
             let commands = receiver.try_iter().collect::<Vec<_>>();
-            assert!(commands.iter().any(|command| matches!(command,
-                super::Command::DismissNotificationAlert(expected) if expected == &notice)));
+            assert_eq!(commands.iter().filter(|command| matches!(command,
+                super::Command::DismissNotificationAlert(expected) if expected == &notice)).count(), 1,
+                "each acknowledgment gesture must send exactly one command");
             assert!(!commands.iter().any(|command| matches!(command, super::Command::Input(..))),
                 "guest inputs: {:?}", commands.iter().filter_map(|command| match command {
                     super::Command::Input(input) => Some(format!("{input:?}")), _ => None,
