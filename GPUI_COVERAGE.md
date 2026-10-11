@@ -1341,4 +1341,23 @@ were reviewed: button labels fit their guest bounds. Panel borders and Save
 layout still differ by backend; these remain visual parity gaps. The initially
 clipped 68K Open directory label now uses a width-constrained text child, and a
 fresh composed capture confirms proper ellipsis within the guest bounds. Keyboard and explicit accessibility action
-routing for Standard File buttons remains unfinished.
+routing for Standard File buttons is covered by the follow-up below.
+
+
+### Standard File semantic button actions
+
+Open/Save, Cancel and Desktop now have explicit keyboard and accessibility Click
+handlers routed through serialized guest mouse tracking. The worker resolves the
+current panel identity and geometry, rejects stale identities and unavailable
+Open selections, then delivers a press, guest execution, release and pointer
+restoration. Physical pointer clicks continue through the ordinary guest input
+path; the host regression rejects duplicate semantic activation.
+
+The guest-session regression exercises Cancel alongside the existing Escape
+path in monochrome 68K, colour 68K and PPC. It checks stale generations, actions
+from a dismissed Open panel while Save is active, actions after dismissal, and
+pointer restoration. This does not qualify native screen-reader dispatch,
+keyboard focus navigation, Accept/Desktop outcomes, nested confirmation dialogs,
+New Folder, or complete file-panel parity.
+
+Both focused Standard File regressions pass on this revision (7.15s total).
