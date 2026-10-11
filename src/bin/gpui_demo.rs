@@ -1453,7 +1453,7 @@ mod desktop {
                                     .w(guest_px(f32::from(title.width.max(1))))
                                     .h(guest_px(f32::from(title.ascent + title.descent)))
                                     .child(super::text::classic_line(glyphs, title.ascent,
-                                        title.ascent + title.descent, (0, 0), false,
+                                        title.ascent + title.descent, (0, 0), None,
                                         super::text::ClassicLineGeometry::Title, scene_scale, foreground, cx.theme().selection))));
                         // Keep controls over the standard WDEF hit cells. Input still
                         // reaches FindWindow/TrackGoAway/DragWindow in the guest.
@@ -1670,25 +1670,29 @@ mod desktop {
                         .w(guest_px(source.width() as f32))
                         .h(guest_px(source.height() as f32))
                         .bg(cx.theme().background);
-                    for (index, line) in lines.into_iter().enumerate() {
+                    let caret_line = record.caret_line();
+                    for (index, _line) in lines.into_iter().enumerate() {
                         let top = dest.top + index as i32 * i32::from(record.line_height) - source.top;
                         if top >= source.height() || top + i32::from(record.line_height) <= 0 {
                             continue;
                         }
                         let starts = record.line_starts.as_ref().unwrap();
                         let line_start = starts[index];
-                        let line_end = line_start + line.chars().count();
+                        let line_end = starts[index + 1];
+                        let mut visible_end = line_end;
+                        while visible_end > line_start && matches!(record.text[visible_end - 1], b' ' | b'\r' | b'\n') {
+                            visible_end -= 1;
+                        }
+                        let measured_end = if record.clips_line_offsets_to_visible_text { visible_end } else { line_end };
                         let selection = (
-                            record.selection.0.saturating_sub(line_start).min(line_end - line_start),
-                            record.selection.1.saturating_sub(line_start).min(line_end - line_start),
+                            record.selection.0.saturating_sub(line_start).min(measured_end - line_start),
+                            record.selection.1.saturating_sub(line_start).min(measured_end - line_start),
                         );
-                        let bytes = &record.text[line_start..line_end];
-                        let glyphs = super::text::ClassicLine::plain(bytes, record.font, record.size);
-                        let soft_wrap_end = index + 2 < starts.len() && starts[index + 1] == line_end;
-                        let caret = record.active && record.caret_visible && record.selection.0 == record.selection.1
-                            && record.selection.0 >= line_start
-                            && (record.selection.0 < line_end
-                                || record.selection.0 == line_end && !soft_wrap_end);
+                        let mut glyphs = super::text::ClassicLine::plain(&record.text[line_start..visible_end], record.font, record.size);
+                        // Measure canonical byte spans independently of visible
+                        // ink; CR and trailing spaces remain guest offsets.
+                        glyphs.positions = super::text::ClassicLine::plain(&record.text[line_start..line_end], record.font, record.size).positions;
+                        let caret = caret_line.filter(|&(line, _)| line == index).map(|(_, offset)| offset);
                         overlay = overlay.child(
                             div()
                                 .id(format!("guest-text-edit-line-{}-{}-{index}", record.guest_id, record.generation))
@@ -6745,6 +6749,7 @@ mod desktop {
                             i32::from(dest.0 + next.font_ascent) + y));
                     }
                 }
+                let guest_ink = expected.clone();
                 if next.caret_visible {
                     let x = i32::from(dest.1) + geometry.caret_x(glyphs.positions[3], 3);
                     expected.extend((i32::from(dest.0)..i32::from(dest.0 + next.line_height)).map(|y| (x, y)));
@@ -6758,6 +6763,39 @@ mod desktop {
                             "TE line ink at {x},{y}, PPC={powerpc}, depth={depth:?}");
                     }
                 }
+                // Reach the shared soft-wrap byte boundary through TEKey,
+                // then compare the first-line caret against guest pixels.
+                for _ in 3..end {
+                    session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x7c, character: 0x1d });
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x7c, character: 0x1d });
+                    session.runner_mut().run_steps(100_000, None);
+                }
+                let boundary = (0..100).find_map(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    session.runner_mut().text_edit_snapshot().records.into_iter().find(|record| {
+                        record.guest_id == first.guest_id && record.selection == (end, end) && record.caret_visible
+                    })
+                }).expect("guest Right arrow must reach the first wrap boundary");
+                assert_eq!(boundary.clips_line_offsets_to_visible_text, powerpc);
+                let (owner, offset) = boundary.caret_line().unwrap();
+                assert_eq!(owner, 0, "guest boundary caret belongs to the first matching line");
+                assert_eq!(offset, if powerpc { visible_end } else { end });
+                let measured = super::super::text::ClassicLine::plain(&boundary.text[..end], boundary.font, boundary.size);
+                let caret_x = i32::from(dest.1) + geometry.caret_x(measured.positions[offset], offset);
+                let mut boundary_expected = guest_ink;
+                boundary_expected.extend((i32::from(dest.0)..i32::from(dest.0 + boundary.line_height)).map(|y| (caret_x, y)));
+                let frame = session.video_frame().unwrap();
+                for y in i32::from(dest.0)..i32::from(dest.0 + boundary.line_height) {
+                    for x in i32::from(dest.1)..i32::from(dest.3) {
+                        let pixel = ((y as u32 * frame.width + x as u32) * 4) as usize;
+                        assert_eq!(frame.pixels[pixel..pixel + 3].iter().all(|value| *value < 128),
+                            boundary_expected.contains(&(x, y)), "wrap caret ink at {x},{y}, PPC={powerpc}, depth={depth:?}");
+                    }
+                }
+                session.deliver_input(MacintoshInput::MouseDown { vertical, horizontal });
+                for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
+                session.deliver_input(MacintoshInput::MouseUp { vertical, horizontal });
+                settle(&mut session);
                 session.deliver_input(MacintoshInput::KeyDown {
                     mac_key: 0x00,
                     character: b'a',

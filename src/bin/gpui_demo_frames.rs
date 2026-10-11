@@ -1063,6 +1063,7 @@ mod tests {
             selection: (0, 0),
             active: true,
             caret_visible: true,
+            clips_line_offsets_to_visible_text: false,
             justification: 0,
             line_count: 1,
             line_starts: Some(vec![0, 5]),
@@ -1075,6 +1076,32 @@ mod tests {
             style_runs: None,
             line_metrics: None,
         };
+        let mut boundary = record.clone();
+        boundary.text = b"ab \rcd".to_vec();
+        boundary.line_starts = Some(vec![0, 4, 6]);
+        boundary.line_count = 2;
+        boundary.line_height = 10;
+        boundary.dest_rect = (0, 0, 20, 100);
+        boundary.view_rect = (0, 0, 20, 100);
+        boundary.selection = (4, 4);
+        assert_eq!(boundary.caret_line(), Some((0, 4)), "68k measures canonical CR/space bytes on the first matching line");
+        boundary.clips_line_offsets_to_visible_text = true;
+        assert_eq!(boundary.caret_line(), Some((0, 2)), "PPC measures the trimmed first matching line");
+        boundary.selection = (5, 5);
+        assert_eq!(boundary.caret_line(), Some((1, 1)));
+        boundary.clips_line_offsets_to_visible_text = false;
+        boundary.view_rect.0 = 10;
+        boundary.selection = (4, 4);
+        assert_eq!(boundary.caret_line(), Some((1, 0)), "68k resolves the first visible line after scrolling");
+        boundary.text = b"ab\r\rc".to_vec();
+        boundary.line_starts = Some(vec![0, 3, 4, 5]);
+        boundary.line_count = 3;
+        boundary.view_rect = (0, 0, 30, 100);
+        assert_eq!(boundary.caret_line(), Some((1, 1)), "empty CR line retains its byte span");
+        boundary.clips_line_offsets_to_visible_text = true;
+        assert_eq!(boundary.caret_line(), Some((1, 0)));
+        boundary.active = false;
+        assert_eq!(boundary.caret_line(), None);
         let viewport = Rect::from((20, 0, 160, 180));
         let pieces = text_edit_pieces(&[record.clone()], &[], &[], &[front.clone(), back.clone()], viewport);
         assert!(!pieces.is_empty());

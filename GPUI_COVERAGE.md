@@ -2624,3 +2624,18 @@ passes). The default build passes. This covers the tested plain line/caret;
 composed scale/state recaptures, newline/soft-wrap caret ownership, theme caret
 width and mixed-run TextEdit rendering remain open. Earlier composed text
 captures precede this inset correction and do not qualify the current matrix.
+
+Plain TextEdit caret ownership now follows canonical byte spans independently
+of visible ink: both guest draw paths choose the first matching line at an
+inclusive wrap boundary. 68k selects among visible lines and retains its last
+visible-line fallback; PPC clamps caret and selection offsets to the trimmed
+visible end. GPUI paints no CR/LF/trailing-space glyphs, but retains their byte
+advances where the guest measures them. Caret offset is independent of the
+highlight range and has one owner per record. Focused coverage includes CR,
+empty lines, scrolling and inactive state (0.05 seconds). The three-mode
+fixture reaches the first wrap boundary through actual guest Right-arrow
+TEKey events and compares caret/line pixels, then exercises typing, selection
+replacement and Mac Roman editing (157.40 seconds, passes). Default and
+JIT/headless checks pass. Broader CR/scroll pixel checks, composed scale/state
+recaptures, theme caret width, mixed-run presentation and native qualification
+remain unfinished.
