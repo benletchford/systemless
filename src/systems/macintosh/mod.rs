@@ -47,6 +47,7 @@ pub(crate) mod scrap_manager;
 pub mod scripted_traces;
 pub mod sound;
 pub(crate) mod text_edit;
+pub(crate) mod text_utils;
 pub(crate) mod thread_manager;
 pub(crate) mod time_manager;
 pub mod trace;
