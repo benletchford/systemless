@@ -23,7 +23,6 @@ def main():
     parser.add_argument('--smooth-review', action='store_true', help='retain native source and collect smooth appearance evidence without binary pixel qualification')
     args = parser.parse_args()
     assert not (args.selected and args.lifecycle), 'choose one matrix'
-    assert not args.smooth_review or args.selected, 'retained-source smooth review currently supports selected captures only'
     root = Path(__file__).resolve().parents[2]
     assert not subprocess.check_output(['git', 'status', '--porcelain'], cwd=root), 'commit source before capturing'
     output = args.output.resolve()
