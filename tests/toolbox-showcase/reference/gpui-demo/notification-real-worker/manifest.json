@@ -1,0 +1,15 @@
+{
+  "source_hashes": {
+    "src/bin/gpui_demo.rs": "b276103ff2a277c3620edabc880a113d189e159bbe09e897021cc6ebd9c5ac02"
+  },
+  "modes": [
+    "mono68k",
+    "colour68k"
+  ],
+  "scope": "Initialized real application in worker; startup prelude executes actual classic NMInstall instructions and restores application registers/status. Explicit acquisition/dismissal through production worker queue; background menu command rejection and automatic NMRemove. Host services disabled; no PPC guest install, composed capture, automatic polling, native reference or physical-input qualification.",
+  "result": {
+    "passed": 1,
+    "failed": 0,
+    "seconds": 1.91
+  }
+}
