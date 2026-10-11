@@ -973,6 +973,13 @@ impl super::TrapDispatcher {
         let rgba = bitmap.rgba();
         let transparent = self.ui_theme().palette().window_background;
         let mut pixels = HashMap::new();
+        let port = *self.current_port;
+        let (port_top, port_left) = self.port_bounds_top_left(bus, port);
+        let regions = if port == 0 { [0, 0] } else {
+            [bus.read_long(port + 24), bus.read_long(port + 28)]
+        };
+        let region_caches = regions.map(|region| Self::build_region_membership_cache(bus, region,
+            top.wrapping_add(port_top), top.saturating_add(bitmap.height() as i16).wrapping_add(port_top)));
         for y in 0..bitmap.height() {
             for x in 0..bitmap.width() {
                 let dst_x = left.saturating_add(x as i16);
@@ -980,6 +987,13 @@ impl super::TrapDispatcher {
                 if clip
                     .is_some_and(|(t, l, b, r)| dst_y < t || dst_y >= b || dst_x < l || dst_x >= r)
                 {
+                    continue;
+                }
+                // Selection and caret chrome share QuickDraw's complete
+                // caller visibility/clip regions, including complex holes.
+                if regions.iter().enumerate().any(|(index, &region)| !Self::region_contains_point_cached(
+                    bus, region, region_caches[index].as_ref(),
+                    dst_y.wrapping_add(port_top), dst_x.wrapping_add(port_left))) {
                     continue;
                 }
                 let offset = ((y * bitmap.width() + x) * 4) as usize;

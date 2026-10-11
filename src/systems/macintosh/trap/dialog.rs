@@ -3108,6 +3108,26 @@ impl super::TrapDispatcher {
         let old_port_fg_pixel = color_port.then(|| bus.read_long(te_port + 80));
         let old_resolved_color_fields = self.resolved_port_color_fields.get(&te_port).copied();
 
+        // TextEdit paints only inside viewRect, intersected with the caller's
+        // complete clip region. Merely skipping invisible lines still lets a
+        // partially visible glyph paint outside the editor.
+        let old_clip = bus.read_long(te_port + 28);
+        let view_clip = Self::allocate_handle_with_data(bus, 10);
+        if view_clip == 0 { return; }
+        let view_clip_ptr = bus.read_long(view_clip);
+        if view_clip_ptr == 0 { bus.free(view_clip); return; }
+        bus.write_word(view_clip_ptr, 10);
+        for (offset, value) in [(2, view_rect.0), (4, view_rect.1), (6, view_rect.2), (8, view_rect.3)] {
+            bus.write_word(view_clip_ptr + offset, value as u16);
+        }
+        if old_clip != 0 && !Self::write_region_boolean_op(bus, view_clip, old_clip, view_clip,
+            super::quickdraw::RegionBooleanOp::Intersection) {
+            bus.free(bus.read_long(view_clip));
+            bus.free(view_clip);
+            return;
+        }
+        bus.write_long(te_port + 28, view_clip);
+
         // Always sync A5 globals to te_port before drawing, even if port didn't change.
         // draw_generic_shape reads from A5 globals, and untrack_window can set self.current_port
         // without updating A5 globals, causing a divergence that sends drawing to the wrong port.
@@ -3450,6 +3470,11 @@ impl super::TrapDispatcher {
                     // still draw at destRect.left + TE_LINE_LEFT_INSET.
                     selection_left = selection_left.saturating_sub(Self::TE_LINE_LEFT_INSET);
                 }
+                let line_top = line_top.max(clip_top);
+                let line_bottom = line_bottom.min(clip_bottom);
+                let selection_left = selection_left.max(clip_left);
+                let selection_right = selection_right.min(clip_right);
+                if line_top >= line_bottom || selection_left >= selection_right { continue; }
                 if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
                     if te_active {
                         self.draw_rect(
@@ -3505,6 +3530,10 @@ impl super::TrapDispatcher {
                 checksum_view_rect(bus, *self.current_port, view_rect)
             );
         }
+
+        bus.write_long(te_port + 28, old_clip);
+        bus.free(bus.read_long(view_clip));
+        bus.free(view_clip);
 
         // Text (1993), p. 2-88: allocation is not evidence of painted text.
         bus.record_text_edit_caret_drawing(te_handle, te_port, view_rect, solid_caret_rect);

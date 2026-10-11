@@ -18141,6 +18141,58 @@
     }
 
     #[test]
+    fn textedit_partial_glyphs_preserve_view_and_complex_caller_clip() {
+        for theme in [UiThemeId::ClassicSystem7, UiThemeId::SystemlessDefault] {
+            let (mut disp, mut cpu, mut bus) = setup_with_port();
+            disp.set_screen_mode_for_test(bus.read_long(0x0824), 64, 512, 342, 1);
+            disp.set_ui_theme_id(theme);
+            let te_handle = make_te_with_text(&mut disp, &mut bus, b"MMMMMMMMMMMM");
+            let te_ptr = bus.read_long(te_handle);
+            let port = bus.read_long(te_ptr + TrapDispatcher::TE_IN_PORT_OFFSET);
+            let view = (20, 20, 27, 70);
+            TrapDispatcher::te_write_rect_words(&mut bus, te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET,
+                (19, 15, 60, 100));
+            TrapDispatcher::te_write_rect_words(&mut bus, te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET, view);
+            let clip_handle = bus.read_long(port + 28);
+            let hole = TrapDispatcher::allocate_handle_with_data(&mut bus, 10);
+            let hole_ptr = bus.read_long(hole);
+            bus.write_word(hole_ptr, 10);
+            TrapDispatcher::te_write_rect_words(&mut bus, hole_ptr + 2, (20, 40, 27, 45));
+            assert!(TrapDispatcher::write_region_boolean_op(&mut bus, clip_handle, clip_handle, hole,
+                super::super::quickdraw::RegionBooleanOp::Difference));
+            bus.free(bus.read_long(hole));
+            bus.free(hole);
+            let clip_ptr = bus.read_long(clip_handle);
+            let clip_bytes = (0..u32::from(bus.read_word(clip_ptr)))
+                .map(|offset| bus.read_byte(clip_ptr + offset)).collect::<Vec<_>>();
+            let (base, row_bytes, _, _, _) = disp.screen_mode;
+            for selection in [(0, 0), (0, 12)] {
+                for offset in 0..row_bytes * 80 { bus.write_byte(base + offset, 0); }
+                bus.write_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 1);
+                bus.write_word(te_ptr + TrapDispatcher::TE_CARET_STATE_OFFSET, 1);
+                bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, selection.0);
+                bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, selection.1);
+                disp.draw_te_contents(&mut cpu, &mut bus, te_handle, true);
+                assert_eq!(bus.read_long(port + 28), clip_handle);
+                let restored_ptr = bus.read_long(clip_handle);
+                assert_eq!((0..u32::from(bus.read_word(restored_ptr)))
+                    .map(|offset| bus.read_byte(restored_ptr + offset)).collect::<Vec<_>>(), clip_bytes);
+                let mut ink = 0;
+                for y in 0..80 {
+                    for x in 0..120 {
+                        let set = screen_pixel_is_set(&bus, base, row_bytes, x, y);
+                        let owned = y >= view.0 && y < view.2 && x >= view.1 && x < view.3
+                            && !(x >= 40 && x < 45);
+                        if owned { ink += usize::from(set); }
+                        else { assert!(!set, "{theme:?}: partial glyph/selection escaped clip at ({x},{y})"); }
+                    }
+                }
+                assert!(ink > 0, "partially visible glyphs must still paint");
+            }
+        }
+    }
+
+    #[test]
     fn teactivate_and_tedeactivate_repaint_empty_insertion_caret() {
         // IM:I I-385 and Text 1993 p. 2-80: TEActivate displays the caret
         // when the active selection is an insertion point; TEDeactivate

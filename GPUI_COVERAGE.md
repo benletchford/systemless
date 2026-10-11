@@ -6548,3 +6548,30 @@ The earlier inactive headless-window images remain in its
 `inactive-headless-window` subdirectory and do not qualify active selection.
 This checks guest field focus and explicitly simulated host focus, not physical
 activation, native typography, full dialog lifecycle or broad release readiness.
+
+
+### Classic TextEdit view and caller clipping correction (2026-10-12)
+
+Expanding the wrapped-dialog interaction test to 68k exposed guest glyphs below
+the view rectangle. The classic painter skipped invisible lines but did not
+clip partially visible glyphs. It now temporarily intersects the complete
+caller clip region with viewRect and restores its handle and contents after
+painting. Selection rectangles retain view bounds; themed selection/caret ink
+also respects caller visibility and complex clip holes, with membership caches
+reused for each paint.
+
+The focused regression passes both classic and Systemless themes, including
+partially visible glyphs, selected text, a complex caller clip hole and exact
+clip restoration. All 105 selected classic TextEdit tests pass (0.34 seconds).
+The library test build passes (6m 48s), using package-only optimization0 and
+16 codegen units to reduce compiler contention on this 8 GB machine; this is
+functional evidence, not production performance qualification. Source/binary/log
+hashes are in `target/gpui-qualification/classic-wrapped-dialog/clipping-review.json`.
+
+Separate, uncommitted 68k dialog-editor discovery and routing changes remain
+unqualified. Their expanded interaction test passes the outside-field pixel
+check, then declines GPUI replacement because the mono68k drawing-ownership
+snapshot has no intact region. A read-only guest probe confirms the screen base
+matches and the ownership remains absent through subsequent caret blink phases.
+The guard is retained. Neither this clipping fix nor the earlier colour68k
+capture establishes complete cross-CPU wrapped-dialog GPUI readiness.
