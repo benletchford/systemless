@@ -354,6 +354,9 @@ mod desktop {
         capture_standard_file_open_composed: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_standard_file_volume_popup_composed: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_standard_file_open_scrolled: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -1041,6 +1044,7 @@ mod desktop {
         keyboard: super::input::KeyboardState,
         wheel: super::scroll::WheelAccumulator,
         _window_activation: Option<Subscription>,
+        _modal_keys: Option<Subscription>,
         host_active: Option<bool>,
         host_generation: u64,
         host_clipboard: super::clipboard::HostClipboard,
@@ -1122,7 +1126,7 @@ mod desktop {
         fn queue_standard_file_action(&self, id: u32, generation: u64, action: super::activation::FileAction) {
             if self.host_active == Some(false) || self.notification_alert.is_some()
                 || !self.standard_file.as_ref().is_some_and(|panel|
-                    panel.guest_id == id && panel.generation == generation) { return; }
+                    panel.guest_id == id && panel.generation == generation && panel.volume_popup.is_none()) { return; }
             let _ = self.commands.send(Command::ActivateFile(id, generation, action));
         }
 
@@ -1131,7 +1135,7 @@ mod desktop {
             if self.host_active == Some(false) || self.notification_alert.is_some()
                 || !self.standard_file.as_ref().is_some_and(|panel|
                     panel.guest_id == id && panel.generation == generation
-                        && panel.new_folder.is_none() && !panel.confirming_replace
+                        && panel.volume_popup.is_none() && panel.new_folder.is_none() && !panel.confirming_replace
                         && panel.entries.as_ref().and_then(|entries| entries.get(index)) == Some(expected)) { return; }
             let _ = self.commands.send(Command::ActivateFileEntry(id, generation, index, expected.clone()));
         }
@@ -1318,6 +1322,7 @@ mod desktop {
                 keyboard: super::input::KeyboardState::default(),
                 wheel: super::scroll::WheelAccumulator::default(),
                 _window_activation: None,
+                _modal_keys: None,
                 host_active: None,
                 host_generation: 0,
                 host_clipboard: Default::default(),
@@ -1454,6 +1459,23 @@ mod desktop {
             }
         }
 
+        fn route_modal_tab(&mut self, modifiers: Modifiers, window: &mut Window, cx: &mut Context<Self>) {
+            let volume_owned = self.standard_file.as_ref().is_some_and(|panel| panel.volume_popup.is_some());
+            if self.notification_alert.is_none() && !volume_owned {
+                return;
+            }
+            if self.host_active != Some(false) {
+                self.focus.focus(window, cx);
+                if self.notification_alert.is_none() {
+                    self.sync_caps_lock(window.capslock().on);
+                    self.sync_host_modifiers(modifiers);
+                    self.press_host_key(0x30, 9);
+                }
+            }
+            cx.stop_propagation();
+            window.prevent_default();
+        }
+
         fn scrollbar_at(&self, point: (i16, i16)) -> Option<(u32, u64, (i16, i16))> {
             let viewport = super::frames::Rect {
                 top: 0,
@@ -1557,6 +1579,16 @@ mod desktop {
 
     impl Render for Demo {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            if self._modal_keys.is_none() {
+                let view = cx.entity().downgrade();
+                let owner = window.window_handle();
+                self._modal_keys = Some(cx.intercept_keystrokes(move |event, window, cx| {
+                    if window.window_handle() != owner || event.keystroke.key != "tab" { return; }
+                    if let Some(view) = view.upgrade() {
+                        view.update(cx, |this, cx| this.route_modal_tab(event.keystroke.modifiers, window, cx));
+                    }
+                }));
+            }
             if self._window_activation.is_none() {
                 self.host_active = Some(window.is_window_active());
                 if window.is_window_active() {
@@ -2789,7 +2821,7 @@ mod desktop {
                             .border_color(cx.theme().border)
                             .text_color(cx.theme().foreground)
                             .text_size(guest_px(13.));
-                        if let Some((text, origin)) = &panel.volume_text {
+                        if let Some((text, origin)) = panel.volume_text.as_ref().filter(|_| panel.volume_popup.is_none()) {
                             overlay = overlay.child(
                                 at(layout.volume)
                                     .overflow_hidden()
@@ -2798,7 +2830,7 @@ mod desktop {
                                     .child(super::text::classic_file_row(text, *origin, scene_scale, cx.theme().foreground)),
                             );
                         }
-                        if let Some(pixels) = &panel.volume_indicator_rgba {
+                        if let Some(pixels) = panel.volume_indicator_rgba.as_ref().filter(|_| panel.volume_popup.is_none()) {
                             let height = (layout.volume.2 - layout.volume.0) as u32;
                             if let Some(rgba) = image::RgbaImage::from_raw(19, height, gpui_pixels(pixels.to_vec())) {
                                 let source = Arc::new(RenderImage::new(vec![image::Frame::new(rgba)]));
@@ -2843,7 +2875,7 @@ mod desktop {
                                     .role(Role::ListBoxOption)
                                     .aria_label(entry.name.clone())
                                     .aria_selected(selected)
-                                    .when(panel.new_folder.is_none() && !panel.confirming_replace && self.host_active != Some(false), |row| {
+                                    .when(panel.volume_popup.is_none() && panel.new_folder.is_none() && !panel.confirming_replace && self.host_active != Some(false), |row| {
                                         let accessibility_view = cx.entity().downgrade();
                                         let (id, generation, expected) = (panel.guest_id, panel.generation, entry.clone());
                                         row.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, cx| {
@@ -2941,7 +2973,7 @@ mod desktop {
                                 at(rect).child(
                                     super::a11y::AccessibleComponent::new(super::choices::guest_button(
                                         format!("guest-standard-open-{}-{}-{}", panel.guest_id, panel.generation, label),
-                                        label.into(), enabled, self.host_active != Some(false), false, false, scene_scale, cx,
+                                        label.into(), enabled, self.host_active != Some(false) && panel.volume_popup.is_none(), false, false, scene_scale, cx,
                                     ).w_full().h_full()
                                     .when(label != "Eject", |button| {
                                         let action = match label {
@@ -2962,6 +2994,30 @@ mod desktop {
                                     }), !enabled),
                                 ),
                             );
+                        }
+                        if let Some(popup) = &panel.volume_popup {
+                            let mut menu = at(popup.bounds)
+                                .left(guest_px(f32::from(popup.bounds.1 - panel.bounds.1)) - px(2.))
+                                .top(guest_px(f32::from(popup.bounds.0 - panel.bounds.0)) - px(2.))
+                                .id("guest-standard-volume-popup")
+                                .overflow_hidden().bg(cx.theme().background).border_1().border_color(cx.theme().border);
+                            for (row, (index, _choice)) in popup.choices.iter().enumerate().skip(popup.first_visible).take(popup.visible_rows).enumerate() {
+                                let selected = popup.highlighted == Some(index);
+                                let label = popup.display_name(index).unwrap_or_default();
+                                menu = menu.child(div().absolute().left(guest_px(1.) - px(1.))
+                                    .top(guest_px(row as f32 * f32::from(popup.row_height)) - px(1.))
+                                    .w(guest_px(f32::from(popup.bounds.3 - popup.bounds.1 - 2)))
+                                    .h(guest_px(f32::from(popup.row_height))).overflow_hidden()
+                                    .child(div().absolute().top(guest_px(1.)).w_full()
+                                        .h(guest_px(f32::from(popup.row_height - 2)))
+                                        .bg(if selected { cx.theme().selection } else { cx.theme().background }))
+                                    .child(div().absolute().left(guest_px(5.))
+                                        .w(guest_px(f32::from(popup.bounds.3 - popup.bounds.1 - 12)))
+                                        .h(guest_px(f32::from(popup.row_height)))
+                                        .child(super::text::classic_directory_label(&label, (0, 12, 0),
+                                            (0, 12, popup.row_height), scene_scale, cx.theme().foreground))));
+                            }
+                            overlay = overlay.child(menu);
                         }
                         screen = screen.child(overlay);
                     }
@@ -3475,6 +3531,20 @@ mod desktop {
                     }
                 }))
                 .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                    if this.notification_alert.is_none() && this.standard_file.as_ref().is_some_and(|panel| panel.volume_popup.is_some()) {
+                        if this.host_active != Some(false) {
+                            this.focus.focus(window, cx);
+                            this.sync_caps_lock(window.capslock().on);
+                            this.sync_host_modifiers(event.keystroke.modifiers);
+                            if let Some((mac_key, character)) = guest_key(&event.keystroke) {
+                                this.press_host_key(mac_key, character);
+                            }
+                        }
+                        cx.stop_propagation();
+                        window.prevent_default();
+                        return;
+                    }
+
                     let Some(notice) = &this.notification_alert else { return; };
                     if this.host_active != Some(false) {
                         this.focus.focus(window, cx);
@@ -3656,6 +3726,7 @@ mod desktop {
         StandardFileSave,
         StandardFileSaveComposed,
         StandardFileOpenComposed,
+        StandardFileVolumePopupComposed,
         StandardFileOpenScrolled,
         StandardFileSaveEditedComposed,
         StandardFileSaveCaretHiddenComposed,
@@ -3846,7 +3917,7 @@ mod desktop {
                 | CaptureCase::StandardFileNewFolderSelectedComposed
                 | CaptureCase::StandardFileNewFolderLongComposed | CaptureCase::StandardFileNewFolderCaretHiddenComposed
         );
-        let standard_file_open = matches!(capture, CaptureCase::StandardFileOpenComposed | CaptureCase::StandardFileOpenScrolled);
+        let standard_file_open = matches!(capture, CaptureCase::StandardFileOpenComposed | CaptureCase::StandardFileVolumePopupComposed | CaptureCase::StandardFileOpenScrolled);
         let standard_file_page = standard_file_save || standard_file_open;
         let radio_page = matches!(capture, CaptureCase::RadioFonts | CaptureCase::RadioHeld | CaptureCase::RadioOutside | CaptureCase::RadioSelected);
         let controls_changed = matches!(capture, CaptureCase::ControlsChanged);
@@ -4423,6 +4494,27 @@ mod desktop {
                         && panel.entries.as_ref().is_some_and(|entries| !entries.is_empty())
                 })
             }));
+            if matches!(capture, CaptureCase::StandardFileVolumePopupComposed) {
+                let panel = session.runner().standard_file_snapshot().unwrap();
+                let selector = panel.get_layout.as_ref().unwrap().volume;
+                session.deliver_input(MacintoshInput::MouseDown {
+                    vertical: selector.0 + 5, horizontal: selector.1 + 5 });
+                assert!((0..100).any(|_| {
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                    session.runner().standard_file_snapshot().is_some_and(|panel| panel.volume_popup.is_some())
+                }));
+                for _ in 0..5 {
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                }
+                let popup = session.runner().standard_file_snapshot().unwrap().volume_popup.unwrap();
+                std::fs::write(output.with_extension("volume-popup.json"), serde_json::to_vec_pretty(&serde_json::json!({
+                    "bounds": popup.bounds, "highlighted": popup.highlighted, "first_visible": popup.first_visible,
+                    "choices": popup.choices.iter().map(|choice| serde_json::json!({ "name": choice.name,
+                        "ref_num": choice.ref_num, "root_dir_id": choice.root_dir_id })).collect::<Vec<_>>()
+                })).unwrap()).unwrap();
+            }
             if matches!(capture, CaptureCase::StandardFileOpenScrolled) {
                 let before = session.runner().standard_file_snapshot().unwrap();
                 let rows = before.get_layout.as_ref().unwrap().visible_rows;
@@ -5457,7 +5549,7 @@ mod desktop {
         });
         visual.run_until_parked();
         if matches!(capture, CaptureCase::StandardFileSaveComposed | CaptureCase::StandardFileNewFolderComposed
-            | CaptureCase::StandardFileOpenComposed | CaptureCase::StandardFileOpenScrolled) {
+            | CaptureCase::StandardFileOpenComposed | CaptureCase::StandardFileVolumePopupComposed | CaptureCase::StandardFileOpenScrolled) {
             visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
                 demo.host_active = Some(true); window.focus(&demo.focus, cx);
                 demo.synchronize_composition(window, cx); cx.notify();
@@ -5481,7 +5573,7 @@ mod desktop {
                 "scope": "Capture provenance only; no automatic smooth visual, font fidelity or performance qualification",
             })).unwrap()).unwrap();
         composed.save(output).unwrap();
-        if matches!(capture, CaptureCase::StandardFileOpenComposed | CaptureCase::StandardFileOpenScrolled) {
+        if matches!(capture, CaptureCase::StandardFileOpenComposed | CaptureCase::StandardFileVolumePopupComposed | CaptureCase::StandardFileOpenScrolled) {
             visual.update_window(window.into(), |_, _, cx| view.update(cx, |demo, cx| {
                 demo.host_active = Some(false); cx.notify();
             })).unwrap();
@@ -7091,6 +7183,12 @@ mod desktop {
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_standard_file_volume_popup_composed.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth,
+                CaptureCase::StandardFileVolumePopupComposed, args.capture_scale);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_standard_file_open_composed.as_ref() {
             capture_fixture_screen(
                 &args.game,
@@ -7727,6 +7825,7 @@ mod desktop {
                         capture_standard_file_save: None,
                         capture_standard_file_save_composed: None,
                         capture_standard_file_open_composed: None,
+                        capture_standard_file_volume_popup_composed: None,
                         capture_standard_file_open_scrolled: None,
                         capture_standard_file_save_edited_composed: None,
                         capture_standard_file_save_caret_hidden_composed: None,
@@ -8850,7 +8949,9 @@ mod desktop {
                 }
                 let (volume_text, origin) = opened.volume_text.as_ref().expect("guest volume typography");
                 if powerpc {
-                    assert_eq!(volume_text, "Maci...");
+                    assert!(volume_text.ends_with("..."));
+                    let line = super::super::text::ClassicLine::unicode(volume_text, 0, 12);
+                    assert!(line.positions.last().copied().unwrap_or(0) <= i32::from(layout.volume.3 - layout.volume.1 - 19));
                     assert_eq!(*origin, (0, 12));
                 } else {
                     assert_eq!(origin.0, 15);
@@ -8875,6 +8976,40 @@ mod desktop {
                 assert!(layout.row_height > 0 && layout.visible_rows > 0);
                 let stable = session.runner_mut().standard_file_snapshot().unwrap();
                 assert_eq!((stable.guest_id, stable.generation), (opened.guest_id, opened.generation));
+                session.deliver_input(MacintoshInput::MouseDown {
+                    vertical: layout.volume.0 + 5, horizontal: layout.volume.1 + 5 });
+                let popup = (0..100).find_map(|_| {
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                    session.runner_mut().standard_file_snapshot().and_then(|panel| panel.volume_popup)
+                }).expect("guest selector must open its retained popup");
+                assert!(!popup.choices.is_empty());
+                session.deliver_input(MacintoshInput::MouseMove {
+                    vertical: popup.bounds.2 + 1, horizontal: popup.bounds.1 + 5 });
+                assert!((0..100).any(|_| {
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                    session.runner_mut().standard_file_snapshot().and_then(|panel| panel.volume_popup)
+                        .is_some_and(|popup| popup.highlighted.is_none())
+                }), "pointer outside clears guest popup highlight");
+                session.deliver_input(MacintoshInput::MouseMove {
+                    vertical: popup.bounds.0 + 5, horizontal: popup.bounds.1 + 5 });
+                assert!((0..100).any(|_| {
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                    session.runner_mut().standard_file_snapshot().and_then(|panel| panel.volume_popup)
+                        .is_some_and(|popup| popup.highlighted == Some(popup.first_visible))
+                }), "pointer inside follows guest popup rows");
+                session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x35, character: 27 });
+                session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x35, character: 27 });
+                assert!((0..100).any(|_| {
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                    session.runner_mut().standard_file_snapshot().is_some_and(|panel|
+                        panel.volume_popup.is_none() && panel.directory_id == opened.directory_id)
+                }), "Escape cancels the selector without dismissing Open or changing the folder");
+                session.deliver_input(MacintoshInput::MouseUp {
+                    vertical: layout.volume.0 + 5, horizontal: layout.volume.1 + 5 });
                 if semantic {
                     use super::super::activation::{ControlActivation, FileAction};
                     let origin = session.runner().dispatcher().mouse_position();
@@ -17347,6 +17482,7 @@ mod desktop {
                 list_text_origin: (4, 11),
                 directory_marker: "▸",
                 list_name_limit: Some(36),
+                volume_popup: None,
                 volume_indicator_rgba: Some(vec![255; 19 * 19 * 4].into()),
                 volume_text: Some(("Maci...".into(), (15, 11))),
                         confirming_replace: false,
@@ -17450,6 +17586,39 @@ mod desktop {
 
             cx.update_window(window.into(), |_, window, cx| {
                 view.update(cx, |demo, cx| {
+                    let panel = demo.standard_file.as_mut().unwrap();
+                    panel.volume_popup = systemless::runner::StandardFileVolumePopup::new(
+                        vec![systemless::runner::StandardFileVolumeChoice { ref_num: -1, root_dir_id: 2, name: "MacintoshHD".into() }],
+                        -1, panel.get_layout.as_ref().unwrap().volume, panel.bounds, 200);
+                    demo.host_active = Some(true);
+                    demo.focus.focus(window, cx);
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                view.update(cx, |demo, _| { demo.host_active = Some(true); demo.release_host_input(); });
+                for key in ["tab", "shift-tab", "enter"] {
+                    window.press(key, cx);
+                    assert_eq!(view.read(cx).host_active, Some(true), "{key}: simulated host activity");
+                    assert!(view.read(cx).standard_file.as_ref().unwrap().volume_popup.is_some(), "{key}: popup ownership");
+                    assert!(view.read(cx).focus.is_focused(window), "volume popup must retain guest root focus");
+                }
+            }).unwrap();
+            let popup_requests: Vec<_> = receiver.try_iter().collect();
+            assert_eq!(popup_requests.iter().filter(|command| matches!(command,
+                super::Command::Input(MacintoshInput::KeyDown { mac_key: 0x30 | 0x24, .. }))).count(), 3, "{:?}", popup_requests.iter().filter_map(|command| match command { super::Command::Input(input) => Some(input), _ => None }).collect::<Vec<_>>());
+            assert!(!popup_requests.iter().any(|command| matches!(command, super::Command::ActivateFile(..))));
+            cx.update_window(window.into(), |_, window, cx| {
+                view.update(cx, |demo, cx| { demo.host_active = Some(false); cx.notify(); });
+                window.render_frame(cx); window.press("enter", cx);
+            }).unwrap();
+            assert!(!receiver.try_iter().any(|command| matches!(command,
+                super::Command::Input(MacintoshInput::KeyDown { .. }) | super::Command::ActivateFile(..))));
+            view.update(cx, |demo, _| {
+                demo.host_active = Some(true); demo.standard_file.as_mut().unwrap().volume_popup = None;
+            });
+
+            cx.update_window(window.into(), |_, window, cx| {
+                view.update(cx, |demo, cx| {
                     demo.standard_file.as_mut().unwrap().selected = None;
                     cx.notify();
                 });
@@ -17486,6 +17655,7 @@ mod desktop {
                 list_text_origin: (4, 11),
                 directory_marker: "▸",
                 list_name_limit: Some(36),
+                volume_popup: None,
                 volume_indicator_rgba: None,
                 volume_text: None,
                         confirming_replace: false,

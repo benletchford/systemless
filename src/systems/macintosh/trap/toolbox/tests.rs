@@ -12615,7 +12615,7 @@
             .standard_file_get_tracking
             .as_ref()
             .expect("Open dialog should remain active");
-        let items = TrapDispatcher::standard_file_get_dialog_items(tracking);
+        let items = disp.standard_file_get_dialog_items(tracking);
         assert!(tracking.entries.is_empty());
         assert_eq!(
             tracking.bounds.2 - tracking.bounds.0,

@@ -1,0 +1,15 @@
+# Guest-owned Standard File volume selector
+
+Shared package state is used by classic and PPC guest event loops. It retains mounted volume identities and names, bounds, pointer and keyboard selection, scrolling and cancellation. Current-directory ancestry resolves the volume; both native painters and GPUI snapshots reflect its label. The new shared compositor mode is `--capture-standard-file-volume-popup-composed`.
+
+Seven library selector tests pass (6.43s) at the checkpoint before the native/GPUI baseline and layering corrections. The real fixture switches to an injected read-only Archive volume in mono68k, colour68k, PPC8 and PPC16, verifies its label and Samples child directory, and retains panel identity. The prior failure clicked incorrect fixture coordinates; the corrected test uses the established Open location. Current-source focused reruns are recorded separately when terminal.
+
+The final library selector rerun passes seven tests (5.42s). The current GPUI pointer/keyboard regression passes (3.88s), including active Tab, Shift-Tab and Return delivery, root focus retention, inactive exclusion and background semantic-action exclusion. An earlier raw-key capture failed: Base Root resolves Tab bindings before that phase. A window-scoped public keystroke interceptor now retains the guest-owned popup/notification boundary before host bindings. The failed trace and passing logs are retained. This remains synthetic GPUI test-window input evidence.
+
+The captures below precede the subsequent keyboard interceptor, constructor visibility and test edits. Their source manifest identifies that capture checkpoint, not the final whole-source candidate.
+
+Four active compositions were reviewed: mono68k scale0.75 full scene without resizing, and colour68k scale1, PPC8 scale1.5 and PPC16 scale2 lossless panel crops at original resolution. Popup labels are smooth and contained; the underlying selector-border remnant in the archived failed mono capture is absent after the layering correction. Popup labels use the same guest font/width truncation as native paint; GPUI placement corrects container-border offsets. Background application-drawn text remains guest raster.
+
+Four active/reactivated full-scene pairs restore exactly. Inactive images are archived but not independently visually reviewed; the helper changes host presentation activity while preserving guest modal state. This does not prove native host observation or guest activation appearance. The capture-source manifest records430 source/build input hashes plus executable/fixture hashes; all matched after capture. These selected single-choice scenes do not qualify every mode/scale combination, long/multiple-choice rendering, native accessibility, physical keyboard/pointer input, authentic Macintosh font fidelity, performance or production readiness. All eight broad release gates remain open.
+
+The scoped interceptor also passes all five notification regressions (43.87s), including actual cross-CPU guest installation/worker delivery. This does not establish physical keyboard or native accessibility qualification.

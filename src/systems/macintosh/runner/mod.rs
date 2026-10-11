@@ -28,7 +28,7 @@ use crate::memory::{AccessSource, MacMemoryBus, MemoryBus};
 use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{ProcessContext, ProcessMemoryManager, SharedProcessFileSystem};
 pub use crate::standard_file_ui::{
-    StandardFileEntrySnapshot, StandardFileGetLayout, StandardFileKind, StandardFilePutLayout,
+    StandardFileVolumePopup, StandardFileVolumeChoice, StandardFileEntrySnapshot, StandardFileGetLayout, StandardFileKind, StandardFilePutLayout,
     StandardFileNameTextLayout, StandardFileSnapshot, StandardFileReplacementLayout, StandardFileNewFolderSnapshot, StandardFileNewFolderLayout,
 };
 pub use crate::list_manager::StandardListCellPaintSnapshot;
@@ -3707,10 +3707,11 @@ impl FixtureRunner {
                 list_text_origin: (4, 11),
                 directory_marker: "▸",
                 list_name_limit: Some(36),
+                volume_popup: tracking.volume_popup.clone(),
                 volume_indicator_rgba: None,
                 volume_text: Some((
                     TrapDispatcher::popup_control_display_title(
-                        crate::trap::dispatch::BOOT_VOLUME_NAME,
+                        &self.dispatcher.standard_file_get_volume_name(tracking),
                         (get_layout.volume.3 - get_layout.volume.1 - 34).max(0), 0, 12,
                     ),
                     (15, {
@@ -3746,7 +3747,7 @@ impl FixtureRunner {
                 name_text_layout: None,
                 name_caret_visible: None,
                 name_has_focus: None,
-                directory_label: Some(self.dispatcher.apply_param_text(crate::trap::dispatch::BOOT_VOLUME_NAME).into_owned()),
+                directory_label: Some(self.dispatcher.apply_param_text(&self.dispatcher.standard_file_get_volume_name(tracking)).into_owned()),
                 directory_font: (self.dispatcher.tx_font, self.dispatcher.tx_size, self.dispatcher.tx_face as u8),
                 directory_text_layout: self.dispatcher.standard_file_directory_text_layout(get_layout.directory_label),
                 get_layout: Some(get_layout),
@@ -3762,6 +3763,7 @@ impl FixtureRunner {
                 list_text_origin: (4, 11),
                 directory_marker: "▸",
                 list_name_limit: Some(36),
+                volume_popup: None,
                 volume_indicator_rgba: None,
                 volume_text: None,
             confirming_replace: tracking.confirming_replace,

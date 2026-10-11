@@ -31,6 +31,8 @@ pub(super) struct PpcStandardFileEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PpcStandardFileGetTrackingState {
+    pub(crate) volume: crate::standard_file_ui::StandardFileVolumeChoice,
+    pub(crate) volume_popup: Option<crate::standard_file_ui::StandardFileVolumePopup>,
     pub(super) generation: u64,
     pub(super) standard_entry_point: bool,
     pub(super) call: PpcStandardFileCall,
@@ -944,12 +946,14 @@ fn ppc_standard_file_draw_get_dialog(
         true,
         false,
     );
-    ppc_draw_dialog_text(memory, gworlds, volume_rect, b"Maci...", PPC_RGB_BLACK);
+    let volume_title = crate::trap::TrapDispatcher::popup_control_display_title(&tracking.volume.name,
+        (volume_rect.3 - volume_rect.1 - 19).max(0), 0, 12);
+    ppc_draw_dialog_text(memory, gworlds, volume_rect, &encode_mac_roman_lossy(&volume_title), PPC_RGB_BLACK);
     ppc_draw_dialog_text(
         memory,
         gworlds,
         ppc_standard_file_global_rect(bounds, PPC_STANDARD_FILE_GET_VOLUME_LABEL_RECT),
-        crate::trap::dispatch::BOOT_VOLUME_NAME.as_bytes(),
+        &encode_mac_roman_lossy(&tracking.volume.name),
         PPC_RGB_BLACK,
     );
     ppc_standard_file_draw_scrollbar(memory, front, gworlds, tracking);
@@ -999,6 +1003,20 @@ fn ppc_standard_file_draw_get_dialog(
         open_enabled,
         true,
     );
+    if let Some(popup) = &tracking.volume_popup {
+        let _ = ppc_fill_front_rect(memory, front, popup.bounds, PPC_RGB_WHITE);
+        let _ = ppc_frame_front_rect(memory, front, popup.bounds, PPC_RGB_BLACK, 1);
+        for (row, (index, choice)) in popup.choices.iter().enumerate().skip(popup.first_visible).take(popup.visible_rows).enumerate() {
+            let top = popup.bounds.0 + row as i16 * popup.row_height;
+            let rect = (top + 1, popup.bounds.1 + 1, top + popup.row_height - 1, popup.bounds.3 - 1);
+            let selected = popup.highlighted == Some(index);
+            if selected { let _ = ppc_fill_front_rect(memory, front, rect, PPC_RGB_BLACK); }
+            let label = crate::trap::TrapDispatcher::popup_control_display_title(&choice.name,
+                (popup.bounds.3 - popup.bounds.1 - 12).max(0), 0, 12);
+            ppc_draw_dialog_text(memory, gworlds, (top, rect.1 + 5, rect.2, rect.3 - 5),
+                &encode_mac_roman_lossy(&label), if selected { PPC_RGB_WHITE } else { PPC_RGB_BLACK });
+        }
+    }
 }
 
 pub(super) fn ppc_standard_file_name_selection_rect(
@@ -1490,13 +1508,44 @@ fn ppc_standard_file_get_service(
     }
     let event = event_queue
         .iter()
-        .position(|event| matches!(event.what, 1 | 3 | 5))
+        .position(|event| matches!(event.what, 1 | 2 | 3 | 5))
         .and_then(|index| event_queue.remove(index));
     let previous_dir_id = tracking.current_dir_id;
     let previous_selection = tracking.selected;
+    let previous_popup = tracking.volume_popup.as_ref().map(|popup| (popup.bounds, popup.first_visible, popup.highlighted));
+    if let Some(popup) = tracking.volume_popup.as_mut() {
+        if let Some((v, h)) = memory.read_u16_be(crate::memory::globals::addr::MOUSE_LOC2)
+            .zip(memory.read_u16_be(crate::memory::globals::addr::MOUSE_LOC2 + 2)) {
+            popup.hover(v as i16, h as i16);
+        }
+    }
     let mut open = false;
     if let Some(event) = event {
-        if event.what == 1 {
+        if let Some(popup) = tracking.volume_popup.as_mut() {
+            use crate::standard_file_ui::StandardFileVolumeResult;
+            let result = match event.what {
+                1 | 2 => popup.pointer(event.where_v, event.where_h, event.what == 2),
+                3 | 5 => popup.key(event.message as u8, (event.message >> 8) as u8, event.modifiers),
+                _ => StandardFileVolumeResult::Pending,
+            };
+            match result {
+                StandardFileVolumeResult::Pending => {},
+                StandardFileVolumeResult::Cancel => tracking.volume_popup = None,
+                StandardFileVolumeResult::Select { root_dir_id, .. } => {
+                    tracking.volume_popup = None;
+                    tracking.current_dir_id = root_dir_id;
+                    tracking.entries = ppc_standard_file_get_entries(vfs_directories, vfs_files,
+                        vfs_resource_files, root_dir_id, tracking.file_types.as_deref());
+                    tracking.selected = 0;
+                }
+            }
+        } else if event.what == 1 && ppc_standard_file_point_in_rect((
+            event.where_v.saturating_sub(tracking.bounds.0), event.where_h.saturating_sub(tracking.bounds.1)),
+            PPC_STANDARD_FILE_GET_VOLUME_RECT) {
+            tracking.volume_popup = crate::standard_file_ui::StandardFileVolumePopup::new(
+                crate::standard_file_ui::StandardFileVolumePopup::mounted_choices(vfs_volumes), tracking.volume.ref_num,
+                ppc_standard_file_global_rect(tracking.bounds, PPC_STANDARD_FILE_GET_VOLUME_RECT), tracking.bounds, 200);
+        } else if event.what == 1 {
             let local = (
                 event.where_v.saturating_sub(tracking.bounds.0),
                 event.where_h.saturating_sub(tracking.bounds.1),
@@ -1602,6 +1651,8 @@ fn ppc_standard_file_get_service(
             }
         }
     }
+    tracking.volume = crate::standard_file_ui::StandardFileVolumePopup::volume_for_directory(
+        vfs_volumes, vfs_directories, tracking.current_dir_id);
     if tracking.current_dir_id != previous_dir_id {
         // CustomGetFile filters each displayed folder, not just the initial
         // listing. Inside Macintosh: Files (1992), pp. 3-20--3-21.
@@ -1618,7 +1669,8 @@ fn ppc_standard_file_get_service(
             Err(tracking) => tracking,
         };
     }
-    if tracking.current_dir_id != previous_dir_id || tracking.selected != previous_selection {
+    if tracking.current_dir_id != previous_dir_id || tracking.selected != previous_selection
+        || tracking.volume_popup.as_ref().map(|popup| (popup.bounds, popup.first_visible, popup.highlighted)) != previous_popup {
         ppc_standard_file_draw_get_dialog(memory, gworlds, &tracking);
     }
     startup.standard_file_get_tracking = Some(tracking);
@@ -1769,6 +1821,8 @@ fn ppc_standard_file_get_start(
         });
     startup.next_standard_file_generation = startup.next_standard_file_generation.saturating_add(1);
     let tracking = PpcStandardFileGetTrackingState {
+        volume: crate::standard_file_ui::StandardFileVolumePopup::volume_for_directory(vfs_volumes, vfs_directories, current_dir_id),
+        volume_popup: None,
         generation: startup.next_standard_file_generation,
         standard_entry_point: operation == PpcStandardFileOperation::StandardGetFile,
         call: ppc_standard_file_call(mode, cpu),

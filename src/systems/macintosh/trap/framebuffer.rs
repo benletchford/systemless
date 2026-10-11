@@ -8901,6 +8901,7 @@ mod redraw_chrome_tests {
 
         let get_bounds = (50, 0, 228, 356);
         disp.standard_file_get_tracking = Some(StandardFileGetTrackingState {
+            volume_popup: None,
             generation: 1,
             standard_entry_point: false,
             modern_reply: false,
