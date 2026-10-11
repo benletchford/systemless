@@ -1,0 +1,8 @@
+{
+  "head": "d0a9dbad9aca3a31a6923ab53c89756c19911946",
+  "command": "cargo check --locked --bin systemless",
+  "result": "PASS, 51s; existing warnings remain",
+  "scope": "Default-feature ordinary application type/build compatibility after wrapped-dialog composition implementation.",
+  "limits": "Check does not produce a release executable, qualify packaging or launch performance, or establish no-default-feature public library buildability.",
+  "sha256": "99548e4fbee916cfeb9c40375e4e2b63f7e3e32d9ff5e4c6baa7182f2990a47b"
+}

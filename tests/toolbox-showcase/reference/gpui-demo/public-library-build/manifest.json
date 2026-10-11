@@ -1,0 +1,8 @@
+{
+  "head": "d0a9dbad9aca3a31a6923ab53c89756c19911946",
+  "command": "cargo check --locked --no-default-features --lib",
+  "result": "PASS, 42s; existing warnings remain",
+  "scope": "Public runtime library compile check without desktop frontend/default features.",
+  "limits": "Not packaged-crate build, release linking, headless executable testing, GUI cross-platform support or runtime qualification.",
+  "sha256": "490012a442a2c39fb7c1c5a6fe986201134a00bb5dda69e83fc8077bcc7b5461"
+}
