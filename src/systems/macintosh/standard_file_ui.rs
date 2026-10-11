@@ -223,6 +223,7 @@ impl StandardFileNewFolderLayout {
 pub(crate) struct StandardFileNewFolderState {
     pub(crate) edit: crate::text_edit::TextEditBuffer,
     pub(crate) error: Option<i16>,
+    pointer_anchor: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -238,11 +239,63 @@ impl Default for StandardFileNewFolderState {
         Self {
             edit: crate::text_edit::TextEditBuffer::new(name, 0, end),
             error: None,
+            pointer_anchor: None,
         }
     }
 }
 
 impl StandardFileNewFolderState {
+    pub(crate) fn offset_at_x(&self, x: i32, measure: impl Fn(&[u8]) -> i32) -> usize {
+        let text = self.edit.text();
+        let mut left = 0;
+        for end in 1..=text.len() {
+            let right = measure(&text[..end]);
+            if i64::from(x) * 2 < i64::from(left) + i64::from(right) {
+                return end - 1;
+            }
+            left = right;
+        }
+        text.len()
+    }
+
+    /// The CPU adapter resolves guest font metrics to a Mac Roman byte offset.
+    /// TEClick retains an anchor until release (Text, 1993, p. 2-85).
+    pub(crate) fn begin_selection(&mut self, offset: usize, extend: bool) {
+        if self.error.is_some() {
+            return;
+        }
+        let offset = offset.min(self.edit.text().len());
+        let selection = self.edit.selection();
+        let anchor = if extend {
+            if offset < selection.start { selection.end } else { selection.start }
+        } else {
+            offset
+        };
+        self.pointer_anchor = Some(anchor);
+        self.track_selection(offset, true);
+    }
+
+    /// Returns whether selection changed; release preserves the final range.
+    pub(crate) fn track_selection(&mut self, offset: usize, button_down: bool) -> bool {
+        let Some(anchor) = self.pointer_anchor else { return false; };
+        let offset = offset.min(self.edit.text().len());
+        let old = self.edit.selection();
+        let selection = anchor.min(offset)..anchor.max(offset);
+        if old != selection {
+            self.edit = crate::text_edit::TextEditBuffer::new(
+                self.edit.text().to_vec(), selection.start, selection.end,
+            );
+        }
+        if !button_down {
+            self.pointer_anchor = None;
+        }
+        old != selection
+    }
+
+    pub(crate) fn is_selecting(&self) -> bool {
+        self.pointer_anchor.is_some()
+    }
+
     pub(crate) fn snapshot(&self, parent: (i16, i16, i16, i16)) -> StandardFileNewFolderSnapshot {
         let selection = self.edit.selection();
         StandardFileNewFolderSnapshot {
@@ -363,6 +416,56 @@ impl StandardFileNewFolderState {
 #[cfg(test)]
 mod new_folder_tests {
     use super::{StandardFileNewFolderAction as Action, StandardFileNewFolderState};
+
+    #[test]
+    fn new_folder_hit_testing_uses_guest_glyph_midpoints() {
+        let mut state = StandardFileNewFolderState::default();
+        state.edit = crate::text_edit::TextEditBuffer::new(vec![b'i', 0x8e, b'W'], 0, 0);
+        let measure = |bytes: &[u8]| bytes.iter().map(|byte| match byte {
+            b'i' => 5, 0x8e => 9, _ => 12,
+        }).sum();
+        for (x, offset) in [(-100, 0), (0, 0), (2, 0), (3, 1), (9, 1), (10, 2), (19, 2), (20, 3), (100, 3)] {
+            assert_eq!(state.offset_at_x(x, measure), offset, "x={x}");
+        }
+        state.edit = crate::text_edit::TextEditBuffer::new(Vec::new(), 0, 0);
+        assert_eq!(state.offset_at_x(100, measure), 0);
+    }
+
+    #[test]
+    fn new_folder_pointer_selection_retains_anchor_until_release() {
+        let mut state = StandardFileNewFolderState::default();
+        let mut scrap = Vec::new();
+        state.begin_selection(usize::MAX, false);
+        assert_eq!(state.edit.selection(), 15..15);
+        assert!(state.is_selecting());
+        state.track_selection(15, false);
+        assert!(!state.is_selecting());
+        state.key(b'x' as u32, 0, &mut scrap);
+        assert_eq!(state.edit.text(), b"untitled folderx");
+        state.begin_selection(16, false);
+        assert!(state.track_selection(4, true));
+        assert_eq!(state.edit.selection(), 4..16);
+        assert!(state.track_selection(0, false));
+        assert_eq!(state.edit.selection(), 0..16);
+        assert!(!state.track_selection(8, false));
+        state.key(b'a' as u32, 0, &mut scrap);
+        assert_eq!(state.edit.text(), b"a");
+    }
+
+    #[test]
+    fn new_folder_shift_click_extends_and_errors_block_selection() {
+        let mut state = StandardFileNewFolderState::default();
+        state.begin_selection(6, false);
+        state.track_selection(6, false);
+        state.begin_selection(2, true);
+        assert_eq!(state.edit.selection(), 2..6);
+        state.track_selection(1, false);
+        assert_eq!(state.edit.selection(), 1..6);
+        state.error = Some(-48);
+        state.begin_selection(10, false);
+        assert!(!state.is_selecting());
+        assert_eq!(state.edit.selection(), 1..6);
+    }
 
     #[test]
     fn new_folder_vertical_arrows_use_single_line_boundaries() {

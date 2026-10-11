@@ -200,6 +200,9 @@ mod desktop {
         capture_standard_file_new_folder_error_composed: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_standard_file_new_folder_selected_composed: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_custom_menu_fallback: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -2602,6 +2605,7 @@ mod desktop {
         StandardFileReplaceComposed,
         StandardFileNewFolderComposed,
         StandardFileNewFolderErrorComposed,
+        StandardFileNewFolderSelectedComposed,
     }
 
     #[cfg(feature = "gpui-demo-test")]
@@ -2740,6 +2744,7 @@ mod desktop {
                 | CaptureCase::StandardFileReplaceComposed
                 | CaptureCase::StandardFileNewFolderComposed
                 | CaptureCase::StandardFileNewFolderErrorComposed
+                | CaptureCase::StandardFileNewFolderSelectedComposed
         );
         let standard_file_open = matches!(capture, CaptureCase::StandardFileOpenComposed);
         let standard_file_page = standard_file_save || standard_file_open;
@@ -3228,7 +3233,7 @@ mod desktop {
                         && panel.entries.as_ref().is_some_and(|entries| !entries.is_empty())
                 })
             }));
-            if matches!(capture, CaptureCase::StandardFileNewFolderComposed | CaptureCase::StandardFileNewFolderErrorComposed) {
+            if matches!(capture, CaptureCase::StandardFileNewFolderComposed | CaptureCase::StandardFileNewFolderErrorComposed | CaptureCase::StandardFileNewFolderSelectedComposed) {
                 let panel = session.runner().standard_file_snapshot().unwrap();
                 let click = super::activation::ControlActivation::begin_file(&mut session, panel.guest_id, panel.generation, super::activation::FileAction::NewFolder).unwrap();
                 let tick = session.runner().guest_tick().saturating_add(1);
@@ -3241,6 +3246,22 @@ mod desktop {
                 let folder = panel.new_folder.as_ref().unwrap();
                 assert_eq!(folder.name, "untitled folder");
                 assert_eq!(folder.selection, (0, 15));
+                if matches!(capture, CaptureCase::StandardFileNewFolderSelectedComposed) {
+                    let field = folder.layout.name;
+                    let vertical = (field.0 + field.2) / 2;
+                    for input in [
+                        MacintoshInput::MouseDown { vertical, horizontal: field.1 + 1 },
+                        MacintoshInput::MouseMove { vertical, horizontal: field.1 + 50 },
+                        MacintoshInput::MouseUp { vertical, horizontal: field.1 + 50 },
+                    ] {
+                        session.deliver_input(input);
+                        let tick = session.runner().guest_tick().saturating_add(1);
+                        session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                    }
+                    let selected = session.runner().standard_file_snapshot().unwrap().new_folder.unwrap();
+                    assert_eq!(selected.selection.0, 0);
+                    assert!(selected.selection.1 > 0 && selected.selection.1 < 15);
+                }
                 if matches!(capture, CaptureCase::StandardFileNewFolderErrorComposed) {
                     let name = panel.entries.as_ref().unwrap().iter().find(|entry| entry.is_directory).unwrap().name.clone();
                     for character in name.bytes() {
@@ -4182,6 +4203,11 @@ mod desktop {
             capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileNewFolderErrorComposed);
             return;
         }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_standard_file_new_folder_selected_composed.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileNewFolderSelectedComposed);
+            return;
+        }
         let (commands, receiver) = mpsc::channel();
         let updates = Arc::new(Mutex::new(None));
         let worker_updates = updates.clone();
@@ -4666,6 +4692,7 @@ mod desktop {
                         capture_standard_file_replace_composed: None,
                         capture_standard_file_new_folder_composed: None,
                         capture_standard_file_new_folder_error_composed: None,
+                        capture_standard_file_new_folder_selected_composed: None,
                         capture_custom_menu_fallback: None,
                         capture_standard_menu: None,
                         capture_windows: None,
@@ -5873,6 +5900,31 @@ mod desktop {
                     step(&mut session);
                     assert_eq!(session.runner().standard_file_snapshot().unwrap().new_folder.unwrap().selection, selection);
                 }
+                let field = child.new_folder.as_ref().unwrap().layout.name;
+                let v = (field.0 + field.2) / 2;
+                let end = field.3 - 2;
+                let start = field.1 - 12;
+                session.deliver_input(MacintoshInput::MouseDown { vertical: v, horizontal: end });
+                step(&mut session);
+                assert_eq!(session.runner().standard_file_snapshot().unwrap().new_folder.unwrap().selection, (15, 15), "end mouse-down: PPC={powerpc}, depth={depth:?}");
+                session.deliver_input(MacintoshInput::MouseUp { vertical: v, horizontal: end });
+                step(&mut session);
+                assert_eq!(session.runner().standard_file_snapshot().unwrap().new_folder.unwrap().selection, (15, 15), "end release: PPC={powerpc}, depth={depth:?}");
+                session.deliver_input(MacintoshInput::KeyDown { mac_key: 0, character: b'x' });
+                session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character: b'x' });
+                step(&mut session);
+                assert_eq!(session.runner().standard_file_snapshot().unwrap().new_folder.unwrap().name, "untitled folderx");
+                session.deliver_input(MacintoshInput::MouseDown { vertical: v, horizontal: end });
+                step(&mut session);
+                session.deliver_input(MacintoshInput::MouseMove { vertical: v, horizontal: start });
+                step(&mut session);
+                assert_eq!(session.runner().standard_file_snapshot().unwrap().new_folder.unwrap().selection, (0, 16));
+                session.deliver_input(MacintoshInput::MouseUp { vertical: v, horizontal: start });
+                step(&mut session);
+                session.deliver_input(MacintoshInput::KeyDown { mac_key: 0, character: b'a' });
+                session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character: b'a' });
+                step(&mut session);
+                assert_eq!(session.runner().standard_file_snapshot().unwrap().new_folder.unwrap().name, "a");
                 assert!(ControlActivation::begin_file(&mut session, original.guest_id, original.generation, FileAction::Accept).is_none());
                 assert!(ControlActivation::begin_file(&mut session, child.guest_id, child.generation, FileAction::Cancel).is_none());
                 activate(&mut session, FileAction::CancelNewFolder);
