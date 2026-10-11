@@ -445,6 +445,8 @@ Selected checks pass: 718 library regressions, all 150 ordinary desktop tests wi
 
 Original Escape Velocity colour-68k captures use the production worker and shared GPUI compositor. The reviewed ship-name dialog retains resource artwork while displaying crisp system text, the selected default name and GPUI Cancel/OK. Four scheduled actions complete over 1,050 observed updates. A separate thirteen-action workflow enters `GPUI Pilot` / `GPUI Ship` and reopens that pilot through actual guest Standard File operations over 1,950 observed updates. Both have zero readiness delay. Commercial media, scripts and captures remain in ignored `target/gpui-qualification/escape-velocity`; they are same-process interaction evidence, not restart persistence or native gameplay qualification.
 
+A separate rebased EV gameplay capture completes all fourteen scheduled actions with zero readiness delay over 2,800 observed updates (47.15 seconds). No compiler jobs were active at its start. The reviewed image shows the flight scene and full HUD. The final 120 worker intervals average 16.01 ms, with p95 20.77 ms and maximum 23.12 ms; these are worker scheduling measurements, not native frame presentation or audio qualification.
+
 Live frontend timing remains a separate qualification requirement: `Demo::new` consumes worker publications on an independent 16 ms timer. Worker-cycle statistics and offscreen captures do not prove the latency or smoothness of that live handoff. Physical input, native audio/display timing, original Macintosh font fidelity and the full CPU/scale/state matrix remain open. No broad release gate closes.
 
 ### Standard File filename abbreviation
