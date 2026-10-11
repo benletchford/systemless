@@ -130,6 +130,7 @@ pub(crate) struct PpcDialogCallbackState {
     pub(super) completion: PpcDialogCallbackCompletion,
     /// Set while ModalDialog waits for the application's filter proc.
     pub(super) modal_filter: Option<PpcModalFilterCall>,
+    pub(super) tracked_press: Option<PpcQueuedEvent>,
 }
 
 /// One ModalDialog filter call in flight: the event handed to the filter
@@ -4229,6 +4230,7 @@ fn ppc_begin_dialog_callbacks(
         import_args: cpu.gpr[3..11].try_into().unwrap(),
         completion,
         modal_filter: None,
+        tracked_press: None,
     });
     ppc_next_dialog_callback(cpu, memory, dialog_callback_stack)
 }
@@ -4964,6 +4966,7 @@ fn ppc_call_modal_filter(
         restore_rtoc: cpu.gpr[2],
         import_args: cpu.gpr[3..11].try_into().unwrap(),
         completion: PpcDialogCallbackCompletion::ReturnPreserve,
+        tracked_press: None,
         modal_filter: Some(PpcModalFilterCall {
             event: launch.event,
             event_ptr,
@@ -5063,6 +5066,18 @@ fn ppc_modal_dialog(
     filter_result: Option<PpcModalFilterResult>,
 ) -> PpcModalDialogPass {
     use PpcModalDialogPass::Done;
+    // Toolbox Essentials (1992), pp. 5-33--5-36, 6-79--6-80:
+    // control tracking owns an already-filtered press until release.
+    let tracked_press = dialog_callback_stack.last().and_then(|state| {
+        (state.import_pc == cpu.pc).then_some(state.tracked_press).flatten()
+    });
+    let filter_result = if let Some(event) = tracked_press {
+        dialog_callback_stack.pop();
+        Some(PpcModalFilterResult { handled: false, event: Some(event) })
+    } else {
+        filter_result
+    };
+
     if filter_result.is_none() {
         if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {
             return Done(action);
@@ -5170,7 +5185,18 @@ fn ppc_modal_dialog(
                     }
                 }
                 if release_index.is_none() && input.mouse_button {
-                    event_queue.push_front(event.take().unwrap());
+                    dialog_callback_stack.push(PpcDialogCallbackState {
+                        import_pc: cpu.pc,
+                        dialog,
+                        callbacks: Vec::new(),
+                        next_callback: 0,
+                        final_pc: cpu.lr,
+                        restore_rtoc: cpu.gpr[2],
+                        import_args: cpu.gpr[3..11].try_into().unwrap(),
+                        completion: PpcDialogCallbackCompletion::Yield,
+                        modal_filter: None,
+                        tracked_press: event.take(),
+                    });
                     return Done(PpcImportAction::Yield(u64::MAX));
                 }
                 let release = release_index.and_then(|index| event_queue.remove(index));
