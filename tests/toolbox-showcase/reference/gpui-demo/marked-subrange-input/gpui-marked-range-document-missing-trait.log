@@ -1,0 +1,79 @@
+warning: method `instrument` is never used
+   --> src/systems/macintosh/sound.rs:609:19
+    |
+403 | impl SndChannel {
+    | --------------- method in this implementation
+...
+609 |     pub(crate) fn instrument(&self) -> Option<&SampledInstrument> {
+    |                   ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `dispatch_toolbox` is never used
+    --> src/systems/macintosh/trap/toolbox.rs:6187:19
+     |
+1169 | impl super::TrapDispatcher {
+     | -------------------------- method in this implementation
+...
+6187 |     pub(crate) fn dispatch_toolbox<C: CpuOps>(
+     |                   ^^^^^^^^^^^^^^^^
+
+warning: `systemless` (lib) generated 2 warnings
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+error[E0599]: no method named `replace_and_mark_text_in_range` found for mutable reference `&mut Demo` in the current scope
+    --> src/bin/gpui_demo.rs:9783:30
+     |
+9783 |                         demo.replace_and_mark_text_in_range(None, "z😀", Some(1..3), window, cx);
+     |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: items from traits can only be used if the trait is in scope
+help: there is a method `replace_text_in_range` with a similar name, but with different arguments
+    --> /Users/ben/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui-pre-0.3.8/src/input.rs:49:5
+     |
+  49 | /     fn replace_text_in_range(
+  50 | |         &mut self,
+  51 | |         range: Option<Range<usize>>,
+  52 | |         text: &str,
+  53 | |         window: &mut Window,
+  54 | |         cx: &mut Context<Self>,
+  55 | |     );
+     | |______^
+help: trait `EntityInputHandler` which provides `replace_and_mark_text_in_range` is implemented but not in scope; perhaps you want to import it
+     |
+6307 +         use gpui_kit::EntityInputHandler;
+     |
+
+error[E0599]: no method named `replace_text_in_range` found for mutable reference `&mut Demo` in the current scope
+    --> src/bin/gpui_demo.rs:9784:30
+     |
+9784 |                         demo.replace_text_in_range(Some(start + 1..start + 3), "z", window, cx);
+     |                              ^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: items from traits can only be used if the trait is in scope
+help: there is a method `replace_and_mark_text_in_range` with a similar name, but with different arguments
+    --> /Users/ben/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui-pre-0.3.8/src/input.rs:58:5
+     |
+  58 | /     fn replace_and_mark_text_in_range(
+  59 | |         &mut self,
+  60 | |         range: Option<Range<usize>>,
+  61 | |         new_text: &str,
+...    |
+  64 | |         cx: &mut Context<Self>,
+  65 | |     );
+     | |______^
+help: trait `EntityInputHandler` which provides `replace_text_in_range` is implemented but not in scope; perhaps you want to import it
+     |
+6307 +         use gpui_kit::EntityInputHandler;
+     |
+
+warning: unused variable: `cx`
+     --> src/bin/gpui_demo.rs:10007:65
+      |
+10007 |                     cx.update_window(window.into(), |_, window, cx| window.remove_window()).unwrap();
+      |                                                                 ^^ help: if this is intentional, prefix it with an underscore: `_cx`
+      |
+      = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0599`.
+warning: `systemless` (example "gpui-menu-demo" test) generated 1 warning
+error: could not compile `systemless` (example "gpui-menu-demo" test) due to 2 previous errors; 1 warning emitted
