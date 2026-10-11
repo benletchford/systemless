@@ -1,0 +1,45 @@
+{
+  "scope": "New Folder editor uses guest Roman system-font 0/12 strikes and Mac Roman byte advances in shared live/headless GPUI canvas.",
+  "capture_flag": "--capture-standard-file-new-folder-selected-composed",
+  "modes": [
+    "--screen-depth 1",
+    "--screen-depth 8",
+    "--prefer-powerpc"
+  ],
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "review": "All three composed captures reviewed: selected prefix, glyphs and field clipping visible. Surrounding host-shaped labels remain unfinished.",
+  "tests": {
+    "painted_new_folder_pointer_events_reach_guest_selection": "Passed 81.17s; all three modes at 0.75,1,1.5 scales; short and horizontally scrolled names; guest insertion advances equal glyph advances."
+  },
+  "limitations": [
+    "No authentic Macintosh font oracle or physical host interaction qualification.",
+    "This preserves the existing GPUI field vertical layout; exact per-CPU baseline/inset/selection-height snapshot qualification remains open.",
+    "No new 2x, inactive-field, non-ASCII-name or alternate-font capture evidence."
+  ],
+  "outputs": [
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-new-folder-mono.png",
+      "sha256": "8075f977a5acaeb5f52b6834ca6d2791279ebdcda9bee34ad18b4073075fc768"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-new-folder-mono.guest.png",
+      "sha256": "469eea9a6f249062646578a6c0a2851221e3e52ca1cdcf6c4e6eaa87884be741"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-new-folder-colour.png",
+      "sha256": "1afa88f8c190e49427d733b500ec107475a4fa5470724126e81399b1268cac4f"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-new-folder-colour.guest.png",
+      "sha256": "c482e256bdbed5fa919ff944bdd45581bfc46d11feecd851bf75b43dd3a8a4d4"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-new-folder-ppc.png",
+      "sha256": "c2de7e8e908e6a2a3bf614ed7e27d6e46449634c81a4b73ce216820b464c32ff"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-new-folder-ppc.guest.png",
+      "sha256": "8e34d85114faae295196712b1c4dab776814e87a24ba4609cad51982470cfcd3"
+    }
+  ]
+}
