@@ -1409,6 +1409,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::ClearMenuBar
         | PpcImportDispatcherTarget::SetMenuBar
         | PpcImportDispatcherTarget::GetMenuHandle
+        | PpcImportDispatcherTarget::SetMenuID
         | PpcImportDispatcherTarget::DrawMenuBar
         | PpcImportDispatcherTarget::InvalMenuBar
         | PpcImportDispatcherTarget::FlashMenuBar

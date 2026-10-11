@@ -379,6 +379,7 @@ pub enum PpcImportDispatcherTarget {
     InvalMenuBar,
     SetMenuBar,
     GetMenuHandle,
+    SetMenuID,
     DrawMenuBar,
     FlashMenuBar,
     HMGetHelpMenuHandle,
@@ -3018,6 +3019,8 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetMenuHandle" | "getmenuhandle" | "GetMHandle" | "getmhandle",
         ) => PpcImportDispatcherTarget::GetMenuHandle,
+        ("InterfaceLib" | "CarbonLib", "SetMenuID" | "setmenuid") =>
+            PpcImportDispatcherTarget::SetMenuID,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "DrawMenuBar" | "drawmenubar",
