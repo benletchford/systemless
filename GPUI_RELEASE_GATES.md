@@ -220,3 +220,17 @@ restoration, and checks that pointer and keyboard inputs do not leak into the
 guest while the alert remains owned (one test passed, 0.11s). This does not
 qualify native accessibility delivery, physical focus or automatic notification
 acquisition, which remains disconnected from frontend polling.
+
+### Automatic notification acquisition (2026-10-11)
+
+Frontend polling now requests eligible text-only alerts automatically and
+retries after ownership guards clear. Only an exact worker-owned snapshot
+authorizes painting/input exclusion; pending requests do not fabricate guest
+ownership. The acquisition regression now advances the actual frontend timer
+and verifies held-key release precedes the request. All five targeted frontend
+notification tests pass (9.12s), including classic guest NMInstall/callback
+worker delivery and editor text-service restoration across four modes.
+These separate tests do not yet establish one composed automatic
+install/display/acknowledge workflow, PPC guest installation, mixed mark/icon/
+sound delivery, native accessibility or physical interaction. All release gates
+remain open.
