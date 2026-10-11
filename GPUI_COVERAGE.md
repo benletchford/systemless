@@ -4727,3 +4727,17 @@ Evidence, including pre-fix defect captures, is archived in
 `tests/toolbox-showcase/reference/gpui-demo/hard-break-caret`. This is shared
 implementation evidence, not an independent Macintosh oracle. Physical input,
 inactive/scrolled navigation and other scales remain unqualified.
+
+
+### Composition queries crossing text ownership boundaries
+
+A shared Demo regression reproduced missing candidate bounds for a range
+starting in the Unicode marked stage and extending into untouched guest text.
+The adapter validates virtual UTF-16 endpoints, splits at guest/stage boundaries
+and returns the first visible source rectangle in document order. Six shared
+composition tests and all20 composed cases pass across mono68k, colour68k,
+PPC8/PPC16 at scale1.5, retaining guest state and exact cancellation pixels.
+Evidence is archived in `reference/gpui-demo/cross-stage-range`, including the
+pre-fix failure. Prefix partitioning has unit evidence; the composed crossing
+assertion covers stage/suffix. Arbitrary guest replacement, physical IME, other
+scales and independent native qualification remain open.

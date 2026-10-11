@@ -488,9 +488,18 @@ impl EntityInputHandler for Demo {
         if self.composition.mark(&text, start..end) { cx.notify(); }
     }
     fn bounds_for_range(&mut self, range: Range<usize>, _: Bounds<Pixels>,
-        _: &mut Window, _: &mut Context<Self>) -> Option<Bounds<Pixels>> {
+        window: &mut Window, cx: &mut Context<Self>) -> Option<Bounds<Pixels>> {
         let range = if self.composition.preedit.is_some() {
             self.painted_composition()?;
+            let pieces = self.composition.geometry_ranges(range.clone())?;
+            if pieces.len() > 1 {
+                for piece in pieces {
+                    if let Some(bounds) = self.bounds_for_range(piece, Bounds::default(), window, cx) {
+                        return Some(bounds);
+                    }
+                }
+                return None;
+            }
             if let Some(guest) = self.composition.surrounding_guest_range(range.clone()) { guest }
             else { return self.marked_bounds(range); }
         } else { range };
