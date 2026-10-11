@@ -654,25 +654,7 @@ mod desktop {
                             let valid = caret.is_none_or(|caret| caret >= range.start && caret <= range.start.saturating_add(bytes.len()))
                                 && caret.is_none_or(|_| session.runner().event_manager_snapshot().key_map[0x7b / 8] & (1 << (0x7b % 8)) == 0)
                                 && !pointer_down && super::input::guest_commit_inputs(&mut session, &owner, &bytes).is_some();
-                            let selected_range = valid && match owner.target {
-                                super::input::TextInputTarget::Document { .. } => {
-                                    let record = session.runner_mut().text_edit_snapshot().records.into_iter()
-                                        .find(|record| (record.guest_id, record.generation) == owner.identity);
-                                    record.as_ref().is_some_and(|record|
-                                        session.runner_mut().select_text_edit_range(record, range.clone()))
-                                }
-                                super::input::TextInputTarget::StandardFile { .. } => {
-                                    let panel = session.runner().standard_file_snapshot();
-                                    panel.as_ref().is_some_and(|panel|
-                                        session.runner_mut().select_standard_file_text_range(panel, range.clone()))
-                                }
-                                super::input::TextInputTarget::Dialog { item, .. } => {
-                                    let dialog = session.runner_mut().dialog_snapshot().into_iter()
-                                        .find(|dialog| (dialog.guest_id, dialog.generation) == owner.identity);
-                                    dialog.as_ref().is_some_and(|dialog|
-                                        session.runner_mut().select_dialog_text_range(dialog, item, range.clone()))
-                                }
-                            };
+                            let selected_range = valid && super::input::guest_select_text_range(&mut session, &owner, range.clone());
                             if selected_range {
                                 text_commit_wait = None;
                                 let mut selected = owner; selected.selection = range;

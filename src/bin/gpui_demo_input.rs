@@ -830,6 +830,32 @@ mod composition_tests {
 
 /// Resolve only the exact live guest-owned document field. Dialogs and file
 /// panels have separate modal input ownership and must use their own paths.
+/// Select through the owning guest Toolbox implementation after revalidating
+/// the complete text-service owner. Selection never rewrites guest bytes.
+pub(crate) fn guest_select_text_range(
+    session: &mut systemless::systems::macintosh::session::MacintoshSession,
+    owner: &TextInputOwner, range: std::ops::Range<usize>,
+) -> bool {
+    if range.start > range.end || range.end > owner.text.len()
+        || guest_commit_inputs(session, owner, &[]).is_none() { return false; }
+    match owner.target {
+        TextInputTarget::Document { .. } => {
+            let record = session.runner_mut().text_edit_snapshot().records.into_iter()
+                .find(|record| (record.guest_id, record.generation) == owner.identity);
+            record.as_ref().is_some_and(|record| session.runner_mut().select_text_edit_range(record, range))
+        }
+        TextInputTarget::StandardFile { .. } => {
+            let panel = session.runner().standard_file_snapshot();
+            panel.as_ref().is_some_and(|panel| session.runner_mut().select_standard_file_text_range(panel, range))
+        }
+        TextInputTarget::Dialog { item, .. } => {
+            let dialog = session.runner_mut().dialog_snapshot().into_iter()
+                .find(|dialog| (dialog.guest_id, dialog.generation) == owner.identity);
+            dialog.as_ref().is_some_and(|dialog| session.runner_mut().select_dialog_text_range(dialog, item, range))
+        }
+    }
+}
+
 pub(crate) fn guest_commit_inputs(
     session: &mut systemless::systems::macintosh::session::MacintoshSession,
     owner: &TextInputOwner,
