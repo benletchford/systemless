@@ -1,0 +1,12 @@
+{
+  "outcome": "21 text tests passed in6.69s; GPUI example build passed in7.79s",
+  "sha256": {
+    "src/bin/gpui_demo.rs": "03f2fb55340503bd6e1c7fd0b8dffce8170411df5cbf6a17c978bd0a3045810f",
+    "src/bin/gpui_demo_text.rs": "4ff4517132eea13c280c5b1f18cf277ff262acf24d1e0d3af893d1c0b9e0f605",
+    "src/bin/gpui_demo_coverage.rs": "01e703230ea3f4794d02357fd3541d5fb13ff1addc000634c2ac9dd90be3c67b",
+    "tests/toolbox-showcase/capture-gpui-styled-text-matrix.py": "62f1482477386f112a237531adc1ce967083825bd3cfdc465bfa6593987d491d",
+    "target/debug/examples/gpui-menu-demo": "4317ba1ba7b75087f3611b67bde9588f32e0b055abb3b5dae406140fccadba25"
+  },
+  "hash_timing": "After successful execution/build with no further changes before hashing.",
+  "scope": "Production shared styled field canvas now coalesces equal final RGB pixels into horizontal spans. Source composition and guest layout unchanged. Actual guest/composed image equivalence, pointer interaction and live performance still await qualification."
+}

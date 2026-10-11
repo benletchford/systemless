@@ -1631,11 +1631,14 @@ fn classic_text_pixels_with_smooth(
             if let Some(pixels) = smooth_textedit_pixels(ops, raster, *view, background) {
                 let unit = scale / raster as f32;
                 let mut coverage_paths = std::collections::BTreeMap::new();
-                for ((x, y), color) in pixels {
-                    let left = snap(port_origin.0 + x as f32 * unit);
-                    let top = snap(port_origin.1 + y as f32 * unit);
-                    let right = snap(port_origin.0 + (x + 1) as f32 * unit);
-                    let bottom = snap(port_origin.1 + (y + 1) as f32 * unit);
+                // Coalesce only equal resolved RGB coverage. Guest composition,
+                // clipping, selection inversion and caret order are already final.
+                for span in super::coverage::row_spans(pixels) {
+                    let color = span.color;
+                    let left = snap(port_origin.0 + span.left as f32 * unit);
+                    let top = snap(port_origin.1 + span.y as f32 * unit);
+                    let right = snap(port_origin.0 + span.right as f32 * unit);
+                    let bottom = snap(port_origin.1 + (i64::from(span.y) + 1) as f32 * unit);
                     if right <= left || bottom <= top { continue; }
                     let path = coverage_paths.entry(color).or_insert_with(PathBuilder::fill);
                     path.move_to(point(left, top)); path.line_to(point(right, top));
