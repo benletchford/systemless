@@ -1,0 +1,9 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.91s
+     Running unittests src/lib.rs (target/debug/deps/systemless-fb1873a31fc5e0eb)
+
+running 1 test
+test systems::macintosh::trap::dialog::tests::modal_dialog_arrows_preserve_text_without_marking_it_modified ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6699 filtered out; finished in 0.03s
+
