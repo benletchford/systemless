@@ -1,0 +1,98 @@
+{
+  "source_commit": "66e2f70f15d39578426b68377a6d37060d00b418",
+  "source_dirty": true,
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "2f605954dd477c6dcbff01382d35c462fa0e18d0117ea5104fb6cd00a42624e3",
+    "src/bin/gpui_demo_text.rs": "f374c4d35d85271cb3cee69933a034865ca1efa9df37d2f20c7a37092f854b10",
+    "src/bin/gpui_demo_menu.rs": "a7eabf25968f524d8e50c12908a4ebd05f31152d68372a1bc449e5bd6680428d"
+  },
+  "binary_sha256": "1791c54ba4de0a5ae956dbd9a66e7d956cc3bf52c1a7b34dfab4198fa63b08a7",
+  "fixture_sha256": "7de6f3d9129370adfa255022e7358182e782871f1fb27788cf960b0ab9ada53a",
+  "cases": [
+    {
+      "name": "mono-075",
+      "depth": 1,
+      "scale": 0.75,
+      "capture_sha256": "e7d0eee57042b5f7b199bbdba395ffd114341d98651b4f954a9e6dcbbba9c67a",
+      "previous_sha256": "4df8f58672360c9795b755b8a9698ac5d44a9873a4b708e6b3582111f66c3eb6",
+      "changed_pixels": 8529,
+      "visually_reviewed": true,
+      "archived_sha256": "ab30c04a47cd61e02bf0549d5a637cfa8298399d5d8616dbcb4ed0e58f27e108",
+      "metadata_sha256": "4db1fc614b37d44e194811e877bcfe47993d861485ca687b3d158ebb691086d9",
+      "decoded_rgba_preserved": true
+    },
+    {
+      "name": "colour-15",
+      "depth": 8,
+      "scale": 1.5,
+      "capture_sha256": "771c785958729661ca47cbe3b7014127449e02c454978003ebf2eafa193bf8a5",
+      "previous_sha256": "6fbb2e3da9148b80d15c0a127b93fda22529feeee1297726beb9094fb692f0f8",
+      "changed_pixels": 8529,
+      "visually_reviewed": true,
+      "archived_sha256": "6f2dff9d38a2e7a7a22ad17ab6352600ec187d5b3ec005e57d8f5367452fe2bf",
+      "metadata_sha256": "1da4832682d074cb05f38e3dbaec5a5dd8a34c09d886597834ead59bf103e1e8",
+      "decoded_rgba_preserved": true
+    },
+    {
+      "name": "ppc8-2",
+      "depth": 8,
+      "scale": 2,
+      "capture_sha256": "d45521d661a5d955879528df48e6a5f199fcb51fccbb69f9d62420968d8bd0f8",
+      "previous_sha256": "c8f037c9b95105740e6c595e7b61238d5b62510eeebe04c4519e15db83a282d3",
+      "changed_pixels": 8529,
+      "visually_reviewed": true,
+      "archived_sha256": "476ab469ed292a29c61e905b9f3aab73b4b181bf7dc9ec075ef01fdf66cf3300",
+      "metadata_sha256": "4744cf19e6da10e5afeacfd97230be215de1f29f958f3b2b500549b5eee6ccef",
+      "decoded_rgba_preserved": true
+    },
+    {
+      "name": "ppc16-1",
+      "depth": 16,
+      "scale": 1,
+      "capture_sha256": "f22e91223dd84f8aaf1170ea52219985253428a92f4ce690875c247ce3f07a14",
+      "previous_sha256": "3a463dab08deab9b06451aaaceedd6a50c3c4ee0ff033d9ee4255de212cbaaf6",
+      "changed_pixels": 8529,
+      "visually_reviewed": true,
+      "unchanged_outside_reviewed_italic_bands": true,
+      "reviewed_italic_row_bands": [
+        [
+          172,
+          202
+        ],
+        [
+          223,
+          253
+        ],
+        [
+          378,
+          408
+        ],
+        [
+          429,
+          459
+        ],
+        [
+          584,
+          614
+        ],
+        [
+          635,
+          665
+        ],
+        [
+          790,
+          820
+        ],
+        [
+          841,
+          871
+        ]
+      ],
+      "archived_sha256": "0b9fdcc9e80325b8794a93c3bb17bb45388d6b02b5de4bc1e8aa859d0f1b94f8",
+      "metadata_sha256": "1154384262d4a1d3dc139260201f4cafcae6b92599892217b5030e365bf4a5d8",
+      "decoded_rgba_preserved": true
+    }
+  ],
+  "scope": "Four reviewed continuous-italic shared compositor samples. Colour1.5/PPC8/2 previews resized; full source PNGs preserved. Metadata unchanged from prior captures. PPC16/1 pixel changes restricted to explicitly reviewed italic row bands. No all-font/state/scales, native appearance oracle, host events or performance qualification.",
+  "test_log_sha256": "9bff2f0310c020a39453e89364be0abadb01fa7b2983c2590b6d4933ad32c621"
+}
