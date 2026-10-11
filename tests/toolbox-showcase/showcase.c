@@ -2961,10 +2961,40 @@ void DrawFileStatusLine(short top, ConstStr255Param label, short status)
     DrawFileStatus(status);
 }
 
+/* Publish actual guest File Manager reads after the data fork is closed.
+ * The checkpoint contains file length, bytes read, status and a bounded prefix.
+ * It is application-owned evidence, not a host read of the VFS. */
+static struct {
+    long length;
+    long count;
+    OSErr status;
+    char bytes[256];
+} gFileOpenRead;
+
 void DoStandardFileOpen(void)
 {
+    short refNum, i;
+    OSErr closeErr;
+
     StandardGetFile(nil, 1, gFileTypeList, &gFileOpenReply);
     gFileOpenStatus = gFileOpenReply.sfGood ? fileStatusAccepted : fileStatusCancelled;
+    if (!gFileOpenReply.sfGood) return;
+    gFileOpenRead.length = gFileOpenRead.count = 0;
+    for (i = 0; i < 256; i++) gFileOpenRead.bytes[i] = 0;
+    gFileOpenRead.status = FSpOpenDF(&gFileOpenReply.sfFile, fsRdPerm, &refNum);
+    if (gFileOpenRead.status == noErr) {
+        gFileOpenRead.status = GetEOF(refNum, &gFileOpenRead.length);
+        if (gFileOpenRead.status == noErr) {
+            gFileOpenRead.count = gFileOpenRead.length;
+            if (gFileOpenRead.count > 256) gFileOpenRead.count = 256;
+            if (gFileOpenRead.count > 0)
+                gFileOpenRead.status = FSRead(refNum, &gFileOpenRead.count, gFileOpenRead.bytes);
+        }
+        closeErr = FSClose(refNum);
+        if (gFileOpenRead.status == noErr) gFileOpenRead.status = closeErr;
+    }
+    if (gFileOpenRead.status != noErr) gFileOpenStatus = fileStatusError;
+    SetWRefCon(gMainWindow, (long)&gFileOpenRead);
 }
 
 void DoLegacyFileOpen(void)

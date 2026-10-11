@@ -67,8 +67,11 @@ test protocol. Its Pages menu selects sixteen interactive views:
     paths while checking `StandardFileReply` and `SFReply` fields. A new-name
     Save writes a known data-fork payload, closes and reopens it, checks every
     byte, then retains it for desktop save/reload checks. The main window’s app-owned refCon publishes the
-    completion status for tests. This does not test persistence across a host
-    restart. Confirmed replacement truncates the existing data fork and checks
+    completion status for tests. Modern Open also reads the data fork and
+    publishes its length, read count, status and up to256 bytes after close.
+    The separate-process GPUI regression persists a new-name Save with the
+    production desktop store, exits, reloads into another process and verifies
+    every restored byte through this guest read checkpoint across all four modes. Confirmed replacement truncates the existing data fork and checks
     the reopened length and bytes too, leaving the replaced file in that guest
     session. Tests load independent sessions from the immutable source archive.
 13. Resource Browser enumerates named `DATA` records with
@@ -211,7 +214,7 @@ exact Systemless framebuffer references while performing the same sequence:
     checkpoints are `20-standard-file-page.png`,
     `21-standard-file-open.png`, and `22-standard-file-complete.png`; the
     semantic assertions cover returned `FSSpec`/`SFReply` fields and the
-    `FSpCreate`/`FSpDelete` round trip.
+    `FSpCreate`, write/close/reopen/read checks.
 21. Activate Resource Browser (item 13), capture the map-only enumeration of
     `DATA` 201–203 and the nine `MENU`/one `WIND` counts, refresh the map, load the
     named `DATA` 203 record, release its handle, and load it again. Capture
@@ -761,3 +764,12 @@ target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit
 ```
 
 This runs single-line and vertically scrolled multiline marked text across monochrome68k, colour68k, PPC8 and PPC16. Each case checks visible text-service bounds/hit-testing, surrogate boundaries, unchanged guest records and exact pixel restoration after cancellation. JSON sidecars record asserted actual CPU/depth, requested/applied scale and visible range geometry. Unicode staging uses a separate host-typography surface; it does not replace committed guest glyphs. The capture does not qualify physical IME, arbitrary replacement outside the stage, or horizontal/modal scrolling.
+
+Separate-process Save/readback qualification runs with:
+
+```sh
+cargo test --locked --example gpui-menu-demo --features gpui-demo-test \
+  standard_file_save_survives_separate_process_and_guest_read -- --nocapture
+```
+
+The parent creates isolated temporary save roots and runs distinct writer/reader processes in mono68k, colour68k, PPC8 and PPC16. The writer uses the actual guest Save workflow and production DesktopSaveStore flush. The reader imports only disk-loaded files before guest initialization, verifies exact forks/metadata, selects the restored Macintosh Roman filename through Standard File input, then checks guest FSpOpenDF/GetEOF/FSRead/FSClose bytes and unchanged metadata. This covers a new-name TEXT save with a nonempty data fork and empty resource fork. Physical GPUI input/shutdown, replacement or New Folder restart, nonempty resource-fork restart and crash/power-loss recovery are separate gates.
