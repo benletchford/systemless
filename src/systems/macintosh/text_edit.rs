@@ -274,6 +274,27 @@ pub(crate) fn aligned_line_left(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn paint_spacing_eligibility_uses_guest_cpu_units() {
+        use super::{TextEditPaintSnapshot, TextEditCharExtraSnapshot};
+        let mut paint = TextEditPaintSnapshot { depth: 8, mode: 1,
+            char_extra: TextEditCharExtraSnapshot::ClassicFixed(0x8000),
+            space_extra: 0x8000, style_ink: Vec::new() };
+        assert!(paint.supports_zero_spacing_src_or());
+        paint.space_extra = -0x8000;
+        assert!(!paint.supports_zero_spacing_src_or());
+        paint.char_extra = TextEditCharExtraSnapshot::PpcPacked(0);
+        assert!(paint.supports_zero_spacing_src_or(), "PPC drawing does not apply SpaceExtra");
+        paint.char_extra = TextEditCharExtraSnapshot::PpcPacked(1);
+        assert!(!paint.supports_zero_spacing_src_or());
+        paint.char_extra = TextEditCharExtraSnapshot::ClassicFixed(-0x8000);
+        paint.space_extra = 0;
+        assert!(!paint.supports_zero_spacing_src_or());
+        paint.char_extra = TextEditCharExtraSnapshot::ClassicFixed(0);
+        paint.mode = 2;
+        assert!(!paint.supports_zero_spacing_src_or(), "XOR requires destination-dependent rendering");
+    }
+
+    #[test]
     fn styled_edits_keep_insertion_anchor_and_following_attributes() {
         let original = b"aaaaaa";
         let inserted = b"aaaaaaa";
@@ -530,6 +551,46 @@ pub struct TextEditLineGeometry {
     pub ascent: i16,
 }
 
+/// Resolved screen ink, distinct from the canonical RGB16 style intent.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TextEditInkSnapshot {
+    pub pixel: u16,
+    pub rgb: [u8; 3],
+    pub inverted_rgb: [u8; 3],
+}
+
+/// The CPU's actual CharExtra representation, not host letter spacing.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TextEditCharExtraSnapshot {
+    ClassicFixed(i32),
+    PpcPacked(i16),
+}
+
+/// Read-only paint inputs for a recognized styled TextEdit screen port.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TextEditPaintSnapshot {
+    pub depth: u16,
+    pub mode: i16,
+    pub char_extra: TextEditCharExtraSnapshot,
+    pub space_extra: i32,
+    /// One ink per canonical style run, in the same order.
+    pub style_ink: Vec<TextEditInkSnapshot>,
+}
+
+impl TextEditPaintSnapshot {
+    /// Eligibility of the currently verified zero-spacing binary run recipes.
+    /// PPC draws ignore SpaceExtra; classic draw_char uses its integer part.
+    pub fn supports_zero_spacing_src_or(&self) -> bool {
+        self.mode == 1 && match self.char_extra {
+            TextEditCharExtraSnapshot::ClassicFixed(value) => value >> 16 == 0 && self.space_extra >> 16 == 0,
+            TextEditCharExtraSnapshot::PpcPacked(value) => value == 0,
+        }
+    }
+}
+
 /// Immutable guest TextEdit contents for fixture and diagnostic assertions.
 #[doc(hidden)]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -568,6 +629,7 @@ pub struct TextEditSnapshot {
     /// Guest LHElement (height, ascent) for each displayed line.
     pub line_metrics: Option<Vec<(i16, i16)>>,
     pub line_layout_policy: TextEditLineLayoutPolicy,
+    pub paint: Option<TextEditPaintSnapshot>,
 }
 
 impl TextEditSnapshot {
@@ -898,6 +960,7 @@ pub(crate) fn snapshot_guest_records(
                 style_runs,
                 line_metrics,
                 line_layout_policy: TextEditLineLayoutPolicy::CumulativeGuestMetrics,
+                paint: None,
             })
         })
         .collect();

@@ -182,3 +182,38 @@ impl PpcLoadedApp {
             .unwrap_or((0, 0, 0, 0))
     }
 }
+
+impl PpcLoadedApp {
+    /// Inspect styled TextEdit destination colours; do not mutate its port or
+    /// borrow the caller's current foreground, which is restored after drawing.
+    pub(crate) fn text_edit_paint_snapshot(
+        &mut self, record: &crate::text_edit::TextEditSnapshot,
+    ) -> Option<crate::text_edit::TextEditPaintSnapshot> {
+        use crate::text_edit::{TextEditCharExtraSnapshot, TextEditInkSnapshot, TextEditPaintSnapshot};
+        let runs = record.style_runs.as_ref()?;
+        let front = self.presented_front_buffer()?;
+        let surface = ppc_live_quickdraw_surface(&mut self.memory, &self.gworlds, record.owner_port)?;
+        if !matches!(front.depth, 8 | 16) || surface.front_buffer.base_addr != front.base_addr
+            || surface.front_buffer.row_bytes != front.row_bytes || surface.front_buffer.depth != front.depth {
+            return None;
+        }
+        let te = self.memory.read_u32_be(record.guest_id)?;
+        let mode = self.memory.read_u16_be(te.checked_add(0x4e)?)? as i16;
+        let palette = crate::display::rgba_palette_from_clut_with_gamma(&self.screen_clut, &self.display_gamma.table());
+        let rgb_at = |pixel: u16| {
+            if front.depth == 16 { return crate::display::rgb555_to_rgb888(pixel); }
+            let [r, g, b, _] = palette[usize::from(pixel)].to_le_bytes();
+            [r, g, b]
+        };
+        let mut style_ink = Vec::with_capacity(runs.len());
+        for run in runs {
+            let pixel = ppc_quickdraw_surface_fore_pixel(&mut self.memory, surface,
+                PpcRgbColor { red: run.color.0, green: run.color.1, blue: run.color.2 }, None)?;
+            style_ink.push(TextEditInkSnapshot { pixel, rgb: rgb_at(pixel), inverted_rgb: rgb_at(pixel ^ if front.depth == 16 { 0xffff } else { 0xff }) });
+        }
+        Some(TextEditPaintSnapshot { depth: front.depth as u16, mode,
+            char_extra: TextEditCharExtraSnapshot::PpcPacked(ppc_port_char_extra_packed(&mut self.memory, record.owner_port)),
+            space_extra: self.memory.read_u32_be(record.owner_port.checked_add(76)?)? as i32,
+            style_ink })
+    }
+}
