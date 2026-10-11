@@ -6439,8 +6439,9 @@ mod desktop {
                 let name = if replacing {
                     panel.entries.as_ref().unwrap().iter().find(|entry| !entry.is_directory)
                         .expect("existing file in Save directory").name.clone()
-                } else { "S".to_string() };
-                for character in name.bytes() {
+                } else { "é£S".to_string() };
+                let name_bytes: Vec<_> = name.chars().map(|ch| systemless::systems::macintosh::mac_roman::encode_mac_roman_char(ch).unwrap()).collect();
+                for character in name_bytes.iter().copied() {
                     session.deliver_input(MacintoshInput::KeyDown { mac_key: 0, character });
                     session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character });
                     step(&mut session);
@@ -6449,6 +6450,22 @@ mod desktop {
                     step(&mut session);
                     session.runner().standard_file_snapshot().is_some_and(|p| p.name.as_deref() == Some(name.as_str()))
                 }));
+                if !replacing {
+                    for _ in 0..2 {
+                        session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x33, character: 8 });
+                        session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x33, character: 8 });
+                        step(&mut session);
+                    }
+                    let edited = session.runner().standard_file_snapshot().unwrap();
+                    assert_eq!(edited.name.as_deref(), Some("é"));
+                    assert_eq!(edited.name_selection, Some((1, 1)), "selection offsets are Mac Roman bytes");
+                    for character in [0xa3, b'S'] {
+                        session.deliver_input(MacintoshInput::KeyDown { mac_key: 0, character });
+                        session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character });
+                        step(&mut session);
+                    }
+                    assert_eq!(session.runner().standard_file_snapshot().unwrap().name.as_deref(), Some(name.as_str()));
+                }
                 let origin = session.runner().dispatcher().mouse_position();
                 let click = ControlActivation::begin_file(&mut session, panel.guest_id, panel.generation, FileAction::Accept).unwrap();
                 step(&mut session);
@@ -6530,8 +6547,8 @@ mod desktop {
                 assert_eq!(reply.bytes.len(), 88);
                 assert_eq!(reply.bytes[0], 1, "sfGood, PPC={powerpc}, depth={depth:?}");
                 assert_eq!(reply.bytes[1], u8::from(replacing), "replacement result");
-                assert_eq!(usize::from(reply.bytes[12]), name.len());
-                assert_eq!(&reply.bytes[13..13 + name.len()], name.as_bytes(), "guest-edited FSSpec name");
+                assert_eq!(usize::from(reply.bytes[12]), name_bytes.len());
+                assert_eq!(&reply.bytes[13..13 + name_bytes.len()], name_bytes.as_slice(), "guest-edited FSSpec name");
             }
         }
 

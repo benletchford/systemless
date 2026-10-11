@@ -2228,7 +2228,7 @@ fn ppc_dispatch_standard_file(
                         } else if character == 0x08 || key_code == 0x33 {
                             ppc_standard_file_backspace_name(&mut tracking);
                         } else if event.modifiers & 0x0100 == 0
-                            && (0x20..=0x7e).contains(&character)
+                            && (character >= 0x20 && character != 0x7f)
                             && !matches!(character, b'/' | b':')
                             && tracking.sel_start <= tracking.sel_end
                             && tracking.sel_end <= tracking.name.len()
