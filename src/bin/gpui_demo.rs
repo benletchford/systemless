@@ -606,6 +606,9 @@ mod desktop {
                                 let in_event = events.queue_len != 0 || events.last_record.is_some_and(|record| record.what != 0)
                                     || session.runner().is_ui_tracking_active();
                                 let same_field = match owner.target {
+                                    super::input::TextInputTarget::StandardFile { new_folder } => session.runner().standard_file_snapshot()
+                                        .and_then(|panel| super::input::standard_file_text_owner(&panel)).is_some_and(|actual|
+                                            actual.identity == owner.identity && actual.new_folder == new_folder),
                                     super::input::TextInputTarget::Document { port } => session.runner_mut().text_edit_snapshot().records.iter().any(|record|
                                         record.active && (record.guest_id, record.generation) == owner.identity && record.owner_port == port),
                                     super::input::TextInputTarget::Dialog { item, content_revision } => {
@@ -615,9 +618,10 @@ mod desktop {
                                             actual.identity == owner.identity && actual.item == item && actual.content_revision == content_revision)
                                     }
                                 };
-                                let document = session.runner().standard_file_snapshot().is_none()
+                                let document = matches!(owner.target, super::input::TextInputTarget::StandardFile { .. })
+                                    || (session.runner().standard_file_snapshot().is_none()
                                     && (matches!(owner.target, super::input::TextInputTarget::Dialog { .. })
-                                        || !session.runner_mut().dialog_snapshot().iter().any(|dialog| dialog.visible && dialog.active));
+                                        || !session.runner_mut().dialog_snapshot().iter().any(|dialog| dialog.visible && dialog.active)));
                                 if !pointer_down && same_field && document && in_event
                                     && text_commit_wait.get_or_insert_with(Instant::now).elapsed() < Duration::from_millis(250) {
                                     queued.push_front(Command::CommitText(owner, bytes));
@@ -9035,6 +9039,85 @@ mod desktop {
         }
 
         #[cfg(feature = "gpui-demo-test")]
+        #[test]
+        fn worker_preserves_rapid_standard_file_composed_text_commits() {
+            use clap::Parser;
+            use super::{Args, Command, Update};
+            use std::sync::{mpsc, Arc, Mutex};
+            use std::time::{Duration, Instant};
+            struct Worker(mpsc::Sender<Command>, Option<std::thread::JoinHandle<()>>);
+            impl Drop for Worker {
+                fn drop(&mut self) {
+                    let _ = self.0.send(Command::Shutdown);
+                    if let Some(handle) = self.1.take() { let _ = handle.join(); }
+                }
+            }
+            fn wait(stage: &str, updates: &Mutex<Option<Update>>, ready: impl Fn(&Update) -> bool) -> Update {
+                let start = Instant::now();
+                loop {
+                    if let Some(update) = updates.lock().unwrap().take() {
+                        if ready(&update) { return update; }
+                    }
+                    assert!(start.elapsed() < Duration::from_secs(15), "worker did not complete composed text: {stage}");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            for (powerpc, depth) in [(false, Some(1u16)), (false, Some(8)), (true, Some(8)), (true, None)] {
+                let mut argv = vec!["gpui-menu-demo".to_string(), PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit").to_string_lossy().into_owned()];
+                if powerpc { argv.push("--prefer-powerpc".into()); }
+                if let Some(depth) = depth { argv.extend(["--screen-depth".into(), depth.to_string()]); }
+                let args = Args::try_parse_from(argv).unwrap();
+                let (sender, receiver) = mpsc::channel();
+                let updates = Arc::new(Mutex::new(None));
+                let output = updates.clone();
+                let worker = Worker(sender, Some(std::thread::spawn(move || super::run_guest(args, receiver, output, false))));
+                let initial = wait("menus", &updates, |update| update.menus.menus.iter().any(|menu| menu.id == 129));
+                let menu = initial.menus.menus.iter().find(|menu| menu.id == 129).unwrap();
+                worker.0.send(Command::Menu(129, 12, menu.guest_id, menu.generation)).unwrap();
+                wait("file page", &updates, |update| update.menus.menus.iter().any(|menu| menu.id == 129 && menu.items.iter().any(|item| item.number == 12 && item.checked)));
+                for input in [MacintoshInput::MouseDown { vertical: 266, horizontal: 400 },
+                    MacintoshInput::MouseUp { vertical: 266, horizontal: 400 }] {
+                    worker.0.send(Command::Input(input)).unwrap();
+                }
+                let focused = wait("Save field", &updates, |update| update.standard_file.as_ref().and_then(super::super::input::standard_file_text_owner).is_some());
+                let before = focused.standard_file.unwrap();
+                let file_owner = super::super::input::standard_file_text_owner(&before).unwrap();
+                let actual_depth = depth.unwrap_or(16);
+                let mut composition = super::super::input::GuestComposition::default();
+                let owner = super::super::input::TextInputOwner { identity: file_owner.identity,
+                    target: super::super::input::TextInputTarget::StandardFile { new_folder: false },
+                    text: file_owner.text, selection: file_owner.selection };
+                composition.synchronize(Some(owner.clone()));
+                let mut expected = owner.text.clone(); expected.splice(owner.selection.clone(), [0x8e, b'Z']);
+                for text in ["é", "Z"] {
+                    let (owner, bytes) = composition.commit(text).unwrap();
+                    worker.0.send(Command::CommitText(owner, bytes)).unwrap();
+                }
+                let expected_text = systemless::systems::macintosh::mac_roman::decode_mac_roman(&expected);
+                let completed = wait("Save commits", &updates, |update| update.standard_file.as_ref().is_some_and(|panel|
+                    (panel.guest_id, panel.generation) == owner.identity && panel.name.as_deref() == Some(expected_text.as_str())));
+                let after = completed.standard_file.unwrap();
+                assert_eq!(after.name_selection, Some((owner.selection.start + 2, owner.selection.start + 2)));
+                assert_eq!(after.entries, before.entries); assert_eq!(after.directory_id, before.directory_id);
+                // A stale request must report rejection persistently, even if
+                // the frontend misses the first worker frame carrying it.
+                worker.0.send(Command::CommitText(owner.clone(), vec![b'x'])).unwrap();
+                let rejected = wait("rejection", &updates, |update| update.text_commit_rejection.is_some());
+                assert_eq!(rejected.text_commit_rejection.as_ref().unwrap().1, owner);
+                let revision = rejected.text_commit_rejection.as_ref().unwrap().0;
+                let repeated = wait("persistent rejection", &updates, |update|
+                    update.text_commit_rejection.as_ref().is_some_and(|(value, _)| *value == revision));
+                assert_eq!(repeated.text_commit_rejection.as_ref().unwrap().1, owner);
+                let actual = repeated.standard_file.unwrap();
+                assert_eq!(actual.name.as_deref(), Some(expected_text.as_str()));
+                assert_eq!(actual.entries, before.entries);
+                eprintln!("PASS worker-standard-file-rapid-composition-and-rejection powerpc={powerpc} depth={actual_depth}");
+                drop(worker);
+            }
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
         fn plain_guest_text_service_geometry_uses_actual_field(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::{AppContext, EntityInputHandler, Bounds, point, px};
@@ -11177,6 +11260,54 @@ mod desktop {
             }
         }
 
+        #[test]
+        fn standard_file_composed_commit_preserves_filename_ownership() {
+            use super::super::input::{standard_file_text_owner, guest_standard_file_commit_inputs};
+            for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app); wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 12));
+                wait_for_menu(&mut session, 129, 12, true); settle(&mut session);
+                let step = |session: &mut MacintoshSession| {
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                };
+                step(&mut session);
+                session.deliver_input(MacintoshInput::MouseDown { vertical: 266, horizontal: 400 });
+                session.deliver_input(MacintoshInput::MouseUp { vertical: 266, horizontal: 400 });
+                let panel = (0..100).find_map(|_| {
+                    step(&mut session); session.runner().standard_file_snapshot()
+                }).expect("Save panel");
+                let owner = standard_file_text_owner(&panel).expect("Save filename owner");
+                for mutation in 0..4 {
+                    let mut stale = owner.clone();
+                    match mutation { 0 => stale.identity.1 += 1, 1 => stale.new_folder = true,
+                        2 => stale.text.push(b'x'), _ => stale.selection = 0..0 }
+                    assert!(guest_standard_file_commit_inputs(&mut session, &stale, b"x").is_none());
+                }
+                assert!(guest_standard_file_commit_inputs(&mut session, &owner, b"\r").is_none());
+                assert!(guest_standard_file_commit_inputs(&mut session, &owner, b"bad:name").is_none());
+                assert!(guest_standard_file_commit_inputs(&mut session, &owner, b"bad/name").is_none());
+                assert!(guest_standard_file_commit_inputs(&mut session, &owner, &[b'x'; 64]).is_none());
+                let bytes = [0x8e, b'Z'];
+                let mut expected = owner.text.clone(); expected.splice(owner.selection.clone(), bytes);
+                for pair in guest_standard_file_commit_inputs(&mut session, &owner, &bytes).unwrap().chunks_exact(2) {
+                    session.deliver_input(pair[0]); session.deliver_input(pair[1]);
+                    for _ in 0..4 { step(&mut session); }
+                }
+                let after = session.runner().standard_file_snapshot().unwrap();
+                assert_eq!(after.name.as_deref(), Some(systemless::systems::macintosh::mac_roman::decode_mac_roman(&expected).as_str()));
+                assert_eq!(after.name_selection, Some((owner.selection.start + 2, owner.selection.start + 2)));
+                assert_eq!(after.entries, panel.entries); assert_eq!(after.directory_id, panel.directory_id);
+                assert_eq!(after.generation, panel.generation);
+                eprintln!("PASS standard-file-composed-commit powerpc={powerpc} depth={depth}");
+            }
+        }
+
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
         fn modal_platform_composition_commits_to_active_guest_item(cx: &mut gpui_kit::TestAppContext) {
@@ -11241,6 +11372,98 @@ mod desktop {
                 assert_eq!(after.items[8].selection, Some((2, 2)));
                 assert_eq!(after.items[6].text, before.items[6].text);
                 eprintln!("PASS modal-platform-composition powerpc={powerpc} depth={depth}");
+                cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
+            }
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn standard_file_platform_composition_commits_to_active_filename(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::{AppContext, EntityInputHandler, Bounds, test::TestWindowExt};
+            cx.update(gpui_kit::init);
+            for ((powerpc, depth), new_folder) in [(false, 1u16), (false, 8), (true, 8), (true, 16)].into_iter().flat_map(|mode| [false, true].map(|folder| (mode, folder))) {
+                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app); wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 12));
+                wait_for_menu(&mut session, 129, 12, true); settle(&mut session);
+                let step = |session: &mut MacintoshSession| {
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                };
+                step(&mut session);
+                session.deliver_input(MacintoshInput::MouseDown { vertical: 266, horizontal: 400 });
+                session.deliver_input(MacintoshInput::MouseUp { vertical: 266, horizontal: 400 });
+                let parent = (0..100).find_map(|_| { step(&mut session); session.runner().standard_file_snapshot() }).unwrap();
+                if new_folder {
+                    let bounds = parent.put_layout.as_ref().unwrap().new_folder;
+                    session.deliver_input(MacintoshInput::MouseDown { vertical: (bounds.0+bounds.2)/2, horizontal: (bounds.1+bounds.3)/2 });
+                    session.deliver_input(MacintoshInput::MouseUp { vertical: (bounds.0+bounds.2)/2, horizontal: (bounds.1+bounds.3)/2 });
+                    assert!((0..100).any(|_| { step(&mut session); session.runner().standard_file_snapshot().is_some_and(|panel| panel.new_folder.is_some()) }));
+                }
+                let before = session.runner().standard_file_snapshot().unwrap();
+                let original_owner = super::super::input::standard_file_text_owner(&before).unwrap();
+                let (sender, receiver) = std::sync::mpsc::channel();
+                let (window, view) = cx.update(|cx| gpui_kit::open_window(Default::default(), cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap());
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.render_frame(cx);
+                    view.update(cx, |demo, cx| {
+                        demo.width = 800; demo.height = 600; demo.standard_file = Some(before.clone());
+                        demo.windows = session.runner_mut().window_frame_snapshot();
+                        demo.host_active = Some(true); window.focus(&demo.focus, cx); cx.notify();
+                    });
+                    window.render_frame(cx);
+                    view.update(cx, |demo, cx| {
+                        let owner = demo.composition.owner().unwrap().clone();
+                        assert!(matches!(owner.target, super::super::input::TextInputTarget::StandardFile { new_folder: actual } if actual == new_folder));
+                        assert!(demo.bounds_for_range(owner.selection.clone(), Bounds::default(), window, cx).is_some());
+                        demo.replace_and_mark_text_in_range(None, "日😀", Some(1..3), window, cx);
+                        assert!(demo.composition_surface(cx).is_some());
+                    });
+                    window.render_frame(cx);
+                    window.press("escape", cx);
+                    assert!(view.read(cx).composition.preedit.is_none());
+                }).unwrap();
+                receiver.try_iter().for_each(drop);
+                cx.simulate_input(window.into(), "éZ");
+                let commands: Vec<_> = receiver.try_iter().collect();
+                assert!(!commands.iter().any(|command| matches!(command,
+                    super::Command::Input(MacintoshInput::KeyDown { character, .. } | MacintoshInput::KeyUp { character, .. }) if *character != 0)),
+                    "committed text must not duplicate physical character events");
+                let commits: Vec<_> = commands.into_iter().filter_map(|command| match command {
+                    super::Command::CommitText(owner, bytes) => Some((owner, bytes)), _ => None,
+                }).collect();
+                assert_eq!(commits.len(), 2);
+                for (owner, bytes) in commits {
+                    let inputs = super::super::input::guest_commit_inputs(&mut session, &owner, &bytes).unwrap();
+                    for pair in inputs.chunks_exact(2) {
+                        session.deliver_input(pair[0]); session.deliver_input(pair[1]);
+                        for _ in 0..4 { step(&mut session); }
+                    }
+                }
+                let after = session.runner().standard_file_snapshot().unwrap();
+                let actual = super::super::input::standard_file_text_owner(&after).unwrap();
+                let mut expected = original_owner.text.clone(); expected.splice(original_owner.selection.clone(), [0x8e, b'Z']);
+                assert_eq!(actual.text, expected);
+                assert_eq!(actual.selection, original_owner.selection.start+2..original_owner.selection.start+2);
+                assert_eq!(after.directory_id, before.directory_id); assert_eq!(after.entries, before.entries);
+                if new_folder { assert_eq!(after.name, parent.name); }
+                // A modal transition must cancel pending marked text and replace ownership.
+                cx.update_window(window.into(), |_, window, cx| {
+                    view.update(cx, |demo, cx| {
+                        demo.standard_file = Some(after.clone());
+                        demo.synchronize_composition(window, cx);
+                        demo.replace_and_mark_text_in_range(None, "日", Some(1..1), window, cx);
+                        demo.standard_file.as_mut().unwrap().confirming_replace = true;
+                        demo.synchronize_composition(window, cx);
+                        assert!(demo.composition.owner().is_none()); assert!(demo.composition.preedit.is_none());
+                    });
+                }).unwrap();
+                eprintln!("PASS standard-file-platform-composition powerpc={powerpc} depth={depth} new_folder={new_folder}");
                 cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
             }
         }
