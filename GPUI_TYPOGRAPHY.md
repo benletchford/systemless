@@ -142,3 +142,12 @@ large-font fidelity. Changing the styled recipe requires coordinated guest
 drawing and measurement plus actual scene/editing qualification. Evidence is
 in `reference/gpui-demo/large-label-guest-recipe`; this audit adds no production
 font substitution or rendering change.
+
+### TextEdit transfer-mode identity
+
+Canonical `TERec.txMode` is retained in each editor snapshot and its recorded
+paint identity. Actual plain/styled TERec overlays currently qualify modes0/1;
+other transfer recipes retain their guest pixels. Smooth destination-aware
+composition for those modes is unfinished. This gate does not qualify every
+simple Dialog Manager item paint path or native transfer-mode appearance.
+Guest font resolution, advances, wrapping and input positions stay authoritative.

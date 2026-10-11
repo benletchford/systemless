@@ -6659,3 +6659,21 @@ These are functional-profile checks, not new image/native activation/accessibili
 or partial-update/custom-filter lifecycle qualification. Earlier visual and
 optimized EV evidence stays pinned to its producing revision. All broad release
 gates remain open.
+
+### TextEdit transfer-mode snapshot and eligibility (2026-10-12)
+
+The shared editor snapshot now reads canonical TERec.txMode (offset0x4E), so the
+retained drawing recipe includes it in freshness comparisons. Actual plain and
+styled TextEdit overlay candidates qualify modes0/1; destination-dependent and
+unknown recipes retain guest pixels pending faithful smooth composition.
+
+Four frontend text-edit checks pass (144.05 seconds), including plain/styled
+eligibility for modes0/1/2/3/4/7/32/64/-1, actual styled editing/snapshot behavior
+and both-CPU geometry. The wrapped-dialog interaction test passes all four
+CPU/display modes and four scales (17.18 seconds). The canonical parser check
+and all 41 related TextEdit library regressions pass (3.80 seconds). Hashes are
+in `target/gpui-qualification/text-mode/review.json`.
+This is functional-profile snapshot/eligibility evidence, not new transfer-mode
+visual or native-oracle qualification. Simple Dialog Manager item paint paths
+and complete destination-aware smooth-mode support remain open. No broad gate
+closes, and earlier game/capture evidence remains pinned to its source revision.

@@ -346,7 +346,10 @@ fn text_edit_pieces_for_kind(
                     continue;
                 }
             }
-            if !record.drawing_intact || record.owner_port != frame.guest_id
+            // Other QuickDraw transfer recipes require destination-aware
+            // coverage composition; retain their guest pixels until supported.
+            if !matches!(record.text_mode, 0 | 1)
+                || !record.drawing_intact || record.owner_port != frame.guest_id
                 || record.styled != styled
                 || (!styled && (record.face != 0 || !matches!(record.justification, -1 | 0 | 1) || record.line_height <= 0
                     // Plain scaled substitutes retain their existing qualification guard.
@@ -1187,6 +1190,7 @@ mod tests {
             font_ascent: 11,
             font: 0,
             face: 0,
+            text_mode: 0,
             size: 12,
             styled: false,
             style_runs: None,
@@ -1249,6 +1253,15 @@ mod tests {
         let mut unsupported = record.clone();
         unsupported.justification = 2;
         assert!(text_edit_pieces(&[unsupported], &[], &[], &[back.clone()], viewport).is_empty());
+        for mode in [0, 1, 2, 3, 4, 7, 32, 64, -1] {
+            let mut transfer = record.clone();
+            transfer.text_mode = mode;
+            assert_eq!(text_edit_pieces(&[transfer.clone()], &[], &[], &[back.clone()], viewport).is_empty(),
+                !matches!(mode, 0 | 1), "plain transfer recipe {mode}");
+            transfer.styled = true;
+            assert_eq!(super::styled_text_edit_candidates(&[transfer], &[], &[], &[back.clone()], viewport).is_empty(),
+                !matches!(mode, 0 | 1), "styled transfer recipe {mode}");
+        }
         let mut scaled = record.clone();
         scaled.size = 120;
         assert!(text_edit_pieces(&[scaled], &[], &[], &[back.clone()], viewport).is_empty());

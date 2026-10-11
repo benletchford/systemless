@@ -389,7 +389,7 @@ mod tests {
             (0x404, 0x130), (0x408, 0x140)] {
             long(&mut memory, address, value);
         }
-        for (address, value) in [(0x218, 0xffff), (0x250, 0xffff), (0x23c, 4),
+        for (address, value) in [(0x218, 0xffff), (0x250, 0xffff), (0x24e, 2), (0x23c, 4),
             (0x25e, 2), (0x260, 0), (0x262, 2), (0x264, 4), (0x220, 1), (0x222, 3),
             (0x400, 2), (0x402, 2), (0x414, 0), (0x416, 0), (0x418, 2), (0x41a, 1),
             (0x502, 14), (0x504, 11), (0x506, 3), (0x50a, 9),
@@ -402,6 +402,7 @@ mod tests {
         let snapshot = super::snapshot_guest_records(&[(0x100, 7)], &mut |address| memory.get(address as usize).copied());
         let record = &snapshot.records[0];
         assert!(record.styled);
+        assert_eq!(record.text_mode, 2);
         assert_eq!(record.selection, (1, 3));
         assert_eq!(record.line_starts, Some(vec![0, 2, 4]));
         assert_eq!(record.line_metrics, Some(vec![(14, 11), (18, 13)]));
@@ -702,6 +703,8 @@ pub struct TextEditSnapshot {
     pub font_ascent: i16,
     pub font: i16,
     pub face: u8,
+    /// Canonical TERec.txMode; replacement must preserve its transfer recipe.
+    pub text_mode: i16,
     pub size: i16,
     pub styled: bool,
     /// None if the canonical style tables are absent or inconsistent.
@@ -1120,6 +1123,7 @@ pub(crate) fn snapshot_guest_records(
                 font_ascent: word(read, ptr + 0x1a)? as i16,
                 font: word(read, ptr + 0x4a)? as i16,
                 face: read(ptr + 0x4c)?,
+                text_mode: word(read, ptr + 0x4e)? as i16,
                 size,
                 styled,
                 style_runs,
