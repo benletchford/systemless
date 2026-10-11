@@ -8,8 +8,11 @@ matrix verifiers refuse qualification until true PPC16 recaptures replace the
 missing coverage. The two-case caret colour counterexample remains valid as
 colour 68k versus PPC8. Existing CPU-specific native unit tests are unaffected.
 The helper now explicitly sets PPC16 by default and emits actual depth/state
-sidecars. New four-state PPC16 smoke captures pass exact field comparison;
-the complete corrected compositor matrix remains pending.
+sidecars. The corrected 192-case isolated styled compositor matrix is archived
+in `styled-text-qualified`; it establishes true PPC16 fixture raster evidence,
+but does not qualify the live Demo. The shared Demo multiline matrix is archived
+in `styled-text-multiline-shared`. The separate 192-case shared Demo single-line
+capture run remains in progress, pinned to f565b695; it is not yet qualified.
 
 ### Standard File filename abbreviation
 
@@ -59,14 +62,18 @@ classic Macintosh font fidelity: changed metrics require an explicit policy
 and layout/interaction qualification. Application-drawn text retains guest
 rendering until its ownership and faithful replacement are established.
 
-Current typography does not pass that gate: several standard surfaces use
-fixed host sizes and inherited GPUI theme fonts. Plain document TextEdit now
-uses shared QuickDraw strikes and the canonical TERec baseline without a host
-size clamp. The painted-glyph input map currently covers New
-Folder only. Guest-owned line boundaries alone do not establish metric fidelity,
-and tests for that field cannot qualify menus, titles, other editable fields or
-styled/multiline TextEdit. These are explicit migration gaps requiring font
-selection/metrics policy, broader shared text layout and interaction evidence.
+Current typography does not yet pass the full gate. Standard menus, window
+titles, controls, recognized dialog text, Standard File rows, supported plain
+TextEdit, qualified styled TextEdit, and qualified standard list cells now use
+shared guest glyph recipes, with native fallback where faithful ownership is
+unproven. The later surface-specific records describe their implementation and
+qualification limits. Styled fields and list cells require current native paint
+evidence; partial fixture coverage does not qualify arbitrary guest fonts,
+custom backgrounds, definitions, clipping or lifecycle behavior. Broader layout,
+interaction, accessibility and production qualification remain unfinished.
+The pixelated appearance of these glyph canvases is an explicit classic bitmap
+policy; the user's smooth-versus-bitmap preference remains unanswered. Any smooth
+path must preserve guest metrics and undergo its own qualification.
 
 The plain-document text component paints binary glyph spans through GPUI,
 using the same resolved guest FONT/NFNT/sfnt, explicit override, or bundled
@@ -74,9 +81,10 @@ fallback as QuickDraw. Its selection and caret share the glyph advances and
 guest fontAscent. This establishes consistency with Systemless guest drawing;
 it does not assert that bundled outlines reproduce original Apple bitmaps.
 Authentic guest resources/explicit overrides retain precedence. Substituted
-strikes requiring rescaling, styled and justified records still retain guest
-pixels pending faithful support. Other system surfaces still need migration
-from modern host shaping to this shared font policy.
+strikes requiring rescaling and unsupported justified records retain guest
+pixels pending faithful support. Supported styled records now use a separately
+qualified whole-field painter; unsupported records retain guest pixels. These
+paths establish consistency with current guest paint, not universal font fidelity.
 
 Standard window titles now use the shared Font Manager system strike (font 0,
 12 points), WDEF horizontal origin, baseline and title clip. GPUI paints its
