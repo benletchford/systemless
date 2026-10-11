@@ -1765,7 +1765,7 @@ mod desktop {
                                         .overflow_hidden()
                                         .h_full()
                                         .child(super::text::classic_popup_control_label(
-                                            &control.title, popup_font, true, scene_scale,
+                                            &control.title, popup_font, true, control.popup_text_inset, scene_scale,
                                             if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })),
                                 )
                                 .child(
@@ -1785,7 +1785,7 @@ mod desktop {
                                                 .overflow_hidden()
                                                 .h_full()
                                                 .child(super::text::classic_popup_control_label(
-                                                    selected, popup_font, false, scene_scale,
+                                                    selected, popup_font, false, control.popup_text_inset, scene_scale,
                                                     if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })),
                                         )
                                         .child(div().w(guest_px(18.)).flex().items_center().justify_center().child("▾")),
@@ -5890,6 +5890,7 @@ mod desktop {
                     assert!((1008..=1023).contains(&control.proc_id));
                     assert_eq!(control.title, title);
                     assert_eq!(control.popup_title_width, Some(width));
+                    assert_eq!(control.popup_text_inset, if powerpc { 5 } else { 15 });
                     assert_eq!(control.popup_font.unwrap().point_size(), if id == 144 { 9 } else { 12 });
                     assert_eq!(control.value, 1);
                     let menu = menus.menus.iter().find(|menu| menu.id == id)
@@ -10476,6 +10477,7 @@ mod desktop {
                         title: "Button".into(),
                         popup_menu_id: None,
                         popup_title_width: None,
+                        popup_text_inset: 15,
                         popup_font: None,
                         font_style: None,
                     }];
@@ -11008,6 +11010,7 @@ mod desktop {
                         title: "Button".into(),
                         popup_menu_id: None,
                         popup_title_width: None,
+                        popup_text_inset: 15,
                         popup_font: None,
                         font_style: None,
                     }];
@@ -11145,6 +11148,7 @@ mod desktop {
                         title: "Checkbox".into(),
                         popup_menu_id: None,
                         popup_title_width: None,
+                        popup_text_inset: 15,
                         popup_font: None,
                         font_style: None,
                     }];

@@ -489,7 +489,7 @@ pub(crate) fn classic_menu_symbol(
 }
 
 pub(crate) fn classic_popup_control_label(
-    label: &str, guest_font: systemless::menu_model::GuestMenuFont, title: bool,
+    label: &str, guest_font: systemless::menu_model::GuestMenuFont, title: bool, text_inset: i16,
     scale: f32, foreground: gpui_kit::Hsla,
 ) -> impl gpui_kit::IntoElement {
     use gpui_kit::{prelude::*, *};
@@ -501,14 +501,14 @@ pub(crate) fn classic_popup_control_label(
         let display = if title { label.clone() } else {
             let chars: Vec<_> = label.chars().collect();
             systemless::menu_model::popup_display_text(&chars, &['.', '.', '.'],
-                (width - 15).clamp(0, i32::from(i16::MAX)) as i16, |chars| {
+                (width - i32::from(text_inset)).clamp(0, i32::from(i16::MAX)) as i16, |chars| {
                     let text: String = chars.iter().collect();
                     ClassicLine::unicode(&text, guest_font.family, guest_font.point_size())
                         .positions.last().copied().unwrap_or(0).clamp(0, i32::from(i16::MAX)) as i16
                 }).into_iter().collect()
         };
         let line = ClassicLine::unicode(&display, guest_font.family, guest_font.point_size());
-        let x = if title { (width - 6 - line.positions.last().copied().unwrap_or(0)).max(0) } else { 15 };
+        let x = if title { (width - 6 - line.positions.last().copied().unwrap_or(0)).max(0) } else { i32::from(text_inset) };
         let baseline = (height - i32::from(metrics.ascent) - i32::from(metrics.descent)) / 2 + i32::from(metrics.ascent);
         for &(ink_x, ink_y, ink_width) in &line.ink {
             window.paint_quad(fill(Bounds::new(
