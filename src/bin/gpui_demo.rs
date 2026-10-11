@@ -2790,7 +2790,7 @@ mod desktop {
     }
 
     #[cfg(feature = "gpui-demo-test")]
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Debug)]
     enum CaptureCase {
         Alert,
         Windows,
@@ -4181,6 +4181,7 @@ mod desktop {
                 "scope": "Replacement prompt fixture; source native frame retained, no native Macintosh oracle qualification",
             })).unwrap()).unwrap();
         }
+        let actual_depth = session.runner().presented_screen_depth();
         let mut source_pixels = frame.pixels;
         if lists_page {
             // Remove only visible, qualified ownership from the source texture.
@@ -4294,11 +4295,23 @@ mod desktop {
             });
         });
         visual.run_until_parked();
-        visual
-            .capture_screenshot(window.into())
-            .unwrap()
-            .save(output)
-            .unwrap();
+        let composed = visual.capture_screenshot(window.into()).unwrap();
+        let (scene_scale, scene_origin) = visual.update(|cx| {
+            view.update(cx, |demo, _| (demo.display_scale, demo.display_origin))
+        });
+        std::fs::write(output.with_extension("capture.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "compositor": "shared Demo renderer", "case": format!("{capture:?}"),
+                "prefer_powerpc": prefer_powerpc, "requested_depth": screen_depth,
+                "actual_depth": actual_depth, "requested_scale": capture_scale,
+                "scene_scale": scene_scale, "scene_origin": scene_origin,
+                "guest_dimensions": [frame.width, frame_height],
+                "viewport_dimensions": [f32::from(capture_size.width), f32::from(capture_size.height)],
+                "composed_dimensions": [composed.width(), composed.height()],
+                "typography": "resolved outline coverage for supported plain system text; binary fallback for unsupported sources and styled/list recipes",
+                "scope": "Capture provenance only; no automatic smooth visual, font fidelity or performance qualification",
+            })).unwrap()).unwrap();
+        composed.save(output).unwrap();
         eprintln!("saved composed GPUI capture to {}", output.display());
     }
 
