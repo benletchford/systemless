@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.96.0](https://github.com/benletchford/systemless/compare/v0.95.2...v0.96.0) (2026-10-11)
+
+
+### Features
+
+* **catalogue:** add playable original Arashi ([30c72df](https://github.com/benletchford/systemless/commit/30c72df767e2b394e2113f0344917e259de1a282))
+
+
+### Bug Fixes
+
+* preserve guest records when selecting graphics ports ([903b1f9](https://github.com/benletchford/systemless/commit/903b1f9d0119e2f29673c29a78607d9fd3604171))
+
 ## [0.95.2](https://github.com/benletchford/systemless/compare/v0.95.1...v0.95.2) (2026-10-10)
 
 
