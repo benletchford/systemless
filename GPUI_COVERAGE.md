@@ -21,8 +21,8 @@ complete paint/style qualification, actual styled scenes across scales and
 independent Macintosh font fidelity remain unfinished. This is a measurement
 prerequisite for wider faithful GPUI text rendering, not completion of it.
 
-The earlier default desktop check passes at `96db9621` (1m17s), before this
-measurement change; it is not a current-source build claim for this fix.
+The fresh locked/offline default desktop check passes on this measurement
+source at `a9296e38` (35.97s). The earlier `96db9621` check is separate evidence.
 
 ### Current optimized EV and multiline checks (2026-10-12)
 
