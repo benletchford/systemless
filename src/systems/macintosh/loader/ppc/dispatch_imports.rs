@@ -1516,6 +1516,9 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::DSpContextRelease
         | PpcImportDispatcherTarget::DSpContextSetState
         | PpcImportDispatcherTarget::DSpContextGetState
+        | PpcImportDispatcherTarget::DSpContextGetDirtyRectGridUnits
+        | PpcImportDispatcherTarget::DSpContextGetDirtyRectGridSize
+        | PpcImportDispatcherTarget::DSpContextSetDirtyRectGridSize
         | PpcImportDispatcherTarget::DSpContextFadeGamma
         | PpcImportDispatcherTarget::DSpContextFadeGammaIn
         | PpcImportDispatcherTarget::DSpContextFadeGammaOut

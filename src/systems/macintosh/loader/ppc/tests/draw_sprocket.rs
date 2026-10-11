@@ -2684,3 +2684,88 @@ fn nondebugging_draw_sprocket_debug_mode_resolves_weak_import_without_display_ch
     assert_eq!(loaded.imports[0].address, 0);
     assert_eq!(loaded.memory.read_u32_be(PPC_DATA_BASE), Some(0));
 }
+
+#[test]
+fn draw_sprocket_dirty_grid_import_writes_base_units_and_retains_rounded_size() {
+    let pef =
+        synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_GetDirtyRectGridUnits");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let out = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(out, vec![0xA5; 16]);
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = out;
+    loaded.cpu.gpr[5] = out + 4;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(out), Some(32));
+    assert_eq!(loaded.memory.read_u32_be(out + 4), Some(32));
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = 40;
+    loaded.cpu.gpr[5] = 96;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DSpContextSetDirtyRectGridSize,
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = out;
+    loaded.cpu.gpr[5] = out + 4;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DSpContextGetDirtyRectGridSize,
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(out), Some(64));
+    assert_eq!(loaded.memory.read_u32_be(out + 4), Some(96));
+    assert_eq!(loaded.memory.read_u32_be(out + 8), Some(0xA5A5_A5A5));
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpContext_SetDirtyRectGridSize"),
+        PpcImportDispatcherTarget::DSpContextSetDirtyRectGridSize
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpContext_GetDirtyRectGridSize"),
+        PpcImportDispatcherTarget::DSpContextGetDirtyRectGridSize
+    );
+}
+
+#[test]
+fn draw_sprocket_dirty_grid_rejects_bad_outputs_and_sizes_without_partial_changes() {
+    let pef =
+        synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_GetDirtyRectGridUnits");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let out = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(out, vec![0xA5; 8]);
+    for (context, height, expected) in [
+        (PPC_DSP_CONTEXT, 0, PPC_PARAM_ERR),
+        (PPC_DSP_CONTEXT, 0xFFFF_FFFC, PPC_PARAM_ERR),
+        (0, out + 4, PPC_DSP_CONTEXT_NOT_FOUND_ERR),
+    ] {
+        loaded.cpu.gpr[3] = context;
+        loaded.cpu.gpr[4] = out;
+        loaded.cpu.gpr[5] = height;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::DSpContextGetDirtyRectGridUnits,
+        );
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(expected));
+        assert_eq!(loaded.memory.read_u32_be(out), Some(0xA5A5_A5A5));
+        assert_eq!(loaded.memory.read_u32_be(out + 4), Some(0xA5A5_A5A5));
+    }
+    for (context, width, height, expected) in [
+        (PPC_DSP_CONTEXT, 0, 32, PPC_PARAM_ERR),
+        (PPC_DSP_CONTEXT, 32, u32::MAX, PPC_PARAM_ERR),
+        (0, 40, 40, PPC_DSP_CONTEXT_NOT_FOUND_ERR),
+    ] {
+        loaded.cpu.gpr[3] = context;
+        loaded.cpu.gpr[4] = width;
+        loaded.cpu.gpr[5] = height;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::DSpContextSetDirtyRectGridSize,
+        );
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(expected));
+        assert_eq!(loaded.draw_sprocket.dirty_grid_size, (32, 32));
+    }
+}

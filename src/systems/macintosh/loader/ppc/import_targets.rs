@@ -600,6 +600,9 @@ pub enum PpcImportDispatcherTarget {
     DSpContextRelease,
     DSpContextSetState,
     DSpContextGetState,
+    DSpContextGetDirtyRectGridUnits,
+    DSpContextGetDirtyRectGridSize,
+    DSpContextSetDirtyRectGridSize,
     DSpContextFadeGamma,
     DSpContextFadeGammaIn,
     DSpContextFadeGammaOut,
@@ -2501,6 +2504,15 @@ pub(crate) fn dispatcher_target_for_import(
         ("DrawSprocketLib", "DSpContext_Release") => PpcImportDispatcherTarget::DSpContextRelease,
         ("DrawSprocketLib", "DSpContext_SetState") => PpcImportDispatcherTarget::DSpContextSetState,
         ("DrawSprocketLib", "DSpContext_GetState") => PpcImportDispatcherTarget::DSpContextGetState,
+        ("DrawSprocketLib", "DSpContext_GetDirtyRectGridUnits") => {
+            PpcImportDispatcherTarget::DSpContextGetDirtyRectGridUnits
+        }
+        ("DrawSprocketLib", "DSpContext_GetDirtyRectGridSize") => {
+            PpcImportDispatcherTarget::DSpContextGetDirtyRectGridSize
+        }
+        ("DrawSprocketLib", "DSpContext_SetDirtyRectGridSize") => {
+            PpcImportDispatcherTarget::DSpContextSetDirtyRectGridSize
+        }
         ("DrawSprocketLib", "DSpContext_FadeGamma") => {
             PpcImportDispatcherTarget::DSpContextFadeGamma
         }
