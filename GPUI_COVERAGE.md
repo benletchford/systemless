@@ -5176,3 +5176,21 @@ was discarded because reinserting untouched styled text could change formatting.
 That behavior needs separate guarded edits preserving intervening runs. Actual
 modal/file initial-range commits, composed geometry/cancellation captures,
 physical IME and complete production qualification remain open.
+
+
+### Initial marked ranges through modal and filename workers
+
+The actual production-worker regressions now include initial explicit marked
+range commits in dialogs, Save and New Folder, using the shared composition
+state and guarded ReplaceText. All three worker regressions pass (37.76s):
+18 initial-range cases cover document4, modal6 (simple all four modes and
+wrapped PPC8/PPC16), Save4 and New Folder4. Guest text/caret, document style
+runs, neighboring modal text, directory entries, parent filename preservation
+and existing modal-return/disposal/rejection behavior are checked. Unicode
+staging is canceled in the shared state before the representable commit.
+
+Evidence: `tests/toolbox-showcase/reference/gpui-demo/initial-mark-modal-file-workers`.
+This extends guest commit-path evidence; it does not prove actual GPUI stage
+rendering, pixel-exact cancellation, candidate bounds, physical IME or expansion
+beyond an existing stage. Production code is unchanged from 2a1dc78a; this extension is test-only. All
+broad release gates remain open.
