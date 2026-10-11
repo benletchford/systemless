@@ -54,6 +54,7 @@ def main():
     parser.add_argument("manifest", type=Path)
     args = parser.parse_args()
     manifest = json.loads(args.manifest.read_text())
+    assert not manifest.get("qualification_invalid_reason"), manifest.get("qualification_invalid_reason")
     repo = Path(__file__).resolve().parents[2]
     if "fixture" in manifest:
         assert sha256(repo / manifest["fixture"]) == manifest["fixture_sha256"], "fixture hash differs"

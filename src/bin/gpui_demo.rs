@@ -218,6 +218,10 @@ mod desktop {
         #[arg(long, hide = true, default_value_t = 26)]
         capture_styled_caret_offset: usize,
         #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, default_value = "visible",
+            value_parser = ["visible", "blink-off", "suspended", "resumed"])]
+        capture_styled_caret_state: String,
+        #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_styled_text_edit_selected: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
@@ -4191,11 +4195,15 @@ mod desktop {
     #[cfg(feature = "gpui-demo-test")]
     fn capture_styled_text_edit_ink(
         game: &std::path::Path, output: &std::path::Path,
-        prefer_powerpc: bool, depth: Option<u16>, scale: f32, selected: bool, caret_offset: Option<usize>, activation: &[bool],
+        prefer_powerpc: bool, depth: Option<u16>, scale: f32, selected: bool, caret_offset: Option<usize>, activation: &[bool], caret_state: &str,
     ) {
         use gpui_kit::{platform, HeadlessAppContext};
         let caret = caret_offset.is_some();
         let insertion = caret_offset.unwrap_or(26);
+        let activation = if caret { match caret_state {
+            "suspended" => &[false][..], "resumed" => &[false, true][..],
+            "visible" | "blink-off" => &[][..], _ => panic!("unknown caret capture state"),
+        } } else { activation };
         struct Preview {
             image: Arc<RenderImage>,
             record: systemless::runner::TextEditSnapshot,
@@ -4230,7 +4238,7 @@ mod desktop {
         }
         let mut session = MacintoshSession::new(true, if prefer_powerpc { Some(8) } else { depth });
         session.runner_mut().set_prefer_powerpc_executables(prefer_powerpc);
-        if prefer_powerpc { if let Some(depth) = depth { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); } }
+        if prefer_powerpc { session.runner_mut().set_powerpc_screen_depth(depth.unwrap_or(16)).unwrap(); }
         let app = session.load_path(game).unwrap();
         session.initialize(&app);
         assert!((0..300).any(|_| {
@@ -4286,6 +4294,31 @@ mod desktop {
             assert_eq!(record.text, original.text);
             assert_eq!(record.style_runs, original.style_runs);
         }
+        if caret && record.active {
+            let visible = caret_state != "blink-off";
+            record = (0..300).find_map(|_| {
+                // Advance the guest clock and let the application's TEIdle
+                // decide the phase. Never write caretState or paint host blink.
+                if !visible { session.runner_mut().force_advance_guest_tick(); }
+                session.runner_mut().run_steps(10_000, None);
+                let settled = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
+                session.runner_mut().text_edit_snapshot().records.into_iter().find(|next|
+                    settled && next.guest_id == original.guest_id && next.active
+                        && next.caret_visible == visible && next.drawing_intact)
+            }).expect("guest completes requested caret blink phase and repaint");
+        }
+        assert_eq!(record.selection, original.selection);
+        assert_eq!(record.text, original.text);
+        assert_eq!(record.style_runs, original.style_runs);
+        assert_eq!(record.generation, original.generation);
+        let evidence = serde_json::json!({
+            "caret_state": if caret { caret_state } else { "not-requested" },
+            "insertion_offset": caret_offset, "selection": record.selection,
+            "active": record.active, "caret_visible": record.caret_visible,
+            "drawing_intact": record.drawing_intact, "generation": record.generation,
+            "guest_tick": session.runner().guest_tick(), "view": record.global_view_rect,
+            "scale": scale, "depth": record.paint.as_ref().map(|paint| paint.depth),
+        });
         let mut frame = session.video_frame().unwrap();
         image::save_buffer(output.with_extension("guest.png"), &frame.pixels, frame.width, frame.height,
             image::ColorType::Rgba8).unwrap();
@@ -4317,6 +4350,7 @@ mod desktop {
         }).unwrap();
         visual.run_until_parked();
         visual.capture_screenshot(window.into()).unwrap().save(output).unwrap();
+        std::fs::write(output.with_extension("json"), serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
         eprintln!("saved GPUI styled ink capture to {}", output.display());
     }
 
@@ -4694,31 +4728,31 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_selected_suspended.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[false]);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[false], "visible");
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_selected_resumed.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[false, true]);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[false, true], "visible");
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_selected.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[]);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[], "visible");
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_caret.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), false, Some(args.capture_styled_caret_offset), &[]);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), false, Some(args.capture_styled_caret_offset), &[], &args.capture_styled_caret_state);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_ink.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), false, None, &[]);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), false, None, &[], "visible");
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -5394,6 +5428,7 @@ mod desktop {
                         capture_styled_text_edit_ink: None,
                         capture_styled_text_edit_caret: None,
                         capture_styled_caret_offset: 26,
+                        capture_styled_caret_state: "visible".into(),
                         capture_styled_text_edit_selected: None,
                         capture_styled_text_edit_selected_suspended: None,
                         capture_styled_text_edit_selected_resumed: None,
@@ -7111,6 +7146,62 @@ mod desktop {
                 let windows = session.runner_mut().window_frame_snapshot();
                 assert!(super::super::frames::text_edit_pieces(&[record], &[], &[], &windows,
                     super::super::frames::Rect::from((0, 0, 600, 800))).is_empty());
+            }
+        }
+
+        #[test]
+        fn styled_guest_idle_blink_repaints_the_native_caret() {
+            for (powerpc, depth) in [(false, 1), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, if powerpc { None } else { Some(depth) });
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 11));
+                wait_for_menu(&mut session, 129, 11, true);
+                settle(&mut session);
+                let original = session.runner_mut().text_edit_snapshot().records.into_iter()
+                    .find(|record| record.styled).unwrap();
+                let dest = original.global_dest_rect.unwrap();
+                let geometry = original.guest_styled_line_geometry(0).unwrap().0;
+                let x = dest.1 - original.dest_rect.1 + geometry.left;
+                let y = dest.0 - original.dest_rect.0 + geometry.top;
+                let pixel = |session: &mut MacintoshSession| {
+                    let frame = session.video_frame().unwrap();
+                    let at = ((y as u32 * frame.width + x as u32) * 4) as usize;
+                    frame.pixels[at..at + 3].to_vec()
+                };
+                let background = pixel(&mut session);
+                for input in [MacintoshInput::MouseDown { vertical: y + geometry.ascent, horizontal: x },
+                    MacintoshInput::MouseUp { vertical: y + geometry.ascent, horizontal: x }] {
+                    session.deliver_input(input);
+                    for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
+                }
+                let mut painted = None;
+                for visible in [true, false, true] {
+                    let record = (0..300).find_map(|_| {
+                        session.runner_mut().force_advance_guest_tick();
+                        session.runner_mut().run_steps(10_000, None);
+                        let settled = session.runner().event_manager_snapshot().last_record
+                            .is_some_and(|event| event.what == 0);
+                        session.runner_mut().text_edit_snapshot().records.into_iter().find(|record|
+                            settled && record.guest_id == original.guest_id && record.active
+                                && record.caret_visible == visible && record.drawing_intact)
+                    }).expect("guest TEIdle completes native caret repaint");
+                    assert_eq!(record.selection, (0, 0));
+                    assert_eq!(record.text, original.text);
+                    assert_eq!(record.style_runs, original.style_runs);
+                    let actual = pixel(&mut session);
+                    if visible {
+                        assert_ne!(actual, background, "visible native caret: PPC={powerpc}, depth={depth}");
+                        if let Some(ref previous) = painted { assert_eq!(&actual, previous); }
+                        painted = Some(actual);
+                    } else {
+                        assert_eq!(actual, background, "hidden native caret must restore its pixel: PPC={powerpc}, depth={depth}");
+                    }
+                }
             }
         }
 

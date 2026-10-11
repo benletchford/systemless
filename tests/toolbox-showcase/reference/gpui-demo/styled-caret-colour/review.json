@@ -64,7 +64,7 @@
       ]
     },
     {
-      "mode": "ppc16",
+      "mode": "ppc8",
       "scale": 1,
       "device_scale": 2,
       "insertion_offset": 0,
@@ -100,7 +100,10 @@
         0,
         0,
         0
-      ]
+      ],
+      "requested_mode": "ppc16",
+      "actual_depth": 8
     }
-  ]
+  ],
+  "depth_correction": "Pinned capture helper initialized PPC at 8bpp when no explicit depth was supplied. Original PPC16 labels were incorrect; native/composed pixel comparisons remain evidence at PPC8 only."
 }
