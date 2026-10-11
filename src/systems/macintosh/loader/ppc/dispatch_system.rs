@@ -7,6 +7,7 @@ pub enum PpcSystemCompatibilityOperation {
     CtbGetCtbVersion,
     CallComponentUpp,
     CharByte,
+    CharType,
     DiBadMount,
     DiFormat,
     DiLoad,
@@ -17,7 +18,9 @@ pub enum PpcSystemCompatibilityOperation {
     Dequeue,
     Enqueue,
     FindNextComponent,
+    FindWord,
     Font2Script,
+    FontScript,
     GetNextProcess,
     GetEvQHdr,
     GetScript,
@@ -25,6 +28,7 @@ pub enum PpcSystemCompatibilityOperation {
     GetScriptVariable,
     GetSysBeepVolume,
     GetSysDirection,
+    HiliteText,
     IuCompString,
     IuDateString,
     IuDatePString,
@@ -44,6 +48,7 @@ pub enum PpcSystemCompatibilityOperation {
     MidiSignOut,
     MidiWritePacket,
     Munger,
+    NFindWord,
     NmInstall,
     NmRemove,
     ObscureCursor,
@@ -317,6 +322,25 @@ pub(crate) fn ppc_dequeue_compatibility(
     }
 }
 
+fn ppc_write_offset_table(
+    memory: &mut PpcSectionMem,
+    offsets_ptr: u32,
+    table: [(i16, i16); 3],
+) -> bool {
+    if offsets_ptr == 0 {
+        return false;
+    }
+    for (i, (first, second)) in table.iter().enumerate() {
+        let base = offsets_ptr + (i as u32 * 4);
+        if memory.write_u16_be(base, *first as u16).is_none()
+            || memory.write_u16_be(base + 2, *second as u16).is_none()
+        {
+            return false;
+        }
+    }
+    true
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn ppc_dispatch_system_compatibility(
     operation: PpcSystemCompatibilityOperation,
@@ -569,11 +593,11 @@ pub(crate) fn ppc_dispatch_system_compatibility(
         PpcSystemCompatibilityOperation::FindNextComponent
         | PpcSystemCompatibilityOperation::OpenDefaultComponent => PpcImportAction::Return(0),
         PpcSystemCompatibilityOperation::CtbGetCtbVersion => PpcImportAction::Return(0x0200),
-        PpcSystemCompatibilityOperation::IntlScript => {
-            // Inside Macintosh: Text (1993), pp. 6-22–6-24: IntlScript
-            // returns an enabled script code, defaulting to the system script
-            // when the font script is unavailable. This guest installs only
-            // the Roman script (smRoman = 0).
+        PpcSystemCompatibilityOperation::IntlScript
+        | PpcSystemCompatibilityOperation::FontScript => {
+            // Inside Macintosh: Text (1993), pp. 6-22–6-24: IntlScript and
+            // FontScript return enabled script codes, defaulting to the
+            // Roman script (smRoman = 0).
             PpcImportAction::Return(0)
         }
         PpcSystemCompatibilityOperation::CharByte => {
@@ -593,6 +617,57 @@ pub(crate) fn ppc_dispatch_system_compatibility(
                 crate::text_utils::SM_ROMAN,
             );
             PpcImportAction::Return(ppc_i16_result(result))
+        }
+        PpcSystemCompatibilityOperation::CharType => {
+            // CharType returns information about character type and direction.
+            // FUNCTION CharType(textBuf: Ptr; textOffset: Integer): Integer;
+            // Inside Macintosh: Text (1993), pp. 6-79–6-80.
+            let text_ptr = cpu.gpr[3];
+            let offset = cpu.gpr[4] as i16;
+            if text_ptr == 0 || offset < 0 {
+                return PpcImportAction::Return(0);
+            }
+            let len = (offset as usize + 1).min(256);
+            let bytes = ppc_memory_read_bytes(memory, text_ptr, len as u32).unwrap_or_default();
+            let result = crate::text_utils::evaluate_char_type(&bytes, offset as usize);
+            PpcImportAction::Return(ppc_i16_result(result))
+        }
+        PpcSystemCompatibilityOperation::HiliteText => {
+            // PROCEDURE HiliteText(textPtr: Ptr; textLength, firstOffset, secondOffset: Integer; VAR offsets: OffsetTable);
+            // Inside Macintosh: Text (1993), pp. 5-75–5-77.
+            let text_len = (cpu.gpr[4] as i16).max(0) as usize;
+            let first_offset = (cpu.gpr[5] as i16).max(0) as usize;
+            let second_offset = (cpu.gpr[6] as i16).max(0) as usize;
+            let offsets_ptr = cpu.gpr[7];
+            if offsets_ptr != 0 {
+                let table = crate::text_utils::evaluate_hilite_text(
+                    text_len,
+                    first_offset,
+                    second_offset,
+                );
+                let _ = ppc_write_offset_table(memory, offsets_ptr, table);
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcSystemCompatibilityOperation::FindWord
+        | PpcSystemCompatibilityOperation::NFindWord => {
+            // PROCEDURE FindWord(textPtr: Ptr; textLength, offset: Integer; leadingEdge: Boolean; breaksPtr: Ptr; VAR offsets: OffsetTable);
+            // PROCEDURE NFindWord(textPtr: Ptr; textLength, offset: Integer; leadingEdge: Boolean; nbreaks: NBreakTablePtr; VAR offsets: OffsetTable);
+            // Inside Macintosh: Text (1993), pp. 5-69–5-72.
+            let text_ptr = cpu.gpr[3];
+            let text_len = (cpu.gpr[4] as i16).max(0) as usize;
+            let offset = (cpu.gpr[5] as i16).max(0) as usize;
+            let offsets_ptr = cpu.gpr[8];
+            if offsets_ptr != 0 {
+                let bytes = if text_ptr != 0 && text_len > 0 {
+                    ppc_memory_read_bytes(memory, text_ptr, text_len as u32).unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                let table = crate::text_utils::evaluate_find_word(&bytes, offset);
+                let _ = ppc_write_offset_table(memory, offsets_ptr, table);
+            }
+            PpcImportAction::ReturnPreserve
         }
         PpcSystemCompatibilityOperation::GetSysDirection => {
             // GetSysDirection returns the SysDirection global: zero for

@@ -5762,8 +5762,14 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "FindNextComponent") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::FindNextComponent,
         ),
+        ("InterfaceLib", "FindWord") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::FindWord,
+        ),
         ("InterfaceLib", "Font2Script") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::Font2Script,
+        ),
+        ("InterfaceLib", "FontScript") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::FontScript,
         ),
         ("InterfaceLib", "GetNextProcess") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::GetNextProcess,
@@ -5810,11 +5816,17 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "CharByte") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::CharByte,
         ),
+        ("InterfaceLib", "CharType") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::CharType,
+        ),
         ("InterfaceLib", "GetSysDirection") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::GetSysDirection,
         ),
         ("InterfaceLib", "GetEvQHdr") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::GetEvQHdr,
+        ),
+        ("InterfaceLib", "HiliteText") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::HiliteText,
         ),
         ("InterfaceLib", "InitCRM") => {
             PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::InitCrm)
@@ -5852,6 +5864,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "Munger") => {
             PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::Munger)
         }
+        ("InterfaceLib", "NFindWord") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::NFindWord,
+        ),
         ("InterfaceLib", "NMInstall") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::NmInstall,
         ),

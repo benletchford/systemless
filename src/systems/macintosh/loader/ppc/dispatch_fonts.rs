@@ -85,11 +85,10 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
         // The standard Roman application font is Geneva (family ID 3).
         PpcImportDispatcherTarget::GetAppFont => Some(PpcImportAction::Return(3)),
         PpcImportDispatcherTarget::FontToScript => {
-            // FontToScript maps a font family ID to an enabled script. This
-            // Roman system has only script 0 enabled, so non-Roman families
-            // also default to the system script.
+            // FontToScript maps a font family ID to an enabled script.
             // Inside Macintosh: Text (1993), pp. 6-22 to 6-24, 6-82 to 6-83.
-            Some(PpcImportAction::Return(0))
+            let script = crate::text_utils::font_id_to_script(cpu.gpr[3] as i16);
+            Some(PpcImportAction::Return(script as u32))
         }
         PpcImportDispatcherTarget::VisibleLength => {
             // VisibleLength excludes whitespace at the display end of a
