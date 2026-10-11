@@ -2766,7 +2766,7 @@ mod desktop {
                                 .child(super::text::classic_file_prompt(panel.prompt.as_deref().unwrap_or_default(), scene_scale, cx.theme().foreground)),
                         );
                         let name = panel.name.as_deref().unwrap_or_default();
-                        let focused = panel.name_has_focus == Some(true);
+                        let focused = panel.name_has_focus == Some(true) && self.host_active != Some(false);
                         let name_field = at(layout.name)
                             .id(format!("guest-standard-save-name-{}-{}", panel.guest_id, panel.generation))
                             .test_support()
@@ -2844,7 +2844,7 @@ mod desktop {
                             .aria_label("Name of new folder").overflow_hidden().flex().items_center().px_1()
                             .border_1().border_color(cx.theme().accent).bg(cx.theme().background)
                             .child(super::text::single_line(folder, (panel.guest_id, panel.generation),
-                                self.text_pointer_map.clone(), scene_scale, cx.theme().foreground, cx.theme().selection));
+                                self.text_pointer_map.clone(), self.host_active != Some(false), scene_scale, cx.theme().foreground, cx.theme().selection));
                         overlay = overlay.child(super::a11y::AccessibleState::new(name, false)
                             .text_value(folder.name.clone(), false));
                     }
@@ -4635,6 +4635,13 @@ mod desktop {
             });
         });
         visual.run_until_parked();
+        if matches!(capture, CaptureCase::StandardFileSaveComposed | CaptureCase::StandardFileNewFolderComposed) {
+            visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                demo.host_active = Some(true); window.focus(&demo.focus, cx);
+                demo.synchronize_composition(window, cx); cx.notify();
+            })).unwrap();
+            visual.run_until_parked();
+        }
         let composed = visual.capture_screenshot(window.into()).unwrap();
         let (scene_scale, scene_origin) = visual.update(|cx| {
             view.update(cx, |demo, _| (demo.display_scale, demo.display_origin))
@@ -4730,8 +4737,25 @@ mod desktop {
             })).unwrap();
             marked.save(output.with_extension("long-marked.png")).unwrap();
             visual.run_until_parked();
-            assert_eq!(visual.capture_screenshot(window.into()).unwrap(), composed,
+            assert!(visual.capture_screenshot(window.into()).unwrap() == composed,
                 "filename composition cancellation must restore exact pixels");
+            visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                assert!(demo.composition.mark("日😀", 1..3));
+                demo.host_active = Some(false); demo.synchronize_composition(window, cx);
+                assert!(demo.composition.owner().is_none() && demo.composition.preedit.is_none());
+                cx.notify();
+            })).unwrap();
+            visual.run_until_parked();
+            visual.capture_screenshot(window.into()).unwrap().save(output.with_extension("inactive.png")).unwrap();
+            visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                demo.host_active = Some(true); demo.synchronize_composition(window, cx);
+                assert_eq!(demo.composition.owner(), Some(&pinned));
+                assert!(demo.composition.preedit.is_none()); cx.notify();
+            })).unwrap();
+            visual.run_until_parked();
+            assert!(visual.capture_screenshot(window.into()).unwrap() == composed,
+                "returning foreground must restore filename pixels without resurrecting marked text");
+            eprintln!("PASS Standard File staging focus loss and restored ownership");
             eprintln!("PASS Standard File long marked geometry and exact cancellation");
         }
         eprintln!("saved composed GPUI capture to {}", output.display());
