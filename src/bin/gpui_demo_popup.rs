@@ -133,7 +133,7 @@ pub fn popup(popup: &GuestPopupSnapshot, scale: f32, cx: &App) -> Div {
     overlay.child(pane)
 }
 
-fn scroll_indicator(up: bool, scale: f32, foreground: Hsla) -> impl IntoElement {
+pub(crate) fn scroll_indicator(up: bool, scale: f32, foreground: Hsla) -> impl IntoElement {
     let pixels = systemless::menu_model::standard_scroll_indicator_pixels(up);
     canvas(move |bounds, _, _| bounds, move |_, bounds, window, _| {
         let center = (f32::from(bounds.size.width) / scale).round() as i32 / 2;

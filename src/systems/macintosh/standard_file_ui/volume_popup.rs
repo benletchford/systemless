@@ -24,6 +24,8 @@ pub struct StandardFileVolumePopup {
     pub visible_rows: usize,
     pub highlighted: Option<usize>,
     last_pointer: Option<(i16, i16)>,
+    scroll_direction: Option<crate::menu_manager::MenuScrollDirection>,
+    keyboard_navigation: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -80,30 +82,54 @@ impl StandardFileVolumePopup {
         if choices.is_empty() || available < i32::from(row_height)
             || viewport.3 <= viewport.1 || width <= 0 { return None; }
         let visible_rows = choices.len().min((available / i32::from(row_height)) as usize);
+        if choices.len() > visible_rows && visible_rows < 3 { return None; }
         let highlighted = choices.iter().position(|choice| choice.ref_num == current_ref).unwrap_or(0);
-        let first_visible = highlighted.saturating_sub(visible_rows - 1);
+        let first_visible = highlighted.saturating_sub(visible_rows.saturating_sub(2))
+            .min(choices.len() - visible_rows);
         let height = visible_rows as i32 * i32::from(row_height);
         let width = i32::from(width).min(i32::from(viewport.3) - i32::from(viewport.1));
         let top = (i32::from(anchor.0) - (highlighted - first_visible) as i32 * i32::from(row_height))
             .clamp(i32::from(viewport.0), i32::from(viewport.2) - height);
         let left = i32::from(anchor.1).clamp(i32::from(viewport.1), i32::from(viewport.3) - width);
         Some(Self { choices, bounds: (top as i16, left as i16, (top + height) as i16, (left + width) as i16),
-            row_height, first_visible, visible_rows, highlighted: Some(highlighted), last_pointer: None })
+            row_height, first_visible, visible_rows, highlighted: Some(highlighted), last_pointer: None, scroll_direction: None, keyboard_navigation: false })
+    }
+
+    fn rows(&self) -> crate::menu_manager::MenuRows {
+        crate::menu_manager::MenuRows::new(self.choices.iter().map(|_| crate::menu_manager::MenuRow {
+            height: self.row_height, selectable: true,
+        }))
+    }
+
+    /// Arrow slots replace clipped rows, using the guest Menu Manager rules.
+    pub fn row_indicator(&self, row: usize) -> Option<bool> {
+        let content_top = self.bounds.0.saturating_sub((self.first_visible as i16).saturating_mul(self.row_height));
+        let (up, down) = self.rows().scroll_indicators(self.bounds, content_top);
+        if row == 0 && up { Some(true) }
+        else if row + 1 == self.visible_rows && down { Some(false) }
+        else { None }
     }
 
     pub(crate) fn hover(&mut self, v: i16, h: i16) -> bool {
-        if self.last_pointer == Some((v, h)) { return false; }
+        let rows = self.rows();
+        let mut content_top = self.bounds.0.saturating_sub((self.first_visible as i16).saturating_mul(self.row_height));
+        if self.last_pointer == Some((v, h)) && (self.keyboard_navigation
+            || (self.scroll_direction.is_none() && rows.pointer_scroll_direction(self.bounds, content_top, (v, h)).is_none())) {
+            return false;
+        }
+        self.keyboard_navigation = false;
         self.last_pointer = Some((v, h));
-        let previous = self.highlighted;
-        self.pointer(v, h, false);
-        self.highlighted != previous
+        let previous = (self.first_visible, self.highlighted);
+        let update = rows.track_pointer(self.bounds, &mut content_top, &mut self.scroll_direction, (v, h));
+        self.first_visible = ((i32::from(self.bounds.0) - i32::from(content_top)) / i32::from(self.row_height)) as usize;
+        self.highlighted = (update.item > 0).then_some(update.item.saturating_sub(1) as usize);
+        previous != (self.first_visible, self.highlighted)
     }
 
     pub(crate) fn pointer(&mut self, v: i16, h: i16, released: bool) -> StandardFileVolumeResult {
-        let (top, left, bottom, right) = self.bounds;
-        self.highlighted = (v >= top && v < bottom && h >= left && h < right)
-            .then(|| self.first_visible + ((i32::from(v) - i32::from(top)) / i32::from(self.row_height)) as usize)
-            .filter(|index| *index < self.choices.len());
+        self.keyboard_navigation = false;
+        self.last_pointer = None;
+        self.hover(v, h);
         if released { self.accept() } else { StandardFileVolumeResult::Pending }
     }
 
@@ -123,8 +149,13 @@ impl StandardFileVolumePopup {
             _ => return StandardFileVolumeResult::Pending,
         };
         self.highlighted = Some(next);
-        if next < self.first_visible { self.first_visible = next; }
-        if next >= self.first_visible + self.visible_rows { self.first_visible = next + 1 - self.visible_rows; }
+        self.scroll_direction = None;
+        self.keyboard_navigation = true;
+        if next <= self.first_visible { self.first_visible = next.saturating_sub(1); }
+        if next >= self.first_visible + self.visible_rows.saturating_sub(1) {
+            self.first_visible = next.saturating_add(2).saturating_sub(self.visible_rows)
+                .min(self.choices.len().saturating_sub(self.visible_rows));
+        }
         StandardFileVolumeResult::Pending
     }
 
@@ -175,9 +206,10 @@ mod volume_popup_tests {
     fn volume_popup_pointer_release_and_cancellation_preserve_choice_identity() {
         let mut popup = popup();
         assert_eq!(popup.bounds, (0, 20, 48, 120));
-        assert_eq!(popup.first_visible, 1);
-        assert_eq!(popup.pointer(1, 21, false), StandardFileVolumeResult::Pending);
-        assert_eq!(popup.pointer(1, 21, true), StandardFileVolumeResult::Select { ref_num: -2, root_dir_id: 102 });
+        assert_eq!(popup.first_visible, 2);
+        assert_eq!(popup.row_indicator(0), Some(true));
+        assert_eq!(popup.pointer(17, 21, false), StandardFileVolumeResult::Pending);
+        assert_eq!(popup.pointer(17, 21, true), StandardFileVolumeResult::Select { ref_num: -4, root_dir_id: 302 });
         assert_eq!(popup.pointer(48, 21, true), StandardFileVolumeResult::Cancel);
         assert_eq!(popup.pointer(1, 120, true), StandardFileVolumeResult::Cancel);
     }
@@ -195,6 +227,13 @@ mod volume_popup_tests {
     }
     #[test]
     fn volume_popup_switches_mounted_guest_directory_on_both_cpus() {
+        mounted_guest_directory_workflow(false);
+    }
+    #[test]
+    fn volume_popup_pointer_scrolls_to_mounted_file_on_both_cpus() {
+        mounted_guest_directory_workflow(true);
+    }
+    fn mounted_guest_directory_workflow(pointer_scroll: bool) {
         use crate::systems::macintosh::session::{MacintoshInput, MacintoshSession};
         fn advance(session: &mut MacintoshSession) {
             let tick = session.runner().guest_tick().saturating_add(1);
@@ -216,6 +255,13 @@ mod volume_popup_tests {
             session.initialize(&app);
             {
                 let dispatcher = session.runner_mut().dispatcher_mut();
+                if pointer_scroll {
+                    dispatcher.vfs_volumes.with_mut(|volumes| {
+                        for index in 0..39 {
+                            volumes.push(volume(-100 - index, &format!("Volume {index:02}"), 50000 + index as u32));
+                        }
+                    });
+                }
                 dispatcher.vfs_volumes.with_mut(|volumes| volumes.push(volume(-42, "Archive", 42000)));
                 dispatcher.vfs_directories.with_mut(|directories| {
                     for (dir_id, parent_dir_id, path) in [(42000, 1, "Archive"), (42001, 42000, "Archive/Samples")] {
@@ -247,13 +293,32 @@ mod volume_popup_tests {
             let opened = wait_panel(&mut session, "Open panel", |_| true);
             let selector = opened.get_layout.as_ref().unwrap().volume;
             session.deliver_input(MacintoshInput::MouseDown { vertical: selector.0 + 5, horizontal: selector.1 + 5 });
-            wait_panel(&mut session, "selector open", |panel| panel.volume_popup.is_some());
-            session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x77, character: 0 });
-            session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x77, character: 0 });
-            wait_panel(&mut session, "Archive highlighted", |panel| panel.volume_popup.as_ref().is_some_and(|popup|
-                popup.highlighted.and_then(|index| popup.choices.get(index)).is_some_and(|choice| choice.root_dir_id == 42000)));
-            session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x24, character: 13 });
-            session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x24, character: 13 });
+            let popup_panel = wait_panel(&mut session, "selector open", |panel| panel.volume_popup.is_some());
+            if pointer_scroll {
+                let popup = popup_panel.volume_popup.as_ref().unwrap();
+                assert_eq!(popup.choices.len(), 41);
+                assert!(popup.visible_rows < popup.choices.len());
+                assert_eq!(popup.row_indicator(popup.visible_rows - 1), Some(false));
+                let vertical = popup.bounds.2 - 5;
+                let horizontal = popup.bounds.1 + 20;
+                session.deliver_input(MacintoshInput::MouseMove { vertical, horizontal });
+                let scrolled = wait_panel(&mut session, "pointer-scrolled Archive", |panel|
+                    panel.volume_popup.as_ref().is_some_and(|popup|
+                        popup.highlighted.and_then(|index| popup.choices.get(index))
+                            .is_some_and(|choice| choice.root_dir_id == 42000)));
+                let popup = scrolled.volume_popup.as_ref().unwrap();
+                assert!(popup.first_visible > 0);
+                assert_eq!(popup.row_indicator(0), Some(true));
+                assert_eq!(popup.row_indicator(popup.visible_rows - 1), None);
+                session.deliver_input(MacintoshInput::MouseUp { vertical, horizontal });
+            } else {
+                session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x77, character: 0 });
+                session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x77, character: 0 });
+                wait_panel(&mut session, "Archive highlighted", |panel| panel.volume_popup.as_ref().is_some_and(|popup|
+                    popup.highlighted.and_then(|index| popup.choices.get(index)).is_some_and(|choice| choice.root_dir_id == 42000)));
+                session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x24, character: 13 });
+                session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x24, character: 13 });
+            }
             let switched = wait_panel(&mut session, "Archive directory", |panel| panel.directory_id == 42000 && panel.volume_popup.is_none());
             assert_eq!(switched.directory_label.as_deref(), Some("Archive"));
             assert!(switched.volume_text.as_ref().is_some_and(|(text, _)| text.starts_with("Ar")));
@@ -306,11 +371,36 @@ mod volume_popup_tests {
     #[test]
     fn volume_popup_stationary_pointer_preserves_keyboard_navigation() {
         let mut popup = popup();
-        assert!(popup.hover(1, 21)); assert_eq!(popup.highlighted, Some(1));
-        popup.key(0, 0x7d, 0); assert_eq!(popup.highlighted, Some(2));
-        assert!(!popup.hover(1, 21)); assert_eq!(popup.highlighted, Some(2));
-        assert!(popup.hover(33, 21)); assert_eq!(popup.highlighted, Some(3));
+        assert!(popup.hover(33, 21)); assert_eq!(popup.highlighted, Some(4));
+        popup.key(0, 0x7e, 0); assert_eq!(popup.highlighted, Some(3));
+        assert!(!popup.hover(33, 21)); assert_eq!(popup.highlighted, Some(3));
         assert!(popup.hover(49, 21)); assert_eq!(popup.highlighted, None);
+    }
+    #[test]
+    fn volume_popup_pointer_scroll_arms_repeats_and_exposes_final_choice() {
+        let mut popup = popup();
+        popup.key(0, 0x73, 0);
+        assert_eq!(popup.first_visible, 0);
+        assert_eq!(popup.row_indicator(2), Some(false));
+        popup.hover(33, 21); // arm down without selecting an arrow
+        assert_eq!((popup.first_visible, popup.highlighted), (0, None));
+        popup.hover(33, 21); assert_eq!(popup.first_visible, 1);
+        assert_eq!(popup.row_indicator(0), Some(true));
+        popup.hover(33, 21); assert_eq!(popup.first_visible, 2);
+        assert_eq!(popup.row_indicator(2), None);
+        popup.hover(33, 21); assert_eq!(popup.highlighted, Some(4));
+        assert_eq!(popup.pointer(33, 21, true), StandardFileVolumeResult::Select { ref_num: -5, root_dir_id: 402 });
+    }
+    #[test]
+    fn volume_popup_keyboard_scroll_does_not_arm_stationary_pointer() {
+        let mut popup = popup();
+        popup.key(0, 0x73, 0); popup.hover(1, 21);
+        popup.key(0, 0x77, 0);
+        assert_eq!((popup.first_visible, popup.highlighted), (2, Some(4)));
+        for _ in 0..10 { assert!(!popup.hover(1, 21)); }
+        assert_eq!((popup.first_visible, popup.highlighted), (2, Some(4)));
+        popup.hover(2, 21); assert_eq!(popup.highlighted, None); // moved pointer arms up
+        popup.hover(2, 21); assert_eq!(popup.first_visible, 1);
     }
     #[test]
     fn volume_popup_declines_empty_choices_and_unusable_geometry() {

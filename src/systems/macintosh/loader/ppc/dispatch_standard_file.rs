@@ -1010,6 +1010,13 @@ fn ppc_standard_file_draw_get_dialog(
         for (row, (index, choice)) in popup.choices.iter().enumerate().skip(popup.first_visible).take(popup.visible_rows).enumerate() {
             let top = popup.bounds.0 + row as i16 * popup.row_height;
             let rect = (top + 1, popup.bounds.1 + 1, top + popup.row_height - 1, popup.bounds.3 - 1);
+            if let Some(up) = popup.row_indicator(row) {
+                for (x, y) in crate::menu_model::standard_scroll_indicator_pixels(up) {
+                    let x = (popup.bounds.1 + popup.bounds.3) / 2 + x; let y = top + y;
+                    let _ = ppc_fill_front_rect(memory, front, (y, x, y + 1, x + 1), PPC_RGB_BLACK);
+                }
+                continue;
+            }
             let selected = popup.highlighted == Some(index);
             if selected { let _ = ppc_fill_front_rect(memory, front, rect, PPC_RGB_BLACK); }
             let label = crate::trap::TrapDispatcher::popup_control_display_title(&choice.name,

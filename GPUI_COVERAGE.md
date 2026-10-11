@@ -1,5 +1,21 @@
 # GPUI Kit system-interface coverage
 
+### Oversized guest volume-popup scrolling (2026-10-11)
+
+Volume popups now reuse shared Menu Manager pointer tracking and arrow pixels
+in both CPU painters and GPUI. Hover arms an indicator before repeated tracking
+scrolls; the final row becomes selectable when its arrow disappears. Keyboard
+navigation reveals choices while a stationary pointer preserves the selection.
+Arrow slots expose no hidden volume choice or acceptance action. All ten popup
+library regressions pass (23.89s), including actual 41-volume pointer scrolling,
+mounted-file Open replies and guest file reads across mono68k, colour68k, PPC8
+and PPC16. The shared GPUI action regression passes (3.69s), checking arrow-slot
+action exclusion and ordinary popup/modal contracts. These are guest workflow
+and test-window checks; oversized composed images across scales/activation,
+physical tracking and native accessibility remain unqualified. No broad release
+gate closes.
+
+
 ### Text-service selection repaint correction (2026-10-11)
 
 The immutable earlier `99b529fb` frontend suite terminated with 197 passed,

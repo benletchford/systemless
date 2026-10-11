@@ -1146,7 +1146,8 @@ mod desktop {
                 || !self.standard_file.as_ref().is_some_and(|panel| panel.guest_id == id
                     && panel.generation == generation && panel.volume_popup.as_ref() == Some(expected)) { return; }
             if index < expected.first_visible || index >= expected.first_visible + expected.visible_rows
-                || expected.choices.get(index).is_none() { return; }
+                || expected.choices.get(index).is_none()
+                || expected.row_indicator(index - expected.first_visible).is_some() { return; }
             let vertical = expected.bounds.0 + (index - expected.first_visible) as i16 * expected.row_height
                 + expected.row_height / 2;
             let horizontal = expected.bounds.1 + (expected.bounds.3 - expected.bounds.1) / 2;
@@ -3023,6 +3024,14 @@ mod desktop {
                                 .role(Role::ListBox).aria_label("Volumes")
                                 .overflow_hidden().bg(cx.theme().background).border_1().border_color(cx.theme().border);
                             for (row, (index, choice)) in popup.choices.iter().enumerate().skip(popup.first_visible).take(popup.visible_rows).enumerate() {
+                                if let Some(up) = popup.row_indicator(row) {
+                                    menu = menu.child(div().absolute().left(guest_px(1.) - px(1.))
+                                        .top(guest_px(row as f32 * f32::from(popup.row_height)) - px(1.))
+                                        .w(guest_px(f32::from(popup.bounds.3 - popup.bounds.1 - 2)))
+                                        .h(guest_px(f32::from(popup.row_height)))
+                                        .child(super::popup::scroll_indicator(up, scene_scale, cx.theme().foreground)));
+                                    continue;
+                                }
                                 let selected = popup.highlighted == Some(index);
                                 let label = popup.display_name(index).unwrap_or_default();
                                 let accessibility_view = cx.entity().downgrade();
@@ -17729,6 +17738,28 @@ mod desktop {
             assert_eq!(popup_requests.iter().filter(|command| matches!(command,
                 super::Command::Input(MacintoshInput::KeyDown { mac_key: 0x30 | 0x24, .. }))).count(), 3, "{:?}", popup_requests.iter().filter_map(|command| match command { super::Command::Input(input) => Some(input), _ => None }).collect::<Vec<_>>());
             assert!(!popup_requests.iter().any(|command| matches!(command, super::Command::ActivateFile(..))));
+            cx.update_window(window.into(), |_, window, cx| {
+                view.update(cx, |demo, cx| {
+                    let panel = demo.standard_file.as_mut().unwrap();
+                    let choices = (0..41).map(|index| systemless::runner::StandardFileVolumeChoice {
+                        ref_num: -1 - index as i16, root_dir_id: 2 + index as u32,
+                        name: format!("Mounted volume {index:02}"),
+                    }).collect();
+                    panel.volume_popup = systemless::runner::StandardFileVolumePopup::new(
+                        choices, -1, panel.get_layout.as_ref().unwrap().volume, panel.bounds, 200);
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                let expected = view.read(cx).standard_file.as_ref().unwrap().volume_popup.clone().unwrap();
+                let arrow_index = expected.visible_rows - 1;
+                assert_eq!(expected.row_indicator(arrow_index), Some(false));
+                assert!(window.try_find(format!("guest-volume-7-1-{arrow_index}")).is_none(),
+                    "scroll arrows must not expose hidden volume choice actions");
+                assert_eq!(window.find("guest-volume-7-1-1").role(), Some(gpui_kit::Role::ListBoxOption));
+                view.update(cx, |demo, cx| demo.queue_volume_choice(7, 1, arrow_index, &expected, window, cx));
+                assert!(!receiver.try_iter().any(|command| matches!(command, super::Command::Input(_))),
+                    "an arrow slot cannot accept its clipped volume");
+            }).unwrap();
             cx.update_window(window.into(), |_, window, cx| {
                 view.update(cx, |demo, cx| { demo.host_active = Some(false); cx.notify(); });
                 window.render_frame(cx); window.press("enter", cx);

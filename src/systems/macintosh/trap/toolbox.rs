@@ -2276,6 +2276,13 @@ impl super::TrapDispatcher {
             self.draw_rect_border(bus, ptop, pleft, pbottom, pright);
             for (row, (index, choice)) in popup.choices.iter().enumerate().skip(popup.first_visible).take(popup.visible_rows).enumerate() {
                 let row_top = ptop + row as i16 * popup.row_height;
+                if let Some(up) = popup.row_indicator(row) {
+                    for (x, y) in crate::menu_model::standard_scroll_indicator_pixels(up) {
+                        let x = (pleft + pright) / 2 + x; let y = row_top + y;
+                        Self::fb_fill_rect(bus, base, row_bytes, depth, width, height, y, x, y + 1, x + 1, true);
+                    }
+                    continue;
+                }
                 let selected = popup.highlighted == Some(index);
                 if selected { Self::fb_fill_rect(bus, base, row_bytes, depth, width, height,
                     row_top + 1, pleft + 1, row_top + popup.row_height - 1, pright - 1, true); }
