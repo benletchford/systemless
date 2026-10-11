@@ -57,6 +57,7 @@ pub(crate) fn single_line(
     let end = bytes[folder.selection.1.min(bytes.len() - 1)].max(start);
     let visible = bytes[folder.visible_offset.min(bytes.len() - 1)];
     let guest_positions = folder.insertion_positions.clone();
+    let caret_visible = folder.caret_visible;
     let guest_bounds = folder.layout.name;
     canvas(move |bounds, window, _| {
         let style = window.text_style();
@@ -86,7 +87,7 @@ pub(crate) fn single_line(
             window.paint_quad(fill(Bounds::new(point(left, origin.y), size(right - left, height)), selection_color));
         }
         let _ = line.paint(origin, height, TextAlign::Left, None, window, cx);
-        if start == end {
+        if start == end && caret_visible {
             window.paint_quad(fill(Bounds::new(point(left, origin.y), size(caret_width, height)), foreground));
         }
     }).size_full()

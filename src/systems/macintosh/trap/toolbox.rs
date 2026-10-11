@@ -2885,7 +2885,7 @@ impl super::TrapDispatcher {
                 let selection = folder.edit.selection();
                 self.draw_edit_text_scrolled(bus, layout.name.0, layout.name.1, layout.name.2, layout.name.3,
                     &name, (!selection.is_empty()).then_some((selection.start, selection.end)),
-                    selection.is_empty().then_some(selection.start), true, folder.scroll_x);
+                    folder.caret_visible().then_some(selection.start), true, folder.scroll_x);
             }
             (self.tx_font, self.tx_size, self.tx_face) = saved_text;
         }
@@ -3208,6 +3208,9 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         mut tracking: StandardFilePutTrackingState,
     ) {
+        if tracking.new_folder.as_mut().is_some_and(|folder| folder.idle(self.current_tick())) {
+            self.draw_standard_file_put_dialog(bus, &tracking);
+        }
         if let Some(folder) = tracking.new_folder.as_mut().filter(|folder| folder.is_selecting()) {
             let layout = crate::standard_file_ui::StandardFileNewFolderLayout::new(tracking.bounds);
             let release = self.event_queue.iter().position(|event| event.what == 2)
@@ -3218,6 +3221,7 @@ impl super::TrapDispatcher {
                 i32::from(Self::fb_measure_string(&decode_mac_roman(bytes), 0, 12))
             });
             let mut changed = folder.track_selection(offset, release.is_none() && self.window_tracking_button_down(bus));
+            if release.is_some() { folder.reset_caret(self.current_tick()); }
                     changed |= folder.reveal_offset(offset, layout.name.3 - layout.name.1 - 3, |bytes| Self::fb_measure_string(&decode_mac_roman(bytes), 0, 12));
             if changed || release.is_some() || !self.standard_file_dialog_intact(bus, tracking.bounds) {
                 self.draw_standard_file_put_dialog(bus, &tracking);
@@ -3239,6 +3243,7 @@ impl super::TrapDispatcher {
                         i32::from(Self::fb_measure_string(&decode_mac_roman(bytes), 0, 12))
                     });
                     folder.begin_selection(offset, event.modifiers & 0x0200 != 0);
+                    folder.reset_caret(self.current_tick());
                     folder.reveal_offset(offset, layout.name.3 - layout.name.1 - 3, |bytes| Self::fb_measure_string(&decode_mac_roman(bytes), 0, 12));
                     tracking.new_folder = Some(folder);
                     self.draw_standard_file_put_dialog(bus, &tracking);
@@ -3250,6 +3255,7 @@ impl super::TrapDispatcher {
                 let mut scrap = if ptr == 0 { Vec::new() } else { bus.read_bytes(ptr, usize::from(bus.read_word(addr::TE_SCRP_LENGTH))) };
                 let original_scrap = scrap.clone();
                 let action = folder.event(&layout, event.what, event.message, event.modifiers, (event.where_v, event.where_h), &mut scrap);
+                folder.reset_caret(self.current_tick());
                     folder.reveal_offset(folder.edit.selection().start, layout.name.3 - layout.name.1 - 3, |bytes| Self::fb_measure_string(&decode_mac_roman(bytes), 0, 12));
                 if scrap != original_scrap { Self::te_set_scrap_bytes(bus, &scrap); }
                 let mut dismiss = action == Some(StandardFileNewFolderAction::Cancel);

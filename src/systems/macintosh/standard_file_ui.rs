@@ -157,6 +157,7 @@ pub struct StandardFileNewFolderSnapshot {
     pub insertion_positions: Vec<i16>,
     /// Byte offset whose caret or moving selection endpoint should remain visible.
     pub visible_offset: usize,
+    pub caret_visible: bool,
     pub selection: (usize, usize),
     pub error: Option<i16>,
     pub layout: StandardFileNewFolderLayout,
@@ -230,6 +231,8 @@ pub(crate) struct StandardFileNewFolderState {
     pointer_anchor: Option<usize>,
     pub(crate) scroll_x: i16,
     visible_offset: usize,
+    caret_tick: Option<u32>,
+    caret_on: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -248,11 +251,38 @@ impl Default for StandardFileNewFolderState {
             pointer_anchor: None,
             scroll_x: 0,
             visible_offset: 0,
+            caret_tick: None,
+            caret_on: true,
         }
     }
 }
 
 impl StandardFileNewFolderState {
+    pub(crate) fn caret_visible(&self) -> bool {
+        self.error.is_none() && self.edit.selection().is_empty() && self.caret_on
+    }
+
+    pub(crate) fn reset_caret(&mut self, tick: u32) {
+        self.caret_tick = Some(tick);
+        self.caret_on = true;
+    }
+
+    /// TEIdle, Text (1993), p. 2-84: only active insertion points blink,
+    /// no more frequently than the default 32 guest ticks.
+    pub(crate) fn idle(&mut self, tick: u32) -> bool {
+        if self.error.is_some() || !self.edit.selection().is_empty() || self.is_selecting() {
+            return false;
+        }
+        let Some(previous) = self.caret_tick else {
+            self.reset_caret(tick);
+            return false;
+        };
+        if tick.wrapping_sub(previous) < 32 { return false; }
+        self.caret_tick = Some(tick);
+        self.caret_on = !self.caret_on;
+        true
+    }
+
     pub(crate) fn offset_at_x(&self, x: i32, measure: impl Fn(&[u8]) -> i32) -> usize {
         let text = self.edit.text();
         let x = x.saturating_add(i32::from(self.scroll_x));
@@ -337,6 +367,7 @@ impl StandardFileNewFolderState {
         StandardFileNewFolderSnapshot {
             insertion_positions,
             visible_offset: self.visible_offset,
+            caret_visible: self.caret_visible(),
             name: crate::trap::types::decode_mac_roman(self.edit.text()),
             selection: (selection.start, selection.end),
             error: self.error,
@@ -467,6 +498,33 @@ mod new_folder_tests {
         }
         state.edit = crate::text_edit::TextEditBuffer::new(Vec::new(), 0, 0);
         assert_eq!(state.offset_at_x(100, measure), 0);
+    }
+
+    #[test]
+    fn new_folder_caret_uses_guest_idle_ticks_and_resets_after_input() {
+        let mut state = StandardFileNewFolderState::default();
+        assert!(!state.caret_visible());
+        state.begin_selection(3, false);
+        state.track_selection(3, false);
+        state.reset_caret(100);
+        assert!(state.caret_visible());
+        assert!(!state.idle(131));
+        assert!(state.idle(132));
+        assert!(!state.caret_visible());
+        assert!(!state.idle(132));
+        assert!(state.idle(164));
+        state.reset_caret(u32::MAX - 15);
+        assert!(!state.idle(15));
+        assert!(state.idle(16));
+        state.reset_caret(17);
+        assert!(state.caret_visible());
+        state.begin_selection(3, false);
+        assert!(!state.idle(100), "held tracking must not blink");
+        state.track_selection(5, false);
+        assert!(!state.idle(200));
+        assert!(!state.caret_visible());
+        state.error = Some(-48);
+        assert!(!state.idle(300));
     }
 
     #[test]

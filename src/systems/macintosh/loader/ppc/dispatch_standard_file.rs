@@ -86,6 +86,7 @@ pub(super) struct PpcStandardFilePutTrackingState {
 
 pub(super) struct PpcStandardFileDispatchContext<'a> {
     pub(super) input: PpcInputSnapshot,
+    pub(super) tick_count: u32,
     pub(super) next_vfs_dir_id: &'a mut u32,
     pub(super) heap_limit: u32,
     pub(super) handles: &'a mut Vec<PpcHandleRecord>,
@@ -112,6 +113,7 @@ pub(super) fn dispatch_standard_file_import(
 ) -> Option<PpcImportAction> {
     let PpcStandardFileDispatchContext {
         input,
+        tick_count,
         next_vfs_dir_id,
         heap_limit,
         handles,
@@ -155,6 +157,7 @@ pub(super) fn dispatch_standard_file_import(
             heap_limit,
             handles,
             input,
+            tick_count,
         )),
         PpcImportDispatcherTarget::StandardFileCompatibility(operation) => {
             Some(ppc_dispatch_standard_file(
@@ -178,6 +181,7 @@ pub(super) fn dispatch_standard_file_import(
             heap_limit,
             handles,
             input,
+            tick_count,
             ))
         }
         _ => None,
@@ -1142,7 +1146,7 @@ fn ppc_standard_file_draw_put_dialog(
                     let _ = ppc_fill_front_rect(memory, front, highlight, PPC_RGB_BLACK);
                     draw_name(memory, highlight, PPC_RGB_WHITE);
                 }
-            } else {
+            } else if folder.caret_visible() {
                 // Text (1993), pp. 2-36–2-37: an empty active selection is
                 // represented by a caret at its insertion position.
                 let advance = ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM,
@@ -1876,6 +1880,7 @@ fn ppc_dispatch_standard_file(
     heap_limit: u32,
     handles: &mut Vec<PpcHandleRecord>,
     input: PpcInputSnapshot,
+    tick_count: u32,
 ) -> PpcImportAction {
     let mode = operation.mode();
     let requested_origin = operation.requested_origin(cpu);
@@ -1918,6 +1923,9 @@ fn ppc_dispatch_standard_file(
                         false,
                     );
                 }
+                if tracking.new_folder.as_mut().is_some_and(|folder| folder.idle(tick_count)) {
+                    ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+                }
                 if let Some(folder) = tracking.new_folder.as_mut().filter(|folder| folder.is_selecting()) {
                     let layout = crate::standard_file_ui::StandardFileNewFolderLayout::new(tracking.bounds);
                     let release = event_queue.iter().position(|event| event.what == 2)
@@ -1927,6 +1935,7 @@ fn ppc_dispatch_standard_file(
                         i32::from(ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes))
                     });
                     let mut changed = folder.track_selection(offset, release.is_none() && input.mouse_button);
+                    if release.is_some() { folder.reset_caret(tick_count); }
                     changed |= folder.reveal_offset(offset, layout.name.3 - layout.name.1 - 5, |bytes| ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes));
                     if changed || release.is_some() {
                         ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
@@ -1961,6 +1970,7 @@ fn ppc_dispatch_standard_file(
                                 i32::from(ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes))
                             });
                             folder.begin_selection(offset, event.modifiers & 0x0200 != 0);
+                            folder.reset_caret(tick_count);
                     folder.reveal_offset(offset, layout.name.3 - layout.name.1 - 5, |bytes| ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes));
                             tracking.new_folder = Some(folder);
                             ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
@@ -1970,6 +1980,7 @@ fn ppc_dispatch_standard_file(
                         let mut scrap = ppc_te_scrap_bytes(memory);
                         let original = scrap.clone();
                         let action = folder.event(&layout, event.what, event.message, event.modifiers, (event.where_v, event.where_h), &mut scrap);
+                        folder.reset_caret(tick_count);
                     folder.reveal_offset(folder.edit.selection().start, layout.name.3 - layout.name.1 - 5, |bytes| ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes));
                         if scrap != original {
                             let mut allocator = PpcProcessAllocatorView { memory_manager: process_memory_manager };

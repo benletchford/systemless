@@ -1894,3 +1894,37 @@ selection and view. All 50 capture files and both scenario identities match
 the manifests. These observations agree with the exercised Systemless held-
 selection paths. Scroll velocity, double-click selection, blink timing,
 composition and accessibility editing remain separate qualification items.
+
+### New Folder caret timing
+
+The local caret change follows Text (1993), TEIdle, p. 2-84 and the existing
+CPU TextEdit paths: empty active selections blink at the default 32 guest-tick
+interval. Both CPU adapters now advance shared caret state and redraw on a
+visibility transition; the GPUI renderer consumes that snapshot state rather
+than using a host timer. Editing and pointer release restart the visible phase;
+nonempty selections, held tracking and error alerts suppress blinking.
+
+The focused timing test passes, covering the 31/32-tick boundary, repeat idle
+calls, visible-phase reset, tick wraparound and selection/error suppression.
+The real guest workflow passes visible/hidden/visible checkpoints at 31, 32
+and 64 ticks in monochrome 68k, colour 68k and PPC, including creation,
+cancellation and duplicate-file/directory retry. Checkpoints advance through
+guest tick boundaries: a GUI deadline is a cap, and PPC deliberately returns
+at each VBL boundary rather than jumping to that deadline in one call.
+
+All six visible/hidden composed captures and their paired guest frames have
+been reviewed. The long name remains clipped at its scrolled origin, with
+the caret appearing and disappearing at the same insertion point; neither
+panel nor scene moves. Reproduce with `--capture-standard-file-new-folder-long-composed`
+and `--capture-standard-file-new-folder-caret-hidden-composed`, each followed
+by an output PNG path, using the `gpui-menu-demo` example with `gpui-demo-test`
+and the showcase archive. Run each with `--screen-depth 1`, `--screen-depth 8`
+and `--prefer-powerpc`. The hidden capture asserts the 32-tick transition and
+unchanged selection/scroll endpoint. The non-test `gpui-demo` feature build
+also passes without exposing test-only capture arguments.
+The full GPUI interaction suite passes all 75 tests with this change.
+
+Host-focus behaviour and adjustable guest caret-rate settings remain open.
+Toolbox Essentials (1992), p. 2-113 documents GetCaretTime and its CaretTime
+global; its C summary defines the global at `$02F4`. The default-interval
+implementation does not yet consume that setting.
