@@ -333,7 +333,7 @@ mod desktop {
 
     enum Command {
         ImportClipboard(Vec<u8>),
-        Foreground(bool),
+        Foreground(bool, u64),
         Menu(i16, i16, u32, u64),
         Input(MacintoshInput),
         Wheel(super::scroll::WheelRequest),
@@ -372,6 +372,7 @@ mod desktop {
         text_edits: Vec<TextEditSnapshot>,
         standard_file: Option<StandardFileSnapshot>,
         frame: Option<(u32, u32, Vec<u8>)>,
+        clipboard_export: Option<(u64, Vec<u8>)>,
         status: String,
     }
 
@@ -448,6 +449,7 @@ mod desktop {
             let mut wheel: Option<super::scroll::WheelClick> = None;
             let mut activation: Option<super::activation::ControlActivation> = None;
             let mut pointer_down = false;
+            let mut clipboard = super::clipboard::GuestClipboard::default();
             loop {
                 let start = Instant::now();
                 #[cfg(feature = "debug-server")]
@@ -518,9 +520,11 @@ mod desktop {
                             }
                         }
                         Ok(Command::ImportClipboard(text)) => {
+                            clipboard.imported(&text);
                             session.import_clipboard_text(text);
                         }
-                        Ok(Command::Foreground(active)) => {
+                        Ok(Command::Foreground(active, generation)) => {
+                            clipboard.foreground(active, generation);
                             session.request_foreground(active);
                         }
                         Ok(Command::Input(input)) => {
@@ -577,6 +581,7 @@ mod desktop {
                     session.runner_mut().run_gui_pending_sound_work(10_000);
                 }
                 session.runner_mut().finish_gui_frame();
+                clipboard.observe(&session);
                 session.drain_audio();
                 if let Some(store) = save_store.as_mut() {
                     store.sync_save_files(session.runner_mut());
@@ -598,6 +603,7 @@ mod desktop {
                 let standard_file = session.runner_mut().standard_file_snapshot();
                 *updates.lock().unwrap() = Some(Update {
                     identity: identity.clone(),
+                    clipboard_export: clipboard.export.clone(),
                     menus,
                     menu_presented,
                     menu_height,
@@ -670,6 +676,7 @@ mod desktop {
         wheel: super::scroll::WheelAccumulator,
         _window_activation: Option<Subscription>,
         host_active: Option<bool>,
+        host_generation: u64,
         host_clipboard: super::clipboard::HostClipboard,
         arrows_as_numpad: bool,
         application_identity: Option<Arc<game::ApplicationIdentity>>,
@@ -693,20 +700,64 @@ mod desktop {
             }
         }
 
-        fn import_host_clipboard(&mut self, cx: &App) {
-            // ClipboardItem::text also synthesizes filenames for ExternalPaths.
-            // Only actual string entries are part of this text-only bridge.
-            let text = cx.read_from_clipboard().and_then(|item| {
-                let mut text = None::<String>;
-                for entry in item.entries() {
-                    if let ClipboardEntry::String(value) = entry {
-                        text.get_or_insert_with(String::new).push_str(value.text());
+        fn read_host_clipboard(cx: &App) -> super::clipboard::HostSample {
+            // GPUI does not expose the native pasteboard change count. Use it
+            // to detect a new copy with identical text and unknown formats.
+            let stamp = || {
+                if cx.is_test() {
+                    return None;
+                }
+                // SAFETY: invoked only on the macOS UI thread; these AppKit
+                // accessors return retained/read-only pasteboard state.
+                let board = unsafe { objc2_app_kit::NSPasteboard::generalPasteboard() };
+                Some(unsafe {
+                    (board.changeCount(), board.types().is_some_and(|types| types.count() != 0))
+                })
+            };
+            for _ in 0..3 {
+                let before = stamp();
+                let mut sample = super::clipboard::HostSample {
+                    text: None,
+                    text_only: before.is_none_or(|(_, has_types)| !has_types),
+                    revision: before.map(|(count, _)| count),
+                };
+                if let Some(item) = cx.read_from_clipboard() {
+                    sample.text_only = true;
+                    for entry in item.entries() {
+                        match entry {
+                            ClipboardEntry::String(value) => {
+                                sample.text.get_or_insert_with(String::new).push_str(value.text());
+                            }
+                            _ => sample.text_only = false,
+                        }
                     }
                 }
-                text
-            });
-            if let Some(text) = self.host_clipboard.changed_text(text) {
+                if stamp() == before {
+                    return sample;
+                }
+            }
+            super::clipboard::HostSample {
+                text: None,
+                text_only: false,
+                revision: stamp().map(|(count, _)| count),
+            }
+        }
+
+        fn import_host_clipboard(&mut self, cx: &App) {
+            let sample = Self::read_host_clipboard(cx);
+            if let Some(text) = self.host_clipboard.changed_sample(sample) {
                 let _ = self.commands.send(Command::ImportClipboard(text));
+            }
+        }
+
+        fn export_host_clipboard(&mut self, generation: u64, text: &[u8], cx: &App) {
+            if self.host_active != Some(false) {
+                return;
+            }
+            let sample = Self::read_host_clipboard(cx);
+            if let Some(text) = self.host_clipboard.export(generation, text, sample) {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                self.host_clipboard.record_export(Self::read_host_clipboard(cx));
             }
         }
 
@@ -723,6 +774,9 @@ mod desktop {
                 if this
                     .update(cx, |this, cx| {
                         if let Some(update) = update {
+                            if let Some((generation, text)) = update.clipboard_export {
+                                this.export_host_clipboard(generation, &text, cx);
+                            }
                             let same_identity = match (&this.application_identity, &update.identity) {
                                 (Some(old), Some(new)) => Arc::ptr_eq(old, new),
                                 (None, None) => true,
@@ -809,6 +863,7 @@ mod desktop {
                 wheel: super::scroll::WheelAccumulator::default(),
                 _window_activation: None,
                 host_active: None,
+                host_generation: 0,
                 host_clipboard: Default::default(),
                 arrows_as_numpad: false,
                 application_identity: None,
@@ -1009,17 +1064,21 @@ mod desktop {
                     self.import_host_clipboard(cx);
                 }
                 if !window.is_window_active() {
-                    let _ = self.commands.send(Command::Foreground(false));
+                    self.host_clipboard.suspend(self.host_generation, Self::read_host_clipboard(cx));
+                    let _ = self.commands.send(Command::Foreground(false, self.host_generation));
                 }
                 self._window_activation = Some(cx.observe_window_activation(window, |this, window, cx| {
                     let active = window.is_window_active();
                     if this.host_active.replace(active) != Some(active) {
+                        this.host_generation = this.host_generation.wrapping_add(1);
                         if !active {
                             this.release_host_input();
+                            this.host_clipboard.suspend(this.host_generation, Self::read_host_clipboard(cx));
                         } else {
+                            this.host_clipboard.resume();
                             this.import_host_clipboard(cx);
                         }
-                        let _ = this.commands.send(Command::Foreground(active));
+                        let _ = this.commands.send(Command::Foreground(active, this.host_generation));
                         cx.notify();
                     }
                 }));
@@ -6987,7 +7046,7 @@ mod desktop {
             cx.update_window(window.into(), |_, window, cx| {
                 window.render_frame(cx);
                 for command in receiver.try_iter() {
-                    assert!(matches!(command, super::Command::Foreground(false)), "only initial window activation may precede menu input");
+                    assert!(matches!(command, super::Command::Foreground(false, _)), "only initial window activation may precede menu input");
                 }
                 window.click("guest-menu-4096-1", cx);
                 window.within("guest-popup-menu").press("down", cx);
@@ -7135,7 +7194,7 @@ mod desktop {
             cx.update_window(window.into(), |_, window, cx| {
                 window.render_frame(cx);
                 for command in receiver.try_iter() {
-                    assert!(matches!(command, super::Command::Foreground(false)), "only initial window activation may precede menu input");
+                    assert!(matches!(command, super::Command::Foreground(false, _)), "only initial window activation may precede menu input");
                 }
                 window.click("guest-menu-4096-1", cx);
                 window.render_frame(cx);
@@ -8556,6 +8615,63 @@ mod desktop {
         }
 
         #[test]
+        fn showcase_clipboard_export_follows_guest_private_scrap_conversion() {
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 7));
+                wait_for_menu(&mut session, 129, 7, true);
+                settle(&mut session);
+                for title in ["Reset", "Copy"] {
+                    let control = session.runner_mut().control_snapshot().into_iter()
+                        .find(|control| control.title == title && control.visible).unwrap();
+                    let (top, left, bottom, right) = control.bounds;
+                    let vertical = (top + bottom) / 2;
+                    let horizontal = (left + right) / 2;
+                    session.deliver_input(MacintoshInput::MouseDown { vertical, horizontal });
+                    settle(&mut session);
+                    session.deliver_input(MacintoshInput::MouseUp { vertical, horizontal });
+                    settle(&mut session);
+                }
+                let before = session.runner_mut().text_edit_snapshot();
+                let expected = before.private_scrap.clone();
+                assert_eq!(expected.len(), 14, "fixture Copy must execute through guest tracking");
+                assert_eq!(session.clipboard_text_after_suspend(), None);
+                let mut worker = super::super::clipboard::GuestClipboard::default();
+                worker.foreground(false, 1);
+                session.request_foreground(false);
+                worker.observe(&session);
+                assert!(worker.export.is_none(), "host blur alone must not export private scrap");
+                assert!((0..10_000).any(|_| {
+                    session.runner_mut().run_steps(100, None);
+                    worker.observe(&session);
+                    worker.export.is_some()
+                }), "guest suspend conversion never reached export: PPC={powerpc}, depth={depth:?}");
+                assert_eq!(worker.export, Some((1, expected.clone())));
+                assert_eq!(session.clipboard_text_after_suspend(), Some(Some(expected.clone())));
+                let after = session.runner_mut().text_edit_snapshot();
+                assert_eq!(after.private_scrap, expected);
+                for (old, new) in before.records.iter().zip(&after.records) {
+                    assert_eq!(old.text, new.text);
+                    assert_eq!(old.selection, new.selection);
+                }
+                let sample = super::super::clipboard::HostSample { text: Some("old host".into()), text_only: true, revision: None };
+                let mut host = super::super::clipboard::HostClipboard::default();
+                host.suspend(1, sample.clone());
+                let exported = host.export(1, &expected, sample).unwrap();
+                assert_eq!(host.changed_text(Some(exported)), None, "guest export must not cause a resume import");
+                host.resume();
+                worker.foreground(true, 2);
+                session.request_foreground(true);
+                assert!(worker.export.is_none(), "resume clears retained export updates");
+            }
+        }
+
+        #[test]
         fn showcase_text_selection_survives_modeless_window_activation() {
             for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
                 let mut session = MacintoshSession::new(true, depth);
@@ -9281,6 +9397,35 @@ mod desktop {
 
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
+        fn host_clipboard_export_respects_activation_and_new_host_contents(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::AppContext;
+            let (sender, _receiver) = std::sync::mpsc::channel();
+            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            cx.update(gpui_kit::init);
+            let view = cx.update(|cx| cx.new(|cx| super::Demo::new(sender, updates, cx)));
+            cx.update(|cx| {
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("old".into()));
+                view.update(cx, |demo, cx| {
+                    demo.host_active = Some(false);
+                    demo.host_clipboard.suspend(1, super::Demo::read_host_clipboard(cx));
+                    demo.export_host_clipboard(0, b"stale", cx);
+                    assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), "old");
+                    demo.export_host_clipboard(1, b"caf\x8e\rnext", cx);
+                    assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), "café\nnext");
+                    demo.host_clipboard.suspend(2, super::Demo::read_host_clipboard(cx));
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("new host copy".into()));
+                    demo.export_host_clipboard(2, b"delayed guest copy", cx);
+                    assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), "new host copy");
+                    demo.host_clipboard.suspend(3, super::Demo::read_host_clipboard(cx));
+                    demo.host_active = Some(true);
+                    demo.export_host_clipboard(3, b"late", cx);
+                    assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), "new host copy");
+                });
+            });
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
         fn host_window_deactivation_releases_held_input(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::{AppContext, test::TestWindowExt};
 
@@ -9309,7 +9454,7 @@ mod desktop {
             visual.deactivate_window();
             let commands: Vec<_> = receiver.try_iter().collect();
             let foreground: Vec<_> = commands.iter().filter_map(|command| match command {
-                super::Command::Foreground(active) => Some(*active),
+                super::Command::Foreground(active, _) => Some(*active),
                 _ => None,
             }).collect();
             assert_eq!(foreground, vec![false]);
@@ -9328,14 +9473,14 @@ mod desktop {
             let commands: Vec<_> = receiver.try_iter().collect();
             assert!(matches!(commands.as_slice(), [
                 super::Command::ImportClipboard(text),
-                super::Command::Foreground(true),
+                super::Command::Foreground(true, _),
             ] if text == b"caf\x8e\rnext"));
             visual.deactivate_window();
             receiver.try_iter().for_each(drop);
             cx.update_window(window.into(), |_, window, _| window.activate_window()).unwrap();
             visual.run_until_parked();
             assert!(matches!(receiver.try_iter().collect::<Vec<_>>().as_slice(), [
-                super::Command::Foreground(true),
+                super::Command::Foreground(true, _),
             ]), "unchanged clipboard must not overwrite newer guest scrap");
         }
 
@@ -9365,7 +9510,7 @@ mod desktop {
                 .try_iter()
                 .filter_map(|command| match command {
                     super::Command::Input(input) => Some(input),
-                    super::Command::Foreground(_) => panic!("input focus loss must not switch the application"),
+                    super::Command::Foreground(..) => panic!("input focus loss must not switch the application"),
                     _ => None,
                 })
                 .collect();

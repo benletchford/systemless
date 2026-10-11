@@ -118,6 +118,13 @@ impl MacintoshSession {
         self.runner.import_clipboard_text(text);
     }
 
+    /// Global TEXT after the guest has finished suspend handling and yielded.
+    /// Outer `None` denotes an unsettled/foreground process; inner `None`
+    /// denotes a settled clipboard without TEXT. Bytes are Macintosh Roman.
+    pub fn clipboard_text_after_suspend(&self) -> Option<Option<Vec<u8>>> {
+        self.runner.clipboard_text_after_suspend()
+    }
+
     /// Request a foreground change without bypassing the guest Event Manager.
     /// The request takes effect at an eligible scheduling call, respecting
     /// modality and the application's SIZE suspend/resume policy.

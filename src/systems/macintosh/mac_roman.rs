@@ -19,7 +19,8 @@ const MAC_ROMAN_HIGH: [char; 128] = [
     '\u{00AF}', '\u{02D8}', '\u{02D9}', '\u{02DA}', '\u{00B8}', '\u{02DD}', '\u{02DB}', '\u{02C7}',
 ];
 
-pub(crate) fn decode_mac_roman(bytes: &[u8]) -> String {
+/// Decode Macintosh Roman bytes exactly, retaining control characters.
+pub fn decode_mac_roman(bytes: &[u8]) -> String {
     bytes
         .iter()
         .map(|&byte| {
