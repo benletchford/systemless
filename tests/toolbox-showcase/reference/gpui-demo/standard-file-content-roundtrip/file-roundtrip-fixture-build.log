@@ -1,0 +1,61 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 1.25kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
+#2 DONE 0.0s
+
+#3 [internal] load metadata for docker.io/library/golang:1.21-bookworm@sha256:c6a5b9308b3f3095e8fde83c8bf4d68bd101fce606c1a0a1394522542509dda9
+#3 DONE 0.0s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 2B done
+#4 DONE 0.0s
+
+#5 [stage-1 1/5] FROM docker.io/library/debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
+#5 resolve docker.io/library/debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 done
+#5 DONE 0.0s
+
+#6 [builder 1/3] FROM docker.io/library/golang:1.21-bookworm@sha256:c6a5b9308b3f3095e8fde83c8bf4d68bd101fce606c1a0a1394522542509dda9
+#6 resolve docker.io/library/golang:1.21-bookworm@sha256:c6a5b9308b3f3095e8fde83c8bf4d68bd101fce606c1a0a1394522542509dda9 0.0s done
+#6 DONE 0.0s
+
+#7 [stage-1 3/5] COPY --from=builder /usr/local/bin/mps /usr/local/bin/mps
+#7 CACHED
+
+#8 [stage-1 4/5] RUN curl --fail --location --silent --show-error "https://sonixwave.com/apple/developer/Tool_Chest/Core_Mac_OS_Tools/MPW_etc./MPW-GM_Images/MPW-GM.img.bin" -o /tmp/MPW-GM.img.bin     && echo "99bbfa95bb9800c8ffc572fce6d72e561f012331c5c623fa45f732502b6fa872  /tmp/MPW-GM.img.bin" | sha256sum --check -     && mps -install /tmp/MPW-GM.img.bin     && rm /tmp/MPW-GM.img.bin
+#8 CACHED
+
+#9 [stage-1 2/5] RUN apt-get update     && apt-get install -y --no-install-recommends ca-certificates curl python3 python3-pip     && rm -rf /var/lib/apt/lists/*     && pip3 install --no-cache-dir --break-system-packages macresources==1.2
+#9 CACHED
+
+#10 [builder 2/3] WORKDIR /opt/mps
+#10 CACHED
+
+#11 [builder 3/3] RUN git clone https://github.com/elliotnunn/mps.git .     && git checkout --detach "e2b8c66e08caaf31e527e3dbecacd0926e11a47c"     && go build -trimpath -o /usr/local/bin/mps ./
+#11 CACHED
+
+#12 [stage-1 5/5] WORKDIR /workspace
+#12 CACHED
+
+#13 exporting to image
+#13 exporting layers done
+#13 exporting manifest sha256:7912745ca4ed29b83113023ed0bae9ec50d4a956eaae89f1e1ecae85e72ae151 done
+#13 exporting config sha256:114f16e2248370ef0ffb83f019f7c46c53fdf723d8b0848b53b73045699981ad done
+#13 exporting attestation manifest sha256:f4e91e9fa784b6397994f5077b854b98206e8aa6ed81dea9d60579058521ed98 done
+#13 exporting manifest list sha256:7b9bc85ccccc19be8fbce4fdec53dca7800d44e8974b8d487fd2b6e422416d09 done
+#13 naming to docker.io/library/systemless-toolbox-showcase-mpw:latest done
+#13 unpacking to docker.io/library/systemless-toolbox-showcase-mpw:latest done
+#13 DONE 0.0s
+  Set Exit 1
+  SC -sym off showcase.c -o showcase.68k.o
+  Link -d -t 'APPL' -c 'SHWC' showcase.68k.o "FS:root:MPW:Libraries:Libraries:"MacRuntime.o "FS:root:MPW:Libraries:Libraries:"Interface.o -o showcase.68k
+  Rez -append -o showcase.68k showcase.r
+  MrC -sym off -opt off showcase.c -o showcase.ppc.o
+  PPCLink showcase.ppc.o "FS:root:MPW:Libraries:SharedLibraries:"InterfaceLib "FS:root:MPW:Libraries:SharedLibraries:"QuickDraw3DLib "FS:root:MPW:Libraries:SharedLibraries:"StdCLib "FS:root:MPW:Libraries:PPCLibraries:"StdCRuntime.o "FS:root:MPW:Libraries:PPCLibraries:"PPCCRuntime.o -sym off -o showcase.ppc
+  Rez -append -o showcase.ppc -d PowerPC showcase.r
+  Duplicate -y showcase.ppc showcase
+  Rez -d FAT showcase.r -a -o showcase
+Built /Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/build/toolbox-showcase.sit

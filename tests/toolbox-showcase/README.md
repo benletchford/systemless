@@ -64,7 +64,11 @@ test protocol. Its Pages menu selects sixteen interactive views:
 12. Standard File exercises modern and legacy Open and Save entry points,
     filters the Open list to `TEXT`, navigates into the fixture folder,
     accepts a returned `FSSpec`, edits a Save name, and cancels both legacy
-    paths while checking `StandardFileReply` and `SFReply` fields.
+    paths while checking `StandardFileReply` and `SFReply` fields. A new-name
+    Save writes a known data-fork payload, closes and reopens it, checks every
+    byte, then deletes it. The main window’s app-owned refCon publishes the
+    completion status for tests. This does not test persistence across a host
+    restart; replacement scenarios currently check the returned reply only.
 13. Resource Browser enumerates named `DATA` records with
     `Count1Resources`, `Get1IndResource`, `GetResInfo`, `GetResAttrs`, and
     `GetResourceSizeOnDisk`, then demonstrates deferred `GetNamedResource`/
