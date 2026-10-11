@@ -575,3 +575,23 @@ preferences scene, considering only the control backplates. The earlier
 monochrome oracle evidence and focused one-bit PaintRect regression remain the
 authority for black custom panel interiors. Neither appearance should be replaced
 by guessed colours sampled from neighbouring pixels.
+
+Retained PPC standard-control tracking now has direct import-level lifetime and
+release-timing coverage. Tests exercise buttons, checkboxes and radios with a
+queued release inside/outside while the current pointer has already moved to the
+opposite location. They verify returned part codes, mouse-up consumption,
+highlight restoration and unchanged control values. Separate cases dispose the
+control or replace its registered generation/handle pointer during a held press;
+resuming returns zero, clears tracking and does not write into the stale record.
+The generation/pointer cases simulate identity replacement and do not prove all
+allocator-driven handle reuse paths.
+
+An additional test found that a mouse-up queued before initial TrackControl entry
+was left pending and the original hit part returned immediately. Standard PPC
+nil-action controls now consume this early release and return its actual
+inside/outside result before starting retained tracking. All 245 library tests
+matching `control` pass, including the three new regressions. Action-procedure
+repetition, nested callback frames and broader cross-CPU lifetime parity remain
+open.
+The seven GPUI tests matching `control` and the radio tracking regression also
+pass against this change.
