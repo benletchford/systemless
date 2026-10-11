@@ -1649,3 +1649,38 @@ menu, window, control, TextEdit and file-panel regressions as well as the new
 semantic workflow. It is regression evidence for the exercised paths; it does
 not close the remaining visual, accessibility, persistence or real-application
 performance requirements.
+
+The monochrome Standard File fixture's black region originates in application
+drawing: `DrawStandardFilePage` calls `DrawBeveledBox`, which sets RGBForeColor
+to light gray (0xeeee in each channel) and paints the panel before drawing black
+text. The paired guest frame already contains the region. Native monochrome
+Color QuickDraw comparison is required to determine whether this is incorrect
+runtime mapping or expected fixture behavior; it is not established as a GPUI
+compositor defect.
+
+### Native New Folder duplicate-name qualification
+
+The `standard-file-new-folder-error` oracle replay completed on Mac OS 8.1 in
+BasiliskII and SheepShaver. Both native captures show that attempting to create
+an existing directory (including a case-only name difference) closes the name
+entry dialog and presents a separate modal alert: “That name is already taken;
+please use another name.” OK is the default action. Return dismisses the alert
+and restores the Save panel with its original filename fully selected; it does
+not return to the New Folder editor. The audit found that shared New Folder state and GPUI presentation retained an
+inline error and permitted editing/retrying in that child. The implementation now
+presents a single-action alert in both ordinary renderers and GPUI, blocks name
+editing while the alert is active, advances the interaction generation on failure,
+and dismisses back to Save. GPUI exposes the error as an AlertDialog and accepts
+only its OK semantic action. The updated six-scenario workflow regression passed across monochrome 68k,
+colour 68k and PPC, including rejection of the pre-error interaction generation.
+The shared error input-isolation test and GPUI presentation test passed; the latter
+checks AlertDialog semantics, background button focus suppression and physical OK
+click forwarding. Composed captures from all three modes were reviewed: each shows
+a complete, wrapped message and one default OK button, without a name editor or
+Cancel button. Ordinary colour-68k and PPC guest captures were also reviewed.
+The reusable capture flag is `--capture-standard-file-new-folder-error-composed`.
+Read-only and other error messages remain unqualified against native oracles;
+full application-wide modal isolation remains a separate readiness requirement. Files (1992), pp. 3-6–3-7 describes subsidiary Standard
+File dialogs; the duplicate-error transition is established by the native replay.
+Capture identities were verified against the completed manifest; the native runs
+used a live guest clock (68k) and 60.15 Hz wall-clock pacing (PPC), with audio off.

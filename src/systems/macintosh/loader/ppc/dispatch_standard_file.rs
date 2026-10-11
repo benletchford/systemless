@@ -1110,32 +1110,31 @@ fn ppc_standard_file_draw_put_dialog(
             let _ = ppc_fill_front_rect(memory, front, layout.bounds, PPC_RGB_WHITE);
             let _ = ppc_frame_front_rect(memory, front, layout.bounds, PPC_RGB_BLACK, 2);
         }
-        let prompt = match folder.error {
-            Some(-48) => "Name already exists",
-            Some(-44 | -46) => "Disk is locked",
-            Some(-37) => "Invalid folder name",
-            Some(_) => "Could not create folder",
-            None => "Name of new folder:",
-        };
-        ppc_draw_dialog_text(memory, gworlds, layout.prompt, prompt.as_bytes(), PPC_RGB_BLACK);
-        let _ = ppc_fill_front_rect(memory, front, layout.name, PPC_RGB_WHITE);
-        let _ = ppc_frame_front_rect(memory, front, layout.name, PPC_RGB_BLACK, 1);
-        let text_rect = (layout.name.0 + 2, layout.name.1 + 2, layout.name.2 - 1, layout.name.3 - 2);
-        ppc_draw_dialog_text(memory, gworlds, text_rect, folder.edit.text(), PPC_RGB_BLACK);
-        // Text (1993), pp. 2-36–2-37: selection offsets count text bytes.
-        let selection = folder.edit.selection();
-        if !selection.is_empty() {
-            let measure = |bytes: &[u8]| ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes);
-            let left = (text_rect.1 + measure(&folder.edit.text()[..selection.start])).min(text_rect.3);
-            let right = (text_rect.1 + measure(&folder.edit.text()[..selection.end])).min(text_rect.3);
-            let highlight = (text_rect.0, left, text_rect.2, right);
-            if !ppc_draw_themed_selection(memory, gworlds, PPC_MAIN_GWORLD, highlight) && left < right {
-                let _ = ppc_fill_front_rect(memory, front, highlight, PPC_RGB_BLACK);
-                ppc_draw_dialog_text(memory, gworlds, highlight, folder.edit.selected_text(), PPC_RGB_WHITE);
+        let prompt = folder.snapshot(bounds).prompt();
+        if folder.error.is_some() {
+            ppc_draw_dialog_text(memory, gworlds, layout.error_message(), prompt.as_bytes(), PPC_RGB_BLACK);
+            ppc_standard_file_draw_button(memory, front, gworlds, (0,0,0,0), layout.create, b"OK", true, true);
+        } else {
+            ppc_draw_dialog_text(memory, gworlds, layout.prompt, prompt.as_bytes(), PPC_RGB_BLACK);
+            let _ = ppc_fill_front_rect(memory, front, layout.name, PPC_RGB_WHITE);
+            let _ = ppc_frame_front_rect(memory, front, layout.name, PPC_RGB_BLACK, 1);
+            let text_rect = (layout.name.0 + 2, layout.name.1 + 2, layout.name.2 - 1, layout.name.3 - 2);
+            ppc_draw_dialog_text(memory, gworlds, text_rect, folder.edit.text(), PPC_RGB_BLACK);
+            // Text (1993), pp. 2-36–2-37: selection offsets count text bytes.
+            let selection = folder.edit.selection();
+            if !selection.is_empty() {
+                let measure = |bytes: &[u8]| ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes);
+                let left = (text_rect.1 + measure(&folder.edit.text()[..selection.start])).min(text_rect.3);
+                let right = (text_rect.1 + measure(&folder.edit.text()[..selection.end])).min(text_rect.3);
+                let highlight = (text_rect.0, left, text_rect.2, right);
+                if !ppc_draw_themed_selection(memory, gworlds, PPC_MAIN_GWORLD, highlight) && left < right {
+                    let _ = ppc_fill_front_rect(memory, front, highlight, PPC_RGB_BLACK);
+                    ppc_draw_dialog_text(memory, gworlds, highlight, folder.edit.selected_text(), PPC_RGB_WHITE);
+                }
             }
+            ppc_standard_file_draw_button(memory, front, gworlds, (0,0,0,0), layout.cancel, b"Cancel", true, false);
+            ppc_standard_file_draw_button(memory, front, gworlds, (0,0,0,0), layout.create, b"Create", !folder.edit.text().is_empty(), true);
         }
-        ppc_standard_file_draw_button(memory, front, gworlds, (0,0,0,0), layout.cancel, b"Cancel", true, false);
-        ppc_standard_file_draw_button(memory, front, gworlds, (0,0,0,0), layout.create, b"Create", !folder.edit.text().is_empty(), true);
     }
     if tracking.confirming_replace {
         let layout = crate::standard_file_ui::StandardFileReplacementLayout::new(bounds);
@@ -1927,6 +1926,8 @@ fn ppc_dispatch_standard_file(
                                 dismiss = true;
                             } else {
                                 folder.error = Some(result);
+                                startup.next_standard_file_generation = startup.next_standard_file_generation.saturating_add(1);
+                                tracking.generation = startup.next_standard_file_generation;
                             }
                         }
                     }

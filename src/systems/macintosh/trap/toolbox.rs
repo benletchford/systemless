@@ -2860,20 +2860,22 @@ impl super::TrapDispatcher {
             let layout = crate::standard_file_ui::StandardFileNewFolderLayout::new(tracking.bounds);
             let local = |r: (i16, i16, i16, i16)| (r.0 - layout.bounds.0, r.1 - layout.bounds.1, r.2 - layout.bounds.0, r.3 - layout.bounds.1);
             let name = decode_mac_roman(folder.edit.text());
-            let prompt = match folder.error {
-                Some(-48) => "Name already exists",
-                Some(-44) => "Disk is locked",
-                Some(-37) => "Invalid folder name",
-                Some(_) => "Could not create folder",
-                None => "Name of new folder:",
-            }.to_string();
-            let items = vec![
-                DialogItem { item_type: if name.is_empty() { 0x84 } else { 4 }, rect: local(layout.create), text: "Create".into(), ..DialogItem::default() },
-                DialogItem { item_type: 4, rect: local(layout.cancel), text: "Cancel".into(), ..DialogItem::default() },
-                DialogItem { item_type: 8, rect: local(layout.prompt), text: prompt, ..DialogItem::default() },
-                DialogItem { item_type: 16, rect: local(layout.name), text: name.clone(), sel_start: folder.edit.selection().start as i16, sel_end: folder.edit.selection().end as i16, ..DialogItem::default() },
-            ];
-            self.draw_dialog(bus, layout.bounds, 2, "", &items, 1, &name, 4, false, 0);
+            let prompt = folder.snapshot(tracking.bounds).prompt().to_string();
+            if folder.error.is_some() {
+                let items = vec![
+                    DialogItem { item_type: 4, rect: local(layout.create), text: "OK".into(), ..DialogItem::default() },
+                    DialogItem { item_type: 8, rect: local(layout.error_message()), text: prompt, ..DialogItem::default() },
+                ];
+                self.draw_dialog(bus, layout.bounds, 2, "", &items, 1, "", 0, false, 0);
+            } else {
+                let items = vec![
+                    DialogItem { item_type: if name.is_empty() { 0x84 } else { 4 }, rect: local(layout.create), text: "Create".into(), ..DialogItem::default() },
+                    DialogItem { item_type: 4, rect: local(layout.cancel), text: "Cancel".into(), ..DialogItem::default() },
+                    DialogItem { item_type: 8, rect: local(layout.prompt), text: prompt, ..DialogItem::default() },
+                    DialogItem { item_type: 16, rect: local(layout.name), text: name.clone(), sel_start: folder.edit.selection().start as i16, sel_end: folder.edit.selection().end as i16, ..DialogItem::default() },
+                ];
+                self.draw_dialog(bus, layout.bounds, 2, "", &items, 1, &name, 4, false, 0);
+            }
         }
         self.standard_file_drawn = bus.screen_mark();
     }
@@ -3216,7 +3218,11 @@ impl super::TrapDispatcher {
                             tracking.selected = None;
                             dismiss = true;
                         }
-                        Err(error) => folder.error = Some(error),
+                        Err(error) => {
+                            folder.error = Some(error);
+                            self.next_standard_file_generation = self.next_standard_file_generation.saturating_add(1);
+                            tracking.generation = self.next_standard_file_generation;
+                        },
                     }
                 }
                 if dismiss {
