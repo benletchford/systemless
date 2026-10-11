@@ -1,0 +1,8 @@
+{
+  "crate_sha256": "051dfd7d7a7ac2aa5633730c489151fe91937ca2cb241cb8db8e2c014ccd2334",
+  "scope": "Offline package artifact; no publishing or release performed",
+  "head": "4fcf6c840d26bf4c8f64d65c48cee58682bc4931",
+  "source_patch_sha256": "ec00d3ba11554978449be0901ee0a006fe04e19579f404bd8f936a5ac6ecc9ca",
+  "dirty_scope": "Only uncommitted GPUI pointer test changes in src/bin/gpui_demo.rs; no production library changes. The packaged artifact hash pins the actual shipped files.",
+  "platform": "macOS; no other host qualification"
+}
