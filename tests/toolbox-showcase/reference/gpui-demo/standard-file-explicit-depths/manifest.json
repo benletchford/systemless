@@ -1,0 +1,20 @@
+{
+  "modes": [
+    "mono68k",
+    "colour68k",
+    "PPC8",
+    "PPC16"
+  ],
+  "routes": [
+    "semantic",
+    "pointer/keyboard"
+  ],
+  "cases": 8,
+  "elapsed_seconds": 8.66,
+  "scope": "Actual guest Open/Save modal snapshots: asserted presented depth, list display policy, directory/volume text anchors, identities and guest actions. No rendered-image or physical-host qualification.",
+  "sha256": {
+    "src/bin/gpui_demo.rs": "e77d9d42b8053c9e7e4300ac9046957a58cdb0e7692db6dd5126c69b56b20acd",
+    "src/bin/gpui_demo_text.rs": "530e6c35efabe97ccd4ad3a1a7e335952c71eb7ac0bbce8788d74bc24369e252",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "7e9259cf65889bd1097a34439278ef4ecc1e69ec6272009488b169adeb72bb59"
+  }
+}

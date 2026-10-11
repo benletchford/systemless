@@ -24,6 +24,17 @@ capture run is archived in `styled-text-single-line-shared`, pinned to f565b695.
 All 192 fixture raster/state cases pass; this earlier bitmap evidence does not
 qualify the newer smooth typography or production readiness.
 
+### Standard File explicit display-depth coverage
+
+The modal snapshot regression now explicitly initializes and asserts mono68k,
+colour68k, PPC8 and PPC16 instead of leaving PPC depth implicit. All eight
+mode/interaction-route cases pass (8.66s), covering Open/Save snapshots, guest
+label anchors and list display policy. Evidence is under
+`reference/gpui-demo/standard-file-explicit-depths`. Directory and volume labels
+already use the original guest glyph canvas, including its smooth-outline path;
+this run establishes snapshot geometry and behavior, not their rendered visual
+parity, physical host input or release qualification.
+
 ### Standard File filename abbreviation
 
 The GPUI Open and Save row painters now use the guest's CPU-specific display

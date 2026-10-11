@@ -8690,7 +8690,7 @@ mod desktop {
         fn standard_file_snapshots_follow_modal_guest_state_on_both_cpus() {
             use systemless::runner::StandardFileKind;
 
-            for (powerpc, depth, semantic) in [(false, Some(1)), (false, Some(8)), (true, None)].into_iter()
+            for (powerpc, depth, semantic) in [(false, Some(1)), (false, Some(8)), (true, Some(8)), (true, Some(16))].into_iter()
                 .flat_map(|(cpu, depth)| [false, true].map(move |semantic| (cpu, depth, semantic))) {
                 let mut session = MacintoshSession::new(true, depth);
                 session.runner_mut().set_prefer_powerpc_executables(powerpc);
@@ -8701,6 +8701,7 @@ mod desktop {
                     )
                     .unwrap();
                 session.initialize(&app);
+                assert_eq!(session.runner().presented_screen_depth(), depth.map(u32::from));
                 wait_for_menu(&mut session, 129, 1, true);
                 assert!(session.runner_mut().select_guest_menu_item(129, 12));
                 wait_for_menu(&mut session, 129, 12, true);
