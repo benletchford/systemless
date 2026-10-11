@@ -1,0 +1,13 @@
+{
+  "source_hashes": {
+    "src/bin/gpui_demo.rs": "4a3e1ef9d3662fc5fff7febc04745afbdcd5f6e7c2c7972daa65220188996bb7",
+    "src/bin/gpui_demo_notification.rs": "10831429177ee619cfe9cd8c89b0bff8ec6e23e2466169a2f05897ab2e3512c2",
+    "src/bin/gpui_demo_text.rs": "530e6c35efabe97ccd4ad3a1a7e335952c71eb7ac0bbce8788d74bc24369e252"
+  },
+  "scope": "Systemless system-owned guest-coordinate layout and raw-byte original-font wrap recipe only. No native geometry oracle, composed capture, modality or delivery qualification.",
+  "tests": {
+    "passed": 1,
+    "failed": 0,
+    "seconds": 0.01
+  }
+}

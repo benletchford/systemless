@@ -2743,13 +2743,31 @@ fn classic_wrapped_text(
     scale: f32,
     foreground: gpui_kit::Hsla,
 ) -> impl gpui_kit::IntoElement {
-    use gpui_kit::{prelude::*, *};
     let bytes = text
         .chars()
         .map(|ch| {
             systemless::systems::macintosh::mac_roman::encode_mac_roman_char(ch).unwrap_or(b'?')
         })
         .collect::<Vec<_>>();
+    classic_wrapped_bytes(bytes, guest_font, face, wrap_advance_extra, layout,
+        inclusive_bottom, scale, foreground)
+}
+
+/// Notification messages retain raw Macintosh Roman bytes and the original
+/// system-font advances. Host shaping never chooses their wrap boundaries.
+pub(crate) fn classic_notification_message(
+    bytes: &[u8], scale: f32, foreground: gpui_kit::Hsla,
+) -> impl gpui_kit::IntoElement {
+    classic_wrapped_bytes(bytes.to_vec(), (0, 12), 0, 0, (0, 12, 16),
+        false, scale, foreground)
+}
+
+fn classic_wrapped_bytes(
+    bytes: Vec<u8>, guest_font: (i16, i16), face: u8, wrap_advance_extra: i16,
+    layout: (i16, i16, i16), inclusive_bottom: bool,
+    scale: f32, foreground: gpui_kit::Hsla,
+) -> impl gpui_kit::IntoElement {
+    use gpui_kit::{prelude::*, *};
     let advances = ClassicLine::plain(&bytes, guest_font.0, guest_font.1).positions;
     canvas(
         move |bounds, _, _| {
