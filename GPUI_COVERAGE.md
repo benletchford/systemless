@@ -636,7 +636,9 @@ The control-font source trace identified a guest-side prerequisite: classic
 labels previously fixed font0/12. Classic buttons, checkboxes and radio buttons
 now adopt the shared family/size/face recipe with clipped nondefault ink;
 `classic-control-font-overrides` records actual one-bit drawing, override reset
-and oversized-font clipping evidence. Colour scene and GPUI adoption remain open.
+and oversized-font clipping evidence. The later selected control-font matrix below
+adds shared GPUI scene evidence across colour and monochrome modes; other
+Appearance flags and full font fidelity remain open.
 `loader/ppc/dispatch_control.rs::ppc_control_title_style` resolves Appearance
 font/face/size flags but explicitly retains mode, justification and background
 without drawing them, and limits foreground overrides to static-text proc288.
@@ -6435,8 +6437,12 @@ still relied on the removed polling timer without publishing an update; its
 follow-up now explicitly publishes the pending notice and keeps the held-key
 release-before-acquisition assertion. The failed full-suite result is retained;
 all five notification regressions pass after the correction (5.98 seconds),
-including the held-key ordering check and actual worker delivery. A clean full
-current-candidate run remains pending.
+including the held-key ordering check and actual worker delivery. The complete
+follow-up suite at `967de651` passes: 221 passed, zero failed and one intentionally
+ignored New Folder reader subprocess (681.65 seconds). Source/executable hashes
+match the pinned producer before the subsequent capture-fixture extension;
+`target/gpui-qualification/native-delivery/full-suite-current-producer.json`
+records the terminal result and post-run audit.
 EV gameplay capture, native presentation/audio, sustained latency, and the wider
 production matrix remain unqualified for this change. No broad release gate closes.
 
@@ -6476,5 +6482,36 @@ remain hidden. Final 120 worker intervals average 16.00 ms, p95 19.64 ms and
 maximum 21.73 ms. These are worker intervals, not native display/frame/audio
 qualification or a controlled FPS comparison. Evidence and producer hashes:
 `target/gpui-qualification/escape-velocity/publication-flight-review.json`.
-The full suite with the corrected notification fixture remains pending; all
-broad production gates remain open.
+The full suite at the publication-delivery checkpoint `967de651` passes after
+the corrected notification fixture (221 passed, zero failed, one ignored;
+681.65 seconds). All broad production gates remain open.
+
+
+### Selected control font states across CPUs and scales (2026-10-12)
+
+The capture fixture now supports inactive radio controls and writes font-state
+sidecars for selected control-font scenes. It checks actual CPU/depth, owner
+activation, and nonempty shared GPUI overlay clips after the guest executes
+SetControlFontStyle and the existing suspend path. The test-feature executable
+builds (34.96 seconds); the capture example builds (28.51 seconds).
+
+All 64 captures pass: mono68k, colour68k, PPC8 and PPC16 at scales 0.75, 1, 1.5
+and 2, with active/inactive button+checkbox and three-radio scenes. Thirty-two
+paired state records preserve identities, generations, bounds, values, requested
+family3/size18/bold with flags7, and overlay clips across suspension. Eight sheets
+of original-pixel crops were reviewed without resizing. Selected button and
+checkbox text is smooth; oversized radio labels retain clipping at guest bounds.
+The monochrome custom radio panel retains its black guest background and low
+contrast: its raw guest label regions are black. This does not qualify readable
+monochrome radio text or an original Apple font match, and does not change the
+custom panel's colours. Other controls outside these selected targets may retain
+guarded guest rendering.
+
+Ignored reproducible artifacts and producer/image hashes are recorded in
+`target/gpui-qualification/control-font-matrix/review.json`. Use
+`--capture-control-fonts`, `--capture-control-fonts-inactive`,
+`--capture-radio-fonts` or `--capture-radio-fonts-inactive`, together with
+`--screen-depth`, `--prefer-powerpc` and `--capture-scale`.
+This is selected family/size/face rendering and retained state evidence, not
+physical activation, native font-oracle, all Appearance flags, or performance
+qualification. All broad production gates remain open.

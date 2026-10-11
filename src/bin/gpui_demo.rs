@@ -236,6 +236,9 @@ mod desktop {
         capture_radio_fonts: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_radio_fonts_inactive: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_control_fonts_changed: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -3840,6 +3843,7 @@ mod desktop {
         ControlFontsInactive,
         ControlFontsChanged,
         RadioFonts,
+        RadioFontsInactive,
         ControlsChanged,
         ControlsDragged,
         ControlsHeld,
@@ -4072,7 +4076,7 @@ mod desktop {
         );
         let standard_file_open = matches!(capture, CaptureCase::StandardFileOpenComposed | CaptureCase::StandardFileVolumePopupComposed | CaptureCase::StandardFileVolumeManyComposed { .. } | CaptureCase::StandardFileOpenScrolled);
         let standard_file_page = standard_file_save || standard_file_open;
-        let radio_page = matches!(capture, CaptureCase::RadioFonts | CaptureCase::RadioHeld | CaptureCase::RadioOutside | CaptureCase::RadioSelected);
+        let radio_page = matches!(capture, CaptureCase::RadioFonts | CaptureCase::RadioFontsInactive | CaptureCase::RadioHeld | CaptureCase::RadioOutside | CaptureCase::RadioSelected);
         let controls_changed = matches!(capture, CaptureCase::ControlsChanged);
         let controls_dragged = matches!(capture, CaptureCase::ControlsDragged);
         let controls_held = matches!(capture, CaptureCase::ControlsHeld);
@@ -5223,7 +5227,7 @@ mod desktop {
                 assert!(value >= 8);
             }
         }
-        if radio_page && !matches!(capture, CaptureCase::RadioFonts) {
+        if radio_page && !matches!(capture, CaptureCase::RadioFonts | CaptureCase::RadioFontsInactive) {
             let target = session.runner_mut().control_snapshot().into_iter()
                 .find(|c| c.visible && c.title == "Recruit (Easy)").unwrap();
             let rect = target.bounds;
@@ -5246,7 +5250,7 @@ mod desktop {
         if matches!(capture, CaptureCase::PopupControlsDisabled) {
             set_showcase_popups_enabled(&mut session, false);
         }
-        if matches!(capture, CaptureCase::ControlFonts | CaptureCase::ControlFontsInactive | CaptureCase::ControlFontsChanged | CaptureCase::RadioFonts) {
+        if matches!(capture, CaptureCase::ControlFonts | CaptureCase::ControlFontsInactive | CaptureCase::ControlFontsChanged | CaptureCase::RadioFonts | CaptureCase::RadioFontsInactive) {
             // Let the guest call SetControlFontStyle; never inject host font state.
             let before = session.runner_mut().control_snapshot();
             for input in [
@@ -5471,10 +5475,11 @@ mod desktop {
                 }), "guest must finish painting the resumed edit");
             }
         }
-        let controls_host_suspended = matches!(capture, CaptureCase::ControlFontsInactive);
+        let controls_host_suspended = matches!(capture, CaptureCase::ControlFontsInactive | CaptureCase::RadioFontsInactive);
         if controls_host_suspended {
-            let owner = controls.iter().find(|control| control.visible && control.title == "Checkbox")
-                .expect("styled checkbox must have a guest owner").owner_id;
+            let owner_title = if radio_page { "Recruit (Easy)" } else { "Checkbox" };
+            let owner = controls.iter().find(|control| control.visible && control.title == owner_title)
+                .expect("styled control must have a guest owner").owner_id;
             session.request_foreground(false);
             assert!((0..300).any(|_| {
                 session.runner_mut().run_steps(10_000, None);
@@ -5541,6 +5546,36 @@ mod desktop {
         let guest_popup = session.runner_mut().guest_popup_snapshot();
         let frame = session.video_frame().unwrap();
         if let Some(panel) = &mut standard_file { panel.retain_volume_indicator(&frame.pixels, frame.width, frame.height); }
+        if matches!(capture, CaptureCase::ControlFonts | CaptureCase::ControlFontsInactive
+            | CaptureCase::ControlFontsChanged | CaptureCase::RadioFonts | CaptureCase::RadioFontsInactive) {
+            assert_eq!(session.runner().is_powerpc_app(), prefer_powerpc, "font capture must execute the requested CPU");
+            if let Some(depth) = screen_depth {
+                assert_eq!(session.runner().presented_screen_depth(), Some(u32::from(depth)));
+            }
+            let pieces = super::frames::control_pieces(&controls, &menus, &windows,
+                super::frames::Rect::from((0, 0, frame.height as i16, frame.width as i16)));
+            let targets = controls.iter().enumerate().filter(|(_, control)| control.visible
+                && matches!(control.title.as_str(), "Activate" | "Checkbox" | "Recruit (Easy)"
+                    | "Veteran (Normal)" | "Nightmare (Hard)"));
+            let evidence = targets.map(|(index, control)| {
+                let owner = windows.iter().find(|window| window.guest_id == control.owner_id).unwrap();
+                assert_eq!(owner.window.active, !controls_host_suspended);
+                let clips = pieces.iter().filter(|piece| piece.control == index).map(|piece|
+                    [piece.clip.top, piece.clip.left, piece.clip.bottom, piece.clip.right]).collect::<Vec<_>>();
+                assert!(!clips.is_empty(), "styled control must enter the shared GPUI overlay");
+                let font = control.font_style.unwrap();
+                serde_json::json!({ "identity": [u64::from(control.guest_id), control.generation],
+                    "owner": control.owner_id, "owner_active": owner.window.active,
+                    "definition": control.proc_id, "title": control.title, "bounds": control.bounds,
+                    "value": control.value, "font": { "flags": font.flags, "family": font.font,
+                        "size": font.size, "face": font.style }, "gpui_clips": clips })
+            }).collect::<Vec<_>>();
+            assert_eq!(evidence.len(), if radio_page { 3 } else { 2 });
+            std::fs::write(output.with_extension("font-state.json"), serde_json::to_vec_pretty(&serde_json::json!({
+                "case": capture_name, "runtime_powerpc": session.runner().is_powerpc_app(),
+                "actual_depth": session.runner().presented_screen_depth(), "controls": evidence,
+                "scope": "Actual guest SetControlFontStyle and suspend paths; shared overlay eligibility and retained state. No native font oracle or physical host activation qualification." })).unwrap()).unwrap();
+        }
         if matches!(capture, CaptureCase::ModalDialogMultiline) {
             let record = text_edits.iter().find(|record| record.active && record.line_count > 1
                 && dialogs.iter().any(|dialog| dialog.guest_id == record.owner_port)).unwrap();
@@ -7283,6 +7318,7 @@ mod desktop {
             (args.capture_control_fonts_inactive.as_ref(), CaptureCase::ControlFontsInactive),
             (args.capture_control_fonts_changed.as_ref(), CaptureCase::ControlFontsChanged),
             (args.capture_radio_fonts.as_ref(), CaptureCase::RadioFonts),
+            (args.capture_radio_fonts_inactive.as_ref(), CaptureCase::RadioFontsInactive),
         ] {
             if let Some(output) = output {
                 capture_fixture_screen(&args.game, output, args.prefer_powerpc,
@@ -8223,6 +8259,7 @@ mod desktop {
                         capture_control_fonts_inactive: None,
                         capture_control_fonts_changed: None,
                         capture_radio_fonts: None,
+                        capture_radio_fonts_inactive: None,
                         capture_controls_changed: None,
                         capture_controls_dragged: None,
                         capture_controls_held: None,
