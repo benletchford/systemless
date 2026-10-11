@@ -254,6 +254,19 @@ pub(super) fn dispatch_drawsprocket_import(
             }
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
+        PpcImportDispatcherTarget::DSpContextGetDirtyRectGridUnits => {
+            Some(PpcImportAction::Return(ppc_i16_result(
+                ppc_dsp_context_get_dirty_grid(cpu, memory, (32, 32)),
+            )))
+        }
+        PpcImportDispatcherTarget::DSpContextGetDirtyRectGridSize => {
+            Some(PpcImportAction::Return(ppc_i16_result(
+                ppc_dsp_context_get_dirty_grid(cpu, memory, draw_sprocket.dirty_grid_size),
+            )))
+        }
+        PpcImportDispatcherTarget::DSpContextSetDirtyRectGridSize => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_dsp_context_set_dirty_grid(cpu, draw_sprocket)),
+        )),
         PpcImportDispatcherTarget::DSpContextGetState => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_dsp_context_get_state(cpu, memory, draw_sprocket)),
         )),

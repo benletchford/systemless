@@ -82,6 +82,7 @@ pub struct PpcDrawSprocketState {
     pub blanking_window: Option<u32>,
     pub context_state: PpcDspContextPlayState,
     pub context_attributes: PpcDspContextAttributes,
+    pub dirty_grid_size: (u32, u32),
     pub front_buffer_gworld: u32,
     pub back_buffer_gworld: u32,
     pub last_fade_context: Option<u32>,
@@ -121,6 +122,7 @@ impl Default for PpcDrawSprocketState {
             blanking_window: None,
             context_state: PpcDspContextPlayState::Inactive,
             context_attributes: PpcDspContextAttributes::default(),
+            dirty_grid_size: (32, 32),
             front_buffer_gworld: PPC_MAIN_GWORLD,
             back_buffer_gworld: PPC_DSP_BACK_GWORLD,
             last_fade_context: None,
@@ -902,6 +904,55 @@ pub(crate) fn ppc_dsp_context_error(context: u32) -> Option<i16> {
     } else {
         Some(PPC_DSP_CONTEXT_NOT_FOUND_ERR)
     }
+}
+
+// Apple Game Sprockets Legacy Reference (2003), pp. 31–32 and 36:
+// PPC base cells are 32×32; requested dimensions round up independently.
+const PPC_DSP_DIRTY_GRID_UNIT: u32 = 32;
+
+pub(crate) fn ppc_dsp_context_get_dirty_grid(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    size: (u32, u32),
+) -> i16 {
+    if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
+        return error;
+    }
+    let width = cpu.gpr[4];
+    let height = cpu.gpr[5];
+    // Validate both outputs before changing either caller-owned word.
+    if width == 0
+        || height == 0
+        || !ppc_memory_can_write_bytes(memory, width, 4)
+        || !ppc_memory_can_write_bytes(memory, height, 4)
+    {
+        return PPC_PARAM_ERR;
+    }
+    if memory.write_u32_be(width, size.0).is_none() || memory.write_u32_be(height, size.1).is_none()
+    {
+        return PPC_PARAM_ERR;
+    }
+    PPC_NO_ERR
+}
+
+pub(crate) fn ppc_dsp_context_set_dirty_grid(
+    cpu: &PpcCpu,
+    state: &mut PpcDrawSprocketState,
+) -> i16 {
+    if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
+        return error;
+    }
+    let round = |value: u32| {
+        (value != 0)
+            .then_some(value)?
+            .checked_add(PPC_DSP_DIRTY_GRID_UNIT - 1)
+            .map(|value| value & !(PPC_DSP_DIRTY_GRID_UNIT - 1))
+    };
+    let (Some(width), Some(height)) = (round(cpu.gpr[4]), round(cpu.gpr[5])) else {
+        return PPC_PARAM_ERR;
+    };
+    state.dirty_grid_size = (width, height);
+    PPC_NO_ERR
 }
 
 pub(crate) fn ppc_dsp_context_state_from_raw(state: u32) -> Option<PpcDspContextPlayState> {
