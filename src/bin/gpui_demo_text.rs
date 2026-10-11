@@ -1327,6 +1327,19 @@ pub(crate) fn classic_popup_control_label(
     }).size_full()
 }
 
+/// Resolve a whole run before painting so an unsupported glyph cannot leave
+/// partially replaced text. Native paint pens may differ from insertion positions.
+fn resolve_smooth_run(
+    line: &ClassicLine, raster: u32,
+) -> Option<Vec<(i32, systemless::quickdraw::text::SmoothGlyphSnapshot)>> {
+    if line.smooth_sources.is_empty() || line.smooth_sources.len() + 1 != line.positions.len() {
+        return None;
+    }
+    line.smooth_sources.iter().map(|&(pen, glyph, data)| {
+        systemless::quickdraw::text::smooth_resolved_glyph(glyph, data, raster).map(|mask| (pen, mask))
+    }).collect()
+}
+
 /// Outline coverage changes ink only; guest advances and baseline remain authoritative.
 fn paint_smooth_label(
     line: &ClassicLine, left: gpui_kit::Pixels, baseline: gpui_kit::Pixels,
@@ -1336,9 +1349,7 @@ fn paint_smooth_label(
     if line.smooth_sources.is_empty() || line.smooth_sources.len() + 1 != line.positions.len() { return false; }
     if line.smooth_sources.iter().enumerate().any(|(index, source)| source.0 != line.positions[index]) { return false; }
     let raster = (scale * window.scale_factor()).ceil().max(1.) as u32;
-    let Some(glyphs) = line.smooth_sources.iter().map(|&(pen, glyph, data)| {
-        systemless::quickdraw::text::smooth_resolved_glyph(glyph, data, raster).map(|mask| (pen, mask))
-    }).collect::<Option<Vec<_>>>() else { return false; };
+    let Some(glyphs) = resolve_smooth_run(line, raster) else { return false; };
     let unit = scale / raster as f32;
     let mut paths = std::collections::BTreeMap::new();
     for (pen, glyph) in glyphs {
