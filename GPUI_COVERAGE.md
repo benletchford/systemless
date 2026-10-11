@@ -751,3 +751,46 @@ This qualifies the guest tracking/snapshot path for those sequences; it does
 not establish native timing parity, host asynchronous pointer routing, every
 arrow boundary pixel, or window-font metrics. No runtime behavior changed in
 this follow-up.
+
+
+### Remaining popup typography contract
+
+The window-font discrepancy is a confirmed implementation gap, not a GPUI theme
+choice. Inside Macintosh VI (1991), “Running in System Software Version 7.0”,
+p. 3-18 explicitly requires `popupUseWFont` to use the owning GrafPort's font
+and size for the **active popup menu**, as well as its title. The shorter
+Toolbox Essentials description only mentions the title and is insufficient
+for implementing this variation. The showcase sets its owner port to
+`applFont`, size 9, and creates Theme with `popupUseWFont`; its fixture comment
+explicitly identifies Geneva 9. The existing BasiliskII scrolled reference
+shows the corresponding smaller rows (Archive 09 through 55), whereas the
+current composed GPUI capture shows Archive 21 through 55.
+
+The traced gaps are:
+
+- Classic `menu_rows` / `standard_menu_width` and dropdown painting in
+  `trap/menu.rs` use system-font row metrics and Chicago 12 text. Popup-control
+  tracking delegates to these helpers without a window-font context.
+- PPC `ppc_calc_menu_size_with_resources`, `ppc_menu_item_appearances` and
+  `ppc_draw_tracked_menu` likewise use system metrics. The control adapter
+  delegates to `PopUpMenuSelect` without supplying the owner font.
+- Retained menu appearances contain height and icon information, but no font
+  context. `GuestPopupSnapshot` carries row geometry but no typography, and
+  `gpui_demo_popup.rs` paints every row at 12 guest pixels.
+
+Close this with a shared resolved menu typography context, derived from the
+owning port only for `popupUseWFont`, retained through tracking, and consumed by
+measurement, guest painting and the GPUI snapshot. Keep default menus on their
+system font and preserve the owner port's font state; do not globally alter
+menu metrics or infer a font from row height. Resolve font identity, size-zero
+semantics, fallback/scaling and style/icon interactions using the existing
+QuickDraw font machinery. Apply the same context to closed popup label/value
+layout, including truncation, rather than fixing only the open menu.
+
+Required evidence: flagged and unflagged controls sharing a menu; owner-font
+changes between openings; matching metrics, hit-testing and selection on
+monochrome 68k, colour 68k and PPC; small/large fonts, separators and icon/style
+rows; scrolling and cancellation with the changed row heights; unchanged
+ordinary menu metrics and owner port state; and reviewed composed captures
+against the existing native references. This audit establishes the root cause
+and implementation scope, not completion of typography support.
