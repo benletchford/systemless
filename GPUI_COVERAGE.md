@@ -601,9 +601,9 @@ across 16 fixture pages. Hosted headless/package validation passes on revision
 clearing the stale-reference gate. This evidence repair does not qualify
 unfinished GPUI components.
 
-### Current recognition boundary audit (2026-10-11)
+### Current recognition boundary audit (2026-10-12)
 
-Source audit updated at `230ddca7`: the following are actual overlay eligibility rules
+Source audit updated against `967de651`: the following are actual overlay eligibility rules
 in `gpui_demo_frames.rs`, not claims that every eligible variant is qualified.
 All CPU modes share these rules after their guest snapshots are normalized.
 
@@ -611,12 +611,20 @@ All CPU modes share these rules after their guest snapshots are normalized.
 | --- | --- | --- |
 | Frames | Recognized WDEF IDs 0, 1, 2, 3, 4, 5, 8, 12, 16; title strips only for 0, 4, 5, 8, 12, 16. Structure must contain content. | Unknown definitions and unavailable/complex presentation geometry retain guest pixels. `hidden_and_custom_frames_keep_guest_presentation` checks model fallback; actual lifecycle coverage for each listed variant remains required. |
 | Controls | CDEF proc IDs 0, 1, 2, 16, plus popup IDs 1008–1023 with a resolvable selected nonseparator item. | Buttons/checkboxes/radio buttons accept selected `ControlFontStyle` flags within mask `0x0187` (font/face/size and supported additive/system selectors). Other selected Appearance fields and popup overrides retain guest drawing. Buttons/checkboxes/radio buttons additionally require an exact current retained background for their bounds; raw recipe mutation invalidates that evidence until redraw. `overlapping_controls_follow_guest_draw_order_and_custom_fallback` checks model ownership boundaries. |
-| Dialog items | The listed recognized WDEFs, exact dialog/window identity and generation, and a wholly recognized item set: button, static text, EditText, checkbox/radio with known value. | Other item kinds retain the dialog's guest presentation. `inactive_standard_dialog_items_clip_below_front_window` checks model clipping; mixed custom-content and item lifecycle qualification remain open. |
+| Dialog items | The listed recognized WDEFs, exact visible dialog/window identity and generation, and an item set limited to button, static text, EditText, checkbox/radio, resource Picture and Icon. Static text needs its retained layout; simple EditText needs a retained layout, no CR and height at most 24; checkbox/radio needs a known value. | Picture/Icon and other unsupported bounded items retain their own guest pixels; their visible bounds are subtracted from standard overlays and decoration. Any UserItem or unknown item kind declines the whole dialog because callback ownership is unbounded. `inactive_standard_dialog_items_clip_below_front_window` checks occlusion, bounded Picture preservation, UserItem/custom-WDEF fallback, layout loss and generation mismatch. The reviewed original EV ship-name capture combines GPUI text/actions with retained resource artwork. Full mixed-item mutation/disposal and all CPU/scale/state combinations remain open. |
 | TextEdit | Document WDEFs 0, 4, 8, 12, 16; additionally active WDEF1 dialog fields whose actual TERec text, selection and bounds match the current edit item. Drawing must remain intact and owner port must match. | Plain candidates require face0, justification0/1/-1, positive line height, supported display lines and matching resolved strike size. Styled candidates require separate whole-field paint qualification. Unsupported records retain guest pixels. `text_edit_clips_to_owner_and_front_window_with_custom_fallback` is model evidence; document and wrapped-dialog worker/compositor evidence retains its recorded scope. |
 | Lists | Document WDEFs 0, 4, 8, 12, 16; LDEF0, drawing enabled, retained text cells and matching owner port. | Overlapping nonstandard controls decline list replacement. `standard_list_clips_beneath_front_window_and_custom_definition_falls_back` checks model fallback; real draw mutation/disposal evidence and complete cell recipes remain separate requirements. |
 
 The classification guards establish where guest ownership is retained; they do
 not establish that a custom fallback has complete CPU lifecycle qualification.
+The mixed-dialog source boundary above supersedes the earlier whole-dialog
+picture/icon exclusion. Current EV evidence is pinned in ignored
+`target/gpui-qualification/escape-velocity/publication-pilot-dialog-review.json`;
+it covers original EV colour68k at sceneScale1/offscreen2x, not every mixed DITL.
+Wrapped fields are a separate path: only an active recognized WDEF1 dialog with
+an exact active TERec/item match can use the document TextEdit renderer when its
+simple retained item layout is unavailable. Text, selection, global view bounds,
+painted regions and owner identity remain authoritative.
 Recognized button/checkbox/radio ControlFontStyle family, size and face flags
 now use the shared guest recipe in GPUI, with an ownership regression recorded
 in `control-font-overlay`. Other selected Appearance fields and popup overrides
