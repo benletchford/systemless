@@ -1,0 +1,13 @@
+{
+  "base": "38bd3b3bcf2644a5b57bb240fa6570495195db6c",
+  "sha256": {
+    "src/bin/gpui_demo.rs": "fa433663e1742acf81cd1d50114aba1ef84291156496b032544208ce93fd58f1",
+    "src/bin/gpui_demo_composition.rs": "a36e373618bd1ba0dd1aa67afe53d960c9e4e28bf20846ed409422b7c1b5fddd",
+    "src/bin/gpui_demo_input.rs": "185dc7af2f9c753d13d79eaa860ef8e87c16f8e2ac7fb5231b0d53c70aa4cda0",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "41cf3aa93f2b41d0ce1d49b2bace8572140e9692d37239a749a471744ca5c09f",
+    "target/ci-test/examples/gpui_menu_demo-957ebf4d71285d8e": "081585759906580947f964dc889cdd3168255e2ad74e243b1b8033d9b1ebeda0"
+  },
+  "command": "cargo test --locked --profile ci-test --example gpui-menu-demo --features gpui-demo-test platform_text_commit_reaches_guest_without_duplicate_character_events -- --nocapture",
+  "scope": "Guest styled geometry checks retained across four modes/scales. Additional constructed plain records with explicit font0/12 height16/ascent12, three justifications and four scales check caret bounds and boundary point queries. Rendering shares measured alignment helper.",
+  "limits": "Constructed plain records are not real guest plain-field or visual fidelity qualification. No preedit display/geometry, scrolling/overlap, physical IME, modal editing or independent native oracle."
+}

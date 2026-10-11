@@ -1,0 +1,13 @@
+{
+  "base": "38bd3b3bcf2644a5b57bb240fa6570495195db6c",
+  "sha256": {
+    "src/bin/gpui_demo.rs": "75d9a0f8971455157b55768189afbc1e4fb51d0ea192f39e3719c1f6a97c88ce",
+    "src/bin/gpui_demo_composition.rs": "2837b8cab5b62ae4e87bafa4f9f9e4cc9741a454a0c2506469db9b5e5cade56c",
+    "src/bin/gpui_demo_input.rs": "185dc7af2f9c753d13d79eaa860ef8e87c16f8e2ac7fb5231b0d53c70aa4cda0",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "41cf3aa93f2b41d0ce1d49b2bace8572140e9692d37239a749a471744ca5c09f",
+    "target/ci-test/examples/gpui_menu_demo-957ebf4d71285d8e": "67ac45e21dabc46003d5dbf7c00f14801a11c57fd7bcda384f3fd5bd24f9dd2a"
+  },
+  "command": "cargo test --locked --profile ci-test --example gpui-menu-demo --features gpui-demo-test platform_text_commit_reaches_guest_without_duplicate_character_events -- --nocapture",
+  "scope": "Styled document first-line range width and boundary point query, invalid range/outside point rejection at four scales on mono68k/colour68k/PPC8/PPC16; existing marked queries and rapid commits retained.",
+  "limits": "Not preedit display/geometry, ordinary fields, scrolling, physical IME, modal editing or independent native oracle."
+}

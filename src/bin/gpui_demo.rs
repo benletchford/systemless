@@ -1781,7 +1781,7 @@ mod desktop {
                     for (index, _line) in lines.into_iter().enumerate() {
                         // Reuse the owning CPU's line anchors. Styled records
                         // remain guest-owned until run ink/selection is qualified.
-                        let Some(geometry) = record.line_geometry(index, 0) else { continue; };
+                        let Some(geometry) = composition::text_line_geometry(record, index) else { continue; };
                         let top = dest.top - i32::from(record.dest_rect.0) + i32::from(geometry.top) - source.top;
                         if top >= source.height() || top + i32::from(geometry.height) <= 0 {
                             continue;
@@ -8856,7 +8856,57 @@ mod desktop {
                 receiver.try_iter().for_each(drop);
                 cx.update_window(window.into(), |_, window, cx| {
                     view.update(cx, |demo, cx| {
-                        use gpui_kit::EntityInputHandler;
+                        use gpui_kit::{EntityInputHandler, Bounds, point, px};
+                        for justification in [0, 1, -1] {
+                            let mut plain = before.clone();
+                            plain.styled = false;
+                            plain.font = 0;
+                            plain.size = 12;
+                            plain.line_height = 16;
+                            plain.font_ascent = 12;
+                            plain.justification = justification;
+                            let starts = plain.line_starts.as_ref().unwrap();
+                            let mut end = starts[1];
+                            while end > starts[0] && matches!(plain.text[end - 1], b' ' | b'\r' | b'\n') { end -= 1; }
+                            let width = super::composition::text_range_width(&plain, starts[0]..end).unwrap();
+                            assert_eq!(super::composition::text_line_geometry(&plain, 0), plain.line_geometry(0, width));
+                            let geometry = super::composition::text_line_geometry(&plain, 0).unwrap();
+                            let dest = plain.global_dest_rect.unwrap();
+                            let x = i32::from(dest.1) - i32::from(plain.dest_rect.1) + i32::from(geometry.left)
+                                + i32::from(super::composition::text_range_width(&plain, starts[0]..starts[0] + 1).unwrap());
+                            let y = i32::from(dest.0) - i32::from(plain.dest_rect.0) + i32::from(geometry.top);
+                            let offset = starts[0] + 1;
+                            let saved = demo.text_edits.clone();
+                            demo.text_edits = vec![plain];
+                            for scale in [0.75, 1., 1.5, 2.] {
+                                demo.display_origin = (37., 29.); demo.display_scale = scale;
+                                let bounds = demo.bounds_for_range(offset..offset, Bounds::default(), window, cx).unwrap();
+                                assert_eq!(f32::from(bounds.origin.x), 37. + x as f32 * scale);
+                                assert_eq!(demo.character_index_for_point(point(px(37. + x as f32 * scale), px(29. + (y as f32 + 1.) * scale)), window, cx), Some(offset));
+                            }
+                            demo.text_edits = saved;
+                        }
+                        let starts = before.line_starts.as_ref().unwrap();
+                        let (geometry, _) = before.guest_styled_line_geometry(0).unwrap();
+                        let dest = before.global_dest_rect.unwrap();
+                        let dx = i32::from(dest.1) - i32::from(before.dest_rect.1);
+                        let dy = i32::from(dest.0) - i32::from(before.dest_rect.0);
+                        for scale in [0.75, 1., 1.5, 2.] {
+                            demo.display_origin = (37., 29.);
+                            demo.display_scale = scale;
+                            let offset = starts[0] + 1;
+                            let x = dx + i32::from(geometry.left) + i32::from(before.guest_styled_range_width(starts[0]..offset).unwrap());
+                            let y = dy + i32::from(geometry.top);
+                            let bounds = demo.bounds_for_range(offset..offset + 1, Bounds::default(), window, cx).unwrap();
+                            assert_eq!(f32::from(bounds.origin.x), 37. + x as f32 * scale);
+                            assert_eq!(f32::from(bounds.size.width), f32::from(before.guest_styled_range_width(offset..offset + 1).unwrap()) * scale);
+                            let query_point = point(px(37. + x as f32 * scale), px(29. + (y as f32 + 1.) * scale));
+                            assert_eq!(demo.character_index_for_point(query_point, window, cx), Some(offset));
+                            assert!(demo.character_index_for_point(point(px(-10.), px(-10.)), window, cx).is_none());
+                            assert!(demo.bounds_for_range(0..before.text.len() + 1, Bounds::default(), window, cx).is_none());
+                        }
+                        demo.display_origin = (0., 0.);
+                        demo.display_scale = 1.;
                         demo.replace_and_mark_text_in_range(None, "日😀", Some(1..3), window, cx);
                         let start = before.selection.0;
                         assert_eq!(demo.marked_text_range(window, cx), Some(start..start + 3));
