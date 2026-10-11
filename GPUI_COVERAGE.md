@@ -422,3 +422,13 @@ Fresh composed captures on monochrome 68K, colour 68K and PPC show clean dialog
 and document buttons. Each mode changes the same 2,621 outline pixels compared
 with its previous capture. The visible/hidden caret pair still differs only in
 62 pixels at the existing caret rectangle, with no text or layout movement.
+
+Standard dialog buttons now use GPUI primary styling when the live guest
+snapshot identifies them as the enabled default action of the active dialog.
+This restores a clear default-action cue after replacing the guest outline;
+it does not infer defaults from labels or intercept Return. HIG (1992),
+pp. 205–206 describes the default-action distinction and guest keyboard behavior.
+All seven GPUI dialog tests pass. Composed preferences captures on monochrome
+68K, colour 68K and PPC show the designated OK action emphasized and Cancel
+unchanged. Dynamic default changes, disabled defaults and nested inactive
+state still need dedicated visual qualification.
