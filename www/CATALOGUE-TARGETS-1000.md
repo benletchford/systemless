@@ -129,7 +129,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 84 | 272 | Pac the Man | Verify 68K/PPC | F | [Archive index](https://www.vintageapplemac.com/software/games/p/); [Garden](https://macintoshgarden.org/games/pac-the-man) |
 | 85 | 273 | PacMac Deluxe | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
 | 86 | 274 | MacSnake | PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 87 | 275 | Tetris Max | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 87 | 275 | Tetris Max | 68K + PPC verified slices | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
 | 88 | 276 | Oxyd | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
 | 89 | 277 | per-oxyd | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
 | 90 | 278 | Lode Runner 2 | PPC lead | D | [Demo index](https://classicmacdemos.com/lode-runner-2); [Archive index](https://www.vintageapplemac.com/software/games/l/) |
