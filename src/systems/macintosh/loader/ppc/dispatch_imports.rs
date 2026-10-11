@@ -1890,6 +1890,7 @@ pub(crate) fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::ClipRect
         | PpcImportDispatcherTarget::GetClip
+        | PpcImportDispatcherTarget::GetPortVisibleRegion
         | PpcImportDispatcherTarget::SetClip
         | PpcImportDispatcherTarget::BitMapToRegion
         | PpcImportDispatcherTarget::NewRgn

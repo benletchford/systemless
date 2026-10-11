@@ -48,6 +48,27 @@ pub(super) fn dispatch_region_import(
             );
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::GetPortVisibleRegion => {
+            let source = cpu.gpr[3]
+                .checked_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET)
+                .filter(|_| cpu.gpr[3] != 0)
+                .and_then(|address| memory.read_u32_be(address))
+                .unwrap_or(0);
+            let destination = cpu.gpr[4];
+            let mut allocator = PpcProcessAllocatorView {
+                memory_manager: process_memory_manager,
+            };
+            let result = ppc_copy_rgn(
+                Some(&mut allocator), memory, heap_cursor, heap_limit,
+                last_mem_error, handles, source, destination,
+            );
+            *last_mem_error = result;
+            Some(PpcImportAction::Return(if result == PPC_NO_ERR {
+                destination
+            } else {
+                0
+            }))
+        }
         PpcImportDispatcherTarget::GetClip | PpcImportDispatcherTarget::SetClip => {
             let clip_rgn = memory
                 .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
