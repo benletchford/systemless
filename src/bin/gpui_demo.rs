@@ -8540,6 +8540,24 @@ mod desktop {
                         settled && record.guest_id == original.guest_id && record.line_count == 2 && record.drawing_intact)
                 }).expect("guest Return creates two mixed-metric styled lines");
                 assert_eq!(record.text[26], b'\r');
+                let second_start = record.line_starts.as_ref().unwrap()[1];
+                for (key, expected) in [("up", 0), ("down", second_start), ("up", 0), ("down", second_start)] {
+                    let stroke = gpui_kit::Keystroke { key: key.into(), key_char: None, modifiers: Default::default() };
+                    let (mac_key, character) = super::super::input::guest_key(&stroke).unwrap();
+                    session.deliver_input(MacintoshInput::KeyDown { mac_key, character });
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key, character });
+                    let moved = (0..300).find_map(|_| {
+                        session.runner_mut().run_steps(10_000, None);
+                        let settled = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
+                        session.runner_mut().text_edit_snapshot().records.into_iter().find(|next|
+                            settled && next.guest_id == record.guest_id && next.drawing_intact)
+                    }).expect("styled arrow completes guest event and repaint");
+                    assert_eq!(moved.selection, (expected, expected), "mixed-height navigation: {key}, PPC={powerpc}, depth={depth}");
+                    assert_eq!(moved.text, record.text);
+                    assert_eq!(moved.style_runs, record.style_runs);
+                    assert_eq!(moved.line_starts, record.line_starts);
+                    assert_eq!(moved.generation, record.generation);
+                }
                 let first = record.guest_styled_line_geometry(0).unwrap().0;
                 let second = record.guest_styled_line_geometry(1).unwrap().0;
                 let start = (origin.0 + first.top + first.ascent, origin.1 + first.left);

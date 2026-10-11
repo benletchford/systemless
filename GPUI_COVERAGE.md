@@ -4668,3 +4668,13 @@ regressions also pass. Logs, failure and provenance are archived in
 `reference/gpui-demo/vertical-arrow-navigation`. Styled vertical movement,
 modal end-to-end navigation, composed captures and physical host input remain
 unqualified; this does not close the complete editing gate.
+
+
+The mixed-height styled public-fixture regression now also drives repeated
+GPUI-translated Up/Down events through the guest after Return creates two lines.
+All four CPU/depth modes pass (56.53s for the parent test), retaining exact guest
+text, style runs, line starts, generation and native paint ownership. Existing
+cross-line selection, typing/deletion and native paint-order qualification in
+that test continue after navigation. The final-source log and scope are archived
+with the vertical-arrow evidence. This qualifies these styled guest event cases;
+modal end-to-end, physical host input and composed navigation captures remain open.
