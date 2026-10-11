@@ -913,6 +913,9 @@ pub enum PpcImportDispatcherTarget {
     YieldToAnyThread,
     DisposeThread,
     ThreadEndCritical,
+    ICStart,
+    ICStop,
+    ICGetSeed,
     GetCurrentProcess,
     WakeUpProcess,
     SameProcess,
@@ -4295,6 +4298,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "ThreadsLib", "ThreadEndCritical") => {
             PpcImportDispatcherTarget::ThreadEndCritical
         }
+        ("InterfaceLib", "ICStart") => PpcImportDispatcherTarget::ICStart,
+        ("InterfaceLib", "ICStop") => PpcImportDispatcherTarget::ICStop,
+        ("InterfaceLib", "ICGetSeed") => PpcImportDispatcherTarget::ICGetSeed,
         ("InterfaceLib", "GetCurrentProcess" | "GetFrontProcess") => {
             PpcImportDispatcherTarget::GetCurrentProcess
         }
