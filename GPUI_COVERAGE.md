@@ -3008,3 +3008,18 @@ Full compositions were reviewed and archived losslessly with hashes in
 labels use guest glyphs, and the long selected item clips in its allocated
 control. The live-selected-item ownership regression passes. Exact CDEF
 geometry and native/scale/state fidelity remain open.
+
+### Closed popup title alignment
+
+Both guest CDEF paths place the title right-aligned six guest pixels before
+the selection box. GPUI now derives that origin from the painted guest advance
+and reserved title width, clamping the origin at the left edge for long labels.
+The updated example type-check passes. Corrected composed captures and exact
+CDEF geometry/long-title display policy remain to be verified; the prior
+closed-popup archive predates this alignment correction.
+
+The corrected binary builds and all three recaptures complete. Full
+compositions are reviewed and archived losslessly with hashes in
+`popup-title-aligned-review.json`. Titles align before the selection boxes
+while the long selected label retains clipping. These captures do not
+qualify long-title policy, exact CDEF geometry, scales/states or native parity.

@@ -1765,7 +1765,7 @@ mod desktop {
                                         .overflow_hidden()
                                         .h_full()
                                         .child(super::text::classic_popup_control_label(
-                                            &control.title, popup_font, scene_scale,
+                                            &control.title, popup_font, true, scene_scale,
                                             if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })),
                                 )
                                 .child(
@@ -1786,7 +1786,7 @@ mod desktop {
                                                 .h_full()
                                                 .px_1()
                                                 .child(super::text::classic_popup_control_label(
-                                                    selected, popup_font, scene_scale,
+                                                    selected, popup_font, false, scene_scale,
                                                     if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })),
                                         )
                                         .child(div().w(guest_px(18.)).flex().items_center().justify_center().child("▾")),
