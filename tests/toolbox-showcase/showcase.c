@@ -33,6 +33,7 @@
 #include <Fonts.h>
 #include <Memory.h>
 #include <Menus.h>
+#include <Notification.h>
 #include <Lists.h>
 #include <OSUtils.h>
 #include <Palettes.h>
@@ -792,6 +793,29 @@ cleanup:
 
 /* State variables */
 static short gPage = pageGraphics;
+static NMRec gNotification;
+static NMUPP gNotificationResponse = nil;
+
+pascal void ShowcaseNotificationResponse(NMRecPtr request)
+{
+    /* Use only the supplied record, without relying on an application A5 world. */
+    request->nmRefCon++;
+}
+
+static void InstallShowcaseNotification(Boolean withResponse)
+{
+    NMRemove(&gNotification);
+    gNotification.qType = 8;
+    gNotification.nmMark = 0;
+    gNotification.nmIcon = nil;
+    gNotification.nmSound = nil;
+    gNotification.nmStr = "\pNotification Caf\216";
+    gNotification.nmRefCon = 0;
+    if (withResponse && gNotificationResponse == nil)
+        gNotificationResponse = NewNMUPP(ShowcaseNotificationResponse);
+    gNotification.nmResp = withResponse ? gNotificationResponse : (NMUPP)-1;
+    NMInstall(&gNotification);
+}
 static Boolean gQuit = false;
 static Boolean gInBackground = false;
 static Boolean gPrivateScrapDirty = false;
@@ -5190,6 +5214,8 @@ static void DoEvent(EventRecord *event)
             key = (char)(event->message & charCodeMask);
             if ((event->modifiers & cmdKey) != 0) {
                 DoMenuChoice(MenuKey(key));
+            } else if (gPage == pageGraphics && (key == 'n' || key == 'r')) {
+                InstallShowcaseNotification(key == 'r');
             } else if ((gPage == pageControls || gPage == pagePreferences) &&
                        (event->modifiers & optionKey) != 0 && (key == 'f' || key == 'n')) {
                 SetShowcaseControlFonts(key == 'f');

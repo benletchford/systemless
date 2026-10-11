@@ -9030,14 +9030,12 @@ mod desktop {
 
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
-        fn worker_delivers_guest_installed_notification_alert_on_classic_depths(cx: &mut gpui_kit::TestAppContext) {
+        fn worker_delivers_guest_installed_notification_alert_across_modes(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::{AppContext, test::TestWindowExt};
             cx.update(gpui_kit::init);
             use super::{Args, Command, Update};
             use std::{sync::{mpsc, Arc, Mutex}, time::{Duration, Instant}};
             use clap::Parser;
-            use systemless::cpu::{CpuOps, Register};
-            use systemless::memory::MemoryBus;
             struct Worker(mpsc::Sender<Command>, Option<std::thread::JoinHandle<()>>);
             impl Drop for Worker {
                 fn drop(&mut self) {
@@ -9058,60 +9056,30 @@ mod desktop {
                     std::thread::sleep(Duration::from_millis(10));
                 }
             }
-            for (depth, procedure) in [(1u16, false), (8, false), (1, true), (8, true)] {
-                let args = Args::try_parse_from(["gpui-menu-demo".to_string(),
+            for (powerpc, depth, procedure) in [(false, 1u16, false), (false, 8, false),
+                (true, 8, false), (true, 16, false), (false, 1, true),
+                (false, 8, true), (true, 8, true), (true, 16, true)] {
+                let mut arguments = vec!["gpui-menu-demo".to_string(),
                     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                         .join("tests/toolbox-showcase/toolbox-showcase.sit").to_string_lossy().into_owned(),
-                    "--screen-depth".into(), depth.to_string()]).unwrap();
+                    "--screen-depth".into(), depth.min(8).to_string()];
+                if powerpc { arguments.push("--prefer-powerpc".into()); }
+                let mut args = Args::try_parse_from(arguments).unwrap();
+                args.screen_depth = if depth == 16 { None } else { Some(depth) };
                 let (sender, receiver) = mpsc::channel();
                 let updates = Arc::new(Mutex::new(None)); let output = updates.clone();
                 let worker = Worker(sender, Some(std::thread::spawn(move ||
-                    super::run_guest_with_setup(args, receiver, output, false, move |session| {
-                        let runner = session.runner_mut();
-                        let registers = [Register::D0, Register::D1, Register::D2, Register::D3,
-                            Register::D4, Register::D5, Register::D6, Register::D7,
-                            Register::A0, Register::A1, Register::A2, Register::A3,
-                            Register::A4, Register::A5, Register::A6, Register::A7, Register::PC];
-                        let saved = registers.map(|register| runner.cpu().read_reg(register));
-                        let sr = runner.cpu().core.get_sr();
-                        let request = runner.bus_mut().alloc(128);
-                        runner.bus_mut().fill_bytes(request, 128, 0);
-                        runner.bus_mut().write_word(request + 4, 8);
-                        runner.bus_mut().write_long(request + 24, request + 64);
-                        let response = if procedure {
-                            let callback = runner.bus_mut().alloc(16);
-                            // Pascal NMRecPtr argument, increment nmRefCon, RTD4.
-                            for (index, word) in [0x206fu16, 4, 0x52a8, 32, 0x4e74, 4]
-                                .into_iter().enumerate() {
-                                runner.bus_mut().write_word(callback + index as u32 * 2, word);
-                            }
-                            callback
-                        } else { u32::MAX };
-                        runner.bus_mut().write_long(request + 28, response);
-                        runner.bus_mut().write_byte(request + 64, 4);
-                        for (index, byte) in b"Caf\x8e".iter().enumerate() {
-                            runner.bus_mut().write_byte(request + 65 + index as u32, *byte);
-                        }
-                        let code = runner.bus_mut().alloc(16);
-                        for (index, word) in [0x41f9u16, (request >> 16) as u16,
-                            request as u16, 0xa05e, 0x60fe].into_iter().enumerate() {
-                            runner.bus_mut().write_word(code + index as u32 * 2, word);
-                        }
-                        runner.cpu_mut().write_reg(Register::PC, code);
-                        assert!(runner.run_steps(3, None).1);
-                        assert_eq!(runner.cpu().read_reg(Register::D0), 0);
-                        assert_eq!(runner.notification_snapshot().len(), 1);
-                        for (register, value) in registers.into_iter().zip(saved) {
-                            runner.cpu_mut().write_reg(register, value);
-                        }
-                        runner.cpu_mut().core.set_sr_noint_nosp(sr);
-                    }))));
+                    super::run_guest(args, receiver, output, false))));
+                wait("ready", &updates, |update| update.menus.menus.iter().any(|menu| menu.id == 129));
+                let (mac_key, character) = if procedure { (15, b'r') } else { (45, b'n') };
+                worker.0.send(Command::Input(MacintoshInput::KeyDown { mac_key, character })).unwrap();
+                worker.0.send(Command::Input(MacintoshInput::KeyUp { mac_key, character })).unwrap();
                 let initial = wait("install", &updates, |update| update.notifications.len() == 1
                     && update.menus.menus.iter().any(|menu| menu.id == 129));
                 let menu = initial.menus.menus.iter().find(|menu| menu.id == 129).unwrap();
                 let blocked_menu = Command::Menu(129, 7, menu.guest_id, menu.generation);
                 let notice = initial.notifications[0].clone();
-                assert_eq!(notice.text.as_deref(), Some(b"Caf\x8e".as_slice()));
+                assert_eq!(notice.text.as_deref(), Some(b"Notification Caf\x8e".as_slice()));
                 let frontend_updates = Arc::new(Mutex::new(Some(initial)));
                 let frontend_sender = worker.0.clone();
                 let (window, view) = cx.update(|cx| gpui_kit::open_window(Default::default(), cx,
