@@ -62,6 +62,39 @@ pub(crate) fn ppc_write_time_string(
     }
 }
 
+// Inside Macintosh: Text (1993), pp. 5-87--5-88, B-23--B-26.
+// LongDateString formats a 64-bit LongDateTime record.
+pub(crate) fn ppc_write_long_date_string(
+    memory: &mut PpcSectionMem,
+    date_time_ptr: u32,
+    form: i16,
+    result: u32,
+    intl_handle: u32,
+) {
+    let seconds = if date_time_ptr != 0 {
+        memory.read_u32_be(date_time_ptr + 4).unwrap_or(0)
+    } else {
+        0
+    };
+    ppc_write_date_string(memory, seconds, form, result, intl_handle);
+}
+
+// LongTimeString formats a 64-bit LongDateTime record.
+pub(crate) fn ppc_write_long_time_string(
+    memory: &mut PpcSectionMem,
+    date_time_ptr: u32,
+    want_seconds: bool,
+    result: u32,
+    intl_handle: u32,
+) {
+    let seconds = if date_time_ptr != 0 {
+        memory.read_u32_be(date_time_ptr + 4).unwrap_or(0)
+    } else {
+        0
+    };
+    ppc_write_time_string(memory, seconds, want_seconds, result, intl_handle);
+}
+
 fn decimal(value: u16, width: usize) -> Vec<u8> {
     format!("{value:0width$}").into_bytes()
 }
@@ -383,5 +416,39 @@ mod tests {
 
         // Resource shorter than required minimum 21 bytes returns None
         assert!(format_time(0, true, &resource[..20]).is_none());
+    }
+
+    #[test]
+    fn ppc_write_long_date_time_string_tests() {
+        let mut memory = PpcSectionMem::default();
+        let long_date_time_ptr = 0x1000;
+        let result_date_ptr = 0x2000;
+        let result_time_ptr = 0x3000;
+        memory.add_region(long_date_time_ptr, vec![0; 16]);
+        memory.add_region(result_date_ptr, vec![0; 256]);
+        memory.add_region(result_time_ptr, vec![0; 256]);
+
+        let timestamp =
+            crate::time_manager::evaluate_date_to_seconds(&crate::time_manager::DateTimeRecord {
+                year: 1971,
+                month: 4,
+                day: 18,
+                hour: 12,
+                minute: 0,
+                second: 0,
+                ..Default::default()
+            });
+        let _ = memory.write_u32_be(long_date_time_ptr, 0); // high 32 bits
+        let _ = memory.write_u32_be(long_date_time_ptr + 4, timestamp); // low 32 bits
+
+        ppc_write_long_date_string(&mut memory, long_date_time_ptr, 0, result_date_ptr, 0);
+        let date_bytes =
+            crate::loader::ppc::ppc_read_pstring_bytes(&mut memory, result_date_ptr).unwrap();
+        assert_eq!(date_bytes, b"4/18/71");
+
+        ppc_write_long_time_string(&mut memory, long_date_time_ptr, true, result_time_ptr, 0);
+        let time_bytes =
+            crate::loader::ppc::ppc_read_pstring_bytes(&mut memory, result_time_ptr).unwrap();
+        assert_eq!(time_bytes, b"12:00:00 PM");
     }
 }

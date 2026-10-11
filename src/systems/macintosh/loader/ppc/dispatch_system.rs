@@ -48,8 +48,10 @@ pub enum PpcSystemCompatibilityOperation {
     IuCompString,
     IuDateString,
     IuDatePString,
+    IuLDateString,
     IuTimeString,
     IuTimePString,
+    IuLTimeString,
     IuEqualString,
     InitCrm,
     InitCtbUtilities,
@@ -76,6 +78,7 @@ pub enum PpcSystemCompatibilityOperation {
     ReplaceText,
     ResetAlertStage,
     SetFrontProcess,
+    SetIntlResource,
     SetSysDirection,
     StyledLineBreak,
     SystemEdit,
@@ -727,6 +730,34 @@ pub(crate) fn ppc_dispatch_system_compatibility(
                 cpu.gpr[5],
                 intl_handle,
             );
+            PpcImportAction::ReturnPreserve
+        }
+        PpcSystemCompatibilityOperation::IuLDateString => {
+            let intl_handle = cpu.gpr[6];
+            crate::date_format::ppc_write_long_date_string(
+                memory,
+                cpu.gpr[3],
+                cpu.gpr[4] as i16,
+                cpu.gpr[5],
+                intl_handle,
+            );
+            PpcImportAction::ReturnPreserve
+        }
+        PpcSystemCompatibilityOperation::IuLTimeString => {
+            let intl_handle = cpu.gpr[6];
+            crate::date_format::ppc_write_long_time_string(
+                memory,
+                cpu.gpr[3],
+                cpu.gpr[4] != 0,
+                cpu.gpr[5],
+                intl_handle,
+            );
+            PpcImportAction::ReturnPreserve
+        }
+        PpcSystemCompatibilityOperation::SetIntlResource => {
+            // PROCEDURE IUSetIntl(refNum: Integer; theID: Integer; intlParam: Handle);
+            // Inside Macintosh Volume I, I-487, I-503; Inside Macintosh: Text (1993), p. 6-91.
+            // HLE does not persist custom INTL overrides. Return cleanly.
             PpcImportAction::ReturnPreserve
         }
         PpcSystemCompatibilityOperation::SystemEdit => {

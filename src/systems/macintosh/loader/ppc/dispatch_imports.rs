@@ -2301,7 +2301,10 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::C2PStr
         | PpcImportDispatcherTarget::CopyCStringToPascal
         | PpcImportDispatcherTarget::CopyPascalStringToC
-        | PpcImportDispatcherTarget::UpperText => {
+        | PpcImportDispatcherTarget::LowerText
+        | PpcImportDispatcherTarget::StripText
+        | PpcImportDispatcherTarget::UpperText
+        | PpcImportDispatcherTarget::StripUpperText => {
             unreachable!("stdc imports return through dispatch_stdc_import")
         }
         PpcImportDispatcherTarget::CfStringMakeConstantString
@@ -2755,9 +2758,14 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::AppleTalkCompatibility(operation) => Some(
             dispatch_appletalk::ppc_dispatch_appletalk_compatibility(operation, cpu, memory),
         ),
-        PpcImportDispatcherTarget::PrintingCompatibility(operation) => Some(
-            dispatch_printing::ppc_dispatch_printing_compatibility(operation, cpu, memory, toolbox_startup),
-        ),
+        PpcImportDispatcherTarget::PrintingCompatibility(operation) => {
+            Some(dispatch_printing::ppc_dispatch_printing_compatibility(
+                operation,
+                cpu,
+                memory,
+                toolbox_startup,
+            ))
+        }
         PpcImportDispatcherTarget::SlotCompatibility => {
             Some(ppc_dispatch_slot_compatibility(binding, cpu, memory))
         }

@@ -898,7 +898,10 @@ pub enum PpcImportDispatcherTarget {
     CfUrlCreateCopyAppendingPathComponent,
     CfBundleCreate,
     CfBundleLoadExecutable,
+    LowerText,
+    StripText,
     UpperText,
+    StripUpperText,
     GetCurrentThread,
     MpCreateSemaphore,
     MpDeleteSemaphore,
@@ -4199,7 +4202,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetPreserveGlyph") => PpcImportDispatcherTarget::GetPreserveGlyph,
         ("InterfaceLib", "IsMetric") => PpcImportDispatcherTarget::IsMetric,
         ("InterfaceLib", "VisibleLength") => PpcImportDispatcherTarget::VisibleLength,
-        ("InterfaceLib", "GetIntlResource") => PpcImportDispatcherTarget::GetIntlResource,
+        ("InterfaceLib" | "CarbonLib", "GetIntlResource" | "IUGetIntl" | "GetIntl") => {
+            PpcImportDispatcherTarget::GetIntlResource
+        }
         ("InterfaceLib", "AESetInteractionAllowed") => {
             PpcImportDispatcherTarget::AESetInteractionAllowed
         }
@@ -4216,7 +4221,10 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "StuffHex") => PpcImportDispatcherTarget::StuffHex,
         ("InterfaceLib", "IUEqualPString") => PpcImportDispatcherTarget::IUEqualPString,
-        ("InterfaceLib", "GetIntlResourceTable") => PpcImportDispatcherTarget::GetIntlResourceTable,
+        (
+            "InterfaceLib" | "CarbonLib",
+            "GetIntlResourceTable" | "IUGetIntlTable" | "IUGetItlTable" | "GetItlTable",
+        ) => PpcImportDispatcherTarget::GetIntlResourceTable,
         ("InterfaceLib", "NumToString") => PpcImportDispatcherTarget::NumToString,
         ("InterfaceLib", "StringToNum") => PpcImportDispatcherTarget::StringToNum,
         ("InterfaceLib", "Random") => PpcImportDispatcherTarget::Random,
@@ -4271,7 +4279,12 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "CFBundleLoadExecutable") => {
             PpcImportDispatcherTarget::CfBundleLoadExecutable
         }
-        ("InterfaceLib", "UpperText") => PpcImportDispatcherTarget::UpperText,
+        ("InterfaceLib" | "CarbonLib", "LowerText") => PpcImportDispatcherTarget::LowerText,
+        ("InterfaceLib" | "CarbonLib", "StripText") => PpcImportDispatcherTarget::StripText,
+        ("InterfaceLib" | "CarbonLib", "UpperText") => PpcImportDispatcherTarget::UpperText,
+        ("InterfaceLib" | "CarbonLib", "StripUpperText") => {
+            PpcImportDispatcherTarget::StripUpperText
+        }
         // Native Thread Manager exports also live in ThreadsLib.
         // Inside Macintosh: Thread Manager (1999), pp. 15, 62.
         ("InterfaceLib" | "ThreadsLib", "GetCurrentThread" | "MacGetCurrentThread") => {
@@ -5643,6 +5656,21 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "IUClearCache") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::IuClearCache,
         ),
+        ("InterfaceLib" | "CarbonLib", "LongDateString" | "IULDateString") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::IuLDateString,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "LongTimeString" | "IULTimeString") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::IuLTimeString,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "SetIntlResource" | "IUSetIntl" | "SetIntl") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::SetIntlResource,
+            )
+        }
         ("InterfaceLib", "IUDatePString" | "DateString") => {
             PpcImportDispatcherTarget::SystemCompatibility(
                 PpcSystemCompatibilityOperation::IuDatePString,

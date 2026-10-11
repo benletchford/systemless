@@ -87,15 +87,18 @@ pub(super) fn dispatch_stdc_import(ctx: PpcStdCDispatchContext<'_>) -> Option<Pp
             if buffer == 0 {
                 return Some(PpcImportAction::Return(0));
             }
-            stdc_jmpbufs.insert(buffer, PpcStdJmpContext {
-                gpr: cpu.gpr,
-                fpr: cpu.fpr,
-                cr: cpu.cr,
-                lr: cpu.lr,
-                ctr: cpu.ctr,
-                xer: cpu.xer,
-                fpscr: cpu.fpscr,
-            });
+            stdc_jmpbufs.insert(
+                buffer,
+                PpcStdJmpContext {
+                    gpr: cpu.gpr,
+                    fpr: cpu.fpr,
+                    cr: cpu.cr,
+                    lr: cpu.lr,
+                    ctr: cpu.ctr,
+                    xer: cpu.xer,
+                    fpscr: cpu.fpscr,
+                },
+            );
             Some(PpcImportAction::Return(0))
         }
         PpcImportDispatcherTarget::StdLongJmp => {
@@ -453,19 +456,33 @@ pub(super) fn dispatch_stdc_import(ctx: PpcStdCDispatchContext<'_>) -> Option<Pp
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::UpperText => {
-            // UpperText
-            // Converts a byte range to localized uppercase in place.
-            // PROCEDURE UpperText (textPtr: Ptr; len: Integer);
-            // Inside Macintosh Volume VI (1991), 14-63
+        PpcImportDispatcherTarget::LowerText
+        | PpcImportDispatcherTarget::StripText
+        | PpcImportDispatcherTarget::UpperText
+        | PpcImportDispatcherTarget::StripUpperText => {
+            // LowerText ($A056), StripText ($A256), UpperText ($A456), StripUpperText ($A656)
+            // PROCEDURE LowerText/StripText/UpperText/StripUpperText (textPtr: Ptr; len: Integer);
+            // Inside Macintosh Volume VI (1991), 14-62--14-63; Inside Macintosh: Text (1993), pp. 5-64--5-66.
             let text_ptr = cpu.gpr[3];
             let length = u32::from(cpu.gpr[4] as u16);
             if ppc_memory_can_write_bytes(memory, text_ptr, length) {
                 if let Some(mut bytes) = ppc_memory_read_bytes(memory, text_ptr, length) {
-                    crate::text_utils::evaluate_transform_text(
-                        &mut bytes,
-                        crate::text_utils::TextTransformOperation::Upper,
-                    );
+                    let op = match binding.dispatcher_target {
+                        PpcImportDispatcherTarget::LowerText => {
+                            crate::text_utils::TextTransformOperation::Lower
+                        }
+                        PpcImportDispatcherTarget::StripText => {
+                            crate::text_utils::TextTransformOperation::StripDiacritics
+                        }
+                        PpcImportDispatcherTarget::UpperText => {
+                            crate::text_utils::TextTransformOperation::Upper
+                        }
+                        PpcImportDispatcherTarget::StripUpperText => {
+                            crate::text_utils::TextTransformOperation::StripUpper
+                        }
+                        _ => unreachable!(),
+                    };
+                    crate::text_utils::evaluate_transform_text(&mut bytes, op);
                     let _ = memory.write_bytes(text_ptr, &bytes);
                 }
             }
