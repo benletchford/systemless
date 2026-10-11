@@ -42,8 +42,18 @@ pub fn popup(popup: &GuestPopupSnapshot, scale: f32, cx: &App) -> Div {
         .h(unit(i32::from(bottom) - i32::from(top)))
         .overflow_hidden()
         .bg(cx.theme().background);
+    // Standard MDEF reserves one 16-pixel row for each scrolling arrow and
+    // presents only complete rows between them. Inside Macintosh V, V-248--V-249.
+    let (scroll_up, scroll_down) = popup.scroll_indicators();
+    let height = i32::from(bottom) - i32::from(top);
+    let visible_top = if scroll_up { 16 } else { 0 };
+    let visible_bottom = height - if scroll_down { 16 } else { 0 };
     let mut offset = i32::from(popup.content_top) - i32::from(top);
     for (item, height) in popup.menu.items.iter().zip(&popup.row_heights) {
+        if offset < visible_top || offset + i32::from(*height) > visible_bottom {
+            offset += i32::from(*height);
+            continue;
+        }
         let selected = item.number == popup.highlighted_item;
         let enabled = popup.menu.enabled && item.enabled;
         let mut row = div()
@@ -89,6 +99,25 @@ pub fn popup(popup: &GuestPopupSnapshot, scale: f32, cx: &App) -> Div {
         pane = pane.child(row);
         offset += i32::from(*height);
     }
+    for (visible, y, arrow) in [(scroll_up, 0, "▴"), (scroll_down, height - 16, "▾")] {
+        if visible {
+            pane = pane.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top(unit(y))
+                    .w_full()
+                    .h(unit(16))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(unit(12))
+                    .text_color(cx.theme().foreground)
+                    .bg(cx.theme().background)
+                    .child(arrow),
+            );
+        }
+    }
     let width = i32::from(right) - i32::from(left);
     let height = i32::from(bottom) - i32::from(top);
     // Paint the border last so selected rows cannot erase it.
@@ -131,6 +160,37 @@ pub fn popup(popup: &GuestPopupSnapshot, scale: f32, cx: &App) -> Div {
 #[cfg(test)]
 mod tests {
     use super::owned_rects;
+    use systemless::menu_model::{GuestMenu, GuestPopupSnapshot};
+
+    #[test]
+    fn popup_scroll_indicators_follow_guest_content_origin() {
+        let mut popup = GuestPopupSnapshot {
+            menu: GuestMenu {
+                guest_id: 1,
+                generation: 1,
+                id: 143,
+                title: String::new(),
+                enabled: true,
+                standard_definition: true,
+                hierarchical: true,
+                visible_in_menu_bar: false,
+                items: Vec::new(),
+            },
+            bounds: (20, 30, 100, 200),
+            content_top: 20,
+            row_heights: vec![16; 10],
+            highlighted_item: 0,
+        };
+        assert_eq!(popup.scroll_indicators(), (false, true));
+        popup.content_top = -12;
+        assert_eq!(popup.scroll_indicators(), (true, true));
+        popup.content_top = -60;
+        assert_eq!(popup.scroll_indicators(), (true, false));
+        popup.row_heights = vec![16, 6, 16];
+        popup.content_top = 20;
+        assert_eq!(popup.scroll_indicators(), (false, false));
+    }
+
     #[test]
     fn popup_owned_pixels_preserve_unpainted_shadow_corners() {
         let rects = owned_rects((10, 20, 50, 100));

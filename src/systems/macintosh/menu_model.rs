@@ -64,6 +64,17 @@ pub struct GuestPopupSnapshot {
     pub highlighted_item: i16,
 }
 
+impl GuestPopupSnapshot {
+    /// Whether the top and bottom row slots are occupied by scrolling arrows.
+    /// Uses the same hidden-content calculation as the standard guest tracker.
+    pub fn scroll_indicators(&self) -> (bool, bool) {
+        let rows = crate::menu_manager::MenuRows::new(self.row_heights.iter().map(|height| {
+            crate::menu_manager::MenuRow { height: *height, selectable: false }
+        }));
+        rows.scroll_indicators(self.bounds, self.content_top)
+    }
+}
+
 /// One menu in the guest's current menu list.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GuestMenu {

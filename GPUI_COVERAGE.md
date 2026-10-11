@@ -691,3 +691,13 @@ highlight 4, committed value 4 and removed tracking after release. It passes in
 50.24 seconds. This establishes event propagation through the rendered dropdown
 and scene transform; asynchronous worker scheduling, outside-window capture,
 keyboard and accessibility routes remain separate qualification work.
+
+GPUI popup presentation now reserves the standard 16-pixel arrow slots when
+content extends above or below the guest pane, and omits partial rows between
+those slots as the guest renderer does. Arrow visibility uses the shared
+MenuRows hidden-content calculation through GuestPopupSnapshot, rather than a
+host scrolling state. A focused regression covers top, middle, bottom and
+fully-fitting content (including a shorter separator row). The rendered popup
+host-pointer regression still passes across all three modes (50.60 seconds).
+Long-popup captures, sustained auto-scrolling and release near arrow boundaries
+remain unqualified; this implementation does not close those inventory items.
