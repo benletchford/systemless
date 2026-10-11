@@ -83,11 +83,14 @@ impl ProcessListRecord {
             self.view_rect.3.saturating_sub(self.view_rect.1),
             self.cell_size.1,
         );
+        // Visible describes the viewport capacity, including a clipped cell beyond
+        // dataBounds. More Macintosh Toolbox, pp. 4-6--4-7; native Mac OS 8.1
+        // reports rows 6..13 for a 114-pixel view of twelve 18-pixel rows.
         self.visible = (
             top,
             left,
-            top.saturating_add(rows).min(self.data_bounds.2),
-            left.saturating_add(columns).min(self.data_bounds.3),
+            top.saturating_add(rows),
+            left.saturating_add(columns),
         );
     }
 }
@@ -402,9 +405,9 @@ mod tests {
         };
         assert_eq!(list.scrollbar_limits(true), (0, 0, 4));
         list.set_visible_origin(4, 0);
-        assert_eq!(list.visible, (4, 0, 12, 1));
+        assert_eq!(list.visible, (4, 0, 13, 1));
         list.set_visible_origin(100, 0);
-        assert_eq!(list.visible, (4, 0, 12, 1));
+        assert_eq!(list.visible, (4, 0, 13, 1));
         list.set_visible_origin(0, 0);
         assert_eq!(list.visible, (0, 0, 9, 1));
         list.view_rect = (78, 24, 192, 474);
@@ -412,7 +415,7 @@ mod tests {
         assert_eq!(list.visible, (4, 0, 11, 1));
         assert_eq!(list.scrollbar_limits(true), (4, 0, 6));
         list.set_visible_origin(100, 100);
-        assert_eq!(list.visible, (6, 0, 12, 1));
+        assert_eq!(list.visible, (6, 0, 13, 1));
     }
 
     #[test]

@@ -238,3 +238,13 @@ is still below the native thumb and does not scroll back. This remains an
 unresolved native-state/rendering discrepancy, not evidence of complete page
 tracking equivalence. The page-click implementation does not close thumb,
 custom-CDEF/LDEF or click-loop qualification.
+
+A native Mac OS 8.1 diagnostic readout narrows the compact-list discrepancy:
+page-down reports `visible.top = 6`, `visible.bottom = 13`, and scrollbar
+value/minimum/maximum `6/0/6`, despite the thumb remaining near the top.
+The shared List Manager now preserves that visible viewport extent instead of
+clamping it to the twelve-row data bounds. Rendering and custom-definition
+cell enumeration still exclude nonexistent cells. The loaded three-mode GPUI
+regression checks the seven-row visible extent after every compact page click.
+The native thumb rendering/hit-region discrepancy remains unresolved; matching
+logical scrollbar values alone does not qualify complete native equivalence.
