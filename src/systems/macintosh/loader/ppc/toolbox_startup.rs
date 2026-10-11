@@ -259,6 +259,7 @@ impl PpcToolboxStartupState {
                 prompt: None,
                 name: None,
                 name_selection: None,
+                name_has_focus: None,
             });
         }
         let tracking = self.standard_file_put_tracking.as_ref()?;
@@ -285,6 +286,7 @@ impl PpcToolboxStartupState {
             prompt: Some(crate::mac_roman::decode_mac_roman(&tracking.prompt)),
             name: Some(crate::mac_roman::decode_mac_roman(&tracking.name)),
             name_selection: Some((tracking.sel_start, tracking.sel_end)),
+            name_has_focus: Some(!tracking.list_has_focus),
         })
     }
 

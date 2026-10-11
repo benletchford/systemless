@@ -3240,6 +3240,7 @@ impl FixtureRunner {
                 prompt: None,
                 name: None,
                 name_selection: None,
+                name_has_focus: None,
             });
         }
         let tracking = self.dispatcher.standard_file_put_tracking.as_ref()?;
@@ -3271,6 +3272,7 @@ impl FixtureRunner {
                 tracking.sel_start.max(0) as usize,
                 tracking.sel_end.max(0) as usize,
             )),
+            name_has_focus: Some(true),
         })
     }
 

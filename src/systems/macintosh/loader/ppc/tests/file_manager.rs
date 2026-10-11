@@ -2987,7 +2987,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         loaded.set_event_queue([PpcQueuedEvent {
             what: 1,
             message: 0,
-            when: 0,
+            when: 10,
             where_v: bounds.0 + PPC_STANDARD_FILE_PUT_LIST_RECT.0 + 5,
             where_h: bounds.1 + PPC_STANDARD_FILE_PUT_LIST_RECT.1 + 5,
             modifiers: 0,
@@ -3000,12 +3000,33 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
             loaded.toolbox_startup.standard_file_put_tracking.as_ref().unwrap().selected,
             Some(0)
         );
+        assert_eq!(
+            loaded.toolbox_startup.standard_file_snapshot().unwrap().name_has_focus,
+            Some(false)
+        );
         loaded.set_event_queue([PpcQueuedEvent {
-            what: 3,
-            message: (u32::from(PPC_KEY_RETURN) << 8) | 0x0d,
-            when: 0,
-            where_v: 0,
-            where_h: 0,
+            what: 1,
+            message: 0,
+            when: 40,
+            where_v: bounds.0 + PPC_STANDARD_FILE_PUT_LIST_RECT.0 + 5,
+            where_h: bounds.1 + PPC_STANDARD_FILE_PUT_LIST_RECT.1 + 5,
+            modifiers: 0,
+        }]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        assert_eq!(
+            loaded.toolbox_startup.standard_file_put_tracking.as_ref().unwrap().dir_id,
+            PPC_ROOT_DIR_ID,
+            "clicks outside DoubleTime must not enter the folder"
+        );
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 1,
+            message: 0,
+            when: 45,
+            where_v: bounds.0 + PPC_STANDARD_FILE_PUT_LIST_RECT.0 + 5,
+            where_h: bounds.1 + PPC_STANDARD_FILE_PUT_LIST_RECT.1 + 5,
             modifiers: 0,
         }]);
         assert!(matches!(
@@ -3016,6 +3037,68 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         assert_eq!(tracking.dir_id, fixtures_dir);
         assert_eq!(tracking.directory_name, b"Fixtures");
         assert!(tracking.entries.iter().any(|entry| entry.name == b"Old Document"));
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 3,
+            message: u32::from(0x7e_u8) << 8,
+            when: 20,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0x0100,
+        }]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        assert_eq!(
+            loaded.toolbox_startup.standard_file_put_tracking.as_ref().unwrap().dir_id,
+            PPC_ROOT_DIR_ID
+        );
+        loaded.set_event_queue([
+            PpcQueuedEvent {
+                what: 1,
+                message: 0,
+                when: 50,
+                where_v: bounds.0 + PPC_STANDARD_FILE_PUT_LIST_RECT.0 + 5,
+                where_h: bounds.1 + PPC_STANDARD_FILE_PUT_LIST_RECT.1 + 5,
+                modifiers: 0,
+            },
+            PpcQueuedEvent {
+                what: 3,
+                message: (u32::from(PPC_KEY_RETURN) << 8) | 0x0d,
+                when: 51,
+                where_v: 0,
+                where_h: 0,
+                modifiers: 0,
+            },
+        ]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        assert_eq!(
+            loaded.toolbox_startup.standard_file_put_tracking.as_ref().unwrap().dir_id,
+            fixtures_dir
+        );
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 1,
+            message: 0,
+            when: 60,
+            where_v: bounds.0 + PPC_STANDARD_FILE_PUT_NAME_RECT.0 + 5,
+            where_h: bounds.1 + PPC_STANDARD_FILE_PUT_NAME_RECT.1 + 5,
+            modifiers: 0,
+        }]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        assert_eq!(
+            loaded.toolbox_startup.standard_file_snapshot().unwrap().name_has_focus,
+            Some(true)
+        );
         loaded.set_event_queue([PpcQueuedEvent {
             what: 1,
             message: 0,
@@ -3082,6 +3165,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
             entries: Vec::new(),
             selected: None,
             list_has_focus: false,
+            last_list_click: None,
             prompt: Vec::new(),
             name: vec![b'x'; 63],
             sel_start: 63,

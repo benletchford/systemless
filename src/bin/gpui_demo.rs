@@ -2069,6 +2069,7 @@ mod desktop {
                 assert!(saving.entries.as_ref().is_some_and(|entries| !entries.is_empty()));
                 assert!(saving.name.as_ref().is_some_and(|name| !name.is_empty()));
                 assert_eq!(saving.name_selection, Some((0, saving.name.as_ref().unwrap().len())));
+                assert_eq!(saving.name_has_focus, Some(true));
                 session.deliver_input(MacintoshInput::KeyDown {
                     mac_key: 0x00,
                     character: b'S',
