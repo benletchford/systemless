@@ -129,6 +129,9 @@ mod desktop {
         capture_windows_moved: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_windows_activated: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_modeless_dialog_layout: Option<PathBuf>,
     }
 
@@ -1997,6 +2000,7 @@ mod desktop {
         Alert,
         Windows,
         WindowsMoved,
+        WindowsActivated,
         ModalDialog,
         ModalDialogChecked,
         ModelessDialog,
@@ -2061,7 +2065,10 @@ mod desktop {
                 | CaptureCase::ControlsDragged
                 | CaptureCase::ControlsHeld
         );
-        let windows_page = matches!(capture, CaptureCase::Windows | CaptureCase::WindowsMoved);
+        let windows_page = matches!(
+            capture,
+            CaptureCase::Windows | CaptureCase::WindowsMoved | CaptureCase::WindowsActivated
+        );
         let lists_page = matches!(capture, CaptureCase::Lists | CaptureCase::ListsSelected);
         let text_edit_page = matches!(
             capture,
@@ -2166,6 +2173,33 @@ mod desktop {
                     moved[0].window.bounds,
                     (top + 12, left + 16, bottom + 12, right + 16)
                 );
+            } else if matches!(capture, CaptureCase::WindowsActivated) {
+                // tests/toolbox-showcase/oracle/windows.json activates the
+                // exposed auxiliary content at this guest coordinate.
+                for input in [
+                    MacintoshInput::MouseDown {
+                        vertical: 240,
+                        horizontal: 210,
+                    },
+                    MacintoshInput::MouseUp {
+                        vertical: 240,
+                        horizontal: 210,
+                    },
+                ] {
+                    session.deliver_input(input);
+                    let start = session.runner().guest_tick();
+                    assert!(
+                        (0..100).any(|_| {
+                            session.runner_mut().run_steps(10_000, None);
+                            session.runner().guest_tick().wrapping_sub(start) >= 2
+                        }),
+                        "guest should advance while activating rear window"
+                    );
+                }
+                let activated = session.runner_mut().window_frame_snapshot();
+                assert_eq!(activated[0].guest_id, before[1].guest_id);
+                assert!(activated[0].window.active);
+                assert!(!activated[1].window.active);
             }
             Vec::new()
         } else if matches!(
@@ -2673,6 +2707,17 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::WindowsMoved,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_windows_activated.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::WindowsActivated,
             );
             return;
         }
@@ -3332,6 +3377,7 @@ mod desktop {
                         capture_standard_menu: None,
                         capture_windows: None,
                         capture_windows_moved: None,
+                        capture_windows_activated: None,
                         capture_modeless_dialog_layout: None,
                     },
                     rx,
