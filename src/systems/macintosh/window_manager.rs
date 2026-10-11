@@ -3265,7 +3265,7 @@ pub fn evaluate_create_new_window_parameters(
     bounds_ptr: u32,
     out_window_ptr: u32,
 ) -> Result<CreateNewWindowParameters, i16> {
-    if !matches!(window_class, 6 | 13) || bounds_ptr == 0 || out_window_ptr == 0 {
+    if !matches!(window_class, 5 | 6 | 13) || bounds_ptr == 0 || out_window_ptr == 0 {
         return Err(-50);
     }
     Ok(CreateNewWindowParameters {
@@ -5344,5 +5344,14 @@ mod tests {
         assert_eq!(evaluate_front_window(Some(0x5000), Some(0x6000)), 0x5000);
         assert_eq!(evaluate_front_window(None, Some(0x6000)), 0x6000);
         assert_eq!(evaluate_front_window(None, None), 0);
+    }
+}
+
+/// Apple Window Manager Reference, standard legacy and Appearance floating WDEF IDs.
+pub(crate) fn window_class_for_legacy_proc(proc_id: i16) -> u32 {
+    if ((1985..=1999).contains(&proc_id) || (1057..=1087).contains(&proc_id)) && proc_id & 1 != 0 {
+        5
+    } else {
+        6
     }
 }

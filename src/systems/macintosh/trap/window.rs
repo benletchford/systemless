@@ -2788,6 +2788,10 @@ impl super::TrapDispatcher {
         bus.write_long(window_ptr + Self::WINDOW_REFCON_OFFSET, ref_con);
         self.set_window_vis_from_content(bus, window_ptr, visible);
         self.track_window_front(bus, window_ptr);
+        self.window_list.set_window_class(
+            window_ptr,
+            crate::window_manager::window_class_for_legacy_proc(proc_id),
+        );
     }
 
     pub(crate) fn window_visible(&self, bus: &MacMemoryBus, window_ptr: u32) -> bool {

@@ -1624,6 +1624,7 @@ pub(super) fn ppc_new_cwindow_with_parameters(
         pixels_no_purge: true,
     });
     ppc_reorder_window(gworlds, window_list, port, behind, false);
+    window_list.set_window_class(port, crate::window_manager::window_class_for_legacy_proc(proc_id));
     if visible && proc_id == 1 {
         ppc_draw_existing_window_frame(memory, gworlds, window_list, port, false);
     }
@@ -3273,6 +3274,7 @@ pub(super) fn ppc_window_content_color(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcLegacyWindowOperation {
     ActiveNonFloatingWindow,
+    FrontNonFloatingWindow,
     BringToFront,
     CalculateVisibleRegion,
     ChangeWindowAttributes,
@@ -3534,7 +3536,11 @@ pub(super) fn ppc_dispatch_legacy_window(
             window_cpu.gpr[4] = bounds;
             window_cpu.gpr[5] = 0;
             window_cpu.gpr[6] = 0;
-            window_cpu.gpr[7] = if window_class == 13 { 2 } else { 0 };
+            window_cpu.gpr[7] = match window_class {
+                5 => 1985,
+                13 => 2,
+                _ => 0,
+            };
             window_cpu.gpr[8] = u32::MAX;
             window_cpu.gpr[9] = u32::from(attributes & 1 != 0);
             window_cpu.gpr[10] = 0;
@@ -3557,6 +3563,7 @@ pub(super) fn ppc_dispatch_legacy_window(
             if window == 0 {
                 return Some(PpcImportAction::Return(ppc_i16_result(*last_mem_error)));
             }
+            window_list.set_window_class(window, window_class);
             if attributes & (1 << 16) != 0 {
                 toolbox_startup.windows_without_updates.insert(window);
             }
@@ -4977,6 +4984,19 @@ pub(super) fn ppc_dispatch_legacy_window(
             let active =
                 crate::window_manager::evaluate_is_window_active(window, is_hilited, is_front);
             Some(PpcImportAction::Return(if active { 1 } else { 0 }))
+        }
+        PpcLegacyWindowOperation::FrontNonFloatingWindow => {
+            let front = window_list.with_ref(|windows| {
+                windows.iter().copied().find(|window| {
+                    ppc_window_is_visible(memory, *window)
+                        && window_list.window_class(*window).unwrap_or_else(|| {
+                            crate::window_manager::window_class_for_legacy_proc(
+                                ppc_window_proc_id(memory, *window),
+                            )
+                        }) != 5
+                })
+            });
+            Some(PpcImportAction::Return(front.unwrap_or(0)))
         }
         PpcLegacyWindowOperation::ActiveNonFloatingWindow => {
             let active = window_list.with_ref(|windows| {
