@@ -132,6 +132,8 @@ the shared item geometry and default button on all three guest modes, confirms
 that the standard alert is eligible for the GPUI overlay, then dismisses it
 through guest mouse input. The additional GPUI Kit host-control test clicks the
 themed alert button and verifies exactly one guest press and release is queued.
+Another host-control test clicks the themed standard Open and Save actions and
+checks that each press/release pair lands inside its guest button rectangle.
 
 For a composed-pixel review of the live About alert, run the opt-in capture
 mode on macOS:
