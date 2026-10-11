@@ -2028,6 +2028,7 @@ mod desktop {
                             }), false,
                     ).text_value(systemless::systems::macintosh::mac_roman::decode_mac_roman(&record.text), record.line_count > 1)
                         .guest_line_ids(accessible_line_ids)
+                        .guest_line_geometry(composition::accessible_line_geometry(record, clip, scene_scale))
                         .guest_text_lines(&record.text, record.line_starts.as_deref().unwrap_or(&[]), record.selection.0..record.selection.1));
                 }
                 // Styled fields use the owning CPU's strikes and paint order.
@@ -2080,6 +2081,7 @@ mod desktop {
                             }), false,
                     ).text_value(systemless::systems::macintosh::mac_roman::decode_mac_roman(&record.text), record.line_count > 1)
                         .guest_line_ids(accessible_line_ids)
+                        .guest_line_geometry(composition::accessible_line_geometry(record, clip, scene_scale))
                         .guest_text_lines(&record.text, record.line_starts.as_deref().unwrap_or(&[]), record.selection.0..record.selection.1));
                 }
                 // CDEF-owned standard controls can use Kit components while their
@@ -10584,6 +10586,26 @@ mod desktop {
                     .is_some_and(|(_, owner)| owner == &selection_owner));
                 assert_eq!(rejected.text_edits.iter().find(|record| (record.guest_id, record.generation) == pinned.identity).unwrap().selection, (2, 7));
                 eprintln!("PASS worker-accessible-document-selection powerpc={powerpc} depth={actual_depth}");
+                let clip = super::super::frames::Rect::from(selected_record.global_view_rect.unwrap());
+                for scale in [0.75, 1., 1.5, 2.] {
+                    let geometry = super::composition::accessible_line_geometry(selected_record, clip, scale);
+                    assert_eq!(geometry.len(), selected_record.line_starts.as_ref().unwrap().len() - 1);
+                    assert!(geometry.iter().any(Option::is_some));
+                    for (index, run) in geometry.iter().enumerate() {
+                        if let Some(run) = run {
+                            let starts = selected_record.line_starts.as_ref().unwrap();
+                            assert_eq!(run.positions.len(), starts[index + 1] - starts[index] + 1);
+                            assert!(run.bounds.0 >= 0. && run.bounds.1 >= 0. && run.bounds.2 <= clip.width() as f32 * scale
+                                && run.bounds.3 <= clip.height() as f32 * scale);
+                            assert!(run.positions.iter().all(|x| x.is_finite()));
+                            assert!(run.positions.windows(2).all(|pair| pair[0] <= pair[1]));
+                        }
+                    }
+                    let outside = super::super::frames::Rect { top: clip.bottom + 100, bottom: clip.bottom + 200, ..clip };
+                    assert!(super::composition::accessible_line_geometry(selected_record, outside, scale).iter().all(Option::is_none));
+                }
+                eprintln!("PASS worker-accessible-document-line-geometry powerpc={powerpc} depth={actual_depth} scales=4");
+
 
 
 
