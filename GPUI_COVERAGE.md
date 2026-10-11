@@ -3588,3 +3588,17 @@ plumbing, not evidence of faithful styled GPUI painting. The next integration
 must supply CPU-specific strike/ratio/spacing and palette-resolved ink, including
 68k per-character versus PPC per-run underline/outline synthesis, before removing
 the styled-field guest-rendering guard.
+
+The snapshot's `guest_styled_line_geometry` now supplies advances from the actual
+TextEdit measurement policies, shared with both guest adapters. Classic 68k adds
+style spacing after integer strike scaling; PPC applies the Font Manager ratio
+to the styled advance and rounds as QuickDraw does. This distinction remains
+explicit instead of choosing a host font with similar appearance. The PPC
+comparison exercises all 256 bytes and 128 style combinations across five font
+families and eight sizes against the existing QuickDraw width function. Styled
+ink still needs palette resolution, port spacing and CPU-specific synthesis;
+measurement equivalence alone does not establish GPUI rendering ownership.
+The final shared-advance comparison and snapshot regression pass together (6s),
+covering 1,310,720 PPC byte/style/font/size combinations. Both native styled
+TextEdit allocation/measurement tests pass (0.47s), as does the classic styled
+TEDelete/TEInsert regression (0.04s). No new styled visual qualification is claimed.

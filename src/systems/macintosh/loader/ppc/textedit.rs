@@ -744,11 +744,9 @@ pub(super) fn ppc_te_measure_text_width_styled(
         .enumerate()
         .fold(0i16, |width, (index, byte)| {
             let style = ppc_te_style_at_offset(runs, start + index);
-            width.saturating_add(ppc_text_width_bytes(
-                style.font,
-                style.size,
-                style.face,
-                &[*byte],
+            width.saturating_add(crate::text_edit::styled_byte_advance(
+                crate::text_edit::TextEditLineLayoutPolicy::PpcRunMetrics,
+                style.font, style.size, style.face, *byte,
             ))
         })
 }
