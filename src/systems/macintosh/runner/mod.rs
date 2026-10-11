@@ -1,7 +1,7 @@
 //! Fixture Runner - Loading and execution infrastructure
 
 use crate::callback_manager::CallbackTaskArchitecture;
-pub use crate::control_manager::ControlSnapshot;
+pub use crate::control_manager::{scrollbar_drag_position, ControlSnapshot};
 use crate::cpu::{M68kCpu, Register, StepResult};
 use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
 pub use crate::dialog_manager::{DialogItemKind, DialogItemSnapshot, DialogSnapshot};

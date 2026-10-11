@@ -4375,7 +4375,7 @@ mod desktop {
                 }
                 // Native PPC LClick leaves content stationary while dragging,
                 // commits on release, and cancels beyond the drag allowance.
-                for (start, end, release_h, expected) in [(150, 218, 522, 6), (218, 150, 522, 0), (150, 218, 650, 0)] {
+                for (start, end, release_h, expected) in [(150, 218, 522, 6), (218, 150, 522, 0), (150, 218, 650, 0), (150, 300, 522, 0)] {
                     let before = session.runner_mut().list_manager_snapshot().remove(0);
                     session.deliver_input(MacintoshInput::MouseDown { vertical: start, horizontal: 522 });
                     settle(&mut session);
