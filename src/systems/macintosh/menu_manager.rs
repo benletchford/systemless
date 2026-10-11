@@ -3525,7 +3525,7 @@ impl MenuList {
                             enabled: item.enabled,
                             checked: item.mark != 0 && submenu_id.is_none(),
                             key_equivalent: (item.command > 0x20)
-                                .then(|| char::from(item.command).to_ascii_lowercase()),
+                                .then(|| decode_mac_roman(&[item.command]).chars().next().unwrap()),
                             submenu_id,
                             separator: item.text == b"-",
                         }
@@ -5851,9 +5851,42 @@ mod tests {
         assert!(snapshot.menus[1].hierarchical);
         assert!(!snapshot.menus[1].visible_in_menu_bar);
         assert!(!snapshot.menus[1].enabled);
-        assert_eq!(snapshot.menus[1].items[0].key_equivalent, Some('d'));
+        assert_eq!(snapshot.menus[1].items[0].key_equivalent, Some('D'));
         assert!(snapshot.menus[1].items[0].checked);
         assert_eq!(snapshot.menus[1].items[1].key_equivalent, None);
+    }
+
+    #[test]
+    fn guest_snapshot_preserves_command_case_and_mac_roman_in_both_partitions() {
+        let list = MenuList {
+            regular: vec![MenuListEntry { handle: 0x1000, value: 11 }],
+            hierarchical: vec![MenuListEntry { handle: 0x2000, value: 0 }],
+            ..MenuList::default()
+        };
+        let snapshot = list.guest_snapshot(|handle| Some(MenuSnapshotRecord {
+            id: if handle == 0x1000 { 128 } else { 200 },
+            standard_definition: true,
+            title: b"Commands".to_vec(),
+            items: MenuItems {
+                first_item: 0,
+                enable_flags: u32::MAX,
+                items: (0..=255).map(|command| MenuItem {
+                    text: b"Command".to_vec(), icon: 0, command, mark: 0,
+                    style: 0, enabled: true,
+                }).collect(),
+            },
+        }));
+        for menu in &snapshot.menus {
+            for (command, item) in menu.items.iter().enumerate() {
+                let expected = (command > 0x20).then(|| {
+                    crate::mac_roman::decode_mac_roman(&[command as u8]).chars().next().unwrap()
+                });
+                assert_eq!(item.key_equivalent, expected, "command {command:#x}");
+            }
+            assert_eq!(menu.items[b'q' as usize].key_equivalent, Some('q'));
+            assert_eq!(menu.items[b'Q' as usize].key_equivalent, Some('Q'));
+            assert_eq!(menu.items[0x8e].key_equivalent, Some('é'));
+        }
     }
 
     #[test]

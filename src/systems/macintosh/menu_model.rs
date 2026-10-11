@@ -164,6 +164,8 @@ pub struct GuestMenuItem {
     pub text: String,
     pub enabled: bool,
     pub checked: bool,
+    /// Mac Roman command character with guest case preserved for display.
+    /// Matching remains in the guest Menu Manager, independently of presentation.
     pub key_equivalent: Option<char>,
     pub submenu_id: Option<i16>,
     pub separator: bool,

@@ -335,7 +335,7 @@ impl Render for GuestMenuPopup {
                 let item_number = item.number;
                 let row_menu_id = menu_id;
                 let label = match item.key_equivalent {
-                    Some(key) => format!("{}    ⌘{}", item.text, key.to_uppercase()),
+                    Some(key) => format!("{}    ⌘{}", item.text, key),
                     None => item.text.clone(),
                 };
                 column = column.child(super::a11y::AccessibleState::new(
@@ -380,7 +380,7 @@ impl Render for GuestMenuPopup {
                                 if enabled { cx.theme().foreground } else { cx.theme().muted_foreground })))
                         .when(item.key_equivalent.is_some(), |row| row.child(
                             div().ml(px(12.)).child(super::text::classic_menu_symbol(
-                                &format!("⌘{}", item.key_equivalent.unwrap().to_uppercase()),
+                                &format!("⌘{}", item.key_equivalent.unwrap()),
                                 if enabled { cx.theme().foreground } else { cx.theme().muted_foreground }))))
                         .when(item.submenu_id.is_some(), |row| row.child(div().ml(px(12.)).child(
                             super::text::classic_menu_hierarchy_indicator(
