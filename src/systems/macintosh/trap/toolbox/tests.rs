@@ -4988,7 +4988,7 @@
 
     // SndDisposeChannel ($A801)
     #[test]
-    fn test_snd_dispose_channel() {
+    fn test_snd_dispose_channel_rejects_null_channel() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
         // SP+0: quiet(2), SP+2: chan(4), SP+6: result(2)
@@ -5000,7 +5000,7 @@
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert_eq!(bus.read_word(sp + 6), 0);
+        assert_eq!(bus.read_word(sp + 6) as i16, -205); // badChannel
         assert_eq!(cpu.read_reg(Register::A7), sp + 6);
     }
 
@@ -5024,7 +5024,7 @@
 
         // Dispose the channel (IM:Sound 1994 p.2-196).
         cpu.write_reg(Register::A7, sp);
-        bus.write_word(sp, 1); // quietNow = TRUE
+        bus.write_word(sp, 0x0100); // quietNow = TRUE; Boolean occupies the first byte
         bus.write_long(sp + 2, chan_ptr);
         bus.write_word(sp + 6, 0xBEEF);
         let result = disp.dispatch_sound(true, 0x001, &mut cpu, &mut bus);
