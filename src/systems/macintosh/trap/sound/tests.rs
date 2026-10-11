@@ -1554,7 +1554,7 @@ fn snddisposechannel_returns_noerr_and_removes_channel_from_manager_state() {
 
     let sp = TEST_SP + 0x40;
     cpu.write_reg(Register::A7, sp);
-    bus.write_word(sp, 1); // quietNow = TRUE
+    bus.write_word(sp, 0x0100); // quietNow = TRUE
     bus.write_long(sp + 2, chan_ptr);
     bus.write_word(sp + 6, 0xFFFF);
 
@@ -1703,7 +1703,7 @@ fn snddisposechannel_discards_pending_callbacks_for_disposed_channel() {
 
     let sp = TEST_SP + 0x40;
     cpu.write_reg(Register::A7, sp);
-    bus.write_word(sp, 1); // quietNow = TRUE
+    bus.write_word(sp, 0x0100); // quietNow = TRUE
     bus.write_long(sp + 2, chan_ptr);
     bus.write_word(sp + 6, 0xFFFF);
 
@@ -2482,4 +2482,98 @@ fn snddoimmediate_ampcmd_sets_channel_amplitude() {
         crate::callback_manager::CallbackTaskArchitecture::M68k,
     );
     assert_eq!(disp.sound_manager.mix_frame(2), vec![0x80, 0x80]);
+}
+
+#[test]
+fn square_wave_note_disposal_waits_for_audio_and_queued_callback_with_false_padding() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let slot = 0x220200;
+    bus.write_long(TEST_SP, 0x123456); // callback
+    bus.write_long(TEST_SP + 4, 0x80);
+    bus.write_word(TEST_SP + 8, 1); // square-wave synth
+    bus.write_long(TEST_SP + 10, slot);
+    bus.write_long(slot, 0);
+    disp.dispatch_sound(true, 0x007, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let channel = bus.read_long(slot);
+    let command = 0x220300;
+    let sp = TEST_SP + 0x40;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_word(sp, 0x006A); // false Boolean, dirty unused padding
+    bus.write_long(sp + 2, command);
+    bus.write_long(sp + 6, channel);
+    bus.write_word(command, cmd::FREQ_DURATION);
+    bus.write_word(command + 2, 250); // 125 ms
+    bus.write_long(command + 4, 68);
+    disp.dispatch_sound(true, 0x003, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert!(disp
+        .sound_manager
+        .find_channel(channel)
+        .unwrap()
+        .is_playing());
+    disp.execute_sound_command(
+        &mut bus,
+        channel,
+        SndCommand {
+            cmd: cmd::CALLBACK,
+            param1: 0,
+            param2: 99,
+        },
+    );
+    let sp = TEST_SP + 0x80;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_word(sp, 0x006A);
+    bus.write_long(sp + 2, channel);
+    bus.write_word(sp + 6, 0xFFFF);
+    disp.dispatch_sound(true, 0x001, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cpu.read_reg(Register::A7), sp);
+    assert_eq!(bus.read_word(sp + 6), 0xFFFF);
+    assert!(disp.service_pending_sound_disposal(&mut cpu, &mut bus));
+    let audio = disp.sound_manager.mix_frame(2500);
+    assert!(audio.iter().any(|sample| *sample != 128));
+    assert!(disp.service_pending_sound_disposal(&mut cpu, &mut bus));
+    disp.sound_manager.mix_frame(1000);
+    assert!(
+        disp.service_pending_sound_disposal(&mut cpu, &mut bus),
+        "queued callback must survive disposal wait"
+    );
+    assert!(
+        matches!(disp.sound_manager.with_mut(|sound| sound.pending_sound_callbacks.remove(0)), PendingSoundCallback::Command { chan_ptr, cmd, .. } if chan_ptr == channel && cmd.param2 == 99)
+    );
+    assert!(!disp.service_pending_sound_disposal(&mut cpu, &mut bus));
+    assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+    assert_eq!(bus.read_word(sp + 6), 0);
+    assert!(disp.sound_manager.find_channel(channel).is_none());
+}
+
+#[test]
+fn sound_disposal_true_boolean_cancels_playback_without_waiting() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let channel = bus.alloc(GUEST_SND_CHANNEL_SIZE);
+    let mut chan = SndChannel::new(channel, true);
+    chan.play_buffer(
+        vec![255; 1000],
+        crate::sound::OUTPUT_RATE << 16,
+        PlaybackKind::Buffer,
+        0,
+    );
+    disp.sound_manager.add_channel(chan);
+    bus.write_word(TEST_SP, 0x016A); // true Boolean with dirty padding
+    bus.write_long(TEST_SP + 2, channel);
+    disp.dispatch_sound(true, 0x001, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+    assert!(disp.pending_sound_disposal.is_none());
+    assert!(disp.sound_manager.find_channel(channel).is_none());
+    assert!(disp
+        .sound_manager
+        .mix_frame(100)
+        .iter()
+        .all(|sample| *sample == 128));
 }

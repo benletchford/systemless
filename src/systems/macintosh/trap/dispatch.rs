@@ -1973,6 +1973,8 @@ pub struct TrapDispatcher {
     /// applied by the runner before guest execution resumes.
     /// Macintosh Toolbox Essentials 1992, p. 2-22
     pub(crate) pending_wait_sleep_ticks: u32,
+    /// A synchronous channel disposal waiting for audio and callbacks to drain.
+    pub(crate) pending_sound_disposal: Option<(u32, u32)>,
     /// Return slots for a WaitNextEvent null result whose sleep has not yet
     /// expired. If input arrives during that sleep, the runner rewrites the
     /// EventRecord/result before foreground guest code resumes.
@@ -3996,6 +3998,7 @@ impl TrapDispatcher {
             current_selector_operation: None,
             current_trap_caller: None,
             pending_wait_sleep_ticks: 0,
+            pending_sound_disposal: None,
             pending_wait_next_event_return: None,
             system_task_wne_stub: 0,
             system_task_wne_returns: Vec::new(),

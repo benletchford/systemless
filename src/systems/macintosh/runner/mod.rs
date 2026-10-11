@@ -6817,6 +6817,21 @@ impl FixtureRunner {
                 }
             }
 
+            // Audio mixing and interrupt callbacks continue while a synchronous
+            // disposal suspends only the foreground caller.
+            if !sound_work_only
+                && !self.callback_suspends_guest_clock()
+                && self
+                    .dispatcher
+                    .service_pending_sound_disposal(&mut self.m68k.cpu, &mut self.bus)
+            {
+                if tick_cap.is_none_or(|cap| self.guest_tick() < cap) {
+                    self.advance_guest_tick();
+                    self.tick_budget = self.instructions_per_tick as i32;
+                }
+                break;
+            }
+
             // Service blocking traps (Delay, WaitNextEvent sleep).
             if !sound_work_only {
                 if self.service_wait_sleep_ticks(tick_cap) {
