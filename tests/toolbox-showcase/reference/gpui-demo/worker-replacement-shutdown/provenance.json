@@ -1,0 +1,5 @@
+{
+  "base": "cc41402c",
+  "source_sha256": "48ebb32daa3fd3ce04c93a897facc264ad8517946a30ef8b41225fc06a1f308e",
+  "scope": "Actual frontend worker exits plus separate reader; no physical window or crash test"
+}
