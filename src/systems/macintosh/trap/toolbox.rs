@@ -2453,6 +2453,27 @@ impl super::TrapDispatcher {
         selected.saturating_sub(visible_rows.saturating_sub(1))
     }
 
+    pub(crate) fn standard_file_get_layout(
+        &self,
+        tracking: &StandardFileGetTrackingState,
+    ) -> crate::standard_file_ui::StandardFileGetLayout {
+        use crate::standard_file_ui::{StandardFileGetLayout, StandardFilePutLayout};
+        let global = |rect| StandardFilePutLayout::global_rect(tracking.bounds, rect);
+        StandardFileGetLayout {
+            volume: global(STANDARD_FILE_GET_VOLUME_RECT),
+            directory_label: global(STANDARD_FILE_GET_VOLUME_LABEL_RECT),
+            list: global(STANDARD_FILE_GET_LIST_RECT),
+            scroll: global(STANDARD_FILE_GET_SCROLL_RECT),
+            eject: global(STANDARD_FILE_GET_EJECT_RECT),
+            desktop: global(STANDARD_FILE_GET_DESKTOP_RECT),
+            cancel: global(STANDARD_FILE_GET_CANCEL_RECT),
+            open: global(STANDARD_FILE_GET_OPEN_RECT),
+            row_height: STANDARD_FILE_GET_ROW_HEIGHT,
+            first_visible: Self::standard_file_get_first_visible_index(tracking),
+            visible_rows: Self::standard_file_get_visible_rows(),
+        }
+    }
+
     fn begin_standard_file_get_tracking(
         &mut self,
         bus: &mut MacMemoryBus,

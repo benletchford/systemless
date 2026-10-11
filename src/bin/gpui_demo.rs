@@ -79,6 +79,9 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_standard_file_save_composed: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_standard_file_open_composed: Option<PathBuf>,
     }
 
     fn parse_depth(value: &str) -> Result<u16, String> {
@@ -1022,6 +1025,196 @@ mod desktop {
                 }
             }
             if let Some(panel) = self.standard_file.as_ref().filter(|panel| {
+                panel.kind == StandardFileKind::Get
+                    && panel.standard_entry_point
+                    && panel.get_layout.is_some()
+                    && panel.entries.is_some()
+            }) {
+                let layout = panel.get_layout.as_ref().unwrap();
+                let bounds = super::frames::Rect::from(panel.bounds);
+                if bounds.intersection(viewport).is_some() {
+                    let at = |rect: (i16, i16, i16, i16)| {
+                        let rect = super::frames::Rect::from(rect);
+                        div()
+                            .absolute()
+                            .top(px((rect.top - bounds.top) as f32))
+                            .left(px((rect.left - bounds.left) as f32))
+                            .w(px(rect.width() as f32))
+                            .h(px(rect.height() as f32))
+                    };
+                    let mut overlay = div()
+                        .id(format!("guest-standard-open-{}-{}", panel.guest_id, panel.generation))
+                        .test_support()
+                        .absolute()
+                        .top(px((bounds.top - self.crop_top as i32) as f32))
+                        .left(px(bounds.left as f32))
+                        .w(px(bounds.width() as f32))
+                        .h(px(bounds.height() as f32))
+                        .bg(cx.theme().background)
+                        .border_2()
+                        .border_color(cx.theme().border)
+                        .text_color(cx.theme().foreground)
+                        .text_size(px(13.));
+                    let volume_abbreviation: String = panel
+                        .directory_label
+                        .as_deref()
+                        .unwrap_or_default()
+                        .chars()
+                        .take(4)
+                        .collect();
+                    overlay = overlay.child(
+                        at(layout.volume)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .bg(cx.theme().secondary)
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .child(format!("{volume_abbreviation}…")),
+                    );
+                    overlay = overlay.child(
+                        at(layout.directory_label)
+                            .flex()
+                            .items_center()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(panel.directory_label.clone().unwrap_or_default()),
+                    );
+                    let entries = panel.entries.as_ref().unwrap();
+                    let list_width = i32::from(layout.list.3 - layout.list.1);
+                    let mut list = at(layout.list)
+                        .overflow_hidden()
+                        .bg(cx.theme().background)
+                        .border_1()
+                        .border_color(cx.theme().border);
+                    for (row, (index, entry)) in entries
+                        .iter()
+                        .enumerate()
+                        .skip(layout.first_visible)
+                        .take(layout.visible_rows)
+                        .enumerate()
+                    {
+                        let selected = panel.selected == Some(index);
+                        list = list.child(
+                            div()
+                                .id(format!(
+                                    "guest-standard-open-entry-{}-{}-{}",
+                                    panel.guest_id, panel.generation, index
+                                ))
+                                .test_support()
+                                .role(Role::ListItem)
+                                .aria_label(entry.name.clone())
+                                .aria_selected(selected)
+                                .absolute()
+                                .top(px(2. + row as f32 * f32::from(layout.row_height)))
+                                .left(px(2.))
+                                .w(px((list_width - 4).max(1) as f32))
+                                .h(px(f32::from(layout.row_height)))
+                                .overflow_hidden()
+                                .flex()
+                                .items_center()
+                                .px_1()
+                                .bg(if selected {
+                                    cx.theme().accent
+                                } else {
+                                    cx.theme().background
+                                })
+                                .child(if entry.is_directory {
+                                    format!("{} ▸", entry.name)
+                                } else {
+                                    entry.name.clone()
+                                }),
+                        );
+                    }
+                    overlay = overlay.child(list);
+                    let scroll_max = entries.len().saturating_sub(layout.visible_rows);
+                    let scroll_height = i32::from(layout.scroll.2 - layout.scroll.0);
+                    let track_height = (scroll_height - 32).max(0);
+                    let thumb_height = if scroll_max == 0 {
+                        track_height
+                    } else {
+                        16.min(track_height)
+                    };
+                    let thumb_top = 16
+                        + if scroll_max == 0 {
+                            0
+                        } else {
+                            ((track_height - thumb_height) as i64
+                                * layout.first_visible.min(scroll_max) as i64
+                                / scroll_max as i64) as i32
+                        };
+                    overlay = overlay.child(
+                        at(layout.scroll)
+                            .bg(cx.theme().secondary)
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .w_full()
+                                    .h(px(16.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child("▴"),
+                            )
+                            .child(
+                                div()
+                                    .absolute()
+                                    .bottom_0()
+                                    .w_full()
+                                    .h(px(16.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child("▾"),
+                            )
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top(px(thumb_top as f32))
+                                    .w_full()
+                                    .h(px(thumb_height as f32))
+                                    .bg(cx.theme().accent)
+                                    .border_1()
+                                    .border_color(cx.theme().border),
+                            ),
+                    );
+                    for (label, rect, enabled) in [
+                        ("Eject", layout.eject, false),
+                        ("Desktop", layout.desktop, true),
+                        ("Cancel", layout.cancel, true),
+                        (
+                            "Open",
+                            layout.open,
+                            panel.selected.and_then(|index| entries.get(index)).is_some_and(
+                                |entry| entry.is_directory || entry.file_type != 0,
+                            ),
+                        ),
+                    ] {
+                        overlay = overlay.child(
+                            at(rect).child(
+                                Button::new(format!(
+                                    "guest-standard-open-{}-{}-{}",
+                                    panel.guest_id, panel.generation, label
+                                ))
+                                .label(label)
+                                .small()
+                                .compact()
+                                .disabled(!enabled)
+                                .tab_stop(false)
+                                .w_full()
+                                .h_full(),
+                            ),
+                        );
+                    }
+                    screen = screen.child(overlay);
+                }
+            }
+            if let Some(panel) = self.standard_file.as_ref().filter(|panel| {
                 panel.kind == StandardFileKind::Put
                     && panel.standard_entry_point
                     && panel.put_layout.is_some()
@@ -1391,6 +1584,7 @@ mod desktop {
         ListsSelected,
         StandardFileSave,
         StandardFileSaveComposed,
+        StandardFileOpenComposed,
     }
 
     #[cfg(feature = "gpui-demo-test")]
@@ -1415,6 +1609,8 @@ mod desktop {
             capture,
             CaptureCase::StandardFileSave | CaptureCase::StandardFileSaveComposed
         );
+        let standard_file_open = matches!(capture, CaptureCase::StandardFileOpenComposed);
+        let standard_file_page = standard_file_save || standard_file_open;
         let controls_changed = matches!(capture, CaptureCase::ControlsChanged);
         let controls_dragged = matches!(capture, CaptureCase::ControlsDragged);
         let controls_held = matches!(capture, CaptureCase::ControlsHeld);
@@ -1437,7 +1633,7 @@ mod desktop {
                 break;
             }
         }
-        let (menu_id, item) = if standard_file_save {
+        let (menu_id, item) = if standard_file_page {
             (129, 12)
         } else if lists_page {
             (129, 9)
@@ -1447,7 +1643,7 @@ mod desktop {
             (128, 1)
         };
         assert!(session.runner_mut().select_guest_menu_item(menu_id, item));
-        let dialogs = if standard_file_save {
+        let dialogs = if standard_file_page {
             for _ in 0..300 {
                 session.runner_mut().run_steps(100_000, None);
                 if session.runner_mut().guest_menu_snapshot().menus.iter().any(|menu| {
@@ -1462,11 +1658,11 @@ mod desktop {
             for input in [
                 MacintoshInput::MouseDown {
                     vertical: 266,
-                    horizontal: 400,
+                    horizontal: if standard_file_open { 126 } else { 400 },
                 },
                 MacintoshInput::MouseUp {
                     vertical: 266,
-                    horizontal: 400,
+                    horizontal: if standard_file_open { 126 } else { 400 },
                 },
             ] {
                 session.deliver_input(input);
@@ -1475,7 +1671,11 @@ mod desktop {
                 let tick = session.runner().guest_tick().saturating_add(1);
                 session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
                 session.runner_mut().standard_file_snapshot().is_some_and(|panel| {
-                    panel.kind == systemless::runner::StandardFileKind::Put
+                    panel.kind == if standard_file_open {
+                        systemless::runner::StandardFileKind::Get
+                    } else {
+                        systemless::runner::StandardFileKind::Put
+                    }
                         && panel.entries.as_ref().is_some_and(|entries| !entries.is_empty())
                 })
             }));
@@ -1526,7 +1726,7 @@ mod desktop {
                 .expect("About alert should become visible")
         };
         let windows = session.runner_mut().window_frame_snapshot();
-        if !controls_page && !lists_page && !standard_file_save {
+        if !controls_page && !lists_page && !standard_file_page {
             assert!(standard_dbox_dialog(&dialogs, &windows).is_some());
         }
         if controls_changed {
@@ -1822,6 +2022,17 @@ mod desktop {
             );
             return;
         }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_standard_file_open_composed.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::StandardFileOpenComposed,
+            );
+            return;
+        }
         let (commands, receiver) = mpsc::channel();
         let updates = Arc::new(Mutex::new(None));
         let worker_updates = updates.clone();
@@ -1907,6 +2118,7 @@ mod desktop {
                         capture_lists_selected: None,
                         capture_standard_file_save: None,
                         capture_standard_file_save_composed: None,
+                        capture_standard_file_open_composed: None,
                     },
                     rx,
                     worker_updates,
@@ -2261,6 +2473,23 @@ mod desktop {
                 assert_ne!(opened.generation, 0);
                 assert!(opened.bounds.2 > opened.bounds.0 && opened.bounds.3 > opened.bounds.1);
                 assert!(opened.entries.as_ref().is_some_and(|entries| !entries.is_empty()));
+                assert!(opened.directory_label.as_ref().is_some_and(|label| !label.is_empty()));
+                let layout = opened.get_layout.as_ref().expect("standard Open geometry");
+                for rect in [
+                    layout.volume,
+                    layout.directory_label,
+                    layout.list,
+                    layout.scroll,
+                    layout.eject,
+                    layout.desktop,
+                    layout.cancel,
+                    layout.open,
+                ] {
+                    assert!(rect.0 >= opened.bounds.0 && rect.2 <= opened.bounds.2);
+                    assert!(rect.1 >= opened.bounds.1 && rect.3 <= opened.bounds.3);
+                    assert!(rect.2 > rect.0 && rect.3 > rect.1);
+                }
+                assert!(layout.row_height > 0 && layout.visible_rows > 0);
                 let stable = session.runner_mut().standard_file_snapshot().unwrap();
                 assert_eq!((stable.guest_id, stable.generation), (opened.guest_id, opened.generation));
                 session.deliver_input(MacintoshInput::KeyDown {

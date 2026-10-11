@@ -53,9 +53,10 @@ zoom hit region; resizing still uses the guest's original lower-right hit region
   draws its arrows and thumb from the guest value and range.
 - Standard LDEF 0 lists use themed GPUI rows with guest-owned text, selection,
   and pointer events; custom list definitions retain their guest pixels.
-- Modern standard Save panels use a themed GPUI panel, list, filename field,
-  and buttons positioned over the guest's live item rectangles. The guest owns
-  directory contents, filename editing, focus, clicks, and the returned reply.
+- Modern standard Open and Save panels use themed GPUI panels, lists, and
+  buttons positioned over the guest's live item rectangles. Save also themes
+  the filename field. The guest owns directory contents, selection, filename
+  editing, focus, clicks, and the returned reply.
 - GPUI-drawn standard title bars, frame edges, close and zoom glyphs, with
   active/inactive colours and close-button press feedback.
 - The Systemless logo in the menu bar, and GPUI-drawn document gutters and
@@ -100,8 +101,8 @@ selection changes. Mac Roman non-ASCII input, composition, and host modifier
 state need separate qualification before themed editable fields can replace
 those pixels.
 
-The Save overlay is limited to the modern standard entry point on both CPUs.
-Legacy and custom panels retain guest pixels. The filename field currently
+The Open and Save overlays are limited to modern standard entry points on both
+CPUs. Legacy and custom panels retain guest pixels. The filename field currently
 shows whole-field selection and focus; partial selection, caret rendering,
 replacement confirmation, New Folder, and full keyboard navigation need more
 work before this can replace the ordinary frontend.
@@ -184,3 +185,6 @@ reviewed guest captures are
 and [PowerPC Save](tests/toolbox-showcase/reference/gpui-demo/17-standard-file-save-ppc-guest.png).
 The composed captures are [68K Save](tests/toolbox-showcase/reference/gpui-demo/17-standard-file-save-68k.png)
 and [PowerPC Save](tests/toolbox-showcase/reference/gpui-demo/17-standard-file-save-ppc.png).
+Use `--capture-standard-file-open-composed` for the corresponding standard
+Open panel: [68K Open](tests/toolbox-showcase/reference/gpui-demo/17-standard-file-open-68k.png)
+and [PowerPC Open](tests/toolbox-showcase/reference/gpui-demo/17-standard-file-open-ppc.png).
