@@ -57,6 +57,9 @@ mod desktop {
         capture_about_alert: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_modal_dialog: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_controls: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -448,8 +451,10 @@ mod desktop {
                         && frame.definition_id == Some(1)
                 })
                 && !dialog.items.is_empty()
-                && dialog.items.iter().all(|item| {
-                    matches!(item.kind, DialogItemKind::Button | DialogItemKind::StaticText)
+                && dialog.items.iter().all(|item| match item.kind {
+                    DialogItemKind::Button | DialogItemKind::StaticText | DialogItemKind::EditText => true,
+                    DialogItemKind::Checkbox | DialogItemKind::RadioButton => item.value.is_some(),
+                    _ => false,
                 })
         })
     }
@@ -976,13 +981,16 @@ mod desktop {
                         .child(overlay),
                 );
             }
-            // dBoxProc dialogs with only standard DITL text and buttons can be
-            // restyled without covering application-owned user items. Their
-            // guest bounds and event handling remain authoritative.
-            // Macintosh Toolbox Essentials (1992), pp. 6-13--6-15, 6-120.
+            // The Dialog Manager creates standard controls from button,
+            // checkbox, and radio DITL items. Keep edit fields in guest pixels
+            // until both guest TextEdit layouts are available to the host.
+            // Macintosh Toolbox Essentials (1992), pp. 5-60--5-64, 6-13--6-15.
             if let Some(dialog) = standard_dbox_dialog(&self.dialogs, &self.windows) {
                 for item in &dialog.items {
                     if !item.visible {
+                        continue;
+                    }
+                    if item.kind == DialogItemKind::EditText {
                         continue;
                     }
                     let item_rect = super::frames::Rect::from(item.bounds);
@@ -1034,6 +1042,32 @@ mod desktop {
                             .text_size(px(13.))
                             .text_color(cx.theme().foreground)
                             .child(item.text.replace('\r', "\n")),
+                        DialogItemKind::Checkbox => overlay.child(
+                            Checkbox::new(format!(
+                                "guest-dialog-checkbox-{}-{}-{}",
+                                dialog.guest_id, dialog.generation, item.number
+                            ))
+                            .label(item.text.clone())
+                            .checked(item.value.unwrap() != 0)
+                            .disabled(!item.enabled)
+                            .tab_stop(false)
+                            .small()
+                            .w_full()
+                            .h_full(),
+                        ),
+                        DialogItemKind::RadioButton => overlay.child(
+                            Radio::new(format!(
+                                "guest-dialog-radio-{}-{}-{}",
+                                dialog.guest_id, dialog.generation, item.number
+                            ))
+                            .label(item.text.clone())
+                            .checked(item.value.unwrap() != 0)
+                            .disabled(!item.enabled)
+                            .tab_stop(false)
+                            .small()
+                            .w_full()
+                            .h_full(),
+                        ),
                         _ => unreachable!(),
                     };
                     screen = screen.child(
@@ -1609,6 +1643,7 @@ mod desktop {
     #[derive(Clone, Copy)]
     enum CaptureCase {
         Alert,
+        ModalDialog,
         Controls,
         ControlsChanged,
         ControlsDragged,
@@ -1671,6 +1706,8 @@ mod desktop {
         }
         let (menu_id, item) = if standard_file_page {
             (129, 12)
+        } else if matches!(capture, CaptureCase::ModalDialog) {
+            (129, 6)
         } else if lists_page {
             (129, 9)
         } else if controls_page {
@@ -1679,7 +1716,35 @@ mod desktop {
             (128, 1)
         };
         assert!(session.runner_mut().select_guest_menu_item(menu_id, item));
-        let dialogs = if standard_file_page {
+        let dialogs = if matches!(capture, CaptureCase::ModalDialog) {
+            assert!((0..300).any(|_| {
+                session.runner_mut().run_steps(100_000, None);
+                session.runner_mut().guest_menu_snapshot().menus.iter().any(|menu| {
+                    menu.id == 129
+                        && menu.items.iter().any(|item| item.number == 6 && item.checked)
+                })
+            }));
+            for input in [
+                MacintoshInput::MouseDown { vertical: 367, horizontal: 170 },
+                MacintoshInput::MouseUp { vertical: 367, horizontal: 170 },
+            ] {
+                session.deliver_input(input);
+                session.runner_mut().run_steps(100_000, None);
+            }
+            (0..300)
+                .find_map(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    let dialogs = session.runner_mut().dialog_snapshot();
+                    dialogs.iter().any(|dialog| {
+                        dialog.visible
+                            && dialog.active
+                            && dialog.items.iter().any(|item| {
+                                item.kind == DialogItemKind::Checkbox && item.value.is_some()
+                            })
+                    }).then_some(dialogs)
+                })
+                .expect("modal preferences dialog should expose a live checkbox")
+        } else if standard_file_page {
             for _ in 0..300 {
                 session.runner_mut().run_steps(100_000, None);
                 if session.runner_mut().guest_menu_snapshot().menus.iter().any(|menu| {
@@ -1989,6 +2054,17 @@ mod desktop {
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_modal_dialog.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::ModalDialog,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_controls.as_ref() {
             capture_fixture_screen(
                 &args.game,
@@ -2187,6 +2263,7 @@ mod desktop {
                         prefer_powerpc: false,
                         screen_depth: Some(8),
                         capture_about_alert: None,
+                        capture_modal_dialog: None,
                         capture_controls: None,
                         capture_controls_changed: None,
                         capture_controls_dragged: None,
@@ -2925,6 +3002,24 @@ mod desktop {
                         .map(|selected| selected.guest_id),
                     Some(dialog.guest_id)
                 );
+                let mut mixed = dialog.clone();
+                mixed.items[1].kind = DialogItemKind::Checkbox;
+                mixed.items[1].value = Some(1);
+                mixed.items.push(systemless::runner::DialogItemSnapshot {
+                    number: 3,
+                    kind: DialogItemKind::EditText,
+                    bounds: (250, 320, 270, 430),
+                    text: "Pilot".into(),
+                    enabled: true,
+                    visible: true,
+                    value: None,
+                    selection: None,
+                });
+                assert!(super::standard_dbox_dialog(&[mixed.clone()], &windows).is_some());
+                mixed.items[1].value = None;
+                assert!(super::standard_dbox_dialog(&[mixed.clone()], &windows).is_none());
+                mixed.items[1].kind = DialogItemKind::UserItem;
+                assert!(super::standard_dbox_dialog(&[mixed], &windows).is_none());
                 let (top, left, bottom, right) = dialog.items[0].bounds;
                 let (vertical, horizontal) = ((top + bottom) / 2, (left + right) / 2);
                 session.deliver_input(MacintoshInput::MouseDown {
@@ -2941,6 +3036,74 @@ mod desktop {
                     session.runner_mut().dialog_snapshot().is_empty()
                 });
                 assert!(dismissed, "guest should dismiss the About alert after its button click");
+            }
+        }
+
+        #[test]
+        fn modal_dialog_checkbox_tracks_guest_value_across_guest_modes() {
+            use systemless::runner::DialogItemKind;
+
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session
+                    .load_path(
+                        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("tests/toolbox-showcase/toolbox-showcase.sit"),
+                    )
+                    .unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 6, false);
+                assert!(session.runner_mut().select_guest_menu_item(129, 6));
+                wait_for_menu(&mut session, 129, 6, true);
+                session.deliver_input(MacintoshInput::MouseDown {
+                    vertical: 367,
+                    horizontal: 170,
+                });
+                settle(&mut session);
+                session.deliver_input(MacintoshInput::MouseUp {
+                    vertical: 367,
+                    horizontal: 170,
+                });
+                let dialog = (0..300)
+                    .find_map(|_| {
+                        session.runner_mut().run_steps(100_000, None);
+                        let dialogs = session.runner_mut().dialog_snapshot();
+                        dialogs.into_iter().find(|dialog| {
+                            dialog.visible
+                                && dialog.active
+                                && dialog.items.iter().any(|item| {
+                                    item.kind == DialogItemKind::Checkbox && item.value == Some(0)
+                                })
+                        })
+                    })
+                    .expect("preferences dialog should expose unchecked guest controls");
+                let windows = session.runner_mut().window_frame_snapshot();
+                assert!(super::standard_dbox_dialog(&[dialog.clone()], &windows).is_some());
+                let checkbox = dialog.items.iter().find(|item| item.number == 4).unwrap();
+                let point = (
+                    (checkbox.bounds.0 + checkbox.bounds.2) / 2,
+                    checkbox.bounds.1 + 12,
+                );
+                session.deliver_input(MacintoshInput::MouseDown {
+                    vertical: point.0,
+                    horizontal: point.1,
+                });
+                settle(&mut session);
+                session.deliver_input(MacintoshInput::MouseUp {
+                    vertical: point.0,
+                    horizontal: point.1,
+                });
+                assert!((0..300).any(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    session.runner_mut().dialog_snapshot().iter().any(|current| {
+                        current.guest_id == dialog.guest_id
+                            && current.generation == dialog.generation
+                            && current.items.iter().any(|item| {
+                                item.number == checkbox.number && item.value == Some(1)
+                            })
+                    })
+                }));
             }
         }
 

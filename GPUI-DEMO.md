@@ -46,8 +46,9 @@ zoom hit region; resizing still uses the guest's original lower-right hit region
 - ASCII typing and arrow-key events translated to Macintosh key codes and
   delivered to the guest TextEdit/event path.
 - Original guest framebuffer content and unsupported dialogs below the new menu bar.
-- A standard `dBoxProc` dialog containing only DITL buttons and static text uses
-  GPUI Kit components over the guest item rectangles, with guest input unchanged.
+- Standard `dBoxProc` dialogs use GPUI Kit buttons, checkboxes, and radio
+  buttons when their live guest values are known. Static text is themed; edit
+  fields retain guest pixels and guest input remains unchanged.
 - Standard document-window buttons, checkboxes, and radio buttons use GPUI Kit
   controls over live Control Manager rectangles. A Systemless GPUI scrollbar
   draws its arrows and thumb from the guest value and range.
@@ -89,11 +90,17 @@ in unsupported windows retain guest pixels. Host keyboard and accessibility
 activation, drag feedback and pointer capture, and broader overlap/layout
 qualification remain unfinished.
 
-The dialog overlay is limited to standard `dBoxProc` windows with button/static-text
-items. Dialogs with custom items, editable text, or other definitions retain
-guest pixels. The themed alert button is not yet qualified for keyboard or
+The dialog overlay is limited to standard `dBoxProc` windows with button,
+static-text, checkbox, radio, and edit-text items. Editable fields retain
+guest pixels; dialogs with custom items or unknown control values retain
+all guest pixels. The themed alert button is not yet qualified for keyboard or
 accessibility operation through the host control; guest keyboard input and
 click handling remain the operative path.
+
+Use `--capture-modal-dialog` to review the real showcase preferences dialog
+through the macOS headless GPUI renderer. Composed captures are available for
+[68K](tests/toolbox-showcase/reference/gpui-demo/07-modal-68k.png) and
+[PowerPC](tests/toolbox-showcase/reference/gpui-demo/07-modal-ppc.png).
 
 TextEdit fields still use guest pixels. The GPUI runner now forwards ordinary
 ASCII keys and arrows to the guest, preserving the guest TERec's text and
