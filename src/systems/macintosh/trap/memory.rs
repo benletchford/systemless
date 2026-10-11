@@ -505,7 +505,9 @@ impl super::TrapDispatcher {
     /// BasiliskII `video.cpp::set_gamma_table` supplies the validation and
     /// channel-layout oracle used here.
     fn install_device_gamma(&mut self, bus: &MacMemoryBus, vd_gamma_ptr: u32) -> u32 {
-        if vd_gamma_ptr == 0 || vd_gamma_ptr.saturating_add(4) > bus.ram_size() {
+        // This is a guest RAM address, not a host pointer. Classic software
+        // can place the parameter record at address zero (Powerball does).
+        if vd_gamma_ptr.saturating_add(4) > bus.ram_size() {
             return PARAM_ERR;
         }
         if bus
@@ -2615,11 +2617,7 @@ impl super::TrapDispatcher {
                         let vd_gamma_ptr = bus.read_long(pb + 28);
                         control_result = self.install_device_gamma(bus, vd_gamma_ptr);
                         if trace_video_driver_enabled() {
-                            let gamma_ptr = if vd_gamma_ptr != 0 {
-                                bus.read_long(vd_gamma_ptr)
-                            } else {
-                                0
-                            };
+                            let gamma_ptr = bus.read_long(vd_gamma_ptr);
                             eprintln!(
                                 "[VIDEO] cscSetGamma record=${:08X} table=${:08X} result={}",
                                 vd_gamma_ptr, gamma_ptr, control_result as i32,

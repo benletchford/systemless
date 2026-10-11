@@ -1,3 +1,4 @@
+use super::PARAM_ERR;
 use super::super::test_helpers::{setup, setup_with_trap_tables, MockCpu, TEST_SP};
 use crate::cpu::{CpuOps, Register};
 use crate::memory::globals::addr;
@@ -7060,6 +7061,47 @@ fn control_set_gamma_installs_one_channel_table_from_vdgamma_record() {
         assert_eq!(channel[0xAB], 0xAA);
         assert_eq!(channel[0xFF], 0xFF);
     }
+}
+
+/private/tmp/powerball13-zero-address-gamma-test-snippet.rs:
+
+#[test]
+fn control_set_gamma_reads_record_at_guest_address_zero() {
+    let (mut dispatcher, mut cpu, mut bus) = setup();
+    let pb = 0x300000u32;
+    let table = bus.alloc(12 + 256);
+    bus.write_word(table, 0);
+    bus.write_word(table + 2, 0);
+    bus.write_word(table + 4, 0);
+    bus.write_word(table + 6, 1);
+    bus.write_word(table + 8, 256);
+    bus.write_word(table + 10, 8);
+    for index in 0..256u32 {
+        bus.write_byte(table + 12 + index, 255 - index as u8);
+    }
+    bus.write_long(0, table);
+    bus.write_word(pb + 26, 4);
+    bus.write_long(pb + 28, 0);
+    cpu.write_reg(Register::A0, pb);
+    dispatcher
+        .dispatch_memory(false, 0x04, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+    assert_eq!(bus.read_word(pb + 16), 0);
+    for channel in dispatcher.device_gamma().iter() {
+        assert_eq!(channel[0], 255);
+        assert_eq!(channel[255], 0);
+    }
+    let before = dispatcher.device_gamma();
+    bus.write_word(table, 1);
+    dispatcher
+        .dispatch_memory(false, 0x04, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cpu.read_reg(Register::D0), PARAM_ERR);
+    assert_eq!(bus.read_word(pb + 16), PARAM_ERR as u16);
+    assert_eq!(dispatcher.device_gamma(), before);
 }
 
 #[test]
