@@ -2018,3 +2018,27 @@ The original fat package and PPC startup evidence remain intact; PPC rendering
 issue #4667 is still being fixed. Full matches, removal, undo, saves and audio
 remain unqualified. Final catalogue CI/merge, human release and public replay
 remain pending. No release is triggered or live-qualified game counted.
+
+
+On the Edge completed catalogue [PR #4664](https://github.com/benletchford/systemless/pull/4664)
+merged as `694b3ee324d39b2f86d21228d6df03fd41b096e5` on 11 October 2026
+20:50:18 UTC. Exact approved head `469d0a028053d2502342def54871a221f6d4fc51`
+passes website validation, catalogue MSRV, promotion signal and required
+license/cla. A missing hosted CLA status was recovered through the normal PR
+reopened event; its repeated website checks also pass. No protection was changed
+or agreement accepted. The complete 68K entry is merged, with promoted immutable
+assets and browser-approved 8 MHz launch. Human release and independent public
+replay remain pending; no qualified-live increment follows from the merge.
+
+[PPC port fix PR #4668](https://github.com/benletchford/systemless/pull/4668):
+the new same-port regression fails on prior code, then all five focused SetPort
+tests pass after explicit selectors always refresh QDGlobals. Immutable native
+`17dd70029960382d69cbb36ee9f4de277abbf028`, exact original archive/selector,
+PPC/depth 8, ordinary Command-N and inner-square click: **ace of hearts** placed,
+**three of clubs** drawn next, Score 0→100; captures inspected. A fresh replay
+passes fourteen assertions at 786/786 ticks, zero exhaustion: twelve measured
+before/after pixels and two words confirming window port `03000250` in the guest
+global. CopyBits now uses window portBits `03000252` with local bounds
+`(-60,-40,540,760)`, replacing stale screen alias `02F00002`. This fixes the
+observed card/score rendering and verifies one PPC placement. Fix CI/merge and
+PPC browser qualification remain pending; no full-game or public PPC claim.

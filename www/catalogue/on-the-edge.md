@@ -94,6 +94,25 @@ compatibility:
       unverified or pending; no PPC gameplay claim follows from this approval.
     status: playable
     evidence: https://github.com/benletchford/systemless/pull/4664
+  - date: "2026-10-12"
+    tester: Catalogue maintainer
+    systemless_version: 17dd70029960382d69cbb36ee9f4de277abbf028
+    architecture: ppc
+    environment: >-
+      Experimental current-port synchronization fix in PR 4668, optimized native
+      build, identical original archive/selector, explicit PPC/depth 8. Command-N
+      and an inner-square placement now render the ace of hearts, next three of
+      clubs and Score 100. Fresh replay passes fourteen assertions at 786 frontend
+      / 786 guest ticks with zero exhausted frames: twelve measured before/after
+      pixels and two words proving QDGlobals selects the actual window port.
+      Captures inspected. CopyBits uses the window's local bitmap bounds instead
+      of screen coordinates. All five focused SetPort tests pass after the new
+      regression fails on the prior code. Native bounded placement is verified;
+      fix CI/merge, PPC hosted-browser qualification, full games, removal, undo,
+      saves, audio and public replay remain pending. The browser-approved default
+      68K route is unchanged.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/4668
 runtime:
   runtime_pacing:
     cpu_mhz: 8
