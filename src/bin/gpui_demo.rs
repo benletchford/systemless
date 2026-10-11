@@ -857,5 +857,43 @@ mod desktop {
                 check_frames(&mut session);
             }
         }
+
+        #[test]
+        fn dialog_items_have_shared_geometry_and_identity_across_guest_modes() {
+            use systemless::runner::DialogItemKind;
+
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session
+                    .load_path(
+                        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("tests/toolbox-showcase/toolbox-showcase.sit"),
+                    )
+                    .unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 128, 1, false);
+                assert!(session.runner_mut().select_guest_menu_item(128, 1));
+                let dialog = (0..300)
+                    .find_map(|_| {
+                        session.runner_mut().run_steps(100_000, None);
+                        session
+                            .runner_mut()
+                            .dialog_snapshot()
+                            .into_iter()
+                            .find(|dialog| dialog.visible && dialog.active)
+                    })
+                    .expect("About alert should expose a live dialog snapshot");
+                assert_ne!(dialog.guest_id, 0);
+                assert_eq!(dialog.default_item, Some(1));
+                assert_eq!(dialog.items.len(), 2);
+                assert_eq!(dialog.items[0].kind, DialogItemKind::Button);
+                assert_eq!(dialog.items[0].text, "OK");
+                assert_eq!(dialog.items[0].number, 1);
+                assert_eq!(dialog.items[0].bounds, (220, 360, 240, 430));
+                assert_eq!(dialog.items[1].kind, DialogItemKind::StaticText);
+                assert!(!dialog.items[1].enabled);
+            }
+        }
     }
 }
