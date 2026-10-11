@@ -1,0 +1,6 @@
+{
+  "base_head": "3d85ced2948a38395e77bf0b04162fc2511802ae",
+  "source_sha256": "29629fdf7139786a78e613065e069bebb7b753844e5803138ac2448410776833",
+  "log_sha256": "898ceb4b7f98080a1b89adba0495aaf0042d226c890117eaa15d706416983044",
+  "scope": "Actual run_guest with production save services, isolated copied archives, guest New Folder input and distinct reader processes after Shutdown or channel disconnection. All eight exit/mode cases pass. Periodic persistence may also have occurred; does not isolate final flush timing, qualify physical host window close/guest Quit/crash durability/audio. Audio output unavailable."
+}

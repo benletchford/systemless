@@ -8110,6 +8110,81 @@ mod desktop {
         }
 
         #[test]
+        fn production_worker_shutdown_persists_new_folder() {
+            use clap::Parser;
+            use super::{Args, Command, Update};
+            use std::sync::{mpsc, Arc, Mutex};
+            use super::super::activation::FileAction;
+            use std::time::{Duration, Instant};
+            struct Worker(Option<mpsc::Sender<Command>>, Option<std::thread::JoinHandle<()>>);
+            impl Drop for Worker {
+                fn drop(&mut self) {
+                    if let Some(sender) = self.0.take() { let _ = sender.send(Command::Shutdown); }
+                    if let Some(handle) = self.1.take() { let _ = handle.join(); }
+                }
+            }
+            fn wait(stage: &str, updates: &Mutex<Option<Update>>, ready: impl Fn(&Update) -> bool) -> Update {
+                let start = Instant::now();
+                loop {
+                    if let Some(update) = updates.lock().unwrap().take() {
+                        if ready(&update) { return update; }
+                        assert!(!update.status.contains("unexpectedly"), "{stage}: {}", update.status);
+                    }
+                    assert!(start.elapsed() < Duration::from_secs(20), "worker timeout: {stage}");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            for ((powerpc, depth), disconnect) in [(false, 1u16), (false, 8), (true, 8), (true, 16)]
+                .into_iter().flat_map(|mode| [false, true].map(move |disconnect| (mode, disconnect))) {
+                let temp = tempfile::tempdir().unwrap();
+                let archive = temp.path().join("Showcase.sit");
+                std::fs::copy(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit"), &archive).unwrap();
+                let mut argv = vec!["gpui-menu-demo".to_string(), archive.to_string_lossy().into_owned()];
+                if powerpc { argv.push("--prefer-powerpc".into()); }
+                if depth != 16 { argv.extend(["--screen-depth".into(), depth.to_string()]); }
+                let args = Args::try_parse_from(argv).unwrap();
+                let (sender, receiver) = mpsc::channel();
+                let updates = Arc::new(Mutex::new(None)); let output = updates.clone();
+                let mut worker = Worker(Some(sender), Some(std::thread::spawn(move || super::run_guest(args, receiver, output, true))));
+                let send = |command| worker.0.as_ref().unwrap().send(command).unwrap();
+                let initial = wait("menus", &updates, |update| update.menus.menus.iter().any(|menu| menu.id == 129));
+                let menu = initial.menus.menus.iter().find(|menu| menu.id == 129).unwrap();
+                send(Command::Menu(129, 12, menu.guest_id, menu.generation));
+                wait("file page", &updates, |update| update.menus.menus.iter().any(|menu| menu.id == 129
+                    && menu.items.iter().any(|item| item.number == 12 && item.checked)));
+                for input in [MacintoshInput::MouseDown { vertical: 266, horizontal: 400 },
+                    MacintoshInput::MouseUp { vertical: 266, horizontal: 400 }] { send(Command::Input(input)); }
+                let panel = wait("Save", &updates, |update| update.standard_file.is_some()).standard_file.unwrap();
+                send(Command::ActivateFile(panel.guest_id, panel.generation, FileAction::NewFolder));
+                let panel = wait("New Folder", &updates, |update| update.standard_file.as_ref()
+                    .is_some_and(|panel| panel.new_folder.is_some())).standard_file.unwrap();
+                let owner = super::super::input::standard_file_text_owner(&panel).unwrap();
+                send(Command::CommitText(super::super::input::TextInputOwner { identity: owner.identity,
+                    target: super::super::input::TextInputTarget::StandardFile { new_folder: true },
+                    text: owner.text, selection: owner.selection }, b"gpui folder".to_vec()));
+                let panel = wait("folder name", &updates, |update| update.standard_file.as_ref().is_some_and(|panel|
+                    panel.new_folder.as_ref().is_some_and(|folder| folder.name == "gpui folder"))).standard_file.unwrap();
+                send(Command::ActivateFile(panel.guest_id, panel.generation, FileAction::CreateFolder));
+                wait("created directory", &updates, |update| update.standard_file.as_ref().is_some_and(|parent|
+                    parent.new_folder.is_none() && parent.directory_id != panel.directory_id));
+                if !disconnect { send(Command::Shutdown); }
+                drop(worker.0.take());
+                worker.1.take().unwrap().join().unwrap();
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "desktop::tests::new_folder_restart_reader", "--ignored", "--nocapture"])
+                    .env("SYSTEMLESS_GPUI_FOLDER_ROOT", &archive)
+                    .env("SYSTEMLESS_GPUI_FOLDER_CPU", if powerpc { "ppc" } else { "68k" })
+                    .env("SYSTEMLESS_GPUI_FOLDER_DEPTH", depth.to_string())
+                    .env("SYSTEMLESS_GPUI_FOLDER_WRITER_PID", std::process::id().to_string()).output().unwrap();
+                eprint!("{}", String::from_utf8_lossy(&output.stderr));
+                print!("{}", String::from_utf8_lossy(&output.stdout));
+                assert!(output.status.success(), "worker shutdown persistence: PPC={powerpc} depth={depth} disconnect={disconnect}");
+                eprintln!("PASS production-worker-folder-shutdown powerpc={powerpc} depth={depth} disconnect={disconnect}");
+            }
+        }
+
+        #[test]
         #[ignore = "reader subprocess of the New Folder guest workflow"]
         fn new_folder_restart_reader() {
             let save_path = PathBuf::from(std::env::var_os("SYSTEMLESS_GPUI_FOLDER_ROOT").unwrap());

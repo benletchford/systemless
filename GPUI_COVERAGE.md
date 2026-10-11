@@ -5011,3 +5011,18 @@ the corrected full result are retained in
 invoked explicitly by its parent test and requires that parent's environment.
 Explicit flush is still required by this evidence; physical shutdown/input,
 crash durability, replacement restart and broader lifecycle remain open.
+
+
+### Production worker exit and empty-folder persistence
+
+The actual `run_guest` worker now has regression coverage with production save
+services enabled and isolated copies of the public fixture. Guest menu, Save,
+New Folder, text commit and Create commands create the directory. Both explicit
+Shutdown and sender-channel disconnection are followed by worker join and an
+independent reader process; all eight exit/mode cases pass across mono68k,
+colour68k, PPC8 and PPC16 (47.47s). Logs and source provenance are archived in
+`reference/gpui-demo/worker-folder-shutdown`. Existing worker code flushes on
+Shutdown/disconnection and guest termination. Periodic persistence may also have
+occurred, so this test does not isolate the final flush timing. Physical window
+close delivery, guest Quit, crash durability and audio qualification remain open;
+audio output could not initialize in this environment.
