@@ -1,0 +1,17 @@
+{
+  "source_hashes": {
+    "src/bin/gpui_demo.rs": "41da5dbdc324316fc5c0f039e446c0e59592a7b299ea85b946a3756d817558d7"
+  },
+  "modes": [
+    "mono68k",
+    "colour68k",
+    "PPC8",
+    "PPC16"
+  ],
+  "scope": "Real fixture plain-editor snapshots; composition synchronization explicitly called on shared Demo with injected alert ownership. Verifies owner exclusion/restoration and unchanged entire TextEdit snapshots. No physical IME, actual worker dismissal, staged composition or reviewed capture qualification.",
+  "result": {
+    "passed": 1,
+    "failed": 0,
+    "seconds": 5.69
+  }
+}

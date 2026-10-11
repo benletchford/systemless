@@ -16309,6 +16309,60 @@ mod desktop {
 
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
+        fn notification_alert_restores_real_editor_text_service_across_modes(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::AppContext;
+            cx.update(gpui_kit::init);
+            for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 7));
+                wait_for_menu(&mut session, 129, 7, true);
+                settle(&mut session);
+                let initial = session.runner_mut().text_edit_snapshot().records.into_iter().next().unwrap();
+                let rect = initial.global_view_rect.unwrap();
+                for input in [MacintoshInput::MouseDown { vertical: rect.0 + 4, horizontal: rect.1 + 4 },
+                    MacintoshInput::MouseUp { vertical: rect.0 + 4, horizontal: rect.1 + 4 }] {
+                    session.deliver_input(input); settle(&mut session);
+                }
+                let records = session.runner_mut().text_edit_snapshot().records;
+                assert!(records.iter().any(|record| record.active && record.drawing_intact));
+                let original = records.clone();
+                let (sender, _receiver) = std::sync::mpsc::channel();
+                let (window, view) = cx.update(|cx| gpui_kit::open_window(Default::default(), cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap());
+                cx.update_window(window.into(), |_, window, cx| {
+                    view.update(cx, |demo, cx| {
+                        demo.width = 800; demo.height = 600;
+                        demo.text_edits = records;
+                        demo.windows = session.runner_mut().window_frame_snapshot();
+                        demo.host_active = Some(true);
+                        window.focus(&demo.focus, cx);
+                        demo.synchronize_composition(window, cx);
+                        let owner = demo.composition.owner().cloned().expect("real editor owns text service");
+                        demo.notification_alert = Some(systemless::runner::NotificationSnapshot {
+                            guest_id: 1, instance_id: 2, response_started: false, mark: 0,
+                            icon_handle: 0, sound_handle: 0, text: Some(b"Notice".to_vec()),
+                            response: 0, ref_con: 0,
+                        });
+                        demo.synchronize_composition(window, cx);
+                        assert!(demo.composition.owner().is_none());
+                        assert_eq!(demo.text_edits, original);
+                        demo.notification_alert = None;
+                        demo.synchronize_composition(window, cx);
+                        assert_eq!(demo.composition.owner(), Some(&owner));
+                        assert_eq!(demo.text_edits, original);
+                    });
+                }).unwrap();
+            }
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
         fn notification_alert_pointer_and_keyboard_do_not_leak_guest_input(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::{AppContext, test::TestWindowExt};
             let (sender, receiver) = std::sync::mpsc::channel();
