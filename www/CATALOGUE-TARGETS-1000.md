@@ -659,7 +659,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | Slot | Catalogue total | Target | Architecture evidence / lead | Rights route | Discovery source |
 | ---: | ---: | --- | --- | :---: | --- |
 | 601 | 789 | FiveStones | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
-| 602 | 790 | Galactic Frontiers | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
+| 602 | 790 | Galactic Frontiers | Original 68K only; machine-requirement startup blocker | G | [Archive index](https://www.vintageapplemac.com/software/games/g/); [conditional grant and original evidence](CATALOGUE-SOURCES.md#galactic-frontiers-102--target-790-primary-slot-602) |
 | 603 | 791 | Hardwood Solitaire II | 68K/PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
 | 604 | 792 | IntelliBots | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
 | 605 | 793 | Joy Of Hex | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/) |
