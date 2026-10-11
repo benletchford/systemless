@@ -3392,3 +3392,15 @@ and 1.0 selected-text regions both match the scaled guest black mask exactly
 and their composed images are reviewed. The public no-default-features check
 passes (15.41 s). The remaining ten corrected captures and their review are
 pending; this checkpoint does not claim complete popup or production fidelity.
+
+The corrected disabled matrix completes across monochrome 68K, colour 68K and
+PPC at 0.75, 1.0, 1.5 and 2.0. All twelve full compositions are reviewed, with
+visible titles and contained selected labels. All 24 selected-label regions
+exactly match independently device-edge-scaled guest ink: black checker ink in
+mono, RGB 150/150/150 in colour and active CDEF black in PPC. Each comparison
+excludes arrows and borders; its coordinates and pixel counts are recorded in
+`popup-disabled-canonical-review.json`. All 24 original PNG hashes/dimensions,
+the fixed binary, fixture and eight source hashes were verified before lossless
+archival as `popup-disabled-canonical-*`. This qualifies the inspected fixture
+regions in the shared compositor, not native typography, arbitrary palettes,
+clipping/letterboxing, popup arrow/chrome or the broader release gate.
