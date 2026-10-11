@@ -9,7 +9,6 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
-launch_enabled: false
 compatibility:
   status: playable
   verified:
@@ -19,17 +18,17 @@ compatibility:
     architecture: 68k
     environment: >-
       Unchanged publisher Classic 2.2 archive; explicit 68K, depth 8, complete
-      original executable and embedded documentation. Native build includes the
-      sound sequence/draining repair in PR 4654, which must land before launch.
-      Ordinary Start Game displays the first button-5 flash across eight frontend
-      captures. A measured note interval yields 2761 non-silent PCM samples.
-      Matching input advances score 0 to 1; the next displayed sequence is 5 then 7,
-      and ordinary matching clicks advance score to 3. Sixteen measured pixel/audio
-      checks pass across 530 frontend / 1102 guest ticks with no budget exhaustion;
-      captures inspected. Independent extraction matches both original forks and
-      supported Finder metadata against production packing. This proves bounded
-      native memory-game rounds, not all difficulty settings or independent audio
-      fidelity. Browser qualification, promotion and launch approval remain pending.
+      original executable and embedded documentation. Native build includes the sound
+      sequence/draining repair in PR 4654, which must land before launch. Ordinary Start Game
+      displays the first button-5 flash across eight frontend captures. A measured note
+      interval yields 2761 non-silent PCM samples. Matching input advances score 0 to
+      1; the next displayed sequence is 5 then 7, and ordinary matching clicks advance
+      score to 3. Sixteen measured pixel/audio checks pass across 530 frontend / 1102
+      guest ticks with no budget exhaustion; captures inspected. Independent extraction
+      matches both original forks and supported Finder metadata against production
+      packing. This proves bounded native memory-game rounds, not all difficulty settings
+      or independent audio fidelity. Browser qualification, promotion and launch
+      approval remain pending.
     status: playable
     evidence: https://github.com/benletchford/systemless/pull/4654
 runtime:
@@ -41,10 +40,9 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://www.tex-edit.com/software/re-pete2.2.sit.hqx
-    expected_sha256: 8de6839796c93ba71a2a9f800a3e2d002f780f8e84356b717ef8c6e4e415add9
-    expected_size: 73613
+    type: sha256
+    sha256: 8de6839796c93ba71a2a9f800a3e2d002f780f8e84356b717ef8c6e4e415add9
+    size_bytes: 73613
   provenance:
     redistribution: permitted
     original: true
@@ -55,23 +53,24 @@ artifacts:
     license: Publisher conditional unchanged-package redistribution permission
     rights_holder: Tom Bender / Trans-Tex Software
     permission: >-
-      Publisher About Our Freeware permits distribution with documentation intact
-      and programs unchanged, excluding beta reposts. This is its linked Classic
-      release 2.2, not a beta. Retain the complete original archive and embedded
-      documentation without modification.
+      Publisher About Our Freeware permits distribution with documentation intact and
+      programs unchanged, excluding beta reposts. This is its linked Classic release
+      2.2, not a beta. Retain the complete original archive and embedded documentation
+      without modification.
     notes: >-
-      Publisher and preservation archives are byte-identical. One original file,
-      two forks and supported Finder metadata independently match production
-      packing. Empty data fork; 71628-byte resource fork with CODE 0/1/3 and no
-      cfrg or native PPC slice. No program, resource, registration or documentation
-      changes. The original embedded About dates version 2.2 to December 21, 1995.
-      The separate OS X version is outside this classic entry.
+      Publisher and preservation archives are byte-identical. One original file, two
+      forks and supported Finder metadata independently match production packing. Empty
+      data fork; 71628-byte resource fork with CODE 0/1/3 and no cfrg or native PPC
+      slice. No program, resource, registration or documentation changes. The original
+      embedded About dates version 2.2 to December 21, 1995. The separate OS X version is
+      outside this classic entry.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/re-pete/gameplay.png
+    type: sha256
+    sha256: 9f126808b4d5b80c37741d72ee20bfd06d335491b5d8d0f3c68174062c6561ac
+    size_bytes: 6040
   provenance:
     redistribution: permitted
     content_only: true
@@ -82,8 +81,8 @@ artifacts:
     rights_holder: Tom Bender / Trans-Tex Software
     permission: Original game content accompanying the complete permitted package.
     notes: >-
-      Actual original game after two matching memory rounds, score 3; cropped to
-      the game content without window frame, title, menu bar or desktop.
+      Actual original game after two matching memory rounds, score 3; cropped to the
+      game content without window frame, title, menu bar or desktop.
 references:
 - https://www.tex-edit.com/index.html
 - https://www.gryphel.com/c/sw/games/repete/index.html
@@ -97,4 +96,4 @@ the same order. Each new round adds another button to remember.
 Two native memory rounds and their score progression are verified. Browser
 qualification is pending, so launch remains disabled.
 
-![Re-Pete after two matching memory rounds](incoming/re-pete/gameplay.png)
+![Re-Pete after two matching memory rounds](https://assets.systemless.org/catalogue/media/sha256/9f/9f126808b4d5b80c37741d72ee20bfd06d335491b5d8d0f3c68174062c6561ac.png)
