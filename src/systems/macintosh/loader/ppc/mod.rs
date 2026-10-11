@@ -115,6 +115,7 @@ mod dispatch_collection;
 mod dispatch_color_tables;
 mod dispatch_control;
 mod dispatch_core_foundation;
+mod dispatch_internet_config;
 mod dispatch_cursor;
 mod dispatch_desk;
 mod dispatch_devices;
