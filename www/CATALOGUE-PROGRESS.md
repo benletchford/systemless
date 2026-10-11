@@ -1,6 +1,6 @@
 # Catalogue qualification progress
 
-Tracking issue: [#4353](https://github.com/benletchford/systemless/issues/4353). Updated 11 October 2026. Scope and discovery links are in [the 1,000-entry target list](CATALOGUE-TARGETS-1000.md).
+Tracking issue: [#4353](https://github.com/benletchford/systemless/issues/4353). Updated 12 October 2026. Scope and discovery links are in [the 1,000-entry target list](CATALOGUE-TARGETS-1000.md).
 
 This ledger tracks all 812 primary intake slots. A stage is complete only when its evidence is linked. `Pending` means unverified; `N/A` requires inspected executable evidence. A promoted archive or merged catalogue draft is not a live qualified game. Production must be checked against the deployed release and catalogue route. The 188-record baseline includes 18 launch-disabled records; its live qualified count has not been independently established. Therefore 812 additions alone do not yet prove the goal achieved.
 
@@ -98,7 +98,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 49 | Otto Matic | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 50 | Avara | [Conditional nonprofit grant](CATALOGUE-SOURCES.md#avara-expansion-intake); remaining terms pending | [1.0.1 receipt and payload](CATALOGUE-SOURCES.md#avara-expansion-intake) | [Mission/spawn unqualified](https://github.com/benletchford/systemless/issues/4355) | Embedded modules; route unqualified | Pending | Pending | Pending |
 | 51 | Ares | [GameRanger bundling permission and auxiliary terms held](CATALOGUE-SOURCES.md#ares-expansion-intake) | Original 1.1.1; current production extraction has sixty files; independent fork parity pending | Pending | [Current coercion-handler halt](https://github.com/benletchford/systemless/issues/4364#issuecomment-6105524171) | Pending | Special-handler fix merged; unhosted | Pending |
-| 52 | Barrack | [Complete unchanged nonprofit grant; 30-day trial retained](CATALOGUE-SOURCES.md#barrack-expansion-intake) | [1.0.4 exact receipt, 18 files](CATALOGUE-SOURCES.md#barrack-expansion-intake) | Black startup; unqualified | Trial dismissal; incomplete menu; [callback defect #4403](https://github.com/benletchford/systemless/issues/4403) | Pending | Pending | Pending |
+| 52 | Barrack | [Complete unchanged nonprofit grant; 30-day trial retained](CATALOGUE-SOURCES.md#barrack-expansion-intake) | Exact 1.0.4; 19 packed records / 18 unique paths; independent installed fork parity pending | Fresh current native startup black; unqualified | Fresh current native trial dismissal; menu artwork incomplete; [callback defect #4403](https://github.com/benletchford/systemless/issues/4403) | Pending | Pending | Pending |
 | 53 | Bubble Trouble | [Complete nonprofit original grant](CATALOGUE-SOURCES.md#bubble-trouble-expansion-intake) | SHA-256 / 1,670,970 bytes | Native + browser movement | Native + browser movement; background defect | [Both release-player slices checked](CATALOGUE-SOURCES.md#bubble-trouble-browser-qualification) | [Merged #4392](https://github.com/benletchford/systemless/pull/4392) | [Live v0.87.0, both slices checked](https://systemless.org/bubble-trouble/) |
 | 54 | Chiral | [Complete nonprofit original grant](catalogue/chiral.md) | SHA-256 / 1,043,239 bytes | Native + browser atom placement | 68K-only original | [Fresh release-player startup + placement](CATALOGUE-SOURCES.md#chiral-release-player-qualification) | [Merged #4394](https://github.com/benletchford/systemless/pull/4394) | [Live v0.87.0, 68K checked](https://systemless.org/chiral/) |
 | 55 | Cythera | [Conditional game grant; auxiliary terms pending](CATALOGUE-SOURCES.md#cythera-expansion-intake) | [1.0.2 receipt; 44 files](CATALOGUE-SOURCES.md#cythera-expansion-intake) | Player creation and archetype; gameplay unqualified | Colour prompt, then PC-zero halt; unqualified | Pending | Pending | Pending |
@@ -883,7 +883,8 @@ screenshot are promoted; hosted body hash/size independently match. Actual
 worker-backed browser walking and climbing pass sixteen measured checks, with
 UNREGISTERED visibly retained and the managed archive request untouched.
 [Launch-approved catalogue PR #4629](https://github.com/benletchford/systemless/pull/4629)
-remains subject to final CI/merge, human release and public replay. Blank options
+merged at `1463e21ee247d07ac223ba205df3fb50b5a25585` after all final checks passed.
+Human release and independently verified public replay remain pending. Blank options
 labels/help and damaged playfield after closing Options remain open. [Intake
 #4628](https://github.com/benletchford/systemless/issues/4628) tracks those remaining
 gates. Primary slots and qualified-live count are unchanged.

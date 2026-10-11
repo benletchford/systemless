@@ -735,6 +735,29 @@ Fresh original 1.0.4 download again matches the receipt above. At source `4d2c64
 
 [Issue #4403](https://github.com/benletchford/systemless/issues/4403) contains the completed bounded reproduction and targeted register trace: Barrack creates a ten-byte picture header, loads the original full PICT separately, installs a native `getPicProc` descriptor at CQDProcs offset 44 in the current port, then calls DrawPicture. The callback entry is never executed. Small sprite pictures pass full resource data and render. The PPC DrawPicture path currently reads only the supplied handle. A structured guest callback continuation and streamed picture input path are needed; no fix, browser approval or publication is claimed.
 
+Fresh 12 October retest using immutable production-code build
+`0f24e29c473c5ed912fa7cca50be45e38698ae11`, including the fixes subsequently
+merged in #4622/#4626, reproduces the startup blockers. The original 1.0.4
+download again matches the 3,081,805-byte receipt. Explicit 68K/depth 8 stays
+black at 600 and 1,080 frontend ticks. Explicit PPC/depth 8 shows the intact
+30-day trial at 1,080; Not Yet dismisses it but menu artwork remains largely
+absent. Captures inspected; zero assertions and no gameplay qualification.
+
+Fresh production packing (5,147,248 bytes) has 19 records / 18 unique paths:
+Documentation ƒ/Icon (CR) occurs twice with different resource payloads. Both
+records and their ordering are retained; independent installed inner-fork/Finder
+parity, including that overwrite scope, remains pending. Independent unar
+extracts the outer SVCT installer, not the installed game files. Do not claim
+nineteen distinct original files or completed inner parity. The game has three
+CODE resources, one cfrg and a `Joy!peffpwpc` data fork: actual 68K and PPC slices,
+one game. Game data is 150,323 bytes, SHA-256
+`caa55fecab47568cafeb5f440b2be91a12bae14bc12832c60630680e648dbaf9`;
+resource fork is 175,945 bytes, SHA-256
+`da97472aca0fdf3d11dd7d676411df3607ee11b955e93b02632558d8da53f5cf`.
+Fresh original licence inspection retains complete unchanged nonprofit
+redistribution permission and the 30-day trial. Callback support, gameplay,
+browser, hosting and launch remain pending in #4403.
+
 ## Angband 2.7.8 original archive intake
 
 The [VintageAppleMac A index](https://www.vintageapplemac.com/software/games/a/) supplies two distinct original ports of the same game. [Angband 2.7.8.sit](https://www.vintageapplemac.com/files/games/Angband%202.7.8.sit) is 336,502 bytes, SHA-256 `e37f6ca2500a92c0aa8c65c7dff765a7868e33910d8699fc5aeaae792c03f34d`; thirty files expand, including the resource-only application, documentation and data. [Angband 2.7.8 PPC.sit](https://www.vintageapplemac.com/files/games/Angband%202.7.8%20PPC.sit) is 400,492 bytes, SHA-256 `91ce28a571189fff8401b2614264c1df47b561dc9e52d14f944e1f17c4df9ffe`; thirty-nine files expand, including MacAngband•PPC, port notes, documentation and data. Do not repack or count these as two games.
@@ -1628,5 +1651,6 @@ a real runtime worker and an 800×600 canvas are verified. The original About
 notice visibly says UNREGISTERED. Once Screen 1 is fully painted, ordinary L
 walking and A ladder climbing pass sixteen measured before/after pixel checks;
 captures inspected. Launch approval is submitted through the ordinary catalogue
-PR. CI/merge, human release and public replay remain pending. Full levels,
+PR, merged at `1463e21ee247d07ac223ba205df3fb50b5a25585` after all final checks
+passed. Human release and independent public replay remain pending. Full levels,
 jumping, saving and audio are unverified. No qualified-live increase.

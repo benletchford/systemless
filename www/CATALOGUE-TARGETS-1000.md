@@ -1,14 +1,14 @@
 # Catalogue expansion targets: 1,000 entries
 
-Research snapshot: **10 October 2026**. Scope: original classic Macintosh games for **68K and PowerPC**, including intact official demos, shareware distributions, and full games only where an applicable distribution grant can be established. This is an acquisition and qualification backlog, not permission to publish.
+Research snapshot: **10 October 2026**; qualification updates through **12 October 2026**. Scope: original classic Macintosh games for **68K and PowerPC**, including intact official demos, shareware distributions, and full games only where an applicable distribution grant can be established. This is an acquisition and qualification backlog, not permission to publish.
 
 ## Stocktake and arithmetic
 
-There are **188 game records** directly under `www/catalogue/`: **170 launch enabled**, **18 launch disabled**. Architecture declarations: **155 68K only**, **15 PPC only**, **18 dual architecture**. Thus 173 records declare 68K and 33 declare PPC; dual records count once toward 1,000. These are record declarations, not a fresh runtime or rights audit. Compatibility claims can differ by architecture within a record.
+The initial 10 October stocktake recorded **188 game records** directly under `www/catalogue/`: **170 launch enabled**, **18 launch disabled**. Architecture declarations: **155 68K only**, **15 PPC only**, **18 dual architecture**. Thus 173 records declare 68K and 33 declare PPC; dual records count once toward 1,000. These are record declarations, not a fresh runtime or rights audit. Compatibility claims can differ by architecture within a record.
 
 **188 existing + 812 primary additions = 1,000 records.** The 100 reserves below replace rejected or unavailable candidates; they are not counted in that arithmetic. Count distinct games, not archive mirrors, CPU builds, localisations, installers, demo/full variants, patches, maps or version updates. Preserve the existing 188-record baseline for planning, but audit possible overlap between `checkers-deluxe-demo` and `strategic-leap-checkers-deluxe` before final counting; any consolidation requires a reserve replacement.
 
-Current category declarations: Arcade: 69, Puzzle: 42, Strategy: 35, Role-Playing: 15, Simulation: 12, FPS: 12, Space Trading: 3. The catalogue is concentrated in 68K arcade and puzzle games. The first wave below gives PowerPC strategy, action and 3D games deliberate priority. Aim for at least 300 PPC-capable records and 500 68K-capable records across the eventual catalogue; overlap is welcome, and these are planning goals rather than a result proven by this list.
+Baseline category declarations: Arcade: 69, Puzzle: 42, Strategy: 35, Role-Playing: 15, Simulation: 12, FPS: 12, Space Trading: 3. The catalogue is concentrated in 68K arcade and puzzle games. The first wave below gives PowerPC strategy, action and 3D games deliberate priority. Aim for at least 300 PPC-capable records and 500 68K-capable records across the eventual catalogue; overlap is welcome, and these are planning goals rather than a result proven by this list.
 
 Execution stages and per-target evidence are tracked in [the qualification ledger](CATALOGUE-PROGRESS.md).
 
@@ -22,7 +22,7 @@ The three requested sites supplied discovery evidence:
 - [VintageAppleMac games](https://www.vintageapplemac.com/software/games/): alphabetic game indexes inspected. Filenames are weaker evidence than application metadata; broad archive contents include support files and commercial releases. Included titles were selected and obvious utilities, patches and duplicates removed. Inspect the package before treating an ambiguous title as a distinct game.
 - [Macintosh Garden](https://macintoshgarden.org/games): games landing page and first index page for each letter inspected. Linked Garden pages are discovery records, not full-package licence inspections. Follow-up requests to individual Garden game pages timed out or refused connections, so their bundled terms could not be assessed. Famous omissions carried over from the existing research queue link to that queue rather than to an unverified archive URL. Archive availability and an “abandonware” description do not establish redistribution permission.
 
-**Rights route codes (all pending):** `D` = demo index lead; `S` = shareware/lite wording in an archive filename; `F` = freeware wording in an archive filename; `U` = no affirmative rights evidence in the inspected index or existing research queue, so locate an official demo, inspect bundled permission, or obtain a rights-holder grant. “Freeware” alone does not establish permission to mirror the archive. For `U`, never substitute a commercial full-game archive just to fill a slot. Some `D` entries may be non-interactive previews.
+**Initial rights route codes (pending at the research snapshot):** `D` = demo index lead; `S` = shareware/lite wording in an archive filename; `F` = freeware wording in an archive filename; `U` = no affirmative rights evidence in the inspected index or existing research queue, so locate an official demo, inspect bundled permission, or obtain a rights-holder grant. “Freeware” alone does not establish permission to mirror the archive. For `U`, never substitute a commercial full-game archive just to fill a slot. Some `D` entries may be non-interactive previews. For subsequent qualification updates, `P` means an applicable original-package distribution grant is inspected and linked; its conditions still apply.
 
 **Architecture column:** “lead” and “era” are research estimates; “filename” is a source label; “repo notes” refers to existing [source inspections](CATALOGUE-SOURCES.md) and [candidate notes](CATALOGUE-CANDIDATES.md). None is a new executable validation. `Verify 68K/PPC` means architecture is unresolved, not that both are supported. For late PPC titles, explicitly prove a classic Mac OS executable: OS X-only, Intel-only and modern source ports do not qualify here. Known later-platform editions were excluded; remaining edge cases must still pass this gate.
 
@@ -33,7 +33,7 @@ Before adding any candidate:
 3. Inspect CODE/PEF slices and required OS, RAM, graphics and dependencies. Record each architecture separately and reproduce bounded gameplay with the exact archive.
 4. Capture a gameplay screenshot, qualify Systemless hosting and browser behaviour, and follow the [contribution guide](README.md#contribute-a-catalogue-entry). Keep launch disabled until approved. Existing runtime fixes do not transfer to a different archive.
 
-All 812 additions remain **research targets**. Rights-route totals: D: 315, S: 16, F: 8, U: 473. There are **zero newly cleared archives** in this document; no game binaries were acquired or redistributed during this stocktake. Replace failures from the reserves and keep researching until 1,000 distinct qualified records are actually present.
+At the initial stocktake, all 812 additions were **research targets**, with rights-route totals D: 315, S: 16, F: 8 and U: 473. That stocktake cleared zero new archives and acquired or redistributed no game binaries. Subsequent rights, runtime, hosting and public-delivery evidence is recorded in [the qualification ledger](CATALOGUE-PROGRESS.md) and linked updates below. Replace failures from the reserves and keep working until 1,000 distinct qualified games are live.
 
 ## Primary additions (812)
 
@@ -977,8 +977,19 @@ On 2026-10-11, reserve R62 was corrected from WadTyper for Doom to NetHack 3.3.1
 | R96 | Set | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
 | R97 | The Wild West 2 | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
 | R98 | Waku | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/waku) |
-| R99 | Arashi | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| R99 | Arashi 1.1 | 68K; no native PPC slice | P | [Original grant, twenty matched forks, native/browser gameplay and public v0.96.0 verification](CATALOGUE-SOURCES.md#arashi-original-intake-and-public-delivery) |
 | R100 | Beehave Beehive | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+
+## Additional reserve discoveries
+
+These discoveries supplement the original 100 reserves without renumbering the
+812 primary slots or changing the 1,000-distinct-game goal. Preserve the original
+lead and its evidence when selecting a replacement. A merged entry still requires
+human release and independently verified public replay before it is counted live.
+
+| Reserve | Game | CPU evidence | Distribution | Qualification |
+| --- | --- | --- | --- | --- |
+| R101 | Spacestation Pheta 2.7 | 68K; no native PPC slice in original archive | Explicit conditional shareware-library grant; UNREGISTERED visibly verified; complete original package retained | [Native/browser walking and climbing, exact archive/forks and promoted screenshot](CATALOGUE-SOURCES.md#spacestation-pheta-27--additional-reserve-discovery); [catalogue PR #4629 merged](https://github.com/benletchford/systemless/pull/4629), human release/public replay pending |
 
 ## Existing catalogue inventory (188; baseline)
 
