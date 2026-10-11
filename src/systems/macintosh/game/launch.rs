@@ -153,9 +153,20 @@ pub fn pack_game_sources_for_web(
             payload_from_disk_image(image, 1)?
         } else if is_zip_archive(source) {
             collect_zip_payload(source)?
+        } else if looks_like_macbinary(source) {
+            let file = parse_macbinary_payload(source, "", 1)?;
+            payload_from_forks(
+                &file.name,
+                file.data,
+                file.rsrc,
+                file.file_type,
+                file.creator,
+                file.finder_flags,
+                file.executable_priority,
+            )?
         } else {
             return Err(
-                "Game source is not a StuffIt archive, ZIP archive, or HFS disk image".to_string(),
+                "Game source is not a StuffIt archive, ZIP archive, HFS disk image, or MacBinary file".to_string(),
             );
         };
         merge_payload(&mut payload, source_payload);
@@ -5919,6 +5930,76 @@ mod tests {
         let err = collect_zip_payload(b"PK\x03\x04not a zip")
             .expect_err("malformed ZIP should be rejected");
         assert!(err.contains("Failed to parse ZIP archive"), "{err}");
+    }
+
+    #[test]
+    fn web_pack_sources_preserve_macbinary_forks_and_companions() {
+        let data = b"original data fork";
+        let rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let original = make_macbinary_application("Original Game", data, &rsrc);
+        let companion = make_zip(&[("README", b"retain original terms")]);
+        let packed = pack_game_sources_for_web(&[&original, &companion], &[]).unwrap();
+        let mut runner = new_runner();
+        load_web_pack(&mut runner, &packed).unwrap();
+        assert_eq!(
+            runner.dispatcher().vfs.get("Original Game"),
+            Some(&data.to_vec())
+        );
+        assert_eq!(
+            runner.dispatcher().vfs_rsrc.get("Original Game"),
+            Some(&rsrc)
+        );
+        assert_eq!(
+            runner.dispatcher().vfs.get("README"),
+            Some(&b"retain original terms".to_vec())
+        );
+        let metadata = runner
+            .dispatcher_mut()
+            .vfs_file_metadata("Original Game")
+            .unwrap();
+        assert_eq!(metadata.file_type, u32::from_be_bytes(*b"APPL"));
+        assert_eq!(metadata.creator, u32::from_be_bytes(*b"TEST"));
+    }
+
+    #[test]
+    fn web_pack_sources_expand_macbinary_installer_and_apply_prefixes() {
+        let data = b"unchanged installed application";
+        let rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let installer_data = crate::game::vise::make_test_archive("Installed Game", data, &rsrc);
+        let original = make_macbinary_application("Original Installer", &installer_data, &rsrc);
+        let packed = pack_game_sources_for_web(&[&original], &["Original Installer"]).unwrap();
+        let mut runner = new_runner();
+        load_web_pack(&mut runner, &packed).unwrap();
+        assert_eq!(
+            runner
+                .dispatcher()
+                .vfs
+                .get("Original Installer/Installed Game"),
+            Some(&data.to_vec())
+        );
+        assert_eq!(
+            runner
+                .dispatcher()
+                .vfs_rsrc
+                .get("Original Installer/Installed Game"),
+            Some(&rsrc)
+        );
+        assert!(!runner.dispatcher().vfs.contains_key("Original Installer"));
+    }
+
+    #[test]
+    fn web_pack_sources_reject_invalid_macbinary_headers_and_truncated_forks() {
+        let rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let original = make_macbinary_application("Original Game", b"data", &rsrc);
+        for (offset, value) in [(0, 1), (1, 0), (1, 64), (74, 1), (82, 1)] {
+            let mut invalid = original.clone();
+            invalid[offset] = value;
+            assert!(pack_game_sources_for_web(&[&invalid], &[]).is_err());
+        }
+        assert!(pack_game_sources_for_web(&[&original[..original.len() - 129]], &[]).is_err());
+        let mut invalid = original;
+        invalid[83..87].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(pack_game_sources_for_web(&[&invalid], &[]).is_err());
     }
 
     #[test]
