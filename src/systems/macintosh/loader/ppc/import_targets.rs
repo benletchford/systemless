@@ -2330,7 +2330,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "InitTSMAwareApplication")
         | ("InterfaceLib", "CloseTSMAwareApplication") => PpcImportDispatcherTarget::ReturnNoErr,
         (
-            "InterfaceLib",
+            "InterfaceLib" | "CarbonLib",
             "SetScriptManagerVariable" | "SetEnvirons" | "SetScript" | "SetScriptVariable",
         ) => PpcImportDispatcherTarget::ReturnNoErr,
         // No input method is active in the emulated process, so Text Services
@@ -2339,7 +2339,7 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::ReturnNoErr
         }
         // The default virtual keyboard uses the Roman script (script 0).
-        ("InterfaceLib", "KeyScript") => PpcImportDispatcherTarget::NoOpPreserve,
+        ("InterfaceLib" | "CarbonLib", "KeyScript") => PpcImportDispatcherTarget::NoOpPreserve,
         // ISO C atexit registers process-termination cleanup. Classic games
         // remain resident until the emulated process is torn down, at which
         // point Systemless releases all guest state together.
@@ -4189,7 +4189,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "SysEnvirons") => PpcImportDispatcherTarget::SysEnvirons,
         ("InterfaceLib", "TextWidth") => PpcImportDispatcherTarget::TextWidth,
         ("InterfaceLib", "StringWidth") => PpcImportDispatcherTarget::StringWidth,
-        ("InterfaceLib", "TruncString") => PpcImportDispatcherTarget::TruncString,
+        ("InterfaceLib" | "CarbonLib", "TruncString") => PpcImportDispatcherTarget::TruncString,
         ("InterfaceLib", "CharWidth") => PpcImportDispatcherTarget::CharWidth,
         ("InterfaceLib", "MeasureText") => PpcImportDispatcherTarget::MeasureText,
         ("InterfaceLib", "RealFont") => PpcImportDispatcherTarget::RealFont,
@@ -4197,11 +4197,11 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "FontMetrics") => PpcImportDispatcherTarget::FontMetrics,
         ("InterfaceLib", "FMSwapFont") => PpcImportDispatcherTarget::FMSwapFont,
         ("InterfaceLib", "GetFNum") => PpcImportDispatcherTarget::GetFNum,
-        ("InterfaceLib", "FontToScript") => PpcImportDispatcherTarget::FontToScript,
+        ("InterfaceLib" | "CarbonLib", "FontToScript") => PpcImportDispatcherTarget::FontToScript,
         ("InterfaceLib", "SetPreserveGlyph") => PpcImportDispatcherTarget::SetPreserveGlyph,
         ("InterfaceLib", "GetPreserveGlyph") => PpcImportDispatcherTarget::GetPreserveGlyph,
         ("InterfaceLib", "IsMetric") => PpcImportDispatcherTarget::IsMetric,
-        ("InterfaceLib", "VisibleLength") => PpcImportDispatcherTarget::VisibleLength,
+        ("InterfaceLib" | "CarbonLib", "VisibleLength") => PpcImportDispatcherTarget::VisibleLength,
         ("InterfaceLib" | "CarbonLib", "GetIntlResource" | "IUGetIntl" | "GetIntl") => {
             PpcImportDispatcherTarget::GetIntlResource
         }
@@ -5555,21 +5555,31 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "FindNextComponent") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::FindNextComponent,
         ),
-        ("InterfaceLib", "FindScriptRun") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::FindScriptRun,
-        ),
-        ("InterfaceLib", "FindWord") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::FindWord,
-        ),
-        ("InterfaceLib", "FindWordBreaks") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::FindWordBreaks,
-        ),
-        ("InterfaceLib", "Font2Script") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::Font2Script,
-        ),
-        ("InterfaceLib", "FontScript") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::FontScript,
-        ),
+        ("InterfaceLib" | "CarbonLib", "FindScriptRun") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::FindScriptRun,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "FindWord") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::FindWord,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "FindWordBreaks") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::FindWordBreaks,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "Font2Script") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::Font2Script,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "FontScript") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::FontScript,
+            )
+        }
         ("InterfaceLib", "GetNextProcess") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::GetNextProcess,
         ),
@@ -5578,20 +5588,26 @@ pub(crate) fn dispatcher_target_for_import(
                 PpcSystemCompatibilityOperation::GetFormatOrder,
             )
         }
-        ("InterfaceLib", "GetScript") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::GetScript,
-        ),
-        ("InterfaceLib", "GetScriptManagerVariable" | "GetEnvirons") => {
+        ("InterfaceLib" | "CarbonLib", "GetScript") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::GetScript,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "GetScriptManagerVariable" | "GetEnvirons") => {
             PpcImportDispatcherTarget::SystemCompatibility(
                 PpcSystemCompatibilityOperation::GetScriptManagerVariable,
             )
         }
-        ("InterfaceLib", "GetScriptVariable") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::GetScriptVariable,
-        ),
-        ("InterfaceLib", "IntlScript") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::IntlScript,
-        ),
+        ("InterfaceLib" | "CarbonLib", "GetScriptVariable") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::GetScriptVariable,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "IntlScript") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::IntlScript,
+            )
+        }
         ("InterfaceLib", "GetSysBeepVolume") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::GetSysBeepVolume,
         ),
@@ -5695,12 +5711,16 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "Char2Pixel") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::Char2Pixel,
         ),
-        ("InterfaceLib", "CharByte") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::CharByte,
-        ),
-        ("InterfaceLib", "CharType") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::CharType,
-        ),
+        ("InterfaceLib" | "CarbonLib", "CharByte" | "CharacterByteType") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::CharByte,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "CharType" | "CharacterType") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::CharType,
+            )
+        }
         ("InterfaceLib", "GetSysDirection") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::GetSysDirection,
         ),
@@ -5710,18 +5730,22 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetEvQHdr") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::GetEvQHdr,
         ),
-        ("InterfaceLib", "HiliteText") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::HiliteText,
-        ),
+        ("InterfaceLib" | "CarbonLib", "HiliteText") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::HiliteText,
+            )
+        }
         ("InterfaceLib", "InitCRM") => {
             PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::InitCrm)
         }
         ("InterfaceLib", "InitCTBUtilities") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::InitCtbUtilities,
         ),
-        ("InterfaceLib", "KeyTranslate") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::KeyTranslate,
-        ),
+        ("InterfaceLib" | "CarbonLib", "KeyTranslate" | "KeyTrans") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::KeyTranslate,
+            )
+        }
         ("InterfaceLib", "LMGetCurApName") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::LmGetCurApName,
         ),
@@ -5749,9 +5773,11 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "Munger") => {
             PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::Munger)
         }
-        ("InterfaceLib", "NFindWord") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::NFindWord,
-        ),
+        ("InterfaceLib" | "CarbonLib", "NFindWord") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::NFindWord,
+            )
+        }
         ("InterfaceLib", "MeasureJust") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::MeasureJust,
         ),
@@ -5767,18 +5793,24 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "OpenDefaultComponent") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::OpenDefaultComponent,
         ),
-        ("InterfaceLib", "ParseTable") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::ParseTable,
-        ),
-        ("InterfaceLib", "PortionText") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::PortionText,
-        ),
+        ("InterfaceLib" | "CarbonLib", "ParseTable") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::ParseTable,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "PortionText") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::PortionText,
+            )
+        }
         ("InterfaceLib", "Pixel2Char") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::Pixel2Char,
         ),
-        ("InterfaceLib", "ReplaceText") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::ReplaceText,
-        ),
+        ("InterfaceLib" | "CarbonLib", "ReplaceText") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::ReplaceText,
+            )
+        }
         ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "ResetAlertStage") => {
             PpcImportDispatcherTarget::SystemCompatibility(
                 PpcSystemCompatibilityOperation::ResetAlertStage,
@@ -5787,18 +5819,22 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "SetFrontProcess") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::SetFrontProcess,
         ),
-        ("InterfaceLib", "StyledLineBreak") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::StyledLineBreak,
-        ),
+        ("InterfaceLib" | "CarbonLib", "StyledLineBreak") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::StyledLineBreak,
+            )
+        }
         ("InterfaceLib", "SystemEdit") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::SystemEdit,
         ),
         ("InterfaceLib", "Transliterate") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::Transliterate,
         ),
-        ("InterfaceLib", "TruncText") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::TruncText,
-        ),
+        ("InterfaceLib" | "CarbonLib", "TruncText") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::TruncText,
+            )
+        }
         ("InterfaceLib", "UpperString") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::UpperString,
         ),
