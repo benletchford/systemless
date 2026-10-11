@@ -1225,7 +1225,9 @@ keyboard traversal, or full dialog replacement qualification.
 
 Ordinary key events reach the guest only while the guest scene owns keyboard
 focus. Host-focused menus retain their own keys; Command shortcuts retain the
-existing guest route. Closing the last host menu restores scene focus. The
+existing guest route. Closing the last host menu restores scene focus. Invalidating its guest menu
+lifetime also restores scene focus when replacement unmounts the popup without
+a normal dismissal callback; the live-menu replacement regression covers this. The
 hierarchical menu test checks an unbound printable key while open, guest typing
 after selection, and typing after Escape cancellation (after delivery of the
 GPUI dismissal event). This does not qualify full control traversal or returning

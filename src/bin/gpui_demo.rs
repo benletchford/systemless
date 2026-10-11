@@ -858,12 +858,16 @@ mod desktop {
                     cx.notify();
                 }));
             }
+            let had_open_menu = !self.open_menus.is_empty();
             self.open_menus.retain(|identity| {
                 self.menus.menus.iter().any(|menu| {
                     menu.visible_in_menu_bar
                         && *identity == format!("guest-menu-{}-{}", menu.guest_id, menu.generation)
                 })
             });
+            if had_open_menu && self.open_menus.is_empty() {
+                self.focus.focus(window, cx);
+            }
             let guest_menu_fallback = self.guest_menu_fallback();
             let fill_display = self.image.is_some();
             let (screen_width, screen_height) = if fill_display {
@@ -6150,6 +6154,7 @@ mod desktop {
                 window.render_frame(cx);
                 assert!(window.try_find("guest-menu-4096-1").is_none());
                 assert!(window.try_find("guest-popup-menu").is_none());
+                assert!(view.read(cx).focus.is_focused(window), "replaced menus must restore guest focus");
                 assert!(
                     view.read(cx).open_menus.is_empty(),
                     "disposed menus must not pin the auto-revealed bar"
