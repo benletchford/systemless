@@ -449,6 +449,7 @@ mod desktop {
     enum Command {
         CommitText(super::input::TextInputOwner, Vec<u8>),
         CommitTextCaret(super::input::TextInputOwner, Vec<u8>, usize),
+        SelectText(super::input::TextInputOwner, std::ops::Range<usize>),
         ReplaceText(super::input::TextInputOwner, std::ops::Range<usize>, Vec<u8>, Option<usize>),
         CommittedInput(MacintoshInput, MacintoshInput),
         ImportClipboard(Vec<u8>),
@@ -648,6 +649,12 @@ mod desktop {
                         Ok(Command::ActivateFile(id, generation, action) | Command::FileWheel(id, generation, action)) => {
                             if !pointer_down {
                                 activation = super::activation::ControlActivation::begin_file(&mut session, id, generation, action);
+                            }
+                        }
+                        Ok(Command::SelectText(owner, range)) => {
+                            if pointer_down || !super::input::guest_select_text_range(&mut session, &owner, range) {
+                                let revision = text_commit_rejection.as_ref().map_or(1, |(revision, _)| revision + 1);
+                                text_commit_rejection = Some((revision, owner));
                             }
                         }
                         Ok(Command::ReplaceText(owner, range, bytes, caret)) => {
@@ -2868,6 +2875,7 @@ mod desktop {
                                 panel.name_text_layout.as_ref().unwrap(), scene_scale,
                                 cx.theme().foreground, cx.theme().selection,
                             ));
+                        let accessible_run_id = std::rc::Rc::new(std::cell::Cell::new(None));
                         let name_field = name_field.when(focused && panel.new_folder.is_none() && self.composition.preedit.is_none()
                             && self.focus.is_focused(window) && self.open_menus.is_empty() && !self.guest_menu_tracking && self.guest_popup.is_none(), |field| {
                             let Some(owner) = super::input::standard_file_text_owner(panel) else { return field; };
@@ -2875,15 +2883,25 @@ mod desktop {
                                 target: super::input::TextInputTarget::StandardFile { new_folder: false },
                                 text: owner.text, selection: owner.selection };
                             let sender = self.commands.clone();
+                            let selection_sender = self.commands.clone();
+                            let selection_owner = owner.clone();
+                            let selection_id = accessible_run_id.clone();
                             field.on_a11y_action(gpui_kit::accesskit::Action::SetValue, move |data, _, _| {
                                 if let Some(gpui_kit::accesskit::ActionData::Value(value)) = data {
                                     if let Some((expected, range, bytes)) = super::input::accessibility_text_replacement(owner.clone(), value, false) {
                                         let _ = sender.send(Command::ReplaceText(expected, range, bytes, None));
                                     }
                                 }
+                            }).on_a11y_action(gpui_kit::accesskit::Action::SetTextSelection, move |data, _, _| {
+                                if let Some(gpui_kit::accesskit::ActionData::SetTextSelection(selection)) = data {
+                                    if let Some(range) = super::a11y::guest_selection_range(selection, selection_id.get(), selection_owner.text.len()) {
+                                        let _ = selection_sender.send(Command::SelectText(selection_owner.clone(), range));
+                                    }
+                                }
                             })
                         });
                         overlay = overlay.child(super::a11y::AccessibleState::new(name_field, false)
+                            .single_line_run_id(accessible_run_id)
                             .hidden(panel.new_folder.is_some() || panel.confirming_replace)
                             .text_value(name.to_owned(), false)
                             .single_line_positions(super::text::ClassicLine::plain(
@@ -2954,6 +2972,7 @@ mod desktop {
                             .border_1().border_color(cx.theme().accent).bg(cx.theme().background)
                             .child(super::text::single_line(folder, (panel.guest_id, panel.generation),
                                 self.text_pointer_map.clone(), self.host_active != Some(false), scene_scale, cx.theme().foreground, cx.theme().selection));
+                        let accessible_run_id = std::rc::Rc::new(std::cell::Cell::new(None));
                         let name = name.when(self.host_active != Some(false) && self.composition.preedit.is_none()
                             && self.focus.is_focused(window) && self.open_menus.is_empty() && !self.guest_menu_tracking && self.guest_popup.is_none(), |field| {
                             let Some(owner) = super::input::standard_file_text_owner(panel) else { return field; };
@@ -2961,15 +2980,25 @@ mod desktop {
                                 target: super::input::TextInputTarget::StandardFile { new_folder: true },
                                 text: owner.text, selection: owner.selection };
                             let sender = self.commands.clone();
+                            let selection_sender = self.commands.clone();
+                            let selection_owner = owner.clone();
+                            let selection_id = accessible_run_id.clone();
                             field.on_a11y_action(gpui_kit::accesskit::Action::SetValue, move |data, _, _| {
                                 if let Some(gpui_kit::accesskit::ActionData::Value(value)) = data {
                                     if let Some((expected, range, bytes)) = super::input::accessibility_text_replacement(owner.clone(), value, false) {
                                         let _ = sender.send(Command::ReplaceText(expected, range, bytes, None));
                                     }
                                 }
+                            }).on_a11y_action(gpui_kit::accesskit::Action::SetTextSelection, move |data, _, _| {
+                                if let Some(gpui_kit::accesskit::ActionData::SetTextSelection(selection)) = data {
+                                    if let Some(range) = super::a11y::guest_selection_range(selection, selection_id.get(), selection_owner.text.len()) {
+                                        let _ = selection_sender.send(Command::SelectText(selection_owner.clone(), range));
+                                    }
+                                }
                             })
                         });
                         overlay = overlay.child(super::a11y::AccessibleState::new(name, false)
+                            .single_line_run_id(accessible_run_id)
                             .text_value(folder.name.clone(), false)
                             .single_line_painted_positions({
                                 let map = self.text_pointer_map.clone();
@@ -10844,6 +10873,23 @@ mod desktop {
                 assert_eq!(rejected.standard_file.unwrap(), accessible);
                 let actual = accessible;
                 eprintln!("PASS worker-accessible-file-value powerpc={powerpc} depth={actual_depth} new_folder=false");
+                let current = super::super::input::standard_file_text_owner(&actual).unwrap();
+                let selection_owner = super::super::input::TextInputOwner { identity: current.identity,
+                    target: super::super::input::TextInputTarget::StandardFile { new_folder: false },
+                    text: current.text, selection: current.selection };
+                worker.0.send(Command::SelectText(selection_owner.clone(), 0..2)).unwrap();
+                let selected = wait("accessible file selection", &updates, |update| update.standard_file.as_ref().is_some_and(|panel|
+                    panel.name_selection == Some((0, 2)))).standard_file.unwrap();
+                assert_eq!(selected.name, actual.name); assert_eq!(selected.entries, actual.entries);
+                assert_eq!(selected.directory_id, actual.directory_id);
+
+                worker.0.send(Command::SelectText(selection_owner.clone(), 0..1)).unwrap();
+                let rejected = wait("stale accessible file selection", &updates, |update| update.text_commit_rejection.as_ref()
+                    .is_some_and(|(_, owner)| owner == &selection_owner));
+                assert_eq!(rejected.standard_file.unwrap(), selected);
+                let actual = selected;
+                eprintln!("PASS worker-accessible-file-selection powerpc={powerpc} depth={actual_depth} new_folder=false");
+
 
 
 
@@ -10948,6 +10994,24 @@ mod desktop {
                 assert_eq!(rejected.standard_file.unwrap(), accessible);
                 let edited = accessible;
                 eprintln!("PASS worker-accessible-file-value powerpc={powerpc} depth={actual_depth} new_folder=true");
+                let current = super::super::input::standard_file_text_owner(&edited).unwrap();
+                let selection_owner = super::super::input::TextInputOwner { identity: current.identity,
+                    target: super::super::input::TextInputTarget::StandardFile { new_folder: true },
+                    text: current.text, selection: current.selection };
+                worker.0.send(Command::SelectText(selection_owner.clone(), 0..2)).unwrap();
+                let selected = wait("accessible file selection", &updates, |update| update.standard_file.as_ref().is_some_and(|panel|
+                    panel.new_folder.as_ref().is_some_and(|folder| folder.selection == (0, 2)))).standard_file.unwrap();
+                assert_eq!(selected.name, edited.name); assert_eq!(selected.entries, edited.entries);
+                assert_eq!(selected.directory_id, edited.directory_id);
+                assert_eq!(selected.new_folder.as_ref().unwrap().name, edited.new_folder.as_ref().unwrap().name);
+
+                worker.0.send(Command::SelectText(selection_owner.clone(), 0..1)).unwrap();
+                let rejected = wait("stale accessible file selection", &updates, |update| update.text_commit_rejection.as_ref()
+                    .is_some_and(|(_, owner)| owner == &selection_owner));
+                assert_eq!(rejected.standard_file.unwrap(), selected);
+                let edited = selected;
+                eprintln!("PASS worker-accessible-file-selection powerpc={powerpc} depth={actual_depth} new_folder=true");
+
 
 
 
