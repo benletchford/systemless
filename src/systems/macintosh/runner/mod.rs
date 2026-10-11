@@ -1855,6 +1855,8 @@ pub struct FixtureRunner {
     /// must not be re-entered by our synthetic tick advancement while the callback
     /// is still unwinding back to interrupted guest code.
     active_interrupt_callback: Option<ActiveInterruptCallback>,
+    /// System-owned notification alert awaiting acknowledgment.
+    notification_alert: Option<NotificationSnapshot>,
     /// Interrupts may preempt a foreground dialog callback; interrupt handlers
     /// themselves remain non-reentrant. Preserve the foreground return frame.
     suspended_dialog_callback: Option<ActiveInterruptCallback>,
@@ -2094,6 +2096,7 @@ impl FixtureRunner {
             adb_callback_trampoline: 0,
             adb_packet_buffer: 0,
             active_interrupt_callback: None,
+            notification_alert: None,
             suspended_dialog_callback: None,
             nested_dialog_calls: Vec::new(),
             dialog_draw_port_snapshot: None,
@@ -2253,10 +2256,49 @@ impl FixtureRunner {
         }
     }
 
+    /// Acquire foreground ownership for an alert-only notification. Earlier
+    /// mark/icon/sound delivery stages must be implemented before mixed notices
+    /// can use this entry. This does not establish that any pixels were painted.
+    pub fn begin_notification_alert(&mut self, expected: &NotificationSnapshot) -> bool {
+        if self.notification_alert_snapshot().is_some()
+            || self.active_interrupt_callback.is_some()
+            || expected.response_started || expected.text.is_none()
+            || expected.mark != 0 || expected.icon_handle != 0 || expected.sound_handle != 0 {
+            return false;
+        }
+        let next = self.notification_snapshot().into_iter().find(|notice| !notice.response_started);
+        if next.as_ref() != Some(expected) { return false; }
+        if self.native.application_mut().is_some_and(|app|
+            app.parked_interrupt_callback.is_some() || app.notification_response_context.is_some()) {
+            return false;
+        }
+        self.notification_alert = Some(expected.clone());
+        true
+    }
+
+    /// Return the currently owned alert, retiring stale or removed guest records.
+    pub fn notification_alert_snapshot(&mut self) -> Option<NotificationSnapshot> {
+        let expected = self.notification_alert.clone()?;
+        if !self.notification_snapshot().iter().any(|notice| notice == &expected) {
+            self.notification_alert = None;
+            return None;
+        }
+        Some(expected)
+    }
+
+    /// Acknowledge the exact displayed alert and then enter its guest response.
+    pub fn dismiss_notification_alert(&mut self, expected: &NotificationSnapshot) -> bool {
+        if self.notification_alert_snapshot().as_ref() != Some(expected) { return false; }
+        self.notification_alert = None;
+        if self.complete_notification_delivery(expected) { return true; }
+        self.notification_alert = Some(expected.clone());
+        false
+    }
+
     /// Complete an actually delivered notice. The frontend must supply the
     /// displayed snapshot; this method does not establish delivery itself.
     pub fn complete_notification_delivery(&mut self, expected: &NotificationSnapshot) -> bool {
-        if self.active_interrupt_callback.is_some()
+        if self.notification_alert.is_some() || self.active_interrupt_callback.is_some()
             || !self.notification_snapshot().iter().any(|current| current == expected) {
             return false;
         }
@@ -2413,6 +2455,7 @@ impl FixtureRunner {
     }
 
     fn guest_work_is_suspended(&self) -> bool {
+        if self.notification_alert.is_some() { return true; }
         #[cfg(feature = "debug")]
         {
             return self.debug.is_paused();
@@ -4819,6 +4862,7 @@ impl FixtureRunner {
         self.debug_advance_generation();
         self.process_context.reset_cfm_for_launch();
         self.process_context.reset_notifications_for_launch();
+        self.notification_alert = None;
         if let Some((ppc_app, migrated_services)) = native_launch {
             self.init_ppc_app_with_services(ppc_app, migrated_services);
             return;
@@ -5623,6 +5667,7 @@ impl FixtureRunner {
         // application cannot suppress or duplicate delivery. Inside
         // Macintosh: Toolbox Essentials (1992), pp. 2-30--2-32 and 5-90.
         self.process_context.reset_notifications_for_launch();
+        self.notification_alert = None;
         self.process_context.reset_application_size(
             ppc_app.application_size.with_ref(|size| *size),
         );
@@ -7372,6 +7417,8 @@ impl FixtureRunner {
         sound_work_only: bool,
         finish_frame: FrameFinalization,
     ) -> (usize, bool) {
+        // Removed or mutated records cannot leave foreground execution stuck.
+        if self.notification_alert.is_some() { self.notification_alert_snapshot(); }
         if self.guest_work_is_suspended() {
             return (0, !self.halted);
         }

@@ -5804,3 +5804,19 @@ This establishes the selected runner handoff, not visible GPUI alert delivery,
 nested interruptions, thread switches or compositor interaction. The presentation
 boundary audit in `GPUI_DRAW_PATHS.md` identifies the missing system-alert model.
 All eight production gates remain open.
+
+### Notification alert foreground ownership (2026-10-11)
+
+The runner can now acquire system-alert ownership for the first pending
+alert-only notification. Foreground execution pauses until exact acknowledgment;
+ordinary completion cannot bypass the alert. Stale identities decline, removal
+or mutation retires alert ownership, failed response entry retains ownership,
+and both launch paths clear obsolete alerts. Classic/native runner regressions
+pass, with all21 notification tests passing (0.18s). Mixed mark/icon/sound notices
+explicitly decline acquisition until their preceding delivery stages exist.
+This is an intermediate ownership API, not a substitute for the complete
+Notification Manager. The frontend does not acquire alerts yet: layout/font
+recipes, shared paint, pointer/keyboard/accessibility modality, delivery stages
+and actual acknowledgment remain unfinished. Evidence is under
+`reference/gpui-demo/notification-alert-ownership`; all eight release gates remain
+open. Contract: Apple's Notification Manager reference, Processes pp.5-4–5-5.
