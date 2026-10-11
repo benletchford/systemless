@@ -24,6 +24,17 @@ capture run is archived in `styled-text-single-line-shared`, pinned to f565b695.
 All 192 fixture raster/state cases pass; this earlier bitmap evidence does not
 qualify the newer smooth typography or production readiness.
 
+### Standard File selector atomic fallback
+
+The Open panel now requires its complete retained indicator region before GPUI
+replaces it. Missing or malformed region data retains the whole guest panel,
+preventing partial selector replacement. The actual GPUI Open/Save click
+regression verifies both decline cases (2.47s), and actual guest wheel routing
+passes all four CPU/depth modes with same-frame indicator data (38.41s). Evidence
+is under `standard-file-selector-atomic-fallback`. The current frontend builds
+(8.25s). A separate 16-case four-mode/four-scale composed capture matrix is
+running; no completed matrix or visual qualification is claimed here.
+
 ### Standard File selector indicator retention
 
 The shared worker and capture paths now retain the Open volume selector’s
