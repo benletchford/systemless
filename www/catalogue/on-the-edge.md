@@ -113,6 +113,25 @@ compatibility:
       68K route is unchanged.
     status: playable
     evidence: https://github.com/benletchford/systemless/pull/4668
+  - date: "2026-10-12"
+    tester: Catalogue maintainer
+    systemless_version: 0d61a87001810ba0e7a37634b567f259bbe1cfd1
+    architecture: ppc
+    environment: >-
+      Optimized real Chrome 151 worker/WebGL preview, ordinary PowerPC selector,
+      identical untouched hosted archive; response HTTP 200, 22676 bytes and
+      original SHA-256 independently checked, no archive interception. Frontend
+      preview interception only. File/New Game and inner-square placement show
+      ace of hearts, next three of clubs and Score 0 to 100. Fresh replay passes
+      twelve measured before/after browser assertions; captures inspected. At
+      supported 8 MHz, unchanged pacing gate passes about 60.11 guest ticks/second
+      and 60.11 host FPS with no console errors. Saturated PPC instruction counter
+      makes displayed MIPS invalid; it is excluded from performance evidence.
+      Browser launch approved for this bounded PPC placement. Rendering fix
+      PR 4668 merged with all nine checks passing. Full games, removal, undo,
+      saves, audio, human release and public replay remain pending.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/4668
 runtime:
   runtime_pacing:
     cpu_mhz: 8
