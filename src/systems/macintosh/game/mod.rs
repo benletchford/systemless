@@ -8,6 +8,7 @@ mod application_icon;
 pub mod installer_maker;
 pub mod launch;
 pub(crate) mod smaller_installer;
+mod stuffit_paths;
 pub(crate) mod vise;
 
 pub use application_icon::{
