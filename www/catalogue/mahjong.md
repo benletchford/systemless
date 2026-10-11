@@ -40,15 +40,14 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://www.vintageapplemac.com/files/games/Mahjong%201.0.5.sit
-    expected_sha256: 8bcbe73e845f41a2318a00d50ebf55b977fb4bdee9b28e7603f8212736c30fa6
-    expected_size: 201942
+    type: incoming
+    path: catalogue/incoming/mahjong/original-1.0.5.sit
   provenance:
     redistribution: permitted
     original: true
     sources:
     - https://www.vintageapplemac.com/software/games/m/
+    - https://www.vintageapplemac.com/files/games/Mahjong%201.0.5.sit
     - https://github.com/benletchford/systemless/issues/4674
     license: Original noncommercial shareware-package distribution permission
     rights_holder: Matti Larborn
@@ -58,6 +57,8 @@ artifacts:
       distribution; other commercial redistribution requires written permission.
       Preserve the complete original package, notices and trial restrictions.
     notes: >-
+      Unchanged original archive: 201942 bytes, SHA-256
+      8bcbe73e845f41a2318a00d50ebf55b977fb4bdee9b28e7603f8212736c30fa6.
       Gratis noncommercial preservation delivery of the unchanged distribution,
       separately from the emulator binary. All five installed files/ten forks and
       Finder metadata match independent extraction. Actual game has resource-only
