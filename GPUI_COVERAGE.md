@@ -3801,3 +3801,26 @@ and clipped geometry rather than inferring either CPU's policy from host text
 styles. It is not yet wired into capture or production ownership; patterned
 classic pens, themed caps and rendered caret compositor qualification remain
 unfinished.
+
+The public fixture now has `--capture-styled-text-edit-caret OUTPUT` for the
+default classic-theme PPC path. It clicks through existing guest mouse events
+at measured byte offset 26, requires active collapsed selection and intact
+visible caret drawing after a null event, then resolves the insertion run's
+physical ink and clips the caret fragment to the owned view. Both the native
+field check and shared headless GPUI canvas include the caret; original guest
+pixels are retained separately. Initial PPC16 scale-1 and PPC8 scale-0.75
+captures have zero differing field pixels at device density 2 and were visually
+inspected. Example build passes (4.17s), production check passes (2.73s), and
+the four-mode styled snapshot regression passes (2.75s).
+
+```sh
+target/debug/examples/gpui-menu-demo \
+  tests/toolbox-showcase/toolbox-showcase.sit --prefer-powerpc \
+  --capture-scale 1 --capture-styled-text-edit-caret /tmp/ppc-caret.png
+```
+
+Default PPC depth is 16; use `--screen-depth 8` for PPC8. The new command rejects
+classic 68k pending pen/pattern metadata rather than substituting insertion
+style ink for classic's final painting pen. These two temporary captures are
+initial evidence, not an archived CPU/scale/blink/activation matrix or native
+Macintosh oracle evidence. Production styled scene ownership is still guarded.
