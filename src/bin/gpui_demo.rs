@@ -5139,6 +5139,112 @@ mod desktop {
 
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
+        fn themed_title_drag_moves_showcase_window_on_both_cpus(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            use gpui_kit::{test::TestWindowExt, AppContext, Bounds, WindowBounds, WindowOptions};
+
+            cx.update(gpui_kit::init);
+            for powerpc in [false, true] {
+                let mut session = MacintoshSession::new(true, if powerpc { None } else { Some(8) });
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session
+                    .load_path(
+                        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("tests/toolbox-showcase/toolbox-showcase.sit"),
+                    )
+                    .unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 3));
+                let before = (0..100)
+                    .find_map(|_| {
+                        settle(&mut session);
+                        let frames = session.runner_mut().window_frame_snapshot();
+                        (frames.len() == 3).then_some(frames)
+                    })
+                    .expect("showcase window stack should appear");
+                let (top, left, bottom, right) = before[0].window.bounds;
+                let from = (top - 9, (left + right) / 2);
+                let to = (from.0 + 12, from.1 + 16);
+                let frame = session.video_frame().expect("showcase framebuffer");
+                let width = frame.width;
+                let height = frame.height - 20;
+                let host = |point: (i16, i16)| {
+                    gpui_kit::point(
+                        gpui_kit::px(f32::from(point.1)),
+                        gpui_kit::px(f32::from(point.0 - 20 + 36)),
+                    )
+                };
+                let (sender, receiver) = std::sync::mpsc::channel();
+                let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+                let (window, view) = cx.update(|cx| {
+                    gpui_kit::open_window(
+                        WindowOptions {
+                            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                                None,
+                                gpui_kit::size(gpui_kit::px(900.), gpui_kit::px(740.)),
+                                cx,
+                            ))),
+                            ..Default::default()
+                        },
+                        cx,
+                        |_, cx| cx.new(|cx| super::Demo::new(sender, updates, cx)),
+                    )
+                    .unwrap()
+                });
+                cx.update(|cx| {
+                    view.update(cx, |demo, cx| {
+                        demo.windows = before.clone();
+                        demo.width = width;
+                        demo.height = height;
+                        demo.crop_top = 20;
+                        cx.notify();
+                    });
+                });
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.drag(host(from), host(to), cx);
+                })
+                .unwrap();
+                let mut pressed = 0;
+                let mut released = 0;
+                for command in receiver.try_iter() {
+                    let super::Command::Input(input) = command else {
+                        continue;
+                    };
+                    match input {
+                        MacintoshInput::MouseDown { .. } => pressed += 1,
+                        MacintoshInput::MouseUp { .. } => released += 1,
+                        _ => {}
+                    }
+                    session.deliver_input(input);
+                    if matches!(
+                        input,
+                        MacintoshInput::MouseDown { .. }
+                            | MacintoshInput::MouseMove { .. }
+                            | MacintoshInput::MouseUp { .. }
+                    ) {
+                        settle(&mut session);
+                    }
+                }
+                assert_eq!((pressed, released), (1, 1), "powerpc={powerpc}");
+                let moved = session.runner_mut().window_frame_snapshot();
+                assert_eq!(moved[0].guest_id, before[0].guest_id, "powerpc={powerpc}");
+                assert_eq!(
+                    moved[0].generation,
+                    before[0].generation,
+                    "powerpc={powerpc}"
+                );
+                assert_eq!(
+                    moved[0].window.bounds,
+                    (top + 12, left + 16, bottom + 12, right + 16),
+                    "powerpc={powerpc}"
+                );
+            }
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
         fn themed_window_title_drag_forwards_guest_coordinates(
             cx: &mut gpui_kit::TestAppContext,
         ) {

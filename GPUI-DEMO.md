@@ -99,9 +99,10 @@ and moves by the requested guest-coordinate delta. Reviewed captures are
 [68K moved](tests/toolbox-showcase/reference/gpui-demo/21-windows-moved-68k.png),
 [PowerPC initial](tests/toolbox-showcase/reference/gpui-demo/21-windows-ppc.png),
 and [PowerPC moved](tests/toolbox-showcase/reference/gpui-demo/21-windows-moved-ppc.png).
-The scripted drag enters the guest directly. A separate GPUI interaction test
-checks title-bar pointer translation and held-button routing; an end-to-end
-host drag against both guest CPUs remains to be qualified.
+The scripted capture drag enters the guest directly. Separate GPUI interaction
+tests check title-bar pointer translation and held-button routing, then drive
+the live showcase through the host drag path and verify the guest window moves
+on both CPUs. Activation and off-pane drag capture remain to be qualified.
 The gutter overlays are presentation only: scrollbar tracks do not invent a
 thumb or scroll state, and input in those areas still reaches the guest. Real
 standard scrollbar controls in document windows now show a guest-value thumb;
