@@ -5090,11 +5090,16 @@ mod desktop {
                 for (label, text, selection) in [("single", "日😀".to_owned(), 1..3),
                     ("multiline", format!("{prefix}日😀"), last + 1..last + 3),
                     ("crlf-interior", format!("日😀\r\n{prefix}tail"), 4..4)] {
-                visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                let surrounding = visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                    use gpui_kit::EntityInputHandler;
                     demo.host_active = Some(true);
                     window.focus(&demo.focus, cx);
                     demo.synchronize_composition(window, cx);
+                    let guest_index = demo.composition.owner().unwrap().selection.end + 1;
+                    let expected = demo.bounds_for_range(guest_index..guest_index, Bounds::default(), window, cx)
+                        .expect("unchanged guest suffix has a painted insertion anchor");
                     assert!(demo.composition.mark(&text, selection.clone())); cx.notify();
+                    (guest_index, expected)
                 })).unwrap();
                 visual.run_until_parked();
                 let marked = visual.capture_screenshot(window.into()).unwrap();
@@ -5122,8 +5127,15 @@ mod desktop {
                         assert_eq!(demo.character_index_for_point(point(bounds.origin.x, bounds.origin.y + px(1.)), window, cx), Some(start + selection.start));
                         assert!(demo.bounds_for_range(start + selection.start..start + selection.start + 1, Bounds::default(), window, cx).is_none(), "cannot split emoji surrogate pair");
                     }
+                    let virtual_index = start + text.encode_utf16().count() + 1;
+                    let suffix = demo.bounds_for_range(virtual_index..virtual_index, Bounds::default(), window, cx)
+                        .expect("unchanged suffix must retain candidate bounds while staged");
+                    assert_eq!(suffix, surrounding.1, "suffix uses original guest metrics despite Unicode stage length");
+                    assert_eq!(demo.character_index_for_point(point(suffix.origin.x, suffix.origin.y + px(1.)), window, cx), Some(virtual_index));
                     assert_eq!(demo.text_edits, records);
                     serde_json::json!({ "runtime_powerpc": powerpc, "actual_depth": actual_depth,
+                        "surrounding_guest_index": surrounding.0, "surrounding_virtual_index": virtual_index,
+                        "surrounding_geometry_matches_guest": true,
                         "case": label, "requested_scale": requested_scale, "scale": demo.display_scale, "origin": demo.display_origin,
                         "guest_selection": demo.composition.owner().unwrap().selection,
                         "marked_selection": selection, "first_visible_index": visible,

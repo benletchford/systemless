@@ -263,6 +263,37 @@ impl GuestComposition {
 
     pub fn cancel(&mut self) { self.preedit = None; }
 
+    /// Map an untouched guest glyph position to the virtual UTF-16 document.
+    /// Positions inside the replaced guest selection have no surrounding ink.
+    pub fn surrounding_virtual_index(&self, index: usize) -> Option<usize> {
+        let owner = self.owner.as_ref()?;
+        let preedit = self.preedit.as_ref()?;
+        if index > owner.text.len() { return None; }
+        if index < owner.selection.start { return Some(index); }
+        if index >= owner.selection.end {
+            return owner.selection.start.checked_add(preedit.text.encode_utf16().count())?
+                .checked_add(index - owner.selection.end);
+        }
+        None
+    }
+
+    /// Map untouched surrounding text back to the still-painted guest record.
+    /// Stage-intersecting ranges must use separate Unicode geometry.
+    pub fn surrounding_guest_range(&self, range: std::ops::Range<usize>) -> Option<std::ops::Range<usize>> {
+        let owner = self.owner.as_ref()?;
+        let preedit = self.preedit.as_ref()?;
+        if range.start > range.end { return None; }
+        let stage_end = owner.selection.start.checked_add(preedit.text.encode_utf16().count())?;
+        let mapped = if range.end <= owner.selection.start && range.start < owner.selection.start {
+            range
+        } else if range.start >= stage_end && range.end > stage_end {
+            let start = owner.selection.end.checked_add(range.start - stage_end)?;
+            let end = owner.selection.end.checked_add(range.end - stage_end)?;
+            start..end
+        } else { return None; };
+        (mapped.end <= owner.text.len()).then_some(mapped)
+    }
+
     /// Host replacement ranges use document UTF-16 offsets. A range inside
     /// staged Unicode can be edited without changing the pinned guest range.
     /// Return the insertion offset within the resulting stage for its selection.
@@ -313,6 +344,25 @@ mod composition_tests {
             text: vec![b'a', 0x8e, b'b'], selection: 1..2 }
     }
 
+    #[test]
+    fn surrounding_ranges_keep_guest_offsets_without_crossing_unicode_stage() {
+        let mut state = GuestComposition::default();
+        let mut current = owner();
+        current.text = b"abcdef".to_vec(); current.selection = 2..4;
+        state.synchronize(Some(current));
+        assert!(state.mark("日😀", 1..3));
+        assert_eq!(state.surrounding_guest_range(0..2), Some(0..2));
+        assert_eq!(state.surrounding_guest_range(5..7), Some(4..6));
+        assert_eq!(state.surrounding_guest_range(6..6), Some(5..5));
+        assert_eq!(state.surrounding_virtual_index(1), Some(1));
+        assert_eq!(state.surrounding_virtual_index(4), Some(5));
+        assert_eq!(state.surrounding_virtual_index(6), Some(7));
+        assert_eq!(state.surrounding_virtual_index(3), None);
+        assert_eq!(state.surrounding_virtual_index(7), None);
+        for range in [2..2, 5..5, 1..3, 4..6, 7..8, 6..5] {
+            assert!(state.surrounding_guest_range(range).is_none());
+        }
+    }
     #[test]
     fn composition_keeps_unicode_preedit_and_commits_mac_roman_atomically() {
         let mut state = GuestComposition::default();
