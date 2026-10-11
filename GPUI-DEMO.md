@@ -52,6 +52,8 @@ zoom hit region; resizing still uses the guest's original lower-right hit region
 - Standard document-window buttons, checkboxes, and radio buttons use GPUI Kit
   controls over live Control Manager rectangles. A Systemless GPUI scrollbar
   draws its arrows and thumb from the guest value and range.
+- Standard popup CDEFs show GPUI closed controls using the guest's current
+  selection and live menu label. Their open dropdown and tracking stay guest-drawn.
 - Standard LDEF 0 lists use themed GPUI rows with guest-owned text, selection,
   and pointer events; custom list definitions retain their guest pixels.
 - Modern standard Open and Save panels use themed GPUI panels, lists, and
@@ -89,6 +91,14 @@ guest thumb dragging commits on release on both CPUs. Custom CDEFs and controls
 in unsupported windows retain guest pixels. Host keyboard and accessibility
 activation, drag feedback and pointer capture, and broader overlap/layout
 qualification remain unfinished.
+
+Choose **Pages → Popup & Dropdown Lists** to see resource-backed and
+programmatic standard popups. `--capture-popup-controls` saves the composed
+closed state, reviewed on [68K](tests/toolbox-showcase/reference/gpui-demo/18-popup-68k.png)
+and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/18-popup-ppc.png).
+The guest owns popup selection, disabled items, menu tracking, and return values;
+the open dropdown retains its guest pixels. Dynamic selection, host keyboard
+operation, and composed open-state captures still need qualification.
 
 The dialog overlay is limited to standard `dBoxProc` windows with button,
 static-text, checkbox, radio, and edit-text items. Editable fields retain

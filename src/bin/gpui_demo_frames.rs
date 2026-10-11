@@ -1,6 +1,7 @@
 //! Rectangular guest-frame overlays. Content pixels and input remain guest-owned.
 
 use systemless::runner::{ControlSnapshot, DialogSnapshot, ListManagerSnapshot, TextEditSnapshot, WindowFrameSnapshot};
+use systemless::menu_model::GuestMenuSnapshot;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Rect {
@@ -98,6 +99,27 @@ pub struct ControlPiece {
     pub control: usize,
     pub source: Rect,
     pub clip: Rect,
+}
+
+/// The popup's selected item remains the ControlRecord value; the label is
+/// read from the live associated MENU, including disabled selected items.
+/// MTE (1992), pp. 5-25--5-27 and 5-77.
+pub fn popup_control_label<'a>(
+    control: &ControlSnapshot,
+    menus: &'a GuestMenuSnapshot,
+) -> Option<&'a str> {
+    if !(1008..=1023).contains(&control.proc_id) {
+        return None;
+    }
+    let menu_id = control.popup_menu_id?;
+    let menu = menus.menus.iter().find(|menu| menu.id == menu_id)?;
+    let item = menu.items.iter().find(|item| item.number == control.value)?;
+    (!item.separator).then_some(item.text.as_str())
+}
+
+fn standard_control(control: &ControlSnapshot, menus: &GuestMenuSnapshot) -> bool {
+    matches!(control.proc_id, 0 | 1 | 2 | 16)
+        || popup_control_label(control, menus).is_some()
 }
 
 pub struct ListPiece {
@@ -246,6 +268,7 @@ pub fn scrollbar_drag_outline(
 /// Macintosh Toolbox Essentials (1992), pp. 5-60--5-64, 5-87--5-88.
 pub fn control_pieces(
     controls: &[ControlSnapshot],
+    menus: &GuestMenuSnapshot,
     windows: &[WindowFrameSnapshot],
     viewport: Rect,
 ) -> Vec<ControlPiece> {
@@ -268,7 +291,7 @@ pub fn control_pieces(
             if control.owner_id != frame.guest_id
                 || !control.owner_visible
                 || !control.visible
-                || !matches!(control.proc_id, 0 | 1 | 2 | 16)
+                || !standard_control(control, menus)
             {
                 continue;
             }
@@ -277,7 +300,7 @@ pub fn control_pieces(
                 other.owner_id == frame.guest_id
                     && other.owner_visible
                     && other.visible
-                    && !matches!(other.proc_id, 0 | 1 | 2 | 16)
+                    && !standard_control(other, menus)
                     && Rect::from(other.bounds).intersection(source).is_some()
             }) {
                 continue;
@@ -488,7 +511,8 @@ pub fn frame_pieces(windows: &[WindowFrameSnapshot], viewport: Rect) -> Vec<Fram
 
 #[cfg(test)]
 mod tests {
-    use super::{control_pieces, frame_pieces, gutter_pieces, list_pieces, scrollbar_drag_outline, scrollbar_geometry, text_edit_pieces, GutterKind, Rect};
+    use super::{control_pieces, frame_pieces, gutter_pieces, list_pieces, popup_control_label, scrollbar_drag_outline, scrollbar_geometry, text_edit_pieces, GutterKind, Rect};
+    use systemless::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
     use systemless::runner::{ControlSnapshot, ListManagerSnapshot, TextEditSnapshot, WindowFrameSnapshot, WindowSnapshot};
 
     fn window(
@@ -529,7 +553,37 @@ mod tests {
             minimum: 0,
             maximum: 10,
             title: String::new(),
+            popup_menu_id: None,
+            popup_title_width: None,
         }
+    }
+
+    #[test]
+    fn popup_overlay_requires_its_live_selected_menu_item() {
+        let mut popup = control(1, 1008, (80, 100, 120, 180));
+        popup.popup_menu_id = Some(143);
+        popup.value = 2;
+        let mut menus = GuestMenuSnapshot::default();
+        assert_eq!(popup_control_label(&popup, &menus), None);
+        menus.menus.push(GuestMenu {
+            id: 143,
+            title: "Loadout".into(),
+            enabled: true,
+            hierarchical: true,
+            visible_in_menu_bar: false,
+            items: vec![GuestMenuItem {
+                number: 2,
+                text: "Scout Kit".into(),
+                enabled: true,
+                checked: false,
+                key_equivalent: None,
+                submenu_id: None,
+                separator: false,
+            }],
+        });
+        assert_eq!(popup_control_label(&popup, &menus), Some("Scout Kit"));
+        menus.menus[0].items[0].separator = true;
+        assert_eq!(popup_control_label(&popup, &menus), None);
     }
 
     #[test]
@@ -542,7 +596,7 @@ mod tests {
             control(2, 99, (95, 20, 111, 150)),
             control(2, 1, (112, 20, 130, 155)),
         ];
-        let pieces = control_pieces(&controls, &[front, back], Rect::from((20, 0, 160, 180)));
+        let pieces = control_pieces(&controls, &GuestMenuSnapshot::default(), &[front, back], Rect::from((20, 0, 160, 180)));
         assert!(pieces.iter().any(|piece| piece.control == 0));
         assert!(pieces.iter().any(|piece| piece.control == 2));
         assert!(pieces.iter().all(|piece| piece.control != 1));
@@ -633,12 +687,12 @@ mod tests {
             control(1, 1, (80, 100, 120, 180)),
         ];
         let viewport = Rect::from((20, 0, 200, 260));
-        let pieces = control_pieces(&controls, &[window.clone()], viewport);
+        let pieces = control_pieces(&controls, &GuestMenuSnapshot::default(), &[window.clone()], viewport);
         assert_eq!(pieces.iter().map(|piece| piece.control).collect::<Vec<_>>(), [1, 0]);
 
         let mut controls_with_custom = controls.to_vec();
         controls_with_custom.push(control(1, 99, (105, 150, 130, 190)));
-        let pieces = control_pieces(&controls_with_custom, &[window], viewport);
+        let pieces = control_pieces(&controls_with_custom, &GuestMenuSnapshot::default(), &[window], viewport);
         assert_eq!(pieces.iter().map(|piece| piece.control).collect::<Vec<_>>(), [0]);
     }
 

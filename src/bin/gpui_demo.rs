@@ -90,6 +90,9 @@ mod desktop {
         capture_text_edit_edited: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_popup_controls: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_standard_file_save: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -269,6 +272,7 @@ mod desktop {
         mouse_down: bool,
         mouse_position: (i16, i16),
         scrollbar_drag: Option<(u32, u64, (i16, i16))>,
+        popup_tracking: Option<(u32, u64)>,
         _poll: Task<()>,
     }
 
@@ -345,6 +349,7 @@ mod desktop {
                 mouse_down: false,
                 mouse_position: (0, 0),
                 scrollbar_drag: None,
+                popup_tracking: None,
                 _poll: poll,
             }
         }
@@ -369,7 +374,7 @@ mod desktop {
                 bottom: (self.crop_top + self.height) as i32,
                 right: self.width as i32,
             };
-            super::frames::control_pieces(&self.controls, &self.windows, viewport)
+            super::frames::control_pieces(&self.controls, &self.menus, &self.windows, viewport)
                 .into_iter()
                 .find_map(|piece| {
                     let control = &self.controls[piece.control];
@@ -397,6 +402,28 @@ mod desktop {
                     (axis >= geometry.thumb_start
                         && axis < geometry.thumb_start + geometry.thumb_extent)
                         .then_some((control.guest_id, control.generation, point))
+                })
+        }
+
+        fn popup_at(&self, point: (i16, i16)) -> Option<(u32, u64)> {
+            let viewport = super::frames::Rect {
+                top: self.crop_top as i32,
+                left: 0,
+                bottom: (self.crop_top + self.height) as i32,
+                right: self.width as i32,
+            };
+            super::frames::control_pieces(&self.controls, &self.menus, &self.windows, viewport)
+                .into_iter()
+                .find_map(|piece| {
+                    let control = &self.controls[piece.control];
+                    let p = (i32::from(point.0), i32::from(point.1));
+                    (control.enabled
+                        && super::frames::popup_control_label(control, &self.menus).is_some()
+                        && p.0 >= piece.clip.top
+                        && p.0 < piece.clip.bottom
+                        && p.1 >= piece.clip.left
+                        && p.1 < piece.clip.right)
+                        .then_some((control.guest_id, control.generation))
                 })
         }
     }
@@ -547,6 +574,7 @@ mod desktop {
                         let (vertical, horizontal) = this.pointer(event.position);
                         this.mouse_position = (vertical, horizontal);
                         this.scrollbar_drag = this.scrollbar_at((vertical, horizontal));
+                        this.popup_tracking = this.popup_at((vertical, horizontal));
                         cx.notify();
                         let _ = this
                             .commands
@@ -561,6 +589,7 @@ mod desktop {
                     cx.listener(|this, event: &MouseUpEvent, _, cx| {
                         this.mouse_down = false;
                         this.scrollbar_drag = None;
+                        this.popup_tracking = None;
                         cx.notify();
                         let (vertical, horizontal) = this.pointer(event.position);
                         let _ = this.commands.send(Command::Input(MacintoshInput::MouseUp {
@@ -575,6 +604,7 @@ mod desktop {
                         if this.mouse_down {
                             this.mouse_down = false;
                             this.scrollbar_drag = None;
+                            this.popup_tracking = None;
                             cx.notify();
                             let (vertical, horizontal) = this.pointer(event.position);
                             let _ = this.commands.send(Command::Input(MacintoshInput::MouseUp {
@@ -889,8 +919,16 @@ mod desktop {
             // CDEF-owned standard controls can use Kit components while their
             // ControlRecord state and tracking remain guest-owned.
             // Macintosh Toolbox Essentials (1992), pp. 5-58--5-64.
-            for piece in super::frames::control_pieces(&self.controls, &self.windows, viewport) {
+            for piece in super::frames::control_pieces(&self.controls, &self.menus, &self.windows, viewport) {
                 let control = &self.controls[piece.control];
+                if (1008..=1023).contains(&control.proc_id)
+                    && (self.popup_tracking == Some((control.guest_id, control.generation))
+                        || control.hilite == 1)
+                {
+                    // Let the guest's live popup tracking and MDEF paint the
+                    // open state until release. MTE (1992), pp. 3-34--3-35.
+                    continue;
+                }
                 let source = piece.source;
                 let clip = piece.clip;
                 let mut overlay = div()
@@ -901,6 +939,48 @@ mod desktop {
                     .h(px(source.height() as f32))
                     .bg(cx.theme().background);
                 match control.proc_id {
+                    proc_id if (1008..=1023).contains(&proc_id) => {
+                        let Some(selected) = super::frames::popup_control_label(control, &self.menus) else {
+                            continue;
+                        };
+                        let title_width = i32::from(control.popup_title_width.unwrap_or(0))
+                            .clamp(0, source.width().saturating_sub(20));
+                        overlay = overlay
+                            .flex()
+                            .items_center()
+                            .child(
+                                div()
+                                    .w(px(title_width as f32))
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .text_size(px(12.))
+                                    .text_color(if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })
+                                    .child(control.title.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .h_full()
+                                    .min_w(px(1.))
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .bg(cx.theme().secondary)
+                                    .flex()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(1.))
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .px_1()
+                                            .text_size(px(12.))
+                                            .text_color(if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })
+                                            .child(selected.to_owned()),
+                                    )
+                                    .child(div().w(px(18.)).flex().items_center().justify_center().child("▾")),
+                            );
+                    }
                     0 => {
                         overlay = overlay.child(
                             Button::new(format!(
@@ -1811,6 +1891,7 @@ mod desktop {
         TextEdit,
         TextEditSelected,
         TextEditEdited,
+        PopupControls,
         StandardFileSave,
         StandardFileSaveComposed,
         StandardFileOpenComposed,
@@ -1839,6 +1920,7 @@ mod desktop {
             capture,
             CaptureCase::TextEdit | CaptureCase::TextEditSelected | CaptureCase::TextEditEdited
         );
+        let popup_page = matches!(capture, CaptureCase::PopupControls);
         let standard_file_save = matches!(
             capture,
             CaptureCase::StandardFileSave
@@ -1877,6 +1959,8 @@ mod desktop {
             (129, 9)
         } else if text_edit_page {
             (129, 7)
+        } else if popup_page {
+            (129, 16)
         } else if controls_page {
             (129, 2)
         } else {
@@ -1987,6 +2071,14 @@ mod desktop {
                 }));
             }
             Vec::new()
+        } else if popup_page {
+            assert!((0..300).any(|_| {
+                session.runner_mut().run_steps(100_000, None);
+                session.runner_mut().control_snapshot().iter().any(|control| {
+                    control.visible && control.popup_menu_id == Some(143)
+                })
+            }));
+            Vec::new()
         } else if text_edit_page {
             assert!((0..300).any(|_| {
                 session.runner_mut().run_steps(100_000, None);
@@ -2041,7 +2133,7 @@ mod desktop {
                 .expect("About alert should become visible")
         };
         let windows = session.runner_mut().window_frame_snapshot();
-        if !controls_page && !lists_page && !text_edit_page && !standard_file_page {
+        if !controls_page && !lists_page && !text_edit_page && !popup_page && !standard_file_page {
             assert!(standard_dbox_dialog(&dialogs, &windows).is_some());
         }
         if controls_changed {
@@ -2409,6 +2501,17 @@ mod desktop {
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_popup_controls.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::PopupControls,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_standard_file_save.as_ref() {
             capture_fixture_screen(
                 &args.game,
@@ -2552,6 +2655,7 @@ mod desktop {
                         capture_text_edit: None,
                         capture_text_edit_selected: None,
                         capture_text_edit_edited: None,
+                        capture_popup_controls: None,
                         capture_standard_file_save: None,
                         capture_standard_file_save_composed: None,
                         capture_standard_file_open_composed: None,
@@ -2866,6 +2970,49 @@ mod desktop {
                         .value,
                     dragged_bar.value
                 );
+            }
+        }
+
+        #[test]
+        fn popup_controls_link_live_guest_menus_on_both_cpus() {
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session
+                    .load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("tests/toolbox-showcase/toolbox-showcase.sit"))
+                    .unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 16));
+                wait_for_menu(&mut session, 129, 16, true);
+                let controls = (0..100)
+                    .find_map(|_| {
+                        session.runner_mut().run_steps(100_000, None);
+                        let controls = session.runner_mut().control_snapshot();
+                        controls.iter().any(|control| control.visible && (1008..=1023).contains(&control.proc_id))
+                            .then_some(controls)
+                    })
+                    .expect("popup page should expose a standard CDEF control");
+                let menus = session.runner_mut().guest_menu_snapshot();
+                for (id, title, width) in [(143, "Loadout:", 60), (144, "Theme:", 52)] {
+                    let control = controls.iter().find(|control| {
+                        control.visible && control.popup_menu_id == Some(id)
+                    }).unwrap_or_else(|| panic!("standard popup menu {id} should be visible"));
+                    assert!((1008..=1023).contains(&control.proc_id));
+                    assert_eq!(control.title, title);
+                    assert_eq!(control.popup_title_width, Some(width));
+                    assert_eq!(control.value, 1);
+                    let menu = menus.menus.iter().find(|menu| menu.id == id)
+                        .expect("popup should reference its live guest menu");
+                    assert!(!menu.visible_in_menu_bar);
+                    assert!(!menu.items.is_empty());
+                    assert!(menu.items[0].enabled);
+                    assert_eq!(
+                        super::super::frames::popup_control_label(control, &menus),
+                        Some(menu.items[0].text.as_str()),
+                    );
+                }
             }
         }
 
@@ -4182,6 +4329,8 @@ mod desktop {
                         minimum: 0,
                         maximum: 1,
                         title: "Checkbox".into(),
+                        popup_menu_id: None,
+                        popup_title_width: None,
                     }];
                     demo.width = 800;
                     demo.height = 580;
