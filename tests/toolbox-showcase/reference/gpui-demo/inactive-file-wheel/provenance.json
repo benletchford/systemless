@@ -1,0 +1,5 @@
+{
+  "base_head": "9fd8c9fc",
+  "source_sha256": "53232ccaa76d97445e4117f0f615077dd9759f910f7962bb49af19b5ba97bcd0",
+  "scope": "Simulated host-active/inactive GPUI wheel dispatch and real Save guest scrolling across four CPU/depth modes; fractional remainder cleared by inactive event. Existing GPUI control-wheel regression and production check pass. No physical host observer qualification."
+}

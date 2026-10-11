@@ -1566,7 +1566,7 @@ mod desktop {
                         return;
                     }
                     if event.touch_phase == TouchPhase::Started { this.wheel.reset(); }
-                    if this.mouse_down || !this.open_menus.is_empty() || this.guest_menu_tracking {
+                    if this.host_active == Some(false) || this.mouse_down || !this.open_menus.is_empty() || this.guest_menu_tracking {
                         this.wheel.reset();
                         return;
                     }
@@ -12237,11 +12237,18 @@ mod desktop {
                         demo.width = 800; demo.height = 600; demo.standard_file = Some(before.clone());
                     });
                     window.render_frame(cx);
+                    view.update(cx, |demo, _| demo.host_active = Some(true));
                     let position = view.update(cx, |demo, _| gpui_kit::point(
                         gpui_kit::px(demo.display_origin.0 + f32::from(point.1) * demo.display_scale),
                         gpui_kit::px(demo.display_origin.1 + f32::from(point.0) * demo.display_scale)));
                     let event = ScrollWheelEvent { position, delta: ScrollDelta::Lines(gpui_kit::point(0., -0.5)),
                         modifiers: Default::default(), touch_phase: TouchPhase::Moved };
+                    window.dispatch_event(event.clone().to_platform_input(), cx);
+                    assert!(!receiver.try_iter().any(|command| matches!(command, super::Command::FileWheel(..))));
+                    view.update(cx, |demo, _| demo.host_active = Some(false));
+                    window.dispatch_event(event.clone().to_platform_input(), cx);
+                    assert!(!receiver.try_iter().any(|command| matches!(command, super::Command::FileWheel(..))));
+                    view.update(cx, |demo, _| demo.host_active = Some(true));
                     window.dispatch_event(event.clone().to_platform_input(), cx);
                     assert!(!receiver.try_iter().any(|command| matches!(command, super::Command::FileWheel(..))));
                     window.dispatch_event(event.to_platform_input(), cx);
@@ -12319,6 +12326,7 @@ mod desktop {
                     demo.menus = session.runner_mut().guest_menu_snapshot();
                 });
                 window.render_frame(cx);
+                view.update(cx, |demo, _| demo.host_active = Some(true));
                 let position = view.update(cx, |demo, _| gpui_kit::point(
                     gpui_kit::px(demo.display_origin.0 + 300. * demo.display_scale),
                     gpui_kit::px(demo.display_origin.1 + 368. * demo.display_scale),
