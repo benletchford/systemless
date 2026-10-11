@@ -2919,70 +2919,14 @@ impl super::TrapDispatcher {
             }
         }
 
-        let glyph_y = y.saturating_add(style.glyph_y_offset() as i16);
-        let base_pixels =
-            crate::quickdraw::text::styled_glyph_base_pixels(x, glyph_y, glyph, data, synthetic_italic, style);
-
-        let Some(smear_max) = style.smear_max() else {
-            for (px, py) in base_pixels.iter().copied() {
-                if !inside(px, py) {
-                    continue;
-                }
+        for (px, py) in crate::quickdraw::text::styled_glyph_pixels(
+            x, y, glyph, data, synthetic_italic, style,
+        ) {
+            if inside(px, py) {
                 Self::fb_set_styled_text_pixel(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    px,
-                    py,
-                    pixel_index_override,
-                    black,
+                    bus, screen_base, row_bytes, pixel_size, screen_width, screen_height,
+                    px, py, pixel_index_override, black,
                 );
-            }
-            bus.end_outline_glyph();
-            return i16::try_from(style.glyph_advance(i32::from(glyph.advance))).unwrap_or(i16::MAX);
-        };
-
-        // QuickDraw outlines/shadows text by smearing a 1-bit glyph mask,
-        // then XORing the original glyph out of the result. That produces
-        // hollow outline and shadow faces instead of drawing offset filled
-        // glyph copies.
-        let smear_max = i16::try_from(smear_max).unwrap_or(1);
-        let min_x = base_pixels.iter().map(|(px, _)| *px).min().unwrap_or(x) - 1;
-        let max_x = base_pixels.iter().map(|(px, _)| *px).max().unwrap_or(x) + smear_max;
-        let min_y = base_pixels.iter().map(|(_, py)| *py).min().unwrap_or(y) - 1;
-        let max_y = base_pixels.iter().map(|(_, py)| *py).max().unwrap_or(y) + smear_max;
-
-        for py in min_y..=max_y {
-            for px in min_x..=max_x {
-                if base_pixels.contains(&(px, py)) {
-                    continue;
-                }
-                let mut smeared = false;
-                'smear: for dy in -1..=smear_max {
-                    for dx in -1..=smear_max {
-                        if base_pixels.contains(&(px - dx, py - dy)) {
-                            smeared = true;
-                            break 'smear;
-                        }
-                    }
-                }
-                if smeared && inside(px, py) {
-                    Self::fb_set_styled_text_pixel(
-                        bus,
-                        screen_base,
-                        row_bytes,
-                        pixel_size,
-                        screen_width,
-                        screen_height,
-                        px,
-                        py,
-                        pixel_index_override,
-                        black,
-                    );
-                }
             }
         }
 
@@ -8650,6 +8594,49 @@ mod redraw_chrome_tests {
                 .count()
         };
         assert!(painted < unclipped, "the clip removed something");
+    }
+
+    #[test]
+    fn frontend_styled_ink_matches_guest_framebuffer_for_every_face() {
+        use std::collections::HashSet;
+        let (mut dispatcher, mut bus, base) = text_fixture();
+        let black = TrapDispatcher::logical_black_pixel_index(&bus);
+        let bytes = [b'W', b' ', b'i', 0x8e];
+        let text: String = bytes.iter().map(|&byte| byte as char).collect();
+        for (font, size) in [(0, 12), (3, 9), (3, 12)] {
+            for face in 0..128u8 {
+                bus.fill_bytes(base, 800 * 600, 0x11);
+                let advance = TrapDispatcher::fb_draw_string_styled_index(
+                    &mut bus, base, 800, 8, 800, 600, 40, 40,
+                    &text, font, size, face, black,
+                );
+                let mut expected = HashSet::new();
+                let mut pen = 40i32;
+                for &byte in &bytes {
+                    let (width, ink) = crate::quickdraw::text::classic_styled_glyph(font, size, byte, face);
+                    expected.extend(ink.into_iter().map(|(x, y)| (pen + i32::from(x), 40 + i32::from(y))));
+                    pen += width;
+                }
+                if face & 4 != 0 {
+                    for y in 1..=crate::quickdraw::text::get_underline_thickness(font, size).max(1) {
+                        expected.extend((40..pen).map(|x| (x, 40 + i32::from(y))));
+                    }
+                }
+                assert_eq!(i32::from(advance), pen - 40, "font {font}/{size}, face {face}");
+                let actual: HashSet<_> = screen_bytes(&bus, base).into_iter().enumerate()
+                    .filter(|(_, pixel)| *pixel == black)
+                    .map(|(index, _)| ((index % 800) as i32, (index / 800) as i32)).collect();
+                assert_eq!(actual, expected, "font {font}/{size}, face {face}");
+                dispatcher.tx_font = font;
+                dispatcher.tx_size = size;
+                dispatcher.tx_face = i16::from(face);
+                let layout = dispatcher.dialog_static_text_layout(&bus, 0, 0, (0, 0, 40, 200))
+                    .expect("exact styled strike must expose statText layout");
+                assert_eq!(layout.face, face);
+                assert_eq!(layout.wrap_advance_extra, dispatcher.advance_extra());
+                assert_eq!(layout.font, (font, size));
+            }
+        }
     }
 
     #[test]

@@ -827,7 +827,7 @@ mod tests {
             visible: true, active: true, default_item: Some(1),
             cancel_item: None, edit_field: None,
             items: vec![DialogItemSnapshot {
-                static_text_layout: Some(systemless::runner::DialogStaticTextLayout { font: (0, 0), origin: (1, 12), line_height: 16, inclusive_bottom: false }),
+                static_text_layout: Some(systemless::runner::DialogStaticTextLayout { wrap_advance_extra: 0, face: 0, font: (0, 0), origin: (1, 12), line_height: 16, inclusive_bottom: false }),
                 control_identity: Some((10, 1)),
                 pressed: false, number: 1, kind: DialogItemKind::Button,
                 bounds: (90, 90, 110, 180), text: "OK".into(),
@@ -892,7 +892,7 @@ mod tests {
             cancel_item: None,
             edit_field: None,
             items: vec![DialogItemSnapshot {
-                static_text_layout: Some(systemless::runner::DialogStaticTextLayout { font: (0, 0), origin: (1, 12), line_height: 16, inclusive_bottom: false }),
+                static_text_layout: Some(systemless::runner::DialogStaticTextLayout { wrap_advance_extra: 0, face: 0, font: (0, 0), origin: (1, 12), line_height: 16, inclusive_bottom: false }),
                 control_identity: None,
                 pressed: false,
                 number: 1,

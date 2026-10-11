@@ -43,6 +43,32 @@ mod tests {
     }
 
     #[test]
+    fn styled_line_preserves_guest_advances_and_full_line_underline() {
+        use std::collections::BTreeSet;
+        for face in 0..128 {
+            let bytes = b"A i\x8e";
+            let line = ClassicLine::styled(bytes, 3, 12, face);
+            let mut expected = BTreeSet::new();
+            let mut positions = vec![0];
+            let mut pen = 0;
+            for &byte in bytes {
+                let (advance, pixels) = systemless::quickdraw::text::classic_styled_glyph(3, 12, byte, face);
+                expected.extend(pixels.into_iter().map(|(x, y)| (pen + i32::from(x), i32::from(y))));
+                pen += advance;
+                positions.push(pen);
+            }
+            if face & 4 != 0 {
+                expected.extend((0..pen).map(|x| (x, 1)));
+            }
+            let painted: BTreeSet<_> = line.ink.iter().flat_map(|&(x, y, width)| {
+                (x..x + width).map(move |px| (px, y))
+            }).collect();
+            assert_eq!(line.positions, positions, "face {face}");
+            assert_eq!(painted, expected, "face {face}");
+        }
+    }
+
+    #[test]
     fn file_name_abbreviation_preserves_guest_character_boundary() {
         assert_eq!(file_row_name("é£πAB", Some(3)), "é£π...");
         assert_eq!(file_row_name("é£π", Some(3)), "é£π");
@@ -209,6 +235,36 @@ impl ClassicLine {
                 systemless::quickdraw::text::get_glyph(font, point_size, *byte as char)
             }),
         )
+    }
+
+    /// Exact guest strike and QuickDraw style synthesis. Underline spans the
+    /// complete line, including spaces, just as the framebuffer painter does.
+    pub fn styled(bytes: &[u8], font: i16, point_size: i16, face: u8) -> Self {
+        let mut result = Self { positions: vec![0], ink: Vec::new() };
+        let mut pen = 0;
+        for &byte in bytes {
+            let (advance, pixels) = systemless::quickdraw::text::classic_styled_glyph(
+                font, point_size, byte, face,
+            );
+            for (x, y) in pixels {
+                let (x, y) = (pen + i32::from(x), i32::from(y));
+                if let Some(last) = result.ink.last_mut() {
+                    if last.1 == y && last.0 + last.2 == x {
+                        last.2 += 1;
+                        continue;
+                    }
+                }
+                result.ink.push((x, y, 1));
+            }
+            pen += advance;
+            result.positions.push(pen);
+        }
+        if face & 4 != 0 && pen > 0 {
+            for y in 1..=systemless::quickdraw::text::get_underline_thickness(font, point_size).max(1) {
+                result.ink.push((0, i32::from(y), pen));
+            }
+        }
+        result
     }
 
     /// HLE labels may include guest-drawn symbols outside Mac Roman, such as
@@ -391,7 +447,7 @@ pub(crate) fn classic_file_prompt(
     scale: f32,
     foreground: gpui_kit::Hsla,
 ) -> impl gpui_kit::IntoElement {
-    classic_wrapped_text(text, (0, 12), (0, 12, 16), false, scale, foreground)
+    classic_wrapped_text(text, (0, 12), 0, 0, (0, 12, 16), false, scale, foreground)
 }
 
 pub(crate) fn classic_directory_label(
@@ -404,6 +460,8 @@ pub(crate) fn classic_directory_label(
     classic_wrapped_text(
         text,
         (font.0, font.1),
+        font.2,
+        0,
         layout,
         layout.0 != 0,
         scale,
@@ -415,13 +473,15 @@ pub(crate) fn classic_dialog_static_text(
     text: &str, layout: &systemless::runner::DialogStaticTextLayout,
     scale: f32, foreground: gpui_kit::Hsla,
 ) -> impl gpui_kit::IntoElement {
-    classic_wrapped_text(text, layout.font, (layout.origin.0, layout.origin.1, layout.line_height),
+    classic_wrapped_text(text, layout.font, layout.face, layout.wrap_advance_extra, (layout.origin.0, layout.origin.1, layout.line_height),
         layout.inclusive_bottom, scale, foreground)
 }
 
 fn classic_wrapped_text(
     text: &str,
     guest_font: (i16, i16),
+    face: u8,
+    wrap_advance_extra: i16,
     layout: (i16, i16, i16),
     inclusive_bottom: bool,
     scale: f32,
@@ -442,14 +502,15 @@ fn classic_wrapped_text(
                 .clamp(1., i16::MAX as f32) as i16;
             let lines =
                 systemless::quickdraw::text::wrap_classic_text(&bytes, width, |index, _| {
-                    (advances[index + 1] - advances[index]) as i16
+                    (advances[index + 1] - advances[index]) as i16 + wrap_advance_extra
                 })
                 .into_iter()
                 .map(|line| {
-                    ClassicLine::plain(
+                    ClassicLine::styled(
                         &bytes[line.start..line.visible_end],
                         guest_font.0,
                         guest_font.1,
+                        face,
                     )
                 })
                 .collect::<Vec<_>>();

@@ -595,10 +595,20 @@ pub fn classic_styled_glyph(
     let Some((glyph, data, italic)) = hit else {
         return (6, Vec::new());
     };
+    let mut ink = styled_glyph_pixels(0, 0, glyph, data, italic, style).into_iter().collect::<Vec<_>>();
+    ink.sort_unstable_by_key(|&(x, y)| (y, x));
+    (style.glyph_advance(i32::from(glyph.advance)), ink)
+}
+
+/// Shared guest/GPUI glyph mask, including hollow outline and shadow synthesis.
+pub(crate) fn styled_glyph_pixels(
+    x: i16, y: i16, glyph: &Glyph, data: &[u8],
+    synthetic_italic: Option<(i16, i16)>, style: QuickDrawTextStyle,
+) -> std::collections::HashSet<(i16, i16)> {
     let base = styled_glyph_base_pixels(
-        0, style.glyph_y_offset() as i16, glyph, data, italic, style,
+        x, y.saturating_add(style.glyph_y_offset() as i16), glyph, data, synthetic_italic, style,
     );
-    let mut ink = if let Some(smear) = style.smear_max() {
+    let ink = if let Some(smear) = style.smear_max() {
         let smear = smear as i16;
         let mut expanded = std::collections::HashSet::new();
         for &(x, y) in &base {
@@ -611,10 +621,9 @@ pub fn classic_styled_glyph(
                 }
             }
         }
-        expanded.into_iter().collect::<Vec<_>>()
+        expanded
     } else {
-        base.into_iter().collect()
+        base
     };
-    ink.sort_unstable_by_key(|&(x, y)| (y, x));
-    (style.glyph_advance(i32::from(glyph.advance)), ink)
+    ink
 }

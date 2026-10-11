@@ -691,6 +691,9 @@ pub struct DialogItemSnapshot {
 #[doc(hidden)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DialogStaticTextLayout {
+    /// Wrapping measures the current port face, independently of item style.
+    pub wrap_advance_extra: i16,
+    pub face: u8,
     pub font: (i16, i16),
     pub origin: (i16, i16),
     pub line_height: i16,

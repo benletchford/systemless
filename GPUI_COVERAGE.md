@@ -2581,3 +2581,19 @@ Roman bytes (passes, 0.07 seconds); default and JIT/headless checks also pass.
 Styled field replacement, complete style-mask parity, scale behavior and CPU
 capture evidence are still unfinished. This groundwork does not enable styled
 text replacement or establish native Macintosh font fidelity.
+
+The styled-ink follow-up now uses the same complete binary mask synthesis in
+QuickDraw and GPUI statText, including intrinsic/synthetic italics, bold, hollow
+outline/shadow, condensed/extended advances and full-line underlining. Exact
+68k statText strikes with face values can be replaced; item colour overrides and
+missing exact strikes keep guest pixels. PPC statText still reports its guest's
+fixed plain face. Wrapping preserves the guest's separate current-port advance
+adjustment rather than inferring measurement from the item's drawing face.
+The shared helper matches framebuffer pixels and advances for all 128 face
+combinations over Chicago 12 and Geneva 9/12, including Mac Roman (1.66 seconds).
+GPUI span/underline coverage passes all faces (0.17 seconds), and guest clipping
+passes (0.19 seconds). These tests establish current guest-renderer parity;
+style-specific composed captures, paint-time font mutation, CPU/scale/activation
+coverage, styled TextEdit, colour styles and native font fidelity remain open.
+Default and JIT/headless checks pass, as does the existing monochrome 68k,
+colour 68k and PPC dialog identity/layout regression (4.50 seconds).
