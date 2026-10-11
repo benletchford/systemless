@@ -196,7 +196,12 @@ On both CPUs the composed image differs from its unchecked capture only
 inside the checkbox's 28-by-28-pixel rendered area.
 
 Standard unstyled document TextEdit now uses a read-only GPUI overlay with
-guest-defined line breaks, scroll origin, selection, and insertion point. Eligibility requires retained evidence from an actual guest draw, matching framebuffer pixels, and the visible/clip regions at draw time. Retaining a TEHandle after changing pages does not display stale text. The same check covers monochrome and colour 68K and the PowerPC presented framebuffer.
+guest-defined line breaks, scroll origin, baseline, selection, and insertion
+point. It paints shared QuickDraw font-strike ink and advances through GPUI,
+without host font shaping or a size clamp. Guest resources and explicit font
+overrides take precedence over bundled outlines; matching runtime drawing does
+not establish original Apple bitmap fidelity. Substituted strikes requiring
+rescaling retain guest pixels until qualified. Eligibility requires retained evidence from an actual guest draw, matching framebuffer pixels, and the visible/clip regions at draw time. Retaining a TEHandle after changing pages does not display stale text. The same check covers monochrome and colour 68K and the PowerPC presented framebuffer.
 Styled and justified records, dialog TextEdit with multiline layouts, and
 records overlapping custom controls retain guest pixels. The runner forwards
 ordinary ASCII keys and arrows to the guest; the guest owns typing, focus,

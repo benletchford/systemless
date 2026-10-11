@@ -1667,7 +1667,8 @@ mod desktop {
                             record.selection.0.saturating_sub(line_start).min(line_end - line_start),
                             record.selection.1.saturating_sub(line_start).min(line_end - line_start),
                         );
-                        let (before, selected, after) = save_name_segments(&line, selection, record.active);
+                        let bytes = &record.text[line_start..line_end];
+                        let glyphs = super::text::ClassicLine::plain(bytes, record.font, record.size);
                         let soft_wrap_end = index + 2 < starts.len() && starts[index + 1] == line_end;
                         let caret = record.active && record.caret_visible && record.selection.0 == record.selection.1
                             && record.selection.0 >= line_start
@@ -1682,19 +1683,11 @@ mod desktop {
                                 .w(guest_px(dest.width().max(1) as f32))
                                 .h(guest_px(f32::from(record.line_height)))
                                 .overflow_hidden()
-                                .flex()
-                                .items_center()
-                                .text_size(guest_px(f32::from(record.size.clamp(9, 18))))
-                                .child(before)
-                                .when(caret, |row| row.child(
-                                    div().relative().w(px(0.)).h(guest_px(f32::from(record.line_height.max(1))))
-                                        .child(div().absolute().left_0().top_0().w(guest_px(1.)).h_full()
-                                            .bg(cx.theme().foreground))
-                                ))
-                                .when(!selected.is_empty(), |row| row.child(
-                                    div().bg(cx.theme().selection).child(selected)
-                                ))
-                                .child(after),
+                                .child(super::text::classic_line(
+                                    glyphs, record.font_ascent, record.line_height,
+                                    if record.active { selection } else { (0, 0) }, caret,
+                                    self.display_scale, cx.theme().foreground, cx.theme().selection,
+                                )),
                         );
                     }
                     screen = screen.child(
@@ -6553,11 +6546,26 @@ mod desktop {
                 assert!(first.global_dest_rect.is_some());
                 assert!(!first.styled);
                 assert!(first.line_height > 0 && first.size > 0);
+                assert!(first.font_ascent > 0 && first.font_ascent <= first.line_height);
                 let starts = first.line_starts.as_ref().expect("TextEdit should expose guest lines");
                 assert_eq!(starts.first(), Some(&0));
                 assert_eq!(starts.last(), Some(&first.text.len()));
                 assert_eq!(starts.len(), first.line_count + 1);
                 assert_eq!(first.display_lines().unwrap().len(), first.line_count);
+                // The GPUI binary-ink layout must agree with the guest TEClick
+                // insertion geometry, not merely its own paint calculations.
+                let end = starts[1].min(first.text.len());
+                let line = super::super::text::ClassicLine::plain(&first.text[..end], first.font, first.size);
+                let dest = first.global_dest_rect.unwrap();
+                let horizontal = dest.1 + line.positions[3] as i16;
+                let vertical = dest.0 + first.font_ascent;
+                session.deliver_input(MacintoshInput::MouseDown { vertical, horizontal });
+                for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
+                session.deliver_input(MacintoshInput::MouseUp { vertical, horizontal });
+                settle(&mut session);
+                let clicked = session.runner_mut().text_edit_snapshot().records.into_iter()
+                    .find(|record| record.guest_id == first.guest_id).unwrap();
+                assert_eq!(clicked.selection, (3, 3), "painted guest glyph boundary, PPC={powerpc}, depth={depth:?}");
                 settle(&mut session);
                 let next = session
                     .runner_mut()
@@ -7250,6 +7258,92 @@ mod desktop {
             assert!(commands.iter().any(|command| matches!(command,
                 super::Command::Input(MacintoshInput::KeyDown { character: b'x', .. })
             )), "cancelled menus must restore guest keyboard input");
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn classic_document_glyph_clicks_reach_guest_at_scene_scales(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::{test::TestWindowExt, AppContext, InputEvent, MouseButton, MouseDownEvent, MouseUpEvent};
+            cx.update(gpui_kit::init);
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 7));
+                wait_for_menu(&mut session, 129, 7, true);
+                settle(&mut session);
+                for scale in [0.75, 1., 1.5, 2.] {
+                    let (sender, receiver) = std::sync::mpsc::channel();
+                    let (window, view) = cx.update(|cx| {
+                        gpui_kit::open_window(gpui_kit::WindowOptions {
+                            // Explicit test bounds: Bounds::centered clamps to
+                            // the mock display and would silently reduce 2x.
+                            window_bounds: Some(gpui_kit::WindowBounds::Windowed(gpui_kit::Bounds::new(
+                                gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)),
+                                gpui_kit::size(gpui_kit::px(800. * scale), gpui_kit::px(600. * scale))))),
+                            ..Default::default()
+                        }, cx, |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap()
+                    });
+                    for (line_index, offset) in [(0, 3), (1, 2)] {
+                        let records = session.runner_mut().text_edit_snapshot().records;
+                        let record = records.iter().find(|record| record.view_rect == (76, 34, 211, 326)).unwrap();
+                        let starts = record.line_starts.as_ref().unwrap();
+                        let layout = super::super::text::ClassicLine::plain(
+                            &record.text[starts[line_index]..starts[line_index + 1]], record.font, record.size);
+                        let dest = record.global_dest_rect.unwrap();
+                        let guest_x = i32::from(dest.1) + layout.positions[offset];
+                        let guest_y = i32::from(dest.0) + line_index as i32 * i32::from(record.line_height)
+                            + i32::from(record.font_ascent);
+                        for down in [true, false] {
+                            cx.update_window(window.into(), |_, window, cx| {
+                                view.update(cx, |demo, cx| {
+                                    demo.width = 800;
+                                    demo.height = 600;
+                                    demo.windows = session.runner_mut().window_frame_snapshot();
+                                    demo.controls = session.runner_mut().control_snapshot();
+                                    demo.text_edits = records.clone();
+                                    demo.image = Some(std::sync::Arc::new(gpui_kit::RenderImage::new(vec![
+                                        image::Frame::new(image::RgbaImage::new(800, 600))
+                                    ])));
+                                    cx.notify();
+                                });
+                                window.render_frame(cx);
+                                let position = view.update(cx, |demo, _| {
+                                    assert!((demo.display_scale - scale).abs() < 0.01,
+                                        "expected scale {scale}, got {}, viewport {:?}", demo.display_scale, window.viewport_size());
+                                    gpui_kit::point(
+                                        gpui_kit::px(demo.display_origin.0 + (guest_x as f32 + 0.25) * scale),
+                                        gpui_kit::px(demo.display_origin.1 + (guest_y as f32 + 0.25) * scale))
+                                });
+                                let event = if down {
+                                    MouseDownEvent { position, button: MouseButton::Left, click_count: 1, ..Default::default() }.to_platform_input()
+                                } else {
+                                    MouseUpEvent { position, button: MouseButton::Left, click_count: 1, ..Default::default() }.to_platform_input()
+                                };
+                                window.dispatch_event(event, cx);
+                            }).unwrap();
+                            let mut delivered = 0;
+                            for command in receiver.try_iter() {
+                                if let super::Command::Input(input) = command {
+                                    session.deliver_input(input);
+                                    delivered += 1;
+                                }
+                            }
+                            assert_eq!(delivered, 1);
+                            for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
+                        }
+                        settle(&mut session);
+                        let clicked = session.runner_mut().text_edit_snapshot().records.into_iter()
+                            .find(|next| next.guest_id == record.guest_id).unwrap();
+                        let expected = starts[line_index] + offset;
+                        assert_eq!(clicked.selection, (expected, expected),
+                            "PPC={powerpc}, depth={depth:?}, scale={scale}, line={line_index}");
+                    }
+                }
+            }
         }
 
         #[cfg(feature = "gpui-demo-test")]

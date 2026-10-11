@@ -25,8 +25,8 @@
 Systemless reimplements the classic Mac Toolbox and operating-system APIs in
 Rust, allowing original 68K and PowerPC Macintosh software to run without a ROM
 image, a System installation, or hardware emulation. On macOS, classic
-applications keep their own identity: guest menus appear in the native menu bar,
-while the guest application name and icon integrate with the Dock.
+applications keep their own identity: GPUI presents guest menus and recognized
+system UI, while the guest application name and icon integrate with the Dock.
 
 ## Try it in your browser
 
