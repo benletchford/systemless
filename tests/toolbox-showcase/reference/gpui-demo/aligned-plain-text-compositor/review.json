@@ -1,0 +1,68 @@
+{
+  "result": "Eight actual-guest shared Demo captures completed and visually reviewed",
+  "cases": [
+    {
+      "case": "mono-center-active",
+      "depth": 1,
+      "scale": 0.75,
+      "reviewed": true,
+      "active": true
+    },
+    {
+      "case": "mono-right-inactive",
+      "depth": 1,
+      "scale": 0.75,
+      "reviewed": true,
+      "active": false
+    },
+    {
+      "case": "colour-center-active",
+      "depth": 8,
+      "scale": 1,
+      "reviewed": true,
+      "active": true
+    },
+    {
+      "case": "colour-right-inactive",
+      "depth": 8,
+      "scale": 1,
+      "reviewed": true,
+      "active": false
+    },
+    {
+      "case": "ppc8-center-active",
+      "depth": 8,
+      "scale": 2,
+      "reviewed": true,
+      "active": true
+    },
+    {
+      "case": "ppc8-right-inactive",
+      "depth": 8,
+      "scale": 2,
+      "reviewed": true,
+      "active": false
+    },
+    {
+      "case": "ppc16-center-active",
+      "depth": 16,
+      "scale": 1.5,
+      "reviewed": true,
+      "active": true
+    },
+    {
+      "case": "ppc16-right-inactive",
+      "depth": 16,
+      "scale": 1.5,
+      "reviewed": true,
+      "active": false
+    }
+  ],
+  "findings": "Smooth recognized original-font field ink, center/right alignment and clipping; selection visible for active center, hidden for suspended right. App-drawn headings retain bitmap rendering; mono black custom panels retained.",
+  "limitations": [
+    "Not an independent Macintosh oracle or physical host input test.",
+    "This is paired center-active/right-inactive coverage, not every combination of alignment, state and scale.",
+    "Guest field is selected; collapsed caret, scrolling and marked staging remain separate evidence requirements.",
+    "Alignment radio indicator remains Left in guest snapshots even though TERec and inspector mode change; no guest-drawn content altered to conceal this."
+  ]
+}

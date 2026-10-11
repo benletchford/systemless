@@ -1,0 +1,9 @@
+{
+  "binary_sha256": "050d736c1094119e919a513bf2caf8912dd839315a91b86e4cf62397ef608c20",
+  "fixture_sha256": "28433983ced239f85c319718528a19c558adb0b355c5e28e0daf9b1a1e824aa8",
+  "sources": {
+    "src/bin/gpui_demo.rs": "52c05cca8bc51f0e9fba5803d4fc06b1b20318b2b7cd04e43a27e4b9ba65d945",
+    "src/bin/gpui_demo_frames.rs": "296b392906d9a4dd84a80e0e459bbf5ddc29a86473d82d379c53a3b9da8f188e",
+    "src/bin/gpui_demo_composition.rs": "64cd97f7f5bc34a3b55a29207f213fee4b6e987d625fd835cf8003d0a64c4840"
+  }
+}

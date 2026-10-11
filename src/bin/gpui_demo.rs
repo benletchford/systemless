@@ -247,6 +247,12 @@ mod desktop {
         #[arg(long, hide = true)]
         capture_text_edit: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, requires = "capture_text_edit", value_parser = ["center", "right"])]
+        capture_text_alignment: Option<String>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, requires = "capture_text_alignment")]
+        capture_text_aligned_inactive: bool,
+        #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_styled_text_edit_ink: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
@@ -3405,6 +3411,7 @@ mod desktop {
         ListsMutated,
         ListsResized,
         TextEdit,
+        TextEditAligned { justification: i16, suspended: bool },
         TextEditSelected,
         TextEditEdited,
         TextEditInactive,
@@ -3592,7 +3599,7 @@ mod desktop {
             | CaptureCase::ListsScrolled | CaptureCase::ListsInactive | CaptureCase::ListsReactivated | CaptureCase::ListsMutated | CaptureCase::ListsResized);
         let text_edit_page = matches!(
             capture,
-            CaptureCase::TextEdit | CaptureCase::TextEditSelected | CaptureCase::TextEditEdited | CaptureCase::TextEditInactive | CaptureCase::TextEditReactivated | CaptureCase::TextEditHostSuspended | CaptureCase::TextEditHostResumed
+            CaptureCase::TextEdit | CaptureCase::TextEditAligned { .. } | CaptureCase::TextEditSelected | CaptureCase::TextEditEdited | CaptureCase::TextEditInactive | CaptureCase::TextEditReactivated | CaptureCase::TextEditHostSuspended | CaptureCase::TextEditHostResumed
         );
         let popup_page = matches!(
             capture,
@@ -4731,7 +4738,7 @@ mod desktop {
                 .map(|c| (c.popup_menu_id, c.hilite, c.popup_ink)).collect::<Vec<_>>());
         }
         let lists = session.runner_mut().list_manager_snapshot();
-        if matches!(capture, CaptureCase::TextEditSelected | CaptureCase::TextEditEdited | CaptureCase::TextEditInactive | CaptureCase::TextEditReactivated | CaptureCase::TextEditHostSuspended | CaptureCase::TextEditHostResumed) {
+        if matches!(capture, CaptureCase::TextEditAligned { .. } | CaptureCase::TextEditSelected | CaptureCase::TextEditEdited | CaptureCase::TextEditInactive | CaptureCase::TextEditReactivated | CaptureCase::TextEditHostSuspended | CaptureCase::TextEditHostResumed) {
             // The showcase Reset control invokes TESetText then
             // TESetSelect(0, 14); send a real guest click through TrackControl.
             // Inside Macintosh: Text (1993), pp. 2-75--2-78.
@@ -4767,6 +4774,27 @@ mod desktop {
                 }));
             }
         }
+        if let CaptureCase::TextEditAligned { justification, .. } = capture {
+            let before = session.runner_mut().text_edit_snapshot().records.into_iter()
+                .find(|record| record.view_rect == (76, 34, 211, 326)).unwrap();
+            let title = if justification == 1 { "Center" } else { "Right" };
+            let control = session.runner_mut().control_snapshot().into_iter()
+                .find(|control| control.visible && control.title == title).unwrap();
+            let mut activation = Some(super::activation::ControlActivation::begin(
+                &mut session, control.guest_id, control.generation).unwrap());
+            for _ in 0..300 {
+                session.runner_mut().run_steps(100_000, None);
+                activation = activation.and_then(|click| click.advance(&mut session));
+                if activation.is_none() { break; }
+            }
+            assert!(activation.is_none());
+            assert!((0..300).any(|_| {
+                session.runner_mut().run_steps(100_000, None);
+                session.runner_mut().text_edit_snapshot().records.iter().any(|record|
+                    record.guest_id == before.guest_id && record.justification == justification
+                    && record.drawing_intact && record.text == before.text && record.selection == (0, 14))
+            }), "guest alignment control must preserve text and selection");
+        }
         let activation_capture = matches!(capture, CaptureCase::TextEditInactive | CaptureCase::TextEditReactivated);
         if activation_capture {
             assert!(session.runner_mut().select_guest_menu_item(132, 7));
@@ -4794,7 +4822,8 @@ mod desktop {
                 for _ in 0..30 { session.runner_mut().run_steps(100_000, None); }
             }
         }
-        let host_activation_capture = matches!(capture, CaptureCase::TextEditHostSuspended | CaptureCase::TextEditHostResumed);
+        let host_activation_capture = matches!(capture, CaptureCase::TextEditHostSuspended | CaptureCase::TextEditHostResumed
+            | CaptureCase::TextEditAligned { suspended: true, .. });
         if host_activation_capture {
             let states: &[bool] = if matches!(capture, CaptureCase::TextEditHostResumed) { &[false, true] } else { &[false] };
             for &active in states {
@@ -4869,6 +4898,20 @@ mod desktop {
             }
         }
         let text_edits = session.runner_mut().text_edit_snapshot().records;
+        if let CaptureCase::TextEditAligned { justification, suspended } = capture {
+            let record = text_edits.iter().find(|record| record.view_rect == (76, 34, 211, 326)).unwrap();
+            assert_eq!(record.justification, justification);
+            assert_eq!(record.selection, (0, 14));
+            assert_eq!(record.active, !suspended);
+            let snapshot = serde_json::json!({ "scope": "Actual guest alignment control and selection; shared Demo compositor",
+                "powerpc": prefer_powerpc, "depth": session.runner().presented_screen_depth().unwrap(),
+                "scale": capture_scale.unwrap_or(1.), "justification": justification, "active": record.active,
+                "selection": record.selection, "identity": [record.guest_id as u64, record.generation],
+                "font": record.font, "size": record.size, "text": record.text,
+                "view_rect": record.global_view_rect, "dest_rect": record.global_dest_rect });
+            std::fs::write(output.with_extension("text-state.json"), serde_json::to_vec_pretty(&snapshot).unwrap()).unwrap();
+        }
+
         let standard_file = session.runner_mut().standard_file_snapshot();
         let menus = session.runner_mut().guest_menu_snapshot();
         let guest_popup = session.runner_mut().guest_popup_snapshot();
@@ -6524,7 +6567,9 @@ mod desktop {
                 output,
                 args.prefer_powerpc,
                 args.screen_depth,
-                CaptureCase::TextEdit,
+                args.capture_text_alignment.as_deref().map_or(CaptureCase::TextEdit, |alignment|
+                    CaptureCase::TextEditAligned { justification: if alignment == "center" { 1 } else { -1 },
+                        suspended: args.capture_text_aligned_inactive }),
                 args.capture_scale,
             );
             return;

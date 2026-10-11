@@ -5492,3 +5492,19 @@ application compilation passes (11.09s). Evidence is in
 probe failures are retained; the final test separates clicks with guest time.
 Composed visual review, physical interaction, other justification values and
 scaled plain-field qualification remain open.
+
+## Aligned plain TextEdit shared compositor (2026-10-11)
+
+Eight actual-guest shared Demo captures are archived in
+`reference/gpui-demo/aligned-plain-text-compositor`: centered active selection
+and right-aligned guest suspend in mono68k scale0.75, colour68k scale1, PPC8
+scale2 and PPC16 scale1.5. All eight images were reviewed. Smooth field ink,
+alignment, wrapping/clipping and active/inactive selection appearance agree
+with recorded state. Each retains font1/size9, 208 original bytes and selection
+0..14; sidecars assert actual presented depth. App-drawn headings and one-bit
+custom black panels remain guest rendered. The guest radio indicator remains
+Left even when its TERec/inspector mode changes; this evidence does not hide
+or correct application-owned state. Reproducible capture flags and build/source
+hashes are archived. This paired visual checkpoint is not every scale/state
+combination, collapsed caret or scrolling/marked staging qualification, a
+Macintosh oracle, or physical host input evidence. All release gates stay open.
