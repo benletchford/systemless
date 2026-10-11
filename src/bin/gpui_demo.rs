@@ -197,6 +197,9 @@ mod desktop {
         #[arg(long, hide = true)]
         capture_lists_cancelled: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, value_parser = parse_capture_scale)]
+        capture_scale: Option<f32>,
+        #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_text_edit: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
@@ -301,6 +304,15 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_modeless_dialog_layout: Option<PathBuf>,
+    }
+
+    #[cfg(feature = "gpui-demo-test")]
+    fn parse_capture_scale(value: &str) -> Result<f32, String> {
+        let scale: f32 = value.parse().map_err(|_| "capture scale must be a number")?;
+        if !scale.is_finite() || !(0.25..=4.).contains(&scale) {
+            return Err("capture scale must be finite and between 0.25 and 4".into());
+        }
+        Ok(scale)
     }
 
     fn parse_depth(value: &str) -> Result<u16, String> {
@@ -2916,6 +2928,7 @@ mod desktop {
         prefer_powerpc: bool,
         screen_depth: Option<u16>,
         capture: CaptureCase,
+        capture_scale: Option<f32>,
     ) {
         use gpui_kit::{platform, HeadlessAppContext};
 
@@ -4008,8 +4021,11 @@ mod desktop {
         let (sender, _receiver) = mpsc::channel();
         let updates = Arc::new(Mutex::new(None));
         let mut view = None;
+        let capture_size = capture_scale.map_or(size(px(900.), px(740.)), |scale| {
+            size(px(frame.width as f32 * scale), px(frame_height as f32 * scale))
+        });
         let window = visual
-            .open_window(size(px(900.), px(740.)), |_, cx| {
+            .open_window(capture_size, |_, cx| {
                 let entity = cx.new(|cx| Demo::new(sender, updates, cx));
                 view = Some(entity.clone());
                 entity
@@ -4087,6 +4103,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::Windows,
+                args.capture_scale,
             );
             return;
         }
@@ -4098,6 +4115,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::WindowsMoved,
+                args.capture_scale,
             );
             return;
         }
@@ -4109,6 +4127,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::WindowsActivated,
+                args.capture_scale,
             );
             return;
         }
@@ -4120,6 +4139,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::WindowsGrown,
+                args.capture_scale,
             );
             return;
         }
@@ -4131,6 +4151,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::WindowsZoomed,
+                args.capture_scale,
             );
             return;
         }
@@ -4142,6 +4163,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::WindowsZoomRestored,
+                args.capture_scale,
             );
             return;
         }
@@ -4153,6 +4175,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::WindowsCustomZoomed,
+                args.capture_scale,
             );
             return;
         }
@@ -4164,6 +4187,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::WindowsCustomZoomRestored,
+                args.capture_scale,
             );
             return;
         }
@@ -4175,6 +4199,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::WindowsPromoted,
+                args.capture_scale,
             );
             return;
         }
@@ -4186,6 +4211,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::WindowsMainPromoted,
+                args.capture_scale,
             );
             return;
         }
@@ -4202,6 +4228,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::Alert,
+                args.capture_scale,
             );
             return;
         }
@@ -4213,6 +4240,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::ModalDialog,
+                args.capture_scale,
             );
             return;
         }
@@ -4221,6 +4249,7 @@ mod desktop {
             capture_fixture_screen(
                 &args.game, output, args.prefer_powerpc, args.screen_depth,
                 CaptureCase::ModalDialogCaretVisible,
+                args.capture_scale,
             );
             return;
         }
@@ -4229,37 +4258,38 @@ mod desktop {
             capture_fixture_screen(
                 &args.game, output, args.prefer_powerpc, args.screen_depth,
                 CaptureCase::ModalDialogCaretHidden,
+                args.capture_scale,
             );
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_modal_dialog_checkbox_checked_held.as_ref() {
             capture_fixture_screen(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, CaptureCase::ModalDialogCheckboxCheckedHeld);
+                args.screen_depth, CaptureCase::ModalDialogCheckboxCheckedHeld, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_modal_dialog_checkbox_held.as_ref() {
             capture_fixture_screen(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, CaptureCase::ModalDialogCheckboxHeld);
+                args.screen_depth, CaptureCase::ModalDialogCheckboxHeld, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_modal_dialog_checkbox_outside.as_ref() {
             capture_fixture_screen(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, CaptureCase::ModalDialogCheckboxOutside);
+                args.screen_depth, CaptureCase::ModalDialogCheckboxOutside, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_modal_dialog_button_held.as_ref() {
             capture_fixture_screen(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, CaptureCase::ModalDialogButtonHeld);
+                args.screen_depth, CaptureCase::ModalDialogButtonHeld, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_modal_dialog_button_outside.as_ref() {
             capture_fixture_screen(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, CaptureCase::ModalDialogButtonOutside);
+                args.screen_depth, CaptureCase::ModalDialogButtonOutside, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -4270,6 +4300,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::ModalDialogChecked,
+                args.capture_scale,
             );
             return;
         }
@@ -4281,6 +4312,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::ModelessDialog,
+                args.capture_scale,
             );
             return;
         }
@@ -4292,6 +4324,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::NestedModalDialog,
+                args.capture_scale,
             );
             return;
         }
@@ -4303,6 +4336,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::Controls,
+                args.capture_scale,
             );
             return;
         }
@@ -4314,6 +4348,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::ControlsChanged,
+                args.capture_scale,
             );
             return;
         }
@@ -4325,22 +4360,23 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::ControlsDragged,
+                args.capture_scale,
             );
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_radio_held.as_ref() {
-            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::RadioHeld);
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::RadioHeld, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_radio_outside.as_ref() {
-            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::RadioOutside);
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::RadioOutside, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_radio_selected.as_ref() {
-            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::RadioSelected);
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::RadioSelected, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -4351,6 +4387,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::ControlsHeld,
+                args.capture_scale,
             );
             return;
         }
@@ -4362,6 +4399,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::Lists,
+                args.capture_scale,
             );
             return;
         }
@@ -4373,19 +4411,20 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::ListsSelected,
+                args.capture_scale,
             );
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_lists_held.as_ref() {
             capture_fixture_screen(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, CaptureCase::ListsHeld);
+                args.screen_depth, CaptureCase::ListsHeld, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_lists_cancelled.as_ref() {
             capture_fixture_screen(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, CaptureCase::ListsCancelled);
+                args.screen_depth, CaptureCase::ListsCancelled, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -4396,6 +4435,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::TextEdit,
+                args.capture_scale,
             );
             return;
         }
@@ -4407,6 +4447,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::TextEditSelected,
+                args.capture_scale,
             );
             return;
         }
@@ -4418,27 +4459,28 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::TextEditEdited,
+                args.capture_scale,
             );
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_text_edit_host_suspended.as_ref() {
-            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::TextEditHostSuspended);
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::TextEditHostSuspended, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_text_edit_host_resumed.as_ref() {
-            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::TextEditHostResumed);
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::TextEditHostResumed, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_text_edit_inactive.as_ref() {
-            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::TextEditInactive);
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::TextEditInactive, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_text_edit_reactivated.as_ref() {
-            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::TextEditReactivated);
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::TextEditReactivated, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -4449,19 +4491,20 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::PopupControls,
+                args.capture_scale,
             );
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_popup_controls_scrolled.as_ref() {
             capture_fixture_screen(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, CaptureCase::PopupControlsScrolled);
+                args.screen_depth, CaptureCase::PopupControlsScrolled, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_popup_controls_open.as_ref() {
             capture_fixture_screen(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, CaptureCase::PopupControlsOpen);
+                args.screen_depth, CaptureCase::PopupControlsOpen, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -4472,6 +4515,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::PopupControlsSelected,
+                args.capture_scale,
             );
             return;
         }
@@ -4483,6 +4527,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::StandardFileSave,
+                args.capture_scale,
             );
             return;
         }
@@ -4494,6 +4539,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::StandardFileSaveComposed,
+                args.capture_scale,
             );
             return;
         }
@@ -4505,6 +4551,7 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::StandardFileOpenComposed,
+                args.capture_scale,
             );
             return;
         }
@@ -4516,43 +4563,44 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::StandardFileSaveEditedComposed,
+                args.capture_scale,
             );
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_standard_file_save_caret_hidden_composed.as_ref() {
             capture_fixture_screen(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, CaptureCase::StandardFileSaveCaretHiddenComposed);
+                args.screen_depth, CaptureCase::StandardFileSaveCaretHiddenComposed, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_standard_file_replace_composed.as_ref() {
-            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileReplaceComposed);
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileReplaceComposed, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_standard_file_new_folder_composed.as_ref() {
-            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileNewFolderComposed);
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileNewFolderComposed, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_standard_file_new_folder_error_composed.as_ref() {
-            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileNewFolderErrorComposed);
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileNewFolderErrorComposed, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_standard_file_new_folder_caret_hidden_composed.as_ref() {
-            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileNewFolderCaretHiddenComposed);
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileNewFolderCaretHiddenComposed, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_standard_file_new_folder_long_composed.as_ref() {
-            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileNewFolderLongComposed);
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileNewFolderLongComposed, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_standard_file_new_folder_selected_composed.as_ref() {
-            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileNewFolderSelectedComposed);
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileNewFolderSelectedComposed, args.capture_scale);
             return;
         }
         let fullscreen = args.options.as_ref().is_some_and(|options| options.fullscreen);
@@ -5041,6 +5089,7 @@ mod desktop {
                         capture_lists_selected: None,
                         capture_lists_held: None,
                         capture_lists_cancelled: None,
+                        capture_scale: None,
                         capture_text_edit: None,
                         capture_text_edit_selected: None,
                         capture_text_edit_edited: None,
