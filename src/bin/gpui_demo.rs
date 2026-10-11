@@ -1081,6 +1081,23 @@ mod desktop {
             Self::read_host_clipboard_with_stamp(cx, stamp)
         }
 
+        fn queue_standard_file_action(&self, id: u32, generation: u64, action: super::activation::FileAction) {
+            if self.host_active == Some(false) || self.notification_alert.is_some()
+                || !self.standard_file.as_ref().is_some_and(|panel|
+                    panel.guest_id == id && panel.generation == generation) { return; }
+            let _ = self.commands.send(Command::ActivateFile(id, generation, action));
+        }
+
+        fn queue_standard_file_entry(&self, id: u32, generation: u64, index: usize,
+            expected: &systemless::runner::StandardFileEntrySnapshot) {
+            if self.host_active == Some(false) || self.notification_alert.is_some()
+                || !self.standard_file.as_ref().is_some_and(|panel|
+                    panel.guest_id == id && panel.generation == generation
+                        && panel.new_folder.is_none() && !panel.confirming_replace
+                        && panel.entries.as_ref().and_then(|entries| entries.get(index)) == Some(expected)) { return; }
+            let _ = self.commands.send(Command::ActivateFileEntry(id, generation, index, expected.clone()));
+        }
+
         fn read_host_clipboard_with_stamp(
             cx: &App,
             mut stamp: impl FnMut() -> Option<(isize, bool)>,
@@ -2789,10 +2806,11 @@ mod desktop {
                                     .aria_label(entry.name.clone())
                                     .aria_selected(selected)
                                     .when(panel.new_folder.is_none() && !panel.confirming_replace && self.host_active != Some(false), |row| {
-                                        let sender = self.commands.clone();
+                                        let accessibility_view = cx.entity().downgrade();
                                         let (id, generation, expected) = (panel.guest_id, panel.generation, entry.clone());
-                                        row.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
-                                            let _ = sender.send(Command::ActivateFileEntry(id, generation, index, expected.clone()));
+                                        row.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, cx| {
+                                            let _ = accessibility_view.update(cx, |this, _|
+                                                this.queue_standard_file_entry(id, generation, index, &expected));
                                         })
                                     })
                                     .absolute()
@@ -2885,7 +2903,7 @@ mod desktop {
                                 at(rect).child(
                                     super::a11y::AccessibleComponent::new(super::choices::guest_button(
                                         format!("guest-standard-open-{}-{}-{}", panel.guest_id, panel.generation, label),
-                                        label.into(), enabled, true, false, false, scene_scale, cx,
+                                        label.into(), enabled, self.host_active != Some(false), false, false, scene_scale, cx,
                                     ).w_full().h_full()
                                     .when(label != "Eject", |button| {
                                         let action = match label {
@@ -2894,14 +2912,14 @@ mod desktop {
                                             _ => super::activation::FileAction::Accept,
                                         };
                                         let (id, generation) = (panel.guest_id, panel.generation);
-                                        let keyboard_sender = self.commands.clone();
-                                        let accessibility_sender = self.commands.clone();
-                                        button.on_click(move |event, _, _| {
+                                        let keyboard_view = cx.entity().downgrade();
+                                        let accessibility_view = cx.entity().downgrade();
+                                        button.on_click(move |event, _, cx| {
                                             if matches!(event, ClickEvent::Keyboard(_)) {
-                                                let _ = keyboard_sender.send(Command::ActivateFile(id, generation, action));
+                                                let _ = keyboard_view.update(cx, |this, _| this.queue_standard_file_action(id, generation, action));
                                             }
-                                        }).on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
-                                            let _ = accessibility_sender.send(Command::ActivateFile(id, generation, action));
+                                        }).on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, cx| {
+                                            let _ = accessibility_view.update(cx, |this, _| this.queue_standard_file_action(id, generation, action));
                                         })
                                     }), !enabled),
                                 ),
@@ -2989,10 +3007,11 @@ mod desktop {
                                     .aria_label(entry.name.clone())
                                     .aria_selected(selected)
                                     .when(panel.new_folder.is_none() && !panel.confirming_replace && self.host_active != Some(false), |row| {
-                                        let sender = self.commands.clone();
+                                        let accessibility_view = cx.entity().downgrade();
                                         let (id, generation, expected) = (panel.guest_id, panel.generation, entry.clone());
-                                        row.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
-                                            let _ = sender.send(Command::ActivateFileEntry(id, generation, index, expected.clone()));
+                                        row.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, cx| {
+                                            let _ = accessibility_view.update(cx, |this, _|
+                                                this.queue_standard_file_entry(id, generation, index, &expected));
                                         })
                                     })
                                     .absolute()
@@ -3135,7 +3154,7 @@ mod desktop {
                                 at(rect).child(
                                     super::a11y::AccessibleComponent::new(super::choices::guest_button(
                                         format!("guest-standard-save-{}-{}-{}", panel.guest_id, panel.generation, label),
-                                        label.into(), true, !(panel.confirming_replace || panel.new_folder.is_some()), false, false, scene_scale, cx,
+                                        label.into(), true, !(panel.confirming_replace || panel.new_folder.is_some()) && self.host_active != Some(false), false, false, scene_scale, cx,
                                     ).w_full().h_full()
                                     .when(!(panel.confirming_replace || panel.new_folder.is_some()), |button| {
                                         let action = match label {
@@ -3145,14 +3164,14 @@ mod desktop {
                                             _ => super::activation::FileAction::Accept,
                                         };
                                         let (id, generation) = (panel.guest_id, panel.generation);
-                                        let keyboard_sender = self.commands.clone();
-                                        let accessibility_sender = self.commands.clone();
-                                        button.on_click(move |event, _, _| {
+                                        let keyboard_view = cx.entity().downgrade();
+                                        let accessibility_view = cx.entity().downgrade();
+                                        button.on_click(move |event, _, cx| {
                                             if matches!(event, ClickEvent::Keyboard(_)) {
-                                                let _ = keyboard_sender.send(Command::ActivateFile(id, generation, action));
+                                                let _ = keyboard_view.update(cx, |this, _| this.queue_standard_file_action(id, generation, action));
                                             }
-                                        }).on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
-                                            let _ = accessibility_sender.send(Command::ActivateFile(id, generation, action));
+                                        }).on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, cx| {
+                                            let _ = accessibility_view.update(cx, |this, _| this.queue_standard_file_action(id, generation, action));
                                         })
                                     }), panel.confirming_replace || panel.new_folder.is_some()),
                                 ),
@@ -3234,17 +3253,17 @@ mod desktop {
                     for (rect, label, action) in actions {
                         let enabled = is_error || label == "Cancel" || !folder.name.is_empty();
                         let (id, generation) = (panel.guest_id, panel.generation);
-                        let keyboard_sender = self.commands.clone();
-                        let accessibility_sender = self.commands.clone();
+                        let keyboard_view = cx.entity().downgrade();
+                        let accessibility_view = cx.entity().downgrade();
                         overlay = overlay.child(at(rect).child(super::a11y::AccessibleComponent::new(super::choices::guest_button(
                             format!("guest-standard-new-folder-{id}-{generation}-{label}"), label.into(),
-                            true, enabled, false, label == "Create" || label == "OK", scene_scale, cx,
-                        ).w_full().h_full().when(enabled, |button| button.on_click(move |event, _, _| {
+                            true, enabled && self.host_active != Some(false), false, label == "Create" || label == "OK", scene_scale, cx,
+                        ).w_full().h_full().when(enabled, |button| button.on_click(move |event, _, cx| {
                             if matches!(event, ClickEvent::Keyboard(_)) {
-                                let _ = keyboard_sender.send(Command::ActivateFile(id, generation, action));
+                                let _ = keyboard_view.update(cx, |this, _| this.queue_standard_file_action(id, generation, action));
                             }
-                        }).on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
-                            let _ = accessibility_sender.send(Command::ActivateFile(id, generation, action));
+                        }).on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, cx| {
+                            let _ = accessibility_view.update(cx, |this, _| this.queue_standard_file_action(id, generation, action));
                         })), !enabled)));
                     }
                     screen = screen.child(overlay);
@@ -3273,17 +3292,17 @@ mod desktop {
                         (layout.replace, "Replace", super::activation::FileAction::Replace),
                     ] {
                         let (id, generation) = (panel.guest_id, panel.generation);
-                        let keyboard_sender = self.commands.clone();
-                        let accessibility_sender = self.commands.clone();
+                        let keyboard_view = cx.entity().downgrade();
+                        let accessibility_view = cx.entity().downgrade();
                         overlay = overlay.child(at(rect).child(super::choices::guest_button(
                             format!("guest-standard-replace-{id}-{generation}-{label}"), label.into(),
-                            true, true, false, label == "Cancel", scene_scale, cx,
-                        ).w_full().h_full().on_click(move |event, _, _| {
+                            true, self.host_active != Some(false), false, label == "Cancel", scene_scale, cx,
+                        ).w_full().h_full().on_click(move |event, _, cx| {
                             if matches!(event, ClickEvent::Keyboard(_)) {
-                                let _ = keyboard_sender.send(Command::ActivateFile(id, generation, action));
+                                let _ = keyboard_view.update(cx, |this, _| this.queue_standard_file_action(id, generation, action));
                             }
-                        }).on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
-                            let _ = accessibility_sender.send(Command::ActivateFile(id, generation, action));
+                        }).on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, cx| {
+                            let _ = accessibility_view.update(cx, |this, _| this.queue_standard_file_action(id, generation, action));
                         })));
                     }
                     screen = screen.child(overlay);
@@ -5399,7 +5418,8 @@ mod desktop {
             });
         });
         visual.run_until_parked();
-        if matches!(capture, CaptureCase::StandardFileSaveComposed | CaptureCase::StandardFileNewFolderComposed) {
+        if matches!(capture, CaptureCase::StandardFileSaveComposed | CaptureCase::StandardFileNewFolderComposed
+            | CaptureCase::StandardFileOpenComposed | CaptureCase::StandardFileOpenScrolled) {
             visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
                 demo.host_active = Some(true); window.focus(&demo.focus, cx);
                 demo.synchronize_composition(window, cx); cx.notify();
@@ -5423,6 +5443,25 @@ mod desktop {
                 "scope": "Capture provenance only; no automatic smooth visual, font fidelity or performance qualification",
             })).unwrap()).unwrap();
         composed.save(output).unwrap();
+        if matches!(capture, CaptureCase::StandardFileOpenComposed | CaptureCase::StandardFileOpenScrolled) {
+            visual.update_window(window.into(), |_, _, cx| view.update(cx, |demo, cx| {
+                demo.host_active = Some(false); cx.notify();
+            })).unwrap();
+            visual.run_until_parked();
+            visual.capture_screenshot(window.into()).unwrap().save(output.with_extension("inactive.png")).unwrap();
+            visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                demo.host_active = Some(true); demo.focus.focus(window, cx); cx.notify();
+            })).unwrap();
+            visual.run_until_parked();
+            let restored = visual.capture_screenshot(window.into()).unwrap();
+            assert_eq!(restored, composed, "Open panel host reactivation must restore the same composed scene");
+            restored.save(output.with_extension("reactivated.png")).unwrap();
+            std::fs::write(output.with_extension("activation.json"), serde_json::to_vec_pretty(&serde_json::json!({
+                "actual_depth": actual_depth, "powerpc": prefer_powerpc, "scene_scale": scene_scale,
+                "host_states": [true, false, true], "exact_composed_restoration": true,
+                "scope": "Shared Demo host-state presentation only; guest modal state retained. No physical observer or guest suspend/resume qualification."
+            })).unwrap()).unwrap();
+        }
         if matches!(capture, CaptureCase::ModalDialogMultiline) {
             use gpui_kit::EntityInputHandler;
             visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
@@ -17260,6 +17299,39 @@ mod desktop {
                 MacintoshInput::MouseDown { vertical: 238..=258, horizontal: 358..=437 },
                 MacintoshInput::MouseUp { vertical: 238..=258, horizontal: 358..=437 },
             ]), "{open_inputs:?}");
+
+            cx.update_window(window.into(), |_, _, cx| {
+                view.update(cx, |demo, _| {
+                    // Change runtime state without re-rendering the previously
+                    // registered callbacks: the dispatch guard must read it now.
+                    demo.host_active = Some(false);
+                    demo.queue_standard_file_action(7, 1, super::super::activation::FileAction::Accept);
+                    demo.host_active = Some(true);
+                    demo.queue_standard_file_action(7, 2, super::super::activation::FileAction::Accept);
+                    demo.queue_standard_file_action(7, 1, super::super::activation::FileAction::Accept);
+                });
+            }).unwrap();
+            let actions: Vec<_> = receiver.try_iter().filter_map(|command| match command {
+                super::Command::ActivateFile(id, generation, action) => Some((id, generation, action)),
+                _ => None,
+            }).collect();
+            assert_eq!(actions.len(), 1, "inactive and replaced-owner dispatch must be rejected");
+            assert!(matches!(actions[0], (7, 1, super::super::activation::FileAction::Accept)));
+            view.update(cx, |demo, _| {
+                let entry = demo.standard_file.as_ref().unwrap().entries.as_ref().unwrap()[0].clone();
+                demo.host_active = Some(false);
+                demo.queue_standard_file_entry(7, 1, 0, &entry);
+                demo.host_active = Some(true);
+                let mut stale = entry.clone(); stale.name.push_str(" obsolete");
+                demo.queue_standard_file_entry(7, 1, 0, &stale);
+                demo.queue_standard_file_entry(7, 1, 0, &entry);
+            });
+            let entries: Vec<_> = receiver.try_iter().filter_map(|command| match command {
+                super::Command::ActivateFileEntry(id, generation, index, expected) => Some((id, generation, index, expected)),
+                _ => None,
+            }).collect();
+            assert_eq!(entries.len(), 1, "inactive and changed-entry callbacks must be rejected");
+            assert_eq!((entries[0].0, entries[0].1, entries[0].2), (7, 1, 0));
 
             cx.update_window(window.into(), |_, window, cx| {
                 view.update(cx, |demo, cx| {
