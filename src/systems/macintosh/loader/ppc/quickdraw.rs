@@ -672,41 +672,29 @@ pub(crate) fn ppc_trunc_string(
     char_extra: i16,
 ) -> i16 {
     let Some(bytes) = ppc_read_pstring_bytes(memory, string) else {
-        return -1;
+        return crate::text_utils::TRUNC_ERR;
     };
     let measure = |text: &[u8]| {
         (i32::from(ppc_text_width_bytes(font, size, style, text))
             + ppc_char_extra_width(char_extra, size, text))
         .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
     };
-    if measure(&bytes) <= width {
-        return 0;
-    }
-    const ELLIPSIS: u8 = 0xc9;
-    if !matches!(where_, 0 | 0x4000) || measure(&[ELLIPSIS]) > width {
-        return -1;
-    }
-    // A Pascal string has at most 255 bytes. Measure complete candidates so
-    // style advances and font scaling agree with StringWidth at the boundary.
-    for retained in (0..bytes.len()).rev() {
-        let left = if where_ == 0x4000 {
-            retained.div_ceil(2)
+    let eval = crate::text_utils::evaluate_trunc_string(
+        &bytes,
+        width,
+        where_,
+        crate::text_utils::MAC_ROMAN_ELLIPSIS,
+        measure,
+    );
+    if let Some(new_text) = eval.new_text {
+        if ppc_write_pstring_bytes(memory, string, &new_text) {
+            eval.result
         } else {
-            retained
-        };
-        let right = retained - left;
-        let mut candidate = bytes[..left].to_vec();
-        candidate.push(ELLIPSIS);
-        candidate.extend_from_slice(&bytes[bytes.len() - right..]);
-        if measure(&candidate) <= width {
-            return if ppc_write_pstring_bytes(memory, string, &candidate) {
-                1
-            } else {
-                -1
-            };
+            crate::text_utils::TRUNC_ERR
         }
+    } else {
+        eval.result
     }
-    -1
 }
 
 pub(crate) fn ppc_text_width_bytes(text_font: i16, text_size: i16, style: u8, bytes: &[u8]) -> i16 {

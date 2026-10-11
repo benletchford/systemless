@@ -17487,6 +17487,150 @@
         assert_eq!(cpu.read_reg(Register::A7), sp + 16);
     }
 
+    #[test]
+    fn scriptutil_trunctext_truncates_end_and_updates_length_and_buffer() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let length_ptr = bus.alloc(2);
+        let text_ptr = bus.alloc(16);
+
+        bus.write_bytes(text_ptr, b"Hello World");
+        bus.write_word(length_ptr, 11);
+
+        bus.write_long(sp, 0x820C_FFDE); // TruncText encoded selector
+        bus.write_word(sp + 4, 0); // truncWhere = smTruncEnd
+        bus.write_long(sp + 6, length_ptr); // VAR length
+        bus.write_long(sp + 10, text_ptr); // textPtr
+        bus.write_word(sp + 14, 36); // width = 36 px (capacity 6 chars: 5 chars + ellipsis)
+        bus.write_word(sp + 16, 0xBEEF); // INTEGER result
+
+        let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp + 16), 1); // smTruncated
+        assert_eq!(bus.read_word(length_ptr), 6);
+        let mut truncated = vec![0u8; 6];
+        for i in 0..6 {
+            truncated[i] = bus.read_byte(text_ptr + i as u32);
+        }
+        assert_eq!(truncated, [b'H', b'e', b'l', b'l', b'o', 0xC9]);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+    }
+
+    #[test]
+    fn scriptutil_trunctext_truncates_middle_and_updates_length_and_buffer() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let length_ptr = bus.alloc(2);
+        let text_ptr = bus.alloc(16);
+
+        bus.write_bytes(text_ptr, b"Hello World");
+        bus.write_word(length_ptr, 11);
+
+        bus.write_long(sp, 0x820C_FFDE); // TruncText encoded selector
+        bus.write_word(sp + 4, 0x4000); // truncWhere = smTruncMiddle
+        bus.write_long(sp + 6, length_ptr); // VAR length
+        bus.write_long(sp + 10, text_ptr); // textPtr
+        bus.write_word(sp + 14, 36); // width = 36 px (capacity 6 chars: 3 + ellipsis + 2)
+        bus.write_word(sp + 16, 0xBEEF); // INTEGER result
+
+        let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp + 16), 1); // smTruncated
+        assert_eq!(bus.read_word(length_ptr), 6);
+        let mut truncated = vec![0u8; 6];
+        for i in 0..6 {
+            truncated[i] = bus.read_byte(text_ptr + i as u32);
+        }
+        assert_eq!(truncated, [b'H', b'e', b'l', 0xC9, b'l', b'd']);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+    }
+
+    #[test]
+    fn scriptutil_truncstring_returns_not_truncated_when_fits() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let pstring_ptr = bus.alloc(32);
+
+        bus.write_byte(pstring_ptr, 5);
+        bus.write_bytes(pstring_ptr + 1, b"Hello");
+
+        bus.write_long(sp, 0x8208_FFE0); // TruncString encoded selector
+        bus.write_word(sp + 4, 0); // truncWhere = smTruncEnd
+        bus.write_long(sp + 6, pstring_ptr); // theString: Str255
+        bus.write_word(sp + 10, 40); // width = 40 px
+        bus.write_word(sp + 12, 0xBEEF); // INTEGER result
+
+        let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp + 12), 0); // smNotTruncated
+        assert_eq!(bus.read_byte(pstring_ptr), 5);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+    }
+
+    #[test]
+    fn scriptutil_truncstring_truncates_end_and_updates_pstring() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let pstring_ptr = bus.alloc(32);
+
+        bus.write_byte(pstring_ptr, 11);
+        bus.write_bytes(pstring_ptr + 1, b"Hello World");
+
+        bus.write_long(sp, 0x8208_FFE0); // TruncString encoded selector
+        bus.write_word(sp + 4, 0); // truncWhere = smTruncEnd
+        bus.write_long(sp + 6, pstring_ptr); // theString: Str255
+        bus.write_word(sp + 10, 36); // width = 36 px (capacity 6 chars: 5 + ellipsis)
+        bus.write_word(sp + 12, 0xBEEF); // INTEGER result
+
+        let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp + 12), 1); // smTruncated
+        assert_eq!(bus.read_byte(pstring_ptr), 6);
+        let mut truncated = vec![0u8; 6];
+        for i in 0..6 {
+            truncated[i] = bus.read_byte(pstring_ptr + 1 + i as u32);
+        }
+        assert_eq!(truncated, [b'H', b'e', b'l', b'l', b'o', 0xC9]);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+    }
+
+    #[test]
+    fn scriptutil_truncstring_truncates_middle_and_updates_pstring() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let pstring_ptr = bus.alloc(32);
+
+        bus.write_byte(pstring_ptr, 11);
+        bus.write_bytes(pstring_ptr + 1, b"Hello World");
+
+        bus.write_long(sp, 0x8208_FFE0); // TruncString encoded selector
+        bus.write_word(sp + 4, 0x4000); // truncWhere = smTruncMiddle
+        bus.write_long(sp + 6, pstring_ptr); // theString: Str255
+        bus.write_word(sp + 10, 36); // width = 36 px
+        bus.write_word(sp + 12, 0xBEEF); // INTEGER result
+
+        let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp + 12), 1); // smTruncated
+        assert_eq!(bus.read_byte(pstring_ptr), 6);
+        let mut truncated = vec![0u8; 6];
+        for i in 0..6 {
+            truncated[i] = bus.read_byte(pstring_ptr + 1 + i as u32);
+        }
+        assert_eq!(truncated, [b'H', b'e', b'l', 0xC9, b'l', b'd']);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+    }
+
     fn write_replace_text_frame(
         bus: &mut MacMemoryBus,
         sp: u32,

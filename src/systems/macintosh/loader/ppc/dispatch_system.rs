@@ -322,33 +322,39 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             PpcImportAction::Return(u32::from(!equal))
         }
         PpcSystemCompatibilityOperation::TruncText => {
-            let width = usize::from(cpu.gpr[3] as u16);
+            let width = cpu.gpr[3] as u16 as i16;
             let text = cpu.gpr[4];
             let length_ptr = cpu.gpr[5];
+            let trunc_where = cpu.gpr[6] as u16;
             let Some(length) = memory.read_u16_be(length_ptr).map(usize::from) else {
-                return PpcImportAction::Return(ppc_i16_result(-1));
+                return PpcImportAction::Return(ppc_i16_result(crate::text_utils::TRUNC_ERR));
             };
-            let capacity = width / 6;
-            if length <= capacity {
-                return PpcImportAction::Return(0);
+            let mut bytes = Vec::with_capacity(length);
+            for index in 0..length {
+                let Some(b) = memory.read_u8(text + index as u32) else {
+                    return PpcImportAction::Return(ppc_i16_result(crate::text_utils::TRUNC_ERR));
+                };
+                bytes.push(b);
             }
-            if capacity < 3 || !ppc_memory_can_write_bytes(memory, text, length as u32) {
-                return PpcImportAction::Return(ppc_i16_result(-1));
-            }
-            let retained = capacity - 3;
-            if cpu.gpr[6] & 0x4000 != 0 {
-                let left = retained / 2;
-                let right = retained - left;
-                let tail = (0..right)
-                    .filter_map(|index| memory.read_u8(text + (length - right + index) as u32))
-                    .collect::<Vec<_>>();
-                let _ = memory.write_bytes(text + left as u32, b"...");
-                let _ = memory.write_bytes(text + left as u32 + 3, &tail);
+            let eval = crate::text_utils::evaluate_trunc_text(
+                &bytes,
+                width,
+                trunc_where,
+                crate::text_utils::MAC_ROMAN_ELLIPSIS,
+                crate::text_utils::default_char_width_measure,
+            );
+            if let Some(new_text) = eval.new_text {
+                if ppc_memory_can_write_bytes(memory, text, new_text.len() as u32)
+                    && memory.write_bytes(text, &new_text).is_some()
+                    && memory.write_u16_be(length_ptr, new_text.len() as u16).is_some()
+                {
+                    PpcImportAction::Return(ppc_i16_result(eval.result))
+                } else {
+                    PpcImportAction::Return(ppc_i16_result(crate::text_utils::TRUNC_ERR))
+                }
             } else {
-                let _ = memory.write_bytes(text + retained as u32, b"...");
+                PpcImportAction::Return(ppc_i16_result(eval.result))
             }
-            let _ = memory.write_u16_be(length_ptr, capacity as u16);
-            PpcImportAction::Return(1)
         }
         PpcSystemCompatibilityOperation::StyledLineBreak => {
             let text_len = cpu.gpr[4];

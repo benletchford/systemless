@@ -15827,21 +15827,62 @@ impl super::TrapDispatcher {
                     }
                     // TruncString ($8208FFE0): FUNCTION TruncString(width: INTEGER;
                     //   VAR theString: Str255; truncWhere: TruncCode): INTEGER
-                    // Returning smNotTruncated leaves the string unchanged.
                     // Stack: selector(4), args(8), result(2). Pop selector + args.
-                    // Inside Macintosh Volume VI, 14-59..14-60 and Table C-3.
-                    0x8208_FFE0 => {
-                        bus.write_word(sp + 12, 0); // smNotTruncated
+                    // Inside Macintosh Volume VI, 14-59..14-60 and Table C-3; IM:Text 5-77..5-78.
+                    crate::text_utils::TRUNC_STRING_SELECTOR => {
+                        let trunc_where = bus.read_word(sp + 4);
+                        let string_ptr = bus.read_long(sp + 6);
+                        let width = bus.read_word(sp + 10) as i16;
+                        let len = bus.read_byte(string_ptr) as usize;
+                        let mut bytes = Vec::with_capacity(len);
+                        for i in 0..len {
+                            bytes.push(bus.read_byte(string_ptr + 1 + i as u32));
+                        }
+                        let eval = crate::text_utils::evaluate_trunc_string(
+                            &bytes,
+                            width,
+                            trunc_where,
+                            crate::text_utils::MAC_ROMAN_ELLIPSIS,
+                            crate::text_utils::default_char_width_measure,
+                        );
+                        if let Some(new_text) = eval.new_text {
+                            bus.write_byte(string_ptr, new_text.len() as u8);
+                            for (i, b) in new_text.iter().enumerate() {
+                                bus.write_byte(string_ptr + 1 + i as u32, *b);
+                            }
+                        }
+                        bus.write_word(sp + 12, eval.result as u16);
                         cpu.write_reg(Register::A7, sp + 12);
                         return Some(Ok(()));
                     }
                     // TruncText ($820CFFDE): FUNCTION TruncText(width: INTEGER;
                     //   textPtr: Ptr; VAR length: INTEGER; truncWhere: TruncCode): INTEGER
-                    // Returning smNotTruncated leaves the pointed-to text and length unchanged.
                     // Stack: selector(4), args(12), result(2). Pop selector + args.
-                    // Inside Macintosh Volume VI, 14-59..14-60 and Table C-3.
-                    0x820C_FFDE => {
-                        bus.write_word(sp + 16, 0); // smNotTruncated
+                    // Inside Macintosh Volume VI, 14-59..14-60 and Table C-3; IM:Text 5-77..5-78.
+                    crate::text_utils::TRUNC_TEXT_SELECTOR => {
+                        let trunc_where = bus.read_word(sp + 4);
+                        let length_ptr = bus.read_long(sp + 6);
+                        let text_ptr = bus.read_long(sp + 10);
+                        let width = bus.read_word(sp + 14) as i16;
+                        let len = bus.read_word(length_ptr) as usize;
+                        let mut bytes = Vec::with_capacity(len);
+                        for i in 0..len {
+                            bytes.push(bus.read_byte(text_ptr + i as u32));
+                        }
+                        let eval = crate::text_utils::evaluate_trunc_text(
+                            &bytes,
+                            width,
+                            trunc_where,
+                            crate::text_utils::MAC_ROMAN_ELLIPSIS,
+                            crate::text_utils::default_char_width_measure,
+                        );
+                        if let Some(new_text) = eval.new_text {
+                            for (i, b) in new_text.iter().enumerate() {
+                                bus.write_byte(text_ptr + i as u32, *b);
+                            }
+                            bus.write_word(length_ptr, new_text.len() as u16);
+                        }
+                        bus.write_word(sp + 16, eval.result as u16);
                         cpu.write_reg(Register::A7, sp + 16);
                         return Some(Ok(()));
                     }
