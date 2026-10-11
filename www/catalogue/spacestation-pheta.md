@@ -9,6 +9,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -22,9 +23,29 @@ compatibility:
       reach Screen 1; ordinary L walks the player right. Eight measured pixel assertions
       pass at 860 frontend / 1438 guest ticks with zero exhaustion; captures
       inspected. All five original files, ten forks and supported Finder metadata match
-      production packing. Browser remains pending. Options initially has blank keyboard labels,
+      production packing. A second fresh scenario walks to the first ladder with L
+      and climbs with A, passing eight assertions at 958 frontend / 1536 guest ticks
+      with zero exhaustion. Original STNG resources record A/Z, K/L and Space as defaults.
+      Options initially has blank keyboard labels,
       Quick Playing Instructions is blank, and closing Options damages the playfield.
       Broader progression, jumping, saving and audio remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4628
+  - date: "2026-10-12"
+    tester: Catalogue maintainer
+    systemless_version: 045c1e6fbb2860757bc301984d9d960493772e9f
+    architecture: 68k
+    environment: >-
+      Production-origin browser frontend preview including merged modal and control
+      snapshot fixes; local launch flag enabled only for testing before approval.
+      Actual managed original HQX request is untouched: HTTP 200, 281913 bytes and
+      the expected SHA-256. Cross-origin isolation, an actual runtime worker and an
+      800x600 canvas are verified. Original About visibly says UNREGISTERED. After
+      complete Screen 1 readiness, ordinary L walks right and A climbs the first
+      ladder. Sixteen measured before/after pixel checks pass; captures inspected.
+      Options/help rendering faults, full levels, jumping, saving and audio remain
+      unverified or unresolved. This is browser preview qualification; human release
+      and public replay remain pending.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4628
 runtime:
@@ -85,8 +106,8 @@ notes and two additional screen files. Registration-only features retain their
 original restrictions.
 
 Choose **Not Yet**, then **Pheta → New Game**. **L** walks right using the original
-keyboard assignment. First-screen native movement is verified; browser approval
-is pending.
+keyboard assignment. Use **A/Z** for up/down, **K/L** for left/right and **Space**
+for jump. Native and browser first-screen walking and ladder climbing are verified.
 
 Game Options initially has blank keyboard labels, Quick Playing Instructions
 is blank, and closing Options can damage the playfield. Broader progression,

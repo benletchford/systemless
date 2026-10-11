@@ -1605,14 +1605,28 @@ a 250,099-byte resource fork, seven CODE resources and no cfrg/PPC slice. The
 ReadMe's PowerMac support does not establish native PPC code.
 
 Immutable native build `0f24e29c473c5ed912fa7cca50be45e38698ae11` includes the
-merged modal fix and candidate [control snapshot fix #4626](https://github.com/benletchford/systemless/pull/4626).
+merged modal fix and [control snapshot fix #4626](https://github.com/benletchford/systemless/pull/4626).
 Original archive, Spacestation Pheta selector, 68K/depth 8: About's UNREGISTERED
 text is visible; Not Yet → Pheta → New Game reaches Screen 1. The original Right
 assignment L is visible when selecting its Game Options button. A fresh start
 with L held twelve ticks moves the player right. Eight measured before/after
 assertions pass at 860 frontend / 1,438 guest ticks with zero exhaustion, and
 captures are inspected. All three checkbox marks survive enabling Mouse Control.
+A second fresh original-archive scenario uses L to reach the first ladder and A
+to climb, passing eight assertions at 958 frontend / 1,536 guest ticks with zero
+exhaustion. Original STNG resources record A/Z, K/L and Space as default controls.
 Initially blank keyboard labels, a blank Quick Playing Instructions page and
-playfield damage after closing Game Options remain unresolved. Browser approval,
-managed asset receipts, launch, human release and public replay remain pending;
-full levels, jumping, saving and audio are unverified. No qualified-live increase.
+playfield damage after closing Game Options remain unresolved.
+
+[Catalogue PR #4629](https://github.com/benletchford/systemless/pull/4629) has
+promoted the unchanged original archive and actual gameplay screenshot. An
+independent actual managed archive fetch is HTTP 200 with the original hash and
+281,913-byte size. Rebased browser source `045c1e6fbb2860757bc301984d9d960493772e9f`
+includes both merged fixes and used a local launch flag for testing before
+approval. Actual managed browser requests were untouched; cross-origin isolation,
+a real runtime worker and an 800×600 canvas are verified. The original About
+notice visibly says UNREGISTERED. Once Screen 1 is fully painted, ordinary L
+walking and A ladder climbing pass sixteen measured before/after pixel checks;
+captures inspected. Launch approval is submitted through the ordinary catalogue
+PR. CI/merge, human release and public replay remain pending. Full levels,
+jumping, saving and audio are unverified. No qualified-live increase.
