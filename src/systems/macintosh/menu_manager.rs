@@ -3140,6 +3140,7 @@ pub(crate) fn install_menu_list_copy<E>(
 pub(crate) struct MenuSnapshotRecord {
     pub(crate) id: i16,
     pub(crate) title: Vec<u8>,
+    pub(crate) standard_definition: bool,
     pub(crate) items: MenuItems,
 }
 
@@ -3513,6 +3514,7 @@ impl MenuList {
                     id: record.id,
                     title,
                     enabled,
+                    standard_definition: record.standard_definition,
                     hierarchical,
                     visible_in_menu_bar: !hierarchical,
                     items,
@@ -5771,6 +5773,7 @@ mod tests {
         let snapshot = list.guest_snapshot(|handle| {
             Some(MenuSnapshotRecord {
                 id: if handle == 0x1000 { 128 } else { 200 },
+                standard_definition: true,
                 title: if handle == 0x1000 {
                     vec![0x14]
                 } else {

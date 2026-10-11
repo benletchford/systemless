@@ -1163,6 +1163,22 @@ pub(crate) fn ppc_guest_menu_snapshot(memory: &mut PpcSectionMem, menu_list_hand
         Some(MenuSnapshotRecord {
             id: memory.read_u16_be(menu)? as i16,
             title: ppc_read_pascal_string(memory, menu + 14)?,
+            // A missing procedure handle is the built-in standard menu. The
+            // standard shim is also identifiable without process resource
+            // metadata. Other procedures keep guest-owned presentation.
+            // Macintosh Toolbox Essentials (1992), pp. 3-3, 3-87.
+            standard_definition: {
+                let handle = memory.read_u32_be(menu + 6).unwrap_or(0);
+                let proc_ptr = memory.read_u32_be(handle).unwrap_or(0);
+                handle == 0
+                    || proc_ptr == 0
+                    || ppc_memory_read_bytes(
+                        memory,
+                        proc_ptr,
+                        STANDARD_MENU_DEFINITION_SHIM.len() as u32,
+                    )
+                    .is_some_and(|bytes| bytes == STANDARD_MENU_DEFINITION_SHIM)
+            },
             items: ppc_menu_items_from_memory(memory, menu_handle)?,
         })
     })
