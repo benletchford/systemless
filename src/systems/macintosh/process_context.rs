@@ -1805,19 +1805,53 @@ impl std::ops::Deref for SharedProcessSoundManager {
 /// processes. Adapters share only through `attach_to`, under the same
 /// serialized runner ownership used for guest RAM and the Memory Manager.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct SharedProcessNotificationQueue(SharedProcessValue<Vec<u32>>);
+struct ProcessNotificationQueue {
+    requests: Vec<u32>,
+    instances: std::collections::BTreeMap<u32, u64>,
+    next_instance: u64,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SharedProcessNotificationQueue(SharedProcessValue<ProcessNotificationQueue>);
 impl std::ops::Deref for SharedProcessNotificationQueue {
     type Target = Vec<u32>;
-    fn deref(&self) -> &Self::Target { &self.0 }
+    fn deref(&self) -> &Self::Target { &self.0.requests }
 }
 impl PartialEq<Vec<u32>> for SharedProcessNotificationQueue {
-    fn eq(&self, other: &Vec<u32>) -> bool { self.0.with_ref(|queue| queue == other) }
+    fn eq(&self, other: &Vec<u32>) -> bool { self.0.with_ref(|queue| queue.requests == *other) }
 }
 impl SharedProcessNotificationQueue {
-    pub(crate) fn push(&self, request: u32) { self.0.with_mut(|queue| queue.push(request)); }
-    pub(crate) fn remove(&self, index: usize) -> u32 { self.0.with_mut(|queue| queue.remove(index)) }
+    pub(crate) fn push(&self, request: u32) {
+        self.0.with_mut(|queue| {
+            if queue.instances.contains_key(&request) { return; }
+            queue.next_instance = queue.next_instance.checked_add(1)
+                .expect("notification installation identity exhausted");
+            queue.instances.insert(request, queue.next_instance);
+            queue.requests.push(request);
+        });
+    }
+    pub(crate) fn remove(&self, index: usize) -> u32 {
+        self.0.with_mut(|queue| {
+            let request = queue.requests.remove(index);
+            queue.instances.remove(&request);
+            request
+        })
+    }
+    pub(crate) fn instance_id(&self, request: u32) -> Option<u64> {
+        self.0.with_ref(|queue| queue.instances.get(&request).copied())
+    }
+    pub(crate) fn clear(&self) {
+        self.0.with_mut(|queue| { queue.requests.clear(); queue.instances.clear(); });
+    }
     pub(crate) fn attach_to(&mut self, process_state: &Self) {
-        self.0.attach_to(&process_state.0, Vec::is_empty);
+        if self.0.ptr_eq(&process_state.0) { return; }
+        let requests = self.0.with_ref(|queue| queue.requests.clone());
+        assert!(requests.is_empty() || process_state.is_empty(),
+            "cannot attach two populated notification queues");
+        // Preserve the process counter even when its request list is empty.
+        // Imported requests acquire identities from that counter; adapter
+        // snapshots must never rewind a running process's installation IDs.
+        for request in requests { process_state.push(request); }
+        self.0 = process_state.0.shared_handle();
     }
 }
 
@@ -10536,7 +10570,7 @@ impl ProcessContext {
     pub(crate) fn reset_notifications_for_launch(&self) {
         // Request pointers belong to the previous guest address space. Never
         // dereference them or run responses after replacing that application.
-        self.notification_requests.0.with_mut(Vec::clear);
+        self.notification_requests.clear();
     }
 
     pub(crate) fn attach_notification_queue(&self, adapter: &mut SharedProcessNotificationQueue) {

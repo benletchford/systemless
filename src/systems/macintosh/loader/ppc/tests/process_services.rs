@@ -2097,6 +2097,8 @@ fn notification_queue_is_shared_across_classic_and_native_install_remove() {
     native.cpu.gpr[3] = first;
     native.run_with_hle_imports(64);
     assert_eq!(classic.notification_requests, vec![first]);
+    let initial_instance = classic.notification_requests.instance_id(first).unwrap();
+    assert_eq!(native.toolbox_startup.notification_requests.instance_id(first), Some(initial_instance));
     classic_cpu.write_reg(Register::A0, second);
     assert!(classic.dispatch_memory(false, 0x5e, &mut classic_cpu, &mut classic_bus).unwrap().is_ok());
     assert_eq!(native.toolbox_startup.notification_requests, vec![first, second]);
@@ -2114,7 +2116,16 @@ fn notification_queue_is_shared_across_classic_and_native_install_remove() {
     classic.dispatch_memory(false, 0x5e, &mut classic_cpu, &mut classic_bus)
         .unwrap().unwrap();
     assert_eq!(native.toolbox_startup.notification_requests, vec![first]);
+    let reinstalled_instance = classic.notification_requests.instance_id(first).unwrap();
+    assert!(reinstalled_instance > initial_instance);
     context.reset_notifications_for_launch();
     assert!(classic.notification_requests.is_empty());
     assert!(native.toolbox_startup.notification_requests.is_empty());
+    assert_eq!(classic.notification_requests.instance_id(first), None);
+    let mut fresh_adapter = crate::process_context::SharedProcessNotificationQueue::default();
+    context.attach_notification_queue(&mut fresh_adapter);
+    classic_cpu.write_reg(Register::A0, first);
+    classic.dispatch_memory(false, 0x5e, &mut classic_cpu, &mut classic_bus)
+        .unwrap().unwrap();
+    assert!(native.toolbox_startup.notification_requests.instance_id(first).unwrap() > reinstalled_instance);
 }

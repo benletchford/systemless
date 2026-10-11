@@ -5681,3 +5681,18 @@ This proves parsing and compiled transport, not displayed notices or interaction
 Presentation, installation identity reuse guards, acknowledgment, sound
 completion and post-delivery guest callbacks remain unfinished. No host font is
 introduced and no application-owned drawing is replaced. All gates remain open.
+
+### Notification installation identity (2026-10-11)
+
+Shared requests now receive process-owned installation IDs, transported in the
+notification snapshot. Removal/reinstallation and launch clearing invalidate
+old IDs; attaching an empty adapter preserves the process counter. Imported
+requests acquire IDs from the destination process rather than rewinding it.
+The final12 notification tests pass (0.12s), including shared classic/native
+installation, removal, reuse, launch clearing and fresh-adapter attachment.
+Log/source hashes are under `reference/gpui-demo/notification-identity`.
+These IDs prepare guarded delivery actions; no frontend acknowledgment action
+or visible notification renderer is established. Post-delivery callbacks must
+preserve suspended guest CPU state, including bounded execution and Mixed Mode
+parking; the immediate NMInstall response path alone does not establish that.
+All production gates remain open.
