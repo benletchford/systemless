@@ -23,6 +23,24 @@ the final release candidate. No overall percentage is inferred from test counts.
 | 7. Representative real games | `tests/presentation_performance.rs` is ignored and requires an external archive. It measures guest execute/compose/presentation helpers, not live GPUI frame delivery. A public catalogue Marathon archive is now available under ignored target output with exact catalogue hash/size verification; a later shared Demo main-menu checkpoint now passes at800 observed production-worker updates, with an earlier30-second timeout retained. Actual guest Begin New Game input also reaches a shared Arrival level-transition checkpoint. A separately timed guest Space input now reaches an active-gameplay shared Demo snapshot. Sustained gameplay and live qualification remain open. | Use verified catalogue media and run the actual live frontend: fullscreen/hidden menu geometry, input latency, frame delivery, CPU/memory, audio continuity, saves/restart and lifecycle. Compare an established baseline under the same conditions; declare acceptable regression limits before measuring. |
 | 8. Reuse, reproducibility and builds | Public fixture rebuild and prior build/package checkpoints are recorded; they pin earlier candidate states. At `43ee32a1`, post-replacement cached checks pass for the default application (10.73s) and no-default-features public library (9.21s), archived in `reference/gpui-demo/post-replacement-builds`. Earlier at `79166359`, the ordinary default-feature application passes `cargo check --locked --bin systemless` (51.22s including Cargo lock wait), and the public library passes `cargo check --locked --no-default-features --lib` (42.16s). Logs and source/hash provenance are archived in `reference/gpui-demo/current-build-checks`. A 444-file package created at 3d06c8da passes both standalone extracted library and default application checks offline, with exact frontend source hashes recorded. At production source e6690b21, the optimized default executable now links successfully (13m46s), its help path succeeds, and the existing public Graphics-to-Controls guest workflow passes on actual 68k/PPC with two assertions each and no exhausted frames. Both Controls images were reviewed. This is guest-runtime smoke coverage, not physical GPUI qualification; evidence and hashes are under `reference/gpui-demo/release-executable-smoke`. At d44b335f a new offline 446-file package has byte-identical Rust sources and passes extracted no-default public library (39.97s) and default GPUI application (48.71s) compile checks using cached dependencies/artifacts; evidence is under `reference/gpui-demo/current-packaged-source`. Network creation was interrupted after repeated DNS failures. Packaged linking/runtime and fresh-download qualification remain unproven. Fresh-download builds, final packaged tests/runtime and live qualification remain open. | Build/test the final candidate from checkout and packaged crate with supported ordinary/headless configurations. Verify published artifact contents, reproducible captures and reusable presentation modules; distinguish platform buildability from GUI qualification. |
 
+## Current accessibility and clipboard qualification (2026-10-11)
+
+At production source `7ec422c2`, recognized document, dialog and Standard File
+editors additionally expose guarded guest text selection. Multiline document
+and wrapped dialog text uses guest line boundaries, Mac Roman offsets and
+clipped guest glyph geometry; inactive accessibility avoids constructing that
+geometry. Actual-worker selection, stale-owner rejection and geometry/model
+checks are recorded in the corresponding `reference/gpui-demo` evidence folders.
+These results do not establish native accessibility tree or action delivery.
+Physical activation, scrolling geometry and styled replacement remain open.
+
+The native named-pasteboard test passes with macOS service access, preserving
+all six tested hidden-format payloads after rejected export. The unchanged test
+failed under restricted access when macOS returned a NULL named pasteboard.
+Evidence is in `reference/gpui-demo/native-pasteboard-service-access`; it does
+not qualify live clipboard suspend/resume. The full 183-test frontend suite is
+not yet established as passing. All eight release gates remain open.
+
 ## Typography requirements within the gates
 
 Recognized system text must use guest text and font/style intent, guest layout
