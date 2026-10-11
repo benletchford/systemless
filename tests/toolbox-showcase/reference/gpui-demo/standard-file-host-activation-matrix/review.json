@@ -1,0 +1,30 @@
+{
+  "scope": "Completed matrix; direct review limited to listed images, equality evidence separate",
+  "reviewed": [
+    {
+      "image": "mono-0.75.inactive.png",
+      "viewer_resize": null,
+      "findings": "Smooth system labels, selection and retained indicator remain contained; guest modal pixels retained. Host-state helper scope only."
+    },
+    {
+      "image": "mono-2.inactive.panel.png",
+      "viewer_resize": null,
+      "findings": "Smooth bounded system labels, selection and retained selector indicator persist in host-inactive presentation; unchanged guest modal state."
+    },
+    {
+      "image": "colour-0.75.inactive.panel.png",
+      "viewer_resize": null,
+      "findings": "Smooth bounded system labels, selection and retained selector indicator persist in host-inactive presentation; unchanged guest modal state."
+    },
+    {
+      "image": "ppc8-1.inactive.panel.png",
+      "viewer_resize": null,
+      "findings": "Smooth bounded system labels, selection and retained selector indicator persist in host-inactive presentation; unchanged guest modal state."
+    },
+    {
+      "image": "ppc16-1.5.inactive.panel.png",
+      "viewer_resize": null,
+      "findings": "Smooth bounded system labels, selection and retained selector indicator persist in host-inactive presentation; unchanged guest modal state."
+    }
+  ]
+}
