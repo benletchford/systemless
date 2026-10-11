@@ -5391,3 +5391,9 @@ seconds), and all 20 state tests pass after the merged commit correction.
 Logs and source hashes are archived under `retained-marked-composition` with
 explicit binary/source checkpoint limits. Cross-candidate merged commits still
 need dedicated worker and modal/file qualification; physical IME remains open.
+
+Dedicated merged-candidate document commits now pass the production worker in
+all four CPU/depth modes (32.30 seconds). The test verifies guarded original
+ownership, exact merged text, caret before the retained suffix, and unchanged
+suffix bytes/styles. Evidence is `retained-marked-composition/merged-worker.log`;
+modal/file merged transactions and physical IME remain open.

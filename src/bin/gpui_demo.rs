@@ -10664,6 +10664,39 @@ mod desktop {
                 assert_eq!(final_record.style_runs.as_ref(), Some(&retained_styles));
                 eprintln!("PASS worker-retained-marked-transaction powerpc={powerpc} depth={actual_depth}");
 
+                let mut merged = super::super::input::GuestComposition::default();
+                let merged_owner = super::super::input::TextInputOwner { identity: pinned.identity,
+                    target: pinned.target, text: final_record.text.clone(),
+                    selection: final_record.selection.0..final_record.selection.1 };
+                merged.synchronize(Some(merged_owner.clone()));
+                assert!(merged.mark_range(Some(&(1..2)), "XY", 2..2));
+                assert!(merged.mark_range(Some(&(5..6)), "KL", 2..2));
+                let requests = merged.commit_marked_replacement(Some(&(2..6)), "Q").unwrap();
+                assert_eq!(requests.len(), 1);
+                assert_eq!(requests[0].expected, merged_owner);
+                assert_eq!(requests[0].range, 1..5);
+                assert_eq!(requests[0].bytes, b"XQL");
+                assert_eq!(requests[0].caret, Some(3));
+                let merged_expected = merged.owner().unwrap().text.clone();
+                for request in requests {
+                    worker.0.send(Command::ReplaceText(request.expected, request.range,
+                        request.bytes, request.caret)).unwrap();
+                }
+                let merged_update = wait("merged marked transaction", &updates, |update|
+                    update.text_edits.iter().any(|record| (record.guest_id, record.generation) == pinned.identity
+                        && record.text == merged_expected && record.selection == (3, 3)));
+                let merged_record = merged_update.text_edits.iter().find(|record|
+                    (record.guest_id, record.generation) == pinned.identity).unwrap();
+                assert_eq!(&merged_record.text[4..], &final_record.text[5..],
+                    "merged replacement preserves the untouched guest suffix");
+                for run in final_record.style_runs.as_ref().unwrap().iter().filter(|run| run.start > 5) {
+                    let mut expected = run.clone(); expected.start -= 1;
+                    assert!(merged_record.style_runs.as_ref().unwrap().contains(&expected),
+                        "untouched suffix styles survive the merged replacement");
+                }
+                let final_record = merged_record;
+                eprintln!("PASS worker-merged-marked-transaction powerpc={powerpc} depth={actual_depth}");
+
                 let initial_mark = super::super::input::TextInputOwner {
                     identity: pinned.identity, target: pinned.target,
                     text: final_record.text.clone(), selection: final_record.selection.0..final_record.selection.1,
