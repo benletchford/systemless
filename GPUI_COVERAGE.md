@@ -2907,3 +2907,23 @@ marks, exact columns, command case, scale/state and native fidelity remain open.
 
 The hierarchical keyboard-selection interaction regression also passes (0.36 s);
 it establishes event routing, not native triangle pixel parity.
+
+
+Work in progress: hidden `--capture-standard-menu-id` selects a real visible
+guest menu (default remains Pages/129). File/131 captures complete on all three
+modes; symbol crops were reviewed and show Command shortcuts and the shared
+triangle. They exposed inline-shortcut column misalignment. Rows now reserve
+a shared name width measured from styled guest advances/ink, aligning shortcut
+and hierarchy indicators. The example builds and keyboard live-update test
+passes (0.19 s). A fresh monochrome full composition was reviewed after the fix.
+Colour/PPC recaptures and archived final evidence remain pending; exact guest
+menu rectangle/row geometry, command case and native fidelity remain open.
+
+
+Final colour 68k and PPC File-menu recaptures complete and were reviewed,
+matching the corrected monochrome composition: Command shortcuts and hierarchy
+indicator use the shared label column. All three final compositions are archived
+losslessly with source/fixture/file/pixel hashes in `menu-file-column-review.json`.
+The reproduction chooses menu ID 131. The prior build and keyboard-selection
+regression cover this unchanged source. Exact guest geometry, command display
+case, arbitrary marks/styled rows and scale/state/native fidelity remain open.

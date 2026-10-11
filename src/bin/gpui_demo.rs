@@ -278,6 +278,9 @@ mod desktop {
         #[arg(long, hide = true)]
         capture_standard_menu: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, default_value_t = 129)]
+        capture_standard_menu_id: i16,
+        #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_windows: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
@@ -4094,7 +4097,7 @@ mod desktop {
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_standard_menu.as_ref() {
-            capture_standard_menu(&args.game, output, args.prefer_powerpc, args.screen_depth);
+            capture_standard_menu(&args.game, output, args.prefer_powerpc, args.screen_depth, args.capture_standard_menu_id);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -4803,6 +4806,7 @@ mod desktop {
         output: &std::path::Path,
         prefer_powerpc: bool,
         screen_depth: Option<u16>,
+        menu_id: i16,
     ) {
         use gpui_kit::{platform, test::TestWindowExt, HeadlessAppContext};
 
@@ -4814,12 +4818,12 @@ mod desktop {
             .find_map(|_| {
                 session.runner_mut().run_steps(100_000, None);
                 let menus = session.runner_mut().guest_menu_snapshot();
-                menus.menus.iter().any(|menu| menu.id == 129 && !menu.items.is_empty())
+                menus.menus.iter().any(|menu| menu.id == menu_id && !menu.items.is_empty())
                     .then_some(menus)
             })
             .expect("showcase standard menu should become available");
         assert!(!menus.requires_guest_menu_rendering());
-        let menu = menus.menus.iter().find(|menu| menu.id == 129).unwrap();
+        let menu = menus.menus.iter().find(|menu| menu.id == menu_id).unwrap();
         let trigger = format!("guest-menu-{}-{}", menu.guest_id, menu.generation);
         let menu_presented = session.runner().guest_menu_bar_presented();
         let menu_height = session.runner().bus().read_word(MBAR_HEIGHT);
@@ -5125,6 +5129,7 @@ mod desktop {
                         capture_standard_file_new_folder_caret_hidden_composed: None,
                         capture_custom_menu_fallback: None,
                         capture_standard_menu: None,
+                        capture_standard_menu_id: 129,
                         capture_windows: None,
                         capture_windows_moved: None,
                         capture_windows_activated: None,
