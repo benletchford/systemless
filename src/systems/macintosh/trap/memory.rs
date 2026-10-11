@@ -769,16 +769,11 @@ impl super::TrapDispatcher {
                 || bus.read_long(nm_rec + notification_manager::NM_ICON_OFFSET) != 0
                 || bus.read_long(nm_rec + notification_manager::NM_SOUND_OFFSET) != 0
                 || bus.read_long(nm_rec + notification_manager::NM_STR_OFFSET) != 0);
-        let nm_resp = if nm_rec != 0 && !pending_delivery {
-            bus.read_long(nm_rec + notification_manager::NM_RESP_OFFSET)
-        } else {
-            0
-        };
         match notification_manager::evaluate_nm_install(
             nm_rec,
             q_type,
             &self.notification_requests,
-            nm_resp,
+            0,
         ) {
             Ok(action) => {
                 match action {
@@ -788,15 +783,16 @@ impl super::TrapDispatcher {
                     }
                     notification_manager::NmInstallAction::Enqueued {
                         previous_tail,
-                        arm_response,
+                        arm_response: _,
                     } => {
                         if let Some(tail) = previous_tail {
                             bus.write_long(tail + notification_manager::Q_LINK_OFFSET, nm_rec);
                         }
                         bus.write_long(nm_rec + notification_manager::Q_LINK_OFFSET, 0);
                         self.notification_requests.push(nm_rec);
-                        if let Some(response) = arm_response {
-                            self.arm_notification_response(cpu, bus, nm_rec, response);
+                        if !pending_delivery {
+                            let instance = self.notification_requests.instance_id(nm_rec).unwrap();
+                            self.complete_notification_delivery(cpu, bus, nm_rec, instance);
                         }
                     }
                 }
@@ -804,6 +800,23 @@ impl super::TrapDispatcher {
             }
             Err(err) => err,
         }
+    }
+
+    /// Called only after all requested notice stages have actually completed.
+    /// Guest removal/reinstallation invalidates stale delivery completions.
+    pub(crate) fn complete_notification_delivery<C: CpuOps>(
+        &mut self, cpu: &mut C, bus: &mut MacMemoryBus,
+        nm_rec: u32, instance: u64,
+    ) -> bool {
+        if self.notification_requests.instance_id(nm_rec) != Some(instance) { return false; }
+        if bus.read_word(nm_rec + 4) != 8
+            || !self.notification_requests.begin_response(nm_rec, instance) { return false; }
+        match bus.read_long(nm_rec + 28) {
+            u32::MAX => { self.remove_notification_request(bus, nm_rec); }
+            0 => {}
+            response => self.arm_notification_response(cpu, bus, nm_rec, response),
+        }
+        true
     }
 
     fn install_vbl_task(
