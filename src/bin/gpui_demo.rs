@@ -8094,24 +8094,53 @@ mod desktop {
                 assert!((0..100).any(|_| { step(&mut session); session.runner().standard_file_snapshot().is_none() }));
                 save_store.sync_save_files_now(session.runner_mut());
                 drop(session);
-                let mut restored = MacintoshSession::new(true, if powerpc { None } else { depth });
-                restored.runner_mut().set_prefer_powerpc_executables(powerpc);
-                if powerpc { restored.runner_mut().set_powerpc_screen_depth(depth.unwrap()).unwrap(); }
-                let app = restored.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
-                let mut store = super::super::desktop_save_store::DesktopSaveStore::for_loaded_archive(
-                    &save_path, restored.runner_mut());
-                store.restore_saved_state(restored.runner_mut());
-                restored.initialize(&app);
-                wait_for_menu(&mut restored, 129, 1, true);
-                assert!(restored.runner_mut().select_guest_menu_item(129, 12));
-                wait_for_menu(&mut restored, 129, 12, true); settle(&mut restored);
-                for input in [MacintoshInput::MouseDown { vertical: 266, horizontal: 400 },
-                    MacintoshInput::MouseUp { vertical: 266, horizontal: 400 }] { restored.deliver_input(input); }
-                let panel = (0..100).find_map(|_| { step(&mut restored); restored.runner().standard_file_snapshot() }).unwrap();
-                assert!(panel.entries.as_ref().unwrap().iter().any(|entry| entry.name == "gpui folder"),
-                    "empty New Folder must survive restart: PPC={powerpc}, depth={depth:?}; entries={:?}", panel.entries);
+                if !duplicate_directory {
+                    let output = std::process::Command::new(std::env::current_exe().unwrap())
+                        .args(["--exact", "desktop::tests::new_folder_restart_reader", "--ignored", "--nocapture"])
+                        .env("SYSTEMLESS_GPUI_FOLDER_ROOT", &save_path)
+                        .env("SYSTEMLESS_GPUI_FOLDER_CPU", if powerpc { "ppc" } else { "68k" })
+                        .env("SYSTEMLESS_GPUI_FOLDER_DEPTH", depth.unwrap().to_string())
+                        .env("SYSTEMLESS_GPUI_FOLDER_WRITER_PID", std::process::id().to_string())
+                        .output().unwrap();
+                    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+                    print!("{}", String::from_utf8_lossy(&output.stdout));
+                    assert!(output.status.success(), "separate-process New Folder restart: PPC={powerpc}, depth={depth:?}");
+                }
             }
+        }
+
+        #[test]
+        #[ignore = "reader subprocess of the New Folder guest workflow"]
+        fn new_folder_restart_reader() {
+            let save_path = PathBuf::from(std::env::var_os("SYSTEMLESS_GPUI_FOLDER_ROOT").unwrap());
+            let powerpc = std::env::var("SYSTEMLESS_GPUI_FOLDER_CPU").unwrap() == "ppc";
+            let depth: u16 = std::env::var("SYSTEMLESS_GPUI_FOLDER_DEPTH").unwrap().parse().unwrap();
+            let writer: u32 = std::env::var("SYSTEMLESS_GPUI_FOLDER_WRITER_PID").unwrap().parse().unwrap();
+            assert_ne!(writer, std::process::id());
+            let mut restored = MacintoshSession::new(true, if powerpc { None } else { Some(depth) });
+            restored.runner_mut().set_prefer_powerpc_executables(powerpc);
+            if powerpc { restored.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+            let app = restored.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+            let mut store = super::super::desktop_save_store::DesktopSaveStore::for_loaded_archive(
+                &save_path, restored.runner_mut());
+            store.restore_saved_state(restored.runner_mut());
+            restored.initialize(&app);
+            assert_eq!(restored.runner().is_powerpc_app(), powerpc);
+            assert_eq!(restored.runner().presented_screen_depth(), Some(u32::from(depth)));
+            wait_for_menu(&mut restored, 129, 1, true);
+            assert!(restored.runner_mut().select_guest_menu_item(129, 12));
+            wait_for_menu(&mut restored, 129, 12, true); settle(&mut restored);
+            let step = |session: &mut MacintoshSession| {
+                let tick = session.runner().guest_tick().saturating_add(1);
+                session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+            };
+            for input in [MacintoshInput::MouseDown { vertical: 266, horizontal: 400 },
+                MacintoshInput::MouseUp { vertical: 266, horizontal: 400 }] { restored.deliver_input(input); }
+            let panel = (0..100).find_map(|_| { step(&mut restored); restored.runner().standard_file_snapshot() }).unwrap();
+            assert!(panel.entries.as_ref().unwrap().iter().any(|entry| entry.name == "gpui folder" && entry.is_directory),
+                "empty New Folder must survive independent process restart: entries={:?}", panel.entries);
+            eprintln!("PASS process-new-folder powerpc={powerpc} depth={depth} writer={writer} reader={}", std::process::id());
         }
 
         #[test]
