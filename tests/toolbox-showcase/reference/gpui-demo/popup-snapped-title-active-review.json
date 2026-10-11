@@ -1,0 +1,576 @@
+{
+  "binary_sha256": "98c725d474d9da5639a82f14d423d9d99fb0e491fbf7dbe5b17f855185c2a0e1",
+  "surface": "popup",
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "scope": "Shared GPUI compositor and guest session API; not native host observer or native Macintosh qualification.",
+  "visual_review": "All twelve full compositions reviewed: active title visible, popup labels within resolved guest bounds; original monochrome application-drawn panels preserved.",
+  "captures": [
+    {
+      "mode": "mono",
+      "state": "active",
+      "scale": 0.75,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "0.75",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-snapped-title-active-scales/popup-selected-scale-mono-active-075.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-snapped-title-active-mono-075.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "sha256": "3c882ca256e17d857f14b1684f14e2c8f816ef0444968b68ce64e1533cc92cb8",
+          "original_file": "popup-selected-scale-mono-active-075.png"
+        },
+        {
+          "file": "popup-selected-scale-mono-active-075.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "9c04b8ffbba1c2bda24d6c459efe64a86619902d0b8068a3bb3976f637afef5e",
+          "archived": false
+        }
+      ],
+      "title_bitmap_comparison": {
+        "reference": "popup-resolved-box-mono-075.png",
+        "reference_sha256": "3c882ca256e17d857f14b1684f14e2c8f816ef0444968b68ce64e1533cc92cb8",
+        "crop": [
+          375,
+          46,
+          578,
+          71
+        ],
+        "pixel_identical": true
+      }
+    },
+    {
+      "mode": "mono",
+      "state": "active",
+      "scale": 1.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "1.0",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-snapped-title-active-scales/popup-selected-scale-mono-active-100.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-snapped-title-active-mono-100.png",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "sha256": "9020dceb69d5b697225a275ac029903178d515ea9d871d7c31202812bc563aa5",
+          "original_file": "popup-selected-scale-mono-active-100.png"
+        },
+        {
+          "file": "popup-selected-scale-mono-active-100.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "9c04b8ffbba1c2bda24d6c459efe64a86619902d0b8068a3bb3976f637afef5e",
+          "archived": false
+        }
+      ],
+      "title_bitmap_comparison": {
+        "reference": "popup-resolved-box-mono-100.png",
+        "reference_sha256": "9020dceb69d5b697225a275ac029903178d515ea9d871d7c31202812bc563aa5",
+        "crop": [
+          500,
+          62,
+          770,
+          94
+        ],
+        "pixel_identical": true
+      }
+    },
+    {
+      "mode": "mono",
+      "state": "active",
+      "scale": 1.5,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "1.5",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-snapped-title-active-scales/popup-selected-scale-mono-active-150.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-snapped-title-active-mono-150.png",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "sha256": "6a86ccb65bbfc1084c6280f878b58fe2d22948d271532b08e40c2804e399cfd5",
+          "original_file": "popup-selected-scale-mono-active-150.png"
+        },
+        {
+          "file": "popup-selected-scale-mono-active-150.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "9c04b8ffbba1c2bda24d6c459efe64a86619902d0b8068a3bb3976f637afef5e",
+          "archived": false
+        }
+      ],
+      "title_bitmap_comparison": {
+        "reference": "popup-resolved-box-mono-150.png",
+        "reference_sha256": "6a86ccb65bbfc1084c6280f878b58fe2d22948d271532b08e40c2804e399cfd5",
+        "crop": [
+          750,
+          93,
+          1155,
+          141
+        ],
+        "pixel_identical": true
+      }
+    },
+    {
+      "mode": "mono",
+      "state": "active",
+      "scale": 2.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "2.0",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-snapped-title-active-scales/popup-selected-scale-mono-active-200.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-snapped-title-active-mono-200.png",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "sha256": "24122af1ff59086f5f674f2ac3fb81b0c2d179e5a0aa23541eec2a065a1508ae",
+          "original_file": "popup-selected-scale-mono-active-200.png"
+        },
+        {
+          "file": "popup-selected-scale-mono-active-200.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "9c04b8ffbba1c2bda24d6c459efe64a86619902d0b8068a3bb3976f637afef5e",
+          "archived": false
+        }
+      ],
+      "title_bitmap_comparison": {
+        "reference": "popup-resolved-box-mono-200.png",
+        "reference_sha256": "24122af1ff59086f5f674f2ac3fb81b0c2d179e5a0aa23541eec2a065a1508ae",
+        "crop": [
+          1000,
+          124,
+          1540,
+          188
+        ],
+        "pixel_identical": true
+      }
+    },
+    {
+      "mode": "colour",
+      "state": "active",
+      "scale": 0.75,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "0.75",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-snapped-title-active-scales/popup-selected-scale-colour-active-075.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-snapped-title-active-colour-075.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "sha256": "6250518c9d2065a99bf4a862ea2bcf08c1330fd34ccdcbf2812b939b34947f71",
+          "original_file": "popup-selected-scale-colour-active-075.png"
+        },
+        {
+          "file": "popup-selected-scale-colour-active-075.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "c9f090aeb75ba2e8300f62d6e52a0a76f3a0342709b6f9af8a9bb56bc62633d9",
+          "archived": false
+        }
+      ],
+      "title_bitmap_comparison": {
+        "reference": "popup-resolved-box-colour-075.png",
+        "reference_sha256": "6250518c9d2065a99bf4a862ea2bcf08c1330fd34ccdcbf2812b939b34947f71",
+        "crop": [
+          375,
+          46,
+          578,
+          71
+        ],
+        "pixel_identical": true
+      }
+    },
+    {
+      "mode": "colour",
+      "state": "active",
+      "scale": 1.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1.0",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-snapped-title-active-scales/popup-selected-scale-colour-active-100.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-snapped-title-active-colour-100.png",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "sha256": "32295ed722e9e6561364ef9421165668ed2674907265cebf1f65ac14b26ee1ab",
+          "original_file": "popup-selected-scale-colour-active-100.png"
+        },
+        {
+          "file": "popup-selected-scale-colour-active-100.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "c9f090aeb75ba2e8300f62d6e52a0a76f3a0342709b6f9af8a9bb56bc62633d9",
+          "archived": false
+        }
+      ],
+      "title_bitmap_comparison": {
+        "reference": "popup-resolved-box-colour-100.png",
+        "reference_sha256": "32295ed722e9e6561364ef9421165668ed2674907265cebf1f65ac14b26ee1ab",
+        "crop": [
+          500,
+          62,
+          770,
+          94
+        ],
+        "pixel_identical": true
+      }
+    },
+    {
+      "mode": "colour",
+      "state": "active",
+      "scale": 1.5,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1.5",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-snapped-title-active-scales/popup-selected-scale-colour-active-150.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-snapped-title-active-colour-150.png",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "sha256": "50fa927aa7feafb5a8d4e037e8129e8d566425880df8bd32d21966339d2254cd",
+          "original_file": "popup-selected-scale-colour-active-150.png"
+        },
+        {
+          "file": "popup-selected-scale-colour-active-150.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "c9f090aeb75ba2e8300f62d6e52a0a76f3a0342709b6f9af8a9bb56bc62633d9",
+          "archived": false
+        }
+      ],
+      "title_bitmap_comparison": {
+        "reference": "popup-resolved-box-colour-150.png",
+        "reference_sha256": "50fa927aa7feafb5a8d4e037e8129e8d566425880df8bd32d21966339d2254cd",
+        "crop": [
+          750,
+          93,
+          1155,
+          141
+        ],
+        "pixel_identical": true
+      }
+    },
+    {
+      "mode": "colour",
+      "state": "active",
+      "scale": 2.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "2.0",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-snapped-title-active-scales/popup-selected-scale-colour-active-200.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-snapped-title-active-colour-200.png",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "sha256": "456993b04ebee06de79de5a37cdfa41304c6ea6df4aaec41297c2b707652a4f7",
+          "original_file": "popup-selected-scale-colour-active-200.png"
+        },
+        {
+          "file": "popup-selected-scale-colour-active-200.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "c9f090aeb75ba2e8300f62d6e52a0a76f3a0342709b6f9af8a9bb56bc62633d9",
+          "archived": false
+        }
+      ],
+      "title_bitmap_comparison": {
+        "reference": "popup-resolved-box-colour-200.png",
+        "reference_sha256": "456993b04ebee06de79de5a37cdfa41304c6ea6df4aaec41297c2b707652a4f7",
+        "crop": [
+          1000,
+          124,
+          1540,
+          188
+        ],
+        "pixel_identical": true
+      }
+    },
+    {
+      "mode": "ppc",
+      "state": "active",
+      "scale": 0.75,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "0.75",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-snapped-title-active-scales/popup-selected-scale-ppc-active-075.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-snapped-title-active-ppc-075.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "sha256": "5a979143d6bdd1a2be22fb4d6f99b3dd206814b1ab211ecdcd4e253c8f57096b",
+          "original_file": "popup-selected-scale-ppc-active-075.png"
+        },
+        {
+          "file": "popup-selected-scale-ppc-active-075.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "66f12929081d81ff05c4a6ff69bebe6b064f533941fadf043491cc35b2ec8312",
+          "archived": false
+        }
+      ],
+      "title_bitmap_comparison": {
+        "reference": "popup-resolved-box-ppc-075.png",
+        "reference_sha256": "5a979143d6bdd1a2be22fb4d6f99b3dd206814b1ab211ecdcd4e253c8f57096b",
+        "crop": [
+          375,
+          46,
+          578,
+          71
+        ],
+        "pixel_identical": true
+      }
+    },
+    {
+      "mode": "ppc",
+      "state": "active",
+      "scale": 1.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "1.0",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-snapped-title-active-scales/popup-selected-scale-ppc-active-100.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-snapped-title-active-ppc-100.png",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "sha256": "17ce6db079e73de9374b40308cdd9a65185036385b66fe4cad5571834ec6e650",
+          "original_file": "popup-selected-scale-ppc-active-100.png"
+        },
+        {
+          "file": "popup-selected-scale-ppc-active-100.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "66f12929081d81ff05c4a6ff69bebe6b064f533941fadf043491cc35b2ec8312",
+          "archived": false
+        }
+      ],
+      "title_bitmap_comparison": {
+        "reference": "popup-resolved-box-ppc-100.png",
+        "reference_sha256": "17ce6db079e73de9374b40308cdd9a65185036385b66fe4cad5571834ec6e650",
+        "crop": [
+          500,
+          62,
+          770,
+          94
+        ],
+        "pixel_identical": true
+      }
+    },
+    {
+      "mode": "ppc",
+      "state": "active",
+      "scale": 1.5,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "1.5",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-snapped-title-active-scales/popup-selected-scale-ppc-active-150.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-snapped-title-active-ppc-150.png",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "sha256": "eb28660b2a56c506a20eab84725aa91fafbcf9b944aa8c3d130b42723fd8d0ac",
+          "original_file": "popup-selected-scale-ppc-active-150.png"
+        },
+        {
+          "file": "popup-selected-scale-ppc-active-150.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "66f12929081d81ff05c4a6ff69bebe6b064f533941fadf043491cc35b2ec8312",
+          "archived": false
+        }
+      ],
+      "title_bitmap_comparison": {
+        "reference": "popup-resolved-box-ppc-150.png",
+        "reference_sha256": "eb28660b2a56c506a20eab84725aa91fafbcf9b944aa8c3d130b42723fd8d0ac",
+        "crop": [
+          750,
+          93,
+          1155,
+          141
+        ],
+        "pixel_identical": true
+      }
+    },
+    {
+      "mode": "ppc",
+      "state": "active",
+      "scale": 2.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "2.0",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-snapped-title-active-scales/popup-selected-scale-ppc-active-200.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-snapped-title-active-ppc-200.png",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "sha256": "be90bde16b07fed9d3d235de8fa3acc1c6d6e47c8a963cfce2d7adf32d6e457f",
+          "original_file": "popup-selected-scale-ppc-active-200.png"
+        },
+        {
+          "file": "popup-selected-scale-ppc-active-200.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "66f12929081d81ff05c4a6ff69bebe6b064f533941fadf043491cc35b2ec8312",
+          "archived": false
+        }
+      ],
+      "title_bitmap_comparison": {
+        "reference": "popup-resolved-box-ppc-200.png",
+        "reference_sha256": "be90bde16b07fed9d3d235de8fa3acc1c6d6e47c8a963cfce2d7adf32d6e457f",
+        "crop": [
+          1000,
+          124,
+          1540,
+          188
+        ],
+        "pixel_identical": true
+      }
+    }
+  ],
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "e9fcb914536b83109b4229dac8e0c7a0f68af5072eb16806ae72b1c749a6a434",
+    "src/bin/gpui_demo_text.rs": "d9a2f17afeaf4358fa49f9065a07950cec700d9fcd1f25a628642b432cc0033e",
+    "src/systems/macintosh/runner/mod.rs": "9982c2ec723a6d588313098b0dc4ed09170620d679a4f7ed94c380ce1247d57f"
+  },
+  "source_commit": "845c0b39",
+  "qualification_limit": "Internal shared-compositor bitmap preservation; not native font parity, native host activation, arbitrary title resources or performance qualification."
+}
