@@ -2212,8 +2212,8 @@ fn track_control_popup_menu_samples_final_release_point() {
     );
     assert_eq!(
         dropdown_rect.3 - dropdown_left,
-        disp.standard_menu_width(&bus, &disp.menus[0].items),
-        "fixed closed control width must not enlarge the open menu"
+        40,
+        "fixed popup excludes its 52-pixel title and 18-pixel arrow area"
     );
     assert_eq!(bus.read_word(sp + 12), 0xBEEF);
 

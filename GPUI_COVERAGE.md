@@ -859,3 +859,32 @@ reviewed after the change and now exposes partial Archive 09, with the up arrow
 and last-item highlight intact. The example build passes. This is a shared
 presentation change; runtime pixel painting still needs equivalent clipping
 qualification, and no new PPC native capture was produced in this follow-up.
+
+
+### Fixed popup width resolved against both native CPUs
+
+A temporary copy of the existing dual-CPU showcase was built with its normal
+MPW pipeline. The only geometry change was Theme's `SetRect(&r, 190, 136,
+400, 160)` becoming `SetRect(&r, 190, 136, 500, 160)`; diagnostic text reported
+`MenuInfo.menuWidth` before/after `DrawControls` and `StringWidth` at Geneva 9
+and Chicago 12. The existing popup scenario was replayed in both BasiliskII
+and SheepShaver. Both open-menu captures moved the right edge from 422 to 522
+while preserving left=282: the fixed dropdown grew from 140 to 240 pixels.
+The menu record reported width 143 after drawing, separately from the open
+fixed rectangle. This rejects the hypothesis that the open fixed width is
+solely the measured text width or a fixed minimum of 140.
+
+Both CPU control adapters now use a shared `fixed_popup_menu_width` rule:
+control width minus title width minus the 18-pixel arrow/end-cap area, then
+the existing screen clipping. Automatic-width popup calls continue through
+their existing menu-size path. The shared regression records the two native
+samples and verifies unflagged controls do not receive this fixed override.
+The long-menu showcase check additionally requires width 140, point size 9
+and row height 12 on monochrome 68k, colour 68k and PPC. All 47 focused library
+popup tests pass. This supersedes the earlier fixed-width text-measurement
+assumption; broader popup typography and lifecycle qualification remain open.
+
+The three-mode scrolling/selection test passes with all three geometry
+assertions (51.59 seconds). The example build passes, and fresh colour-68k
+and PPC composed captures were reviewed: both retain the partial top row,
+up arrow and last-item highlight at the corrected fixed width.
