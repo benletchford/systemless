@@ -1,6 +1,43 @@
 use super::*;
 
 #[test]
+fn notification_direct_m68k_response_parks_then_restores_native_foreground() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NMInstall")).unwrap();
+    let request = PPC_DATA_BASE + 0x1800;
+    let output = request + 64;
+    let descriptor = PPC_HEAP_BASE + 0x1000;
+    let callback = PPC_HEAP_BASE + 0x2000;
+    loaded.memory.add_region(request, vec![0; 128]);
+    install_test_m68k_callback(&mut loaded, descriptor, callback,
+        test_stack_proc_info(0, &[PPC_PROCINFO_SIZE_FOUR]), 0,
+        &[0x202f, 4, 0x23c0, (output >> 16) as u16, output as u16, 0x4e74, 4]);
+    loaded.memory.write_u16_be(request + 4, 8).unwrap();
+    loaded.memory.write_u32_be(request + 24, request + 96).unwrap();
+    loaded.memory.write_u32_be(request + 28, descriptor).unwrap();
+    loaded.cpu.gpr[3] = request;
+    loaded.run_with_hle_imports(64);
+    let instance = loaded.toolbox_startup.notification_requests.instance_id(request).unwrap();
+    assert!(loaded.guest_calls().bind_task_entry_isa(
+        crate::guest_call::ExecutionTaskId::APPLICATION, GuestIsa::PowerPc));
+    assert!(loaded.guest_calls().current_native_task_owns_cpu());
+    let foreground = loaded.cpu.capture_execution_context();
+    let mut cfm = loaded.cfm.take().unwrap();
+    let manager_handle = loaded.process_memory_manager.0.clone();
+    let probe = loaded.run_notification_response_with_process_services(request, instance,
+        descriptor, 64, false, false, &mut manager_handle.borrow_mut(), &mut cfm).unwrap();
+    assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+    assert!(loaded.parked_interrupt_callback.is_some());
+    assert!(!loaded.interrupts_masked());
+    loaded.cfm = Some(cfm);
+    drain_test_m68k_guest_calls(&mut loaded);
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.memory.read_u32_be(output), Some(request));
+    assert!(loaded.parked_interrupt_callback.is_none());
+    assert!(loaded.guest_calls().is_empty());
+    assert_eq!(loaded.cpu.capture_execution_context().architectural(), foreground.architectural());
+}
+
+#[test]
 fn notification_native_response_resumes_slices_and_restores_foreground_context() {
     for remove_queue in [false, true] {
         let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NMInstall")).unwrap();
