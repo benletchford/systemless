@@ -330,7 +330,15 @@ fn ppc_dispatch_popup_track_control(
         .unwrap_or(1) as u32;
     let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
     let menu_colors = MenuColorTable::new(&menu_color_bytes);
-    let action = ppc_dispatch_pop_up_menu_select(
+    let font = if record.proc_id & 8 != 0 {
+        crate::menu_model::GuestMenuFont {
+            family: memory.read_u16_be(owner + 68).unwrap_or(0) as i16,
+            size: memory.read_u16_be(owner + 74).unwrap_or(0) as i16,
+        }
+    } else {
+        Default::default()
+    };
+    let action = ppc_dispatch_pop_up_menu_select_with_font(
         &popup_cpu,
         memory,
         gworlds,
@@ -340,6 +348,7 @@ fn ppc_dispatch_popup_track_control(
         input,
         vfs_resources,
         current_resource_refnum,
+        font,
     );
     Some(match action {
         PpcImportAction::Return(result) => {

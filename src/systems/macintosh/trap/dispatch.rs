@@ -865,6 +865,7 @@ pub(crate) struct ControlTrackingState {
     pub ctrl_handle: u32,
     pub ctrl_ptr: u32,
     pub popup_tracking: bool,
+    pub popup_font: crate::menu_model::GuestMenuFont,
     pub active_menu: usize,
     pub highlighted_item: i16,
     pub saved_pixels: SavedPixels,
