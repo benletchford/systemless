@@ -4685,6 +4685,25 @@ mod desktop {
             visual.run_until_parked();
             let restored = visual.capture_screenshot(window.into()).unwrap();
             assert_eq!(restored, composed, "marked cancellation must restore exact wrapped dialog pixels");
+            let long_stage = format!("{}日😀", "W".repeat(100));
+            visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                assert!(demo.composition.mark(&long_stage, 101..103)); cx.notify();
+            })).unwrap();
+            visual.run_until_parked();
+            let long_marked = visual.capture_screenshot(window.into()).unwrap();
+            assert_ne!(long_marked, composed);
+            visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                let bounds = demo.bounds_for_range(121..123, Bounds::default(), window, cx)
+                    .expect("horizontally revealed modal stage selection must have painted bounds");
+                assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+                assert_eq!(demo.character_index_for_point(point(bounds.origin.x, bounds.origin.y + px(1.)), window, cx), Some(121));
+                demo.composition.cancel(); cx.notify();
+            })).unwrap();
+            long_marked.save(output.with_extension("long-marked.png")).unwrap();
+            visual.run_until_parked();
+            assert_eq!(visual.capture_screenshot(window.into()).unwrap(), composed,
+                "long modal staging cancellation must restore exact pixels");
+
             eprintln!("PASS wrapped dialog painted marked geometry and exact cancellation");
         }
         eprintln!("saved composed GPUI capture to {}", output.display());
