@@ -529,6 +529,7 @@ mod desktop {
         styled_text_plans: Vec<Option<super::text::StyledTextEditPaintPlan>>,
         standard_file: Option<StandardFileSnapshot>,
         cursor: Option<systemless::runner::CursorSnapshot>,
+        notifications: Vec<systemless::runner::NotificationSnapshot>,
         frame: Option<(u32, u32, Vec<u8>)>,
         clipboard_export: Option<(u64, Vec<u8>)>,
         text_commit_rejection: Option<(u64, super::input::TextInputOwner)>,
@@ -896,6 +897,7 @@ mod desktop {
                 let lists = session.runner_mut().list_manager_snapshot();
                 let text_edits = session.runner_mut().text_edit_snapshot().records;
                 let standard_file = session.runner_mut().standard_file_snapshot();
+                let notifications = session.runner_mut().notification_snapshot();
                 let list_text_plans = frame.as_ref().map(|frame|
                     qualify_list_text_fields(&lists, &frame.pixels, frame.width, frame.height)).unwrap_or_default();
                 let styled_text_plans = frame.as_ref().map(|frame|
@@ -920,6 +922,7 @@ mod desktop {
                     styled_text_plans,
                     standard_file,
                     cursor: Some(session.runner().cursor_snapshot()),
+                    notifications,
                     frame,
                     status: format!(
                         "{architecture} · {}",
@@ -964,6 +967,7 @@ mod desktop {
         styled_text_plans: Vec<Option<super::text::StyledTextEditPaintPlan>>,
         standard_file: Option<StandardFileSnapshot>,
         cursor: Option<systemless::runner::CursorSnapshot>,
+        notifications: Vec<systemless::runner::NotificationSnapshot>,
         cursor_inside: bool,
         cursor_host_position: Option<(f32, f32)>,
         cursor_pointer_mapping: Option<super::cursor::PointerMapping>,
@@ -1116,6 +1120,7 @@ mod desktop {
                             this.guest_menu_tracking = update.guest_menu_tracking;
                             this.guest_popup = update.guest_popup;
                             this.cursor = update.cursor;
+                            this.notifications = update.notifications;
                             this.windows = update.windows;
                             this.dialogs = update.dialogs;
                             this.controls = update.controls;
@@ -1176,6 +1181,7 @@ mod desktop {
                 styled_text_plans: Vec::new(),
                 standard_file: None,
                 cursor: None,
+                notifications: Vec::new(),
                 cursor_inside: false,
                 cursor_host_position: None,
                 cursor_pointer_mapping: None,
@@ -6144,6 +6150,7 @@ mod desktop {
             demo.lists = update.lists; demo.list_text_plans = update.list_text_plans;
             demo.text_edits = update.text_edits; demo.styled_text_plans = update.styled_text_plans;
             demo.standard_file = update.standard_file; demo.cursor = update.cursor;
+            demo.notifications = update.notifications;
             demo.status = update.status; demo.host_active = Some(true);
             demo.image = Some(Arc::new(RenderImage::new(vec![image::Frame::new(
                 image::RgbaImage::from_raw(width, height, gpui_pixels(update.frame.unwrap().2)).unwrap())])));
