@@ -1264,6 +1264,11 @@ pub(crate) fn classic_popup_control_label(
         let line = ClassicLine::unicode(&display, guest_font.family, guest_font.point_size());
         let x = if title { (width - 6 - line.positions.last().copied().unwrap_or(0)).max(0) } else { i32::from(text_inset) };
         let baseline = (height - i32::from(metrics.ascent) - i32::from(metrics.descent)) / 2 + i32::from(metrics.ascent) - i32::from(!title);
+        if let systemless::runner::ControlTextInk::Solid([r, g, b]) = ink {
+            let foreground: Hsla = rgb((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)).into();
+            if paint_smooth_label(&line, origin.x + px(x as f32 * scale),
+                origin.y + px(baseline as f32 * scale), scale, foreground, window) { return; }
+        }
         for &(ink_x, ink_y, ink_width) in &line.ink {
             let y = baseline + ink_y;
             // Solid ink retains one quad per bitmap run; only checker ink
