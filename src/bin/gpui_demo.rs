@@ -404,6 +404,7 @@ mod desktop {
         controls: Vec<ControlSnapshot>,
         lists: Vec<ListManagerSnapshot>,
         text_edits: Vec<TextEditSnapshot>,
+        styled_text_plans: Vec<Option<super::text::StyledTextEditPaintPlan>>,
         standard_file: Option<StandardFileSnapshot>,
         frame: Option<(u32, u32, Vec<u8>)>,
         clipboard_export: Option<(u64, Vec<u8>)>,
@@ -625,9 +626,7 @@ mod desktop {
                 let menu_height = session.runner().bus().read_word(MBAR_HEIGHT);
                 let guest_menu_tracking = session.runner().guest_menu_tracking_active();
                 let guest_popup = session.runner_mut().guest_popup_snapshot();
-                let frame = session.video_frame().map(|frame| {
-                    (frame.width, frame.height, gpui_pixels(frame.pixels))
-                });
+                let frame = session.video_frame();
                 let running = session.status().running;
                 let windows = session.runner_mut().window_frame_snapshot();
                 let dialogs = session.runner_mut().dialog_snapshot();
@@ -635,6 +634,10 @@ mod desktop {
                 let lists = session.runner_mut().list_manager_snapshot();
                 let text_edits = session.runner_mut().text_edit_snapshot().records;
                 let standard_file = session.runner_mut().standard_file_snapshot();
+                let styled_text_plans = frame.as_ref().map(|frame|
+                    qualify_styled_text_fields(&text_edits, &frame.pixels, frame.width, frame.height))
+                    .unwrap_or_default();
+                let frame = frame.map(|frame| (frame.width, frame.height, gpui_pixels(frame.pixels)));
                 *updates.lock().unwrap() = Some(Update {
                     identity: identity.clone(),
                     clipboard_export: clipboard.export.clone(),
@@ -648,6 +651,7 @@ mod desktop {
                     controls,
                     lists,
                     text_edits,
+                    styled_text_plans,
                     standard_file,
                     frame,
                     status: format!(
@@ -689,6 +693,7 @@ mod desktop {
         controls: Vec<ControlSnapshot>,
         lists: Vec<ListManagerSnapshot>,
         text_edits: Vec<TextEditSnapshot>,
+        styled_text_plans: Vec<Option<super::text::StyledTextEditPaintPlan>>,
         standard_file: Option<StandardFileSnapshot>,
         text_pointer_map: std::rc::Rc<std::cell::RefCell<Option<super::text::TextPointerMap>>>,
         text_pointer_capture: Option<(u32, u64)>,
@@ -830,6 +835,7 @@ mod desktop {
                             this.controls = update.controls;
                             this.lists = update.lists;
                             this.text_edits = update.text_edits;
+                            this.styled_text_plans = update.styled_text_plans;
                             this.standard_file = update.standard_file;
                             this.status = update.status;
                             if let Some((width, height, pixels)) = update.frame {
@@ -873,6 +879,7 @@ mod desktop {
                 controls: Vec::new(),
                 lists: Vec::new(),
                 text_edits: Vec::new(),
+                styled_text_plans: Vec::new(),
                 standard_file: None,
                 image: None,
                 prepared_buttons: None,
@@ -1756,6 +1763,28 @@ mod desktop {
                             .h(guest_px(clip.height() as f32))
                             .child(overlay),
                     );
+                }
+                // Styled fields use the owning CPU's strikes and paint order.
+                // Visibility establishes the standard owner; exact native pixels
+                // establish paint fidelity. Input continues through guest events.
+                for piece in super::frames::styled_text_edit_candidates(
+                    &self.text_edits, &self.dialogs, &self.controls, &self.windows, viewport,
+                ) {
+                    let Some(Some(plan)) = self.styled_text_plans.get(piece.record) else { continue; };
+                    let record = &self.text_edits[piece.record];
+                    let Some(dest) = record.global_dest_rect else { continue; };
+                    let origin = (
+                        self.display_origin.0 + (i32::from(dest.1) - i32::from(record.dest_rect.1)) as f32 * scene_scale,
+                        self.display_origin.1 + (i32::from(dest.0) - i32::from(record.dest_rect.0)) as f32 * scene_scale,
+                    );
+                    let Some(ink) = super::text::classic_styled_text_edit_field(
+                        plan.clone(), scene_scale, origin,
+                    ) else { continue; };
+                    let clip = piece.clip;
+                    screen = screen.child(div().absolute().overflow_hidden()
+                        .left(guest_px(clip.left as f32)).top(guest_px(clip.top as f32))
+                        .w(guest_px(clip.width() as f32)).h(guest_px(clip.height() as f32))
+                        .child(ink));
                 }
                 // CDEF-owned standard controls can use Kit components while their
                 // ControlRecord state and tracking remain guest-owned.
@@ -4074,6 +4103,7 @@ mod desktop {
         let menus = session.runner_mut().guest_menu_snapshot();
         let guest_popup = session.runner_mut().guest_popup_snapshot();
         let frame = session.video_frame().unwrap();
+        let styled_text_plans = qualify_styled_text_fields(&text_edits, &frame.pixels, frame.width, frame.height);
         if matches!(capture, CaptureCase::WindowsZoomRestored) {
             // This exposed main-window point used to retain the zoomed
             // auxiliary window's blue pixels after the 68K zoom-back.
@@ -4142,6 +4172,7 @@ mod desktop {
                 demo.controls = controls;
                 demo.lists = lists;
                 demo.text_edits = text_edits;
+                demo.styled_text_plans = styled_text_plans;
                 demo.standard_file = standard_file;
                 if let Some((id, generation, from, to)) = held_drag {
                     demo.mouse_down = true;
@@ -4172,10 +4203,26 @@ mod desktop {
         eprintln!("saved composed GPUI capture to {}", output.display());
     }
 
+    // White is an explicit classic-field candidate, not inferred host theme
+    // paint. Every field pixel must match before the recipe can be presented.
+    fn qualify_styled_text_fields(
+        records: &[TextEditSnapshot], native: &[u8], width: u32, height: u32,
+    ) -> Vec<Option<super::text::StyledTextEditPaintPlan>> {
+        records.iter().map(|record| {
+            if !record.styled { return None; }
+            let background = systemless::runner::TextEditInkSnapshot {
+                pixel: if record.paint.as_ref()?.depth == 16 { 0x7fff } else { 0 },
+                rgb: [255, 255, 255], inverted_rgb: [0, 0, 0],
+            };
+            let caret = (0..record.line_count).find_map(|index| styled_caret_paint(record, index));
+            super::text::StyledTextEditPaintPlan::qualify(record, &background, caret, native, width, height)
+        }).collect()
+    }
+
     /// Classic PPC uses the insertion style; 68k uses retained native solid
     /// paint evidence, independently of the restored caller foreground.
-    /// This capture uses the default classic theme only.
-    #[cfg(feature = "gpui-demo-test")]
+    /// This is a classic-theme candidate; full native pixel qualification
+    /// rejects a changed theme or unsupported caret paint.
     fn styled_caret_paint(
         record: &systemless::runner::TextEditSnapshot, index: usize,
     ) -> Option<((i16, i16, i16, i16), systemless::runner::TextEditInkSnapshot)> {
@@ -7163,6 +7210,10 @@ mod desktop {
                 let plan = super::super::text::StyledTextEditPaintPlan::qualify(
                     &record, &background, None, &frame.pixels, frame.width, frame.height,
                 ).expect("whole-field styled recipe matches native ink and background");
+                let live_plans = super::qualify_styled_text_fields(std::slice::from_ref(&record),
+                    &frame.pixels, frame.width, frame.height);
+                assert_eq!(live_plans.len(), 1);
+                assert_eq!(live_plans[0].as_ref().expect("worker qualifies native styled field").pixels, plan.pixels);
                 assert_eq!(plan.background, [255; 3]);
                 assert!(!plan.pixels.is_empty());
                 assert_eq!(plan.view, record.view_rect);
@@ -7174,6 +7225,8 @@ mod desktop {
                 let mut changed = frame.pixels.clone();
                 let at = ((view.0 as u32 * frame.width + view.1 as u32) * 4) as usize;
                 changed[at] ^= 1;
+                assert!(super::qualify_styled_text_fields(std::slice::from_ref(&record),
+                    &changed, frame.width, frame.height)[0].is_none());
                 assert!(super::super::text::StyledTextEditPaintPlan::qualify(
                     &record, &background, None, &changed, frame.width, frame.height,
                 ).is_none(), "modified application pixels refuse replacement");
