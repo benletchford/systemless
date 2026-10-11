@@ -3109,3 +3109,67 @@ fn picture_input_distinguishes_invalid_data_and_overflow_from_missing_input() {
     assert!(input.range(usize::MAX, 4).is_none());
     assert!(input.missing.get().is_none());
 }
+
+#[test]
+fn picture_playback_yields_without_losing_same_rect_or_nested_picture_state() {
+    let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+    let screen = 0x08_0000;
+    let outer_ptr = 0x10_0000;
+    let inner_ptr = 0x11_0000;
+    let frame = (0, 0, 8, 8);
+    let outer = finish_v1_picture(frame, &[0x31, 0, 0, 0, 0, 0, 2, 0, 2, 0x3A]);
+    let inner = finish_v1_picture(frame, &[0x31, 0, 4, 0, 4, 0, 6, 0, 6]);
+    bus.write_bytes(outer_ptr, &outer);
+    bus.write_bytes(inner_ptr, &inner);
+    bus.fill_zeros(screen, 64);
+    let clut = TrapDispatcher::standard_mac_8bpp_clut();
+    let mode = (screen, 8, 8, 8, 8);
+    let mut outer = super::PicturePlayback::from_frame(outer_ptr, frame, frame, 8, &clut).unwrap();
+    let mut inner = super::PicturePlayback::from_frame(inner_ptr, frame, frame, 8, &clut).unwrap();
+    outer.render_commands(&mut bus, mode, &clut, 0, None, 0);
+    assert_eq!(outer.pos, outer_ptr + 10);
+    outer.render_commands(&mut bus, mode, &clut, 0, None, 2);
+    assert_eq!(bus.read_byte(screen), 255);
+    assert!(!outer.ended);
+    inner.render_commands(&mut bus, mode, &clut, 0, None, usize::MAX);
+    assert!(inner.ended);
+    assert_eq!(bus.read_byte(screen + 4 * 8 + 4), 255);
+    outer.render_commands(&mut bus, mode, &clut, 0, None, 1);
+    assert_eq!(bus.read_byte(screen), 0);
+    assert_eq!(bus.read_byte(screen + 4 * 8 + 4), 255);
+    assert!(!outer.ended);
+    outer.render_commands(&mut bus, mode, &clut, 0, None, 1);
+    assert!(outer.ended);
+    let final_count = outer.opcount;
+    outer.render_commands(&mut bus, mode, &clut, 0, None, 1);
+    assert_eq!(outer.opcount, final_count);
+}
+
+#[test]
+fn picture_playback_single_opcode_slices_preserve_v2_font_color_and_relative_text() {
+    let frame = (0, 0, 48, 80);
+    let mut commands = Vec::new();
+    for word in [0x0003, 0, 0x000D, 18, 0x001A, 0xFFFF, 0, 0] {
+        super::recording_push_word(&mut commands, word);
+    }
+    super::recording_push_long_text(&mut commands, 20, 10, b"A");
+    push_v2_relative_text(&mut commands, 0x002B, &[12, 8], b"B");
+    let picture = super::finish_recording(frame, commands);
+    let expected = render_text_picture(&picture, 80, 48);
+    assert!(expected.iter().any(|&pixel| pixel != 0));
+    let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+    let screen = 0x08_0000;
+    let pic = 0x10_0000;
+    bus.write_bytes(pic, &picture);
+    bus.fill_zeros(screen, 80 * 48);
+    let clut = TrapDispatcher::standard_mac_8bpp_clut();
+    let mut playback = super::PicturePlayback::from_frame(pic, frame, frame, 8, &clut).unwrap();
+    for _ in 0..32 {
+        playback.render_commands(&mut bus, (screen, 80, 80, 48, 8), &clut, 0, None, 1);
+        if playback.ended {
+            break;
+        }
+    }
+    assert!(playback.ended);
+    assert_eq!(bus.read_bytes(screen, 80 * 48), expected);
+}
