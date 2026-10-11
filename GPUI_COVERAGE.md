@@ -37,7 +37,9 @@ items. Rebuilds now compare the open menu and its reachable submenus, so
 changes to unrelated guest menus leave its current selection alone.
 `PopupMenu::rebuild` still clears its selected row and exposes no public
 selection setter, so preserving hover and keyboard selection during live
-updates remains open. The interaction test also verifies that removing the guest menu unmounts
+updates remains open. A keyboard-only interaction test confirms that Down and
+Enter dispatch the selected standard-menu item through the guest command queue.
+The interaction test also verifies that removing the guest menu unmounts
 the open popup; replacement with a reused MenuHandle still needs qualification. Selections still pass through
 `FixtureRunner::select_guest_menu_item` for guest-side validation and Toolbox
 event ordering. Inside Macintosh Volume I, I-352 and I-356–I-358, defines

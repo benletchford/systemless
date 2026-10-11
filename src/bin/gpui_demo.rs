@@ -4077,6 +4077,75 @@ mod desktop {
 
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
+        fn open_menu_keyboard_selection_dispatches_guest_command(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::{test::TestWindowExt, AppContext, Bounds, WindowBounds, WindowOptions};
+            use systemless::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
+
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            cx.update(gpui_kit::init);
+            let (window, view) = cx.update(|cx| {
+                gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                            None,
+                            gpui_kit::size(gpui_kit::px(640.), gpui_kit::px(480.)),
+                            cx,
+                        ))),
+                        ..Default::default()
+                    },
+                    cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(sender, updates, cx)),
+                )
+                .unwrap()
+            });
+            cx.update(|cx| {
+                view.update(cx, |demo, cx| {
+                    demo.menus = GuestMenuSnapshot {
+                        custom_bar_definition: false,
+                        menus: vec![GuestMenu {
+                            guest_id: 0x1000,
+                            generation: 1,
+                            id: 129,
+                            title: "File".into(),
+                            enabled: true,
+                            standard_definition: true,
+                            hierarchical: false,
+                            visible_in_menu_bar: true,
+                            items: ["Open", "Save"]
+                                .into_iter()
+                                .enumerate()
+                                .map(|(index, text)| GuestMenuItem {
+                                    number: index as i16 + 1,
+                                    text: text.into(),
+                                    enabled: true,
+                                    checked: false,
+                                    key_equivalent: None,
+                                    submenu_id: None,
+                                    separator: false,
+                                })
+                                .collect(),
+                        }],
+                    };
+                    cx.notify();
+                });
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window.click("guest-menu-4096-1", cx);
+                window.within("popup-menu").press("down", cx);
+                window.within("popup-menu").press("down", cx);
+                window.within("popup-menu").press("enter", cx);
+            })
+            .unwrap();
+            assert!(matches!(
+                receiver.try_recv(),
+                Ok(super::Command::Menu(129, 2, 0x1000, 1))
+            ));
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
         fn gpui_key_event_reaches_guest_queue(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::{test::TestWindowExt, AppContext, Bounds, InputEvent, KeyDownEvent, KeyUpEvent, ModifiersChangedEvent, WindowBounds, WindowOptions};
             use systemless::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
