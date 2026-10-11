@@ -1230,3 +1230,11 @@ hierarchical menu test checks an unbound printable key while open, guest typing
 after selection, and typing after Escape cancellation (after delivery of the
 GPUI dismissal event). This does not qualify full control traversal or returning
 to an independently focused host text editor.
+
+
+Document and dialog choices now omit host focus and semantic activation while
+their guest owner is inactive. Guest pointer forwarding remains available for
+window activation. The document-checkbox interaction regression covers an
+inactive owner, reactivation, disabling, and re-enabling without changing the
+control identity. It verifies focus availability and a single forwarded press;
+this is not a native accessibility or complete focus-traversal qualification.
