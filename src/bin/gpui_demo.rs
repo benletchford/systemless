@@ -1756,39 +1756,32 @@ mod desktop {
                             let popup_font = control.popup_font.unwrap_or_default();
                             let title_width = i32::from(control.popup_title_width.unwrap_or(0))
                                 .clamp(0, source.width().saturating_sub(20));
+                            // Keep text in the guest ControlRecord coordinate system.
+                            // Host borders must not inset the CDEF text canvas.
                             overlay = overlay
-                                .flex()
-                                .items_center()
                                 .child(
-                                    div()
-                                        .w(guest_px(title_width as f32))
-                                        .overflow_hidden()
-                                        .h_full()
+                                    div().absolute().left(guest_px(0.)).top(guest_px(0.))
+                                        .w(guest_px(title_width as f32)).h_full().overflow_hidden()
                                         .child(super::text::classic_popup_control_label(
                                             &control.title, popup_font, true, control.popup_text_inset, scene_scale,
                                             if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })),
                                 )
                                 .child(
-                                    div()
-                                        .flex_1()
-                                        .h_full()
-                                        .min_w(guest_px(1.))
-                                        .border_1()
-                                        .border_color(cx.theme().border)
-                                        .bg(cx.theme().secondary)
-                                        .flex()
-                                        .items_center()
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .min_w(guest_px(1.))
-                                                .overflow_hidden()
-                                                .h_full()
-                                                .child(super::text::classic_popup_control_label(
-                                                    selected, popup_font, false, control.popup_text_inset, scene_scale,
-                                                    if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })),
-                                        )
-                                        .child(div().w(guest_px(18.)).flex().items_center().justify_center().child("▾")),
+                                    div().absolute().left(guest_px(title_width as f32)).top(guest_px(0.))
+                                        .w(guest_px((source.width() - title_width) as f32)).h_full()
+                                        .border_1().border_color(cx.theme().border).bg(cx.theme().secondary),
+                                )
+                                .child(
+                                    div().absolute().left(guest_px(title_width as f32)).top(guest_px(0.))
+                                        .w(guest_px((source.width() - title_width - 19).max(0) as f32))
+                                        .h_full().overflow_hidden()
+                                        .child(super::text::classic_popup_control_label(
+                                            selected, popup_font, false, control.popup_text_inset, scene_scale,
+                                            if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })),
+                                )
+                                .child(
+                                    div().absolute().right(guest_px(0.)).top(guest_px(0.))
+                                        .w(guest_px(18.)).h_full().flex().items_center().justify_center().child("▾"),
                                 );
                         }
                         0 => {

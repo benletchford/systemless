@@ -3063,3 +3063,17 @@ full PPC selected-control composition is reviewed and losslessly archived
 with hashes in `popup-ppc-text-inset-review.json`. The label uses the smaller
 PPC inset and retains guest ellipsis. Exact geometry, scales/states and native
 parity remain unqualified.
+
+### Closed popup text coordinates independent of host borders
+
+The closed popup title and selected-label canvases now use absolute guest
+coordinates rather than the host border's flex content box. The selected text
+area ends 19 guest pixels before the control right edge, and its baseline is
+one guest pixel above the centered title baseline, following both CPU CDEF
+paths. The existing CPU-specific 15/5-pixel text origins remain intact.
+The GPUI example passes its locked build check and the diff whitespace check.
+The rebuilt PPC composed capture passed and was visually reviewed and archived
+with source hashes in `popup-coordinate-ppc-review.json`. Initial sandboxed
+captures failed at host service access; the successful compositor run used
+macOS host access. Both 68k compositions also passed and were visually reviewed and archived.
+Scale/state interaction verification remains pending; the host arrow and themed border still need faithful replacement.
