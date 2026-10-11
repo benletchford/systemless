@@ -1809,6 +1809,7 @@ struct ProcessNotificationQueue {
     requests: Vec<u32>,
     instances: std::collections::BTreeMap<u32, u64>,
     next_instance: u64,
+    completed_responses: std::collections::BTreeSet<u64>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SharedProcessNotificationQueue(SharedProcessValue<ProcessNotificationQueue>);
@@ -1832,15 +1833,23 @@ impl SharedProcessNotificationQueue {
     pub(crate) fn remove(&self, index: usize) -> u32 {
         self.0.with_mut(|queue| {
             let request = queue.requests.remove(index);
-            queue.instances.remove(&request);
+            if let Some(instance) = queue.instances.remove(&request) {
+                queue.completed_responses.remove(&instance);
+            }
             request
         })
     }
     pub(crate) fn instance_id(&self, request: u32) -> Option<u64> {
         self.0.with_ref(|queue| queue.instances.get(&request).copied())
     }
+    pub(crate) fn begin_response(&self, request: u32, instance: u64) -> bool {
+        self.0.with_mut(|queue| {
+            queue.instances.get(&request) == Some(&instance)
+                && queue.completed_responses.insert(instance)
+        })
+    }
     pub(crate) fn clear(&self) {
-        self.0.with_mut(|queue| { queue.requests.clear(); queue.instances.clear(); });
+        self.0.with_mut(|queue| { queue.requests.clear(); queue.instances.clear(); queue.completed_responses.clear(); });
     }
     pub(crate) fn attach_to(&mut self, process_state: &Self) {
         if self.0.ptr_eq(&process_state.0) { return; }

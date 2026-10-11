@@ -5696,3 +5696,18 @@ or visible notification renderer is established. Post-delivery callbacks must
 preserve suspended guest CPU state, including bounded execution and Mixed Mode
 parking; the immediate NMInstall response path alone does not establish that.
 All production gates remain open.
+
+### Guarded notification response entry (2026-10-11)
+
+Shared queue state now tracks response entry once per installation, clearing
+that tracking on removal/launch. Both immediate CPU paths use it. Classic
+notification delivery has an internal completion entry that validates current
+installation identity before reading guest memory and starting the response.
+The deferred procedure regression executes guest instructions and verifies
+return PC/SP and refCon writes; duplicate completion leaves the active callback
+unchanged. Automatic removal rejects repeat completion and stale IDs after
+reinstallation. Final13 targeted tests pass (0.12s); log and source hashes are
+under `reference/gpui-demo/notification-response-once`. The harness supplies
+completion explicitly; no GPUI acknowledgment is proved. Asynchronous runner
+CPU/condition-code preservation, PPC deferred callback continuation, visible
+notices and sound completion remain unfinished. All production gates stay open.

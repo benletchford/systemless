@@ -729,14 +729,26 @@ impl super::TrapDispatcher {
             || bus.read_long(nm_rec + 20) != 0 || bus.read_long(nm_rec + 24) != 0 {
             return 0;
         }
+        let instance = self.notification_requests.instance_id(nm_rec).unwrap();
+        self.complete_notification_delivery(cpu, bus, nm_rec, instance);
+        0
+    }
+
+    /// Called only after all requested notice stages have actually completed.
+    /// Guest removal/reinstallation invalidates stale delivery completions.
+    pub(crate) fn complete_notification_delivery<C: CpuOps>(
+        &mut self, cpu: &mut C, bus: &mut MacMemoryBus,
+        nm_rec: u32, instance: u64,
+    ) -> bool {
+        if self.notification_requests.instance_id(nm_rec) != Some(instance) { return false; }
+        if bus.read_word(nm_rec + 4) != 8
+            || !self.notification_requests.begin_response(nm_rec, instance) { return false; }
         match bus.read_long(nm_rec + 28) {
-            u32::MAX => {
-                self.remove_notification_request(bus, nm_rec);
-            }
+            u32::MAX => { self.remove_notification_request(bus, nm_rec); }
             0 => {}
             response => self.arm_notification_response(cpu, bus, nm_rec, response),
         }
-        0
+        true
     }
 
     fn install_vbl_task(

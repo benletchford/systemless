@@ -237,6 +237,10 @@ pub(crate) fn ppc_dispatch_system_compatibility(
                     || memory.read_u32_be(request + 24).unwrap_or(0) != 0 {
                     return PpcImportAction::Return(0);
                 }
+                let instance = toolbox_startup.notification_requests.instance_id(request).unwrap();
+                if !toolbox_startup.notification_requests.begin_response(request, instance) {
+                    return PpcImportAction::Return(0);
+                }
                 let response = memory.read_u32_be(request + 28).unwrap_or(0);
                 if response == u32::MAX {
                     ppc_remove_notification(memory, &mut toolbox_startup.notification_requests, request);
