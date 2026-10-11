@@ -1269,7 +1269,7 @@ fn ppc_standard_file_write_get_reply(
     mode: PpcStandardFileMode,
     reply: u32,
     entry: &PpcStandardFileEntry,
-    legacy_wd_ref: i16,
+    reply_volume_ref: i16,
 ) {
     if reply == 0 {
         return;
@@ -1284,7 +1284,7 @@ fn ppc_standard_file_write_get_reply(
             let _ = ppc_write_fsspec(
                 memory,
                 reply + 6,
-                PPC_BOOT_VOLUME_REF_NUM,
+                reply_volume_ref,
                 entry.dir_id,
                 &entry.name,
             );
@@ -1301,7 +1301,7 @@ fn ppc_standard_file_write_get_reply(
             }
             let _ = memory.write_u8(reply + 1, 0);
             let _ = memory.write_u32_be(reply + 2, entry.file_type);
-            let _ = memory.write_u16_be(reply + 6, legacy_wd_ref as u16);
+            let _ = memory.write_u16_be(reply + 6, reply_volume_ref as u16);
             let _ = memory.write_u16_be(reply + 8, 0);
             let _ = ppc_write_pstring_bytes(memory, reply + 10, &entry.name);
         }
@@ -1368,14 +1368,14 @@ fn ppc_standard_file_finish_get(
     {
         let legacy_wd_ref = if tracking.call.mode == PpcStandardFileMode::GetLegacy {
             ppc_standard_file_working_directory_ref(
-                PPC_BOOT_VOLUME_REF_NUM,
+                tracking.volume.ref_num,
                 tracking.entries.get(tracking.selected).unwrap().dir_id,
                 vfs_volumes,
                 working_directories,
                 next_working_directory_ref_num,
             )
         } else {
-            PPC_BOOT_VOLUME_REF_NUM
+            tracking.volume.ref_num
         };
         ppc_standard_file_write_get_reply(
             memory,
