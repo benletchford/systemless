@@ -317,25 +317,14 @@ mod desktop {
                 session.drain_audio();
                 let menus = session.runner_mut().guest_menu_snapshot();
                 let menu_presented = session.runner().guest_menu_bar_presented();
-                let guest_menu_fallback = menus.requires_guest_menu_rendering();
                 let guest_menu_tracking = session.runner().guest_menu_tracking_active();
                 let frame = session.video_frame().map(|frame| {
-                    // Preserve guest MBarHeight and crop only the displayed image,
-                    // as the native menu frontend does (Inside Macintosh V, V-245).
-                    let top = if guest_menu_fallback || !menu_presented {
-                        0
-                    } else {
-                        u32::from(session.runner().bus().read_word(MBAR_HEIGHT))
-                    };
-                    let top = if top < frame.height { top } else { 0 };
                     let mut pixels = frame.pixels;
-                    if top > 0 {
-                        pixels.drain(..(top * frame.width * 4) as usize);
-                    }
                     for pixel in pixels.chunks_exact_mut(4) {
                         pixel.swap(0, 2);
                     }
-                    (frame.width, frame.height - top, top, pixels)
+                    // Keep the guest framebuffer fixed while the host menu overlays it.
+                    (frame.width, frame.height, 0, pixels)
                 });
                 let running = session.status().running;
                 let windows = session.runner_mut().window_frame_snapshot();
@@ -502,10 +491,13 @@ mod desktop {
 
         fn pointer(&self, position: Point<Pixels>) -> (i16, i16) {
             // Convert the aspect-fit host position back to guest coordinates.
-            // Custom MDEFs retain the guest menu bar and have no host-bar offset.
+            // Cropped fixture captures retain the host-bar offset; live frames do not.
             let x = ((f32::from(position.x) - self.display_origin.0) / self.display_scale)
                 .clamp(0., self.width.saturating_sub(1) as f32);
-            let bar_height = if self.guest_menu_fallback() || !self.menu_presented {
+            let bar_height = if self.crop_top == 0
+                || self.guest_menu_fallback()
+                || !self.menu_presented
+            {
                 0.
             } else {
                 36.
@@ -519,7 +511,10 @@ mod desktop {
         fn inside_guest_pane(&self, position: Point<Pixels>) -> bool {
             let x = f32::from(position.x);
             let y = f32::from(position.y);
-            let bar_height = if self.guest_menu_fallback() || !self.menu_presented {
+            let bar_height = if self.crop_top == 0
+                || self.guest_menu_fallback()
+                || !self.menu_presented
+            {
                 0.
             } else {
                 36.
@@ -791,7 +786,7 @@ mod desktop {
             }
             let guest_menu_fallback = self.guest_menu_fallback();
             let fill_display = self.image.is_some()
-                && !self.menu_presented
+                && self.crop_top == 0
                 && !guest_menu_fallback
                 && self.windows.is_empty()
                 && self.dialogs.is_empty()
@@ -829,9 +824,10 @@ mod desktop {
                 .when(fill_display, |screen| {
                     screen.ml(px(self.display_origin.0)).mt(px(self.display_origin.1))
                 })
-                .when(self.menu_presented && !self.guest_menu_fallback(), |screen| {
-                    screen.mt(px(36.))
-                })
+                .when(
+                    self.crop_top > 0 && self.menu_presented && !self.guest_menu_fallback(),
+                    |screen| screen.mt(px(36.)),
+                )
                 .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
                     let (vertical, horizontal) = this.pointer(event.position);
                     this.mouse_position = (vertical, horizontal);
@@ -4669,7 +4665,7 @@ mod desktop {
                     WindowOptions {
                         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                             None,
-                            gpui_kit::size(gpui_kit::px(800.), gpui_kit::px(600.)),
+                            gpui_kit::size(gpui_kit::px(1200.), gpui_kit::px(900.)),
                             cx,
                         ))),
                         ..Default::default()
@@ -4710,8 +4706,10 @@ mod desktop {
                 assert!(window.try_find("guest-menu-1-1").is_none());
                 assert!(window.try_find("guest-status").is_none());
                 let screen = window.find("guest-screen");
-                assert_eq!(screen.bounds().size.width, gpui_kit::px(800.));
-                assert_eq!(screen.bounds().size.height, gpui_kit::px(600.));
+                assert_eq!(screen.bounds().origin.x, gpui_kit::px(0.));
+                assert_eq!(screen.bounds().origin.y, gpui_kit::px(0.));
+                assert_eq!(screen.bounds().size.width, gpui_kit::px(1200.));
+                assert_eq!(screen.bounds().size.height, gpui_kit::px(900.));
                 window.dispatch_event(gpui_kit::PlatformInput::MouseMove(
                     gpui_kit::MouseMoveEvent {
                         position: gpui_kit::point(gpui_kit::px(100.), gpui_kit::px(2.)),
@@ -4738,6 +4736,11 @@ mod desktop {
             cx.update_window(window.into(), |_, window, cx| {
                 window.render_frame(cx);
                 assert!(window.try_find("guest-menu-1-1").is_some());
+                let screen = window.find("guest-screen");
+                assert_eq!(screen.bounds().origin.x, gpui_kit::px(0.));
+                assert_eq!(screen.bounds().origin.y, gpui_kit::px(0.));
+                assert_eq!(screen.bounds().size.width, gpui_kit::px(1200.));
+                assert_eq!(screen.bounds().size.height, gpui_kit::px(900.));
             }).unwrap();
         }
 
