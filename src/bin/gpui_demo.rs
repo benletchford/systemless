@@ -4077,7 +4077,7 @@ mod desktop {
 
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
-        fn open_menu_keyboard_selection_dispatches_guest_command(cx: &mut gpui_kit::TestAppContext) {
+        fn unrelated_menu_update_preserves_keyboard_selection(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::{test::TestWindowExt, AppContext, Bounds, WindowBounds, WindowOptions};
             use systemless::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
 
@@ -4135,6 +4135,21 @@ mod desktop {
                 window.click("guest-menu-4096-1", cx);
                 window.within("popup-menu").press("down", cx);
                 window.within("popup-menu").press("down", cx);
+            })
+            .unwrap();
+            cx.update(|cx| {
+                view.update(cx, |demo, cx| {
+                    let mut other = demo.menus.menus[0].clone();
+                    other.guest_id = 0x2000;
+                    other.id = 130;
+                    other.title = "Edit".into();
+                    other.items[0].text = "Undo".into();
+                    demo.menus.menus.push(other);
+                    cx.notify();
+                });
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
                 window.within("popup-menu").press("enter", cx);
             })
             .unwrap();
