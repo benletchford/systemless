@@ -5946,7 +5946,7 @@ fn classic_carbon_port_buffering_weak_imports_use_documented_mac_os_9_contract()
 }
 
 #[test]
-fn shared_ppc_styled_run_ink_matches_guest_pixels_at_font_ratios() {
+fn shared_ppc_styled_run_ink_matches_src_or_guest_pixels_at_font_ratios() {
     use std::collections::BTreeSet;
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CharExtra")).unwrap();
     let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
@@ -5958,7 +5958,8 @@ fn shared_ppc_styled_run_ink_matches_guest_pixels_at_font_ratios() {
                 assert!(ppc_paint_rect_bounds(&mut loaded.memory, &loaded.gworlds,
                     PPC_MAIN_GWORLD, (0, 0, 120, 160), PPC_RGB_WHITE, Some(0)));
                 let advance = ppc_draw_text_bytes_styled(&mut loaded.memory, &loaded.gworlds,
-                    PPC_MAIN_GWORLD, (30, 60), font, size, 0, PPC_RGB_BLACK, Some(1), style, bytes);
+                    // Ink masks exclude srcCopy character-cell background erasure.
+                    PPC_MAIN_GWORLD, (30, 60), font, size, PPC_QD_TEXT_MODE_SRC_OR, PPC_RGB_BLACK, Some(1), style, bytes);
                 let (shared_advance, pixels) = crate::quickdraw::text::ppc_styled_run_ink(font, size, style, bytes);
                 assert_eq!(advance, shared_advance);
                 let expected: BTreeSet<_> = pixels.into_iter().map(|(x, y)| (x + 30, y + 60)).collect();
