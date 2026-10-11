@@ -64,6 +64,15 @@ mod frames;
 mod a11y;
 
 #[cfg(target_os = "macos")]
+#[path = "gpui_demo_frame_pixels.rs"]
+mod frame_pixels;
+#[cfg(target_os = "macos")]
+#[path = "gpui_demo_performance.rs"]
+mod performance;
+#[cfg(target_os = "macos")]
+#[path = "gpui_demo_cadence.rs"]
+mod cadence;
+#[cfg(target_os = "macos")]
 #[path = "gpui_demo_metrics.rs"]
 mod metrics;
 
@@ -413,6 +422,12 @@ mod desktop {
         #[arg(long, hide = true, requires = "capture_application")]
         capture_application_notification: bool,
         #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, requires = "capture_application", conflicts_with_all = ["capture_application_key", "capture_application_mouse_v"])]
+        capture_application_inputs: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, requires = "capture_application", value_parser = clap::value_parser!(u32).range(1..))]
+        capture_application_render_after: Option<u32>,
+        #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_guest_cursor: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
@@ -533,7 +548,7 @@ mod desktop {
         image: Arc<RenderImage>,
     }
 
-    #[derive(Default)]
+    #[derive(Clone, Default)]
     struct Update {
         identity: Option<Arc<game::ApplicationIdentity>>,
         menus: GuestMenuSnapshot,
@@ -561,9 +576,7 @@ mod desktop {
     // Both live rendering and composed captures preserve the complete guest
     // coordinate space. GPUI RenderImage consumes BGRA pixels.
     fn gpui_pixels(mut pixels: Vec<u8>) -> Vec<u8> {
-        for pixel in pixels.chunks_exact_mut(4) {
-            pixel.swap(0, 2);
-        }
+        super::frame_pixels::rgba_to_bgra(&mut pixels);
         pixels
     }
 
@@ -640,7 +653,11 @@ mod desktop {
             let mut activation: Option<super::activation::ControlActivation> = None;
             let mut pointer_down = false;
             let mut clipboard = super::clipboard::GuestClipboard::default();
+            let mut profiler = super::performance::WorkerProfiler::from_env();
+            let mut committed_input_wait_logged = false;
+            let mut last_profile_dialog = None;
             loop {
+                let mut timing = profiler.begin();
                 let start = Instant::now();
                 #[cfg(feature = "debug-server")]
                 if let Some(server) = debug_server.as_mut() {
@@ -802,6 +819,7 @@ mod desktop {
                             let inputs = (!pointer_down && safe_caret).then(||
                                 super::input::guest_commit_inputs(&mut session, &owner, &bytes)).flatten();
                             if let Some(mut inputs) = inputs {
+                                if profiler.enabled() { eprintln!("[GPUI-TEXT-COMMIT] accepted pairs={} owner={:?}", inputs.len() / 2, owner.identity); }
                                 if let Some(caret) = caret {
                                     for _ in caret..owner.selection.start + bytes.len() {
                                         inputs.extend([
@@ -854,6 +872,29 @@ mod desktop {
                             }
                         }
                         Ok(Command::CommittedInput(down, up)) => {
+                            // A worker publication is not acknowledgment that the
+                            // guest has consumed the previous character. EV can
+                            // remain in Toolbox code across several publications.
+                            let events = session.runner().event_manager_snapshot();
+                            if events.queued_event_types.iter().any(|what| matches!(*what, 3 | 5)) {
+                                if profiler.enabled() && !committed_input_wait_logged {
+                                    eprintln!("[GPUI-TEXT-QUEUE] blocked events={:?} key0={} modal={} last={:?}",
+                                        events.queued_event_types, events.key_map[0], session.runner().dispatcher().is_dialog_tracking(), events.last_record);
+                                }
+                                committed_input_wait_logged = true;
+                                // A guest that stops reading keyboard events must
+                                // still be closable. Flush only completed writes.
+                                if queued.iter().any(|command| matches!(command, Command::Shutdown)) {
+                                    if let Some(store) = save_store.as_mut() {
+                                        store.sync_save_files_now(session.runner_mut());
+                                    }
+                                    return Ok::<(), String>(());
+                                }
+                                queued.push_front(Command::CommittedInput(down, up));
+                                break;
+                            }
+                            committed_input_wait_logged = false;
+                            if profiler.enabled() { eprintln!("[GPUI-TEXT-QUEUE] deliver {down:?}"); }
                             // A text service commits characters, not physical held
                             // keys. Release before execution to avoid autoKey, and
                             // give the guest a worker cycle between characters.
@@ -917,8 +958,10 @@ mod desktop {
                 // Snapshot validation and command handling can exceed a frame's
                 // budget at higher guest depths. Always reserve execution time
                 // afterward so queued Toolbox events cannot be starved by UI work.
+                timing.checkpoint();
                 let cpu_deadline = Instant::now() + Duration::from_millis(12);
                 super::cpu_frame::advance(session.runner_mut(), batch, deadline, cpu_deadline);
+                timing.checkpoint();
                 session.runner_mut().advance_notification_system_sounds();
                 session.runner_mut().mix_gui_audio_slice(367);
                 session.runner_mut().advance_notification_system_sounds();
@@ -933,21 +976,33 @@ mod desktop {
                 if let Some(store) = save_store.as_mut() {
                     store.sync_save_files(session.runner_mut());
                 }
+                timing.checkpoint();
                 let menus = session.runner_mut().guest_menu_snapshot();
                 let menu_presented = session.runner().guest_menu_bar_presented();
                 let menu_height = session.runner().bus().read_word(MBAR_HEIGHT);
                 let guest_menu_tracking = session.runner().guest_menu_tracking_active();
                 let guest_popup = session.runner_mut().guest_popup_snapshot();
                 let frame = session.video_frame();
+                timing.checkpoint();
                 let running = session.status().running;
                 let windows = session.runner_mut().window_frame_snapshot();
                 let dialogs = session.runner_mut().dialog_snapshot();
+                if profiler.enabled() {
+                    let owner = session.runner().dispatcher().dialog_tracking.as_ref().map(|tracking|
+                        (tracking.dialog_ptr, tracking.edit_item, tracking.edit_text.clone()));
+                    let state = dialogs.first().map(|dialog| (dialog.guest_id, dialog.active, owner));
+                    if state != last_profile_dialog {
+                        eprintln!("[GPUI-UI] dialog={state:?}");
+                        last_profile_dialog = state;
+                    }
+                }
                 let controls = session.runner_mut().control_snapshot();
                 let lists = session.runner_mut().list_manager_snapshot();
                 let text_edits = session.runner_mut().text_edit_snapshot().records;
                 let mut standard_file = session.runner_mut().standard_file_snapshot();
                 let notifications = session.runner_mut().notification_snapshot();
                 let notification_alert = session.runner_mut().notification_alert_snapshot();
+                timing.checkpoint();
                 let list_text_plans = frame.as_ref().map(|frame|
                     qualify_list_text_fields(&lists, &frame.pixels, frame.width, frame.height)).unwrap_or_default();
                 let styled_text_plans = frame.as_ref().map(|frame|
@@ -956,6 +1011,7 @@ mod desktop {
                 if let (Some(frame), Some(panel)) = (&frame, &mut standard_file) {
                     panel.retain_volume_indicator(&frame.pixels, frame.width, frame.height);
                 }
+                timing.checkpoint();
                 let frame = frame.map(|frame| (frame.width, frame.height, gpui_pixels(frame.pixels)));
                 *updates.lock().unwrap() = Some(Update {
                     identity: identity.clone(),
@@ -983,6 +1039,8 @@ mod desktop {
                         if running { "Running" } else { "Guest stopped" }
                     ),
                 });
+                timing.checkpoint();
+                profiler.record(timing);
                 if !running {
                     if let Some(store) = save_store.as_mut() {
                         store.sync_save_files_now(session.runner_mut());
@@ -1218,82 +1276,93 @@ mod desktop {
             }
         }
 
+        // Live windows and application captures consume the same BGRA update,
+        // including identity, composition rejection and unchanged-image reuse.
+        // Offscreen captures do not export clipboard or alter the native icon.
+        fn apply_guest_update(&mut self, update: Update, host_services: bool, cx: &mut Context<Self>) {
+            if let Some((generation, text)) = update.clipboard_export {
+                if host_services { self.export_host_clipboard(generation, &text, cx); }
+            }
+            let same_identity = match (&self.application_identity, &update.identity) {
+                (Some(old), Some(new)) => Arc::ptr_eq(old, new),
+                (None, None) => true,
+                _ => false,
+            };
+            if !same_identity {
+                if host_services {
+                    super::native_application::set_application_icon(update.identity.as_ref().and_then(|identity| identity.icon.as_ref()));
+                }
+                self.application_identity = update.identity;
+            }
+            self.menus = update.menus;
+            self.menu_presented = update.menu_presented;
+            self.menu_height = update.menu_height;
+            self.guest_menu_tracking = update.guest_menu_tracking;
+            self.guest_popup = update.guest_popup;
+            self.cursor = update.cursor;
+            self.notifications = update.notifications;
+            self.notification_alert = update.notification_alert;
+            self.windows = update.windows;
+            self.dialogs = update.dialogs;
+            self.controls = update.controls;
+            self.lists = update.lists;
+            self.list_text_plans = update.list_text_plans;
+            if let Some((revision, owner)) = update.text_commit_rejection {
+                if revision != self.text_commit_rejection_revision {
+                    self.composition.reject(&owner);
+                    self.text_commit_rejection_revision = revision;
+                }
+            }
+            self.text_edits = update.text_edits;
+            self.styled_text_plans = update.styled_text_plans;
+            self.standard_file = update.standard_file;
+            self.status = update.status;
+            if let Some((width, height, pixels)) = update.frame {
+                self.width = width;
+                self.height = height;
+                if self.image.as_ref().is_none_or(|image| {
+                    image.as_bytes(0) != Some(pixels.as_slice())
+                        || image.size(0).width.0 != width as i32
+                        || image.size(0).height.0 != height as i32
+                }) {
+                    let buffer =
+                        image::RgbaImage::from_raw(width, height, pixels).unwrap();
+                    if let Some(old) =
+                        self.image.replace(Arc::new(RenderImage::new(vec![
+                            image::Frame::new(buffer),
+                        ])))
+                    {
+                        cx.drop_image(old, None);
+                    }
+                }
+            }
+            cx.notify();
+        }
+
         fn new(
             commands: mpsc::Sender<Command>,
             updates: Arc<Mutex<Option<Update>>>,
             cx: &mut Context<Self>,
         ) -> Self {
-            let poll = cx.spawn(async move |this, cx| loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(16))
-                    .await;
-                let update = updates.lock().unwrap().take();
-                if this
-                    .update(cx, |this, cx| {
-                        if let Some(update) = update {
-                            if let Some((generation, text)) = update.clipboard_export {
-                                this.export_host_clipboard(generation, &text, cx);
+            let poll = cx.spawn(async move |this, cx| {
+                let executor = cx.background_executor().clone();
+                let mut cadence = super::cadence::Cadence::new(executor.now(), Duration::from_millis(16));
+                loop {
+                    executor.timer(cadence.delay(executor.now())).await;
+                    let update = updates.lock().unwrap().take();
+                    if this
+                        .update(cx, |this, cx| {
+                            if let Some(update) = update {
+                                this.apply_guest_update(update, true, cx);
                             }
-                            let same_identity = match (&this.application_identity, &update.identity) {
-                                (Some(old), Some(new)) => Arc::ptr_eq(old, new),
-                                (None, None) => true,
-                                _ => false,
-                            };
-                            if !same_identity {
-                                super::native_application::set_application_icon(update.identity.as_ref().and_then(|identity| identity.icon.as_ref()));
-                                this.application_identity = update.identity;
-                            }
-                            this.menus = update.menus;
-                            this.menu_presented = update.menu_presented;
-                            this.menu_height = update.menu_height;
-                            this.guest_menu_tracking = update.guest_menu_tracking;
-                            this.guest_popup = update.guest_popup;
-                            this.cursor = update.cursor;
-                            this.notifications = update.notifications;
-                            this.notification_alert = update.notification_alert;
-                            this.windows = update.windows;
-                            this.dialogs = update.dialogs;
-                            this.controls = update.controls;
-                            this.lists = update.lists;
-                            this.list_text_plans = update.list_text_plans;
-                            if let Some((revision, owner)) = update.text_commit_rejection {
-                                if revision != this.text_commit_rejection_revision {
-                                    this.composition.reject(&owner);
-                                    this.text_commit_rejection_revision = revision;
-                                }
-                            }
-                            this.text_edits = update.text_edits;
-                            this.styled_text_plans = update.styled_text_plans;
-                            this.standard_file = update.standard_file;
-                            this.status = update.status;
-                            if let Some((width, height, pixels)) = update.frame {
-                                this.width = width;
-                                this.height = height;
-                                if this.image.as_ref().is_none_or(|image| {
-                                    image.as_bytes(0) != Some(pixels.as_slice())
-                                        || image.size(0).width.0 != width as i32
-                                        || image.size(0).height.0 != height as i32
-                                }) {
-                                    let buffer =
-                                        image::RgbaImage::from_raw(width, height, pixels).unwrap();
-                                    if let Some(old) =
-                                        this.image.replace(Arc::new(RenderImage::new(vec![
-                                            image::Frame::new(buffer),
-                                        ])))
-                                    {
-                                        cx.drop_image(old, None);
-                                    }
-                                }
-                            }
-                            cx.notify();
-                        }
-                        // Retry after guest tracking ends or host ownership returns.
-                        // The worker validates the exact record before pausing guest work.
-                        this.request_notification_alert();
-                    })
-                    .is_err()
-                {
-                    break;
+                            // Retry after guest tracking ends or host ownership returns.
+                            // The worker validates the exact record before pausing guest work.
+                            this.request_notification_alert();
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
             });
             Self {
@@ -6478,6 +6547,57 @@ mod desktop {
     #[cfg(feature = "gpui-demo-test")]
     fn capture_application(args: Args) {
         use gpui_kit::{platform, HeadlessAppContext};
+        fn capture_inventory(update: &Update) -> serde_json::Value {
+            serde_json::json!({
+                "windows": update.windows.iter().map(|frame| serde_json::json!({
+                    "identity": [frame.guest_id, frame.generation], "definition": frame.definition_id,
+                    "recognized_definition": frame.presentation_definition_id(), "visible": frame.window.visible,
+                    "rectangular": frame.rectangular_regions })).collect::<Vec<_>>(),
+                "dialogs": update.dialogs.iter().map(|dialog| serde_json::json!({
+                    "identity": [dialog.guest_id, dialog.generation], "visible": dialog.visible,
+                    "active": dialog.active, "bounds": dialog.bounds,
+                    "items": dialog.items.iter().map(|item| serde_json::json!({
+                        "number": item.number, "kind": format!("{:?}", item.kind),
+                        "bounds": item.bounds, "visible": item.visible, "text": item.text,
+                        "enabled": item.enabled, "selection": item.selection, "control_identity": item.control_identity
+                    })).collect::<Vec<_>>() })).collect::<Vec<_>>(),
+                "standard_file": update.standard_file.as_ref().map(|panel| serde_json::json!({
+                    "identity": [panel.guest_id, panel.generation], "kind": format!("{:?}", panel.kind),
+                    "bounds": panel.bounds, "standard_entry_point": panel.standard_entry_point,
+                    "directory_id": panel.directory_id, "directory_label": panel.directory_label,
+                    "selected": panel.selected, "name": panel.name, "name_selection": panel.name_selection,
+                    "new_folder": panel.new_folder.is_some(), "confirming_replace": panel.confirming_replace,
+                    "entries": panel.entries.as_ref().map(|entries| entries.iter().map(|entry| serde_json::json!({
+                        "name": entry.name, "directory_id": entry.directory_id,
+                        "is_directory": entry.is_directory, "file_type": entry.file_type
+                    })).collect::<Vec<_>>())
+                })),
+                "controls": update.controls.len(), "lists": update.lists.len(), "text_edits": update.text_edits.len()
+            })
+        }
+        // Worker updates already contain GPUI BGRA bytes. Convert only a
+        // copy for PNG's RGBA format; display the original bytes unchanged.
+        fn save_guest_frame(path: PathBuf, pixels: &[u8], width: u32, height: u32) {
+            image::save_buffer(path, &gpui_pixels(pixels.to_vec()), width, height,
+                image::ColorType::Rgba8).unwrap();
+        }
+        type CaptureCompositor = (HeadlessAppContext, Entity<Demo>, WindowHandle<Demo>);
+        fn new_compositor(commands: mpsc::Sender<Command>, width: u32, height: u32, scale: f32) -> CaptureCompositor {
+            let mut visual = HeadlessAppContext::with_platform(platform::current_platform(true).text_system(),
+                Arc::new(gpui_kit::assets::Assets), platform::current_headless_renderer);
+            visual.update(gpui_kit::init);
+            let mut view = None;
+            let window = visual.open_window(size(px(width as f32 * scale), px(height as f32 * scale)), |_, cx| {
+                let entity = cx.new(|cx| Demo::new(commands, Default::default(), cx));
+                view = Some(entity.clone()); entity
+            }).unwrap();
+            // A newly opened test window starts inactive. Drive its real GPUI
+            // activation path before measuring foreground guest updates.
+            visual.update_window(window.into(), |_, window, _| window.activate_window()).unwrap();
+            visual.run_until_parked();
+            visual.update_window(window.into(), |_, window, _| assert!(window.is_window_active())).unwrap();
+            (visual, view.unwrap(), window)
+        }
         let output = args.capture_application.clone().unwrap();
         let scale = args.capture_scale.unwrap_or(1.);
         assert!(scale.is_finite() && scale > 0.);
@@ -6485,13 +6605,51 @@ mod desktop {
         let powerpc = args.prefer_powerpc;
         let archive = args.game.clone();
         let capture_notification = args.capture_application_notification;
+        let render_after = args.capture_application_render_after;
+        let mut compositor: Option<CaptureCompositor> = None;
+        let mut rendered_updates = Vec::new();
         let input = args.capture_application_key.map(|key| (key, args.capture_application_character));
         let pointer = args.capture_application_mouse_v.zip(args.capture_application_mouse_h);
+        // This capture clock counts observed worker publications, not guest or
+        // frontend ticks. Actions still enter the production guest input path.
+        #[derive(serde::Deserialize, serde::Serialize)]
+        struct ScheduledInput {
+            after_updates: u32,
+            #[serde(default)]
+            wait_for_dialog_text: Option<String>,
+            #[serde(default)]
+            wait_for_no_dialog: bool,
+            #[serde(default)]
+            wait_for_file_entry: Option<String>,
+            #[serde(default)]
+            wait_for_no_file: bool,
+            #[serde(flatten)]
+            action: CaptureInput,
+        }
+        #[derive(serde::Deserialize, serde::Serialize)]
+        #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+        enum CaptureInput {
+            MouseDown { v: i16, h: i16 },
+            MouseUp { v: i16, h: i16 },
+            KeyDown { key: u8, ch: u8 },
+            KeyUp { key: u8, ch: u8 },
+            ActivateDialogButton { number: i16 },
+            CommitDialogText { text: String },
+            WaitForState,
+            ActivateFileEntry { name: String },
+            ActivateFile { action: super::activation::FileAction },
+        }
+        let scheduled_inputs: Vec<ScheduledInput> = args.capture_application_inputs.as_ref()
+            .map(|path| serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap())
+            .unwrap_or_default();
+        assert!(scheduled_inputs.iter().all(|entry| entry.after_updates > 0));
+        assert!(scheduled_inputs.windows(2).all(|pair| pair[0].after_updates <= pair[1].after_updates));
         let input_after = args.capture_application_input_after;
         let release_after = input_after + args.capture_application_hold_updates;
         let key_after = args.capture_application_key_after.unwrap_or(input_after);
         let key_release_after = key_after + args.capture_application_hold_updates;
-        let target_observations = args.capture_application_updates.max(
+        let target_observations = args.capture_application_updates
+            .max(scheduled_inputs.last().map_or(1, |entry| entry.after_updates.saturating_add(60))).max(
             if input.is_some() || pointer.is_some() {
                 (if input.is_some() { key_release_after } else { 0 })
                     .max(if pointer.is_some() { release_after } else { 0 }) + 60
@@ -6510,11 +6668,112 @@ mod desktop {
         let worker = Worker(sender, Some(std::thread::spawn(move || run_guest(args, receiver, worker_updates, false))));
         let start = Instant::now();
         let mut observations = 0;
+        let mut next_scheduled_input = 0;
+        let mut sent_guest_inputs = 0;
+        let mut input_delay = 0u32;
         let mut latest: Option<Update> = None;
         let update = loop {
             if let Some(update) = updates.lock().unwrap().take() {
                 assert!(update.frame.is_some(), "application worker failed: {}", update.status);
                 observations += 1;
+                if render_after.is_some_and(|after| observations >= after) {
+                    let (width, height, _) = update.frame.as_ref().unwrap();
+                    let (visual, view, window) = compositor.get_or_insert_with(||
+                        new_compositor(worker.0.clone(), *width, *height, scale));
+                    // A test-only clone retains the raw snapshot for evidence and
+                    // scripted inputs. Exclude that copy from renderer timing.
+                    let render_update = update.clone();
+                    let render_start = Instant::now();
+                    visual.update_window((*window).into(), |_, _, cx| view.update(cx, |demo, cx| {
+                        demo.host_active = Some(true);
+                        demo.apply_guest_update(render_update, false, cx);
+                    })).unwrap();
+                    visual.run_until_parked();
+                    rendered_updates.push(serde_json::json!({ "observed_worker_update": observations,
+                        "elapsed_ms": start.elapsed().as_secs_f64() * 1000.,
+                        "render_ms": render_start.elapsed().as_secs_f64() * 1000. }));
+                }
+                while let Some(entry) = scheduled_inputs.get(next_scheduled_input) {
+                    if observations < entry.after_updates.saturating_add(input_delay)
+                        || (entry.wait_for_no_dialog && update.dialogs.iter().any(|dialog| dialog.visible))
+                        || (entry.wait_for_no_file && update.standard_file.is_some())
+                        || entry.wait_for_file_entry.as_ref().is_some_and(|name|
+                            !update.standard_file.as_ref().and_then(|panel| panel.entries.as_ref())
+                                .is_some_and(|entries| entries.iter().any(|entry| entry.name == name.as_str())))
+                        || entry.wait_for_dialog_text.as_ref().is_some_and(|text|
+                            !update.dialogs.iter().any(|dialog| dialog.visible && dialog.active
+                                && dialog.items.iter().any(|item| item.visible && item.text.contains(text))))
+                    { break; }
+                    let dialog_button = if let CaptureInput::ActivateDialogButton { number } = entry.action {
+                        update.dialogs.iter().filter(|dialog| dialog.visible && dialog.active).find_map(|dialog|
+                            dialog.items.iter().find(|item| item.number == number && item.visible && item.enabled
+                                && item.kind == DialogItemKind::Button).map(|item|
+                                    (dialog.guest_id, dialog.generation, item.control_identity)))
+                    } else { None };
+                    if matches!(entry.action, CaptureInput::ActivateDialogButton { .. }) && dialog_button.is_none() {
+                        break;
+                    }
+                    let dialog_text_owner = if matches!(entry.action, CaptureInput::CommitDialogText { .. }) {
+                        super::input::dialog_text_owner(&update.dialogs, &update.windows)
+                    } else { None };
+                    if matches!(entry.action, CaptureInput::CommitDialogText { .. }) && dialog_text_owner.is_none() {
+                        break;
+                    }
+                    let file_entry = if let CaptureInput::ActivateFileEntry { ref name } = entry.action {
+                        update.standard_file.as_ref().and_then(|panel| panel.entries.as_ref().and_then(|entries|
+                            entries.iter().enumerate().find(|(_, entry)| entry.name == name.as_str())
+                                .map(|(index, entry)| (panel.guest_id, panel.generation, index, entry.clone()))))
+                    } else { None };
+                    if (matches!(entry.action, CaptureInput::ActivateFileEntry { .. }) && file_entry.is_none())
+                        || (matches!(entry.action, CaptureInput::ActivateFile { .. }) && update.standard_file.is_none()) {
+                        break;
+                    }
+                    // Shift subsequent actions by the readiness delay, preserving
+                    // down/up hold durations through the guest event path.
+                    input_delay = observations.saturating_sub(entry.after_updates);
+                    if matches!(entry.action, CaptureInput::WaitForState) {
+                        next_scheduled_input += 1;
+                        continue;
+                    }
+                    let command = match entry.action {
+                        CaptureInput::MouseDown { v, h } => Command::Input(MacintoshInput::MouseDown { vertical: v, horizontal: h }),
+                        CaptureInput::MouseUp { v, h } => Command::Input(MacintoshInput::MouseUp { vertical: v, horizontal: h }),
+                        CaptureInput::KeyDown { key, ch } => Command::Input(MacintoshInput::KeyDown { mac_key: key, character: ch }),
+                        CaptureInput::KeyUp { key, ch } => Command::Input(MacintoshInput::KeyUp { mac_key: key, character: ch }),
+                        // Match the live GPUI Button callback, including the worker's
+                        // ownership checks and guest tracking/release handshake.
+                        CaptureInput::ActivateDialogButton { number } => {
+                            let (id, generation, identity) = dialog_button.unwrap();
+                            eprintln!("[GPUI-CAPTURE-INPUT] dialog={id} generation={generation} item={number} control={identity:?} observed_update={observations}");
+                            Command::ActivateDialog(id, generation, number, identity)
+                        }
+                        CaptureInput::ActivateFileEntry { .. } => {
+                            let (id, generation, index, expected) = file_entry.unwrap();
+                            Command::ActivateFileEntry(id, generation, index, expected)
+                        }
+                        CaptureInput::ActivateFile { action } => {
+                            let panel = update.standard_file.as_ref().unwrap();
+                            Command::ActivateFile(panel.guest_id, panel.generation, action)
+                        }
+                        CaptureInput::WaitForState => unreachable!("state waits do not deliver guest input"),
+                        CaptureInput::CommitDialogText { ref text } => {
+                            let owner = dialog_text_owner.unwrap();
+                            let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
+                            let bytes: Vec<u8> = normalized.chars()
+                                .map(systemless::systems::macintosh::mac_roman::encode_mac_roman_char)
+                                .collect::<Option<_>>().expect("capture text must be Macintosh Roman");
+                            assert!(!bytes.iter().any(|byte| *byte < 32 && !matches!(*byte, b'\r' | b'\t')));
+                            Command::CommitText(super::input::TextInputOwner {
+                                identity: owner.identity,
+                                target: super::input::TextInputTarget::Dialog { item: owner.item, content_revision: owner.content_revision },
+                                text: owner.text, selection: owner.selection,
+                            }, bytes)
+                        }
+                    };
+                    worker.0.send(command).unwrap();
+                    sent_guest_inputs += 1;
+                    next_scheduled_input += 1;
+                }
                 if capture_notification && update.notification_alert.is_none() {
                     if let Some(notice) = update.notifications.iter().find(|notice| !notice.response_started) {
                         worker.0.send(Command::BeginNotificationAlert(notice.clone())).unwrap();
@@ -6523,8 +6782,7 @@ mod desktop {
                 if let Some((vertical, horizontal)) = pointer {
                     if observations == input_after {
                         let (width, height, pixels) = update.frame.as_ref().unwrap();
-                        image::save_buffer(output.with_extension("before.guest.png"), pixels, *width, *height,
-                            image::ColorType::Rgba8).unwrap();
+                        save_guest_frame(output.with_extension("before.guest.png"), pixels, *width, *height);
                         worker.0.send(Command::Input(MacintoshInput::MouseDown { vertical, horizontal })).unwrap();
                     } else if observations == release_after {
                         worker.0.send(Command::Input(MacintoshInput::MouseUp { vertical, horizontal })).unwrap();
@@ -6533,70 +6791,60 @@ mod desktop {
                 if let Some((mac_key, character)) = input {
                     if observations == key_after {
                         let (width, height, pixels) = update.frame.as_ref().unwrap();
-                        image::save_buffer(output.with_extension(if pointer.is_some() {
+                        save_guest_frame(output.with_extension(if pointer.is_some() {
                             "before-key.guest.png"
-                        } else { "before.guest.png" }), pixels, *width, *height, image::ColorType::Rgba8).unwrap();
+                        } else { "before.guest.png" }), pixels, *width, *height);
                         worker.0.send(Command::Input(MacintoshInput::KeyDown { mac_key, character })).unwrap();
                     } else if observations == key_release_after {
                         worker.0.send(Command::Input(MacintoshInput::KeyUp { mac_key, character })).unwrap();
                     }
                 }
-                if observations >= target_observations
+                if observations >= target_observations.saturating_add(input_delay)
+                    && next_scheduled_input == scheduled_inputs.len()
+                    && observations >= scheduled_inputs.last().map_or(1, |entry|
+                        entry.after_updates.saturating_add(input_delay).saturating_add(60))
                     && (!capture_notification || update.notification_alert.is_some()) { break update; }
                 latest = Some(update);
             }
             if start.elapsed() >= observation_timeout {
                 if let Some(last) = latest.as_ref() {
                     if let Some((width, height, pixels)) = &last.frame {
-                        image::save_buffer(output.with_extension("timeout.guest.png"), pixels, *width, *height,
-                            image::ColorType::Rgba8).unwrap();
+                        save_guest_frame(output.with_extension("timeout.guest.png"), pixels, *width, *height);
                     }
                     std::fs::write(output.with_extension("timeout.json"), serde_json::to_vec_pretty(&serde_json::json!({
                         "status": "failed", "worker_status": last.status,
-                        "observed_worker_updates": observations, "requested_worker_updates": target_observations,
+                        "ui_inventory": capture_inventory(last),
+                        "observed_worker_updates": observations, "requested_worker_updates": target_observations.saturating_add(input_delay),
                         "guest_key_input": input, "guest_mouse_input_v_h": pointer,
+                        "scheduled_guest_inputs": scheduled_inputs,
+                        "sent_scheduled_inputs": sent_guest_inputs, "completed_scheduled_actions": next_scheduled_input, "input_readiness_delay_updates": input_delay,
                         "input_after_updates": input_after, "release_after_updates": release_after,
                         "key_after_updates": key_after, "key_release_after_updates": key_release_after,
                         "observation_timeout_seconds": observation_timeout.as_secs(),
-                        "reason": "observation deadline exceeded",
+                        "reason": if next_scheduled_input < scheduled_inputs.len() {
+                            "input readiness or guest workflow did not complete before the deadline"
+                        } else { "observation deadline exceeded" },
                     })).unwrap()).unwrap();
                 }
-                panic!("application did not produce the requested observed worker frames: {observations}/{target_observations}");
+                panic!("application capture deadline exceeded: observed {observations} updates; completed {next_scheduled_input}/{} scheduled actions", scheduled_inputs.len());
             }
             std::thread::sleep(Duration::from_millis(5));
         };
         let observed_ms = start.elapsed().as_secs_f64() * 1000.;
         let (width, height, pixels) = update.frame.as_ref().unwrap();
         let (width, height) = (*width, *height);
-        image::save_buffer(output.with_extension("guest.png"), pixels, width, height, image::ColorType::Rgba8).unwrap();
+        save_guest_frame(output.with_extension("guest.png"), pixels, width, height);
         let status = update.status.clone();
         let notification_identity = update.notification_alert.as_ref()
             .map(|notice| (notice.guest_id, notice.instance_id));
         let menu_presented = update.menu_presented;
         let menu_height = update.menu_height;
-        let mut visual = HeadlessAppContext::with_platform(platform::current_platform(true).text_system(),
-            Arc::new(gpui_kit::assets::Assets), platform::current_headless_renderer);
-        visual.update(gpui_kit::init);
-        let mut view = None;
-        let window = visual.open_window(size(px(width as f32 * scale), px(height as f32 * scale)), |_, cx| {
-            let entity = cx.new(|cx| Demo::new(worker.0.clone(), Default::default(), cx));
-            view = Some(entity.clone()); entity
-        }).unwrap();
-        let view = view.unwrap();
+        let ui_inventory = capture_inventory(&update);
+        let (mut visual, view, window) = compositor.take().unwrap_or_else(||
+            new_compositor(worker.0.clone(), width, height, scale));
         visual.update(|cx| view.update(cx, |demo, cx| {
-            demo.width = width; demo.height = height;
-            demo.menus = update.menus; demo.menu_presented = update.menu_presented; demo.menu_height = update.menu_height;
-            demo.guest_menu_tracking = update.guest_menu_tracking; demo.guest_popup = update.guest_popup;
-            demo.windows = update.windows; demo.dialogs = update.dialogs; demo.controls = update.controls;
-            demo.lists = update.lists; demo.list_text_plans = update.list_text_plans;
-            demo.text_edits = update.text_edits; demo.styled_text_plans = update.styled_text_plans;
-            demo.standard_file = update.standard_file; demo.cursor = update.cursor;
-            demo.notifications = update.notifications;
-            demo.notification_alert = update.notification_alert;
-            demo.status = update.status; demo.host_active = Some(true);
-            demo.image = Some(Arc::new(RenderImage::new(vec![image::Frame::new(
-                image::RgbaImage::from_raw(width, height, gpui_pixels(update.frame.unwrap().2)).unwrap())])));
-            cx.notify();
+            demo.host_active = Some(true);
+            demo.apply_guest_update(update, false, cx);
         }));
         visual.run_until_parked();
         let screenshot = visual.capture_screenshot(window.into()).unwrap(); screenshot.save(&output).unwrap();
@@ -6605,8 +6853,15 @@ mod desktop {
             "compositor": "shared Demo renderer", "worker": "production run_guest with host services disabled",
             "archive": archive, "prefer_powerpc": powerpc, "requested_depth": requested_depth,
             "observed_worker_updates": observations, "observation_elapsed_ms": observed_ms,
+            "requested_base_worker_updates": target_observations,
             "guest_key_input": input, "guest_mouse_input_v_h": pointer,
+            "scheduled_guest_inputs": scheduled_inputs,
+            "sent_scheduled_inputs": sent_guest_inputs, "completed_scheduled_actions": next_scheduled_input, "input_readiness_delay_updates": input_delay,
             "notification_identity": notification_identity,
+            "ui_inventory": ui_inventory,
+            "headless_render_after_updates": render_after,
+            "headless_render_samples": rendered_updates,
+            "headless_render_scope": "Shared live update consumption and Demo compositor with offscreen Metal scene rendering. Renderer CPU time excludes the harness snapshot clone, screenshot readback and GPU completion latency; observed-update cadence includes harness work. No native display presentation or physical-input latency qualification.",
             "input_after_updates": input_after, "release_after_updates": release_after,
             "key_after_updates": key_after, "key_release_after_updates": key_release_after,
             "observation_timeout_seconds": observation_timeout.as_secs(),
@@ -7781,7 +8036,7 @@ mod desktop {
         capture.save(output).unwrap();
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "gpui-demo-test"))]
     mod tests {
         use super::{MacintoshInput, MacintoshSession, PathBuf};
 
@@ -7964,6 +8219,8 @@ mod desktop {
                         capture_composition_surface: None,
                         capture_application: None,
                         capture_application_notification: false,
+                        capture_application_inputs: None,
+                        capture_application_render_after: None,
                         capture_guest_cursor: None,
                         capture_application_key: None,
                         capture_application_character: 0,

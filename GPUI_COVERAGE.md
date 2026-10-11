@@ -1,5 +1,80 @@
 # GPUI Kit system-interface coverage
 
+### Escape Velocity GPUI work (2026-10-11, qualification in progress)
+
+Original EV's New Pilot dialog combines standard controls/text with resource
+pictures. Mixed DITLs now qualify standard items individually, excluding bounded
+picture/icon paint from replacement clips. Unknown callbacks and custom CDEFs
+retain the complete dialog. The explicit classic modal owner activates a visible
+dialog even when its titleless WindowRecord hilite flag is clear; semantic button
+hit testing uses that owner while retaining visibility, clipping and identity
+checks. Guest window flags are unchanged. These fixes are pushed at `0172adfa`.
+
+The production worker and application captures share update consumption and the
+same GPUI compositor. Worker BGRA pixels feed GPUI unchanged; only PNG copies
+convert to RGBA. Earlier application captures with the extra channel conversion
+are not colour-fidelity evidence. RGBA/BGRA conversion uses baseline NEON/SSE2
+and a scalar tail, preserving alpha, unaligned slices and partial pixels. Native
+aarch64 exact-byte tests pass; the x86-64 test compiles but cannot run on this host.
+
+Reviewed original EV colour68k/8-bit evidence includes the modern pilot dialog,
+selected name, complete `GPUI Pilot` edit with guest selection/caret `[10,10]`,
+a guarded edit-and-Cancel sequence, two flight runs with held acceleration and
+turning, and pilot/ship creation followed by GPUI Standard File navigation into
+Pilots and reopening `GPUI Pilot`. The final main menu displays pilot `GPUI Pilot`
+and ship `GPUI Ship`, with file/dialog inventories empty and an existing guest
+Filespec. Reopening is within the same running guest, with host services disabled;
+it does not establish restart persistence. Resource-picture instruction text and
+application-drawn game/HUD text retain guest pixels because faithful replacement
+ownership has not been established. These changes do not introduce font substitution.
+Game media, scripts, captures and review hashes stay in ignored qualification
+output, outside tracked source.
+
+Committed character pairs now wait while earlier guest keyDown/autoKey events
+remain queued; worker publications are not input acknowledgments. A blocked commit
+still permits shutdown and flushes completed writes. One profiled and one default
+completed-edit run pass, but earlier partial edits, unchanged fields and stalled
+ship/Cancel attempts remain recorded. The queue guard is not a general reliability
+claim. Opt-in diagnostics report commit acceptance and queued keyboard events.
+
+Live polling uses fixed 16 ms deadlines on GPUI's executor clock, skipping missed
+intervals without catch-up bursts or accumulated update-processing delay. A smaller
+CPU instruction batch near the host deadline preserves guest tick/instruction
+limits; retained modal scheduling matches guest ticks and PC/A7. Native frame pacing
+and a controlled before/after gameplay comparison remain unqualified. Isolated
+conversion speedups and offscreen CPU scene/submission timings are not gameplay FPS
+or GPU-completion measurements. Opt-in worker timing excludes sleeping, GPUI drawing
+and native presentation.
+
+Validation: 18 geometry tests, modal ownership, semantic checkbox activation across
+mono68k/colour68k/PPC, and the existing cross-CPU modal platform text commit pass.
+All 144 ordinary desktop/headless tests pass (19.12s), including cadence. Live
+polling/notification integration passes (12.52s). The full GPUI suite before the
+later text-queue change completes with 206 passed, zero failed and one ignored
+New Folder subprocess helper (806.41s). Three current rapid composed-text tests
+pass (32.51s), covering document, modal and Standard File commits across their CPU
+modes. The corrected example and ordinary desktop test builds pass. GPUI's optional
+test module requires `gpui-demo-test`; ordinary headless tests stay enabled.
+
+Application captures accept an external `--capture-application-inputs` JSON array.
+`after_updates` counts observed worker publications, not guest/frontend ticks.
+Readiness waits shift subsequent action deadlines while preserving hold durations.
+Supported actions include guest mouse/key down/up, `activate_dialog_button`,
+`commit_dialog_text`, `activate_file_entry` by complete name, `activate_file` using
+existing button actions, and `wait_for_state` without guest input. Readiness fields
+include `wait_for_dialog_text`, `wait_for_file_entry`, `wait_for_no_dialog` and
+`wait_for_no_file`. File entries pin the complete expected snapshot; raw index-only
+file actions are excluded. Success and timeout inventories include Standard File
+identity, directory, entries and selection. Metadata separates delivered guest
+commands from completed actions, including waits. Capture completion alone is not
+a behavioral assertion; inspect state and images before accepting evidence.
+
+Repeated EV input reliability, other EV dialogs, PPC EV, the complete CPU/scale/
+active-state matrix, native font fidelity, physical input/accessibility, audio
+continuity, native display smoothness and restart persistence remain open. All eight
+broad release gates remain open.
+
+
 ### Disjoint marked-text composed evidence (2026-10-11)
 
 The existing shared composition capture now stages two separate candidates

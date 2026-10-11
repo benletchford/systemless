@@ -10,6 +10,8 @@ pub struct ControlActivation {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "gpui-demo-test", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "gpui-demo-test", serde(rename_all = "snake_case"))]
 pub enum FileAction {
     Accept,
     Cancel,
@@ -22,6 +24,7 @@ pub enum FileAction {
     DismissFolderError,
     ScrollUp,
     ScrollDown,
+    #[cfg_attr(feature = "gpui-demo-test", serde(skip))]
     Entry(usize),
 }
 
@@ -214,7 +217,11 @@ impl ControlActivation {
                 bottom: i32::from(mode.3),
                 right: i32::from(mode.2),
             },
-        )?;
+        );
+        if std::env::var_os("SYSTEMLESS_GPUI_PROFILE").is_some() {
+            eprintln!("[GPUI-DIALOG-ACTIVATION] id={id} generation={generation} item={number} point={point:?}");
+        }
+        let point = point?;
         let origin = session.runner().dispatcher().mouse_position();
         session.deliver_input(MacintoshInput::MouseDown {
             vertical: point.0,
