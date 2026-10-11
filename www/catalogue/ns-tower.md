@@ -27,7 +27,7 @@ compatibility:
       no-Space run stays on the bottom floor at the same clock. All eight original forks
       match independent extraction. Title-dialog remnants remain outside the playfield.
       Floor-counter progression, ordinary browser/public gameplay, saved scores, long
-      runs and audio remain unverified. Browser launch remains disabled pending approval.
+      runs and audio remain unverified. Browser approval is recorded separately below.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4480
   - date: "2026-10-11"
