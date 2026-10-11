@@ -15,7 +15,7 @@ struct Source {
 }
 static SOURCES: LazyLock<Mutex<HashMap<usize, Source>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
-static MASKS: LazyLock<Mutex<HashMap<(usize, u32), crate::memory::presentation::OutlineGlyph>>> =
+static MASKS: LazyLock<Mutex<HashMap<(usize, u32, u32, u32), crate::memory::presentation::OutlineGlyph>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub(super) fn face(font_id: i16, size: i16) -> Option<Faces> {
@@ -258,7 +258,13 @@ pub(crate) fn presentation_glyph(
     data: &[u8],
     scale: u32,
 ) -> Option<crate::memory::presentation::OutlineGlyph> {
-    let key = (glyph as *const Glyph as usize, scale);
+    presentation_glyph_ratio(glyph, data, scale, 1, 0)
+}
+
+pub(crate) fn presentation_glyph_ratio(glyph: &Glyph, data: &[u8], numerator: u32, denominator: u32, phase: u32)
+    -> Option<crate::memory::presentation::OutlineGlyph> {
+    if numerator == 0 || denominator == 0 || phase >= denominator { return None; }
+    let key = (glyph as *const Glyph as usize, numerator, denominator, phase);
     let _ = data;
     let mut masks = MASKS.lock().ok()?;
     if let Some(mask) = masks.get(&key) {
@@ -274,7 +280,7 @@ pub(crate) fn presentation_glyph(
     let outlines = font.outline_glyphs();
     let hint = HintingInstance::new(
         &outlines,
-        Size::new(source.size as f32 * scale as f32),
+        Size::new(source.size as f32 * numerator as f32 / denominator as f32),
         LocationRef::default(),
         Target::from(SmoothMode::Normal),
     )
@@ -284,6 +290,17 @@ pub(crate) fn presentation_glyph(
         .get(source.id)?
         .draw(DrawSettings::hinted(&hint, false), &mut path)
         .ok()?;
+    if phase != 0 {
+        let offset = phase as f32 / denominator as f32;
+        for command in &mut path.0 {
+            match command {
+                zeno::Command::MoveTo(point) | zeno::Command::LineTo(point) => point.x += offset,
+                zeno::Command::QuadTo(control, point) => { control.x += offset; point.x += offset; },
+                zeno::Command::CurveTo(first, second, point) => { first.x += offset; second.x += offset; point.x += offset; },
+                zeno::Command::Close => {},
+            }
+        }
+    }
     let mut pixels = Vec::new();
     let placement = zeno::Mask::new(path.0.as_slice())
         .origin(zeno::Origin::BottomLeft)
