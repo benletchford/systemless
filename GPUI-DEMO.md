@@ -118,6 +118,16 @@ and selection. Use `--capture-text-edit` to inspect the composed showcase on
 [68K colour](tests/toolbox-showcase/reference/gpui-demo/16-text-edit-68k.png),
 [PowerPC](tests/toolbox-showcase/reference/gpui-demo/16-text-edit-ppc.png), or
 [68K monochrome](tests/toolbox-showcase/reference/gpui-demo/16-text-edit-mono-68k.png).
+The showcase Reset button selects fourteen guest bytes through `TESetSelect`;
+`--capture-text-edit-selected` shows the [68K](tests/toolbox-showcase/reference/gpui-demo/16-text-edit-selected-68k.png)
+and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/16-text-edit-selected-ppc.png)
+selection. `--capture-text-edit-edited` replaces that selection through the
+guest key path and shows the resulting caret on [68K](tests/toolbox-showcase/reference/gpui-demo/16-text-edit-edited-68k.png)
+and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/16-text-edit-edited-ppc.png).
+The same Reset-and-replace guest sequence reaches a 195-byte, five-line
+record with selection `[1,1]` in Systemless and BasiliskII. The GPUI editor,
+single-line dialog fields, and Save filename now share the kit's dedicated
+text-selection color.
 Font metrics, caret blink, Mac Roman non-ASCII input, composition, host
 modifier state, and broader TextEdit layouts need separate qualification.
 
