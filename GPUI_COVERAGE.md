@@ -1,5 +1,31 @@
 # GPUI Kit system-interface coverage
 
+### Current optimized EV and multiline checks (2026-10-12)
+
+Default optimized CI build of `ae2cd138` passes (2m49s, one job, locked/offline,
+`gpui-demo-test`, no root optimization override or release LTO). Original EV
+colour68k flight completes all 14 held-input actions and 2,900 observations in
+49.77s with zero readiness delay. Reviewed full composed output retains the
+ship, stars/asteroids, custom HUD and bottom instructions with guest menus
+hidden. App-drawn text remains guest-rendered.
+
+Maximum resident size is 150,896,640 bytes; peak footprint is 198,067,208 bytes
+(188.89MiB). For 614 final-flight scene submissions, wall-clock elapsed
+mean/p95/max is 0.307/0.644/10.812ms. The last 120 worker cycle intervals have
+mean/p95/max 16.671/22.559/22.765ms. Scene intervals exclude harness snapshot
+copying, readback and GPU completion and include scheduling; worker intervals
+include sleep and scheduling. These are current optimized offscreen results,
+not native FPS or a matched optimized before/after timing comparison. Physical
+input, native presentation, host audio, saves/restart and release remain open.
+Ignored `escape-velocity/image-retirement-optimized-review.json` pins provenance.
+
+The current functional frontend multiline-dialog regression also passes
+(21.32s), exercising guest typing, composition/insertion geometry and the
+existing candidate path across mono68k, colour68k, PPC8 and PPC16 at scales
+0.75/1/1.5/2. Nonzero unstyled TERec faces and destination-aware transfer modes
+remain guarded guest rendering; this run does not qualify their replacement,
+independent Macintosh font fidelity or physical host interaction.
+
 ### Standard File selector image lifetime (2026-10-12)
 
 Open-panel volume indicators retain one prepared image keyed by guest identity,
