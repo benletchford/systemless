@@ -3118,3 +3118,49 @@ fn ppc_script_order_lang_order_and_text_order_compatibility() {
         ),
     );
 }
+
+#[test]
+fn ppc_string_order_pascal_lengths_six_argument_abi_and_signed_result() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"IUStringOrder")).unwrap();
+    let a_ptr = PPC_DATA_BASE + 0x1000;
+    let b_ptr = PPC_DATA_BASE + 0x1100;
+    // Trailing bytes must not participate in a Pascal-string comparison.
+    loaded.memory.add_region(a_ptr, vec![1, b'a', b'z', b'z']);
+    loaded.memory.add_region(b_ptr, vec![2, b'a', b'a', b'z']);
+    for (a_script, b_script, a_lang, b_lang, expected) in [
+        (0, 0, 0, 0, -1i16),
+        (1, 0, 0, 0, 1),
+        (0, 1, 0, 0, -1),
+        (0, 0, 2, 1, 1),
+        (0, 0, 1, 2, -1),
+        (-1, -1, -1, -1, -1),
+    ] {
+        loaded.cpu.gpr[3] = a_ptr;
+        loaded.cpu.gpr[4] = b_ptr;
+        loaded.cpu.gpr[5] = a_script as i16 as i32 as u32;
+        loaded.cpu.gpr[6] = b_script as i16 as i32 as u32;
+        loaded.cpu.gpr[7] = a_lang as i16 as i32 as u32;
+        loaded.cpu.gpr[8] = b_lang as i16 as i32 as u32;
+        // These are outside the six-argument interface and must be ignored.
+        loaded.cpu.gpr[9] = 99;
+        loaded.cpu.gpr[10] = 1;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::IuStringOrder,
+            ),
+        );
+        assert_eq!(loaded.cpu.gpr[3], expected as i32 as u32);
+    }
+    loaded.memory.write_bytes(b_ptr, &[1]).unwrap();
+    loaded.cpu.gpr[3] = a_ptr;
+    loaded.cpu.gpr[4] = b_ptr;
+    loaded.cpu.gpr[5..=8].fill(0);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::IuStringOrder,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}

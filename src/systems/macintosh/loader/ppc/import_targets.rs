@@ -5645,6 +5645,11 @@ pub(crate) fn dispatcher_target_for_import(
                 PpcSystemCompatibilityOperation::IuLangOrder,
             )
         }
+        ("InterfaceLib" | "CarbonLib", "StringOrder" | "IUStringOrder") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::IuStringOrder,
+            )
+        }
         ("InterfaceLib" | "CarbonLib", "TextOrder" | "IUTextOrder") => {
             PpcImportDispatcherTarget::SystemCompatibility(
                 PpcSystemCompatibilityOperation::IuTextOrder,
