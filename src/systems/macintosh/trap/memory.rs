@@ -450,6 +450,54 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn installed_main_display_ref(bus: &MacMemoryBus, reference: u16) -> bool {
+        let handle = bus.read_long(0x08A4);
+        let device = if handle != 0 {
+            bus.read_long(handle)
+        } else {
+            0
+        };
+        if device == 0 || bus.read_word(device) != reference {
+            return false;
+        }
+        let Some(slot) = Self::driver_unit_table_slot(bus, reference) else {
+            return false;
+        };
+        let dce_handle = bus.read_long(slot);
+        dce_handle != 0 && bus.read_long(dce_handle) != 0
+    }
+
+    fn export_device_gamma(&mut self, bus: &mut MacMemoryBus, output: u32) -> u32 {
+        if output == 0
+            || output.checked_add(4).is_none_or(|end| end > bus.ram_size())
+            || bus.get_alloc_size(output).is_some_and(|size| size < 4)
+        {
+            return PARAM_ERR;
+        }
+        // GammaTbl has six header words, followed by channel-major bytes.
+        // Include the declared trailing word in the allocation size.
+        const SIZE: u32 = 14 + 3 * 256;
+        if self.display_gamma_table_ptr == 0 {
+            let pointer = bus.alloc(SIZE);
+            if pointer == 0 {
+                return MEM_FULL_ERR;
+            }
+            self.display_gamma_table_ptr = pointer;
+        }
+        let pointer = self.display_gamma_table_ptr;
+        bus.fill_zeros(pointer, SIZE);
+        for (offset, value) in [(6, 3), (8, 256), (10, 8)] {
+            bus.write_word(pointer + offset, value);
+        }
+        for (channel, values) in self.display_gamma.table().iter().enumerate() {
+            for (index, value) in values.iter().enumerate() {
+                bus.write_byte(pointer + 12 + (channel * 256 + index) as u32, *value);
+            }
+        }
+        bus.write_long(output, pointer);
+        NO_ERR
+    }
+
     /// Install a video-device gamma table from a `VDGammaRecord`.
     ///
     /// Universal Interfaces 3.4 `Video.h` defines `VDGammaRecord.csGTable`
@@ -2653,31 +2701,35 @@ impl super::TrapDispatcher {
                     let io_ref_num = bus.read_word(pb + 24);
                     let cs_code = bus.read_word(pb + 26);
                     let vdpg_info = bus.read_long(pb + 28);
-                    let result = if io_ref_num == 0 {
-                        match cs_code {
-                            2 => {
-                                if vdpg_info != 0 {
-                                    if let Some(mode) =
-                                        crate::display::classic_depth_mode(self.screen_mode.4)
-                                    {
-                                        bus.write_word(vdpg_info, mode);
-                                        bus.write_word(vdpg_info + 6, 0);
-                                        bus.write_long(vdpg_info + 8, self.screen_mode.0);
+                    let result = if io_ref_num == 0 || Self::installed_main_display_ref(bus, io_ref_num) {
+                        if cs_code == 8 {
+                            self.export_device_gamma(bus, vdpg_info)
+                        } else {
+                            match cs_code {
+                                2 => {
+                                    if vdpg_info != 0 {
+                                        if let Some(mode) =
+                                            crate::display::classic_depth_mode(self.screen_mode.4)
+                                        {
+                                            bus.write_word(vdpg_info, mode);
+                                            bus.write_word(vdpg_info + 6, 0);
+                                            bus.write_long(vdpg_info + 8, self.screen_mode.0);
+                                        }
                                     }
                                 }
-                            }
-                            4 if vdpg_info != 0 => bus.write_word(vdpg_info + 6, 1),
-                            6 => {
-                                if vdpg_info != 0 {
-                                    let gdh = self.ensure_main_gdevice(bus);
-                                    let gd = bus.read_long(gdh);
-                                    let is_color = gd != 0 && bus.read_word(gd + 20) & 1 != 0;
-                                    bus.write_word(vdpg_info, u16::from(!is_color));
+                                4 if vdpg_info != 0 => bus.write_word(vdpg_info + 6, 1),
+                                6 => {
+                                    if vdpg_info != 0 {
+                                        let gdh = self.ensure_main_gdevice(bus);
+                                        let gd = bus.read_long(gdh);
+                                        let is_color = gd != 0 && bus.read_word(gd + 20) & 1 != 0;
+                                        bus.write_word(vdpg_info, u16::from(!is_color));
+                                    }
                                 }
+                                _ => {}
                             }
-                            _ => {}
+                            NO_ERR
                         }
-                        NO_ERR
                     } else if self.synthetic_drivers.contains_key(&io_ref_num) {
                         NO_ERR
                     } else {

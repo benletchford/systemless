@@ -37,7 +37,7 @@ impl super::TrapDispatcher {
     /// Inside Macintosh: Devices (1994), pp. 1-8--1-9 defines the unit
     /// number as the one's complement of the reference number and exposes
     /// the table through UTableBase and UnitNtryCnt.
-    fn driver_unit_table_slot(bus: &MacMemoryBus, ref_num: u16) -> Option<u32> {
+    pub(super) fn driver_unit_table_slot(bus: &MacMemoryBus, ref_num: u16) -> Option<u32> {
         let unit = !ref_num;
         let count = bus.read_word(addr::UNIT_NTRY_CNT);
         let table = bus.read_long(addr::U_TABLE_BASE);
