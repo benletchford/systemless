@@ -177,7 +177,7 @@ fn ppc_start_object_accessor(
     heap_limit: u32,
     toolbox_startup: &mut PpcToolboxStartupState,
     accessor: PpcObjectAccessor,
-    arguments: [u32; 9],
+    arguments: [u32; 7],
 ) -> PpcImportAction {
     let Some(procedure) = resolve_guest_procedure(
         memory,
@@ -434,14 +434,20 @@ fn ppc_dispatch_ae_resolve_level(
     if !ppc_write_ae_desc(memory, output, PPC_TYPE_NULL, 0) {
         return Err(PPC_PARAM_ERR);
     }
+    // AEObjects.h: input AEDesc pointers must outlive the asynchronous call.
+    let container = pending.scratch_ptr + 8;
+    let selection = pending.scratch_ptr + 16;
+    if !ppc_write_ae_desc(memory, container, pending.container_type, pending.container_handle)
+        || !ppc_write_ae_desc(memory, selection, level.key_data.desc_type, key_handle)
+    {
+        return Err(PPC_PARAM_ERR);
+    }
     let arguments = [
         level.desired_class,
-        pending.container_type,
-        pending.container_handle,
+        container,
         pending.container_class,
         level.key_form,
-        level.key_data.desc_type,
-        key_handle,
+        selection,
         output,
         accessor.refcon,
     ];
@@ -550,30 +556,29 @@ pub(super) fn dispatch_apple_event_import(
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::ObjectSupportCallAccessor => {
-            // AECallObjectAccessor passes two AEDesc values by value. Their
-            // type and handle occupy two words each; the registered refcon is
-            // appended as the ninth word of the accessor's native PPC call.
-            // FUNCTION AECallObjectAccessor(desiredClass: DescType;
-            //   containerToken: AEDesc; containerClass, keyForm: DescType;
-            //   keyData: AEDesc; VAR theToken: AEDesc): OSErr;
-            // Inside Macintosh: Interapplication Communication (1993), 6-83;
-            // PowerPC System Software (1994), 1-47--1-50.
-            let token = cpu.gpr[10];
-            let action = if !ppc_write_ae_desc(memory, token, PPC_TYPE_NULL, 0)
+            // AEObjects.h: six API arguments; the callback appends its refcon.
+            let container = cpu.gpr[4];
+            let selection = cpu.gpr[7];
+            let token = cpu.gpr[8];
+            let valid_inputs = container != 0
+                && selection != 0
+                && ppc_memory_can_read_bytes(memory, container, 8)
+                && ppc_memory_can_read_bytes(memory, selection, 8);
+            let action = if !valid_inputs
+                || !ppc_write_ae_desc(memory, token, PPC_TYPE_NULL, 0)
                 || !apple_events.object_support_initialized
             {
                 PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR))
-            } else if let Some(accessor) =
-                apple_events.object_accessor_exact(cpu.gpr[3], cpu.gpr[4])
-            {
+            } else if let Some(accessor) = apple_events.object_accessor_exact(
+                cpu.gpr[3],
+                memory.read_u32_be(container).unwrap(),
+            ) {
                 let arguments = [
                     cpu.gpr[3],
-                    cpu.gpr[4],
+                    container,
                     cpu.gpr[5],
                     cpu.gpr[6],
-                    cpu.gpr[7],
-                    cpu.gpr[8],
-                    cpu.gpr[9],
+                    selection,
                     token,
                     accessor.refcon,
                 ];
@@ -716,12 +721,10 @@ pub(super) fn dispatch_apple_event_import(
                         PPC_ERR_AE_ACCESSOR_NOT_FOUND
                     }
                     Some((base, levels)) => {
-                        let scratch_ptr = if levels.len() > 1 {
-                            process_memory_manager.new_native_ptr(memory, 8, true)
-                        } else {
-                            0
-                        };
-                        if levels.len() > 1 && scratch_ptr == 0 {
+                        // One output AEDesc and two stable input AEDescs, even
+                        // for a single level. Cleanup owns the entire block.
+                        let scratch_ptr = process_memory_manager.new_native_ptr(memory, 24, true);
+                        if scratch_ptr == 0 {
                             PPC_MEM_FULL_ERR
                         } else {
                             ppc_apply_process_native_allocator(
