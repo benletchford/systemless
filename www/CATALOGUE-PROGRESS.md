@@ -84,7 +84,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 35 | Carmageddon | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 36 | Shadow Warrior | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 37 | Heretic | [Episode-one original grant found; Mac port scope pending](CATALOGUE-SOURCES.md#heretic-092--target-225) | Exact 0.9.2 receipt; 103 original files; production parity pending | N/A: 68K wrapper is installer, not game | [PPC scene/movement/pickup/fire; twelve assertions; startup palette issue remains](https://github.com/benletchford/systemless/issues/4563#issuecomment-6107484161) | Pending | Pending | Pending |
-| 38 | Dark Castle | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 38 | Dark Castle (original B&W) | Original distribution grant pending | [Demo lead duplicates existing Color Dark Castle](CATALOGUE-SOURCES.md#dark-castle-original-target-and-existing-color-demo); distinct original archive pending | Pending | Pending | Pending | Research only; do not duplicate baseline color demo | Pending |
 | 39 | Trinity | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 40 | Railroad Tycoon II | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 41 | Caesar III | Pending | Pending | Pending | Pending | Pending | Pending | Pending |

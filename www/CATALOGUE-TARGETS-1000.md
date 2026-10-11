@@ -80,7 +80,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 35 | 223 | Carmageddon | PPC lead | D | [Demo index](https://classicmacdemos.com/carmageddon) |
 | 36 | 224 | Shadow Warrior | PPC lead | D | [Demo index](https://classicmacdemos.com/shadow-warrior); [Archive index](https://www.vintageapplemac.com/software/games/s/) |
 | 37 | 225 | Heretic | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/heretic); [Archive index](https://www.vintageapplemac.com/software/games/h/) |
-| 38 | 226 | Dark Castle | 68K lead | D | [Demo index](https://classicmacdemos.com/dark-castle) |
+| 38 | 226 | Dark Castle (original 1986 B&W; exact archive unverified) | 68K lead; original executable uninspected | U | [Demo lead duplicates baseline color remake](CATALOGUE-SOURCES.md#dark-castle-original-target-and-existing-color-demo); [identity #4643](https://github.com/benletchford/systemless/issues/4643) |
 | 39 | 227 | Trinity | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
 | 40 | 228 | Railroad Tycoon II | PPC lead | D | [Demo index](https://classicmacdemos.com/railroad-tycoon-ii); [Archive index](https://www.vintageapplemac.com/software/games/r/) |
 | 41 | 229 | Caesar III | PPC lead | D | [Demo index](https://classicmacdemos.com/caesar-iii); [Archive index](https://www.vintageapplemac.com/software/games/c/); [Garden](https://macintoshgarden.org/games/caesar-iii) |
