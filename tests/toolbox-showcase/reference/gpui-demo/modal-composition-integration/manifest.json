@@ -1,0 +1,14 @@
+{
+  "base": "5b1c0f3a5bbd08c370ea4ca21afa3d92177d7368",
+  "sha256": {
+    "src/bin/gpui_demo.rs": "6496ff2ea30a2a1a8827d86bfe4a0c89263a1df01e0ac07d2724cefbff02b2de",
+    "src/bin/gpui_demo_composition.rs": "51ebcaa049e18ddd6de2c15564982fc430c24967955fe373efcb96c6e288c61a",
+    "src/bin/gpui_demo_input.rs": "64be23c0311ad523ba24eeb8ee0a18679b2aa44aee874da1ce73d40d796a03d7",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "41cf3aa93f2b41d0ce1d49b2bace8572140e9692d37239a749a471744ca5c09f"
+  },
+  "scope": "Four actual CPU/depth modes: GPUI modal/document test-window handlers and real worker rapid commits/rejection; explicit test-window activation. No physical IME, Standard File, rendered pixel qualification, or native accessibility claim.",
+  "test_binaries": {
+    "target/ci-test/examples/gpui_menu_demo-957ebf4d71285d8e": "2d55cd79ce8e1dd87890d4a6f02cf772b975cad53346e089d79b2dac25d85aab",
+    "target/ci-test/examples/gpui_menu_demo-9e8a8abfde68f05d": "1210293933b5b733c41a68a5aece9d2e21e4fe77daf28887fc746b1cf8f9d6e4"
+  }
+}

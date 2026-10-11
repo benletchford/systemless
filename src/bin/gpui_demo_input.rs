@@ -174,10 +174,16 @@ pub(crate) fn guest_key(keystroke: &Keystroke) -> Option<(u8, u8)> {
 
 /// Host preedit is transient: the guest is changed only after a complete commit.
 /// Mac Roman guest offsets are UTF-16 offsets because every decoded byte is BMP.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TextInputTarget {
+    Document { port: u32 },
+    Dialog { item: i16, content_revision: u64 },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TextInputOwner {
     pub identity: (u32, u64),
-    pub port: u32,
+    pub target: TextInputTarget,
     pub text: Vec<u8>,
     pub selection: std::ops::Range<usize>,
 }
@@ -214,7 +220,7 @@ impl GuestComposition {
                 // the next commit at that stale guest selection.
                 if self.pending_commits.iter().any(|(base, bytes)| {
                     if actual == base { return true; }
-                    if actual.identity != base.identity || actual.port != base.port { return false; }
+                    if actual.identity != base.identity || actual.target != base.target { return false; }
                     let retained = base.text.len() - base.selection.len();
                     let Some(inserted) = actual.text.len().checked_sub(retained) else { return false; };
                     inserted <= bytes.len()
@@ -279,10 +285,10 @@ impl GuestComposition {
 
 #[cfg(test)]
 mod composition_tests {
-    use super::{GuestComposition, TextInputOwner};
+    use super::{GuestComposition, TextInputOwner, TextInputTarget};
 
     fn owner() -> TextInputOwner {
-        TextInputOwner { identity: (42, 3), port: 100,
+        TextInputOwner { identity: (42, 3), target: TextInputTarget::Document { port: 100 },
             text: vec![b'a', 0x8e, b'b'], selection: 1..2 }
     }
 
@@ -348,7 +354,7 @@ mod composition_tests {
             let mut changed = initial;
             match mutation {
                 0 => changed.identity.1 += 1,
-                1 => changed.port += 1,
+                1 => changed.target = TextInputTarget::Document { port: 101 },
                 2 => changed.text.push(b'x'),
                 3 => changed.selection = 0..0,
                 _ => changed.selection = 0..99,
@@ -376,6 +382,13 @@ pub(crate) fn guest_commit_inputs(
     owner: &TextInputOwner,
     bytes: &[u8],
 ) -> Option<Vec<MacintoshInput>> {
+    if let TextInputTarget::Dialog { item, content_revision } = owner.target {
+        return guest_dialog_commit_inputs(session, &DialogTextOwner {
+            identity: owner.identity, item, content_revision,
+            text: owner.text.clone(), selection: owner.selection.clone(),
+        }, bytes);
+    }
+    let TextInputTarget::Document { port } = owner.target else { return None; };
     if session.runner().is_ui_tracking_active()
         || session.runner().standard_file_snapshot().is_some()
         || session.runner_mut().dialog_snapshot().iter().any(|dialog| dialog.visible && dialog.active) {
@@ -389,7 +402,7 @@ pub(crate) fn guest_commit_inputs(
     let records = session.runner_mut().text_edit_snapshot().records;
     let record = records.iter().find(|record| record.active && record.drawing_intact
         && (record.guest_id, record.generation) == owner.identity
-        && record.owner_port == owner.port && record.text == owner.text
+        && record.owner_port == port && record.text == owner.text
         && record.selection == (owner.selection.start, owner.selection.end))?;
     if records.iter().filter(|record| record.active && record.drawing_intact).count() != 1
         || record.global_view_rect.is_none() { return None; }

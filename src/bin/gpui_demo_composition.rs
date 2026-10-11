@@ -46,10 +46,16 @@ fn marked_lines(text: &str) -> Vec<MarkedLine> {
 struct MarkedRow { start: usize, positions: Vec<(usize, f32)>, origin: (f32, f32) }
 
 #[derive(Clone)]
+enum PaintedSource {
+    Document(systemless::runner::TextEditSnapshot),
+    Dialog(systemless::runner::DialogSnapshot),
+}
+
+#[derive(Clone)]
 pub(super) struct PaintedComposition {
     owner: super::super::input::TextInputOwner,
     preedit: super::super::input::Preedit,
-    record: systemless::runner::TextEditSnapshot,
+    record: PaintedSource,
     transform: ((f32, f32), f32),
     clip: (f32, f32, f32, f32),
     rows: Vec<MarkedRow>,
@@ -59,15 +65,65 @@ impl Demo {
     pub(super) fn synchronize_composition(&mut self, window: &Window, _: &mut Context<Self>) {
         let eligible = self.focus.is_focused(window) && self.host_active != Some(false)
             && self.open_menus.is_empty() && !self.guest_menu_tracking && self.guest_popup.is_none()
-            && self.standard_file.is_none() && !self.dialogs.iter().any(|dialog| dialog.visible && dialog.active);
+            && self.standard_file.is_none();
         let mut records = self.text_edits.iter().filter(|record| record.active && record.drawing_intact);
         let record = records.next();
-        let owner = if eligible && records.next().is_none() {
+        let owner = if eligible && self.dialogs.iter().any(|dialog| dialog.visible && dialog.active) {
+            super::super::input::dialog_text_owner(&self.dialogs, &self.windows).map(|owner|
+                super::super::input::TextInputOwner { identity: owner.identity,
+                    target: super::super::input::TextInputTarget::Dialog { item: owner.item, content_revision: owner.content_revision },
+                    text: owner.text, selection: owner.selection })
+        } else if eligible && records.next().is_none() {
             record.filter(|record| record.global_view_rect.is_some()).map(|record|
                 super::super::input::TextInputOwner { identity: (record.guest_id, record.generation),
-                    port: record.owner_port, text: record.text.clone(), selection: record.selection.0..record.selection.1 })
+                    target: super::super::input::TextInputTarget::Document { port: record.owner_port }, text: record.text.clone(), selection: record.selection.0..record.selection.1 })
         } else { None };
         self.composition.synchronize(owner);
+    }
+
+    fn dialog_field(&self, owner: &super::super::input::TextInputOwner)
+        -> Option<(&systemless::runner::DialogSnapshot, &systemless::runner::DialogItemSnapshot)> {
+        let super::super::input::TextInputTarget::Dialog { item, content_revision } = owner.target else { return None; };
+        let dialog = self.dialogs.iter().find(|dialog| (dialog.guest_id, dialog.generation) == owner.identity
+            && dialog.content_revision == content_revision && dialog.visible && dialog.active && dialog.edit_field == Some(item))?;
+        let field = dialog.items.iter().find(|field| field.number == item && field.enabled && field.visible && field.edit_text_layout.is_some())?;
+        if field.text != systemless::systems::macintosh::mac_roman::decode_mac_roman(&owner.text) { return None; }
+        Some((dialog, field))
+    }
+
+    fn dialog_bounds(&self, range: Range<usize>) -> Option<Bounds<Pixels>> {
+        let owner = self.composition.owner()?;
+        let (_, field) = self.dialog_field(owner)?;
+        if range.start > range.end || range.end > owner.text.len() || !self.display_scale.is_finite() || self.display_scale <= 0. { return None; }
+        let layout = field.edit_text_layout.as_ref()?;
+        if layout.wrap { return None; }
+        let line = super::super::text::ClassicLine::unicode(&field.text, layout.font.0, layout.font.1);
+        let left = i32::from(field.bounds.1) + 1 + *line.positions.get(range.start)?
+            - i32::from(range.is_empty() && layout.text_edit_geometry && range.start > 0);
+        let right = if range.is_empty() { left + 1 } else { i32::from(field.bounds.1) + 1 + *line.positions.get(range.end)? };
+        let left = left.max(i32::from(field.bounds.1)); let right = right.min(i32::from(field.bounds.3));
+        let top = field.bounds.0;
+        let bottom = i32::from(top).saturating_add(i32::from(layout.line_height)).min(i32::from(field.bounds.2));
+        if left >= right || i32::from(top) >= bottom { return None; }
+        Some(Bounds::new(point(px(self.display_origin.0 + left as f32 * self.display_scale),
+            px(self.display_origin.1 + f32::from(top) * self.display_scale)),
+            size(px((right - left) as f32 * self.display_scale), px((bottom - i32::from(top)) as f32 * self.display_scale))))
+    }
+
+    fn dialog_index_for_point(&self, point: Point<Pixels>) -> Option<usize> {
+        let owner = self.composition.owner()?;
+        let (_, field) = self.dialog_field(owner)?;
+        if !self.display_scale.is_finite() || self.display_scale <= 0. { return None; }
+        let x = (f32::from(point.x) - self.display_origin.0) / self.display_scale;
+        let y = (f32::from(point.y) - self.display_origin.1) / self.display_scale;
+        if !x.is_finite() || !y.is_finite() || x < f32::from(field.bounds.1) || x >= f32::from(field.bounds.3)
+            || y < f32::from(field.bounds.0) || y >= f32::from(field.bounds.2) { return None; }
+        let layout = field.edit_text_layout.as_ref()?;
+        if layout.wrap { return None; }
+        let line = super::super::text::ClassicLine::unicode(&field.text, layout.font.0, layout.font.1);
+        line.positions.iter().enumerate().min_by(|a, b|
+            (f32::from(field.bounds.1) + 1. + *a.1 as f32 - x).abs().total_cmp(
+                &(f32::from(field.bounds.1) + 1. + *b.1 as f32 - x).abs())).map(|(offset, _)| offset)
     }
 
     /// Unicode staging belongs to the host text service. It uses host typography
@@ -75,8 +131,18 @@ impl Demo {
     pub(super) fn composition_surface(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let owner = self.composition.owner()?;
         let preedit = self.composition.preedit.clone()?;
+        if !self.display_scale.is_finite() || self.display_scale <= 0. { return None; }
+        let (x, y, line_height, view, cache_record) = if matches!(owner.target, super::super::input::TextInputTarget::Dialog { .. }) {
+            let (dialog, field) = self.dialog_field(owner)?;
+            let layout = field.edit_text_layout.as_ref()?;
+            if layout.wrap { return None; }
+            let line = super::super::text::ClassicLine::unicode(&field.text, layout.font.0, layout.font.1);
+            let pen = *line.positions.get(owner.selection.start)?;
+            (i32::from(field.bounds.1) + 1 + pen, i32::from(field.bounds.0), layout.line_height,
+                field.bounds, PaintedSource::Dialog(dialog.clone()))
+        } else {
         let record = self.text_edits.iter().find(|record| (record.guest_id, record.generation) == owner.identity)?;
-        if record.text != owner.text || self.display_scale <= 0. { return None; }
+        if record.text != owner.text { return None; }
         let starts = record.line_starts.as_ref()?;
         let index = starts.partition_point(|start| *start <= owner.selection.start).saturating_sub(1)
             .min(starts.len().checked_sub(2)?);
@@ -86,17 +152,18 @@ impl Demo {
         let x = i32::from(dest.1) - i32::from(record.dest_rect.1) + i32::from(geometry.left)
             + i32::from(text_range_width(record, starts[index]..owner.selection.start)?);
         let y = i32::from(dest.0) - i32::from(record.dest_rect.0) + i32::from(geometry.top);
+        (x, y, geometry.height, view, PaintedSource::Document(record.clone()))
+        };
         if x < i32::from(view.1) || x >= i32::from(view.3) || y < i32::from(view.0) || y >= i32::from(view.2) { return None; }
         let width = 240f32.min(self.width as f32 * self.display_scale).max(1.);
         let lines = marked_lines(&preedit.text);
         let height = (lines.len().max(1) as f32 * 20. + 8.).min(168.).min(self.height as f32 * self.display_scale);
         let left = (self.display_origin.0 + x as f32 * self.display_scale)
             .min(self.display_origin.0 + self.width as f32 * self.display_scale - width);
-        let top = (self.display_origin.1 + (y + i32::from(geometry.height)) as f32 * self.display_scale)
+        let top = (self.display_origin.1 + (y + i32::from(line_height)) as f32 * self.display_scale)
             .min(self.display_origin.1 + self.height as f32 * self.display_scale - height);
         let cache = self.composition_geometry.clone();
         let cache_owner = owner.clone();
-        let cache_record = record.clone();
         let transform = (self.display_origin, self.display_scale);
         let foreground = cx.theme().foreground;
         let selection = cx.theme().selection;
@@ -163,7 +230,10 @@ impl Demo {
         (self.composition.owner() == Some(&painted.owner)
             && self.composition.preedit.as_ref() == Some(&painted.preedit)
             && painted.transform == (self.display_origin, self.display_scale)
-            && self.text_edits.iter().any(|record| record == &painted.record)).then_some(painted)
+            && match &painted.record {
+                PaintedSource::Document(expected) => self.text_edits.iter().any(|record| record == expected),
+                PaintedSource::Dialog(expected) => self.dialogs.iter().any(|dialog| dialog == expected),
+            }).then_some(painted)
     }
 
     fn marked_bounds(&self, range: Range<usize>) -> Option<Bounds<Pixels>> {
@@ -263,6 +333,7 @@ impl EntityInputHandler for Demo {
     fn bounds_for_range(&mut self, range: Range<usize>, _: Bounds<Pixels>,
         _: &mut Window, _: &mut Context<Self>) -> Option<Bounds<Pixels>> {
         if self.composition.preedit.is_some() { return self.marked_bounds(range); }
+        if matches!(self.composition.owner()?.target, super::super::input::TextInputTarget::Dialog { .. }) { return self.dialog_bounds(range); }
         let owner = self.composition.owner()?;
         let record = self.text_edits.iter().find(|record| (record.guest_id, record.generation) == owner.identity)?;
         // Geometry is meaningful only for the currently painted guest text.
@@ -294,6 +365,7 @@ impl EntityInputHandler for Demo {
     }
     fn character_index_for_point(&mut self, point: Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
         if self.composition.preedit.is_some() { return self.marked_index_for_point(point); }
+        if matches!(self.composition.owner()?.target, super::super::input::TextInputTarget::Dialog { .. }) { return self.dialog_index_for_point(point); }
         let owner = self.composition.owner()?;
         let record = self.text_edits.iter().find(|record| (record.guest_id, record.generation) == owner.identity)?;
         if self.composition.preedit.is_some() || record.text != owner.text
