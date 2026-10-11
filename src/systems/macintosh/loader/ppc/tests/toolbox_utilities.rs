@@ -915,3 +915,45 @@ fn hle_import_runner_handles_date_and_time_utilities() {
         }
     }
 }
+
+#[test]
+fn qd_random_seed_weak_setter_updates_live_globals_and_random_sequence() {
+    for library in ["InterfaceLib", "CarbonLib"] {
+        for symbol in ["SetQDGlobalsRandomSeed", "setqdglobalsrandomseed"] {
+            let loader = synthetic_loader_with_symbol_class(
+                library.as_bytes(), symbol.as_bytes(), 0x82, &[run_reloc(0x23, 1)],
+            );
+            let mut loaded = load_pef_application(&synthetic_pef_with_loader(loader)).unwrap();
+            let setter = PpcImportDispatcherTarget::SetQDGlobalsRandomSeed;
+            assert!(loaded.imports[0].weak);
+            assert_ne!(loaded.imports[0].address, 0);
+            assert_eq!(loaded.imports[0].dispatcher_target, setter);
+            // Before InitGraf, the setter and Random use the existing fallback.
+            loaded.cpu.gpr[3] = 12345;
+            run_test_import(&mut loaded, setter.clone());
+            assert_eq!(loaded.cpu.gpr[3], 12345); // void ABI preserves r3
+            assert_eq!(loaded.memory.read_u32_be(PPC_RAND_SEED_ADDR), Some(12345));
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::Random);
+            assert_eq!(loaded.memory.read_u32_be(PPC_RAND_SEED_ADDR), Some(207482415));
+            let globals = PPC_DATA_BASE + 0x2800;
+            loaded.memory.add_region(globals - 130, vec![0xA5; 134]);
+            loaded.cpu.gpr[3] = globals;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::InitGraf);
+            loaded.memory.write_u32_be(PPC_RAND_SEED_ADDR, 99).unwrap();
+            for seed in [0, 1, 12345, 0x8000_0000, u32::MAX] {
+                loaded.cpu.gpr[3] = seed;
+                run_test_import(&mut loaded, setter.clone());
+                assert_eq!(loaded.cpu.gpr[3], seed);
+                assert_eq!(loaded.memory.read_u32_be(globals - 126), Some(seed));
+                assert_eq!(loaded.memory.read_u32_be(PPC_RAND_SEED_ADDR), Some(99));
+                assert_eq!(loaded.memory.read_u32_be(globals - 130), Some(0xA5A5_A5A5));
+            }
+            loaded.cpu.gpr[3] = 12345;
+            run_test_import(&mut loaded, setter.clone());
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::Random);
+            assert_eq!(loaded.memory.read_u32_be(globals - 126), Some(207482415));
+            assert_eq!(loaded.cpu.gpr[3], u32::from(207482415u32 as u16));
+            assert_eq!(loaded.memory.read_u32_be(PPC_RAND_SEED_ADDR), Some(99));
+        }
+    }
+}

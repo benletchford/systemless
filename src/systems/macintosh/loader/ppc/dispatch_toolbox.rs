@@ -128,6 +128,17 @@ pub(super) fn dispatch_toolbox_import(
             ppc_string_to_num(cpu, memory);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::SetQDGlobalsRandomSeed => {
+            // Quickdraw.h: void SetQDGlobalsRandomSeed(long randomSeed).
+            // Share the live QDGlobals.randSeed location with Random, including
+            // its existing pre-InitGraf storage. Do not overwrite LM RandSeed
+            // once the application has installed its own QuickDraw globals.
+            let seed_addr = init_graf_global_ptr.checked_sub(126).unwrap_or(PPC_RAND_SEED_ADDR);
+            if ppc_memory_can_write_bytes(memory, seed_addr, 4) {
+                let _ = memory.write_u32_be(seed_addr, cpu.gpr[3]);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::Random => {
             // QuickDraw's randSeed lives 126 bytes before thePort, not at
             // the unrelated low-memory RandSeed global (Inside Macintosh I-195).
