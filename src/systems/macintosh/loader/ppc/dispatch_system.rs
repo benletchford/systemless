@@ -17,6 +17,7 @@ pub enum PpcSystemCompatibilityOperation {
     Dequeue,
     Enqueue,
     FindNextComponent,
+    Font2Script,
     GetNextProcess,
     GetEvQHdr,
     GetScript,
@@ -47,6 +48,7 @@ pub enum PpcSystemCompatibilityOperation {
     NmRemove,
     ObscureCursor,
     OpenDefaultComponent,
+    ReplaceText,
     ResetAlertStage,
     SetFrontProcess,
     StyledLineBreak,
@@ -176,6 +178,79 @@ pub(crate) fn ppc_munger_compatibility(
     eval.return_offset as u32
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ppc_replace_text_compatibility(
+    allocator: Option<&mut PpcProcessAllocatorView<'_>>,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    base_handle: u32,
+    substitution_handle: u32,
+    key_ptr: u32,
+) -> i16 {
+    if base_handle == 0 || substitution_handle == 0 {
+        *last_mem_error = crate::text_utils::NIL_HANDLE_ERR;
+        return crate::text_utils::NIL_HANDLE_ERR;
+    }
+    let Some(base_bytes) = ppc_handle_bytes(memory, handles, base_handle) else {
+        *last_mem_error = crate::text_utils::MEM_WZ_ERR;
+        return crate::text_utils::MEM_WZ_ERR;
+    };
+    let Some(substitution_bytes) = ppc_handle_bytes(memory, handles, substitution_handle) else {
+        *last_mem_error = crate::text_utils::MEM_WZ_ERR;
+        return crate::text_utils::MEM_WZ_ERR;
+    };
+    let key = if key_ptr == 0 {
+        Vec::new()
+    } else {
+        ppc_read_pstring_bytes(memory, key_ptr).unwrap_or_default()
+    };
+    if key.is_empty() {
+        *last_mem_error = PPC_NO_ERR;
+        return 0;
+    }
+
+    let (substitutions, new_data) = crate::text_utils::evaluate_replace_text(
+        &base_bytes,
+        &substitution_bytes,
+        &key,
+        crate::text_utils::SM_ROMAN,
+    );
+    if substitutions == 0 {
+        *last_mem_error = PPC_NO_ERR;
+        return 0;
+    }
+
+    if let Some(new_data) = new_data {
+        let resize_err = ppc_allocator_view_resize_handle(
+            allocator,
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            base_handle,
+            u32::try_from(new_data.len()).unwrap_or(u32::MAX),
+        );
+        *last_mem_error = resize_err;
+        if resize_err != PPC_NO_ERR {
+            return crate::text_utils::MEM_FULL_ERR;
+        }
+        if !new_data.is_empty() {
+            if let Some(ptr) = memory.read_u32_be(base_handle) {
+                if memory.write_bytes(ptr, &new_data).is_none() {
+                    *last_mem_error = PPC_PARAM_ERR;
+                    return crate::text_utils::MEM_FULL_ERR;
+                }
+            }
+        }
+    }
+
+    *last_mem_error = PPC_NO_ERR;
+    substitutions
+}
 
 pub(crate) fn ppc_enqueue_compatibility(
     memory: &mut PpcSectionMem,
@@ -269,6 +344,27 @@ pub(crate) fn ppc_dispatch_system_compatibility(
                 last_mem_error,
                 handles,
             ))
+        }
+        PpcSystemCompatibilityOperation::ReplaceText => {
+            let mut allocator = PpcProcessAllocatorView {
+                memory_manager: process_memory_manager,
+            };
+            let result = ppc_replace_text_compatibility(
+                Some(&mut allocator),
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                cpu.gpr[3],
+                cpu.gpr[4],
+                cpu.gpr[5],
+            );
+            PpcImportAction::Return(ppc_i16_result(result))
+        }
+        PpcSystemCompatibilityOperation::Font2Script => {
+            let font_num = cpu.gpr[3] as i16;
+            PpcImportAction::Return(crate::text_utils::font_id_to_script(font_num) as u32)
         }
         PpcSystemCompatibilityOperation::Enqueue => {
             let _ = ppc_enqueue_compatibility(memory, cpu.gpr[3], cpu.gpr[4]);
@@ -482,10 +578,21 @@ pub(crate) fn ppc_dispatch_system_compatibility(
         }
         PpcSystemCompatibilityOperation::CharByte => {
             // CharByte identifies a byte's place in a multibyte character.
-            // The installed Roman script uses only single-byte characters.
             // FUNCTION CharByte(textBuf: Ptr; textOffset: Integer): Integer;
-            // Inside Macintosh Volume V (1986), V-306.
-            PpcImportAction::Return(0)
+            // Inside Macintosh Volume V (1986), V-306; Inside Macintosh: Text (1993), pp. 6-78–6-79.
+            let text_ptr = cpu.gpr[3];
+            let offset = cpu.gpr[4] as i16;
+            if text_ptr == 0 || offset < 0 {
+                return PpcImportAction::Return(0);
+            }
+            let len = (offset as usize + 2).min(256);
+            let bytes = ppc_memory_read_bytes(memory, text_ptr, len as u32).unwrap_or_default();
+            let result = crate::text_utils::evaluate_char_byte(
+                &bytes,
+                offset as usize,
+                crate::text_utils::SM_ROMAN,
+            );
+            PpcImportAction::Return(ppc_i16_result(result))
         }
         PpcSystemCompatibilityOperation::GetSysDirection => {
             // GetSysDirection returns the SysDirection global: zero for

@@ -95,17 +95,15 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
             // VisibleLength excludes whitespace at the display end of a
             // Roman, left-to-right style run without changing its contents.
             // Inside Macintosh: Text (1993), pp. 3-36 to 3-38, 3-82.
-            let mut visible = (cpu.gpr[4] as i32).max(0) as u32;
-            if !ppc_memory_can_read_bytes(memory, cpu.gpr[3], visible) {
+            let len = (cpu.gpr[4] as i32).max(0) as usize;
+            if len == 0 {
+                return Some(PpcImportAction::Return(0));
+            }
+            if !ppc_memory_can_read_bytes(memory, cpu.gpr[3], len as u32) {
                 return None;
             }
-            while visible > 0 {
-                let byte = memory.read_u8(cpu.gpr[3].checked_add(visible - 1)?)?;
-                if !matches!(byte, b' ' | b'\t') {
-                    break;
-                }
-                visible -= 1;
-            }
+            let bytes = ppc_memory_read_bytes(memory, cpu.gpr[3], len as u32)?;
+            let visible = crate::text_utils::evaluate_visible_length(&bytes) as u32;
             Some(PpcImportAction::Return(visible))
         }
         // The same reference specifies that GetDefFontSize returns

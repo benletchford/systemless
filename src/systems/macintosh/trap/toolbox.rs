@@ -3719,49 +3719,7 @@ impl super::TrapDispatcher {
     }
 
     fn scriptutil_font_script(&self) -> u8 {
-        let font = self.tx_font as u16;
-        if (0x4000..=0xBFFF).contains(&font) {
-            (((font - 0x4000) / 0x0200) + 1) as u8
-        } else {
-            0
-        }
-    }
-
-    fn scriptutil_is_lead_byte(script: u8, byte: u8) -> bool {
-        match script {
-            // Macintosh Japanese uses Shift-JIS lead-byte ranges.
-            1 => (0x81..=0x9F).contains(&byte) || (0xE0..=0xFC).contains(&byte),
-            // The Macintosh Chinese and Korean double-byte encodings reserve
-            // the high-byte range used by their script parse tables.
-            2 | 3 | 25 => (0xA1..=0xFE).contains(&byte),
-            _ => false,
-        }
-    }
-
-    fn scriptutil_character_len(script: u8, text: &[u8], offset: usize) -> usize {
-        let Some(&byte) = text.get(offset) else {
-            return 0;
-        };
-        if Self::scriptutil_is_lead_byte(script, byte) && offset + 1 < text.len() {
-            2
-        } else {
-            1
-        }
-    }
-
-    fn scriptutil_is_complete_text(script: u8, text: &[u8]) -> bool {
-        let mut offset = 0;
-        while offset < text.len() {
-            if Self::scriptutil_is_lead_byte(script, text[offset]) {
-                if offset + 1 == text.len() {
-                    return false;
-                }
-                offset += 2;
-            } else {
-                offset += 1;
-            }
-        }
-        true
+        crate::text_utils::font_id_to_script(self.tx_font as i16)
     }
 
     fn scriptutil_replace_text(
@@ -3771,25 +3729,21 @@ impl super::TrapDispatcher {
         substitution_handle: u32,
         key_ptr: u32,
     ) -> i16 {
-        const MEM_FULL_ERR: i16 = -108;
-        const NIL_HANDLE_ERR: i16 = -109;
-        const MEM_WZ_ERR: i16 = -111;
-
         if base_handle == 0 || substitution_handle == 0 {
-            return NIL_HANDLE_ERR;
+            return crate::text_utils::NIL_HANDLE_ERR;
         }
 
         let base_ptr = bus.read_long(base_handle);
         let substitution_ptr = bus.read_long(substitution_handle);
         if base_ptr == 0 || substitution_ptr == 0 {
-            return MEM_WZ_ERR;
+            return crate::text_utils::MEM_WZ_ERR;
         }
 
         let Some(base_size) = bus.get_alloc_size(base_ptr) else {
-            return MEM_WZ_ERR;
+            return crate::text_utils::MEM_WZ_ERR;
         };
         let Some(substitution_size) = bus.get_alloc_size(substitution_ptr) else {
-            return MEM_WZ_ERR;
+            return crate::text_utils::MEM_WZ_ERR;
         };
         let key = if key_ptr == 0 {
             Vec::new()
@@ -3803,32 +3757,21 @@ impl super::TrapDispatcher {
         let base = bus.read_bytes(base_ptr, base_size as usize);
         let substitution = bus.read_bytes(substitution_ptr, substitution_size as usize);
         let script = self.scriptutil_font_script();
-        let key_is_complete = Self::scriptutil_is_complete_text(script, &key);
-        let mut replaced = Vec::with_capacity(base.len());
-        let mut substitutions = 0i16;
-        let mut offset = 0;
-        while offset < base.len() {
-            let candidate_end = offset.saturating_add(key.len());
-            let matches_key = candidate_end <= base.len()
-                && base[offset..candidate_end] == key
-                && key_is_complete;
-            if matches_key {
-                replaced.extend_from_slice(&substitution);
-                substitutions = substitutions.saturating_add(1);
-                offset = candidate_end;
-            } else {
-                let char_len = Self::scriptutil_character_len(script, &base, offset);
-                replaced.extend_from_slice(&base[offset..offset + char_len]);
-                offset += char_len;
-            }
-        }
-
+        let (substitutions, new_data) = crate::text_utils::evaluate_replace_text(
+            &base,
+            &substitution,
+            &key,
+            script,
+        );
         if substitutions == 0 {
             return 0;
         }
+        let Some(replaced) = new_data else {
+            return 0;
+        };
         let updated_ptr = self.write_bytes_to_handle(bus, base_handle, &replaced);
         if !replaced.is_empty() && updated_ptr == 0 {
-            return MEM_FULL_ERR;
+            return crate::text_utils::MEM_FULL_ERR;
         }
         substitutions
     }
@@ -15769,18 +15712,15 @@ impl super::TrapDispatcher {
                     // IM:VI 14-130..14-132; IM:Text 3-36..3-38, 3-82.
                     // Roman left-to-right text excludes trailing spaces/tabs.
                     // Stack: selector(4), textLen(4), textPtr(4), result(4).
-                    0x8408_0028 => {
+                    crate::text_utils::VISIBLE_LENGTH_SELECTOR => {
                         let text_ptr = bus.read_long(sp + 8);
-                        let mut visible = (bus.read_long(sp + 4) as i32).max(0) as u32;
-                        while visible > 0 {
-                            let Some(last_ptr) = text_ptr.checked_add(visible - 1) else {
-                                break;
-                            };
-                            if !matches!(bus.read_byte(last_ptr), b' ' | b'\t') {
-                                break;
-                            }
-                            visible -= 1;
-                        }
+                        let len = (bus.read_long(sp + 4) as i32).max(0) as usize;
+                        let bytes = if text_ptr != 0 && len > 0 {
+                            bus.read_bytes(text_ptr, len)
+                        } else {
+                            Vec::new()
+                        };
+                        let visible = crate::text_utils::evaluate_visible_length(&bytes) as u32;
                         bus.write_long(sp + 12, visible);
                         cpu.write_reg(Register::A7, sp + 12);
                         return Some(Ok(()));
@@ -15790,7 +15730,7 @@ impl super::TrapDispatcher {
                     // Stack: selector(4), key pointer(4), substitution handle(4),
                     // base handle(4), result(2). Pop selector and arguments.
                     // Inside Macintosh: Text 1993, pp. 5-74..5-75 and Table D-3.
-                    0x820C_FFDC => {
+                    crate::text_utils::REPLACE_TEXT_SELECTOR => {
                         let key_ptr = bus.read_long(sp + 4);
                         let substitution_handle = bus.read_long(sp + 8);
                         let base_handle = bus.read_long(sp + 12);
@@ -15896,8 +15836,12 @@ impl super::TrapDispatcher {
                     }
                     // Font2Script (6): FUNCTION Font2Script(fontNum: INTEGER): INTEGER
                     // Stack: selector(4), fontNum(2), result(2)
-                    6 => {
-                        bus.write_word(sp + 6, 0); // smRoman
+                    crate::text_utils::FONT2SCRIPT_SELECTOR => {
+                        let font_num = bus.read_word(sp + 4) as i16;
+                        bus.write_word(
+                            sp + 6,
+                            crate::text_utils::font_id_to_script(font_num) as u16,
+                        );
                         cpu.write_reg(Register::A7, sp + 6); // pop selector + fontNum
                     }
                     // GetEnvirons (8): FUNCTION GetEnvirons(verb: INTEGER): LongInt
@@ -15927,10 +15871,23 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::D0, 0);
                     }
                     // CharByte (16): FUNCTION CharByte(textBuf: Ptr; textOffset: INTEGER): INTEGER
-                    // Returns smSingleByte (0) for all chars in Roman script.
                     // Stack: selector(4), textBuf(4), textOffset(2), result(2)
-                    16 => {
-                        bus.write_word(sp + 10, 0); // smSingleByte = 0
+                    crate::text_utils::CHAR_BYTE_SELECTOR => {
+                        let text_offset = bus.read_word(sp + 4) as i16;
+                        let text_buf = bus.read_long(sp + 6);
+                        let script = self.scriptutil_font_script();
+                        let result = if text_buf != 0 && text_offset >= 0 {
+                            let len = (text_offset as usize + 2).min(256);
+                            let bytes = bus.read_bytes(text_buf, len);
+                            crate::text_utils::evaluate_char_byte(
+                                &bytes,
+                                text_offset as usize,
+                                script,
+                            )
+                        } else {
+                            crate::text_utils::SM_SINGLE_BYTE
+                        };
+                        bus.write_word(sp + 10, result as u16);
                         cpu.write_reg(Register::A7, sp + 10);
                     }
                     // CharType (18): FUNCTION CharType(textBuf: Ptr; textOffset: INTEGER): INTEGER
