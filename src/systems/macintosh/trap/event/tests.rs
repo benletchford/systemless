@@ -1690,26 +1690,44 @@ fn wait_next_event_schedules_process_switch_and_window_activation_by_size_policy
         disp.window_list.push(window);
         bus.write_byte(window + 110, 255);
         bus.write_byte(window + 111, 255);
-        disp.application_size.with_mut(|size| *size = Some(crate::loader::ApplicationSizeResource {
-            flags, preferred_size: 0, minimum_size: 0,
-        }));
+        disp.application_size.with_mut(|size| {
+            *size = Some(crate::loader::ApplicationSizeResource {
+                flags,
+                preferred_size: 0,
+                minimum_size: 0,
+            })
+        });
         let accepts = flags & 0x4000 != 0;
         let owns_activation = flags == 0x4800;
         for foreground in [false, true] {
-            disp.event_queue.with_mut(|queue| queue.activation.request(foreground));
+            disp.event_queue
+                .with_mut(|queue| queue.activation.request(foreground));
             let mut expected = Vec::new();
-            if accepts { expected.push(15); }
-            if !owns_activation { expected.push(8); }
+            if accepts {
+                expected.push(15);
+            }
+            if !owns_activation {
+                expected.push(8);
+            }
             for what in expected {
                 cpu.write_reg(Register::A7, TEST_SP);
                 bus.write_long(TEST_SP, 0);
                 bus.write_long(TEST_SP + 4, 0);
                 bus.write_long(TEST_SP + 8, event_ptr);
                 bus.write_word(TEST_SP + 12, 0x8100);
-                disp.dispatch_toolbox(true, 0x060, &mut cpu, &mut bus).unwrap().unwrap();
-                assert_eq!(bus.read_word(event_ptr), what, "flags={flags:04x} foreground={foreground}");
+                disp.dispatch_toolbox(true, 0x060, &mut cpu, &mut bus)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    bus.read_word(event_ptr),
+                    what,
+                    "flags={flags:04x} foreground={foreground}"
+                );
                 if what == 15 {
-                    assert_eq!(bus.read_long(event_ptr + 2), 0x0100_0000 | u32::from(foreground));
+                    assert_eq!(
+                        bus.read_long(event_ptr + 2),
+                        0x0100_0000 | u32::from(foreground)
+                    );
                 } else {
                     assert_eq!(bus.read_long(event_ptr + 2), window);
                     assert_eq!(bus.read_word(event_ptr + 14) & 1, u16::from(foreground));
@@ -1723,9 +1741,70 @@ fn wait_next_event_schedules_process_switch_and_window_activation_by_size_policy
             bus.write_long(TEST_SP + 4, 0);
             bus.write_long(TEST_SP + 8, event_ptr);
             bus.write_word(TEST_SP + 12, 0x8100);
-            disp.dispatch_toolbox(true, 0x060, &mut cpu, &mut bus).unwrap().unwrap();
+            disp.dispatch_toolbox(true, 0x060, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
             assert_eq!(bus.read_word(event_ptr), 0);
-            assert_eq!(disp.event_queue.with_ref(|queue| queue.activation.is_foreground()), foreground);
+            assert_eq!(
+                disp.event_queue
+                    .with_ref(|queue| queue.activation.is_foreground()),
+                foreground
+            );
+            if owns_activation {
+                assert_eq!(
+                    bus.read_byte(window + 111),
+                    255,
+                    "application-owned activation must not alter hiliting"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn process_switch_waits_for_ordinary_modal_window_to_close() {
+    use super::super::test_helpers::TEST_SP;
+    // Toolbox Essentials (1992), p. 2-20: dBoxProc blocks major switching;
+    // movableDBoxProc permits it when the application owns the event loop.
+    for proc_id in [1, 5] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window = bus.alloc(256);
+        let event = bus.alloc(16);
+        disp.window_list.push(window);
+        disp.window_proc_ids.insert(window, proc_id);
+        bus.write_byte(window + 110, 255);
+        bus.write_byte(window + 111, 255);
+        disp.application_size.with_mut(|size| {
+            *size = Some(crate::loader::ApplicationSizeResource {
+                flags: 0x4800,
+                preferred_size: 0,
+                minimum_size: 0,
+            })
+        });
+        disp.event_queue
+            .with_mut(|queue| queue.activation.request(false));
+        for scan in 0..3 {
+            if scan == 2 && proc_id == 1 {
+                bus.write_byte(window + 110, 0);
+            }
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, 0);
+            bus.write_long(TEST_SP + 4, 0);
+            bus.write_long(TEST_SP + 8, event);
+            bus.write_word(TEST_SP + 12, 0x8000);
+            disp.dispatch_toolbox(true, 0x060, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            let suspend = (proc_id == 1 && scan == 2) || (proc_id == 5 && scan == 0);
+            assert_eq!(bus.read_word(event), if suspend { 15 } else { 0 });
+            if suspend {
+                assert_eq!(bus.read_long(event + 2), 0x0100_0000);
+            }
+            if proc_id == 1 {
+                assert!(disp
+                    .event_queue
+                    .with_ref(|queue| queue.activation.is_foreground()));
+            }
         }
     }
 }

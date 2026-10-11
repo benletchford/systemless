@@ -2085,3 +2085,14 @@ modeless dialog, retained modal dialog, open menu, held key, and held pointer;
 include both SIZE activation policies, repeated focus notifications, and
 front-click suppression. Existing key/button-release tests cover only input
 cleanup and must not be counted as this lifecycle qualification.
+
+
+The shared process-activation state now retains launch SIZE policy across CPU
+adapters and schedules requested transitions through both Event Managers.
+Prepared suspend/resume records preserve timestamps across EventAvail peeks,
+respect event masks and priority, and remain separate from GetOSEvent and
+FlushEvents. Matching WaitNextEvent regressions cover all four combinations
+of acceptSuspendResume and doesActivateOnFGSwitch, including the subsequent
+yield that commits suspension and the absence of duplicate notifications.
+These are runtime boundary checks; the host-focus bridge, background scheduling,
+clipboard conversion and the native lifecycle qualification above remain open.
