@@ -1,0 +1,11 @@
+{
+  "base_head": "348d19b909a0196047e792f094348efd011835bb",
+  "source_sha256": "10c68803df89ec659eb2c014f908ecdd89f39f417629dbb8081dc6613bd8abcc",
+  "log_sha256": "679f541fe9ae7598f86684f11ea8dc7393f6f5e39021ca3ca2fc2aec4799d9e2",
+  "exit_modes": {
+    "0": "explicit Shutdown",
+    "1": "sender-channel disconnection",
+    "2": "cancel Save parent then guest File Quit"
+  },
+  "scope": "Actual production worker lifecycle, guest New Folder input, file modal cancellation and File Quit, normal Guest stopped status and worker join, independent reader processes finding restored folders across four CPU/depth modes. Audio unavailable. Not physical window close, crash durability or final flush timing in isolation."
+}

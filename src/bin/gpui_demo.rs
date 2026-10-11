@@ -8134,8 +8134,8 @@ mod desktop {
                     std::thread::sleep(Duration::from_millis(10));
                 }
             }
-            for ((powerpc, depth), disconnect) in [(false, 1u16), (false, 8), (true, 8), (true, 16)]
-                .into_iter().flat_map(|mode| [false, true].map(move |disconnect| (mode, disconnect))) {
+            for ((powerpc, depth), exit) in [(false, 1u16), (false, 8), (true, 8), (true, 16)]
+                .into_iter().flat_map(|mode| [0u8, 1, 2].map(move |exit| (mode, exit))) {
                 let temp = tempfile::tempdir().unwrap();
                 let archive = temp.path().join("Showcase.sit");
                 std::fs::copy(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -8168,7 +8168,17 @@ mod desktop {
                 send(Command::ActivateFile(panel.guest_id, panel.generation, FileAction::CreateFolder));
                 wait("created directory", &updates, |update| update.standard_file.as_ref().is_some_and(|parent|
                     parent.new_folder.is_none() && parent.directory_id != panel.directory_id));
-                if !disconnect { send(Command::Shutdown); }
+                if exit == 0 { send(Command::Shutdown); }
+                if exit == 2 {
+                    let panel = wait("created folder parent", &updates, |update| update.standard_file.as_ref()
+                        .is_some_and(|panel| panel.new_folder.is_none())).standard_file.unwrap();
+                    send(Command::ActivateFile(panel.guest_id, panel.generation, FileAction::Cancel));
+                    let resumed = wait("cancel before Quit", &updates, |update| update.standard_file.is_none()
+                        && update.menus.menus.iter().any(|menu| menu.id == 131));
+                    let menu = resumed.menus.menus.iter().find(|menu| menu.id == 131).unwrap();
+                    send(Command::Menu(131, 4, menu.guest_id, menu.generation));
+                    wait("guest Quit", &updates, |update| update.status.ends_with("Guest stopped"));
+                }
                 drop(worker.0.take());
                 worker.1.take().unwrap().join().unwrap();
                 let output = std::process::Command::new(std::env::current_exe().unwrap())
@@ -8179,8 +8189,8 @@ mod desktop {
                     .env("SYSTEMLESS_GPUI_FOLDER_WRITER_PID", std::process::id().to_string()).output().unwrap();
                 eprint!("{}", String::from_utf8_lossy(&output.stderr));
                 print!("{}", String::from_utf8_lossy(&output.stdout));
-                assert!(output.status.success(), "worker shutdown persistence: PPC={powerpc} depth={depth} disconnect={disconnect}");
-                eprintln!("PASS production-worker-folder-shutdown powerpc={powerpc} depth={depth} disconnect={disconnect}");
+                assert!(output.status.success(), "worker shutdown persistence: PPC={powerpc} depth={depth} exit={exit}");
+                eprintln!("PASS production-worker-folder-shutdown powerpc={powerpc} depth={depth} exit={exit}");
             }
         }
 
