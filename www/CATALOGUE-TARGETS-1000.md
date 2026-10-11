@@ -560,7 +560,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 505 | 693 | Lites Out | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
 | 506 | 694 | Munchkinstein | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
 | 507 | 695 | NetBoxes | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
-| 508 | 696 | On the Edge | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
+| 508 | 696 | On the Edge | Original fat game; 68K placement verified; PPC Random fix pending | S | [Original grant and intake](CATALOGUE-SOURCES.md#on-the-edge-31--primary-508-complete-original-package) |
 | 509 | 697 | Pajatso | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
 | 510 | 698 | Quarry | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
 | 511 | 699 | Radiant Weirdness Zone | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/radiant-weirdness-zone) |

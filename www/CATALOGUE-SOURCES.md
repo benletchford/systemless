@@ -1897,5 +1897,55 @@ again verifies HTTP 200, 73,613 bytes and the publisher SHA-256 without intercep
 The score-3 capture is inspected and the pacing probe passes with no console
 errors. Newer default-branch changes are confined to PPC DrawSprocket and do not
 change this 68K runtime path. Launch is approved for the bounded native/browser
-memory rounds and the entry is enabled. Final catalogue CI/merge, human release
-and independent public replay remain pending; no qualified-live increment yet.
+memory rounds and the entry is enabled. [Catalogue PR #4656](https://github.com/benletchford/systemless/pull/4656)
+merged on 11 October 2026 as `3c29bd40572c2c61cbe266d30646bf166c1b7cb5` after
+all four checks passed on head `35911d56c75751ca66c3759a3ab3dd6a0894ac97`.
+Human release and independent public replay remain pending; no qualified-live
+increment yet.
+
+
+## On the Edge 3.1 — primary 508, complete original package
+
+Inspected 12 October 2026. The [preservation index](https://www.gryphel.com/c/sw/games/edge/)
+links the [original BinHex/StuffIt archive](https://www.gryphel.com/d/sw/games/edge/c/ontheedge.sit.hqx),
+not its repackaged HFS disk. Original download: 22,676 bytes, SHA-256
+`666d412e535e9be3d4b994be9ef1e04ec43ed77fa8a0820d7a877a9a4e80bde3`.
+Production packing preserves both original files / all four forks exactly
+against independent unar extraction, plus each file's Finder type, creator and
+flags. Application: 15,058 data / 21,540 resource bytes. Accompanying PICT readme:
+2,514 data / zero resource bytes. Complete production pack: 39,221 bytes.
+
+The original PICT readme's text records were inspected, and its unmodified
+file was independently rendered. It permits free copying and distribution
+without charge, retains the five-dollar shareware request and copyright, and
+reserves sold software libraries and commercial bundling for written consent.
+This proposed free preservation delivery keeps the full original archive and
+readme separate from the emulator binary. No sale, commercial-bundling or
+modified-software grant is inferred. Actual executable has CODE 0/1/3, a
+`Joy!peffpwpc` data fork and cfrg; vers identifies 3.1. Both game slices are
+present. The preserved edition is dated 1995 by the archive index.
+
+[Catalogue intake #4661](https://github.com/benletchford/systemless/issues/4661):
+immutable native `392e612c55387756ec217577f085b387948da491`, exact original archive,
+selector `On the Edge 3.1/On the Edge`, explicit 68K/depth 8. Command-N starts
+New game, then an ordinary inner-square click places the six of hearts, draws
+an ace of clubs and changes Score 0 to 100. A fresh bounded replay passes twelve
+measured before/after pixel checks at 786 frontend / 1,386 guest ticks, zero
+exhaustion; captures inspected. This proves one placement, not completed games,
+card removal, undo, saving or audio. A later Command-Z attempt made no visible
+change and does not qualify undo. A content-only crop of the successful placement
+is 3,228 bytes, SHA-256
+`379b25620693cd71d32c8bd3289cf1f4fbb19b93973df969c30276c67d46d724`.
+
+PPC baseline repeats on native `400a685b6365aa226cb220bf7b8da61d4600bbbb`: startup
+halts at frontend 1 / guest 0, PC 0 / LR 0, SP `07F6FFC0`, 41,206 cycles, zero
+assertions and no requested checkpoint; an empty framed window is inspected.
+Original instruction/register traces show zero-extended negative Random values
+produce negative shuffle indexes: result `0000EAC5` becomes `FFFF153B` after
+negation, then remainder -41. A memory-write watch observes the guest's shuffle
+store at `0100294C` repeatedly overwrite quit flag `0200047E`, ending with `1B`.
+The original event loop consequently returns. [Focused signed-result issue #4663](https://github.com/benletchford/systemless/issues/4663)
+tracks the fix; no guest archive or application state was patched. Corrected PPC
+replay, asset promotion, hosted browser qualification, launch approval, catalogue
+CI/merge, human release and independent public replay remain pending. The proposed
+entry remains launch-disabled; no new live-qualified game is counted.
