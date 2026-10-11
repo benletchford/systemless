@@ -146,7 +146,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 101 | 289 | Shanghai Dynasty | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/shanghai-dynasty) |
 | 102 | 290 | Mahjong | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
 | 103 | 291 | MacTaipei | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 104 | 292 | Pegged | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 104 | 292 | Pegged | 68K verified; native PPC absent | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
 | 105 | 293 | Powerball | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
 | 106 | 294 | Brickles Plus | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
 | 107 | 295 | Brick Attack | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
