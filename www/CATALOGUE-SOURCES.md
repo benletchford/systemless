@@ -1702,6 +1702,26 @@ trace changed the execution path and was stopped; it is excluded from gameplay
 evidence. Rights, native gameplay, browser approval and public delivery remain
 held. Only a human may trigger a release.
 
+
+[Alternate-buffer invalidation fix #4655](https://github.com/benletchford/systemless/pull/4655)
+merged as `cdc7ab13318688816770977c1041445c2e683d5b` after all nine CI/CLA
+checks passed. All 70 focused DrawSprocket tests pass, including underlay pixels,
+disjoint-region gap preservation, presentation before sprite restoration and
+atomic invalid-input rejection. Fresh immutable native
+`392e612c55387756ec217577f085b387948da491`, same unchanged 4.1 original and
+explicit PPC/depth 8 selector, advances beyond the prior tick-348 optional-import
+halt to the original registration dialog. The diagnostic completes 1,080
+frontend/guest ticks with no exhaustion; zero assertions prove only completion
+of its requested actions. Inspected captures show a blank central registration
+text area with controls and scrollbar rendered. The trace still reports PC-zero /
+LR-zero callback halts with r12 `01E003D8` / `01E003F0`; these are not fixed by
+this scoped invalidation repair. A separate fresh ordinary OK dismissal (v423,
+h242; down, two ticks, up) completes at 842 frontend / 910 guest ticks with no
+exhaustion and zero assertions. The dialog closes, but a blank subsequent framed
+view remains. Gameplay, registration/callback rendering, rights and browser
+qualification stay unresolved. The archive remains unhosted and does not count
+as a qualified live game.
+
 ## Brickles Plus 3.0 original package and bounded probes
 
 Primary target 106; [intake #4635](https://github.com/benletchford/systemless/issues/4635).
