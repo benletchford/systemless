@@ -2128,3 +2128,20 @@ TextEdit records. This is end-to-end Systemless session evidence, separate from
 the GPUI platform focus observer test. Native oracle comparison and rendered
 host-switch captures remain required, as do background scheduling and modal,
 menu, clipboard and front-click lifecycle scenarios.
+
+### Host activation capture evidence
+
+The opt-in capture flags `--capture-text-edit-host-suspended` and
+`--capture-text-edit-host-resumed` request process transitions through the
+frontend session API. They wait for the expected TextEdit activation and
+selection state, then a subsequent null event so guest painting has completed.
+The six composed captures and paired raw frames are recorded in
+`tests/toolbox-showcase/reference/gpui-demo/text-host-activation-review.json`.
+Visual review confirms selection suppression/restoration and stable geometry
+on monochrome 68k, colour 68k and PPC. The menu uses the existing transparent
+SVG logo instead of the app icon's black tile.
+
+These captures do not qualify native host activation observer integration or
+native-oracle process switching. Monochrome custom guest panels are still
+black, obscuring their headings, and need separate investigation. Background
+scheduling, modal/menu transitions and clipboard conversion remain open.

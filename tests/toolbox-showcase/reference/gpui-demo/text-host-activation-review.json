@@ -1,0 +1,54 @@
+{
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "review": "All six composed states reviewed: selection hidden during suspension and restored on resume, with stable scene geometry and transparent menu logo. Paired raw frames retained. Requests enter through the frontend session API; native host observer integration and native-oracle application switching are not qualified by these captures. Monochrome custom guest panels remain black and require separate investigation.",
+  "captures": [
+    {
+      "file": "reference/gpui-demo/16-text-edit-host-suspended-mono.png",
+      "sha256": "3b46d04dd0b12408d350174d5e76ab90bbe8ff71a744523e01414e50eb4f08bd"
+    },
+    {
+      "file": "reference/gpui-demo/16-text-edit-host-suspended-mono.guest.png",
+      "sha256": "713e2ed2ce18d5111bda8f4f4d2349b7118fa665befc51f0efa616781eccec28"
+    },
+    {
+      "file": "reference/gpui-demo/16-text-edit-host-resumed-mono.png",
+      "sha256": "8d25af6fede76f0192cfe714b8276bb27bc3e265b4dd085b4079ad150d6b17b5"
+    },
+    {
+      "file": "reference/gpui-demo/16-text-edit-host-resumed-mono.guest.png",
+      "sha256": "f63b8455c95580c0f27487eb87236254afcca2eae16a8d09dfd5e248ec86615c"
+    },
+    {
+      "file": "reference/gpui-demo/16-text-edit-host-suspended-colour.png",
+      "sha256": "78510b04f8bee6a15390e1983ffef8512f30fcabdef2fec6b37b6a83d4f18350"
+    },
+    {
+      "file": "reference/gpui-demo/16-text-edit-host-suspended-colour.guest.png",
+      "sha256": "0e1a1dab8640db3aec8a161547ccf7f2cc2590b94672c2138057e26071130b01"
+    },
+    {
+      "file": "reference/gpui-demo/16-text-edit-host-resumed-colour.png",
+      "sha256": "99901008902107be2dce03c46a1d7397583afd64b847a2aa6c2e122bf5374fa3"
+    },
+    {
+      "file": "reference/gpui-demo/16-text-edit-host-resumed-colour.guest.png",
+      "sha256": "dbeb94170d916dea45bca07c641f769941940f082b5b545051a051160e6a20cb"
+    },
+    {
+      "file": "reference/gpui-demo/16-text-edit-host-suspended-ppc.png",
+      "sha256": "78510b04f8bee6a15390e1983ffef8512f30fcabdef2fec6b37b6a83d4f18350"
+    },
+    {
+      "file": "reference/gpui-demo/16-text-edit-host-suspended-ppc.guest.png",
+      "sha256": "0e1a1dab8640db3aec8a161547ccf7f2cc2590b94672c2138057e26071130b01"
+    },
+    {
+      "file": "reference/gpui-demo/16-text-edit-host-resumed-ppc.png",
+      "sha256": "99901008902107be2dce03c46a1d7397583afd64b847a2aa6c2e122bf5374fa3"
+    },
+    {
+      "file": "reference/gpui-demo/16-text-edit-host-resumed-ppc.guest.png",
+      "sha256": "dbeb94170d916dea45bca07c641f769941940f082b5b545051a051160e6a20cb"
+    }
+  ]
+}

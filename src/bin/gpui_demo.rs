@@ -177,6 +177,12 @@ mod desktop {
         capture_text_edit_reactivated: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_text_edit_host_suspended: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_text_edit_host_resumed: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_popup_controls: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -604,7 +610,7 @@ mod desktop {
         text_pointer_capture: Option<(u32, u64)>,
         image: Option<Arc<RenderImage>>,
         prepared_buttons: Option<PreparedButtonImage>,
-        logo: Arc<RenderImage>,
+        logo: Arc<Image>,
         width: u32,
         height: u32,
         display_origin: (f32, f32),
@@ -695,11 +701,10 @@ mod desktop {
                 standard_file: None,
                 image: None,
                 prepared_buttons: None,
-                logo: Arc::new(RenderImage::new(vec![image::Frame::new(
-                    image::load_from_memory(include_bytes!("../../www/assets/icons/icon-192.png"))
-                        .expect("decode Systemless logo")
-                        .to_rgba8(),
-                )])),
+                logo: Arc::new(Image::from_bytes(
+                    ImageFormat::Svg,
+                    include_bytes!("../../www/assets/icons/favicon.svg").to_vec(),
+                )),
                 width: 640,
                 height: 460,
                 display_origin: (0., 0.),
@@ -2655,6 +2660,8 @@ mod desktop {
         TextEditEdited,
         TextEditInactive,
         TextEditReactivated,
+        TextEditHostSuspended,
+        TextEditHostResumed,
         PopupControls,
         PopupControlsSelected,
         PopupControlsOpen,
@@ -2793,7 +2800,7 @@ mod desktop {
         let lists_page = matches!(capture, CaptureCase::Lists | CaptureCase::ListsSelected | CaptureCase::ListsHeld | CaptureCase::ListsCancelled);
         let text_edit_page = matches!(
             capture,
-            CaptureCase::TextEdit | CaptureCase::TextEditSelected | CaptureCase::TextEditEdited | CaptureCase::TextEditInactive | CaptureCase::TextEditReactivated
+            CaptureCase::TextEdit | CaptureCase::TextEditSelected | CaptureCase::TextEditEdited | CaptureCase::TextEditInactive | CaptureCase::TextEditReactivated | CaptureCase::TextEditHostSuspended | CaptureCase::TextEditHostResumed
         );
         let popup_page = matches!(
             capture,
@@ -3711,7 +3718,7 @@ mod desktop {
         }
         let controls = session.runner_mut().control_snapshot();
         let lists = session.runner_mut().list_manager_snapshot();
-        if matches!(capture, CaptureCase::TextEditSelected | CaptureCase::TextEditEdited | CaptureCase::TextEditInactive | CaptureCase::TextEditReactivated) {
+        if matches!(capture, CaptureCase::TextEditSelected | CaptureCase::TextEditEdited | CaptureCase::TextEditInactive | CaptureCase::TextEditReactivated | CaptureCase::TextEditHostSuspended | CaptureCase::TextEditHostResumed) {
             // The showcase Reset control invokes TESetText then
             // TESetSelect(0, 14); send a real guest click through TrackControl.
             // Inside Macintosh: Text (1993), pp. 2-75--2-78.
@@ -3774,6 +3781,27 @@ mod desktop {
                 for _ in 0..30 { session.runner_mut().run_steps(100_000, None); }
             }
         }
+        let host_activation_capture = matches!(capture, CaptureCase::TextEditHostSuspended | CaptureCase::TextEditHostResumed);
+        if host_activation_capture {
+            let states: &[bool] = if matches!(capture, CaptureCase::TextEditHostResumed) { &[false, true] } else { &[false] };
+            for &active in states {
+                session.request_foreground(active);
+                assert!((0..300).any(|_| {
+                    session.runner_mut().run_steps(10_000, None);
+                    session.runner_mut().text_edit_snapshot().records.iter().any(|record|
+                        record.view_rect == (76, 34, 211, 326) && record.active == active && record.selection == (0, 14))
+                }), "host switch must preserve the guest selection");
+                // TEActivate/TEDeactivate changes active before completing
+                // its drawing. Capture only after the guest finishes handling
+                // the notification and returns to the event loop.
+                assert!((0..300).any(|_| {
+                    session.runner_mut().run_steps(10_000, None);
+                    session.runner().event_manager_snapshot().last_record
+                        .is_some_and(|event| event.what == 0)
+                }), "guest must finish painting the host transition");
+            }
+        }
+        let activation_capture = activation_capture || host_activation_capture;
         let windows = if activation_capture { session.runner_mut().window_frame_snapshot() } else { windows };
         let dialogs = if activation_capture { session.runner_mut().dialog_snapshot() } else { dialogs };
         let text_edits = session.runner_mut().text_edit_snapshot().records;
@@ -4228,6 +4256,16 @@ mod desktop {
                 args.screen_depth,
                 CaptureCase::TextEditEdited,
             );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_text_edit_host_suspended.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::TextEditHostSuspended);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_text_edit_host_resumed.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::TextEditHostResumed);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -4823,6 +4861,8 @@ mod desktop {
                         capture_text_edit_edited: None,
                         capture_text_edit_inactive: None,
                         capture_text_edit_reactivated: None,
+                        capture_text_edit_host_suspended: None,
+                        capture_text_edit_host_resumed: None,
                         capture_popup_controls: None,
                         capture_popup_controls_selected: None,
                         capture_popup_controls_open: None,
