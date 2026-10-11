@@ -2873,3 +2873,14 @@ losslessly archived in `menu-guest-label-review.json` with source/fixture and
 file/pixel hashes. Item names fit this menu; styled rows, disabled/selected
 presentation, scaled menus and native font fidelity are not qualified by these
 plain-item captures. The remaining title/symbol/geometry gaps remain open.
+
+
+Menu-bar titles now use the shared guest glyph canvas, with GPUI Kit custom
+button children and explicit accessibility labels preserving menu identities.
+Visible-bar labels use the scene scale; hidden-menu reveal uses its existing
+host bar scale. The example builds, live-update keyboard selection passes
+(0.28 s), and the open-menu live snapshot regression passes (4.11 s). Three
+title-bar crops were reviewed and archived in `menu-guest-title-review.json`:
+titles fit at the historical viewport and Pages opens beneath its control.
+Explicit scales/states, full-scene review of this revision, symbols, guest row
+geometry and native Macintosh font/input qualification remain open.

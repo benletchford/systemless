@@ -449,7 +449,7 @@ fn classic_control_label(
 }
 
 pub(crate) fn classic_menu_label(
-    label: &str, face: u8, foreground: gpui_kit::Hsla,
+    label: &str, face: u8, scale: f32, foreground: gpui_kit::Hsla,
 ) -> impl gpui_kit::IntoElement {
     use gpui_kit::{prelude::*, *};
     let bytes: Vec<_> = label.chars().map(|ch|
@@ -462,8 +462,8 @@ pub(crate) fn classic_menu_label(
         .max(line.positions.last().copied().unwrap_or(0));
     for ink in &mut line.ink { ink.0 -= left; }
     let width = (right - left).max(1);
-    div().w(px(width as f32)).h(px(18.)).flex_shrink_0()
-        .overflow_hidden().child(classic_label_canvas(line, false, 1., foreground))
+    div().w(px(width as f32 * scale)).h(px(18. * scale)).flex_shrink_0()
+        .overflow_hidden().child(classic_label_canvas(line, false, scale, foreground))
 }
 
 fn classic_label_canvas(
