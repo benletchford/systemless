@@ -1,0 +1,10 @@
+{
+  "scope": "Current guest-frame selector indicator retained by shared live/capture path. Exact region pixels and invalid-frame retirement checked in eight mode/route cases, 9.50s. Mono scale1 and PPC16 scale1.5 composed Open captures directly reviewed; PPC viewer resized 2400x1800 to 1824x1368. Guest volume-selection tracking remains missing; no native oracle or release qualification.",
+  "sha256": {
+    "src/bin/gpui_demo.rs": "0cc0986058339f3f6a11645cfc93625c4bf2282bd2af45153e276abae48d41c0",
+    "src/systems/macintosh/standard_file_ui.rs": "c501821175ff46d01d39a98922579b0a036ab6076f559d42d46bb0845a8a1fc8",
+    "src/systems/macintosh/runner/mod.rs": "4880a765c6bd8b4e0ea31eaa08d05562016cf0344c043aad067b701fa4741f3e",
+    "src/systems/macintosh/loader/ppc/toolbox_startup.rs": "6314e98dc640a5618ab55741a531ffb57dd1b1620161e8822188294806bff47c"
+  },
+  "executable_sha256": "bd18c5e12a8b4b751a237aff7e4183a65b6be0b56b24858e3043f6f60f9e1741"
+}

@@ -934,7 +934,7 @@ mod desktop {
                 let controls = session.runner_mut().control_snapshot();
                 let lists = session.runner_mut().list_manager_snapshot();
                 let text_edits = session.runner_mut().text_edit_snapshot().records;
-                let standard_file = session.runner_mut().standard_file_snapshot();
+                let mut standard_file = session.runner_mut().standard_file_snapshot();
                 let notifications = session.runner_mut().notification_snapshot();
                 let notification_alert = session.runner_mut().notification_alert_snapshot();
                 let list_text_plans = frame.as_ref().map(|frame|
@@ -942,6 +942,9 @@ mod desktop {
                 let styled_text_plans = frame.as_ref().map(|frame|
                     qualify_styled_text_fields(&text_edits, &frame.pixels, frame.width, frame.height))
                     .unwrap_or_default();
+                if let (Some(frame), Some(panel)) = (&frame, &mut standard_file) {
+                    panel.retain_volume_indicator(&frame.pixels, frame.width, frame.height);
+                }
                 let frame = frame.map(|frame| (frame.width, frame.height, gpui_pixels(frame.pixels)));
                 *updates.lock().unwrap() = Some(Update {
                     identity: identity.clone(),
@@ -2735,6 +2738,14 @@ mod desktop {
                                     .child(div().absolute().size_full().border_1().border_color(cx.theme().border))
                                     .child(super::text::classic_file_row(text, *origin, scene_scale, cx.theme().foreground)),
                             );
+                        }
+                        if let Some(pixels) = &panel.volume_indicator_rgba {
+                            let height = (layout.volume.2 - layout.volume.0) as u32;
+                            if let Some(rgba) = image::RgbaImage::from_raw(19, height, gpui_pixels(pixels.to_vec())) {
+                                let source = Arc::new(RenderImage::new(vec![image::Frame::new(rgba)]));
+                                overlay = overlay.child(at((layout.volume.0, layout.volume.3 - 19, layout.volume.2, layout.volume.3))
+                                    .overflow_hidden().child(img(source).size_full()));
+                            }
                         }
                         overlay = overlay.child(
                             at(layout.directory_label)
@@ -5201,10 +5212,11 @@ mod desktop {
             std::fs::write(output.with_extension("text-state.json"), serde_json::to_vec_pretty(&snapshot).unwrap()).unwrap();
         }
 
-        let standard_file = session.runner_mut().standard_file_snapshot();
+        let mut standard_file = session.runner_mut().standard_file_snapshot();
         let menus = session.runner_mut().guest_menu_snapshot();
         let guest_popup = session.runner_mut().guest_popup_snapshot();
         let frame = session.video_frame().unwrap();
+        if let Some(panel) = &mut standard_file { panel.retain_volume_indicator(&frame.pixels, frame.width, frame.height); }
         if matches!(capture, CaptureCase::ModalDialogMultiline) {
             let record = text_edits.iter().find(|record| record.active && record.line_count > 1
                 && dialogs.iter().any(|dialog| dialog.guest_id == record.owner_port)).unwrap();
@@ -7311,7 +7323,7 @@ mod desktop {
         let controls = session.runner_mut().control_snapshot();
         let lists = session.runner_mut().list_manager_snapshot();
         let text_edits = session.runner_mut().text_edit_snapshot().records;
-        let standard_file = session.runner_mut().standard_file_snapshot();
+        let mut standard_file = session.runner_mut().standard_file_snapshot();
 
         let mut visual = HeadlessAppContext::with_platform(
             platform::current_platform(true).text_system(),
@@ -8723,6 +8735,18 @@ mod desktop {
                         session.runner_mut().standard_file_snapshot()
                     })
                     .expect("StandardGetFile should retain its modal panel state");
+                let frame = session.video_frame().expect("Open guest frame");
+                let mut retained = opened.clone();
+                retained.retain_volume_indicator(&frame.pixels, frame.width, frame.height);
+                let layout = retained.get_layout.as_ref().unwrap();
+                let pixels = retained.volume_indicator_rgba.as_ref().expect("guest selector chrome");
+                assert_eq!(pixels.len(), 19 * (layout.volume.2 - layout.volume.0) as usize * 4);
+                for (row, y) in (layout.volume.0..layout.volume.2).enumerate() {
+                    let start = (y as usize * frame.width as usize + (layout.volume.3 - 19) as usize) * 4;
+                    assert_eq!(&pixels[row * 76..(row + 1) * 76], &frame.pixels[start..start + 76]);
+                }
+                retained.retain_volume_indicator(&[], frame.width, frame.height);
+                assert!(retained.volume_indicator_rgba.is_none(), "invalid frame must retire stale chrome");
                 assert_eq!(opened.kind, StandardFileKind::Get);
                 assert_eq!(opened.list_name_limit, if powerpc { None } else { Some(36) });
                 assert_eq!(opened.list_text_origin, if powerpc { (3, 13) } else { (4, 11) });
@@ -17163,6 +17187,7 @@ mod desktop {
                 list_text_origin: (4, 11),
                 directory_marker: "▸",
                 list_name_limit: Some(36),
+                volume_indicator_rgba: None,
                 volume_text: Some(("Maci...".into(), (15, 11))),
                         confirming_replace: false,
                         new_folder: None,
@@ -17256,6 +17281,7 @@ mod desktop {
                 list_text_origin: (4, 11),
                 directory_marker: "▸",
                 list_name_limit: Some(36),
+                volume_indicator_rgba: None,
                 volume_text: None,
                         confirming_replace: false,
                         new_folder: None,

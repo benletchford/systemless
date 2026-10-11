@@ -24,6 +24,20 @@ capture run is archived in `styled-text-single-line-shared`, pinned to f565b695.
 All 192 fixture raster/state cases pass; this earlier bitmap evidence does not
 qualify the newer smooth typography or production readiness.
 
+### Standard File selector indicator retention
+
+The shared worker and capture paths now retain the Open volume selector’s
+rightmost 19 guest-painted columns from the same frame as its snapshot. GPUI
+paints that bounded region over the selector, preserving the CPU/theme indicator
+while its label continues through the original-font smooth renderer. All eight
+mode/route snapshot cases verify exact source pixels and invalid-frame retirement
+(9.50s). Mono scale1 and PPC16 scale1.5 recaptures were directly reviewed and show
+the indicator restored without displaced text; the PPC viewer resized the image
+from 2400x1800 to 1824x1368. Evidence is in `standard-file-volume-indicator`.
+This supersedes the missing-indicator finding below. Both guest Open mouse
+handlers still lack volume-selector switching; that Toolbox behavior remains
+an implementation gap, and complete selector qualification remains open.
+
 ### Standard File current composed typography
 
 Four current shared Demo captures of Open/Save were directly reviewed: mono68k
