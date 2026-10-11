@@ -9,6 +9,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Strategy
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -17,6 +18,22 @@ compatibility:
     systemless_version: fbd12e1e33941e1da82b9ceb61ed28966571ed81
     architecture: 68k
     environment: "Unchanged original 1.0.2 archive, Galactic Frontiers executable, 68K/depth 8. Ordinary title click, Game Setup Start and Command-E reach the star map and advance Turn 1 to Turn 2. Eleven assertions pass at 2006 frontend / 2605 guest ticks with zero exhaustion: three ROM metadata checks and eight measured turn-title pixel checks. Captures inspected. Production packing matches all ten original files, twenty forks and supported Finder metadata. Ship movement, combat, saving, audio and browser qualification remain pending."
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4594
+  - date: "2026-10-12"
+    tester: Catalogue maintainer
+    systemless_version: 92afd9bf
+    architecture: 68k
+    environment: >-
+      Optimized Chrome preview with current merged emulator source and this
+      promoted original catalogue record, local launch enabled. Controlled
+      frontend responses under production origin; actual managed archive
+      response untouched, HTTP 200, 333691 bytes and original SHA-256 verified.
+      Cross-origin isolation and 800x600 canvas verified. Ordinary title click,
+      Game Setup Start and browser Command-E start a game and advance Turn 1
+      to Turn 2. Eight measured before/after title pixel checks pass; captures
+      inspected. Browser launch approved. Ship movement, combat, saving,
+      audio and post-release public replay remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4594
 runtime:
@@ -86,7 +103,7 @@ and distribution conditions. It may only be distributed without potential direct
 or indirect profit and must not be sold. CD-ROM distribution has separate written
 permission requirements in the original ReadMe.
 
-New-game startup and one turn transition are verified natively. Ship movement,
-combat, saving, audio and browser qualification remain pending.
+New-game startup and one turn transition are verified natively and in the
+browser. Ship movement, combat, saving and audio remain unverified.
 
 ![Galactic Frontiers Turn 2 star map](https://assets.systemless.org/catalogue/media/sha256/18/18ac2bafb988be654c628c950d8822034d017849a7f8af5476f865c5a07ff3a5.png)

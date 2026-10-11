@@ -1399,3 +1399,15 @@ Original no-profit distribution and CD-ROM conditions remain applicable. Ship
 movement, combat, saving, audio, browser qualification, launch approval, human
 release and public replay remain pending. Launch is disabled; no qualified-live
 increment.
+
+
+Galactic Frontiers browser qualification: optimized Chrome preview with promoted
+original record and current merged emulator source passes ordinary new-game
+startup and Command-E advancement from Turn 1 to Turn 2. Eight measured
+before/after title pixel checks pass; captures inspected. Actual managed archive
+response is untouched, HTTP 200, original 333,691 bytes and SHA-256 match.
+Cross-origin isolation and 800x600 canvas are verified.
+[Browser approval](https://github.com/benletchford/systemless/issues/4594#issuecomment-6109539488).
+Launch approved in PR #4609; final CI/merge, human release and public replay are
+pending. Ship movement, combat, saving and audio remain unverified. No live-game
+increment until public replay.
