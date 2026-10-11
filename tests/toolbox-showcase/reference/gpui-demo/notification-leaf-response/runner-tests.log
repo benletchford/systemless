@@ -1,0 +1,30 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 41.96s
+     Running unittests src/lib.rs (target/debug/deps/systemless-257ba83b63f6679f)
+
+running 22 tests
+test systems::macintosh::runner::notification::tests::notification_snapshot_preserves_guest_bytes_and_rejects_unmapped_text ... ok
+test systems::macintosh::loader::ppc::tests::process_services::notification_queue_is_shared_across_classic_and_native_install_remove ... ok
+test systems::macintosh::loader::ppc::tests::process_services::notification_queue_imports_preserve_links_errors_and_auto_removal ... ok
+test systems::macintosh::loader::ppc::tests::process_services::notification_response_executes_guest_descriptor_and_restores_return_state ... ok
+test systems::macintosh::runner::tests::trap_dispatch::notification_alert_removal_releases_foreground_without_delivering_response ... ok
+test systems::macintosh::loader::ppc::tests::process_services::notification_response_executes_m68k_descriptor_through_guest_gateway ... ok
+test systems::macintosh::loader::ppc::tests::file_manager::notification_direct_m68k_response_parks_then_restores_native_foreground ... ok
+test systems::macintosh::runner::tests::trap_dispatch::notification_delivery_restores_full_guest_registers_and_condition_codes ... ok
+test systems::macintosh::trap::memory::tests::nminstall_arms_pascal_response_with_notification_record_argument ... ok
+test systems::macintosh::trap::memory::tests::nminstall_returns_noerr_for_nominal_notification_request ... ok
+test systems::macintosh::trap::memory::tests::nmremove_returns_noerr_for_nominal_notification_request ... ok
+test systems::macintosh::trap::memory::tests::notification_completion_rejects_duplicate_and_reinstalled_record_identity ... ok
+test systems::macintosh::trap::memory::tests::notification_delivery_defer_response_and_auto_removal ... ok
+test systems::macintosh::trap::memory::tests::notification_queue_links_requests_and_nmremove_unlinks_them ... ok
+test systems::macintosh::trap::memory::tests::notification_response_executes_and_can_be_explicitly_removed ... ok
+test systems::macintosh::runner::tests::trap_dispatch::notification_rejected_procedure_retains_alert_without_marking_response_started ... ok
+test systems::macintosh::runner::tests::trap_dispatch::notification_alert_owns_foreground_until_exact_acknowledgment_on_both_cpus ... ok
+test systems::macintosh::runner::tests::trap_dispatch::notification_native_runner_finishes_response_before_foreground_instructions ... ok
+test systems::macintosh::runner::tests::trap_dispatch::notification_runner_delivers_direct_m68k_response_and_restores_native_context ... ok
+test systems::macintosh::loader::ppc::tests::process_services::notification_delivery_defer_native_response_and_auto_removal ... ok
+test systems::macintosh::runner::tests::trap_dispatch::notification_native_runner_completes_null_and_auto_remove_without_cpu_changes ... ok
+test systems::macintosh::loader::ppc::tests::file_manager::notification_native_response_resumes_slices_and_restores_foreground_context ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 6714 filtered out; finished in 0.16s
+

@@ -673,14 +673,17 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         nm_rec: u32,
         response: u32,
-    ) {
-        if !Self::looks_like_callable_proc(bus, response) {
-            return;
+    ) -> bool {
+        // A valid leaf procedure need not have a LINK/MOVEM/JMP prologue.
+        // Validate the address, then let the guest CPU execute its instructions.
+        if response == 0 || response & 1 != 0
+            || bus.translate_guest_address(response) > bus.ram_size().saturating_sub(2) {
+            return false;
         }
 
         let trampoline = bus.alloc(28);
         if trampoline == 0 {
-            return;
+            return false;
         }
         let return_slot = cpu.read_reg(Register::A7).wrapping_sub(4);
         let saved_regs_sp = return_slot.wrapping_sub(32);
@@ -702,6 +705,7 @@ impl super::TrapDispatcher {
         bus.write_long(return_slot, cpu.read_reg(Register::PC));
         cpu.write_reg(Register::A7, return_slot);
         cpu.write_reg(Register::PC, trampoline);
+        true
     }
 
     fn install_notification_request<C: CpuOps>(
@@ -742,12 +746,13 @@ impl super::TrapDispatcher {
     ) -> bool {
         if self.notification_requests.instance_id(nm_rec) != Some(instance) { return false; }
         if bus.read_word(nm_rec + 4) != 8
-            || !self.notification_requests.begin_response(nm_rec, instance) { return false; }
-        match bus.read_long(nm_rec + 28) {
-            u32::MAX => { self.remove_notification_request(bus, nm_rec); }
-            0 => {}
-            response => self.arm_notification_response(cpu, bus, nm_rec, response),
-        }
+            || self.notification_requests.response_started(nm_rec, instance) { return false; }
+        let response = bus.read_long(nm_rec + 28);
+        if !matches!(response, 0 | u32::MAX)
+            && !self.arm_notification_response(cpu, bus, nm_rec, response) { return false; }
+        let started = self.notification_requests.begin_response(nm_rec, instance);
+        debug_assert!(started, "serialized notification ownership changed during entry");
+        if response == u32::MAX { self.remove_notification_request(bus, nm_rec); }
         true
     }
 

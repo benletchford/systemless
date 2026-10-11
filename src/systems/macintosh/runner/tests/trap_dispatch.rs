@@ -5,6 +5,27 @@ use crate::process_context::PendingFileCompletion;
 use crate::trap::dispatch::TrapTableProfile;
 
 #[test]
+fn notification_rejected_procedure_retains_alert_without_marking_response_started() {
+    for response in [1, 8 * 1024 * 1024 + 2] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let request = runner.bus.alloc(128);
+        runner.bus.write_word(request + 4, 8);
+        runner.bus.write_long(request + 24, request + 64);
+        runner.bus.write_long(request + 28, response);
+        runner.dispatcher.notification_requests.push(request);
+        let notice = runner.notification_snapshot().pop().unwrap();
+        let pc = runner.m68k.cpu.read_reg(Register::PC);
+        let sp = runner.m68k.cpu.read_reg(Register::A7);
+        assert!(runner.begin_notification_alert(&notice));
+        assert!(!runner.dismiss_notification_alert(&notice));
+        assert_eq!(runner.notification_alert_snapshot(), Some(notice));
+        assert!(!runner.notification_snapshot().pop().unwrap().response_started);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), pc);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
+    }
+}
+
+#[test]
 fn notification_alert_owns_foreground_until_exact_acknowledgment_on_both_cpus() {
     for native_mode in [false, true] {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());

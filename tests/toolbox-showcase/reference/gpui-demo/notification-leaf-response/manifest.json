@@ -1,0 +1,15 @@
+{
+  "source_hashes": {
+    "src/bin/gpui_demo.rs": "c9ca0b63f53a1cb88151e823e916dbcfc4ed3b4677e2a90905fc12d0a03725c0",
+    "src/systems/macintosh/trap/memory.rs": "2bacb251070dd6f73944ea3fdeab3da8e9bd06acc2558a0932c4da5113547617",
+    "src/systems/macintosh/runner/tests/trap_dispatch.rs": "b6583ac68d8c5b48187aaab77504497e221af6736d6ad0bb30f2c59f82e62062"
+  },
+  "scope": "Classic leaf response invoked through actual worker acknowledgment at 1/8bpp; guest refCon increments once, later menu progress verifies duplicate acknowledgment exclusion. Invalid procedure address retains ownership and unstarted response. No PPC worker/compositor/physical/native-reference qualification.",
+  "results": {
+    "worker_cases": 4,
+    "worker_seconds": 4.12,
+    "runner_passed": 22,
+    "runner_failed": 0,
+    "runner_seconds": 0.16
+  }
+}
