@@ -10735,3 +10735,109 @@ fn open_rf_perm_read_only_blocks_updates_and_keeps_first_open_mode() {
     assert!(loaded.resource_files.is_empty());
     assert!(!loaded.vfs_resource_files[0].dirty);
 }
+
+#[test]
+fn pb_get_cat_info_preserves_literal_slash_and_macroman_basename() {
+    for resource_only in [false, true] {
+        let pef = synthetic_pef_with_import(b"PBGetCatInfoSync");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let pb = PPC_DATA_BASE + 0x1000;
+        let name_ptr = pb + 128;
+        loaded.memory.add_region(pb, vec![0; 256]);
+        write_ppc_pstring(&mut loaded.memory, name_ptr, b"");
+        loaded.memory.write_u32_be(pb + 18, name_ptr).unwrap();
+        loaded
+            .memory
+            .write_u16_be(pb + 22, PPC_BOOT_VOLUME_REF_NUM as u16)
+            .unwrap();
+        loaded.memory.write_u16_be(pb + 28, 1).unwrap();
+        loaded
+            .memory
+            .write_u32_be(pb + 48, PPC_PREFERENCES_DIR_ID)
+            .unwrap();
+        let encoded = crate::trap::TrapDispatcher::encode_hfs_component_for_vfs("Café/Level");
+        let path = format!("System Folder/Preferences/{encoded}");
+        if resource_only {
+            loaded.push_vfs_resource_file(PpcVfsResourceFileRecord {
+                path: path.clone(),
+                creator: u32::from_be_bytes(*b"TEST"),
+                file_type: u32::from_be_bytes(*b"TEXT"),
+                finder_flags: 0,
+                resource_len: 9,
+                raw_data: Some(b"unchanged".to_vec().into()),
+                map_attrs: 0,
+                dirty: false,
+            });
+        } else {
+            loaded.push_test_vfs_file(PpcVfsFileRecord {
+                path: path.clone(),
+                data: b"unchanged".to_vec().into(),
+                creator: u32::from_be_bytes(*b"TEST"),
+                file_type: u32::from_be_bytes(*b"TEXT"),
+                finder_flags: 0,
+                dirty: false,
+            });
+        }
+        loaded.cpu.gpr[3] = pb;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, name_ptr).unwrap(),
+            b"Caf\x8e/Level"
+        );
+        let entry = ppc_catalog_entry_for_lookup(
+            &loaded.vfs_directories,
+            &loaded.vfs_files,
+            &loaded.vfs_resource_files,
+            PPC_PREFERENCES_DIR_ID,
+            b"Caf\x8e/Level",
+            0,
+        )
+        .expect("enumerated guest basename must resolve to the same file");
+        assert_eq!(entry.path, path);
+        assert_eq!(entry.name, b"Caf\x8e/Level");
+        let spec_ptr = pb + 0x200;
+        loaded
+            .memory
+            .add_region(spec_ptr, vec![0; PPC_FSSPEC_SIZE as usize]);
+        loaded.cpu.gpr[3] = ppc_i16_result(PPC_BOOT_VOLUME_REF_NUM);
+        loaded.cpu.gpr[4] = PPC_PREFERENCES_DIR_ID;
+        loaded.cpu.gpr[5] = name_ptr;
+        loaded.cpu.gpr[6] = spec_ptr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::FSMakeFSSpec);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, spec_ptr + 6).unwrap(),
+            b"Caf\x8e/Level"
+        );
+        let directories = loaded.vfs_directories.clone();
+        let files = loaded.vfs_files.clone();
+        let resources = loaded.vfs_resource_files.clone();
+        assert_eq!(
+            ppc_path_for_fsspec(&mut loaded.memory, &directories, spec_ptr),
+            Ok(path.clone())
+        );
+        assert_eq!(
+            ppc_existing_path_for_fsspec(
+                &mut loaded.memory,
+                &directories,
+                &files,
+                &resources,
+                spec_ptr
+            ),
+            Ok(path.clone())
+        );
+        if !resource_only {
+            assert_eq!(
+                ppc_existing_data_path_for_fsspec(
+                    &mut loaded.memory,
+                    &directories,
+                    &files,
+                    spec_ptr
+                ),
+                Ok(path.clone())
+            );
+        }
+    }
+}

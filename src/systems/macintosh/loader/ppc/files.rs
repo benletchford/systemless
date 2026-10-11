@@ -1049,7 +1049,7 @@ pub(super) fn ppc_catalog_entry_for_lookup(
     }
 
     let decoded_name = decode_mac_roman(name_bytes);
-    let normalized_name = ppc_normalize_vfs_path(&decoded_name);
+    let normalized_name = crate::trap::TrapDispatcher::normalize_hfs_path(&decoded_name);
     if normalized_name.is_empty() {
         return None;
     }
@@ -1061,7 +1061,7 @@ pub(super) fn ppc_catalog_entry_for_lookup(
         // records store paths relative to the volume root.
         if let Some((volume, relative)) = decoded_name.split_once(':') {
             if volume.eq_ignore_ascii_case(crate::trap::TrapDispatcher::boot_volume_name()) {
-                ppc_normalize_vfs_path(relative)
+                crate::trap::TrapDispatcher::normalize_hfs_path(relative)
             } else {
                 normalized_name
             }
@@ -1111,10 +1111,10 @@ pub(super) fn ppc_catalog_child_by_index(
         });
     }
     for file in vfs_files {
-        if let Some(name) = ppc_child_name_for_parent(parent_path, &file.path) {
+        if ppc_child_name_for_parent(parent_path, &file.path).is_some() {
             entries.push(PpcCatalogEntry {
                 path: file.path.clone(),
-                name: name.as_bytes().to_vec(),
+                name: ppc_vfs_basename_bytes(&file.path),
                 is_directory: false,
             });
         }
@@ -1126,10 +1126,10 @@ pub(super) fn ppc_catalog_child_by_index(
         {
             continue;
         }
-        if let Some(name) = ppc_child_name_for_parent(parent_path, &fork.path) {
+        if ppc_child_name_for_parent(parent_path, &fork.path).is_some() {
             entries.push(PpcCatalogEntry {
                 path: fork.path.clone(),
-                name: name.as_bytes().to_vec(),
+                name: ppc_vfs_basename_bytes(&fork.path),
                 is_directory: false,
             });
         }
@@ -1198,7 +1198,8 @@ pub(super) fn ppc_vfs_basename_bytes(path: &str) -> Vec<u8> {
         .next()
         .filter(|name| !name.is_empty())
         .unwrap_or(path);
-    encode_mac_roman_lossy(basename)
+    let basename = crate::trap::TrapDispatcher::hfs_name_from_vfs_component(basename);
+    encode_mac_roman_lossy(&basename)
 }
 
 pub(super) fn ppc_fill_file_catalog_info(
@@ -1779,7 +1780,7 @@ pub(super) fn ppc_resolved_fsspec_target_path(
         return None;
     };
     let name = decode_mac_roman(name_bytes);
-    let normalized_name = ppc_normalize_vfs_path(&name);
+    let normalized_name = crate::trap::TrapDispatcher::normalize_hfs_path(&name);
     if normalized_name.is_empty() {
         return None;
     }
@@ -1826,7 +1827,7 @@ pub(super) fn ppc_path_for_fsspec(
         return Err(PPC_DIR_NF_ERR);
     };
     let name = decode_mac_roman(&name_bytes);
-    let normalized_name = ppc_normalize_vfs_path(&name);
+    let normalized_name = crate::trap::TrapDispatcher::normalize_hfs_path(&name);
     if normalized_name.is_empty() {
         return Err(PPC_PARAM_ERR);
     }
@@ -1855,7 +1856,7 @@ pub(super) fn ppc_existing_path_for_fsspec(
             .ok_or(PPC_DIR_NF_ERR);
     }
     let name = decode_mac_roman(&name_bytes);
-    let normalized_name = ppc_normalize_vfs_path(&name);
+    let normalized_name = crate::trap::TrapDispatcher::normalize_hfs_path(&name);
     if normalized_name.is_empty() {
         return Err(PPC_PARAM_ERR);
     }
@@ -1899,7 +1900,7 @@ pub(super) fn ppc_existing_data_path_for_fsspec(
         return Err(PPC_PARAM_ERR);
     }
     let name = decode_mac_roman(&name_bytes);
-    let normalized_name = ppc_normalize_vfs_path(&name);
+    let normalized_name = crate::trap::TrapDispatcher::normalize_hfs_path(&name);
     if normalized_name.is_empty() {
         return Err(PPC_PARAM_ERR);
     }
