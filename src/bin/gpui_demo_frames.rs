@@ -133,8 +133,10 @@ pub fn popup_control_label<'a>(
 }
 
 fn standard_control(control: &ControlSnapshot, menus: &GuestMenuSnapshot) -> bool {
-    matches!(control.proc_id, 0 | 1 | 2 | 16)
-        || popup_control_label(control, menus).is_some()
+    // Appearance overrides need guest font/style shaping before Kit can own
+    // these pixels. Keep their guest CDEF painting, including overlap masks.
+    control.font_style.is_none() && (matches!(control.proc_id, 0 | 1 | 2 | 16)
+        || popup_control_label(control, menus).is_some())
 }
 
 pub struct ListPiece {
@@ -786,6 +788,7 @@ mod tests {
             popup_menu_id: None,
             popup_title_width: None,
             popup_font: None,
+            font_style: None,
         }
     }
 
@@ -1093,6 +1096,16 @@ mod tests {
         let viewport = Rect::from((20, 0, 200, 260));
         let pieces = control_pieces(&controls, &GuestMenuSnapshot::default(), &[window.clone()], viewport);
         assert_eq!(pieces.iter().map(|piece| piece.control).collect::<Vec<_>>(), [1, 0]);
+
+        let mut overridden = controls.to_vec();
+        overridden[1].font_style = Some(systemless::runner::ControlFontStyle {
+            flags: 7, font: 3, size: 10, style: 1, mode: 1, justification: -1,
+            foreground: [0; 3], background: [65535; 3],
+        });
+        let pieces = control_pieces(&overridden, &GuestMenuSnapshot::default(), &[window.clone()], viewport);
+        // Override retains its guest pixels and masks the intersecting standard
+        // control rather than being erased underneath a host-shaped label.
+        assert!(pieces.is_empty(), "overlapping guest-owned font override retains both controls");
 
         let mut controls_with_custom = controls.to_vec();
         controls_with_custom.push(control(1, 99, (105, 150, 130, 190)));
