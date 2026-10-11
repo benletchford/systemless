@@ -5890,3 +5890,17 @@ prove a separately simulated modifier event, actual background editor restoratio
 physical IME or live native focus. Automatic acquisition and broader real-worker,
 CPU/scale, visual, native-reference and complete notification qualification remain
 open. No production gate closes.
+
+### Notification editor registration restoration across CPU modes (2026-10-11)
+
+A real Toolbox Showcase plain editor is activated through guest input in
+mono68k, colour68k, PPC8 and PPC16. Its snapshots populate shared Demo state;
+explicit composition synchronization establishes the original editor owner,
+excludes it while an injected alert owns foreground, and restores that exact
+owner when alert ownership clears. Full TextEdit snapshots remain unchanged.
+The four-mode regression passes (5.69s); logs/provenance are under
+`reference/gpui-demo/notification-editor-restoration`. This establishes the
+selected registration lifecycle, not a worker-delivered alert, physical IME,
+staged composition cancellation, styled variants or composed visual fidelity.
+Automatic acquisition and complete notification delivery remain unfinished;
+all eight production gates remain open.
