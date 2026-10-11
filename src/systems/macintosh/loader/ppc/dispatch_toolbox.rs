@@ -108,7 +108,8 @@ pub(super) fn dispatch_toolbox_import(
             let number = cpu.gpr[3] as i32;
             let string_ptr = cpu.gpr[4];
             if string_ptr != 0 {
-                let _ = ppc_write_pstring_bytes(memory, string_ptr, number.to_string().as_bytes());
+                let bytes = crate::text_utils::evaluate_num_to_string(number);
+                let _ = ppc_write_pstring_bytes(memory, string_ptr, &bytes);
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -158,36 +159,8 @@ pub(crate) fn ppc_string_to_num(cpu: &PpcCpu, memory: &mut PpcSectionMem) {
     let Some(bytes) = ppc_read_pstring_bytes(memory, string_ptr) else {
         return;
     };
-    let mut index = 0usize;
-    while bytes
-        .get(index)
-        .is_some_and(|byte| byte.is_ascii_whitespace())
-    {
-        index += 1;
-    }
-    let mut sign = 1i64;
-    if let Some(byte) = bytes.get(index) {
-        if *byte == b'-' {
-            sign = -1;
-            index += 1;
-        } else if *byte == b'+' {
-            index += 1;
-        }
-    }
-    let mut value = 0i64;
-    while let Some(byte) = bytes.get(index) {
-        if !byte.is_ascii_digit() {
-            break;
-        }
-        value = value
-            .saturating_mul(10)
-            .saturating_add(i64::from(byte - b'0'));
-        index += 1;
-    }
-    let signed = value
-        .saturating_mul(sign)
-        .clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-    let _ = memory.write_u32_be(number_ptr, signed as u32);
+    let value = crate::text_utils::evaluate_string_to_num(&bytes);
+    let _ = memory.write_u32_be(number_ptr, value as u32);
 }
 
 pub(crate) fn ppc_sys_environs(memory: &mut PpcSectionMem, rec_ptr: u32) -> i16 {
