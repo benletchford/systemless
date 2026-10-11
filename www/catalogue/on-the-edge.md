@@ -39,11 +39,26 @@ compatibility:
       tick 1 / guest tick 0 before its requested startup checkpoint. PC and LR are zero,
       SP 07F6FFC0, 41206 cycles; only an empty framed window appears. Original
       register and memory-write traces identify zero-extended negative Random results
-      producing negative shuffle indexes, overwriting the quit flag. The signed-result fix and
-      exact original-game retest remain pending. Actual CODE 0/1/3 and a pwpc PEF/cfrg
+      producing negative shuffle indexes, overwriting the quit flag. A later signed-result fix is recorded
+      below. Actual CODE 0/1/3 and a pwpc PEF/cfrg
       confirm both game slices; slice presence does not establish PPC playability.
     status: broken
     evidence: https://github.com/benletchford/systemless/issues/4663
+  - date: "2026-10-12"
+    tester: Catalogue maintainer
+    systemless_version: ed9db4de2310b638252f7d5d8f43158896e45598
+    architecture: ppc
+    environment: >-
+      Experimental signed Random result fix in PR 4665, optimized native build,
+      identical original archive and selector, explicit PPC/depth 8. Startup now
+      runs 600 frontend / 600 guest ticks with four measured table-pixel assertions
+      and zero exhausted frames. Command-N and an inner-square click also finish
+      786/786 ticks without the previous halt. Captures inspected. The table appears,
+      but dealt-card artwork and score text are incomplete; no PPC gameplay
+      qualification is claimed. Runtime fix CI/merge and browser validation remain
+      pending. The 68K slice remains the proposed default.
+    status: boots
+    evidence: https://github.com/benletchford/systemless/pull/4665
 runtime:
   executable_path: On the Edge 3.1/On the Edge
   screen_depth: 8

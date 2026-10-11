@@ -1954,3 +1954,16 @@ head `17b0de28ec3e663230a09a4f19feff29f4db0cad`. A fresh download of the
 matches all 22,676 bytes and the original SHA-256. Canonical omission of the
 false launch flag retains the schema default of false. The proposed
 entry remains launch-disabled; no new live-qualified game is counted.
+
+
+On the Edge PPC follow-up: [PR #4665](https://github.com/benletchford/systemless/pull/4665)
+returns signed Random results through the existing INTEGER helper. All eight
+focused Random tests pass. Immutable optimized native
+`ed9db4de2310b638252f7d5d8f43158896e45598` with the unchanged original archive,
+selector and explicit PPC/depth 8 now completes startup at 600/600 ticks, four
+measured table-pixel assertions, zero exhaustion. Command-N plus an inner-square
+click completes 786/786 ticks without the prior halt. Captures inspected.
+Dealt-card artwork and score text remain incomplete, so this is startup evidence
+only. No PPC gameplay or public support claim follows; fix CI/merge and browser
+qualification remain pending. The original halt trace above remains historical
+baseline evidence.
