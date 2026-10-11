@@ -9,6 +9,7 @@ architectures:
 - ppc
 default_architecture: ppc
 category: Role-Playing
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -24,6 +25,23 @@ compatibility:
       matches eight original files, sixteen forks and supported Finder metadata.
       Browser, broader gameplay, saving and audio remain unverified. The earlier 3.3.1 68K
       edition remains unqualified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4568
+  - date: "2026-10-12"
+    tester: Catalogue maintainer
+    systemless_version: 92afd9bf
+    architecture: ppc
+    environment: >-
+      Optimized Chrome preview, local frontend under production origin with
+      launch enabled. Actual managed archive response untouched, HTTP 200,
+      original 1083366-byte body and SHA-256 verified. Cross-origin isolation,
+      actual runtime worker and 800x600 canvas verified. Ordinary Player typing,
+      Play click, Space and Return reach the dungeon; Numpad4 moves west and
+      displaces the dog. Eight measured before/after pixel checks pass; captures
+      inspected. Corresponding original upstream source download exposed in the
+      browser alongside the complete game's bundled port differences. Browser
+      launch approved. Full progression, combat, saving, audio and post-release
+      public replay remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4568
 runtime:
@@ -90,7 +108,7 @@ The unchanged game download includes its licence, documentation, data and
 original Macintosh port source differences. Download the corresponding upstream
 source above and use it with the included src-diff.txt.
 
-First-dungeon movement and dog displacement are verified natively. Browser
-qualification, broader gameplay, saving and audio remain pending.
+First-dungeon movement and dog displacement are verified natively and in the
+browser. Broader gameplay, saving and audio remain unverified.
 
 ![NetHack first dungeon after moving west](https://assets.systemless.org/catalogue/media/sha256/d8/d8ab4557e3c548d0109656f1813daacb563f3be170738af766f19799e50bdd95.png)
