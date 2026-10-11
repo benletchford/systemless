@@ -196,8 +196,11 @@ In particular, recognized ControlFontStyle overrides remain an implementation
 gap, and the final inventory must associate every supported variant with actual
 rendering, interaction and lifecycle evidence before the inventory gate closes.
 
-The control-font source trace also identifies a guest-side prerequisite:
-`trap/control.rs::draw_control_text` fixes classic labels to font0/12;
+The control-font source trace identified a guest-side prerequisite: classic
+labels previously fixed font0/12. Classic buttons, checkboxes and radio buttons
+now adopt the shared family/size/face recipe with clipped nondefault ink;
+`classic-control-font-overrides` records actual one-bit drawing, override reset
+and oversized-font clipping evidence. Colour scene and GPUI adoption remain open.
 `loader/ppc/dispatch_control.rs::ppc_control_title_style` resolves Appearance
 font/face/size flags but explicitly retains mode, justification and background
 without drawing them, and limits foreground overrides to static-text proc288.
