@@ -111,8 +111,16 @@ selection to the guest MenuHandle generation and item number, reconciles that
 selection after each update, and clears it if the selected item is disabled or
 disposed. The popup preserves keyboard and hover selection when labels or
 checkmarks change, skips disabled items, and routes leaf commands through the
-guest queue. Disabled rows omit GPUI click handlers. A keyboard test covers
-hierarchical navigation with Right and Enter; a live-update test covers item
+guest queue. Disabled rows omit GPUI click handlers. Rendered menu tests cover
+native accessibility state as well: disabled rows expose a disabled flag,
+checked items expose a checked menu-item role, and submenu rows report their
+expanded state. Systemless supplies the missing disabled-state setter through
+a reusable element wrapper that preserves layout, input and accessibility
+metadata. Rendered interaction tests check live disabled/checkmark changes
+and submenu expansion without bypassing guest command validation. All nine
+menu-related tests pass. VoiceOver navigation and activation still require
+host-level qualification. A keyboard test covers hierarchical navigation
+with Right and Enter; a live-update test covers item
 changes and an unrelated menu appearing while the popup is open. Offscreen
 composed captures of the real showcase menu
 cover both 68K and PowerPC. An interaction test confirms a 40-item menu scrolls

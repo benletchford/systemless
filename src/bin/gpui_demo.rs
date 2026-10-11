@@ -24,6 +24,10 @@ mod scroll;
 mod frames;
 
 #[cfg(target_os = "macos")]
+#[path = "gpui_demo_a11y.rs"]
+mod a11y;
+
+#[cfg(target_os = "macos")]
 #[path = "gpui_demo_metrics.rs"]
 mod metrics;
 
@@ -5982,6 +5986,9 @@ mod desktop {
             });
             cx.update_window(window.into(), |_, window, cx| {
                 window.render_frame(cx);
+                let disabled = window.find("guest-popup-item-129-1");
+                assert_eq!(disabled.disabled(), Some(true));
+                assert_eq!(disabled.checked(), Some(true));
                 window.click("guest-popup-item-129-1", cx);
                 window.within("guest-popup-menu").press("enter", cx);
             })
@@ -6103,9 +6110,12 @@ mod desktop {
             cx.update_window(window.into(), |_, window, cx| {
                 window.render_frame(cx);
                 window.click("guest-menu-4096-1", cx);
+                window.render_frame(cx);
+                assert_eq!(window.find("guest-popup-item-129-1").expanded(), Some(false));
                 window.within("guest-popup-menu").press("down", cx);
                 window.within("guest-popup-menu").press("right", cx);
                 window.render_frame(cx);
+                assert_eq!(window.find("guest-popup-item-129-1").expanded(), Some(true));
                 assert_eq!(window.find("guest-popup-item-130-1").label(), Some("Example"));
             })
             .unwrap();
