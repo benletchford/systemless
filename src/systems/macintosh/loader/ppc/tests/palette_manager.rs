@@ -3658,3 +3658,36 @@ use super::*;
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 0);
     }
+
+    #[test]
+    fn palette_restore_uses_indexed_depth_and_device_personality() {
+        for depth in [1, 2, 4, 8] {
+            for color in [false, true] {
+                let pef = synthetic_pef_with_import(b"RestoreDeviceClut");
+                let mut loaded = load_pef_application(&pef).unwrap();
+                let gd = loaded.memory.read_u32_be(PPC_MAIN_GDEVICE).unwrap();
+                let pm_handle = loaded.memory.read_u32_be(gd + 22).unwrap();
+                let pm = loaded.memory.read_u32_be(pm_handle).unwrap();
+                loaded.memory.write_u16_be(pm + 32, depth).unwrap();
+                let flags = loaded.memory.read_u16_be(gd + 20).unwrap();
+                loaded.memory.write_u16_be(gd + 20, (flags & !1) | u16::from(color)).unwrap();
+                let window = PPC_DATA_BASE + 0xd000;
+                loaded.memory.add_region(window, vec![0; PPC_CGRAF_PORT_SIZE as usize]);
+                let expected = TrapDispatcher::standard_screen_depth_clut(depth, color).unwrap().0;
+                loaded.screen_clut.replace([[0x1234; 3]; 256]);
+                assert!(with_test_display_cluts!(loaded, |screen, logical| ppc_activate_window_palette(
+                    &mut loaded.memory, window, PPC_MAIN_GDEVICE, PPC_MAIN_GDEVICE,
+                    screen, logical, &mut loaded.toolbox_startup,
+                )));
+                assert_eq!(*loaded.screen_clut, expected, "window depth={depth}, color={color}");
+                assert_eq!(*loaded.color_manager_clut, expected);
+                loaded.screen_clut.replace([[0x5678; 3]; 256]);
+                with_test_display_cluts!(loaded, |screen, logical| ppc_restore_device_clut(
+                    &mut loaded.memory, PPC_MAIN_GDEVICE, PPC_MAIN_GDEVICE,
+                    screen, logical, &mut loaded.toolbox_startup,
+                ));
+                assert_eq!(*loaded.screen_clut, expected, "explicit restore depth={depth}, color={color}");
+                assert_eq!(*loaded.color_manager_clut, expected);
+            }
+        }
+    }
