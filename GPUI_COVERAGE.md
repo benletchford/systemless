@@ -2831,3 +2831,25 @@ caret are consistent. Paired frames, a contact sheet and the scoped
 Only mono 0.75 received full-screen visual review in this matrix. Inactive/modal
 host transitions, full-scene review at remaining scales, native pointer mapping
 and native Macintosh font fidelity remain open.
+
+
+Work in progress: `--capture-modal-dialog-selection-inactive` selects nickname
+offsets 3--6, then switches focus to the name field through guest pointer
+events. The example builds. Monochrome and PPC paired captures pass and were
+visually reviewed: the nickname highlight disappears and the name field owns
+the caret. PPC snapshots intentionally expose selection only for the active
+DialogRecord TERec; classic snapshots retain the inactive item range. The
+assertions reflect these guest snapshot contracts without synthesizing a PPC
+inactive selection. The scale harness now includes this inactive case; colour,
+scale captures and archived review evidence remain pending for this revision.
+
+
+All 12 inactive modal field captures now complete across the three CPU/display
+modes and four explicit scales. Geometry/density checks pass. Every composed
+field crop was reviewed: nickname highlight/caret is absent, name caret is at
+offset zero and text remains unchanged. The paired frames and contact sheet
+are losslessly archived with scoped source/file/pixel hashes in
+`dialog-modal-selection-scale-inactive-review.json`. The harness supports
+`--state inactive` for a focused reproduction. This verifies a field focus
+change, not host suspension of the modal application; native font/input, wider
+scene and paired guest pixel comparison at every scale remain open.

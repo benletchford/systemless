@@ -141,6 +141,9 @@ mod desktop {
         capture_modal_dialog_selection: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_modal_dialog_selection_inactive: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_modal_dialog_caret_visible: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -2744,6 +2747,7 @@ mod desktop {
         ModalDialog,
         ModalDialogChecked,
         ModalDialogSelection,
+        ModalDialogSelectionInactive,
         ModalDialogCaretVisible,
         ModalDialogCaretHidden,
         ModalDialogButtonHeld,
@@ -2963,7 +2967,7 @@ mod desktop {
             CaptureCase::ModelessDialog | CaptureCase::NestedModalDialog
         ) {
             (132, 7)
-        } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked | CaptureCase::ModalDialogSelection | CaptureCase::ModalDialogCaretVisible | CaptureCase::ModalDialogCaretHidden | CaptureCase::ModalDialogButtonHeld | CaptureCase::ModalDialogButtonOutside | CaptureCase::ModalDialogCheckboxHeld | CaptureCase::ModalDialogCheckboxCheckedHeld | CaptureCase::ModalDialogCheckboxOutside) {
+        } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked | CaptureCase::ModalDialogSelection | CaptureCase::ModalDialogSelectionInactive | CaptureCase::ModalDialogCaretVisible | CaptureCase::ModalDialogCaretHidden | CaptureCase::ModalDialogButtonHeld | CaptureCase::ModalDialogButtonOutside | CaptureCase::ModalDialogCheckboxHeld | CaptureCase::ModalDialogCheckboxCheckedHeld | CaptureCase::ModalDialogCheckboxOutside) {
             (129, 6)
         } else if lists_page {
             (129, 9)
@@ -3293,7 +3297,7 @@ mod desktop {
             } else {
                 modeless
             }
-        } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked | CaptureCase::ModalDialogSelection | CaptureCase::ModalDialogCaretVisible | CaptureCase::ModalDialogCaretHidden | CaptureCase::ModalDialogButtonHeld | CaptureCase::ModalDialogButtonOutside | CaptureCase::ModalDialogCheckboxHeld | CaptureCase::ModalDialogCheckboxCheckedHeld | CaptureCase::ModalDialogCheckboxOutside) {
+        } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked | CaptureCase::ModalDialogSelection | CaptureCase::ModalDialogSelectionInactive | CaptureCase::ModalDialogCaretVisible | CaptureCase::ModalDialogCaretHidden | CaptureCase::ModalDialogButtonHeld | CaptureCase::ModalDialogButtonOutside | CaptureCase::ModalDialogCheckboxHeld | CaptureCase::ModalDialogCheckboxCheckedHeld | CaptureCase::ModalDialogCheckboxOutside) {
             assert!((0..300).any(|_| {
                 session.runner_mut().run_steps(100_000, None);
                 session.runner_mut().guest_menu_snapshot().menus.iter().any(|menu| {
@@ -3341,7 +3345,7 @@ mod desktop {
                     })
                     .expect("guest should check the modal dialog control");
             }
-            if matches!(capture, CaptureCase::ModalDialogSelection) {
+            if matches!(capture, CaptureCase::ModalDialogSelection | CaptureCase::ModalDialogSelectionInactive) {
                 let field = &dialogs.iter().find(|dialog| dialog.visible && dialog.active).unwrap().items[8];
                 let bounds = field.bounds;
                 let layout = field.edit_text_layout.as_ref().unwrap();
@@ -3360,6 +3364,25 @@ mod desktop {
                 dialogs = session.runner_mut().dialog_snapshot();
                 assert!(dialogs.iter().any(|dialog| dialog.visible && dialog.active
                     && dialog.items[8].selection == Some((3, 6))));
+                if matches!(capture, CaptureCase::ModalDialogSelectionInactive) {
+                    let bounds = dialogs.iter().find(|dialog| dialog.visible && dialog.active).unwrap().items[6].bounds;
+                    for input in [
+                        MacintoshInput::MouseDown { vertical: bounds.0 + 5, horizontal: bounds.1 + 1 },
+                        MacintoshInput::MouseUp { vertical: bounds.0 + 5, horizontal: bounds.1 + 1 },
+                    ] {
+                        session.deliver_input(input);
+                        for _ in 0..10 {
+                            let tick = session.runner().guest_tick().saturating_add(1);
+                            session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                        }
+                    }
+                    dialogs = session.runner_mut().dialog_snapshot();
+                    assert!(dialogs.iter().any(|dialog| dialog.visible && dialog.active
+                        && dialog.edit_field == Some(7) && dialog.items[6].selection == Some((0, 0))
+                        && dialog.items[8].selection == if prefer_powerpc { None } else { Some((3, 6)) }
+                        && dialog.items[8].text == "Maverick"),
+                        "switching focus must preserve text and expose only guest-owned selection");
+                }
             }
             if matches!(capture, CaptureCase::ModalDialogCaretVisible | CaptureCase::ModalDialogCaretHidden) {
                 let visible = matches!(capture, CaptureCase::ModalDialogCaretVisible);
@@ -4229,6 +4252,14 @@ mod desktop {
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_modal_dialog_selection_inactive.as_ref() {
+            capture_fixture_screen(
+                &args.game, output, args.prefer_powerpc, args.screen_depth,
+                CaptureCase::ModalDialogSelectionInactive, args.capture_scale,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_modal_dialog_caret_visible.as_ref() {
             capture_fixture_screen(
                 &args.game, output, args.prefer_powerpc, args.screen_depth,
@@ -5043,6 +5074,7 @@ mod desktop {
                         capture_modal_dialog: None,
                         capture_modal_dialog_checked: None,
                         capture_modal_dialog_selection: None,
+                        capture_modal_dialog_selection_inactive: None,
                         capture_modal_dialog_caret_visible: None,
                         capture_modal_dialog_caret_hidden: None,
                         capture_modal_dialog_button_held: None,
