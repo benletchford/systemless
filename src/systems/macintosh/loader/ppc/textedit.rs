@@ -361,6 +361,17 @@ pub(super) fn ppc_te_initialize_record(
     te_handle
 }
 
+/// Shared native TESetSelect operation; preserve the PPC signed-word limits.
+pub(crate) fn ppc_te_set_select(memory: &mut PpcSectionMem, te_handle: u32, start: u32, end: u32) -> bool {
+    let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else { return false; };
+    let length = u32::from(memory.read_u16_be(te_ptr + PPC_TE_LENGTH_OFFSET).unwrap_or(0));
+    let start = start.min(i16::MAX as u32).min(length);
+    let end = end.min(i16::MAX as u32).min(length);
+    let start_written = memory.write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, start as u16).is_some();
+    let end_written = memory.write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, end as u16).is_some();
+    start_written && end_written
+}
+
 pub(super) fn ppc_te_record_ptr(memory: &mut PpcSectionMem, te_handle: u32) -> Option<u32> {
     memory.read_u32_be(te_handle).filter(|ptr| *ptr != 0)
 }

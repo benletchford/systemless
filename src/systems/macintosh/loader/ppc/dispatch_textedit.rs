@@ -480,17 +480,7 @@ pub(super) fn dispatch_textedit_import(
         PpcImportDispatcherTarget::TESetSelect => {
             // Text (1993), pp. 2-51–2-52: native parameters are start, end,
             // TEHandle; the public TERec stores the clamped offsets as words.
-            if let Some(te_ptr) = ppc_te_record_ptr(memory, cpu.gpr[5]) {
-                let length = u32::from(
-                    memory
-                        .read_u16_be(te_ptr + PPC_TE_LENGTH_OFFSET)
-                        .unwrap_or(0),
-                );
-                let start = cpu.gpr[3].min(i16::MAX as u32).min(length);
-                let end = cpu.gpr[4].min(i16::MAX as u32).min(length);
-                let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, start as u16);
-                let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, end as u16);
-            }
+            ppc_te_set_select(memory, cpu.gpr[5], cpu.gpr[3], cpu.gpr[4]);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::TESetText => {
