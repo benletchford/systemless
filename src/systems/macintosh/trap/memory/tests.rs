@@ -10011,3 +10011,106 @@ fn test_unhandled_trap_returns_none() {
     let result = dispatcher.dispatch_memory(false, 0xFFFF, &mut cpu, &mut bus);
     assert!(result.is_none(), "Unhandled trap should return None");
 }
+
+#[test]
+fn status_gamma_installed_display_returns_current_channels_and_roundtrips_control() {
+    let (mut dispatcher, mut cpu, mut bus) = setup();
+    let table = bus.alloc(4);
+    bus.write_long(crate::memory::globals::addr::U_TABLE_BASE, table);
+    bus.write_word(crate::memory::globals::addr::UNIT_NTRY_CNT, 1);
+    assert_eq!(dispatcher.install_driver_dce(&mut bus, u16::MAX), 0);
+    let device_handle = dispatcher.ensure_main_gdevice(&mut bus);
+    let device = bus.read_long(device_handle);
+    bus.write_word(device, u16::MAX);
+    bus.write_long(0x08A4, device_handle);
+    let gamma = std::array::from_fn(|channel| {
+        std::array::from_fn(|index| match channel {
+            0 => index as u8,
+            1 => (255 - index) as u8,
+            _ => (index / 2) as u8,
+        })
+    });
+    dispatcher.display_gamma.install(gamma);
+    let pb = 0x300000;
+    let output = bus.alloc(4);
+    bus.write_word(pb + 24, u16::MAX);
+    bus.write_word(pb + 26, 8);
+    bus.write_long(pb + 28, output);
+    cpu.write_reg(Register::A0, pb);
+    let stack = cpu.read_reg(Register::A7);
+    dispatcher
+        .dispatch_memory(false, 0x05, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+    assert_eq!(bus.read_word(pb + 16), 0);
+    assert_eq!(cpu.read_reg(Register::A7), stack);
+    let pointer = bus.read_long(output);
+    assert_ne!(pointer, 0);
+    for (offset, value) in [(0, 0), (2, 0), (4, 0), (6, 3), (8, 256), (10, 8)] {
+        assert_eq!(bus.read_word(pointer + offset), value);
+    }
+    for (channel, values) in gamma.iter().enumerate() {
+        for (index, value) in values.iter().enumerate() {
+            assert_eq!(
+                bus.read_byte(pointer + 12 + (channel * 256 + index) as u32),
+                *value
+            );
+        }
+    }
+    bus.write_word(pb + 26, 4);
+    cpu.write_reg(Register::A0, pb);
+    dispatcher
+        .dispatch_memory(false, 0x04, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(dispatcher.device_gamma(), gamma);
+    dispatcher
+        .display_gamma
+        .install(crate::display::linear_display_gamma());
+    bus.write_word(pb + 26, 8);
+    cpu.write_reg(Register::A0, pb);
+    dispatcher
+        .dispatch_memory(false, 0x05, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(bus.read_long(output), pointer);
+    for channel in 0..3 {
+        for index in 0..256 {
+            assert_eq!(
+                bus.read_byte(pointer + 12 + channel * 256 + index),
+                index as u8
+            );
+        }
+    }
+}
+
+#[test]
+fn status_gamma_rejects_invalid_driver_and_output_without_overwriting_output() {
+    let (mut dispatcher, mut cpu, mut bus) = setup();
+    let pb = 0x300000;
+    let output = bus.alloc(4);
+    bus.write_long(output, 0xDEADBEEF);
+    bus.write_word(pb + 24, 0xFFFE);
+    bus.write_word(pb + 26, 8);
+    bus.write_long(pb + 28, output);
+    cpu.write_reg(Register::A0, pb);
+    dispatcher
+        .dispatch_memory(false, 0x05, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cpu.read_reg(Register::D0), (-21i32) as u32);
+    assert_eq!(bus.read_word(pb + 16), (-21i16) as u16);
+    assert_eq!(bus.read_long(output), 0xDEADBEEF);
+    for invalid in [0, bus.ram_size() - 2, bus.alloc(2)] {
+        bus.write_word(pb + 24, 0);
+        bus.write_long(pb + 28, invalid);
+        cpu.write_reg(Register::A0, pb);
+        dispatcher
+            .dispatch_memory(false, 0x05, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), (-50i32) as u32);
+        assert_eq!(bus.read_word(pb + 16), (-50i16) as u16);
+    }
+}
