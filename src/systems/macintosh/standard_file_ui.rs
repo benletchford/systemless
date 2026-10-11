@@ -30,7 +30,7 @@ pub struct StandardFileSnapshot {
     pub kind: StandardFileKind,
     pub bounds: (i16, i16, i16, i16),
     pub directory_id: u32,
-    /// `None` means this adapter has not extracted the file list yet.
+    /// `None` means the current guest panel has no exposed file list.
     pub entries: Option<Vec<StandardFileEntrySnapshot>>,
     pub selected: Option<usize>,
     pub prompt: Option<String>,
