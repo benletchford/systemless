@@ -14,6 +14,10 @@ def verify(directory,partial=False):
  spacing_style=manifest.get('spacing_style','normal')
  assert spacing_style in ['normal','condensed','extended','both']
  spacing={'normal':0,'condensed':32,'extended':64,'both':96}[spacing_style]
+ halo_style=manifest.get('halo_style','normal')
+ assert halo_style in ['normal','underlined-outline','underlined-shadow','underlined-both','everything']
+ halo_bits={'normal':0,'underlined-outline':12,'underlined-shadow':20,'underlined-both':28,'everything':31}[halo_style]
+ halo_mask=0 if not halo_bits else 31 if halo_bits==31 else 28
  multiline=manifest['matrix_kind']=='multiline'
  assert manifest['matrix_kind'] in ['multiline','single-line']
  configs=[('multiline','selected',None)] if multiline else [('inactive','inactive',None),*[('selection',s,None) for s in ['selected','suspended','resumed']],*[('caret',s,o) for o in [0,26] for s in ['visible','blink-off','suspended','resumed']]]
@@ -51,6 +55,13 @@ def verify(directory,partial=False):
    assert command.count('--capture-styled-spacing')==1
    assert command[command.index('--capture-styled-spacing')+1]==spacing_style
   else:assert '--capture-styled-spacing' not in command
+  if 'halo_style' in manifest:
+   assert evidence.get('halo_style')==halo_style, 'halo evidence must agree with matrix policy'
+   assert command.count('--capture-styled-halo')==1
+   assert command[command.index('--capture-styled-halo')+1]==halo_style
+  else:
+   assert evidence.get('halo_style','normal')=='normal', 'non-normal halo requires explicit matrix policy'
+   assert '--capture-styled-halo' not in command
   assert command.count('--capture-scale')==1
   assert float(command[command.index('--capture-scale')+1])==case['scale']
   assert type(case['actual_depth']) is int and type(evidence['depth']) is int
@@ -73,7 +84,7 @@ def verify(directory,partial=False):
   assert all(value is True for value in case['smooth_raster_support_1_through_8'])
   runs=evidence['style_runs']
   assert all(type(run[key]) is int for run in runs for key in ['start','font','size','face'])
-  assert [tuple(run[key] for key in ['start','font','size','face']) for run in runs]==[(start,font,size,face|spacing) for start,font,size,face in [
+  assert [tuple(run[key] for key in ['start','font','size','face']) for run in runs]==[(start,font,size,((face|spacing)&~halo_mask)|halo_bits) for start,font,size,face in [
    (0,3,10,0),(7,3,12,1),(11,3,10,0),(13,4,10,0),
    (18,3,10,0),(20,4,14,2),(24,3,10,0),(27 if multiline else 26,3,10,4)]]
   assert case['binary_ink_oracle']=='not applied to antialiased coverage'

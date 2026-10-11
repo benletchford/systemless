@@ -52,6 +52,15 @@ if 'spacing_style' in base:
   'spacing-request':lambda m,c,e:c['command'].__setitem__(c['command'].index('--capture-styled-spacing')+1,'extended' if m['spacing_style']!='extended' else 'condensed'),
   'spacing-face':lambda m,c,e:e['style_runs'][0].update(face=e['style_runs'][0]['face'] ^ 32),
  })
+if 'halo_style' in base:
+ checks.update({
+  'halo-policy':lambda m,c,e:m.update(halo_style='invalid'),
+  'halo-evidence':lambda m,c,e:e.update(halo_style='everything' if m['halo_style']!='everything' else 'underlined-outline'),
+  'halo-policy-missing':lambda m,c,e:m.pop('halo_style'),
+  'halo-evidence-missing':lambda m,c,e:e.pop('halo_style'),
+  'halo-request':lambda m,c,e:c['command'].__setitem__(c['command'].index('--capture-styled-halo')+1,'everything' if m['halo_style']!='everything' else 'underlined-outline'),
+  'halo-face':lambda m,c,e:e['style_runs'][0].update(face=e['style_runs'][0]['face'] ^ 8),
+ })
 with tempfile.TemporaryDirectory(prefix='systemless-styled-verifier-') as temporary:
  out=pathlib.Path(temporary)
  for key in ['rendered','guest']:(out/case[key]).symlink_to((args.source/case[key]).resolve())
