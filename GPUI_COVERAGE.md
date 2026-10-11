@@ -435,6 +435,18 @@ already use the original guest glyph canvas, including its smooth-outline path;
 this run establishes snapshot geometry and behavior, not their rendered visual
 parity, physical host input or release qualification.
 
+### Rebase and Escape Velocity requalification (2026-10-12)
+
+The branch is rebased onto master `77ad8e87`. Conflict resolution retains upstream window classes and live control tracking alongside GPUI window generations, grow state and dialog revisions; shared TextEdit idle handling retains guest-configured low-memory caret timing. Notification validation, shared installation identity and deferred response timing remain intact.
+
+The locked offline GPUI example and installed-command builds pass. The ordinary headless Toolbox Showcase scenario passes on colour68k (41 frontend ticks) and PPC8 (35 frontend ticks); these raw guest-pixel checks do not qualify GPUI rendering.
+
+Selected checks pass: 718 library regressions, all 150 ordinary desktop tests with temporary native pasteboard access, and the full GPUI suite (211 passed, zero failed, one intentionally ignored New Folder subprocess reader; 506.98 seconds). The PPC run-ink comparison now explicitly uses `srcOr`: the helper owns ink, while callers own transfer/background policy. Its 1,280 font/size/style cases pass; upstream copy-mode character-cell clearing also passes with clipping and scaling. The earlier copy-mode comparison failure is preserved in the local validation logs.
+
+Original Escape Velocity colour-68k captures use the production worker and shared GPUI compositor. The reviewed ship-name dialog retains resource artwork while displaying crisp system text, the selected default name and GPUI Cancel/OK. Four scheduled actions complete over 1,050 observed updates. A separate thirteen-action workflow enters `GPUI Pilot` / `GPUI Ship` and reopens that pilot through actual guest Standard File operations over 1,950 observed updates. Both have zero readiness delay. Commercial media, scripts and captures remain in ignored `target/gpui-qualification/escape-velocity`; they are same-process interaction evidence, not restart persistence or native gameplay qualification.
+
+Live frontend timing remains a separate qualification requirement: `Demo::new` consumes worker publications on an independent 16 ms timer. Worker-cycle statistics and offscreen captures do not prove the latency or smoothness of that live handoff. Physical input, native audio/display timing, original Macintosh font fidelity and the full CPU/scale/state matrix remain open. No broad release gate closes.
+
 ### Standard File filename abbreviation
 
 The GPUI Open and Save row painters now use the guest's CPU-specific display
