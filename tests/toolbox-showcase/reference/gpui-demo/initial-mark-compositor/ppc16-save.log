@@ -1,0 +1,5 @@
+saved guest frame to /tmp/gpui-initial-mark-final/ppc16-save.guest.png
+PASS Standard File staging focus loss and restored ownership
+PASS Standard File long marked geometry and exact cancellation
+PASS initial explicit marked range painted geometry and exact cancellation
+saved composed GPUI capture to /tmp/gpui-initial-mark-final/ppc16-save.png

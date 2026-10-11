@@ -5194,3 +5194,7 @@ This extends guest commit-path evidence; it does not prove actual GPUI stage
 rendering, pixel-exact cancellation, candidate bounds, physical IME or expansion
 beyond an existing stage. Production code is unchanged from 2a1dc78a; this extension is test-only. All
 broad release gates remain open.
+
+### Initial explicit marked range: selected shared compositor checks (2026-10-11)
+
+The capture-only extension now checks an initial replacement of guest range `0..1` with `日😀`, independently of the actual guest selection. Mono68k document scale0.75, colour68k document scale1, PPC8 New Folder scale2 and PPC16 Save scale1.5 completed with exit0. Painted candidate bounds, hit-testing, surrogate-split rejection, exact whole-image cancellation and simulated focus-loss/return restoration passed. All four marked-stage images were reviewed. Guest selection remains pinned and Unicode appears in the existing separate staging box; these checks do not establish inline composition or physical IME qualification. Evidence and source hash: `tests/toolbox-showcase/reference/gpui-demo/initial-mark-compositor`. This is selected coverage, not a complete cross-CPU/scale matrix.

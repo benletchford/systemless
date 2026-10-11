@@ -4819,6 +4819,62 @@ mod desktop {
             eprintln!("PASS Standard File staging focus loss and restored ownership");
             eprintln!("PASS Standard File long marked geometry and exact cancellation");
         }
+        if matches!(capture, CaptureCase::TextEditSelected | CaptureCase::ModalDialogMultiline | CaptureCase::StandardFileSaveComposed | CaptureCase::StandardFileNewFolderComposed) {
+            use gpui_kit::EntityInputHandler;
+            visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                demo.host_active = Some(true); window.focus(&demo.focus, cx);
+                demo.synchronize_composition(window, cx); cx.notify();
+            })).unwrap();
+            visual.run_until_parked();
+            let baseline = visual.capture_screenshot(window.into()).unwrap();
+            baseline.save(output.with_extension("initial-baseline.png")).unwrap();
+            let initial = visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                demo.synchronize_composition(window, cx);
+                let initial = demo.composition.owner().unwrap().clone();
+                assert_ne!(initial.selection, 0..1);
+                demo.replace_and_mark_text_in_range(Some(0..1), "日😀", Some(1..3), window, cx);
+                assert_eq!(demo.composition.marked_base(), Some(&initial));
+                demo.synchronize_composition(window, cx);
+                assert_eq!(demo.marked_text_range(window, cx), Some(0..3));
+                initial
+            })).unwrap();
+            visual.run_until_parked();
+            let marked = visual.capture_screenshot(window.into()).unwrap();
+            assert!(marked != baseline, "initial explicit stage must paint");
+            visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                let bounds = demo.bounds_for_range(1..3, Bounds::default(), window, cx)
+                    .expect("initial explicit stage must publish painted candidate bounds");
+                assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+                assert_eq!(demo.character_index_for_point(point(bounds.origin.x, bounds.origin.y + px(1.)), window, cx), Some(1));
+                assert!(demo.bounds_for_range(1..2, Bounds::default(), window, cx).is_none());
+                demo.composition.cancel();
+                assert_eq!(demo.composition.owner(), Some(&initial)); cx.notify();
+            })).unwrap();
+            marked.save(output.with_extension("initial-mark.png")).unwrap();
+            visual.run_until_parked();
+            assert!(visual.capture_screenshot(window.into()).unwrap() == baseline,
+                "initial explicit stage cancellation must restore exact composed pixels");
+            visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                demo.replace_and_mark_text_in_range(Some(0..1), "日😀", Some(1..3), window, cx);
+                demo.host_active = Some(false); demo.synchronize_composition(window, cx);
+                assert!(demo.composition.owner().is_none() && demo.composition.preedit.is_none()); cx.notify();
+            })).unwrap();
+            visual.run_until_parked();
+            visual.capture_screenshot(window.into()).unwrap().save(output.with_extension("initial-inactive.png")).unwrap();
+            visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                demo.host_active = Some(true); demo.synchronize_composition(window, cx);
+                assert_eq!(demo.composition.owner(), Some(&initial)); assert!(demo.composition.preedit.is_none()); cx.notify();
+            })).unwrap();
+            visual.run_until_parked();
+            assert!(visual.capture_screenshot(window.into()).unwrap() == baseline,
+                "initial marked focus return must restore exact active pixels without resurrecting the stage");
+            std::fs::write(output.with_extension("initial-mark.json"), serde_json::to_vec_pretty(&serde_json::json!({
+                "target": format!("{:?}", initial.target), "guest_selection": [initial.selection.start, initial.selection.end],
+                "replacement": [0, 1], "marked_selection_utf16": [1, 3],
+                "scope": "Shared Demo initial explicit stage geometry/hit-testing, surrogate rejection, exact cancellation and simulated focus-loss restoration. No physical IME qualification."
+            })).unwrap()).unwrap();
+            eprintln!("PASS initial explicit marked range painted geometry and exact cancellation");
+        }
         eprintln!("saved composed GPUI capture to {}", output.display());
     }
 
