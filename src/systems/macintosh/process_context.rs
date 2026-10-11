@@ -1895,7 +1895,13 @@ pub(crate) struct SharedProcessEventQueue(SharedProcessValue<EventQueue>);
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SharedProcessMenuTracking(crate::guest_call::SharedMenuTracking);
 #[derive(Clone, Default)]
-pub(crate) struct SharedProcessWindowList(SharedProcessValue<Vec<u32>>);
+pub(crate) struct SharedProcessWindowList(SharedProcessValue<ProcessWindowListState>);
+
+#[derive(Clone, Default)]
+struct ProcessWindowListState {
+    windows: Vec<u32>,
+    classes: HashMap<u32, u32>,
+}
 pub(crate) struct SharedProcessInputState(SharedProcessValue<ProcessInputState>);
 /// Detached-by-default attachment handle for Time Manager tasks.
 ///
@@ -4487,7 +4493,10 @@ impl<const N: usize> PartialEq<[u32; N]> for SharedProcessWindowList {
 #[allow(dead_code)]
 impl SharedProcessWindowList {
     pub(crate) fn from_value(windows: Vec<u32>) -> Self {
-        Self(SharedProcessValue::from_value(windows))
+        Self(SharedProcessValue::from_value(ProcessWindowListState {
+            windows,
+            classes: HashMap::new(),
+        }))
     }
 
     pub(crate) fn shared_handle(&self) -> Self {
@@ -4499,15 +4508,31 @@ impl SharedProcessWindowList {
     }
 
     pub(crate) fn attach_to(&mut self, process_state: &Self) {
-        self.0.attach_to(&process_state.0, Vec::is_empty);
+        self.0.attach_to(&process_state.0, |state| state.windows.is_empty());
     }
 
     pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&[u32]) -> R) -> R {
-        self.0.with_ref(|windows| operation(windows.as_slice()))
+        self.0.with_ref(|state| operation(state.windows.as_slice()))
     }
 
     pub(crate) fn with_mut<R>(&self, operation: impl FnOnce(&mut Vec<u32>) -> R) -> R {
-        self.0.with_mut(operation)
+        self.0.with_mut(|state| {
+            let result = operation(&mut state.windows);
+            state.classes.retain(|window, _| state.windows.contains(window));
+            result
+        })
+    }
+
+    pub(crate) fn set_window_class(&self, window: u32, class: u32) {
+        self.0.with_mut(|state| {
+            if state.windows.contains(&window) {
+                state.classes.insert(window, class);
+            }
+        });
+    }
+
+    pub(crate) fn window_class(&self, window: u32) -> Option<u32> {
+        self.0.with_ref(|state| state.classes.get(&window).copied())
     }
 
     pub(crate) fn with_windows<R>(&self, operation: impl FnOnce(&[u32]) -> R) -> R {
@@ -13948,6 +13973,28 @@ mod tests {
         assert_eq!(classic, [0x3000, 0x1000, 0x4000]);
         assert_eq!(native, [0x3000, 0x1000, 0x4000]);
         assert_eq!(detached, [0x1000, 0x2000]);
+    }
+
+    #[test]
+    fn attached_window_classes_survive_reordering_and_clear_on_removal() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessWindowList::from_value(vec![0x1000, 0x2000]);
+        let mut native = SharedProcessWindowList::default();
+        context.attach_window_list(&mut classic);
+        context.attach_window_list(&mut native);
+        classic.set_window_class(0x1000, 5);
+        native.set_window_class(0x2000, 13);
+        let detached = native.clone();
+        native.send_behind(0x1000, 0x2000);
+        assert_eq!(classic.window_class(0x1000), Some(5));
+        assert_eq!(classic.window_class(0x2000), Some(13));
+        classic.remove_window(0x1000);
+        assert_eq!(native.window_class(0x1000), None);
+        assert_eq!(detached.window_class(0x1000), Some(5));
+        native.insert(0, 0x1000);
+        assert_eq!(classic.window_class(0x1000), None);
+        native.clear();
+        assert_eq!(classic.window_class(0x2000), None);
     }
 
     #[test]

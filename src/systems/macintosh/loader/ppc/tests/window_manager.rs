@@ -10041,3 +10041,93 @@ fn native_execution_does_not_infer_windows_from_offscreen_gworlds() {
     assert_eq!(loaded.memory.read_u32_be(0x09D6), Some(0));
     assert_eq!(loaded.memory.read_u32_be(address), Some(0x5a5a_a5a5));
 }
+
+#[test]
+fn front_non_floating_window_uses_classes_visibility_and_live_window_order() {
+    for library in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+            library.as_bytes(),
+            b"FrontNonFloatingWindow",
+        ))
+        .unwrap();
+        let target = dispatcher_target_for_import(library, "FrontNonFloatingWindow");
+        assert_eq!(
+            target,
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::FrontNonFloatingWindow,
+            )
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "frontnonfloatingwindow"),
+            target
+        );
+        run_test_import(&mut loaded, target);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let scratch = PPC_DATA_BASE + 0x1400;
+        loaded.memory.add_region(scratch, vec![0; 0x100]);
+        let back = create_test_cwindow(&mut loaded, scratch, (40, 50, 140, 250), 0, true, u32::MAX);
+        let front =
+            create_test_cwindow(&mut loaded, scratch, (60, 70, 160, 270), 0, true, u32::MAX);
+        let legacy_float = create_test_cwindow(
+            &mut loaded,
+            scratch,
+            (80, 90, 180, 290),
+            1985,
+            true,
+            u32::MAX,
+        );
+        assert_eq!(loaded.window_list.window_class(legacy_float), Some(5));
+        run_test_import(&mut loaded, target);
+        assert_eq!(loaded.cpu.gpr[3], front);
+        // A negative application windowKind is unrelated to the Carbon class.
+        loaded
+            .memory
+            .write_u16_be(front + PPC_CWINDOW_WINDOW_KIND_OFFSET, 0xFFFF)
+            .unwrap();
+        run_test_import(&mut loaded, target);
+        assert_eq!(loaded.cpu.gpr[3], front);
+        loaded
+            .memory
+            .write_u8(front + PPC_CWINDOW_VISIBLE_OFFSET, 0)
+            .unwrap();
+        run_test_import(&mut loaded, target);
+        assert_eq!(loaded.cpu.gpr[3], back);
+        loaded
+            .memory
+            .write_u8(front + PPC_CWINDOW_VISIBLE_OFFSET, 0xFF)
+            .unwrap();
+        loaded.window_list.bring_to_front(back);
+        run_test_import(&mut loaded, target);
+        assert_eq!(loaded.cpu.gpr[3], back);
+        // CreateNewWindow records the actual class independently of windowKind.
+        loaded.cpu.gpr[3] = 5;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = scratch;
+        loaded.cpu.gpr[6] = scratch + 8;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::CreateNewWindow),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let carbon_float = loaded.memory.read_u32_be(scratch + 8).unwrap();
+        assert_ne!(carbon_float, 0);
+        assert_eq!(loaded.window_list.window_class(carbon_float), Some(5));
+        loaded
+            .memory
+            .write_u8(carbon_float + PPC_CWINDOW_VISIBLE_OFFSET, 1)
+            .unwrap();
+        loaded.window_list.bring_to_front(carbon_float);
+        run_test_import(&mut loaded, target);
+        assert_eq!(loaded.cpu.gpr[3], back);
+        for window in [back, front] {
+            loaded.cpu.gpr[3] = window;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::DisposeWindow),
+            );
+            assert_eq!(loaded.window_list.window_class(window), None);
+        }
+        run_test_import(&mut loaded, target);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+}

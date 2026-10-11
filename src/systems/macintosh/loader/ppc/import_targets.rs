@@ -4806,6 +4806,12 @@ pub(crate) fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TrackControl),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "FrontNonFloatingWindow" | "frontnonfloatingwindow",
+        ) => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::FrontNonFloatingWindow,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "ActiveNonFloatingWindow" | "activenonfloatingwindow",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(
