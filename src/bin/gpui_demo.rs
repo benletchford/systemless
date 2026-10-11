@@ -187,6 +187,9 @@ mod desktop {
         #[arg(long, hide = true, requires = "capture_modeless_dialog")]
         capture_modeless_dialog_suspended: bool,
         #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, requires = "capture_modeless_dialog", conflicts_with = "capture_modeless_dialog_suspended")]
+        capture_modeless_dialog_resumed: bool,
+        #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_nested_modal_dialog: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
@@ -3385,7 +3388,7 @@ mod desktop {
         ModalDialogCheckboxHeld,
         ModalDialogCheckboxCheckedHeld,
         ModalDialogCheckboxOutside,
-        ModelessDialog { suspended: bool },
+        ModelessDialog { suspended: bool, resumed: bool },
         NestedModalDialog,
         Controls,
         ControlFonts,
@@ -4867,26 +4870,48 @@ mod desktop {
                 && control.popup_menu_id == Some(143) && control.value == 4));
             assert!(session.runner_mut().guest_popup_snapshot().is_none());
         }
-        let modeless_host_suspended = matches!(capture, CaptureCase::ModelessDialog { suspended: true });
-        if modeless_host_suspended {
+        let modeless_host_suspended = matches!(capture, CaptureCase::ModelessDialog { suspended: true, .. });
+        let modeless_host_resumed = matches!(capture, CaptureCase::ModelessDialog { resumed: true, .. });
+        let modeless_host_transition = modeless_host_suspended || modeless_host_resumed;
+        if modeless_host_transition {
             let original = dialogs.iter().find(|dialog| dialog.visible && dialog.items.len() == 4)
                 .expect("capture must have a visible dialog").clone();
-            session.request_foreground(false);
-            assert!((0..300).any(|_| {
-                session.runner_mut().run_steps(10_000, None);
-                session.runner_mut().window_frame_snapshot().iter().any(|frame|
-                    frame.guest_id == original.guest_id && frame.window.visible && !frame.window.active)
-            }), "guest suspend must deactivate the dialog owner");
-            assert!((0..300).any(|_| {
-                session.runner_mut().run_steps(10_000, None);
-                session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0)
-            }), "guest must finish its dialog suspend event");
-            let current = session.runner_mut().dialog_snapshot().into_iter()
-                .find(|dialog| dialog.guest_id == original.guest_id).unwrap();
-            assert_eq!((current.generation, current.bounds), (original.generation, original.bounds));
-            let contents = |dialog: &DialogSnapshot| dialog.items.iter().map(|item|
-                (item.number, item.bounds, item.text.clone(), item.value, item.selection)).collect::<Vec<_>>();
-            assert_eq!(contents(&current), contents(&original), "suspend must preserve dialog contents");
+            let states: &[bool] = if modeless_host_resumed { &[false, true, false, true] } else { &[false] };
+            for &foreground in states {
+                session.request_foreground(foreground);
+                assert!((0..300).any(|_| {
+                    session.runner_mut().run_steps(10_000, None);
+                    session.runner_mut().window_frame_snapshot().iter().any(|frame|
+                        frame.guest_id == original.guest_id && frame.window.visible && frame.window.active == foreground)
+                }), "guest must apply the dialog foreground transition");
+                assert!((0..300).any(|_| {
+                    session.runner_mut().run_steps(10_000, None);
+                    session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0)
+                }), "guest must finish its dialog foreground event");
+                let current = session.runner_mut().dialog_snapshot().into_iter()
+                    .find(|dialog| dialog.guest_id == original.guest_id).unwrap();
+                assert_eq!((current.generation, current.bounds), (original.generation, original.bounds));
+                let contents = |dialog: &DialogSnapshot| dialog.items.iter().map(|item|
+                    (item.number, item.bounds, item.text.clone(), item.value, item.selection)).collect::<Vec<_>>();
+                assert_eq!(contents(&current), contents(&original), "foreground transitions must preserve dialog contents");
+            }
+            if modeless_host_resumed {
+                let edit = original.items.iter().find(|item| item.number == 4).unwrap();
+                assert_eq!(edit.selection, Some((0, 0)));
+                session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x06, character: b'z' });
+                session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x06, character: b'z' });
+                let expected = format!("z{}", edit.text);
+                assert!((0..300).any(|_| {
+                    session.runner_mut().run_steps(10_000, None);
+                    session.runner_mut().dialog_snapshot().iter().any(|dialog|
+                        dialog.guest_id == original.guest_id && dialog.items.iter().any(|item|
+                            item.number == 4 && item.text == expected && item.selection == Some((1, 1))))
+                }), "guest dialog editing must work after repeated resume");
+                assert!((0..300).any(|_| {
+                    session.runner_mut().run_steps(10_000, None);
+                    session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0)
+                }), "guest must finish painting the resumed edit");
+            }
         }
         let controls_host_suspended = matches!(capture, CaptureCase::ControlFontsInactive);
         if controls_host_suspended {
@@ -4910,8 +4935,8 @@ mod desktop {
             }
             eprintln!("styled control owner suspended with font, bounds, value and identity preserved");
         }
-        let controls = if controls_host_suspended || modeless_host_suspended { session.runner_mut().control_snapshot() } else { controls };
-        let activation_capture = activation_capture || host_activation_capture || popup_host_suspended || controls_host_suspended || modeless_host_suspended;
+        let controls = if controls_host_suspended || modeless_host_transition { session.runner_mut().control_snapshot() } else { controls };
+        let activation_capture = activation_capture || host_activation_capture || popup_host_suspended || controls_host_suspended || modeless_host_transition;
         let windows = if activation_capture { session.runner_mut().window_frame_snapshot() } else { windows };
         let dialogs = if activation_capture { session.runner_mut().dialog_snapshot() } else { dialogs };
         if matches!(capture, CaptureCase::ModelessDialog { .. }) {
@@ -4922,7 +4947,7 @@ mod desktop {
                 .expect("recognized dialog title must reach the GPUI painter");
             std::fs::write(output.with_extension("dialog-state.json"), serde_json::to_vec_pretty(&serde_json::json!({
                 "definition": owner.definition_id, "identity": [owner.guest_id as u64, owner.generation],
-                "window": owner.window, "dialog_active": dialog.active, "suspended": modeless_host_suspended,
+                "window": owner.window, "dialog_active": dialog.active, "suspended": modeless_host_suspended, "resumed": modeless_host_resumed,
                 "actual_depth": session.runner().presented_screen_depth(),
                 "title_position": [title.horizontal, title.baseline], "title_clip": title.clip,
                 "items": dialog.items.iter().map(|item| serde_json::json!({
@@ -5102,7 +5127,7 @@ mod desktop {
         let view = view.unwrap();
         visual.update(|cx| {
             view.update(cx, |demo, cx| {
-                if controls_host_suspended || modeless_host_suspended { demo.host_active = Some(false); }
+                if controls_host_suspended || modeless_host_transition { demo.host_active = Some(!controls_host_suspended && !modeless_host_suspended); }
                 demo.menus = menus;
                 demo.guest_menu_tracking = guest_menu_tracking;
                 demo.guest_popup = guest_popup;
@@ -6408,7 +6433,7 @@ mod desktop {
                 output,
                 args.prefer_powerpc,
                 args.screen_depth,
-                CaptureCase::ModelessDialog { suspended: args.capture_modeless_dialog_suspended },
+                CaptureCase::ModelessDialog { suspended: args.capture_modeless_dialog_suspended, resumed: args.capture_modeless_dialog_resumed },
                 args.capture_scale,
             );
             return;
@@ -7321,6 +7346,7 @@ mod desktop {
                         capture_modal_dialog_checkbox_outside: None,
                         capture_modeless_dialog: None,
                         capture_modeless_dialog_suspended: false,
+                        capture_modeless_dialog_resumed: false,
                         capture_nested_modal_dialog: None,
                         capture_controls: None,
                         capture_control_fonts: None,
