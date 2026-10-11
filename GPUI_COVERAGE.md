@@ -71,7 +71,7 @@ unfinished GPUI components.
 | Mouse wheel and trackpad scrolling | GPUI wheel events accumulate fractional pixel/line deltas and target an unambiguous standard scrollbar in the active window. The worker revalidates lifetime, visibility, clipping and limits before posting ordinary arrow clicks; guest execution separates press, release and pointer restoration. Consecutive requests coalesce with a bounded step count. Loaded monochrome 68K, colour 68K and PPC tests verify guest-owned value changes; a live-worker test exercises both CPUs. | Qualify vertical document scrolling, real trackpads, rapid direction changes, focus-loss cancellation, nested modal controls, list/Standard File internal scrolling, callback timing under load and audible/frame latency. The shared session API still has no general wheel event; custom and ambiguous targets are not translated. | Standard scrollbar wheel path; broader qualification open |
 | Lists | `FixtureRunner::list_manager_snapshot` exposes guest ListHandle, lifetime generation, owner port, local and global view rectangles, LDEF ID, decoded standard cell text, logical cells, selection, visible cell range, drawing/active state, and guest scrollbar visibility bytes. A deterministic showcase test on monochrome 68K, colour 68K, and PowerPC confirms that switching pages hides but retains the same list identity, then restores it. Standard LDEF 0 cells are presented as themed GPUI rows clipped to the owning window and front-window bounds; pointer input still follows guest coordinates. Custom LDEFs and overlapping custom window definitions keep guest pixels. Four offscreen captures cover initial and selected rows on both CPUs. | Add keyboard and accessibility actions, broader list definitions and scroll/selection qualification, and composed captures with complex visible regions and overlapping windows. | Standard list demo |
 | TextEdit and editable fields | `FixtureRunner::text_edit_snapshot` reads canonical guest TERecs with stable TEHandle/generation, owner port, local/global view and destination bounds, text bytes, selection, activation, alignment, font fields, guest line starts and height, and private scrap. The showcase checks owner-port geometry, guest-owned typing, Reset selection through `TESetSelect`, and selected-text replacement through `TEKey` on monochrome 68K, colour 68K, and PowerPC. A deterministic 68K guest sequence and BasiliskII both end with a 195-byte, five-line record and selection `[1,1]`; the PowerPC guest sequence reaches the same state. GPUI ASCII keys and arrows enter the existing guest event route; a host event test verifies the translated press/release pair. Dialog items carry edit selection; standard single-line DITL fields use a read-only GPUI presentation. Drawing evidence is independent of optional sharp-text rendering, includes the guest clip/visible regions, and compares against the actual presented framebuffer. Allocated but unpainted records and records overwritten by another page remain hidden. Ordinary unstyled left-aligned document TextEdit uses a clipped GPUI overlay with guest line breaks, scroll origin, selection, and caret. Styled, justified, and custom-overlapping cases retain guest pixels. Seven offscreen captures cover initial, selected, and edited states across 68K and PowerPC. | Qualify font metrics, multiline editing, caret blink, focus and composition state; test guest wrapping, scrolling, selections across lines, Mac Roman input, modifier and clipboard behavior, and keyboard/accessibility actions. | Standard TextEdit slice |
-| Standard File panels | The 68K `_Pack3` and PowerPC import paths retain their own modal Open/Save state outside Window Manager records. `FixtureRunner::standard_file_snapshot` normalizes live mode, reply-record identity, per-invocation generation, panel bounds, directory contents, selection, save-name/prompt and keyboard-focus state, and the guest's standard Open/Save item geometry. The opt-in demo overlays modern standard Open and Save panels with GPUI elements on both CPUs; legacy and custom calls retain guest pixels. PowerPC Save lists VFS entries and supports folder selection with Return or a guest-timed double-click, Desktop and parent-directory navigation, guest-owned filename editing, and destination-aware replies. A three-mode showcase test checks Open, cancellation, Save, guest-owned filename editing, and a second cancellation. The PowerPC Save list follows the standard display-list and filename-focus behavior described in Inside Macintosh: Files (1992), pp. 3-5--3-6. | Complete Save New Folder and replacement confirmation on both CPUs, plus directory popup and keyboard behavior; qualify callback timing, entry icons, true scroll state, nested modality, caret blink and composition, and accessibility actions on both panels. | Standard Open/Save demo |
+| Standard File panels | The 68K `_Pack3` and PowerPC import paths retain their own modal Open/Save state outside Window Manager records. `FixtureRunner::standard_file_snapshot` normalizes live mode, reply-record identity, per-invocation generation, panel bounds, directory contents, selection, save-name/prompt and keyboard-focus state, and the guest's standard Open/Save item geometry. The opt-in demo overlays modern standard Open and Save panels with GPUI elements on both CPUs; legacy and custom calls retain guest pixels. PowerPC Save lists VFS entries and supports folder selection with Return or a guest-timed double-click, Desktop and parent-directory navigation, guest-owned filename editing, and destination-aware replies. A three-mode showcase test checks Open, cancellation, Save, guest-owned filename editing, and a second cancellation. The PowerPC Save list follows the standard display-list and filename-focus behavior described in Inside Macintosh: Files (1992), pp. 3-5--3-6. | Complete Save New Folder on both CPUs, plus directory popup and keyboard behavior; qualify the replacement-confirmation follow-up below; qualify callback timing, entry icons, true scroll state, nested modality, caret blink and composition, and accessibility actions on both panels. | Standard Open/Save demo |
 | Cursors and notifications | Cursor bitmap, mask, hotspot, visibility, and hide/show level are guest state presented by the desktop host. Classic notification records and callbacks are tracked; equivalent PowerPC install and visible-notice coverage is unproven. The draw-path inventory separates these boundaries. | Qualify resource-backed versus application-built cursors, notification imagery, sound, acknowledgment, callback timing, and PowerPC installation before GPUI presentation. | State extraction needed |
 | QuickDraw and custom definitions | Framebuffer remains the presentation source. | Mask only verified standard system pixels; keep unknown WDEF, CDEF, MDEF, user items, and application drawing unchanged. | Required fallback |
 
@@ -1372,13 +1372,48 @@ panel dismissal and pointer restoration in monochrome 68K, colour 68K and PPC.
 The GPUI test feature enables the debugger for this observation; the production
 GPUI feature remains unchanged.
 
-Source inspection confirms that **both** Save backends currently calculate
-sfReplacing and return immediately for existing filenames. Neither performs the
-subsidiary replacement confirmation required by Inside Macintosh: Files (1992),
-p. 3-7. This is a shared unfinished workflow, not solely a PPC parity gap. New
-Folder and replacement confirmation must be implemented in guest-owned modal
-state and exposed to the same live/headless presentation path before this area
-can be qualified as complete.
+Source inspection before the follow-up below confirmed that **both** Save
+backends calculated sfReplacing and returned immediately for existing filenames.
+Neither performed the subsidiary confirmation required by Inside Macintosh:
+Files (1992), p. 3-7. The follow-up addresses that shared gap; complete file-panel
+qualification still requires New Folder and the remaining workflow evidence.
 
 The focused three-mode Save acceptance regression passes (3.24s). This checks
 the returned record, not complete file persistence or replacement behavior.
+
+
+### Shared Save replacement confirmation
+
+Both retained Save backends now present a subsidiary confirmation for an existing
+filename. Cancel returns to Save with its filename preserved; Replace alone
+returns the accepted replacement reply. Shared geometry and event interpretation
+serve native drawing and the GPUI AlertDialog. Entering or leaving confirmation
+changes the panel generation, preventing queued actions from crossing modal
+states. Parent Save semantic actions are rejected while confirmation is active.
+
+The three-mode guest regression covers new-file acceptance, name-conflict
+confirmation, cancellation back to Save, reopening confirmation, confirmed
+replacement and returned sfGood/sfReplacing/name bytes. The snapshot/lifecycle
+and acceptance regressions pass alongside the existing pointer regression.
+The GPUI host regression additionally checks AlertDialog metadata and one guest
+press/release within Replace, without duplicated semantic input. Visual capture
+review, native oracle comparison, keyboard confirmation/cancellation, full modal
+focus and screen-reader operation still require qualification. New Folder remains
+unimplemented.
+
+
+Four Standard File library regressions and all eight existing Save regressions
+pass. The 68K directory-navigation test now explicitly confirms Replace before
+checking the reply. Three composed replacement captures were reviewed across
+monochrome 68K, colour 68K and PPC: confirmation labels/buttons fit, and Save
+stays GPUI-rendered underneath, preventing document overlays from showing through.
+Existing backend differences in the parent Save geometry remain. Review also
+identified the parent filename caret as incorrectly active; snapshots now clear
+filename focus during confirmation and restore it on cancellation, with guest
+integration assertions for both transitions.
+
+The final focused Standard File run passes all three tests (12.55s), including
+filename focus clearing and restoration across replacement confirmation.
+
+Fresh final composed captures in all three modes confirm the parent filename
+caret is absent while replacement confirmation is open.

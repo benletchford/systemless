@@ -71,9 +71,10 @@ impl StandardFilePutLayout {
 pub struct StandardFileSnapshot {
     /// Address of the caller's reply record; pair with generation.
     pub guest_id: u32,
-    /// Changes for each retained Standard File invocation.
+    /// Changes for each retained Standard File invocation and modal transition.
     pub generation: u64,
     pub kind: StandardFileKind,
+    pub confirming_replace: bool,
     /// True only for the modern standard entry points. This alone does not
     /// qualify a panel for an overlay; its guest behavior must also be complete.
     pub standard_entry_point: bool,
@@ -90,4 +91,56 @@ pub struct StandardFileSnapshot {
     pub directory_label: Option<String>,
     pub get_layout: Option<StandardFileGetLayout>,
     pub put_layout: Option<StandardFilePutLayout>,
+}
+
+/// Geometry and event interpretation shared by both Standard File backends.
+/// Files (1992), p. 3-7: a name conflict requires a subsidiary confirmation.
+#[doc(hidden)]
+pub struct StandardFileReplacementLayout {
+    pub bounds: (i16, i16, i16, i16),
+    pub message: (i16, i16, i16, i16),
+    pub cancel: (i16, i16, i16, i16),
+    pub replace: (i16, i16, i16, i16),
+}
+
+impl StandardFileReplacementLayout {
+    pub fn new(parent: (i16, i16, i16, i16)) -> Self {
+        let top = parent.0 + (parent.2 - parent.0 - 110) / 2;
+        let left = parent.1 + (parent.3 - parent.1 - 300) / 2;
+        Self {
+            bounds: (top, left, top + 110, left + 300),
+            message: (top + 14, left + 16, top + 64, left + 284),
+            cancel: (top + 76, left + 104, top + 98, left + 184),
+            replace: (top + 76, left + 202, top + 98, left + 282),
+        }
+    }
+
+    /// None keeps the confirmation open; false returns to the parent Save panel.
+    pub(crate) fn action(
+        &self,
+        what: u16,
+        message: u32,
+        modifiers: u16,
+        v: i16,
+        h: i16,
+    ) -> Option<bool> {
+        if what == 1 {
+            let contains = |r: (i16, i16, i16, i16)| v >= r.0 && v < r.2 && h >= r.1 && h < r.3;
+            if contains(self.cancel) {
+                return Some(false);
+            }
+            if contains(self.replace) {
+                return Some(true);
+            }
+        } else if what == 3 || what == 5 {
+            let character = message as u8;
+            if character == 27 || (character == b'.' && modifiers & 0x100 != 0) {
+                return Some(false);
+            }
+            if character == 13 || character == 3 {
+                return Some(true);
+            }
+        }
+        None
+    }
 }

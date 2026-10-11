@@ -14,6 +14,8 @@ pub enum FileAction {
     Accept,
     Cancel,
     Desktop,
+    Replace,
+    CancelReplacement,
 }
 
 impl ControlActivation {
@@ -33,27 +35,38 @@ impl ControlActivation {
         }
         // Standard File owns the modal loop and reply; semantic actions are clicks.
         // Inside Macintosh: Files (1992), pp. 3-3--3-13.
-        let rect = match panel.kind {
-            StandardFileKind::Get => {
-                let layout = panel.get_layout.as_ref()?;
-                match action {
-                    FileAction::Accept => {
-                        let entry = panel.entries.as_ref()?.get(panel.selected?)?;
-                        if !entry.is_directory && entry.file_type == 0 {
-                            return None;
-                        }
-                        layout.open
-                    }
-                    FileAction::Cancel => layout.cancel,
-                    FileAction::Desktop => layout.desktop,
-                }
+        let rect = if panel.confirming_replace {
+            let layout = systemless::runner::StandardFileReplacementLayout::new(panel.bounds);
+            match action {
+                FileAction::Replace => layout.replace,
+                FileAction::CancelReplacement => layout.cancel,
+                _ => return None,
             }
-            StandardFileKind::Put => {
-                let layout = panel.put_layout.as_ref()?;
-                match action {
-                    FileAction::Accept => layout.save,
-                    FileAction::Cancel => layout.cancel,
-                    FileAction::Desktop => layout.desktop,
+        } else {
+            match panel.kind {
+                StandardFileKind::Get => {
+                    let layout = panel.get_layout.as_ref()?;
+                    match action {
+                        FileAction::Accept => {
+                            let entry = panel.entries.as_ref()?.get(panel.selected?)?;
+                            if !entry.is_directory && entry.file_type == 0 {
+                                return None;
+                            }
+                            layout.open
+                        }
+                        FileAction::Cancel => layout.cancel,
+                        FileAction::Desktop => layout.desktop,
+                        _ => return None,
+                    }
+                }
+                StandardFileKind::Put => {
+                    let layout = panel.put_layout.as_ref()?;
+                    match action {
+                        FileAction::Accept => layout.save,
+                        FileAction::Cancel => layout.cancel,
+                        FileAction::Desktop => layout.desktop,
+                        _ => return None,
+                    }
                 }
             }
         };

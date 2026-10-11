@@ -191,6 +191,9 @@ mod desktop {
         capture_standard_file_save_edited_composed: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_standard_file_replace_composed: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_custom_menu_fallback: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -2346,6 +2349,42 @@ mod desktop {
                         screen = screen.child(overlay);
                     }
                 }
+                if let Some(panel) = self.standard_file.as_ref().filter(|p| p.standard_entry_point && p.confirming_replace) {
+                    let layout = systemless::runner::StandardFileReplacementLayout::new(panel.bounds);
+                    let bounds = super::frames::Rect::from(layout.bounds);
+                    let at = |rect: (i16, i16, i16, i16)| {
+                        let rect = super::frames::Rect::from(rect);
+                        div().absolute().top(guest_px((rect.top - bounds.top) as f32))
+                            .left(guest_px((rect.left - bounds.left) as f32))
+                            .w(guest_px(rect.width() as f32)).h(guest_px(rect.height() as f32))
+                    };
+                    let mut overlay = div().id("guest-standard-replace").test_support()
+                        .role(gpui_kit::Role::AlertDialog).aria_label("Replace existing file")
+                        .absolute().top(guest_px(bounds.top as f32)).left(guest_px(bounds.left as f32))
+                        .w(guest_px(bounds.width() as f32)).h(guest_px(bounds.height() as f32))
+                        .bg(cx.theme().background).border_2().border_color(cx.theme().border)
+                        .text_color(cx.theme().foreground).text_size(guest_px(13.))
+                        .child(at(layout.message).overflow_hidden().child(format!("Replace existing \"{}\"?", panel.name.as_deref().unwrap_or(""))));
+                    for (rect, label, action) in [
+                        (layout.cancel, "Cancel", super::activation::FileAction::CancelReplacement),
+                        (layout.replace, "Replace", super::activation::FileAction::Replace),
+                    ] {
+                        let (id, generation) = (panel.guest_id, panel.generation);
+                        let keyboard_sender = self.commands.clone();
+                        let accessibility_sender = self.commands.clone();
+                        overlay = overlay.child(at(rect).child(super::choices::guest_button(
+                            format!("guest-standard-replace-{id}-{generation}-{label}"), label.into(),
+                            true, true, false, label == "Replace", scene_scale, cx,
+                        ).w_full().h_full().on_click(move |event, _, _| {
+                            if matches!(event, ClickEvent::Keyboard(_)) {
+                                let _ = keyboard_sender.send(Command::ActivateFile(id, generation, action));
+                            }
+                        }).on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
+                            let _ = accessibility_sender.send(Command::ActivateFile(id, generation, action));
+                        })));
+                    }
+                    screen = screen.child(overlay);
+                }
             }
             let mut bar = Some(bar);
             if let Some(popup) = self.guest_popup.as_ref() {
@@ -2493,6 +2532,7 @@ mod desktop {
         StandardFileSaveComposed,
         StandardFileOpenComposed,
         StandardFileSaveEditedComposed,
+        StandardFileReplaceComposed,
     }
 
     #[cfg(feature = "gpui-demo-test")]
@@ -2628,6 +2668,7 @@ mod desktop {
             CaptureCase::StandardFileSave
                 | CaptureCase::StandardFileSaveComposed
                 | CaptureCase::StandardFileSaveEditedComposed
+                | CaptureCase::StandardFileReplaceComposed
         );
         let standard_file_open = matches!(capture, CaptureCase::StandardFileOpenComposed);
         let standard_file_page = standard_file_save || standard_file_open;
@@ -3116,6 +3157,24 @@ mod desktop {
                         && panel.entries.as_ref().is_some_and(|entries| !entries.is_empty())
                 })
             }));
+            if matches!(capture, CaptureCase::StandardFileReplaceComposed) {
+                let panel = session.runner().standard_file_snapshot().unwrap();
+                let name = panel.entries.as_ref().unwrap().iter().find(|entry| !entry.is_directory).unwrap().name.clone();
+                for character in name.bytes() {
+                    session.deliver_input(MacintoshInput::KeyDown { mac_key: 0, character });
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character });
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                }
+                let click = super::activation::ControlActivation::begin_file(&mut session, panel.guest_id, panel.generation, super::activation::FileAction::Accept).unwrap();
+                let tick = session.runner().guest_tick().saturating_add(1);
+                session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                let click = click.advance(&mut session).unwrap();
+                let tick = session.runner().guest_tick().saturating_add(1);
+                session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                assert!(click.advance(&mut session).is_none());
+                assert!(session.runner().standard_file_snapshot().unwrap().confirming_replace);
+            }
             if matches!(capture, CaptureCase::StandardFileSaveEditedComposed) {
                 session.deliver_input(MacintoshInput::KeyDown {
                     mac_key: 0x00,
@@ -4006,6 +4065,11 @@ mod desktop {
             );
             return;
         }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_standard_file_replace_composed.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileReplaceComposed);
+            return;
+        }
         let (commands, receiver) = mpsc::channel();
         let updates = Arc::new(Mutex::new(None));
         let worker_updates = updates.clone();
@@ -4487,6 +4551,7 @@ mod desktop {
                         capture_standard_file_save_composed: None,
                         capture_standard_file_open_composed: None,
                         capture_standard_file_save_edited_composed: None,
+                        capture_standard_file_replace_composed: None,
                         capture_custom_menu_fallback: None,
                         capture_standard_menu: None,
                         capture_windows: None,
@@ -5661,7 +5726,8 @@ mod desktop {
             use super::super::activation::{ControlActivation, FileAction};
             use systemless::systems::macintosh::debug::{handle_debug_request, DebugReply, DebugRequest, M68K_SPACE, PPC_SPACE};
 
-            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+            for (powerpc, depth, replacing) in [(false, Some(1)), (false, Some(8)), (true, None)].into_iter()
+                .flat_map(|(cpu, depth)| [false, true].map(move |replacing| (cpu, depth, replacing))) {
                 let mut session = MacintoshSession::new(true, depth);
                 session.runner_mut().set_prefer_powerpc_executables(powerpc);
                 let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -5682,12 +5748,18 @@ mod desktop {
                     step(&mut session);
                     session.runner().standard_file_snapshot()
                 }).expect("Save panel");
-                // Standard File owns name editing; type over the selected default.
-                session.deliver_input(MacintoshInput::KeyDown { mac_key: 0, character: b'S' });
-                session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character: b'S' });
+                let name = if replacing {
+                    panel.entries.as_ref().unwrap().iter().find(|entry| !entry.is_directory)
+                        .expect("existing file in Save directory").name.clone()
+                } else { "S".to_string() };
+                for character in name.bytes() {
+                    session.deliver_input(MacintoshInput::KeyDown { mac_key: 0, character });
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character });
+                    step(&mut session);
+                }
                 assert!((0..100).any(|_| {
                     step(&mut session);
-                    session.runner().standard_file_snapshot().is_some_and(|p| p.name.as_deref() == Some("S"))
+                    session.runner().standard_file_snapshot().is_some_and(|p| p.name.as_deref() == Some(name.as_str()))
                 }));
                 let origin = session.runner().dispatcher().mouse_position();
                 let click = ControlActivation::begin_file(&mut session, panel.guest_id, panel.generation, FileAction::Accept).unwrap();
@@ -5696,6 +5768,31 @@ mod desktop {
                 step(&mut session);
                 assert!(click.advance(&mut session).is_none());
                 assert_eq!(session.runner().dispatcher().mouse_position(), origin);
+                if replacing {
+                    assert!(session.runner().standard_file_snapshot().unwrap().confirming_replace);
+                    assert!(ControlActivation::begin_file(&mut session, panel.guest_id, panel.generation, FileAction::Accept).is_none());
+                    let confirmation = session.runner().standard_file_snapshot().unwrap();
+                    assert_ne!(confirmation.generation, panel.generation);
+                    assert_eq!(confirmation.name_has_focus, Some(false));
+                    let click = ControlActivation::begin_file(&mut session, confirmation.guest_id, confirmation.generation, FileAction::CancelReplacement).unwrap();
+                    step(&mut session);
+                    let click = click.advance(&mut session).unwrap();
+                    step(&mut session);
+                    assert!(click.advance(&mut session).is_none());
+                    let parent = session.runner().standard_file_snapshot().unwrap();
+                    assert!(!parent.confirming_replace);
+                    assert_eq!(parent.name_has_focus, Some(true));
+                    assert_eq!(parent.name.as_deref(), Some(name.as_str()));
+                    assert!(ControlActivation::begin_file(&mut session, confirmation.guest_id, confirmation.generation, FileAction::CancelReplacement).is_none());
+                    for action in [FileAction::Accept, FileAction::Replace] {
+                        let current = session.runner().standard_file_snapshot().unwrap();
+                        let click = ControlActivation::begin_file(&mut session, current.guest_id, current.generation, action).unwrap();
+                        step(&mut session);
+                        let click = click.advance(&mut session).unwrap();
+                        step(&mut session);
+                        assert!(click.advance(&mut session).is_none());
+                    }
+                }
                 assert!((0..100).any(|_| {
                     step(&mut session);
                     session.runner().standard_file_snapshot().is_none()
@@ -5708,8 +5805,9 @@ mod desktop {
                 // follows its volume reference and directory ID at reply + 12.
                 assert_eq!(reply.bytes.len(), 88);
                 assert_eq!(reply.bytes[0], 1, "sfGood, PPC={powerpc}, depth={depth:?}");
-                assert_eq!(reply.bytes[1], 0, "new file must not replace an existing one");
-                assert_eq!(&reply.bytes[12..14], &[1, b'S'], "guest-edited FSSpec name");
+                assert_eq!(reply.bytes[1], u8::from(replacing), "replacement result");
+                assert_eq!(usize::from(reply.bytes[12]), name.len());
+                assert_eq!(&reply.bytes[13..13 + name.len()], name.as_bytes(), "guest-edited FSSpec name");
             }
         }
 
@@ -8518,6 +8616,7 @@ mod desktop {
                         guest_id: 7,
                         generation: 1,
                         kind: StandardFileKind::Get,
+                        confirming_replace: false,
                         standard_entry_point: true,
                         bounds: (100, 100, 278, 456),
                         directory_id: 2,
@@ -8600,6 +8699,7 @@ mod desktop {
                         guest_id: 8,
                         generation: 2,
                         kind: StandardFileKind::Put,
+                        confirming_replace: false,
                         standard_entry_point: true,
                         bounds: (100, 100, 360, 460),
                         directory_id: 2,
@@ -8650,6 +8750,32 @@ mod desktop {
                 MacintoshInput::MouseDown { vertical: 320..=341, horizontal: 358..=437 },
                 MacintoshInput::MouseUp { vertical: 320..=341, horizontal: 358..=437 },
             ]), "{save_inputs:?}");
+            cx.update_window(window.into(), |_, window, cx| {
+                view.update(cx, |demo, cx| {
+                    demo.standard_file.as_mut().unwrap().confirming_replace = true;
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                assert_eq!(window.find("guest-standard-replace").role(), Some(gpui_kit::Role::AlertDialog));
+                window.click("guest-standard-replace-8-2-Replace", cx);
+            }).unwrap();
+            let confirmation_inputs: Vec<_> = receiver.try_iter().filter_map(|command| match command {
+                super::Command::Input(input) => Some(input),
+                super::Command::ActivateFile(..) => panic!("pointer click duplicated as semantic replacement"),
+                _ => None,
+            }).collect();
+            let layout = systemless::runner::StandardFileReplacementLayout::new((100, 100, 360, 460));
+            let presses: Vec<_> = confirmation_inputs.iter().filter(|input| matches!(input, MacintoshInput::MouseDown { .. } | MacintoshInput::MouseUp { .. })).collect();
+            assert_eq!(presses.len(), 2);
+            for input in presses {
+                let (MacintoshInput::MouseDown { vertical, horizontal } | MacintoshInput::MouseUp { vertical, horizontal }) = input else { unreachable!() };
+                assert!(*vertical >= layout.replace.0 && *vertical < layout.replace.2);
+                assert!(*horizontal >= layout.replace.1 && *horizontal < layout.replace.3);
+            }
+            cx.update(|cx| view.update(cx, |demo, cx| {
+                demo.standard_file.as_mut().unwrap().confirming_replace = false;
+                cx.notify();
+            }));
             for selected in [None, Some(0), None] {
                 cx.update_window(window.into(), |_, window, cx| {
                     view.update(cx, |demo, cx| {
