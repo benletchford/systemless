@@ -460,6 +460,7 @@ mod desktop {
         ActivateControl(u32, u64),
         ActivateDialog(u32, u64, i16, Option<(u32, u64)>),
         ActivateFile(u32, u64, super::activation::FileAction),
+        ActivateFileEntry(u32, u64, usize, systemless::runner::StandardFileEntrySnapshot),
         CancelWheel,
         Shutdown,
     }
@@ -636,6 +637,12 @@ mod desktop {
                         Ok(Command::ActivateDialog(id, generation, number, identity)) => {
                             if !pointer_down {
                                 activation = super::activation::ControlActivation::begin_dialog(&mut session, id, generation, number, identity);
+                            }
+                        }
+                        Ok(Command::ActivateFileEntry(id, generation, index, expected)) => {
+                            if !pointer_down {
+                                activation = super::activation::ControlActivation::begin_file_entry(
+                                    &mut session, id, generation, index, &expected);
                             }
                         }
                         Ok(Command::ActivateFile(id, generation, action) | Command::FileWheel(id, generation, action)) => {
@@ -2531,6 +2538,13 @@ mod desktop {
                                     .role(Role::ListBoxOption)
                                     .aria_label(entry.name.clone())
                                     .aria_selected(selected)
+                                    .when(panel.new_folder.is_none() && !panel.confirming_replace && self.host_active != Some(false), |row| {
+                                        let sender = self.commands.clone();
+                                        let (id, generation, expected) = (panel.guest_id, panel.generation, entry.clone());
+                                        row.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
+                                            let _ = sender.send(Command::ActivateFileEntry(id, generation, index, expected.clone()));
+                                        })
+                                    })
                                     .absolute()
                                     .top(guest_px(2. + row as f32 * f32::from(layout.row_height)))
                                     .left(guest_px(2.))
@@ -2724,6 +2738,13 @@ mod desktop {
                                     .role(Role::ListBoxOption)
                                     .aria_label(entry.name.clone())
                                     .aria_selected(selected)
+                                    .when(panel.new_folder.is_none() && !panel.confirming_replace && self.host_active != Some(false), |row| {
+                                        let sender = self.commands.clone();
+                                        let (id, generation, expected) = (panel.guest_id, panel.generation, entry.clone());
+                                        row.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
+                                            let _ = sender.send(Command::ActivateFileEntry(id, generation, index, expected.clone()));
+                                        })
+                                    })
                                     .absolute()
                                     .top(guest_px(2. + row as f32 * f32::from(layout.row_height)))
                                     .left(guest_px(2.))
@@ -12319,6 +12340,23 @@ mod desktop {
                 for _ in 0..visible_rows + 1 { click(&mut session, FileAction::ScrollUp); }
                 let up = session.runner().standard_file_snapshot().unwrap();
                 assert_eq!(if open { up.get_layout.as_ref().unwrap().first_visible } else { up.put_layout.as_ref().unwrap().first_visible }, first_visible);
+                let expected_entry = up.entries.as_ref().unwrap()[1].clone();
+                let mut stale_entry = expected_entry.clone(); stale_entry.name.push_str(" stale");
+                assert!(ControlActivation::begin_file_entry(&mut session, target.id, target.generation,
+                    1, &stale_entry).is_none());
+                let hidden_index = up.entries.as_ref().unwrap().len() - 1;
+                assert!(ControlActivation::begin_file_entry(&mut session, target.id, target.generation,
+                    hidden_index, &up.entries.as_ref().unwrap()[hidden_index]).is_none());
+                let activation = ControlActivation::begin_file_entry(&mut session, target.id,
+                    target.generation, 1, &expected_entry).unwrap();
+                step(&mut session);
+                let activation = activation.advance(&mut session).unwrap(); step(&mut session);
+                assert!(activation.advance(&mut session).is_none());
+                for _ in 0..5 { step(&mut session); }
+                let selected = session.runner().standard_file_snapshot().unwrap();
+                assert_eq!(selected.selected, Some(1)); assert_eq!(selected.entries, up.entries);
+                assert_eq!(selected.directory_id, up.directory_id);
+                eprintln!("PASS guarded file-entry guest selection powerpc={powerpc} depth={depth} open={open}");
                 if !open {
                     click(&mut session, FileAction::NewFolder);
                     let nested = session.runner().standard_file_snapshot().unwrap();

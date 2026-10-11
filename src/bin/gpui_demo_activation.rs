@@ -22,6 +22,7 @@ pub enum FileAction {
     DismissFolderError,
     ScrollUp,
     ScrollDown,
+    Entry(usize),
 }
 
 fn file_scroll_arrow(rect: (i16, i16, i16, i16), action: FileAction) -> (i16, i16, i16, i16) {
@@ -31,7 +32,25 @@ fn file_scroll_arrow(rect: (i16, i16, i16, i16), action: FileAction) -> (i16, i1
     }
 }
 
+fn file_entry_rect(list: (i16, i16, i16, i16), first: usize, visible: usize,
+    height: i16, index: usize, count: usize) -> Option<(i16, i16, i16, i16)> {
+    let row = index.checked_sub(first)?;
+    if row >= visible || index >= count || height <= 0 { return None; }
+    let top = i32::from(list.0).checked_add(2)?.checked_add(i32::try_from(row).ok()?.checked_mul(i32::from(height))?)?;
+    let bottom = top.checked_add(i32::from(height))?.min(i32::from(list.2));
+    if top >= bottom { return None; }
+    Some((i16::try_from(top).ok()?, list.1.saturating_add(2), i16::try_from(bottom).ok()?, list.3.saturating_sub(2)))
+}
+
 impl ControlActivation {
+    pub fn begin_file_entry(session: &mut MacintoshSession, id: u32, generation: u64,
+        index: usize, expected: &systemless::runner::StandardFileEntrySnapshot) -> Option<Self> {
+        let panel = session.runner().standard_file_snapshot()?;
+        if panel.guest_id != id || panel.generation != generation
+            || panel.entries.as_ref()?.get(index)? != expected { return None; }
+        Self::begin_file(session, id, generation, FileAction::Entry(index))
+    }
+
     pub fn begin_file(
         session: &mut MacintoshSession,
         id: u32,
@@ -77,6 +96,8 @@ impl ControlActivation {
                         FileAction::Cancel => layout.cancel,
                         FileAction::Desktop => layout.desktop,
                         FileAction::ScrollUp | FileAction::ScrollDown => file_scroll_arrow(layout.scroll, action),
+                        FileAction::Entry(index) => file_entry_rect(layout.list, layout.first_visible,
+                            layout.visible_rows, layout.row_height, index, panel.entries.as_ref()?.len())?,
                         _ => return None,
                     }
                 }
@@ -88,6 +109,8 @@ impl ControlActivation {
                         FileAction::Desktop => layout.desktop,
                         FileAction::NewFolder => layout.new_folder,
                         FileAction::ScrollUp | FileAction::ScrollDown => file_scroll_arrow(layout.scroll, action),
+                        FileAction::Entry(index) => file_entry_rect(layout.list, layout.first_visible,
+                            layout.visible_rows, layout.row_height, index, panel.entries.as_ref()?.len())?,
                         _ => return None,
                     }
                 }
