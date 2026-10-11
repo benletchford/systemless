@@ -55,6 +55,8 @@ fn init_app_seeds_classic_double_click_interval() {
         DEFAULT_DOUBLE_TIME_TICKS,
         "a zero DoubleTime makes every application-level double-click test fail"
     );
+    assert_eq!(runner.bus.read_long(addr::CARET_TIME), crate::memory::globals::DEFAULT_CARET_TIME_TICKS);
+
 }
 
 #[test]

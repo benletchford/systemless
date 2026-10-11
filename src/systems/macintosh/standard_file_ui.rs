@@ -268,8 +268,8 @@ impl StandardFileNewFolderState {
     }
 
     /// TEIdle, Text (1993), p. 2-84: only active insertion points blink,
-    /// no more frequently than the default 32 guest ticks.
-    pub(crate) fn idle(&mut self, tick: u32) -> bool {
+    /// using the guest CaretTime interval (Toolbox Essentials, p. 2-113).
+    pub(crate) fn idle(&mut self, tick: u32, caret_time: u32) -> bool {
         if self.error.is_some() || !self.edit.selection().is_empty() || self.is_selecting() {
             return false;
         }
@@ -277,7 +277,7 @@ impl StandardFileNewFolderState {
             self.reset_caret(tick);
             return false;
         };
-        if tick.wrapping_sub(previous) < 32 { return false; }
+        if tick.wrapping_sub(previous) < caret_time { return false; }
         self.caret_tick = Some(tick);
         self.caret_on = !self.caret_on;
         true
@@ -508,23 +508,41 @@ mod new_folder_tests {
         state.track_selection(3, false);
         state.reset_caret(100);
         assert!(state.caret_visible());
-        assert!(!state.idle(131));
-        assert!(state.idle(132));
+        assert!(!state.idle(131, 32));
+        assert!(state.idle(132, 32));
         assert!(!state.caret_visible());
-        assert!(!state.idle(132));
-        assert!(state.idle(164));
+        assert!(!state.idle(132, 32));
+        assert!(state.idle(164, 32));
         state.reset_caret(u32::MAX - 15);
-        assert!(!state.idle(15));
-        assert!(state.idle(16));
+        assert!(!state.idle(15, 32));
+        assert!(state.idle(16, 32));
         state.reset_caret(17);
         assert!(state.caret_visible());
         state.begin_selection(3, false);
-        assert!(!state.idle(100), "held tracking must not blink");
+        assert!(!state.idle(100, 32), "held tracking must not blink");
         state.track_selection(5, false);
-        assert!(!state.idle(200));
+        assert!(!state.idle(200, 32));
         assert!(!state.caret_visible());
         state.error = Some(-48);
-        assert!(!state.idle(300));
+        assert!(!state.idle(300, 32));
+    }
+
+    #[test]
+    fn new_folder_caret_observes_changed_guest_interval() {
+        let mut state = StandardFileNewFolderState::default();
+        state.begin_selection(3, false);
+        state.track_selection(3, false);
+        state.reset_caret(100);
+        assert!(!state.idle(163, 64));
+        assert!(state.caret_visible());
+        assert!(state.idle(164, 64));
+        assert!(!state.caret_visible());
+        assert!(!state.idle(168, 5));
+        assert!(state.idle(169, 5));
+        assert!(state.caret_visible());
+        state.reset_caret(u32::MAX - 2);
+        assert!(!state.idle(1, 5));
+        assert!(state.idle(2, 5));
     }
 
     #[test]

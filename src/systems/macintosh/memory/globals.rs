@@ -17,6 +17,8 @@ pub(crate) const DEFAULT_SYS_EVT_MASK: u16 = 0xFFEF;
 /// Inside Macintosh Volume I, I-246 documents the initial delay and repeat rate.
 pub(crate) const DEFAULT_AUTO_KEY_THRESHOLD_TICKS: u16 = 16;
 pub(crate) const DEFAULT_AUTO_KEY_RATE_TICKS: u16 = 4;
+/// Initial caret blink interval. Inside Macintosh: Text (1993), p. 2-84.
+pub(crate) const DEFAULT_CARET_TIME_TICKS: u32 = 32;
 
 /// Unit-table size for Systemless's Mac OS 8.1 machine profile. Inside
 /// Macintosh Volume V (1986), p. V-215 documents a 64-entry table that grows
