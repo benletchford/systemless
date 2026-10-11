@@ -3271,7 +3271,7 @@ mod desktop {
                 }
             }
             // System-owned notification alerts are painted by this same Demo
-            // in live windows and headless captures. Acquisition remains explicit.
+            // in live windows and headless captures after worker acquisition.
             if let Some(plan) = self.notification_alert.as_ref().and_then(|notice|
                 super::notification::AlertPlan::build(notice,
                     super::frames::Rect::from((0, 0, self.height as i16, self.width as i16)))) {
@@ -3280,12 +3280,10 @@ mod desktop {
                         .left(guest_px((rect.left - plan.bounds.left) as f32))
                         .w(guest_px(rect.width() as f32)).h(guest_px(rect.height() as f32))
                 };
-                let sender = self.commands.clone();
                 let expected = plan.notice.clone();
-                let accessibility_sender = self.commands.clone();
                 let accessibility_notice = plan.notice.clone();
-                let pointer_focus = self.focus.clone();
-                let accessibility_focus = self.focus.clone();
+                let accessibility_view = cx.entity().downgrade();
+                let active = self.host_active != Some(false);
                 let overlay = div().id("guest-notification-alert").test_support()
                     .role(gpui_kit::Role::AlertDialog).aria_label("Notification")
                     .absolute().top(guest_px(plan.bounds.top as f32))
@@ -3298,13 +3296,19 @@ mod desktop {
                             cx.theme().foreground)))
                     .child(at(plan.button).child(super::choices::guest_button(
                         "guest-notification-ok".into(), "OK".into(),
-                        true, true, false, true, scene_scale, cx).w_full().h_full()
-                        .on_click(move |_, window, cx| {
-                            pointer_focus.focus(window, cx);
-                            let _ = sender.send(Command::DismissNotificationAlert(expected.clone()));
-                        }).on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, window, cx| {
-                            accessibility_focus.focus(window, cx);
-                            let _ = accessibility_sender.send(Command::DismissNotificationAlert(accessibility_notice.clone()));
+                        true, active, false, active, scene_scale, cx).w_full().h_full()
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if this.host_active == Some(false)
+                                || this.notification_alert.as_ref() != Some(&expected) { return; }
+                            this.focus.focus(window, cx);
+                            let _ = this.commands.send(Command::DismissNotificationAlert(expected.clone()));
+                        })).on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, window, cx| {
+                            let _ = accessibility_view.update(cx, |this, cx| {
+                            if this.host_active == Some(false)
+                                || this.notification_alert.as_ref() != Some(&accessibility_notice) { return; }
+                            this.focus.focus(window, cx);
+                            let _ = this.commands.send(Command::DismissNotificationAlert(accessibility_notice.clone()));
+                            });
                         })));
                 screen = screen.child(super::a11y::AccessibleState::new(overlay, false).modal(true));
             }
@@ -3395,7 +3399,8 @@ mod desktop {
                 }))
                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                     if let Some(notice) = &this.notification_alert {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "return") {
+                        if this.host_active != Some(false)
+                            && matches!(event.keystroke.key.as_str(), "enter" | "return") {
                             let _ = this.commands.send(Command::DismissNotificationAlert(notice.clone()));
                         }
                         cx.stop_propagation(); return;
@@ -7624,6 +7629,7 @@ mod desktop {
                         capture_windows: None,
                         capture_composition_surface: None,
                         capture_application: None,
+                        capture_application_notification: false,
                         capture_guest_cursor: None,
                         capture_application_key: None,
                         capture_application_character: 0,
@@ -16575,6 +16581,7 @@ mod desktop {
                 let displaced_focus = cx.focus_handle();
                 displaced_focus.focus(window, cx);
                 assert!(!view.read(cx).focus.is_focused(window));
+                view.update(cx, |demo, _| demo.host_active = Some(true));
                 window.click("guest-notification-ok", cx);
                 assert!(view.read(cx).focus.is_focused(window),
                     "acknowledgment must return focus to the guest root");
@@ -16586,6 +16593,16 @@ mod desktop {
                 "guest inputs: {:?}", commands.iter().filter_map(|command| match command {
                     super::Command::Input(input) => Some(format!("{input:?}")), _ => None,
                 }).collect::<Vec<_>>());
+            cx.update_window(window.into(), |_, window, cx| {
+                view.update(cx, |demo, cx| { demo.host_active = Some(false); cx.notify(); });
+                window.render_frame(cx);
+                window.click("guest-notification-ok", cx);
+                window.press("enter", cx);
+            }).unwrap();
+            assert!(!receiver.try_iter().any(|command| matches!(command,
+                super::Command::DismissNotificationAlert(..) | super::Command::Input(..))),
+                "inactive alert must retain ownership without accepting input");
+            view.update(cx, |demo, _| demo.host_active = Some(true));
             cx.update_window(window.into(), |_, window, cx| {
                 window.press("a", cx);
                 window.press("shift-a", cx);
