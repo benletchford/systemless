@@ -6104,30 +6104,34 @@ pub(crate) fn dispatcher_target_for_import(
         ("StdCLib", "vsprintf") => {
             PpcImportDispatcherTarget::StdCCompatibility(PpcStdCCompatibilityOperation::Vsprintf)
         }
-        ("ObjectSupportLib", "AEObjectInit") => PpcImportDispatcherTarget::ObjectSupportInit,
-        ("ObjectSupportLib", "AEInstallObjectAccessor") => {
+        ("ObjectSupportLib" | "InterfaceLib", "AEObjectInit") => {
+            PpcImportDispatcherTarget::ObjectSupportInit
+        }
+        ("ObjectSupportLib" | "InterfaceLib", "AEInstallObjectAccessor") => {
             PpcImportDispatcherTarget::ObjectSupportInstallAccessor
         }
-        ("ObjectSupportLib", "AEGetObjectAccessor") => {
+        ("ObjectSupportLib" | "InterfaceLib", "AEGetObjectAccessor") => {
             PpcImportDispatcherTarget::ObjectSupportGetAccessor
         }
-        ("ObjectSupportLib", "AECallObjectAccessor") => {
+        ("ObjectSupportLib" | "InterfaceLib", "AECallObjectAccessor") => {
             PpcImportDispatcherTarget::ObjectSupportCallAccessor
         }
-        ("ObjectSupportLib", "AEDisposeToken") => {
+        ("ObjectSupportLib" | "InterfaceLib", "AEDisposeToken") => {
             PpcImportDispatcherTarget::ObjectSupportDisposeToken
         }
-        ("ObjectSupportLib", "AERemoveObjectAccessor") => {
+        ("ObjectSupportLib" | "InterfaceLib", "AERemoveObjectAccessor") => {
             PpcImportDispatcherTarget::ObjectSupportRemoveAccessor
         }
-        ("ObjectSupportLib", "AESetObjectCallbacks") => {
+        ("ObjectSupportLib" | "InterfaceLib", "AESetObjectCallbacks") => {
             PpcImportDispatcherTarget::ObjectSupportSetCallbacks
         }
-        ("ObjectSupportLib", "AEResolve") => PpcImportDispatcherTarget::ObjectSupportResolve,
-        ("ObjectSupportLib", "CreateObjSpecifier") => {
+        ("ObjectSupportLib" | "InterfaceLib", "AEResolve") => {
+            PpcImportDispatcherTarget::ObjectSupportResolve
+        }
+        ("ObjectSupportLib" | "InterfaceLib", "CreateObjSpecifier") => {
             PpcImportDispatcherTarget::ObjectSupportCompatibility
         }
-        ("ObjectSupportLib", "CreateOffsetDescriptor") => {
+        ("ObjectSupportLib" | "InterfaceLib", "CreateOffsetDescriptor") => {
             PpcImportDispatcherTarget::ObjectSupportCreateOffsetDescriptor
         }
         ("OpenGLLibrary", "aglChoosePixelFormat") => {
