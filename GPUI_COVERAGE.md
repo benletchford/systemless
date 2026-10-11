@@ -3974,3 +3974,18 @@ and clipping. Invalid nonpositive/nonfinite scales and nonfinite origins
 decline. The production build check passes, and the four-mode snapshot test
 constructs the canvas and checks transform rejection. This is not yet rendered
 whole-field compositor evidence or enabled production styled ownership.
+
+The styled capture preview now consumes the qualified whole-field plan rather
+than merging independent line selection recipes. Qualification occurs against
+the original guest frame before its field is erased; the canvas paints the
+resolved background and CPU-ordered ink together. The existing `d7c3e82f`
+matrix job remains on its original unchanged executable and does not qualify
+this newer canvas. New rendered captures are required after that job finishes.
+
+`--capture-styled-text-edit-multiline OUTPUT` exercises the whole-field preview
+with Return inserted at guest byte 26 and selection dragged across both lines.
+It requires two intact guest lines and overlapping PPC highlight boxes, then
+qualifies the native field before composition. Its sidecar marks `multiline`.
+The setup follows the passing four-mode native multiline regression. This new
+command has not yet been rendered or archived; the running older matrix is
+independent and must finish before rebuilding its pinned example executable.

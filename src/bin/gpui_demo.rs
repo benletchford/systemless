@@ -213,6 +213,9 @@ mod desktop {
         capture_styled_text_edit_ink: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_styled_text_edit_multiline: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_styled_text_edit_caret: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true, default_value_t = 26)]
@@ -4195,7 +4198,7 @@ mod desktop {
     #[cfg(feature = "gpui-demo-test")]
     fn capture_styled_text_edit_ink(
         game: &std::path::Path, output: &std::path::Path,
-        prefer_powerpc: bool, depth: Option<u16>, scale: f32, selected: bool, caret_offset: Option<usize>, activation: &[bool], caret_state: &str,
+        prefer_powerpc: bool, depth: Option<u16>, scale: f32, selected: bool, caret_offset: Option<usize>, activation: &[bool], caret_state: &str, multiline: bool,
     ) {
         use gpui_kit::{platform, HeadlessAppContext};
         let caret = caret_offset.is_some();
@@ -4208,6 +4211,7 @@ mod desktop {
             image: Arc<RenderImage>,
             record: systemless::runner::TextEditSnapshot,
             scale: f32,
+            plan: super::text::StyledTextEditPaintPlan,
         }
         impl Render for Preview {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -4216,21 +4220,12 @@ mod desktop {
                 let dest = record.global_dest_rect.unwrap();
                 let origin = ((dest.1 - record.dest_rect.1) as f32 * self.scale,
                     (dest.0 - record.dest_rect.0) as f32 * self.scale);
-                let mut ink = div().absolute().size_full();
-                for index in 0..record.line_count {
-                    let line = super::text::StyledTextEditLine::from_guest(record, index).unwrap();
-                    if line.selection.is_some() {
-                        let background = systemless::runner::TextEditInkSnapshot { pixel: 0, rgb: [255; 3], inverted_rgb: [0; 3] };
-                        ink = ink.child(super::text::classic_styled_text_edit_selection(line, &background, self.scale, origin).unwrap());
-                    } else if let Some((rect, caret_ink)) = styled_caret_paint(record, index) {
-                        ink = ink.child(super::text::classic_styled_text_edit_solid_caret(line, Some(rect), &caret_ink, self.scale, origin).unwrap());
-                    } else {
-                        ink = ink.child(super::text::classic_styled_text_edit_ink(line, self.scale, origin).unwrap());
-                    }
-                }
+                let ink = super::text::classic_styled_text_edit_field(
+                    self.plan.clone(), self.scale, origin,
+                ).expect("qualified whole-field canvas transform");
                 div().relative().size_full()
                     .child(img(self.image.clone()).absolute().size_full())
-                    .child(div().absolute().overflow_hidden().bg(gpui_kit::white())
+                    .child(div().absolute().overflow_hidden()
                         .left(px(f32::from(view.1) * self.scale)).top(px(f32::from(view.0) * self.scale))
                         .w(px(f32::from(view.3 - view.1) * self.scale)).h(px(f32::from(view.2 - view.0) * self.scale))
                         .child(ink))
@@ -4254,7 +4249,53 @@ mod desktop {
                     .is_some_and(|runs| runs.iter().any(|run| run.start == 26)))
         }).expect("settled showcase styled field");
         assert!(!record.active, "styled fixture starts inactive");
-        if selected || caret {
+        if multiline {
+            let before = record.clone();
+            let dest = before.global_dest_rect.unwrap();
+            let geometry = before.guest_styled_line_geometry(0).unwrap().0;
+            let origin = (dest.0 - before.dest_rect.0, dest.1 - before.dest_rect.1);
+            let horizontal = origin.1 + geometry.left + before.guest_styled_range_width(0..26).unwrap();
+            let vertical = origin.0 + geometry.top + geometry.ascent;
+            for input in [MacintoshInput::MouseDown { vertical, horizontal }, MacintoshInput::MouseUp { vertical, horizontal }] {
+                session.deliver_input(input);
+                for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
+            }
+            session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x24, character: b'\r' });
+            session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x24, character: b'\r' });
+            let split = (0..300).find_map(|_| {
+                session.runner_mut().run_steps(10_000, None);
+                let settled = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
+                session.runner_mut().text_edit_snapshot().records.into_iter().find(|record|
+                    settled && record.guest_id == before.guest_id && record.line_count == 2 && record.drawing_intact)
+            }).expect("guest Return creates two mixed-metric styled lines");
+            assert_eq!(split.text[26], b'\r');
+            let first = split.guest_styled_line_geometry(0).unwrap().0;
+            let second = split.guest_styled_line_geometry(1).unwrap().0;
+            let start = (origin.0 + first.top + first.ascent, origin.1 + first.left);
+            let line_start = split.line_starts.as_ref().unwrap()[1];
+            let end = (origin.0 + second.top + second.ascent,
+                origin.1 + second.left + split.guest_styled_range_width(line_start..split.text.len()).unwrap());
+            for input in [MacintoshInput::MouseDown { vertical: start.0, horizontal: start.1 },
+                MacintoshInput::MouseMove { vertical: end.0, horizontal: end.1 },
+                MacintoshInput::MouseUp { vertical: end.0, horizontal: end.1 }] {
+                session.deliver_input(input);
+                for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
+            }
+            let selected = (0..300).find_map(|_| {
+                session.runner_mut().run_steps(10_000, None);
+                let settled = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
+                session.runner_mut().text_edit_snapshot().records.into_iter().find(|next|
+                    settled && next.guest_id == split.guest_id && next.active && next.drawing_intact
+                        && next.selection == (0, split.text.len()))
+            }).expect("guest drag selects both styled lines");
+            if prefer_powerpc {
+                let first = selected.guest_styled_selection_rect(0).unwrap().unwrap();
+                let second = selected.guest_styled_selection_rect(1).unwrap().unwrap();
+                assert!(first.0 < second.2 && second.0 < first.2, "overlapping PPC highlights");
+            }
+            record = selected;
+        }
+        if !multiline && (selected || caret) {
             assert!(insertion <= record.text.len(), "caret offset is a guest byte boundary");
             let before = record.clone();
             let dest = record.global_dest_rect.unwrap();
@@ -4313,7 +4354,7 @@ mod desktop {
         assert_eq!(record.generation, original.generation);
         let evidence = serde_json::json!({
             "caret_state": if caret { caret_state } else { "not-requested" },
-            "insertion_offset": caret_offset, "selection": record.selection,
+            "insertion_offset": caret_offset, "multiline": multiline, "selection": record.selection,
             "active": record.active, "caret_visible": record.caret_visible,
             "drawing_intact": record.drawing_intact, "generation": record.generation,
             "guest_tick": session.runner().guest_tick(), "view": record.global_view_rect,
@@ -4323,22 +4364,16 @@ mod desktop {
         image::save_buffer(output.with_extension("guest.png"), &frame.pixels, frame.width, frame.height,
             image::ColorType::Rgba8).unwrap();
         let view = record.global_view_rect.unwrap();
-        let dest = record.global_dest_rect.unwrap();
-        let origin = (dest.0 - record.dest_rect.0, dest.1 - record.dest_rect.1);
-        let mut native_ink = std::collections::BTreeMap::new();
-        for index in 0..record.line_count {
-            let line = super::text::StyledTextEditLine::from_guest(&record, index).unwrap();
-            native_ink.extend(if let Some((rect, ink)) = styled_caret_paint(&record, index) {
-                line.pixels_with_solid_caret(Some(rect), &ink).unwrap()
-            } else {
-                line.pixels_with_selection(&systemless::runner::TextEditInkSnapshot {
-                    pixel: 0, rgb: [255; 3], inverted_rgb: [0; 3] }).unwrap()
-            });
-        }
+        let background = systemless::runner::TextEditInkSnapshot {
+            pixel: if record.paint.as_ref().unwrap().depth == 16 { 0x7fff } else { 0 },
+            rgb: [255; 3], inverted_rgb: [0; 3],
+        };
+        let caret_paint = (0..record.line_count).find_map(|index| styled_caret_paint(&record, index));
+        let plan = super::text::StyledTextEditPaintPlan::qualify(
+            &record, &background, caret_paint, &frame.pixels, frame.width, frame.height,
+        ).expect("whole-field native styled recipe, background and caret");
         for y in view.0..view.2 { for x in view.1..view.3 {
             let at = ((y as u32 * frame.width + x as u32) * 4) as usize;
-            let expected = native_ink.get(&(x - origin.1, y - origin.0)).copied().unwrap_or([255; 3]);
-            assert_eq!(&frame.pixels[at..at + 3], expected.as_slice(), "native styled pixel ({x},{y})");
             frame.pixels[at..at + 4].copy_from_slice(&[255; 4]);
         } }
         let mut visual = HeadlessAppContext::with_platform(platform::current_platform(true).text_system(),
@@ -4346,7 +4381,7 @@ mod desktop {
         visual.update(gpui_kit::init);
         let window = visual.open_window(size(px(frame.width as f32 * scale), px(frame.height as f32 * scale)), |_, cx| {
             cx.new(|_| Preview { image: Arc::new(RenderImage::new(vec![image::Frame::new(
-                image::RgbaImage::from_raw(frame.width, frame.height, gpui_pixels(frame.pixels)).unwrap())])), record, scale })
+                image::RgbaImage::from_raw(frame.width, frame.height, gpui_pixels(frame.pixels)).unwrap())])), record, scale, plan })
         }).unwrap();
         visual.run_until_parked();
         visual.capture_screenshot(window.into()).unwrap().save(output).unwrap();
@@ -4726,33 +4761,39 @@ mod desktop {
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_styled_text_edit_multiline.as_ref() {
+            capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[], "visible", true);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_selected_suspended.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[false], "visible");
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[false], "visible", false);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_selected_resumed.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[false, true], "visible");
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[false, true], "visible", false);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_selected.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[], "visible");
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[], "visible", false);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_caret.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), false, Some(args.capture_styled_caret_offset), &[], &args.capture_styled_caret_state);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), false, Some(args.capture_styled_caret_offset), &[], &args.capture_styled_caret_state, false);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_ink.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), false, None, &[], "visible");
+                args.screen_depth, args.capture_scale.unwrap_or(1.), false, None, &[], "visible", false);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -5426,6 +5467,7 @@ mod desktop {
                         capture_scale: None,
                         capture_text_edit: None,
                         capture_styled_text_edit_ink: None,
+                        capture_styled_text_edit_multiline: None,
                         capture_styled_text_edit_caret: None,
                         capture_styled_caret_offset: 26,
                         capture_styled_caret_state: "visible".into(),
