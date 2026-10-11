@@ -1,0 +1,1325 @@
+{
+  "schema_version": 1,
+  "source_commit": "6112e194863e5855598cf087b8264821ef52418a",
+  "capture_binary_sha256": "01492df5d8ff33607c6d1adf6a218347955cde4998f3f129141dc6aca9776f29",
+  "fixture": "tests/toolbox-showcase/toolbox-showcase.sit",
+  "fixture_sha256": "17e3cd4dd1a2510627b55487db166773759319f93454bb9141ad8a80bc40d4b8",
+  "platform": "macOS ARM64; shared GPUI Metal headless compositor",
+  "states": [
+    "selected",
+    "suspended",
+    "resumed"
+  ],
+  "field_bounds": [
+    126,
+    74,
+    164,
+    561
+  ],
+  "paint_policy": "Classic selection inversion; zero-spacing srcOr; white erased fixture background",
+  "scope": "Exact styled field raster and fixture drag/session activation assertions; no production scene ownership, caret, general background/theme policies or native host-window observer qualification",
+  "archive_encoding": "Lossless PNG recompression; RGBA equality checked and original capture byte hashes retained",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "66b89727eafcf0fa30b85eb774dea50249684f3e94e7f3801e4a7fb95fe6d77a",
+    "src/bin/gpui_demo_text.rs": "391ad9927a7a58bca7cc2043f328ee4a090409bebff6c37e360bce7d1628adee",
+    "src/systems/macintosh/text_edit.rs": "bf988d31db27db28abe2ab57fe5021a1c23d715eb5cafcd98533210947b51538"
+  },
+  "cases": [
+    {
+      "mode": "mono",
+      "state": "selected",
+      "scale": 0.75,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "mono-selected-0.75.png",
+      "guest": "mono-selected-0.75.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "0.75",
+        "--capture-styled-text-edit-selected",
+        "/tmp/systemless-styled-selection-review/mono-selected-0.75.png"
+      ],
+      "rendered_original_capture_sha256": "9551aeb762bde12ff69fa0633e5728c81a7b49d930d13976242ce96cb6c6f4a7",
+      "rendered_sha256": "89ddd94cffba3f868830930492af5def246715f5e37315e752a2fd2875d962db",
+      "guest_original_capture_sha256": "993c1a4c24ab9bd82e727cd9edd52cb47d12c7dd4978419a6eaeedea6da897bb",
+      "guest_sha256": "1cc47d4db79a3bba3365d312af06801f165db8bfcca93693805617bd04788a7e"
+    },
+    {
+      "mode": "mono",
+      "state": "selected",
+      "scale": 1.0,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "mono-selected-1.png",
+      "guest": "mono-selected-1.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "1",
+        "--capture-styled-text-edit-selected",
+        "/tmp/systemless-styled-selection-review/mono-selected-1.png"
+      ],
+      "rendered_original_capture_sha256": "a02fcaa4fd514e0e376cd54a968152abfc984105c3c58e2760b7dd4472f3d3af",
+      "rendered_sha256": "5ff646d05b3bc08e1fae2cee42096ee07add10465f170e699e75a17f942a27ba",
+      "guest_original_capture_sha256": "993c1a4c24ab9bd82e727cd9edd52cb47d12c7dd4978419a6eaeedea6da897bb",
+      "guest_sha256": "1cc47d4db79a3bba3365d312af06801f165db8bfcca93693805617bd04788a7e"
+    },
+    {
+      "mode": "mono",
+      "state": "selected",
+      "scale": 1.5,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "mono-selected-1.5.png",
+      "guest": "mono-selected-1.5.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "1.5",
+        "--capture-styled-text-edit-selected",
+        "/tmp/systemless-styled-selection-review/mono-selected-1.5.png"
+      ],
+      "rendered_original_capture_sha256": "5fa071c2121b8548344049032d014a114029776dfef231549cecd128dfb60713",
+      "rendered_sha256": "e9920fb89a28c8cca01f596b6e8a649837b562648113cf5c50132e560540bb66",
+      "guest_original_capture_sha256": "993c1a4c24ab9bd82e727cd9edd52cb47d12c7dd4978419a6eaeedea6da897bb",
+      "guest_sha256": "1cc47d4db79a3bba3365d312af06801f165db8bfcca93693805617bd04788a7e"
+    },
+    {
+      "mode": "mono",
+      "state": "selected",
+      "scale": 2.0,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "mono-selected-2.png",
+      "guest": "mono-selected-2.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "2",
+        "--capture-styled-text-edit-selected",
+        "/tmp/systemless-styled-selection-review/mono-selected-2.png"
+      ],
+      "rendered_original_capture_sha256": "e1aea430b0ce12ade309cc59bbfa6a6c04130d6b38f1cd9e08ee585c6e92e411",
+      "rendered_sha256": "392f9aaa1ea6bad67775b5e1190f50d63e503f1a9ef215dcbec5d740aa83972d",
+      "guest_original_capture_sha256": "993c1a4c24ab9bd82e727cd9edd52cb47d12c7dd4978419a6eaeedea6da897bb",
+      "guest_sha256": "1cc47d4db79a3bba3365d312af06801f165db8bfcca93693805617bd04788a7e"
+    },
+    {
+      "mode": "mono",
+      "state": "suspended",
+      "scale": 0.75,
+      "device_scale": 2,
+      "active": false,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "mono-suspended-0.75.png",
+      "guest": "mono-suspended-0.75.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "0.75",
+        "--capture-styled-text-edit-selected-suspended",
+        "/tmp/systemless-styled-selection-review/mono-suspended-0.75.png"
+      ],
+      "rendered_original_capture_sha256": "f2a4533203fee6fce7d012cb2e094891686151e4676b85513be87c43b421d298",
+      "rendered_sha256": "09962b5d7468e49f7e15c2bb124e95749d1ff29e2e06bd2409639be281b419ce",
+      "guest_original_capture_sha256": "32eec5b4bd9b389fb0086ab407053079f41cd9aca05c14f26898fb62642816c3",
+      "guest_sha256": "b545bd9fe23f1d5236f3d1e4d8719d6e419b7379b6d55eae43a5fbdb288c8268"
+    },
+    {
+      "mode": "mono",
+      "state": "suspended",
+      "scale": 1.0,
+      "device_scale": 2,
+      "active": false,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "mono-suspended-1.png",
+      "guest": "mono-suspended-1.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "1",
+        "--capture-styled-text-edit-selected-suspended",
+        "/tmp/systemless-styled-selection-review/mono-suspended-1.png"
+      ],
+      "rendered_original_capture_sha256": "dd2b26ffb191d69d01638e0abf72c2a80840a74b0b6ca5cd4f580bbb5de39266",
+      "rendered_sha256": "57d7ae4ad8020c42bc45b5f7429ad120f14ab24b24f82d849cba314ec09e1075",
+      "guest_original_capture_sha256": "32eec5b4bd9b389fb0086ab407053079f41cd9aca05c14f26898fb62642816c3",
+      "guest_sha256": "b545bd9fe23f1d5236f3d1e4d8719d6e419b7379b6d55eae43a5fbdb288c8268"
+    },
+    {
+      "mode": "mono",
+      "state": "suspended",
+      "scale": 1.5,
+      "device_scale": 2,
+      "active": false,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "mono-suspended-1.5.png",
+      "guest": "mono-suspended-1.5.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "1.5",
+        "--capture-styled-text-edit-selected-suspended",
+        "/tmp/systemless-styled-selection-review/mono-suspended-1.5.png"
+      ],
+      "rendered_original_capture_sha256": "2b811f4e7765d08d7c0471ddd202c37274d20a8c115896925eaef628e70afa10",
+      "rendered_sha256": "f1738ec7688db9019457ed6e3e9741ec50bccf2d7bcc8fa7c3f9a5b207db144b",
+      "guest_original_capture_sha256": "32eec5b4bd9b389fb0086ab407053079f41cd9aca05c14f26898fb62642816c3",
+      "guest_sha256": "b545bd9fe23f1d5236f3d1e4d8719d6e419b7379b6d55eae43a5fbdb288c8268"
+    },
+    {
+      "mode": "mono",
+      "state": "suspended",
+      "scale": 2.0,
+      "device_scale": 2,
+      "active": false,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "mono-suspended-2.png",
+      "guest": "mono-suspended-2.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "2",
+        "--capture-styled-text-edit-selected-suspended",
+        "/tmp/systemless-styled-selection-review/mono-suspended-2.png"
+      ],
+      "rendered_original_capture_sha256": "28f715425d80cceca16aa5d64124edb0591bd0cae8c7526a0e9136ffa83cd8a9",
+      "rendered_sha256": "0fac904b00ff7052b80cc74daaf8f9535a39c24d5026cca16c5496bdae71839e",
+      "guest_original_capture_sha256": "32eec5b4bd9b389fb0086ab407053079f41cd9aca05c14f26898fb62642816c3",
+      "guest_sha256": "b545bd9fe23f1d5236f3d1e4d8719d6e419b7379b6d55eae43a5fbdb288c8268"
+    },
+    {
+      "mode": "mono",
+      "state": "resumed",
+      "scale": 0.75,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "mono-resumed-0.75.png",
+      "guest": "mono-resumed-0.75.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "0.75",
+        "--capture-styled-text-edit-selected-resumed",
+        "/tmp/systemless-styled-selection-review/mono-resumed-0.75.png"
+      ],
+      "rendered_original_capture_sha256": "9551aeb762bde12ff69fa0633e5728c81a7b49d930d13976242ce96cb6c6f4a7",
+      "rendered_sha256": "89ddd94cffba3f868830930492af5def246715f5e37315e752a2fd2875d962db",
+      "guest_original_capture_sha256": "993c1a4c24ab9bd82e727cd9edd52cb47d12c7dd4978419a6eaeedea6da897bb",
+      "guest_sha256": "1cc47d4db79a3bba3365d312af06801f165db8bfcca93693805617bd04788a7e"
+    },
+    {
+      "mode": "mono",
+      "state": "resumed",
+      "scale": 1.0,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "mono-resumed-1.png",
+      "guest": "mono-resumed-1.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "1",
+        "--capture-styled-text-edit-selected-resumed",
+        "/tmp/systemless-styled-selection-review/mono-resumed-1.png"
+      ],
+      "rendered_original_capture_sha256": "a02fcaa4fd514e0e376cd54a968152abfc984105c3c58e2760b7dd4472f3d3af",
+      "rendered_sha256": "5ff646d05b3bc08e1fae2cee42096ee07add10465f170e699e75a17f942a27ba",
+      "guest_original_capture_sha256": "993c1a4c24ab9bd82e727cd9edd52cb47d12c7dd4978419a6eaeedea6da897bb",
+      "guest_sha256": "1cc47d4db79a3bba3365d312af06801f165db8bfcca93693805617bd04788a7e"
+    },
+    {
+      "mode": "mono",
+      "state": "resumed",
+      "scale": 1.5,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "mono-resumed-1.5.png",
+      "guest": "mono-resumed-1.5.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "1.5",
+        "--capture-styled-text-edit-selected-resumed",
+        "/tmp/systemless-styled-selection-review/mono-resumed-1.5.png"
+      ],
+      "rendered_original_capture_sha256": "5fa071c2121b8548344049032d014a114029776dfef231549cecd128dfb60713",
+      "rendered_sha256": "e9920fb89a28c8cca01f596b6e8a649837b562648113cf5c50132e560540bb66",
+      "guest_original_capture_sha256": "993c1a4c24ab9bd82e727cd9edd52cb47d12c7dd4978419a6eaeedea6da897bb",
+      "guest_sha256": "1cc47d4db79a3bba3365d312af06801f165db8bfcca93693805617bd04788a7e"
+    },
+    {
+      "mode": "mono",
+      "state": "resumed",
+      "scale": 2.0,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "mono-resumed-2.png",
+      "guest": "mono-resumed-2.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "2",
+        "--capture-styled-text-edit-selected-resumed",
+        "/tmp/systemless-styled-selection-review/mono-resumed-2.png"
+      ],
+      "rendered_original_capture_sha256": "e1aea430b0ce12ade309cc59bbfa6a6c04130d6b38f1cd9e08ee585c6e92e411",
+      "rendered_sha256": "392f9aaa1ea6bad67775b5e1190f50d63e503f1a9ef215dcbec5d740aa83972d",
+      "guest_original_capture_sha256": "993c1a4c24ab9bd82e727cd9edd52cb47d12c7dd4978419a6eaeedea6da897bb",
+      "guest_sha256": "1cc47d4db79a3bba3365d312af06801f165db8bfcca93693805617bd04788a7e"
+    },
+    {
+      "mode": "colour",
+      "state": "selected",
+      "scale": 0.75,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "colour-selected-0.75.png",
+      "guest": "colour-selected-0.75.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "0.75",
+        "--capture-styled-text-edit-selected",
+        "/tmp/systemless-styled-selection-review/colour-selected-0.75.png"
+      ],
+      "rendered_original_capture_sha256": "8951a32c0ae9f1fa6719c8fcbaf57f8405adbf00c7f30525abf10c8b4f986098",
+      "rendered_sha256": "697863d77737ef145ebaacbc997f18f6b4421b8f74b79873bd85a94a078ee6e4",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    },
+    {
+      "mode": "colour",
+      "state": "selected",
+      "scale": 1.0,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "colour-selected-1.png",
+      "guest": "colour-selected-1.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1",
+        "--capture-styled-text-edit-selected",
+        "/tmp/systemless-styled-selection-review/colour-selected-1.png"
+      ],
+      "rendered_original_capture_sha256": "9be44662fa80c7aba556b49d19dc41281ec99141cec86daf4eab989516c3a476",
+      "rendered_sha256": "b8c01e28d3aba58dfe9ffdb36346d674606bfdc63a390b6584af119032653171",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    },
+    {
+      "mode": "colour",
+      "state": "selected",
+      "scale": 1.5,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "colour-selected-1.5.png",
+      "guest": "colour-selected-1.5.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1.5",
+        "--capture-styled-text-edit-selected",
+        "/tmp/systemless-styled-selection-review/colour-selected-1.5.png"
+      ],
+      "rendered_original_capture_sha256": "af4382103e1a4e93556ffc2d91ea5fcc4931e435895bd27501f8b783b95b2277",
+      "rendered_sha256": "b63ed4bc671af21e69514f8515a79d24050b0590f24c57820535cadfb9a4e873",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    },
+    {
+      "mode": "colour",
+      "state": "selected",
+      "scale": 2.0,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "colour-selected-2.png",
+      "guest": "colour-selected-2.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "2",
+        "--capture-styled-text-edit-selected",
+        "/tmp/systemless-styled-selection-review/colour-selected-2.png"
+      ],
+      "rendered_original_capture_sha256": "0550f5a94a8e1ee8154db2dccdc725831e9965a9b5a3c3533dd8905af9578cf4",
+      "rendered_sha256": "e639520417a787a663f0d4b418c19680a8fa16b221e22600c7a6cc6ef84b0566",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    },
+    {
+      "mode": "colour",
+      "state": "suspended",
+      "scale": 0.75,
+      "device_scale": 2,
+      "active": false,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "colour-suspended-0.75.png",
+      "guest": "colour-suspended-0.75.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "0.75",
+        "--capture-styled-text-edit-selected-suspended",
+        "/tmp/systemless-styled-selection-review/colour-suspended-0.75.png"
+      ],
+      "rendered_original_capture_sha256": "31234520330ce7cd02d1944388a588e790bbc49abe821d0edfa693bbfa9b415d",
+      "rendered_sha256": "24ec8e97f02ea8c33bd6d1b7c1ec8b49c77ed10c79fce6cd1c24d490da55395c",
+      "guest_original_capture_sha256": "feba0d166004c13b75f004ed5e979a98dcdca84706269b5c341d02d09a76a6db",
+      "guest_sha256": "d2455c6757fca38ea483fbe40514df19059468abb6c3c34e4661b09627d51a13"
+    },
+    {
+      "mode": "colour",
+      "state": "suspended",
+      "scale": 1.0,
+      "device_scale": 2,
+      "active": false,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "colour-suspended-1.png",
+      "guest": "colour-suspended-1.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1",
+        "--capture-styled-text-edit-selected-suspended",
+        "/tmp/systemless-styled-selection-review/colour-suspended-1.png"
+      ],
+      "rendered_original_capture_sha256": "2fb86339e738b5c588c2d70f4e9ed3fedcf747c244b154ad3438b249e9b0caab",
+      "rendered_sha256": "126b269ff84eac87faa4bb64fcc22a3bbbef133ff2fb0b81cb35dea088c468b2",
+      "guest_original_capture_sha256": "feba0d166004c13b75f004ed5e979a98dcdca84706269b5c341d02d09a76a6db",
+      "guest_sha256": "d2455c6757fca38ea483fbe40514df19059468abb6c3c34e4661b09627d51a13"
+    },
+    {
+      "mode": "colour",
+      "state": "suspended",
+      "scale": 1.5,
+      "device_scale": 2,
+      "active": false,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "colour-suspended-1.5.png",
+      "guest": "colour-suspended-1.5.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1.5",
+        "--capture-styled-text-edit-selected-suspended",
+        "/tmp/systemless-styled-selection-review/colour-suspended-1.5.png"
+      ],
+      "rendered_original_capture_sha256": "c181569c89855a703b7e19f22afc6ff752fe6693ec8fe64df121af7556c6e043",
+      "rendered_sha256": "26033b0691c8d98d1bff02cd9ea11adac68203a35d28908b53a36bb64520511f",
+      "guest_original_capture_sha256": "feba0d166004c13b75f004ed5e979a98dcdca84706269b5c341d02d09a76a6db",
+      "guest_sha256": "d2455c6757fca38ea483fbe40514df19059468abb6c3c34e4661b09627d51a13"
+    },
+    {
+      "mode": "colour",
+      "state": "suspended",
+      "scale": 2.0,
+      "device_scale": 2,
+      "active": false,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "colour-suspended-2.png",
+      "guest": "colour-suspended-2.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "2",
+        "--capture-styled-text-edit-selected-suspended",
+        "/tmp/systemless-styled-selection-review/colour-suspended-2.png"
+      ],
+      "rendered_original_capture_sha256": "beda09a14de0d1726f411ada506f39a8e0fde5901ae492a4a7ed6b6fd3dff6ee",
+      "rendered_sha256": "39f7802a9f7b28ff570744e433d7395b83092e5b06470856cf1fd753398ec171",
+      "guest_original_capture_sha256": "feba0d166004c13b75f004ed5e979a98dcdca84706269b5c341d02d09a76a6db",
+      "guest_sha256": "d2455c6757fca38ea483fbe40514df19059468abb6c3c34e4661b09627d51a13"
+    },
+    {
+      "mode": "colour",
+      "state": "resumed",
+      "scale": 0.75,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "colour-resumed-0.75.png",
+      "guest": "colour-resumed-0.75.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "0.75",
+        "--capture-styled-text-edit-selected-resumed",
+        "/tmp/systemless-styled-selection-review/colour-resumed-0.75.png"
+      ],
+      "rendered_original_capture_sha256": "8951a32c0ae9f1fa6719c8fcbaf57f8405adbf00c7f30525abf10c8b4f986098",
+      "rendered_sha256": "697863d77737ef145ebaacbc997f18f6b4421b8f74b79873bd85a94a078ee6e4",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    },
+    {
+      "mode": "colour",
+      "state": "resumed",
+      "scale": 1.0,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "colour-resumed-1.png",
+      "guest": "colour-resumed-1.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1",
+        "--capture-styled-text-edit-selected-resumed",
+        "/tmp/systemless-styled-selection-review/colour-resumed-1.png"
+      ],
+      "rendered_original_capture_sha256": "9be44662fa80c7aba556b49d19dc41281ec99141cec86daf4eab989516c3a476",
+      "rendered_sha256": "b8c01e28d3aba58dfe9ffdb36346d674606bfdc63a390b6584af119032653171",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    },
+    {
+      "mode": "colour",
+      "state": "resumed",
+      "scale": 1.5,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "colour-resumed-1.5.png",
+      "guest": "colour-resumed-1.5.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1.5",
+        "--capture-styled-text-edit-selected-resumed",
+        "/tmp/systemless-styled-selection-review/colour-resumed-1.5.png"
+      ],
+      "rendered_original_capture_sha256": "af4382103e1a4e93556ffc2d91ea5fcc4931e435895bd27501f8b783b95b2277",
+      "rendered_sha256": "b63ed4bc671af21e69514f8515a79d24050b0590f24c57820535cadfb9a4e873",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    },
+    {
+      "mode": "colour",
+      "state": "resumed",
+      "scale": 2.0,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "colour-resumed-2.png",
+      "guest": "colour-resumed-2.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "2",
+        "--capture-styled-text-edit-selected-resumed",
+        "/tmp/systemless-styled-selection-review/colour-resumed-2.png"
+      ],
+      "rendered_original_capture_sha256": "0550f5a94a8e1ee8154db2dccdc725831e9965a9b5a3c3533dd8905af9578cf4",
+      "rendered_sha256": "e639520417a787a663f0d4b418c19680a8fa16b221e22600c7a6cc6ef84b0566",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    },
+    {
+      "mode": "ppc16",
+      "state": "selected",
+      "scale": 0.75,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc16-selected-0.75.png",
+      "guest": "ppc16-selected-0.75.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "0.75",
+        "--capture-styled-text-edit-selected",
+        "/tmp/systemless-styled-selection-review/ppc16-selected-0.75.png"
+      ],
+      "rendered_original_capture_sha256": "8951a32c0ae9f1fa6719c8fcbaf57f8405adbf00c7f30525abf10c8b4f986098",
+      "rendered_sha256": "697863d77737ef145ebaacbc997f18f6b4421b8f74b79873bd85a94a078ee6e4",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    },
+    {
+      "mode": "ppc16",
+      "state": "selected",
+      "scale": 1.0,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc16-selected-1.png",
+      "guest": "ppc16-selected-1.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "1",
+        "--capture-styled-text-edit-selected",
+        "/tmp/systemless-styled-selection-review/ppc16-selected-1.png"
+      ],
+      "rendered_original_capture_sha256": "9be44662fa80c7aba556b49d19dc41281ec99141cec86daf4eab989516c3a476",
+      "rendered_sha256": "b8c01e28d3aba58dfe9ffdb36346d674606bfdc63a390b6584af119032653171",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    },
+    {
+      "mode": "ppc16",
+      "state": "selected",
+      "scale": 1.5,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc16-selected-1.5.png",
+      "guest": "ppc16-selected-1.5.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "1.5",
+        "--capture-styled-text-edit-selected",
+        "/tmp/systemless-styled-selection-review/ppc16-selected-1.5.png"
+      ],
+      "rendered_original_capture_sha256": "af4382103e1a4e93556ffc2d91ea5fcc4931e435895bd27501f8b783b95b2277",
+      "rendered_sha256": "b63ed4bc671af21e69514f8515a79d24050b0590f24c57820535cadfb9a4e873",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    },
+    {
+      "mode": "ppc16",
+      "state": "selected",
+      "scale": 2.0,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc16-selected-2.png",
+      "guest": "ppc16-selected-2.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "2",
+        "--capture-styled-text-edit-selected",
+        "/tmp/systemless-styled-selection-review/ppc16-selected-2.png"
+      ],
+      "rendered_original_capture_sha256": "0550f5a94a8e1ee8154db2dccdc725831e9965a9b5a3c3533dd8905af9578cf4",
+      "rendered_sha256": "e639520417a787a663f0d4b418c19680a8fa16b221e22600c7a6cc6ef84b0566",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    },
+    {
+      "mode": "ppc16",
+      "state": "suspended",
+      "scale": 0.75,
+      "device_scale": 2,
+      "active": false,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc16-suspended-0.75.png",
+      "guest": "ppc16-suspended-0.75.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "0.75",
+        "--capture-styled-text-edit-selected-suspended",
+        "/tmp/systemless-styled-selection-review/ppc16-suspended-0.75.png"
+      ],
+      "rendered_original_capture_sha256": "31234520330ce7cd02d1944388a588e790bbc49abe821d0edfa693bbfa9b415d",
+      "rendered_sha256": "24ec8e97f02ea8c33bd6d1b7c1ec8b49c77ed10c79fce6cd1c24d490da55395c",
+      "guest_original_capture_sha256": "feba0d166004c13b75f004ed5e979a98dcdca84706269b5c341d02d09a76a6db",
+      "guest_sha256": "d2455c6757fca38ea483fbe40514df19059468abb6c3c34e4661b09627d51a13"
+    },
+    {
+      "mode": "ppc16",
+      "state": "suspended",
+      "scale": 1.0,
+      "device_scale": 2,
+      "active": false,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc16-suspended-1.png",
+      "guest": "ppc16-suspended-1.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "1",
+        "--capture-styled-text-edit-selected-suspended",
+        "/tmp/systemless-styled-selection-review/ppc16-suspended-1.png"
+      ],
+      "rendered_original_capture_sha256": "2fb86339e738b5c588c2d70f4e9ed3fedcf747c244b154ad3438b249e9b0caab",
+      "rendered_sha256": "126b269ff84eac87faa4bb64fcc22a3bbbef133ff2fb0b81cb35dea088c468b2",
+      "guest_original_capture_sha256": "feba0d166004c13b75f004ed5e979a98dcdca84706269b5c341d02d09a76a6db",
+      "guest_sha256": "d2455c6757fca38ea483fbe40514df19059468abb6c3c34e4661b09627d51a13"
+    },
+    {
+      "mode": "ppc16",
+      "state": "suspended",
+      "scale": 1.5,
+      "device_scale": 2,
+      "active": false,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc16-suspended-1.5.png",
+      "guest": "ppc16-suspended-1.5.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "1.5",
+        "--capture-styled-text-edit-selected-suspended",
+        "/tmp/systemless-styled-selection-review/ppc16-suspended-1.5.png"
+      ],
+      "rendered_original_capture_sha256": "c181569c89855a703b7e19f22afc6ff752fe6693ec8fe64df121af7556c6e043",
+      "rendered_sha256": "26033b0691c8d98d1bff02cd9ea11adac68203a35d28908b53a36bb64520511f",
+      "guest_original_capture_sha256": "feba0d166004c13b75f004ed5e979a98dcdca84706269b5c341d02d09a76a6db",
+      "guest_sha256": "d2455c6757fca38ea483fbe40514df19059468abb6c3c34e4661b09627d51a13"
+    },
+    {
+      "mode": "ppc16",
+      "state": "suspended",
+      "scale": 2.0,
+      "device_scale": 2,
+      "active": false,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc16-suspended-2.png",
+      "guest": "ppc16-suspended-2.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "2",
+        "--capture-styled-text-edit-selected-suspended",
+        "/tmp/systemless-styled-selection-review/ppc16-suspended-2.png"
+      ],
+      "rendered_original_capture_sha256": "beda09a14de0d1726f411ada506f39a8e0fde5901ae492a4a7ed6b6fd3dff6ee",
+      "rendered_sha256": "39f7802a9f7b28ff570744e433d7395b83092e5b06470856cf1fd753398ec171",
+      "guest_original_capture_sha256": "feba0d166004c13b75f004ed5e979a98dcdca84706269b5c341d02d09a76a6db",
+      "guest_sha256": "d2455c6757fca38ea483fbe40514df19059468abb6c3c34e4661b09627d51a13"
+    },
+    {
+      "mode": "ppc16",
+      "state": "resumed",
+      "scale": 0.75,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc16-resumed-0.75.png",
+      "guest": "ppc16-resumed-0.75.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "0.75",
+        "--capture-styled-text-edit-selected-resumed",
+        "/tmp/systemless-styled-selection-review/ppc16-resumed-0.75.png"
+      ],
+      "rendered_original_capture_sha256": "8951a32c0ae9f1fa6719c8fcbaf57f8405adbf00c7f30525abf10c8b4f986098",
+      "rendered_sha256": "697863d77737ef145ebaacbc997f18f6b4421b8f74b79873bd85a94a078ee6e4",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    },
+    {
+      "mode": "ppc16",
+      "state": "resumed",
+      "scale": 1.0,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc16-resumed-1.png",
+      "guest": "ppc16-resumed-1.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "1",
+        "--capture-styled-text-edit-selected-resumed",
+        "/tmp/systemless-styled-selection-review/ppc16-resumed-1.png"
+      ],
+      "rendered_original_capture_sha256": "9be44662fa80c7aba556b49d19dc41281ec99141cec86daf4eab989516c3a476",
+      "rendered_sha256": "b8c01e28d3aba58dfe9ffdb36346d674606bfdc63a390b6584af119032653171",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    },
+    {
+      "mode": "ppc16",
+      "state": "resumed",
+      "scale": 1.5,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc16-resumed-1.5.png",
+      "guest": "ppc16-resumed-1.5.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "1.5",
+        "--capture-styled-text-edit-selected-resumed",
+        "/tmp/systemless-styled-selection-review/ppc16-resumed-1.5.png"
+      ],
+      "rendered_original_capture_sha256": "af4382103e1a4e93556ffc2d91ea5fcc4931e435895bd27501f8b783b95b2277",
+      "rendered_sha256": "b63ed4bc671af21e69514f8515a79d24050b0590f24c57820535cadfb9a4e873",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    },
+    {
+      "mode": "ppc16",
+      "state": "resumed",
+      "scale": 2.0,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc16-resumed-2.png",
+      "guest": "ppc16-resumed-2.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "2",
+        "--capture-styled-text-edit-selected-resumed",
+        "/tmp/systemless-styled-selection-review/ppc16-resumed-2.png"
+      ],
+      "rendered_original_capture_sha256": "0550f5a94a8e1ee8154db2dccdc725831e9965a9b5a3c3533dd8905af9578cf4",
+      "rendered_sha256": "e639520417a787a663f0d4b418c19680a8fa16b221e22600c7a6cc6ef84b0566",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    },
+    {
+      "mode": "ppc8",
+      "state": "selected",
+      "scale": 0.75,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc8-selected-0.75.png",
+      "guest": "ppc8-selected-0.75.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "0.75",
+        "--capture-styled-text-edit-selected",
+        "/tmp/systemless-styled-selection-review/ppc8-selected-0.75.png"
+      ],
+      "rendered_original_capture_sha256": "8951a32c0ae9f1fa6719c8fcbaf57f8405adbf00c7f30525abf10c8b4f986098",
+      "rendered_sha256": "697863d77737ef145ebaacbc997f18f6b4421b8f74b79873bd85a94a078ee6e4",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    },
+    {
+      "mode": "ppc8",
+      "state": "selected",
+      "scale": 1.0,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc8-selected-1.png",
+      "guest": "ppc8-selected-1.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1",
+        "--capture-styled-text-edit-selected",
+        "/tmp/systemless-styled-selection-review/ppc8-selected-1.png"
+      ],
+      "rendered_original_capture_sha256": "9be44662fa80c7aba556b49d19dc41281ec99141cec86daf4eab989516c3a476",
+      "rendered_sha256": "b8c01e28d3aba58dfe9ffdb36346d674606bfdc63a390b6584af119032653171",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    },
+    {
+      "mode": "ppc8",
+      "state": "selected",
+      "scale": 1.5,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc8-selected-1.5.png",
+      "guest": "ppc8-selected-1.5.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1.5",
+        "--capture-styled-text-edit-selected",
+        "/tmp/systemless-styled-selection-review/ppc8-selected-1.5.png"
+      ],
+      "rendered_original_capture_sha256": "af4382103e1a4e93556ffc2d91ea5fcc4931e435895bd27501f8b783b95b2277",
+      "rendered_sha256": "b63ed4bc671af21e69514f8515a79d24050b0590f24c57820535cadfb9a4e873",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    },
+    {
+      "mode": "ppc8",
+      "state": "selected",
+      "scale": 2.0,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc8-selected-2.png",
+      "guest": "ppc8-selected-2.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "2",
+        "--capture-styled-text-edit-selected",
+        "/tmp/systemless-styled-selection-review/ppc8-selected-2.png"
+      ],
+      "rendered_original_capture_sha256": "0550f5a94a8e1ee8154db2dccdc725831e9965a9b5a3c3533dd8905af9578cf4",
+      "rendered_sha256": "e639520417a787a663f0d4b418c19680a8fa16b221e22600c7a6cc6ef84b0566",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    },
+    {
+      "mode": "ppc8",
+      "state": "suspended",
+      "scale": 0.75,
+      "device_scale": 2,
+      "active": false,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc8-suspended-0.75.png",
+      "guest": "ppc8-suspended-0.75.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "0.75",
+        "--capture-styled-text-edit-selected-suspended",
+        "/tmp/systemless-styled-selection-review/ppc8-suspended-0.75.png"
+      ],
+      "rendered_original_capture_sha256": "31234520330ce7cd02d1944388a588e790bbc49abe821d0edfa693bbfa9b415d",
+      "rendered_sha256": "24ec8e97f02ea8c33bd6d1b7c1ec8b49c77ed10c79fce6cd1c24d490da55395c",
+      "guest_original_capture_sha256": "feba0d166004c13b75f004ed5e979a98dcdca84706269b5c341d02d09a76a6db",
+      "guest_sha256": "d2455c6757fca38ea483fbe40514df19059468abb6c3c34e4661b09627d51a13"
+    },
+    {
+      "mode": "ppc8",
+      "state": "suspended",
+      "scale": 1.0,
+      "device_scale": 2,
+      "active": false,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc8-suspended-1.png",
+      "guest": "ppc8-suspended-1.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1",
+        "--capture-styled-text-edit-selected-suspended",
+        "/tmp/systemless-styled-selection-review/ppc8-suspended-1.png"
+      ],
+      "rendered_original_capture_sha256": "2fb86339e738b5c588c2d70f4e9ed3fedcf747c244b154ad3438b249e9b0caab",
+      "rendered_sha256": "126b269ff84eac87faa4bb64fcc22a3bbbef133ff2fb0b81cb35dea088c468b2",
+      "guest_original_capture_sha256": "feba0d166004c13b75f004ed5e979a98dcdca84706269b5c341d02d09a76a6db",
+      "guest_sha256": "d2455c6757fca38ea483fbe40514df19059468abb6c3c34e4661b09627d51a13"
+    },
+    {
+      "mode": "ppc8",
+      "state": "suspended",
+      "scale": 1.5,
+      "device_scale": 2,
+      "active": false,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc8-suspended-1.5.png",
+      "guest": "ppc8-suspended-1.5.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1.5",
+        "--capture-styled-text-edit-selected-suspended",
+        "/tmp/systemless-styled-selection-review/ppc8-suspended-1.5.png"
+      ],
+      "rendered_original_capture_sha256": "c181569c89855a703b7e19f22afc6ff752fe6693ec8fe64df121af7556c6e043",
+      "rendered_sha256": "26033b0691c8d98d1bff02cd9ea11adac68203a35d28908b53a36bb64520511f",
+      "guest_original_capture_sha256": "feba0d166004c13b75f004ed5e979a98dcdca84706269b5c341d02d09a76a6db",
+      "guest_sha256": "d2455c6757fca38ea483fbe40514df19059468abb6c3c34e4661b09627d51a13"
+    },
+    {
+      "mode": "ppc8",
+      "state": "suspended",
+      "scale": 2.0,
+      "device_scale": 2,
+      "active": false,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc8-suspended-2.png",
+      "guest": "ppc8-suspended-2.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "2",
+        "--capture-styled-text-edit-selected-suspended",
+        "/tmp/systemless-styled-selection-review/ppc8-suspended-2.png"
+      ],
+      "rendered_original_capture_sha256": "beda09a14de0d1726f411ada506f39a8e0fde5901ae492a4a7ed6b6fd3dff6ee",
+      "rendered_sha256": "39f7802a9f7b28ff570744e433d7395b83092e5b06470856cf1fd753398ec171",
+      "guest_original_capture_sha256": "feba0d166004c13b75f004ed5e979a98dcdca84706269b5c341d02d09a76a6db",
+      "guest_sha256": "d2455c6757fca38ea483fbe40514df19059468abb6c3c34e4661b09627d51a13"
+    },
+    {
+      "mode": "ppc8",
+      "state": "resumed",
+      "scale": 0.75,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc8-resumed-0.75.png",
+      "guest": "ppc8-resumed-0.75.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "0.75",
+        "--capture-styled-text-edit-selected-resumed",
+        "/tmp/systemless-styled-selection-review/ppc8-resumed-0.75.png"
+      ],
+      "rendered_original_capture_sha256": "8951a32c0ae9f1fa6719c8fcbaf57f8405adbf00c7f30525abf10c8b4f986098",
+      "rendered_sha256": "697863d77737ef145ebaacbc997f18f6b4421b8f74b79873bd85a94a078ee6e4",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    },
+    {
+      "mode": "ppc8",
+      "state": "resumed",
+      "scale": 1.0,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc8-resumed-1.png",
+      "guest": "ppc8-resumed-1.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1",
+        "--capture-styled-text-edit-selected-resumed",
+        "/tmp/systemless-styled-selection-review/ppc8-resumed-1.png"
+      ],
+      "rendered_original_capture_sha256": "9be44662fa80c7aba556b49d19dc41281ec99141cec86daf4eab989516c3a476",
+      "rendered_sha256": "b8c01e28d3aba58dfe9ffdb36346d674606bfdc63a390b6584af119032653171",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    },
+    {
+      "mode": "ppc8",
+      "state": "resumed",
+      "scale": 1.5,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc8-resumed-1.5.png",
+      "guest": "ppc8-resumed-1.5.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1.5",
+        "--capture-styled-text-edit-selected-resumed",
+        "/tmp/systemless-styled-selection-review/ppc8-resumed-1.5.png"
+      ],
+      "rendered_original_capture_sha256": "af4382103e1a4e93556ffc2d91ea5fcc4931e435895bd27501f8b783b95b2277",
+      "rendered_sha256": "b63ed4bc671af21e69514f8515a79d24050b0590f24c57820535cadfb9a4e873",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    },
+    {
+      "mode": "ppc8",
+      "state": "resumed",
+      "scale": 2.0,
+      "device_scale": 2,
+      "active": true,
+      "selection": [
+        0,
+        26
+      ],
+      "rendered": "ppc8-resumed-2.png",
+      "guest": "ppc8-resumed-2.guest.png",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "2",
+        "--capture-styled-text-edit-selected-resumed",
+        "/tmp/systemless-styled-selection-review/ppc8-resumed-2.png"
+      ],
+      "rendered_original_capture_sha256": "0550f5a94a8e1ee8154db2dccdc725831e9965a9b5a3c3533dd8905af9578cf4",
+      "rendered_sha256": "e639520417a787a663f0d4b418c19680a8fa16b221e22600c7a6cc6ef84b0566",
+      "guest_original_capture_sha256": "f1d1b68dddd8e40a1157c9525cf179846a922731605b93d45bd74f269f2d6b91",
+      "guest_sha256": "3e5834c685de3d534df5486b2a7704d84b4f2312ebe5afd2481cde6ed88db5ba"
+    }
+  ]
+}

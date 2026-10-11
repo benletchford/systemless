@@ -3767,3 +3767,25 @@ and hidden-blink states, and suppression during a nonempty selection (0.08s).
 Caret ink, pen patterns, theme painting and guest pixels outside the owned view
 remain separate; this is not rendered caret or production ownership evidence.
 Production and no-default-features checks pass (40.41s/12.23s).
+
+The completed styled selection matrix is now archived in
+`tests/toolbox-showcase/reference/gpui-demo/styled-text-selection/review.json`:
+48 composed captures and 48 original guest baselines cover monochrome 68k,
+colour 68k, PPC8 and PPC16 at 0.75/1/1.5/2 scales, device density 2, in selected,
+suspended and resumed states. All 48 have zero mismatched field pixels. The
+manifest pins source commit `6112e194`, the capture executable, fixture and
+source hashes, commands, original capture hashes and lossless archive hashes.
+RGBA equality was checked during recompression; the archive occupies about
+4 MB. Recheck with:
+
+```sh
+python3 tests/toolbox-showcase/verify-gpui-styled-text-ink.py \
+  tests/toolbox-showcase/reference/gpui-demo/styled-text-selection/review.json
+```
+
+This qualifies the fixture's mixed-style field, real guest drag and session
+activation assertions with classic inversion, zero-spacing srcOr and a white
+erased background. It does not qualify rendered caret, arbitrary backgrounds
+or themes, production styled scene ownership, GPUI pointer mapping or native
+host-window activation observers. The later caret geometry helper is outside
+the pinned capture source.
