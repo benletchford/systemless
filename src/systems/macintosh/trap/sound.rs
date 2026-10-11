@@ -399,7 +399,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn play_sys_beep(&mut self, bus: &mut MacMemoryBus) {
+    pub(crate) fn play_sys_beep(&mut self, bus: &mut MacMemoryBus) {
         let volume = self.sound_manager.sys_beep_volume();
         if volume & 0xFFFF == 0 && (volume >> 16) & 0xFFFF == 0 {
             return;

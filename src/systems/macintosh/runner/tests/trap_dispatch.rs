@@ -5,6 +5,44 @@ use crate::process_context::PendingFileCompletion;
 use crate::trap::dispatch::TrapTableProfile;
 
 #[test]
+fn notification_system_sound_plays_while_alert_retains_foreground_on_both_cpus() {
+    for native_mode in [false, true] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        if native_mode { runner.init_app(&halted_ppc_app_with_sound(PpcSoundState::default())); }
+        let request = if native_mode { PPC_DATA_BASE + 0x6000 } else { runner.bus.alloc(128) };
+        if native_mode {
+            let native = runner.native.application_mut().unwrap();
+            native.memory.add_region(request, vec![0; 128]);
+            native.memory.write_u16_be(request + 4, 8).unwrap();
+            native.memory.write_u32_be(request + 24, request + 64).unwrap();
+            native.memory.write_u32_be(request + 20, u32::MAX).unwrap();
+            native.toolbox_startup.notification_requests.push(request);
+        } else {
+            runner.bus.write_word(request + 4, 8);
+            runner.bus.write_long(request + 24, request + 64);
+            runner.bus.write_long(request + 20, u32::MAX);
+            runner.dispatcher.notification_requests.push(request);
+        }
+        let notice = runner.notification_snapshot().pop().unwrap();
+        let classic_pc = runner.cpu().read_reg(Register::PC);
+        let native_context = runner.native.application().map(|app| app.cpu.capture_execution_context());
+        assert!(runner.begin_notification_alert(&notice));
+        assert!(!runner.begin_notification_alert(&notice));
+        runner.mix_gui_audio_slice(128);
+        let audio = runner.drain_audio();
+        assert_eq!(audio.len(), 128);
+        assert!(audio.iter().any(|sample| *sample != 0x80));
+        assert!(runner.guest_work_is_suspended());
+        assert_eq!(runner.cpu().read_reg(Register::PC), classic_pc);
+        if let Some(context) = native_context {
+            assert_eq!(runner.native.application().unwrap().cpu.capture_execution_context().architectural(), context.architectural());
+        }
+        assert!(!runner.notification_snapshot()[0].response_started);
+        assert!(runner.dismiss_notification_alert(&notice));
+    }
+}
+
+#[test]
 fn notification_rejected_procedure_retains_alert_without_marking_response_started() {
     for response in [1, 8 * 1024 * 1024 + 2] {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());

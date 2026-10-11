@@ -2256,16 +2256,16 @@ impl FixtureRunner {
         }
     }
 
-    /// Acquire foreground ownership for an alert-only notification. Earlier
-    /// mark/icon/sound delivery stages must be implemented before mixed notices
-    /// can use this entry. This does not establish that any pixels were painted.
+    /// Acquire a text alert, optionally preceded by the system beep. Mark, icon
+    /// and custom sound delivery remain unsupported. No painting is established.
     pub fn begin_notification_alert(&mut self, expected: &NotificationSnapshot) -> bool {
         if self.notification_alert_snapshot().is_some()
             || self.is_ui_tracking_active()
             || self.deferred_tracking_refire_pc.is_some()
             || self.active_interrupt_callback.is_some()
             || expected.response_started || expected.text.is_none()
-            || expected.mark != 0 || expected.icon_handle != 0 || expected.sound_handle != 0 {
+            || expected.mark != 0 || expected.icon_handle != 0
+            || !matches!(expected.sound_handle, 0 | u32::MAX) {
             return false;
         }
         let next = self.notification_snapshot().into_iter().find(|notice| !notice.response_started);
@@ -2273,6 +2273,16 @@ impl FixtureRunner {
         if self.native.application_mut().is_some_and(|app|
             app.parked_interrupt_callback.is_some() || app.notification_response_context.is_some()) {
             return false;
+        }
+        if expected.sound_handle == u32::MAX {
+            if let Some(app) = self.native.application_mut() {
+                if app.toolbox_startup.notification_requests.begin_sound(expected.guest_id, expected.instance_id) {
+                    let volume = app.sound.manager.sys_beep_volume();
+                    app.sound.manager.play_sys_beep(volume);
+                }
+            } else if self.dispatcher.notification_requests.begin_sound(expected.guest_id, expected.instance_id) {
+                self.dispatcher.play_sys_beep(&mut self.bus);
+            }
         }
         self.notification_alert = Some(expected.clone());
         true
@@ -5891,6 +5901,11 @@ impl FixtureRunner {
     /// Mix and queue audio samples without full frame finalization.
     /// Used to keep the audio buffer fed during long CPU frames.
     pub fn mix_audio(&mut self, num_samples: usize) {
+        if self.notification_alert.is_some() {
+            let samples = self.dispatcher.sound_manager.mix_frame_stereo(num_samples);
+            self.queue_mixed_audio(&samples);
+            return;
+        }
         if self.guest_work_is_suspended() {
             return;
         }
@@ -6081,6 +6096,12 @@ impl FixtureRunner {
     /// doubleback callbacks run between small audio chunks when TickCount is
     /// already caught up to the wall clock.
     pub fn mix_gui_audio_slice(&mut self, audio_samples: usize) {
+        if self.notification_alert.is_some() {
+            // Play queued channels without entering guest completion callbacks
+            // or continuing foreground code while the system alert owns it.
+            self.mix_audio(audio_samples);
+            return;
+        }
         if self.guest_work_is_suspended() {
             return;
         }

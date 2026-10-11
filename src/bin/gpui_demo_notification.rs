@@ -17,7 +17,7 @@ pub(crate) struct AlertPlan {
 impl AlertPlan {
     pub fn build(notice: &NotificationSnapshot, viewport: Rect) -> Option<Self> {
         if notice.response_started || notice.mark != 0 || notice.icon_handle != 0
-            || notice.sound_handle != 0 { return None; }
+            || !matches!(notice.sound_handle, 0 | u32::MAX) { return None; }
         let bytes = notice.text.as_ref()?;
         let width = viewport.width().checked_sub(32)?.min(400);
         if width < 160 { return None; }
@@ -56,7 +56,7 @@ mod tests {
         assert!(plan.message.bottom < plan.button.top);
         assert_eq!(plan.bounds.intersection(viewport), Some(plan.bounds));
         assert!(AlertPlan::build(&notice, Rect::from((0, 0, 64, 512))).is_none());
-        let mut mixed = notice.clone(); mixed.sound_handle = u32::MAX;
+        let mut mixed = notice.clone(); mixed.sound_handle = 1234;
         assert!(AlertPlan::build(&mixed, viewport).is_none());
         let mut completed = notice; completed.response_started = true;
         assert!(AlertPlan::build(&completed, viewport).is_none());

@@ -1,5 +1,16 @@
 # GPUI production release gates
 
+Notification system-sound stage: text alerts can now use the `nmSound == -1`
+system-alert sentinel. Per-installation sound delivery is retained in the
+shared queue; native/classic Sound Manager paths queue the tone before alert
+ownership. Owned alerts mix queued channel samples without executing foreground
+or completion callback code, rather than silencing the mixer until dismissal.
+The new both-CPU runner regression verifies non-silent128-sample output while
+owned, unchanged CPU context and no response entry. All23 library notification
+tests pass (0.19s) and five frontend notification regressions pass (11.49s).
+Guest-installed sound workflows and physical audio continuity remain unqualified;
+custom sounds, marks and icons still decline. No broad release gate closes.
+
 Notification keyboard boundary: a root capture-phase handler now excludes
 owned-alert keys before focused background controls can process them, prevents
 default Tab/Shift-Tab traversal, and restores active guest root focus. Return
