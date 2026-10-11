@@ -3326,8 +3326,11 @@ impl super::TrapDispatcher {
             if te_active && caret_visible {
                 if let Some(&(line_start, line_end, line_top, line_bottom, line_x)) = visual_lines
                     .iter()
-                    .find(|&&(start, end, _, _, _)| {
+                    .find(|&&(start, end, top, _, _)| {
                         selection_start >= start && selection_start <= end
+                            && !(selection_start == end && end > start
+                                && visual_lines.iter().any(|next| next.0 == end && next.2 > top)
+                                && matches!(text_bytes[end - 1], b'\r' | b'\n'))
                     })
                     .or_else(|| visual_lines.last())
                 {

@@ -4713,3 +4713,17 @@ identify a live guest window and the following pass to be idle, preserving its
 callback/register checks. Failures, final logs and scope are archived in
 `reference/gpui-demo/modal-arrow-modification`. No physical host or new composed
 rendering qualification is inferred from these library tests.
+
+
+### Hard-break caret ownership after vertical navigation
+
+Shared Demo captures exposed a caret at the preceding row end after Down
+selected the byte immediately after CR. Both guest painters and the shared
+TextEdit geometry now assign that insertion to the following row; soft-wrap
+affinity remains unchanged. Nine TextEdit unit tests pass. The frontend build
+and four active multiline styled navigation captures pass at scale1.5 across
+mono68k, colour68k, PPC8 and PPC16. All four composed images were reviewed.
+Evidence, including pre-fix defect captures, is archived in
+`tests/toolbox-showcase/reference/gpui-demo/hard-break-caret`. This is shared
+implementation evidence, not an independent Macintosh oracle. Physical input,
+inactive/scrolled navigation and other scales remain unqualified.
