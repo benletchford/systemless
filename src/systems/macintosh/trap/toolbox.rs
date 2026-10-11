@@ -2078,6 +2078,8 @@ impl super::TrapDispatcher {
         dir_id: u32,
         file_types: Option<&[u32]>,
     ) -> Vec<StandardFileGetEntry> {
+        let vref = crate::standard_file_ui::StandardFileVolumePopup::volume_for_directory(
+            &self.vfs_volumes, &self.vfs_directories, dir_id).ref_num;
         let mut entries = Vec::new();
         for entry in self.list_vfs_catalog_entries(dir_id) {
             if entry.is_directory {
@@ -2093,8 +2095,8 @@ impl super::TrapDispatcher {
                 entries.push(StandardFileGetEntry {
                     name,
                     display_name: entry.name,
-                    vref: Self::boot_volume_ref_num(),
-                    wd_ref: Self::boot_volume_ref_num(),
+                    vref,
+                    wd_ref: vref,
                     dir_id: directory.dir_id,
                     file_type: 0,
                     finder_flags: 0,
@@ -2108,7 +2110,6 @@ impl super::TrapDispatcher {
             if file_types.is_some_and(|types| !types.contains(&metadata.file_type)) {
                 continue;
             }
-            let vref = Self::boot_volume_ref_num();
             let wd_ref = self
                 .open_working_directory(vref, metadata.parent_dir_id, 0)
                 .unwrap_or(vref);

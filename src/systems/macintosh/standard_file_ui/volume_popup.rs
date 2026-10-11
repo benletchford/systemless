@@ -225,6 +225,12 @@ mod volume_popup_tests {
                     }
                 });
             }
+            let payload = b"Mounted Archive guest read\r";
+            session.runner_mut().import_vfs_file(&crate::runner::VfsFileSnapshot {
+                path: "Archive/Mounted.txt".into(), data_fork: payload.to_vec(), resource_fork: vec![],
+                file_type: u32::from_be_bytes(*b"TEXT"), creator: u32::from_be_bytes(*b"SHWC"),
+                finder_flags: 0, created_date: 0, modified_date: 0,
+            });
             for _ in 0..300 {
                 advance(&mut session);
                 if session.runner_mut().guest_menu_snapshot().menus.iter().any(|menu| menu.id == 129) { break; }
@@ -254,6 +260,47 @@ mod volume_popup_tests {
             assert!(switched.entries.as_ref().is_some_and(|entries| entries.iter().any(|entry|
                 entry.name == "Samples" && entry.is_directory && entry.directory_id == 42001)));
             assert_eq!((switched.guest_id, switched.generation), (opened.guest_id, opened.generation));
+            let index = switched.entries.as_ref().unwrap().iter().position(|entry| entry.name == "Mounted.txt").unwrap();
+            let layout = switched.get_layout.as_ref().unwrap();
+            let vertical = layout.list.0 + index as i16 * layout.row_height + 5;
+            let horizontal = layout.list.1 + 25;
+            session.deliver_input(MacintoshInput::MouseDown { vertical, horizontal });
+            session.deliver_input(MacintoshInput::MouseUp { vertical, horizontal });
+            wait_panel(&mut session, "mounted file selected", |panel| panel.selected == Some(index));
+            if !powerpc {
+                let tracking = session.runner().dispatcher().standard_file_get_tracking.as_ref().unwrap();
+                assert_eq!(tracking.entries[tracking.selected].vref, -42, "candidate depth={depth} dir={}", tracking.current_dir_id);
+            }
+            session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x24, character: 13 });
+            session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x24, character: 13 });
+            #[cfg(feature = "debug")]
+            {
+            use m68k::AddressBus;
+            use crate::systems::macintosh::debug::{handle_debug_request, DebugRequest, DebugReply, M68K_SPACE, PPC_SPACE};
+            let main = session.runner_mut().window_frame_snapshot().into_iter()
+                .find(|frame| frame.window.title == "Toolbox Showcase").unwrap().guest_id;
+            let checkpoint = (0..300).find_map(|_| {
+                advance(&mut session);
+                let pointer = session.runner_mut().bus_mut().read_long(main + 152);
+                (session.runner().standard_file_snapshot().is_none() && pointer != 0).then_some(pointer)
+            }).expect("mounted guest read checkpoint");
+            let space = if powerpc { PPC_SPACE } else { M68K_SPACE };
+            let DebugReply::Memory(reply) = handle_debug_request(session.runner_mut(), DebugRequest::ReadMemory {
+                space, address: u64::from(opened.guest_id), length: 88,
+            }).unwrap() else { panic!("Open reply"); };
+            assert_eq!(reply.bytes[0], 1);
+            assert_eq!(i16::from_be_bytes(reply.bytes[6..8].try_into().unwrap()), -42,
+                "reply powerpc={powerpc} depth={depth} pointer={:x} bytes={:?}", opened.guest_id, &reply.bytes[..12]);
+            assert_eq!(u32::from_be_bytes(reply.bytes[8..12].try_into().unwrap()), 42000);
+            let DebugReply::Memory(read) = handle_debug_request(session.runner_mut(), DebugRequest::ReadMemory {
+                space, address: u64::from(checkpoint), length: (10 + payload.len()) as u64,
+            }).unwrap() else { panic!("mounted file read"); };
+            assert_eq!(u32::from_be_bytes(read.bytes[0..4].try_into().unwrap()) as usize, payload.len());
+            assert_eq!(u32::from_be_bytes(read.bytes[4..8].try_into().unwrap()) as usize, payload.len());
+            assert_eq!(&read.bytes[8..10], &[0, 0]);
+            assert_eq!(&read.bytes[10..], payload);
+            }
+
         }
     }
     #[test]

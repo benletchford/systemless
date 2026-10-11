@@ -24,6 +24,10 @@ capture run is archived in `styled-text-single-line-shared`, pinned to f565b695.
 All 192 fixture raster/state cases pass; this earlier bitmap evidence does not
 qualify the newer smooth typography or production readiness.
 
+### Mounted-file Open reply identity
+
+Both CPU paths now preserve the mounted-volume reference through candidate creation and final Open replies. The expanded actual-guest modern Open/read regression passes four CPU/depth modes (8.22s), verifying volume -42, parent directory42000, exact file bytes and successful guest read/close. All seven selector library tests pass (7.41s). Evidence and failed diagnostics: `reference/gpui-demo/mounted-file-reply`. This is session/debug evidence; legacy mounted-file acceptance, custom filter callbacks, Save navigation, physical GPUI input and broader production qualification remain open. No broad gate closes.
+
 ### Guest-owned Open volume selector
 
 Open panels now retain shared mounted-volume choices and popup tracking in both CPU event loops. Directory ancestry supplies the current volume name; GPUI renders the guest snapshot with original-font smooth labels and preserves guest bounds and event ownership. Seven library selector tests pass (5.42s), including mounted-directory switching in mono68k, colour68k, PPC8 and PPC16. The GPUI pointer/keyboard regression passes (3.88s); window-scoped interception delivers Tab before Base Root bindings and excludes inactive/background semantic actions. All five notification regressions pass (43.87s). Four selected active compositions were reviewed at scales0.75/1/1.5/2 with exact active/reactivated restoration. Evidence: `reference/gpui-demo/volume-selector`. Capture provenance precedes subsequent keyboard/test edits. Multiple-choice visual scrolling, mounted-file replies/filter callbacks, Save destination navigation, physical input, native accessibility and independent font fidelity remain open. All eight release gates remain open.

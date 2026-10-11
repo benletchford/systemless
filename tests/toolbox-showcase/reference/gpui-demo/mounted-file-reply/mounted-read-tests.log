@@ -1,0 +1,9 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.57s
+     Running unittests src/lib.rs (target/debug/deps/systemless-4e06a53605bb32d1)
+
+running 1 test
+test systems::macintosh::standard_file_ui::volume_popup::volume_popup_tests::volume_popup_switches_mounted_guest_directory_on_both_cpus ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6824 filtered out; finished in 8.22s
+
