@@ -3789,3 +3789,15 @@ erased background. It does not qualify rendered caret, arbitrary backgrounds
 or themes, production styled scene ownership, GPUI pointer mapping or native
 host-window activation observers. The later caret geometry helper is outside
 the pinned capture source.
+
+A shared GPUI styled solid-caret canvas can now paint caller-qualified native
+ink over ordered glyph ink, preserving overlapping text outside the caret and
+rejecting simultaneous selection or malformed rectangles. The focused canvas
+plan regression passes (0.02s), and the production binary checks (6.53s).
+Native source inspection establishes that PPC classic carets use the style
+colour at the insertion offset, whereas classic 68k uses the final drawing
+pen state or the theme painter. The canvas deliberately requires resolved ink
+and clipped geometry rather than inferring either CPU's policy from host text
+styles. It is not yet wired into capture or production ownership; patterned
+classic pens, themed caps and rendered caret compositor qualification remain
+unfinished.
