@@ -5586,3 +5586,12 @@ WindowManager104 passed before the FrameRect change. Failed, partial and final
 images/provenance are under `reference/gpui-demo/movable-dialog-drag`. Physical
 input, broader lifecycle, performance and final-candidate qualification remain
 open; no production gate is closed by this selected workflow.
+
+### Editing after movable dialog drag (2026-10-11)
+
+Four reviewed shared captures now additionally click the relocated editor after
+its first displayed glyph, assert guest selection1, type z through guest events
+and assert exact Pzilot/caret2 after completed painting. Mono68k/0.75, colour68k/1,
+PPC8/2 and PPC16/1.5 pass; build/test compilation pass. Evidence is under
+`reference/gpui-demo/movable-dialog-drag-edit`. This checks guest/session glyph
+coordinates; physical GPUI pointer delivery and broader release gates remain open.
