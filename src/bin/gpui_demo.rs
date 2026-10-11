@@ -494,6 +494,8 @@ mod desktop {
         ActivateDialog(u32, u64, i16, Option<(u32, u64)>),
         ActivateFile(u32, u64, super::activation::FileAction),
         ActivateFileEntry(u32, u64, usize, systemless::runner::StandardFileEntrySnapshot),
+        BeginNotificationAlert(systemless::runner::NotificationSnapshot),
+        DismissNotificationAlert(systemless::runner::NotificationSnapshot),
         CancelWheel,
         Shutdown,
     }
@@ -530,6 +532,7 @@ mod desktop {
         standard_file: Option<StandardFileSnapshot>,
         cursor: Option<systemless::runner::CursorSnapshot>,
         notifications: Vec<systemless::runner::NotificationSnapshot>,
+        notification_alert: Option<systemless::runner::NotificationSnapshot>,
         frame: Option<(u32, u32, Vec<u8>)>,
         clipboard_export: Option<(u64, Vec<u8>)>,
         text_commit_rejection: Option<(u64, super::input::TextInputOwner)>,
@@ -670,6 +673,16 @@ mod desktop {
                         Ok(Command::Wheel(request)) => {
                             if !pointer_down && !session.runner().is_ui_tracking_active() {
                                 wheel = super::scroll::WheelClick::begin(&mut session, request);
+                            }
+                        }
+                        Ok(Command::BeginNotificationAlert(expected)) => {
+                            if !pointer_down && activation.is_none() {
+                                session.runner_mut().begin_notification_alert(&expected);
+                            }
+                        }
+                        Ok(Command::DismissNotificationAlert(expected)) => {
+                            if !pointer_down && activation.is_none() {
+                                session.runner_mut().dismiss_notification_alert(&expected);
                             }
                         }
                         Ok(Command::ActivateControl(id, generation)) => {
@@ -898,6 +911,7 @@ mod desktop {
                 let text_edits = session.runner_mut().text_edit_snapshot().records;
                 let standard_file = session.runner_mut().standard_file_snapshot();
                 let notifications = session.runner_mut().notification_snapshot();
+                let notification_alert = session.runner_mut().notification_alert_snapshot();
                 let list_text_plans = frame.as_ref().map(|frame|
                     qualify_list_text_fields(&lists, &frame.pixels, frame.width, frame.height)).unwrap_or_default();
                 let styled_text_plans = frame.as_ref().map(|frame|
@@ -923,6 +937,7 @@ mod desktop {
                     standard_file,
                     cursor: Some(session.runner().cursor_snapshot()),
                     notifications,
+                    notification_alert,
                     frame,
                     status: format!(
                         "{architecture} · {}",
@@ -968,6 +983,7 @@ mod desktop {
         standard_file: Option<StandardFileSnapshot>,
         cursor: Option<systemless::runner::CursorSnapshot>,
         notifications: Vec<systemless::runner::NotificationSnapshot>,
+        notification_alert: Option<systemless::runner::NotificationSnapshot>,
         cursor_inside: bool,
         cursor_host_position: Option<(f32, f32)>,
         cursor_pointer_mapping: Option<super::cursor::PointerMapping>,
@@ -1121,6 +1137,7 @@ mod desktop {
                             this.guest_popup = update.guest_popup;
                             this.cursor = update.cursor;
                             this.notifications = update.notifications;
+                            this.notification_alert = update.notification_alert;
                             this.windows = update.windows;
                             this.dialogs = update.dialogs;
                             this.controls = update.controls;
@@ -1182,6 +1199,7 @@ mod desktop {
                 standard_file: None,
                 cursor: None,
                 notifications: Vec::new(),
+                notification_alert: None,
                 cursor_inside: false,
                 cursor_host_position: None,
                 cursor_pointer_mapping: None,
@@ -6151,6 +6169,7 @@ mod desktop {
             demo.text_edits = update.text_edits; demo.styled_text_plans = update.styled_text_plans;
             demo.standard_file = update.standard_file; demo.cursor = update.cursor;
             demo.notifications = update.notifications;
+            demo.notification_alert = update.notification_alert;
             demo.status = update.status; demo.host_active = Some(true);
             demo.image = Some(Arc::new(RenderImage::new(vec![image::Frame::new(
                 image::RgbaImage::from_raw(width, height, gpui_pixels(update.frame.unwrap().2)).unwrap())])));
