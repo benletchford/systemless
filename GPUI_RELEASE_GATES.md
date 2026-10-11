@@ -1,5 +1,14 @@
 # GPUI production release gates
 
+Notification keyboard boundary: a root capture-phase handler now excludes
+owned-alert keys before focused background controls can process them, prevents
+default Tab/Shift-Tab traversal, and restores active guest root focus. Return
+remains excluded while inactive. Five notification regressions pass (12.08s);
+the strengthened pointer/key regression separately verifies forward/backward
+tab focus retention, inactive exclusion, and exactly one acknowledgment per
+OK/Return gesture (0.18s). These GPUI test-window checks do not qualify native
+accessibility focus actions, physical input or broader modal dialog focus.
+
 Notification accessibility background separation: the alert is now a sibling
 of the painted guest scene; the background scene and retained menu bar carry
 hidden accessibility state during alert ownership. SceneMetrics forwards roles,
