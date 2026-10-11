@@ -5096,6 +5096,68 @@ mod desktop {
             }
         }
 
+        #[cfg(feature = "gpui-demo-test")]
+        #[test]
+        fn popup_reverse_scrolling_and_arrow_release_preserve_value_across_cpu_modes() {
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session
+                    .load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("tests/toolbox-showcase/toolbox-showcase.sit"))
+                    .unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 16));
+                wait_for_menu(&mut session, 129, 16, true);
+                settle(&mut session);
+                super::scroll_showcase_theme_popup(&mut session);
+                let runner = session.runner_mut();
+                let bottom = runner.guest_popup_snapshot().unwrap();
+                let up_point = (bottom.bounds.0 + 4, bottom.bounds.1 + 30);
+                runner.set_mouse_position(up_point.0, up_point.1);
+                let top = (0..100).find_map(|_| {
+                    runner.run_steps(50_000, None);
+                    runner.guest_popup_snapshot()
+                        .filter(|popup| !popup.scroll_indicators().0)
+                }).expect("held up arrow must return to the start of the menu");
+                assert_eq!(top.menu.guest_id, bottom.menu.guest_id);
+                assert_eq!(top.menu.generation, bottom.menu.generation);
+                assert_eq!(top.bounds, bottom.bounds);
+                assert!(top.content_top > bottom.content_top);
+                assert_eq!(top.scroll_indicators(), (false, true));
+
+                // Stop on a scrolling indicator, not a selectable row. The
+                // standard MDEF owns scrolling; it must not commit a value.
+                // Macintosh Toolbox Essentials (1992), Menu Manager, "Menus".
+                let down_point = (top.bounds.2 - 4, top.bounds.1 + 30);
+                runner.set_mouse_position(down_point.0, down_point.1);
+                runner.push_mouse_up(down_point.0, down_point.1);
+                assert!((0..100).any(|_| {
+                    runner.run_steps(50_000, None);
+                    runner.guest_popup_snapshot().is_none()
+                }), "release on the scroll indicator must close tracking");
+                for _ in 0..20 {
+                    runner.run_steps(50_000, None);
+                }
+                assert_eq!(runner.control_snapshot().iter().find(|control| {
+                    control.visible && control.popup_menu_id == Some(144)
+                }).unwrap().value, 1, "arrow release must preserve the original selection");
+
+                // A subsequent interaction must be usable after cancellation.
+                let point = super::scroll_showcase_theme_popup(&mut session);
+                session.runner_mut().push_mouse_up(point.0, point.1);
+                assert!((0..100).any(|_| {
+                    let runner = session.runner_mut();
+                    runner.run_steps(50_000, None);
+                    runner.control_snapshot().iter().any(|control| {
+                        control.visible && control.popup_menu_id == Some(144) && control.value == 55
+                    })
+                }));
+                assert!(session.runner_mut().guest_popup_snapshot().is_none());
+            }
+        }
+
         #[test]
         fn popup_cancellation_preserves_guest_value_across_cpu_modes() {
             for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
