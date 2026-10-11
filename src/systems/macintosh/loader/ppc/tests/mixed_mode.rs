@@ -534,6 +534,34 @@ fn carbon_grow_zone_upp_binds_weak_import_and_builds_descriptor() {
     );
 }
 
+// Keep the application's main transition vector at data[0..8], and relocate
+// the weak imported transition vector into its own slot at data[8..12].
+// The guest CFM call stub loads that slot rather than jumping to a fixed trap.
+pub(super) fn relocated_dialog_upp_test_pef(library: &[u8], symbol: &[u8]) -> Vec<u8> {
+    let loader = synthetic_loader_with_symbol_class(
+        library,
+        symbol,
+        0x82,
+        &[run_reloc(0x23, 1), sm_index_reloc(0x30, 0)],
+    );
+    let mut code = Vec::new();
+    for word in [
+        d_form_u(32, 12, 2, 8), // lwz r12, imported transition vector
+        d_form_u(36, 2, 1, 20), // save caller RTOC
+        d_form_u(32, 0, 12, 0),
+        d_form_u(32, 2, 12, 4),
+        xfx_form(31, 0, 9, 467),
+        xl_form(19, 20, 0, 528, true),
+        d_form_u(32, 2, 1, 20), // restore caller RTOC
+        d_form_u(14, 0, 0, 0),
+        xfx_form(31, 0, 8, 467),
+        BLR,
+    ] {
+        code.extend_from_slice(&word.to_be_bytes());
+    }
+    synthetic_pef_with_loader_code_and_data(loader, &code, &[0; 12])
+}
+
 #[test]
 fn user_item_upp_weak_import_owns_descriptor_with_dialog_callback_abi() {
     for library in ["CarbonLib", "InterfaceLib"] {
@@ -541,13 +569,9 @@ fn user_item_upp_weak_import_owns_descriptor_with_dialog_callback_abi() {
             ("NewUserItemUPP", "DisposeUserItemUPP"),
             ("newuseritemupp", "disposeuseritemupp"),
         ] {
-            let loader = synthetic_loader_with_symbol_class(
-                library.as_bytes(),
-                create.as_bytes(),
-                0x82,
-                &[sm_index_reloc(0x30, 0)],
-            );
-            let mut loaded = load_pef_application(&synthetic_pef_with_loader(loader)).unwrap();
+            let mut loaded = load_pef_application(&relocated_dialog_upp_test_pef(
+                library.as_bytes(), create.as_bytes(),
+            )).unwrap();
             assert!(loaded.imports[0].weak);
             assert_eq!(
                 loaded.imports[0].dispatcher_target,
@@ -555,7 +579,7 @@ fn user_item_upp_weak_import_owns_descriptor_with_dialog_callback_abi() {
             );
             assert_ne!(loaded.imports[0].address, 0);
             assert_eq!(
-                loaded.memory.read_u32_be(PPC_DATA_BASE),
+                loaded.memory.read_u32_be(PPC_DATA_BASE + 8),
                 Some(loaded.imports[0].address)
             );
             let callback = PPC_DATA_BASE + 0x1800;
@@ -624,13 +648,9 @@ fn user_item_upp_weak_import_owns_descriptor_with_dialog_callback_abi() {
             run_test_import(&mut loaded, PpcImportDispatcherTarget::NewUserItemUPP);
             assert_eq!(loaded.cpu.gpr[3], 0);
             // The disposal symbol itself must also resolve as a relocated weak vector.
-            let loader = synthetic_loader_with_symbol_class(
-                library.as_bytes(),
-                dispose.as_bytes(),
-                0x82,
-                &[sm_index_reloc(0x30, 0)],
-            );
-            let mut disposal = load_pef_application(&synthetic_pef_with_loader(loader)).unwrap();
+            let mut disposal = load_pef_application(&relocated_dialog_upp_test_pef(
+                library.as_bytes(), dispose.as_bytes(),
+            )).unwrap();
             assert!(disposal.imports[0].weak);
             assert_eq!(
                 disposal.imports[0].dispatcher_target,
@@ -638,7 +658,7 @@ fn user_item_upp_weak_import_owns_descriptor_with_dialog_callback_abi() {
             );
             assert_ne!(disposal.imports[0].address, 0);
             assert_eq!(
-                disposal.memory.read_u32_be(PPC_DATA_BASE),
+                disposal.memory.read_u32_be(PPC_DATA_BASE + 8),
                 Some(disposal.imports[0].address)
             );
             disposal.cpu.gpr[3] = 0;

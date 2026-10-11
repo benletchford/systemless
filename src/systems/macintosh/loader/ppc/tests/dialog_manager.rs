@@ -422,12 +422,7 @@ fn find_dialog_item_returns_zero_based_index_and_minus_one_for_miss() {
 
 #[test]
 fn created_user_item_upp_draws_dialog_through_original_callback_and_rtoc() {
-    let pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
-        b"CarbonLib",
-        b"NewUserItemUPP",
-        0x82,
-        &[sm_index_reloc(0x30, 0)],
-    ));
+    let pef = super::mixed_mode::relocated_dialog_upp_test_pef(b"CarbonLib", b"NewUserItemUPP");
     let mut loaded = load_pef_application(&pef).unwrap();
     let mut dlog = vec![0; 22];
     dlog[4..6].copy_from_slice(&100i16.to_be_bytes());
