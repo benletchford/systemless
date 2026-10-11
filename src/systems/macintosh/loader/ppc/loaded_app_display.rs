@@ -184,6 +184,23 @@ impl PpcLoadedApp {
 }
 
 impl PpcLoadedApp {
+    /// Complete a guarded host text-service selection through the guest
+    /// TextEdit painter, including erasing the previous selection/caret ink.
+    pub(crate) fn select_and_draw_text_edit(&mut self, handle: u32, start: u32, end: u32) -> bool {
+        if !ppc_te_set_select(&mut self.memory, handle, start, end) { return false; }
+        let Some(te) = ppc_te_record_ptr(&mut self.memory, handle) else { return false; };
+        let port = self.memory.read_u32_be(te + PPC_TE_IN_PORT_OFFSET).unwrap_or(*self.current_gworld);
+        if let Some(view) = ppc_read_rect(&mut self.memory, te + PPC_TE_VIEW_RECT_OFFSET) {
+            let background = ppc_port_rgb_colors(&mut self.memory, port)
+                .map_or(self.quickdraw_back_color, |colors| colors.1);
+            ppc_paint_rect_bounds(&mut self.memory, &self.gworlds, port, view, background, None);
+        }
+        let handles = self.handles();
+        ppc_te_draw(&mut self.memory, &handles, &self.gworlds, handle,
+            *self.current_gworld, self.quickdraw_fore_color, &self.quickdraw_fore_indices);
+        true
+    }
+
     /// Inspect styled TextEdit destination colours; do not mutate its port or
     /// borrow the caller's current foreground, which is restored after drawing.
     pub(crate) fn text_edit_paint_snapshot(

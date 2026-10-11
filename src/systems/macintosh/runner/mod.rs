@@ -3625,9 +3625,13 @@ impl FixtureRunner {
             && record.style_runs == expected.style_runs && record.global_view_rect.is_some()) else { return false; };
         let handle = record.guest_id;
         if let Some(app) = self.native.application_mut() {
-            crate::loader::ppc::ppc_te_set_select(&mut app.memory, handle, range.start as u32, range.end as u32)
+            app.select_and_draw_text_edit(handle, range.start as u32, range.end as u32)
         } else {
-            crate::trap::dispatch::TrapDispatcher::te_set_select(&mut self.bus, handle, range.start as u32, range.end as u32)
+            if !crate::trap::dispatch::TrapDispatcher::te_set_select(&mut self.bus, handle, range.start as u32, range.end as u32) {
+                return false;
+            }
+            self.dispatcher.draw_te_contents(&mut self.m68k.cpu, &mut self.bus, handle, true);
+            true
         }
     }
 
@@ -3657,7 +3661,7 @@ impl FixtureRunner {
         if range.start > range.end || range.end > length || range.end > i16::MAX as usize { return false; }
         if let Some(app) = self.native.application_mut() {
             let handle = app.memory.read_u32_be(actual.guest_id + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET).unwrap_or(0);
-            handle != 0 && crate::loader::ppc::ppc_te_set_select(&mut app.memory, handle, range.start as u32, range.end as u32)
+            handle != 0 && app.select_and_draw_text_edit(handle, range.start as u32, range.end as u32)
         } else {
             self.dispatcher.select_active_dialog_text_range(&mut self.bus, actual.guest_id, item_number, range)
         }

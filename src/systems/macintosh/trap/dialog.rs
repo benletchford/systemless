@@ -3066,7 +3066,7 @@ impl super::TrapDispatcher {
         base != 0 && row_bytes != 0 && top < bottom && left < right
     }
 
-    fn draw_te_contents(
+    pub(crate) fn draw_te_contents(
         &mut self,
         cpu: &mut impl CpuOps,
         bus: &mut MacMemoryBus,
