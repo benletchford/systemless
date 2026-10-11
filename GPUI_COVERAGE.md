@@ -24,6 +24,20 @@ capture run is archived in `styled-text-single-line-shared`, pinned to f565b695.
 All 192 fixture raster/state cases pass; this earlier bitmap evidence does not
 qualify the newer smooth typography or production readiness.
 
+### Standard File runtime inactive dispatch guards
+
+Open/Save, New Folder and replacement button keyboard/accessibility callbacks
+now consult current host activity and panel identity when invoked. File-row
+accessibility actions also validate current entry identity and nested modality.
+Inactive buttons omit host focus. The GPUI click regression passes (2.85s),
+including direct dispatch-guard calls after changing activity/identity without
+re-rendering, so cached callback state cannot authorize those actions. This
+is source/helper and pointer-route evidence, not native accessibility delivery.
+Evidence is in `standard-file-inactive-dispatch`; the current frontend builds
+(7.60s). The shared Open capture helper now saves host-inactive/reactivated images
+and asserts exact composed restoration. Its 16-scenario matrix is running;
+physical host activation and guest suspend/resume are outside that capture scope.
+
 ### Standard File selector scale matrix
 
 All 16 shared Demo Open-panel captures complete across mono68k, colour68k,

@@ -1,0 +1,6 @@
+{
+  "scope": "Actual GPUI Open/Save pointer routes remain covered. Shared runtime dispatch guards reject inactive and stale-owner button actions and inactive/changed-entry row actions, exercised directly without re-rendering (2.85s). Button/row callbacks now use those guards; inactive buttons omit host focus. Current frontend build passes (7.60s). Native accessibility callback delivery, physical observer integration and activation matrix remain unqualified/pending.",
+  "sha256": {
+    "src/bin/gpui_demo.rs": "89c145c1ab83fcf0bdcb730291300447b247ea7bdb17e60e0585d0d039a032ac"
+  }
+}
