@@ -8834,6 +8834,28 @@ impl super::TrapDispatcher {
         (Self::TE_LINE_LEFT_INSET, baseline, metrics.ascent + metrics.descent + metrics.leading)
     }
 
+    pub(crate) fn dialog_static_text_layout(
+        &self, bus: &MacMemoryBus, dialog: u32, index: usize, rect: (i16, i16, i16, i16),
+    ) -> Option<crate::dialog_manager::DialogStaticTextLayout> {
+        let style = self.dialog_item_text_style(bus, dialog, index);
+        let font = style.map_or(self.tx_font, |style| style.font);
+        let size = style.map_or(self.tx_size, |style| style.size);
+        let face = style.map_or(self.tx_face as u8, |style| style.face);
+        if face != 0 || style.is_some_and(|style| style.foreground.is_some() || style.background.is_some()) {
+            return None;
+        }
+        if crate::quickdraw::fonts::get_font_face_or_default(font, size).size != if size == 0 { 12 } else { size.max(1) } {
+            return None;
+        }
+        let metrics = get_font_metrics(font, Self::font_lookup_size(size));
+        let height = rect.2.saturating_sub(rect.0);
+        let baseline = if metrics.ascent >= height && height > 0 { height - 1 } else { metrics.ascent };
+        Some(crate::dialog_manager::DialogStaticTextLayout {
+            font: (font, size), origin: (Self::TE_LINE_LEFT_INSET, baseline),
+            line_height: metrics.ascent + metrics.descent + metrics.leading, inclusive_bottom: true,
+        })
+    }
+
     fn draw_static_text(
         &self,
         bus: &mut MacMemoryBus,
