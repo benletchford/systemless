@@ -102,6 +102,7 @@ pub(super) fn dispatch_textedit_import(
                 styled,
             );
             scrap.text_edit.register(te_handle);
+            memory.presentation().forget_text_edit_drawing(te_handle);
             *last_mem_error = if te_handle == 0 {
                 PPC_MEM_FULL_ERR
             } else {
@@ -296,6 +297,7 @@ pub(super) fn dispatch_textedit_import(
                 cpu.gpr[3],
             );
             scrap.text_edit.remove(&cpu.gpr[3]);
+            memory.presentation().forget_text_edit_drawing(cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::TEActivate { active } => {

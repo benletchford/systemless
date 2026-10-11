@@ -3,6 +3,9 @@
 //! The 68K trap and PowerPC import layers translate guest ABI and memory into
 //! this model, then serialize the result back into their respective `TERec`.
 
+mod drawing;
+pub(crate) use drawing::TextEditDrawing;
+
 use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 
@@ -291,6 +294,10 @@ mod tests {
 #[doc(hidden)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TextEditSnapshot {
+    /// True only while the last guest drawing has a verified visible region.
+    pub drawing_intact: bool,
+    /// Screen rectangles covered by the last verified guest drawing.
+    pub painted_regions: Vec<(i16, i16, i16, i16)>,
     pub guest_id: u32,
     pub generation: u64,
     pub owner_port: u32,
@@ -382,6 +389,8 @@ pub(crate) fn snapshot_guest_records(
             let line_height = word(read, ptr + 0x18)? as i16;
             let size = word(read, ptr + 0x50)? as i16;
             Some(TextEditSnapshot {
+                drawing_intact: false,
+                painted_regions: Vec::new(),
                 guest_id: *handle,
                 generation: *generation,
                 owner_port: long(read, ptr + 0x52)?,

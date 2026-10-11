@@ -4541,6 +4541,14 @@ mod desktop {
                     .unwrap();
                 session.initialize(&app);
                 wait_for_menu(&mut session, 129, 1, true);
+                let records = session.runner_mut().text_edit_snapshot().records;
+                let windows = session.runner_mut().window_frame_snapshot();
+                let dialogs = session.runner_mut().dialog_snapshot();
+                let controls = session.runner_mut().control_snapshot();
+                assert!(super::super::frames::text_edit_pieces(
+                    &records, &dialogs, &controls, &windows,
+                    super::super::frames::Rect { top: 0, left: 0, bottom: 600, right: 800 },
+                ).is_empty(), "allocated text must not overlay the graphics page; powerpc={powerpc}");
                 assert!(session.runner_mut().select_guest_menu_item(129, 7));
                 wait_for_menu(&mut session, 129, 7, true);
                 let first = (0..100)
@@ -4576,6 +4584,7 @@ mod desktop {
                     .unwrap();
                 assert_eq!(next.generation, first.generation);
                 assert_eq!(next.global_view_rect, first.global_view_rect);
+                assert!(next.drawing_intact, "painted text must remain eligible; powerpc={powerpc}, depth={depth:?}");
                 session.deliver_input(MacintoshInput::KeyDown {
                     mac_key: 0x00,
                     character: b'a',
@@ -4631,6 +4640,14 @@ mod desktop {
                     })
                     .expect("guest TEKey should replace the selection and move the caret");
                 assert_eq!(replaced.text.len(), first.text.len() - 13);
+                assert!(session.runner_mut().select_guest_menu_item(129, 1));
+                wait_for_menu(&mut session, 129, 1, true);
+                settle(&mut session);
+                let retained = session.runner_mut().text_edit_snapshot().records.into_iter()
+                    .find(|record| record.guest_id == first.guest_id).unwrap();
+                assert!(!retained.drawing_intact,
+                    "retained text must not overlay a subsequently painted page; powerpc={powerpc}, depth={depth:?}");
+
             }
         }
 

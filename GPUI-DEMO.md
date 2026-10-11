@@ -90,7 +90,7 @@ headless GPUI renderer. Reviewed composed captures use the same showcase on
 [68K](tests/toolbox-showcase/reference/gpui-demo/20-standard-menu-68k.png) and
 [PowerPC](tests/toolbox-showcase/reference/gpui-demo/20-standard-menu-ppc.png).
 
-These menu references use the current uncropped live layout. Other composed
+These menu references and the initial Controls references use the current uncropped live layout. The Controls references also verify that retained, unpainted TextEdit records do not overlay the page and are byte-identical across 68K and PPC. Other composed
 references below predate that layout change and still require regeneration
 and visual review; they are not current layout acceptance evidence.
 
@@ -196,7 +196,7 @@ On both CPUs the composed image differs from its unchecked capture only
 inside the checkbox's 28-by-28-pixel rendered area.
 
 Standard unstyled document TextEdit now uses a read-only GPUI overlay with
-guest-defined line breaks, scroll origin, selection, and insertion point.
+guest-defined line breaks, scroll origin, selection, and insertion point. Eligibility requires retained evidence from an actual guest draw, matching framebuffer pixels, and the visible/clip regions at draw time. Retaining a TEHandle after changing pages does not display stale text. The same check covers monochrome and colour 68K and the PowerPC presented framebuffer.
 Styled and justified records, dialog TextEdit with multiline layouts, and
 records overlapping custom controls retain guest pixels. The runner forwards
 ordinary ASCII keys and arrows to the guest; the guest owns typing, focus,

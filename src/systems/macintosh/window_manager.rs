@@ -153,12 +153,22 @@ pub(crate) fn snapshot_window_regions_rectangular(
 /// Inside Macintosh Volume I (1985), pp. I-141--I-142.
 pub(crate) fn snapshot_visible_region_rects(
     window: u32,
+    read_byte: impl FnMut(u32) -> u8,
+) -> Option<Vec<WindowRect>> {
+    snapshot_port_region_rects(window, 24, true, read_byte)
+}
+
+/// Decode either visRgn (24) or clipRgn (28), optionally in screen coordinates.
+pub(crate) fn snapshot_port_region_rects(
+    window: u32,
+    region_offset: u32,
+    global: bool,
     mut read_byte: impl FnMut(u32) -> u8,
 ) -> Option<Vec<WindowRect>> {
     const STOP: i16 = i16::MAX;
     const MAX_ROWS: i32 = 4096;
     const MAX_RECTS: usize = 512;
-    let handle = snapshot_read_long(&mut read_byte, window.wrapping_add(24));
+    let handle = snapshot_read_long(&mut read_byte, window.wrapping_add(region_offset));
     let region = snapshot_read_long(&mut read_byte, handle);
     if handle == 0 || region == 0 {
         return None;
@@ -171,7 +181,7 @@ pub(crate) fn snapshot_visible_region_rects(
     if bounds.2 <= bounds.0 || bounds.3 <= bounds.1 {
         return Some(Vec::new());
     }
-    let origin = snapshot_port_bounds_origin(&mut read_byte, window);
+    let origin = if global { snapshot_port_bounds_origin(&mut read_byte, window) } else { (0, 0) };
     if size == 10 {
         return Some(vec![snapshot_local_rect_to_global(bounds, origin)]);
     }
