@@ -4941,6 +4941,12 @@ pub(crate) fn dispatcher_target_for_import(
             )
         }
         (
+            "InterfaceLib" | "CarbonLib",
+            "ConstrainWindowToScreen" | "constrainwindowtoscreen",
+        ) => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::ConstrainWindowToScreen,
+        ),
+        (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowBounds" | "getwindowbounds",
         ) => {

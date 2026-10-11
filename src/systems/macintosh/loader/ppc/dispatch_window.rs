@@ -3280,6 +3280,7 @@ pub enum PpcLegacyWindowOperation {
     ChangeWindowAttributes,
     ChangeWindowPropertyAttributes,
     CheckUpdate,
+    ConstrainWindowToScreen,
     CreateNewWindow,
     DisposeWindow,
     DragWindow,
@@ -4628,6 +4629,192 @@ pub(super) fn ppc_dispatch_legacy_window(
                 Err(_) => 0,
             };
             Some(PpcImportAction::Return(result))
+        }
+        PpcLegacyWindowOperation::ConstrainWindowToScreen => {
+            // MacWindows.h: constrain the requested global region; outStructure
+            // always describes the frame, including for content-region callers.
+            let window = cpu.gpr[3];
+            let region_code = cpu.gpr[4];
+            let options = cpu.gpr[5];
+            let screen_ptr = cpu.gpr[6];
+            let output = cpu.gpr[7];
+            if window == 0
+                || !window_list.windows().contains(&window)
+                || (output != 0 && !ppc_memory_can_write_bytes(memory, output, 8))
+                || (screen_ptr != 0 && !ppc_memory_can_read_bytes(memory, screen_ptr, 8))
+                || options & !0x0f != 0
+            {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            let Some(content) = ppc_window_global_content_bounds(memory, gworlds, window) else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            let Some(structure) = ppc_window_global_structure_bounds(memory, gworlds, window)
+            else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            let region = match region_code {
+                32 | 35 => structure,
+                33 | 40 => content,
+                0 if ppc_window_proc_has_title_bar(ppc_window_proc_id(memory, window)) => {
+                    (structure.0, structure.1, content.0, structure.3)
+                }
+                34 => {
+                    let handle = memory
+                        .read_u32_be(window + PPC_CWINDOW_UPDATE_RGN_OFFSET)
+                        .unwrap_or(0);
+                    match ppc_read_rgn_bbox(memory, handle) {
+                        Some(bounds) => bounds,
+                        None => {
+                            return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)))
+                        }
+                    }
+                }
+                _ => return Some(PpcImportAction::Return(ppc_i16_result(-30593))),
+            };
+            // Systemless exposes one display. Its desktop excludes the menu bar;
+            // an explicit rectangle is already in global coordinates.
+            let screen = if screen_ptr != 0 {
+                ppc_read_rect(memory, screen_ptr).unwrap()
+            } else {
+                let menu_height = if toolbox_startup.host_menu_bar_hidden {
+                    0
+                } else {
+                    memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i16
+                };
+                (
+                    menu_height,
+                    0,
+                    ppc_main_screen_height() as i16,
+                    ppc_main_screen_width() as i16,
+                )
+            };
+            if screen.0 >= screen.2 || screen.1 >= screen.3 {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            let mut new_content = content;
+            let mut new_region = region;
+            let screen_height = i32::from(screen.2) - i32::from(screen.0);
+            let screen_width = i32::from(screen.3) - i32::from(screen.1);
+            if options & 1 != 0 && options & 4 == 0 {
+                let excess_height = if region_code == 0 {
+                    0
+                } else {
+                    (i32::from(region.2) - i32::from(region.0) - screen_height).max(0)
+                };
+                let excess_width =
+                    (i32::from(region.3) - i32::from(region.1) - screen_width).max(0);
+                // Resize the content, retaining the frame insets and local origin.
+                new_content.2 = ppc_i32_to_i16_saturating(
+                    (i32::from(content.2) - excess_height).max(i32::from(content.0) + 1),
+                );
+                new_content.3 = ppc_i32_to_i16_saturating(
+                    (i32::from(content.3) - excess_width).max(i32::from(content.1) + 1),
+                );
+                new_region.2 = ppc_i32_to_i16_saturating(
+                    i32::from(region.2) + i32::from(new_content.2) - i32::from(content.2),
+                );
+                new_region.3 = ppc_i32_to_i16_saturating(
+                    i32::from(region.3) + i32::from(new_content.3) - i32::from(content.3),
+                );
+            }
+            let partial = options & 4 != 0;
+            let intersects = new_region.0 < screen.2
+                && new_region.2 > screen.0
+                && new_region.1 < screen.3
+                && new_region.3 > screen.1;
+            let fits = partial
+                || (i32::from(new_region.2) - i32::from(new_region.0) <= screen_height
+                    && i32::from(new_region.3) - i32::from(new_region.1) <= screen_width);
+            let may_move = fits || options & 2 != 0;
+            let (dy, dx) = if may_move && !(partial && intersects) {
+                let constrain_axis = |start: i16, end: i16, low: i16, high: i16| {
+                    let start = i32::from(start);
+                    let end = i32::from(end);
+                    let low = i32::from(low);
+                    let high = i32::from(high);
+                    if start < low {
+                        low - start
+                    } else if end > high {
+                        (high - end).max(low - start)
+                    } else {
+                        0
+                    }
+                };
+                (
+                    constrain_axis(new_region.0, new_region.2, screen.0, screen.2),
+                    constrain_axis(new_region.1, new_region.3, screen.1, screen.3),
+                )
+            } else {
+                (0, 0)
+            };
+            new_content = (
+                ppc_i32_to_i16_saturating(i32::from(new_content.0) + dy),
+                ppc_i32_to_i16_saturating(i32::from(new_content.1) + dx),
+                ppc_i32_to_i16_saturating(i32::from(new_content.2) + dy),
+                ppc_i32_to_i16_saturating(i32::from(new_content.3) + dx),
+            );
+            let new_structure =
+                ppc_window_structure_bounds(ppc_window_proc_id(memory, window), new_content);
+            if options & 8 == 0 && new_content != content {
+                let visible = ppc_window_is_visible(memory, window);
+                if ppc_move_window_coordinates(
+                    memory,
+                    gworlds,
+                    window,
+                    new_content.1,
+                    new_content.0,
+                )
+                .is_none()
+                    || ppc_size_window_dimensions(
+                        memory,
+                        gworlds,
+                        window,
+                        (i32::from(new_content.3) - i32::from(new_content.1)) as u32,
+                        (i32::from(new_content.2) - i32::from(new_content.0)) as u32,
+                    )
+                    .is_none()
+                {
+                    return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+                }
+                ppc_recalculate_window_vis_regions(
+                    process_memory_manager,
+                    memory,
+                    window_list,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                );
+                ppc_repaint_window_geometry_transition(
+                    memory,
+                    gworlds,
+                    window_list,
+                    window,
+                    visible,
+                    Some(structure),
+                    Some(new_structure),
+                    toolbox_startup.host_menu_bar_hidden,
+                    event_queue,
+                    when,
+                    input,
+                );
+            }
+            if output != 0 {
+                let _ = ppc_write_rect(
+                    memory,
+                    output,
+                    new_structure.0,
+                    new_structure.1,
+                    new_structure.2,
+                    new_structure.3,
+                );
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(if fits {
+                PPC_NO_ERR
+            } else {
+                -5611
+            })))
         }
         PpcLegacyWindowOperation::GetWindowBounds => {
             let window = cpu.gpr[3];

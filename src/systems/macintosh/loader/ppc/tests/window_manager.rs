@@ -10131,3 +10131,125 @@ fn front_non_floating_window_uses_classes_visibility_and_live_window_order() {
         assert_eq!(loaded.cpu.gpr[3], 0);
     }
 }
+
+
+#[test]
+fn window_screen_constraint_weak_import_moves_live_geometry_and_calculates_frame_bounds() {
+    for library in ["InterfaceLib", "CarbonLib"] {
+        for symbol in ["ConstrainWindowToScreen", "constrainwindowtoscreen"] {
+            let loader = synthetic_loader_with_symbol_class(
+                library.as_bytes(),
+                symbol.as_bytes(),
+                0x82,
+                &[run_reloc(0x23, 1)],
+            );
+            let mut loaded = load_pef_application(&synthetic_pef_with_loader(loader)).unwrap();
+            let operation = PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::ConstrainWindowToScreen,
+            );
+            assert_eq!(loaded.imports[0].dispatcher_target, operation);
+            assert!(loaded.imports[0].weak);
+            assert_ne!(loaded.imports[0].address, 0);
+            let scratch = PPC_DATA_BASE + 0x1400;
+            loaded.memory.add_region(scratch, vec![0; 0x100]);
+            let window =
+                create_test_cwindow(&mut loaded, scratch, (-40, -80, 60, 120), 0, true, u32::MAX);
+            let other =
+                create_test_cwindow(&mut loaded, scratch, (40, 50, 90, 150), 0, true, u32::MAX);
+            let screen = scratch + 32;
+            let output = scratch + 48;
+            ppc_write_rect(&mut loaded.memory, screen, 20, 30, 180, 260).unwrap();
+            let invoke = |loaded: &mut PpcLoadedApp, region, options, screen, output| {
+                loaded.cpu.gpr[3] = window;
+                loaded.cpu.gpr[4] = region;
+                loaded.cpu.gpr[5] = options;
+                loaded.cpu.gpr[6] = screen;
+                loaded.cpu.gpr[7] = output;
+                run_test_import(loaded, operation.clone());
+                loaded.cpu.gpr[3] as i16
+            };
+            // Calculate-only frame constraint returns a translated structure,
+            // without changing the content, window ordering or other window.
+            let order = loaded.window_list.windows();
+            assert_eq!(invoke(&mut loaded, 32, 2 | 8, screen, output), PPC_NO_ERR);
+            assert_eq!(
+                ppc_read_rect(&mut loaded.memory, output),
+                Some((20, 30, 141, 233))
+            );
+            assert_eq!(
+                ppc_window_global_content_bounds(&mut loaded.memory, &loaded.gworlds, window),
+                Some((-40, -80, 60, 120))
+            );
+            assert_eq!(loaded.window_list.windows(), order);
+            // Real content constraint preserves size and local port origin;
+            // outStructure still includes the title and frame.
+            let local = ppc_read_rect(&mut loaded.memory, window + 16);
+            assert_eq!(invoke(&mut loaded, 33, 2, screen, output), PPC_NO_ERR);
+            assert_eq!(
+                ppc_window_global_content_bounds(&mut loaded.memory, &loaded.gworlds, window),
+                Some((20, 30, 120, 230))
+            );
+            assert_eq!(
+                ppc_read_rect(&mut loaded.memory, output),
+                Some((1, 29, 122, 232))
+            );
+            assert_eq!(ppc_read_rect(&mut loaded.memory, window + 16), local);
+            assert_eq!(
+                ppc_window_global_content_bounds(&mut loaded.memory, &loaded.gworlds, other),
+                Some((40, 50, 90, 150))
+            );
+            // Already intersecting is sufficient for AllowPartial: no movement.
+            ppc_write_rect(&mut loaded.memory, screen, 100, 200, 160, 260).unwrap();
+            assert_eq!(invoke(&mut loaded, 33, 2 | 4, screen, 0), PPC_NO_ERR);
+            assert_eq!(
+                ppc_window_global_content_bounds(&mut loaded.memory, &loaded.gworlds, window),
+                Some((20, 30, 120, 230))
+            );
+            // Without resizing an oversized window reports the documented fit
+            // error. Calculate-only does not apply its hypothetical move.
+            assert_eq!(invoke(&mut loaded, 33, 8, screen, output), -5611);
+            assert_eq!(
+                ppc_window_global_content_bounds(&mut loaded.memory, &loaded.gworlds, window),
+                Some((20, 30, 120, 230))
+            );
+            // MayResize really shrinks the content to the supplied screen.
+            assert_eq!(invoke(&mut loaded, 33, 1 | 2, screen, output), PPC_NO_ERR);
+            assert_eq!(
+                ppc_window_global_content_bounds(&mut loaded.memory, &loaded.gworlds, window),
+                Some((100, 200, 160, 260))
+            );
+            assert_eq!(
+                ppc_read_rect(&mut loaded.memory, output),
+                Some((81, 199, 162, 262))
+            );
+            // Invalid output is rejected before moving/resizing the window.
+            assert_eq!(invoke(&mut loaded, 33, 2, 0, u32::MAX - 3), PPC_PARAM_ERR);
+            assert_eq!(
+                ppc_window_global_content_bounds(&mut loaded.memory, &loaded.gworlds, window),
+                Some((100, 200, 160, 260))
+            );
+            // Move beyond the virtual screen using explicit global bounds,
+            // then prove a null screen really uses the current display.
+            ppc_write_rect(&mut loaded.memory, screen, 900, 900, 960, 960).unwrap();
+            assert_eq!(invoke(&mut loaded, 33, 2, screen, 0), PPC_NO_ERR);
+            assert_eq!(
+                ppc_window_global_content_bounds(&mut loaded.memory, &loaded.gworlds, window),
+                Some((900, 900, 960, 960))
+            );
+            assert_eq!(invoke(&mut loaded, 33, 2, 0, 0), PPC_NO_ERR);
+            let height = ppc_main_screen_height() as i16;
+            let width = ppc_main_screen_width() as i16;
+            assert_eq!(
+                ppc_window_global_content_bounds(&mut loaded.memory, &loaded.gworlds, window),
+                Some((height - 60, width - 60, height, width))
+            );
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = 33;
+            loaded.cpu.gpr[5] = 2;
+            loaded.cpu.gpr[6] = 0;
+            loaded.cpu.gpr[7] = output;
+            run_test_import(&mut loaded, operation.clone());
+            assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+        }
+    }
+}
