@@ -7531,7 +7531,7 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
         fn classic_document_glyph_clicks_reach_guest_at_scene_scales(cx: &mut gpui_kit::TestAppContext) {
-            use gpui_kit::{test::TestWindowExt, AppContext, InputEvent, MouseButton, MouseDownEvent, MouseUpEvent};
+            use gpui_kit::{test::TestWindowExt, AppContext, InputEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent};
             cx.update(gpui_kit::init);
             for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
                 let mut session = MacintoshSession::new(true, depth);
@@ -7555,7 +7555,7 @@ mod desktop {
                             ..Default::default()
                         }, cx, |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap()
                     });
-                    for (line_index, offset) in [(0, 3), (1, 2)] {
+                    for (line_index, offset, drag_end) in [(0, 3, None), (1, 2, None), (0, 3, Some(6))] {
                         let records = session.runner_mut().text_edit_snapshot().records;
                         let record = records.iter().find(|record| record.view_rect == (76, 34, 211, 326)).unwrap();
                         let starts = record.line_starts.as_ref().unwrap();
@@ -7564,10 +7564,13 @@ mod desktop {
                         let dest = record.global_dest_rect.unwrap();
                         // TextEdit paints glyphs one guest pixel inside destRect.
                         // Exercise the displayed boundary, including that inset.
-                        let guest_x = i32::from(dest.1) + 1 + layout.positions[offset];
                         let guest_y = i32::from(dest.0) + line_index as i32 * i32::from(record.line_height)
                             + i32::from(record.font_ascent);
-                        for down in [true, false] {
+                        let mut events = vec![(0, offset)];
+                        if let Some(end) = drag_end { events.push((1, end)); }
+                        events.push((2, drag_end.unwrap_or(offset)));
+                        for (phase, pointer_offset) in events {
+                            let guest_x = i32::from(dest.1) + 1 + layout.positions[pointer_offset];
                             cx.update_window(window.into(), |_, window, cx| {
                                 view.update(cx, |demo, cx| {
                                     demo.width = 800;
@@ -7588,10 +7591,10 @@ mod desktop {
                                         gpui_kit::px(demo.display_origin.0 + (guest_x as f32 + 0.25) * scale),
                                         gpui_kit::px(demo.display_origin.1 + (guest_y as f32 + 0.25) * scale))
                                 });
-                                let event = if down {
-                                    MouseDownEvent { position, button: MouseButton::Left, click_count: 1, ..Default::default() }.to_platform_input()
-                                } else {
-                                    MouseUpEvent { position, button: MouseButton::Left, click_count: 1, ..Default::default() }.to_platform_input()
+                                let event = match phase {
+                                    0 => MouseDownEvent { position, button: MouseButton::Left, click_count: 1, ..Default::default() }.to_platform_input(),
+                                    1 => MouseMoveEvent { position, pressed_button: Some(MouseButton::Left), ..Default::default() }.to_platform_input(),
+                                    _ => MouseUpEvent { position, button: MouseButton::Left, click_count: 1, ..Default::default() }.to_platform_input(),
                                 };
                                 window.dispatch_event(event, cx);
                             }).unwrap();
@@ -7609,8 +7612,9 @@ mod desktop {
                         let clicked = session.runner_mut().text_edit_snapshot().records.into_iter()
                             .find(|next| next.guest_id == record.guest_id).unwrap();
                         let expected = starts[line_index] + offset;
-                        assert_eq!(clicked.selection, (expected, expected),
-                            "PPC={powerpc}, depth={depth:?}, scale={scale}, line={line_index}");
+                        let expected_end = starts[line_index] + drag_end.unwrap_or(offset);
+                        assert_eq!(clicked.selection, (expected, expected_end),
+                            "PPC={powerpc}, depth={depth:?}, scale={scale}, line={line_index}, drag_end={drag_end:?}");
                     }
                 }
             }

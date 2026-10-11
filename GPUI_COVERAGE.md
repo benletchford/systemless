@@ -2676,5 +2676,11 @@ boundary, including the one-pixel destRect inset. The GPUI test
 frontend mouse-down/up events through the existing guest input path and asserts
 the resulting guest insertion offset on two lines at 0.75x, 1x, 1.5x and 2x,
 across monochrome 68k, colour 68k and PPC (24 checks; passed in 254.37 seconds).
-This qualifies that bounded click mapping; scaled dragging, Shift-selection,
-editing, scrolling and native host input remain open.
+The same test now also holds the mouse button while moving from byte offset 3
+to 6, then releases it and asserts the guest selection `(3, 6)` at each scale
+and in each mode. All 36 checks (24 clicks and 12 drags) pass in 344.11 seconds.
+Each frontend event is delivered through the existing session input path;
+selection is read from the guest TERec, without a host editing model. This
+qualifies the tested insertion and forward-drag mapping; reverse/cross-line
+dragging, Shift-selection, scaled editing, scrolling and native host input
+remain open.
