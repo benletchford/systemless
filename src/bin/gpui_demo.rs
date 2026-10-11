@@ -7853,9 +7853,10 @@ mod desktop {
 
         #[test]
         fn live_controls_expose_guest_values_on_both_cpus() {
-            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
-                let mut session = MacintoshSession::new(true, depth);
+            for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
                 session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
                 let app = session
                     .load_path(
                         &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -7873,12 +7874,14 @@ mod desktop {
                     .unwrap();
                 assert_eq!(button.proc_id, 0);
                 assert_eq!(button.bounds, (305, 80, 329, 190));
+                assert!(button.background.is_some(), "fresh standard button paint must reach the frontend snapshot");
                 let checkbox = controls
                     .iter()
                     .find(|control| control.visible && control.title == "Checkbox")
                     .unwrap();
                 assert_eq!(checkbox.proc_id, 1);
                 assert_eq!(checkbox.bounds, (305, 225, 329, 355));
+                assert!(checkbox.background.is_some(), "fresh checkbox paint must reach the frontend snapshot");
                 assert_eq!(checkbox.value, 0);
                 assert!(checkbox.enabled);
                 assert_ne!(checkbox.generation, 0);

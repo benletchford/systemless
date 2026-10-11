@@ -5409,3 +5409,9 @@ Seven shared tests, actual PPC checkbox mutation/redraw, and classic control
 font drawing with raw value mutation rejection pass. Evidence is archived in
 `control-state-freshness`. This closes the specific unstamped raw-record gap;
 broader custom paint provenance, composed fidelity and release gates remain open.
+
+The live-control fixture now explicitly covers PPC8 and PPC16 alongside mono
+and colour 68k. Fresh button and checkbox paint evidence reaches the actual
+frontend snapshots, with guest held checkbox/value and scrollbar behavior
+preserved (6.36s). Evidence is `control-state-freshness/four-mode-snapshots.log`;
+this is snapshot/interaction qualification, not a composed image comparison.

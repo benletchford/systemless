@@ -15,3 +15,11 @@ pin production code. These tests establish native guest draw/state ownership,
 not screenshot fidelity, physical host interaction or the complete release gate.
 
 The current default GPUI application compile check also passes (25.04s).
+
+The later live-control fixture regression passes all four explicit CPU/depth
+modes (6.36s), requiring fresh standard button/checkbox backgrounds in actual
+frontend snapshots and preserving guest held checkbox/value/scrollbar behavior.
+Evidence is `four-mode-snapshots.log`; `snapshot-source-hashes.json` pins this
+later source checkpoint. Snapshot metadata is not composed visual evidence.
+
+The no-default-features public library compile check passes (11.88s).
