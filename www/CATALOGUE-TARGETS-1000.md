@@ -473,7 +473,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 418 | 606 | ExaChess_Lite | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
 | 419 | 607 | Fanorona | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
 | 420 | 608 | GL Tron | PPC (filename) | F | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
-| 421 | 609 | HipHop | Verify 68K/PPC | F | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
+| 421 | 609 | HipHop | 68K (original 1.0.1; rights/startup held) | F | [Archive index](https://www.vintageapplemac.com/software/games/h/); [Original intake](CATALOGUE-SOURCES.md#hiphop-101--target-609-original-68k-installer-intake) |
 | 422 | 610 | Imp Fodder | Verify 68K/PPC | F | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
 | 423 | 611 | Jailbreak | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/); [Garden](https://macintoshgarden.org/games/jailbreak) |
 | 424 | 612 | Kalah | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
