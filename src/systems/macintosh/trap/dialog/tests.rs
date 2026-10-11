@@ -18261,6 +18261,58 @@
     }
 
     #[test]
+    fn plain_textedit_retains_glyph_ink_before_selection_and_caller_changes() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.set_screen_mode_for_test(bus.read_long(0x0824), 64, 512, 342, 1);
+        let handle = make_te_with_text(&mut disp, &mut bus, b"ABC");
+        let ptr = bus.read_long(handle);
+        let port = bus.read_long(ptr + TrapDispatcher::TE_IN_PORT_OFFSET);
+        bus.write_word(ptr + TrapDispatcher::TE_TX_MODE_OFFSET, 1);
+        disp.fg_color = (0, 0, 0);
+        disp.draw_te_contents(&mut cpu, &mut bus, handle, false);
+        let ink = bus.presentation.text_edit_plain_ink(handle).unwrap();
+        assert_eq!(ink, (1, 1));
+        let mut record = crate::text_edit::snapshot_guest_records(&[(handle, 1)],
+            &mut |address| Some(bus.read_byte(address))).records.remove(0);
+        record.drawing_intact = !bus.text_edit_drawing_regions(handle, port,
+            record.view_rect, disp.screen_mode.0).is_empty();
+        assert!(record.drawing_intact);
+        disp.fg_color = (0xffff, 0xffff, 0xffff);
+        let paint = disp.text_edit_paint_snapshot(&bus, &record).unwrap();
+        assert_eq!(paint.style_ink[0].pixel, 1, "later caller white must not replace painted black");
+        assert_eq!(paint.style_ink[0].rgb, [0; 3]);
+        disp.fg_color = (0, 0, 0);
+        bus.write_word(ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 1);
+        bus.write_word(ptr + TrapDispatcher::TE_SEL_START_OFFSET, 0);
+        bus.write_word(ptr + TrapDispatcher::TE_SEL_END_OFFSET, 1);
+        disp.draw_te_contents(&mut cpu, &mut bus, handle, true);
+        assert_eq!(bus.presentation.text_edit_plain_ink(handle), Some(ink),
+            "selection inversion must not become glyph foreground");
+        bus.forget_text_edit_drawing(handle);
+        assert!(disp.text_edit_paint_snapshot(&bus, &record).is_none());
+    }
+
+    #[test]
+    fn plain_textedit_ink_capture_preserves_nested_port_scope_and_rejects_mixed_ink() {
+        let (_, _, bus) = setup();
+        let outer = bus.presentation.begin_text_edit_ink_capture(100);
+        bus.presentation.record_text_edit_glyph_ink(200, 8, Some(7));
+        bus.presentation.record_text_edit_glyph_ink(100, 1, Some(1));
+        let inner = bus.presentation.begin_text_edit_ink_capture(200);
+        bus.presentation.record_text_edit_glyph_ink(200, 8, Some(7));
+        assert_eq!(bus.presentation.end_text_edit_ink_capture(inner), Some((8, 7)));
+        assert_eq!(bus.presentation.end_text_edit_ink_capture(outer), Some((1, 1)));
+        let previous = bus.presentation.begin_text_edit_ink_capture(100);
+        bus.presentation.record_text_edit_glyph_ink(100, 1, Some(0));
+        bus.presentation.record_text_edit_glyph_ink(100, 1, Some(1));
+        assert_eq!(bus.presentation.end_text_edit_ink_capture(previous), None);
+        let previous = bus.presentation.begin_text_edit_ink_capture(100);
+        bus.presentation.record_text_edit_glyph_ink(100, 1, Some(1));
+        bus.presentation.record_text_edit_glyph_ink(100, 8, None);
+        assert_eq!(bus.presentation.end_text_edit_ink_capture(previous), None);
+    }
+
+    #[test]
     fn textedit_uses_record_transfer_mode_and_restores_port_text_attributes() {
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         disp.set_screen_mode_for_test(bus.read_long(0x0824), 64, 512, 342, 1);

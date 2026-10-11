@@ -1,5 +1,32 @@
 # GPUI Kit system-interface coverage
 
+### Retained classic plain TextEdit foreground ink (2026-10-12)
+
+Classic TextEdit now observes the actual glyph foreground resolved by its existing
+QuickDraw draw path, scoped to the editor's port. Nested captures restore the
+outer observation; other ports, erasing, selection inversion and caret paint do
+not supply glyph ink. Mixed or unsupported glyph recipes decline the retained
+ink. The physical pixel travels with the existing drawing evidence, and a fresh
+plain snapshot resolves its displayed/inverted colours from the live palette.
+Guest glyph painting, font metrics and event routing are retained.
+
+Four targeted tests pass (2.16s), including actual one-bit paint, later caller
+colour changes, selection inversion, forgotten evidence and nested/mixed capture
+scope. All 434 classic dialog regressions pass (0.32s), and 43 related shared
+TextEdit checks pass (5.87s). The new real Showcase plain-field check passes
+mono68k, colour68k, PPC8 and PPC16 (5.07s): each sampled field's retained physical
+foreground appears in the native frame. This checks paint inputs on one sampled
+field per mode, not a complete font/style visual matrix or independent
+Macintosh oracle.
+
+The existing active multiline GPUI interaction check passes all four CPU/display
+modes and four scales (34.84s). Functional CI builds use root optimization0 and
+incremental compilation; these timings do not measure production performance.
+Actual nonzero plain-face GPUI composition, empty/unsupported glyph recipes,
+complete font ratios and source/transfer recipes, physical input, native font
+references and live EV performance remain unfinished. No broad gate closes.
+The fresh locked/offline default desktop check passes (31.34s).
+
 ### Retained PPC plain TextEdit foreground ink (2026-10-12)
 
 PPC plain TextEdit records the actual foreground pixel resolved for its glyph

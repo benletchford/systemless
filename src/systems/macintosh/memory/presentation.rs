@@ -38,11 +38,21 @@ fn divide_row(offset: u32, row_bytes: u32, reciprocal: u64) -> (u32, u32) {
     (x, y)
 }
 
+/// A scoped observation of plain TextEdit glyph ink. Nested draws restore the
+/// outer observation; other ports and selection/caret operations do not enter it.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct TextEditInkCapture {
+    port: Option<u32>,
+    ink: Option<(u16, u16)>,
+    mixed: bool,
+}
+
 /// Shared by both CPU adapters; access is scoped to a single drawing operation.
 #[derive(Clone, Default)]
 pub(crate) struct PresentationSlot(
     std::rc::Rc<std::cell::RefCell<Option<Presentation>>>,
     std::rc::Rc<std::cell::RefCell<HashMap<u32, crate::text_edit::TextEditDrawing>>>,
+    std::rc::Rc<std::cell::Cell<TextEditInkCapture>>,
 );
 
 /// Page size of the bus's JIT store filter; equal to `PageIndex`'s.
@@ -131,6 +141,22 @@ impl std::fmt::Debug for PresentationSlot {
     }
 }
 impl PresentationSlot {
+    pub(crate) fn begin_text_edit_ink_capture(&self, port: u32) -> TextEditInkCapture {
+        self.2.replace(TextEditInkCapture { port: Some(port), ..TextEditInkCapture::default() })
+    }
+    pub(crate) fn end_text_edit_ink_capture(&self, previous: TextEditInkCapture) -> Option<(u16, u16)> {
+        let current = self.2.replace(previous);
+        if current.mixed { None } else { current.ink }
+    }
+    pub(crate) fn record_text_edit_glyph_ink(&self, port: u32, depth: u16, pixel: Option<u16>) {
+        let mut capture = self.2.get();
+        if capture.port != Some(port) || capture.mixed { return; }
+        let Some(pixel) = pixel else { capture.mixed = true; self.2.set(capture); return; };
+        let ink = (depth, pixel);
+        if capture.ink.is_some_and(|held| held != ink) { capture.mixed = true; }
+        else { capture.ink = Some(ink); }
+        self.2.set(capture);
+    }
     pub(crate) fn text_edit_plain_ink(&self, handle: u32) -> Option<(u16, u16)> {
         self.1.borrow().get(&handle)?.plain_ink
     }
@@ -2941,9 +2967,10 @@ impl MacMemoryBus {
     }
     pub(crate) fn record_text_edit_caret_drawing(
         &self, handle: u32, port: u32, view: (i16, i16, i16, i16),
-        caret: Option<(i16, i16, i16, i16)>,
+        caret: Option<(i16, i16, i16, i16)>, plain_ink: Option<(u16, u16)>,
     ) {
         let mut drawing = crate::text_edit::TextEditDrawing::capture_editor(handle, port, view, |addr| Some(self.read_byte(addr)));
+        if let Some(drawing) = &mut drawing { drawing.plain_ink = plain_ink; }
         if let (Some(drawing), Some(rect)) = (&mut drawing, caret) { drawing.qualify_solid_caret(rect); }
         self.presentation.record_text_edit_drawing(handle, drawing);
     }

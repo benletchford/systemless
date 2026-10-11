@@ -10721,6 +10721,40 @@ mod desktop {
         }
 
         #[test]
+        fn plain_text_edit_paint_snapshots_preserve_native_ink_across_cpu_modes() {
+            for (powerpc, depth, ppc_depth) in [(false, Some(1), None), (false, Some(8), None),
+                (true, None, Some(8)), (true, None, Some(16))] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if let Some(depth) = ppc_depth { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 7));
+                wait_for_menu(&mut session, 129, 7, true);
+                let record = (0..100).find_map(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    let settled = session.runner().event_manager_snapshot().last_record
+                        .is_some_and(|event| event.what == 0);
+                    session.runner_mut().text_edit_snapshot().records.into_iter().find(|record|
+                        settled && record.drawing_intact && !record.styled && !record.text.is_empty())
+                }).expect("plain page must expose actually painted native text");
+                let paint = record.paint.as_ref().expect("plain field retains its actual glyph foreground");
+                assert_eq!(paint.depth, if powerpc { ppc_depth.unwrap() } else { depth.unwrap() });
+                assert_eq!(paint.mode, record.text_mode);
+                assert_eq!(paint.style_ink.len(), 1);
+                let ink = &paint.style_ink[0];
+                let frame = session.video_frame().unwrap();
+                let view = record.global_view_rect.unwrap();
+                assert!((view.0..view.2).any(|y| (view.1..view.3).any(|x| {
+                    let at = ((y as u32 * frame.width + x as u32) * 4) as usize;
+                    frame.pixels.get(at..at + 3) == Some(ink.rgb.as_slice())
+                })), "retained physical foreground must appear in the native field, PPC={powerpc}, depth={depth:?}");
+            }
+        }
+
+        #[test]
         fn styled_text_edit_snapshots_preserve_guest_runs_across_cpu_modes() {
             for (powerpc, depth, ppc_depth) in [(false, Some(1), None), (false, Some(8), None), (true, None, None), (true, None, Some(8))] {
                 let mut session = MacintoshSession::new(true, depth);

@@ -1678,6 +1678,16 @@ impl super::TrapDispatcher {
                 _ => (u32::from(r >> 8) << 16) | (u32::from(g >> 8) << 8) | u32::from(b >> 8),
             }
         };
+        if let ShapeOp::Glyph(mode) = op {
+            let pixel = if matches!(mode, 0 | 1) {
+                match pixel_size {
+                    1 => Some(u16::from(effective_fg_color != (0xffff, 0xffff, 0xffff))),
+                    8 => Some(u16::from(fg_idx)),
+                    _ => None,
+                }
+            } else { None };
+            bus.presentation.record_text_edit_glyph_ink(port, pixel_size, pixel);
+        }
         // Color QuickDraw matches pixel-pattern colors against the destination
         // device's inverse table (Imaging With QuickDraw 1994, pp. 4-82,
         // 4-103). Cache only source indices actually drawn: the match remains

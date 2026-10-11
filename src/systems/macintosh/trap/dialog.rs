@@ -3282,6 +3282,8 @@ impl super::TrapDispatcher {
         self.tx_size = size;
         self.tx_mode = bus.read_word(te_ptr + Self::TE_TX_MODE_OFFSET) as i16;
         self.fg_color = color;
+        let previous_ink_capture = (!uses_styled_runs && matches!(self.tx_mode, 0 | 1))
+            .then(|| bus.presentation.begin_text_edit_ink_capture(te_port));
 
         let clip_top = view_rect.0;
         let clip_left = view_rect.1;
@@ -3526,6 +3528,8 @@ impl super::TrapDispatcher {
             }
         }
 
+        let plain_ink = previous_ink_capture
+            .and_then(|previous| bus.presentation.end_text_edit_ink_capture(previous));
         self.tx_font = old_font;
         self.tx_face = old_face;
         self.tx_size = old_size;
@@ -3569,7 +3573,7 @@ impl super::TrapDispatcher {
         bus.free(view_clip);
 
         // Text (1993), p. 2-88: allocation is not evidence of painted text.
-        bus.record_text_edit_caret_drawing(te_handle, te_port, view_rect, solid_caret_rect);
+        bus.record_text_edit_caret_drawing(te_handle, te_port, view_rect, solid_caret_rect, plain_ink);
         if switched_port {
             self.set_current_port_state(bus, cpu, previous_port, Some(previous_gdevice));
         }
