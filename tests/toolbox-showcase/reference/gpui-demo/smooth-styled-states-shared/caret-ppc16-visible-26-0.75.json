@@ -1,0 +1,83 @@
+{
+  "caret_state": "visible",
+  "insertion_offset": 26,
+  "multiline": false,
+  "selection": [
+    26,
+    26
+  ],
+  "compositor": "shared Demo renderer",
+  "active": true,
+  "caret_visible": true,
+  "drawing_intact": true,
+  "generation": 2,
+  "guest_tick": 85,
+  "view": [
+    126,
+    74,
+    164,
+    561
+  ],
+  "scale": 0.75,
+  "depth": 16,
+  "smooth_raster_support_1_through_8": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+  ],
+  "style_runs": [
+    {
+      "start": 0,
+      "font": 3,
+      "size": 10,
+      "face": 0
+    },
+    {
+      "start": 7,
+      "font": 3,
+      "size": 12,
+      "face": 1
+    },
+    {
+      "start": 11,
+      "font": 3,
+      "size": 10,
+      "face": 0
+    },
+    {
+      "start": 13,
+      "font": 4,
+      "size": 10,
+      "face": 0
+    },
+    {
+      "start": 18,
+      "font": 3,
+      "size": 10,
+      "face": 0
+    },
+    {
+      "start": 20,
+      "font": 4,
+      "size": 14,
+      "face": 2
+    },
+    {
+      "start": 24,
+      "font": 3,
+      "size": 10,
+      "face": 0
+    },
+    {
+      "start": 26,
+      "font": 3,
+      "size": 10,
+      "face": 4
+    }
+  ]
+}
