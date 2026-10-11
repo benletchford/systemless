@@ -73,6 +73,9 @@ mod performance;
 #[path = "gpui_demo_cadence.rs"]
 mod cadence;
 #[cfg(target_os = "macos")]
+#[path = "gpui_demo_mailbox.rs"]
+mod mailbox;
+#[cfg(target_os = "macos")]
 #[path = "gpui_demo_metrics.rs"]
 mod metrics;
 
@@ -122,7 +125,7 @@ mod desktop {
     use std::{
         collections::{HashMap, HashSet},
         path::PathBuf,
-        sync::{mpsc, Arc, Mutex},
+        sync::{mpsc, Arc},
         time::{Duration, Instant},
     };
 
@@ -577,6 +580,8 @@ mod desktop {
         status: String,
     }
 
+    type Updates = super::mailbox::Latest<Update>;
+
     // Both live rendering and composed captures preserve the complete guest
     // coordinate space. GPUI RenderImage consumes BGRA pixels.
     fn gpui_pixels(mut pixels: Vec<u8>) -> Vec<u8> {
@@ -596,16 +601,17 @@ mod desktop {
     fn run_guest(
         args: Args,
         commands: mpsc::Receiver<Command>,
-        updates: Arc<Mutex<Option<Update>>>,
+        updates: Arc<Updates>,
         host_services: bool,
     ) {
         run_guest_with_setup(args, commands, updates, host_services, |_| {});
     }
 
     fn run_guest_with_setup(
-        args: Args, commands: mpsc::Receiver<Command>, updates: Arc<Mutex<Option<Update>>>,
+        args: Args, commands: mpsc::Receiver<Command>, updates: Arc<Updates>,
         host_services: bool, setup: impl FnOnce(&mut MacintoshSession) + std::panic::UnwindSafe,
     ) {
+        let _publisher = updates.publisher();
         let result = std::panic::catch_unwind(|| {
             let mut session = MacintoshSession::new(
                 !args.options.as_ref().is_some_and(|options| options.addressing_24_bit),
@@ -1043,7 +1049,7 @@ mod desktop {
                 }
                 timing.checkpoint();
                 let frame = frame.map(|frame| (frame.width, frame.height, gpui_pixels(frame.pixels)));
-                *updates.lock().unwrap() = Some(Update {
+                updates.publish(Update {
                     identity: identity.clone(),
                     clipboard_export: clipboard.export.clone(),
                     text_commit_rejection: text_commit_rejection.clone(),
@@ -1087,7 +1093,7 @@ mod desktop {
             Ok(Err(error)) => error,
             Err(_) => "Guest worker stopped unexpectedly; see terminal output".to_owned(),
         };
-        *updates.lock().unwrap() = Some(Update {
+        updates.publish(Update {
             status: error,
             ..Default::default()
         });
@@ -1150,7 +1156,7 @@ mod desktop {
         application_identity: Option<Arc<game::ApplicationIdentity>>,
         _focus_out: Option<Subscription>,
         _focus_lost: Option<Subscription>,
-        _poll: Task<()>,
+        _updates: Task<()>,
     }
 
     impl Demo {
@@ -1373,20 +1379,14 @@ mod desktop {
 
         fn new(
             commands: mpsc::Sender<Command>,
-            updates: Arc<Mutex<Option<Update>>>,
+            updates: Arc<Updates>,
             cx: &mut Context<Self>,
         ) -> Self {
-            let poll = cx.spawn(async move |this, cx| {
-                let executor = cx.background_executor().clone();
-                let mut cadence = super::cadence::Cadence::new(executor.now(), Duration::from_millis(16));
-                loop {
-                    executor.timer(cadence.delay(executor.now())).await;
-                    let update = updates.lock().unwrap().take();
+            let updates_task = cx.spawn(async move |this, cx| {
+                while let Some(update) = updates.next().await {
                     if this
                         .update(cx, |this, cx| {
-                            if let Some(update) = update {
-                                this.apply_guest_update(update, true, cx);
-                            }
+                            this.apply_guest_update(update, true, cx);
                             // Retry after guest tracking ends or host ownership returns.
                             // The worker validates the exact record before pausing guest work.
                             this.request_notification_alert();
@@ -1457,7 +1457,7 @@ mod desktop {
                 application_identity: None,
                 _focus_out: None,
                 _focus_lost: None,
-                _poll: poll,
+                _updates: updates_task,
             }
         }
 
@@ -5667,7 +5667,7 @@ mod desktop {
         );
         visual.update(gpui_kit::init);
         let (sender, _receiver) = mpsc::channel();
-        let updates = Arc::new(Mutex::new(None));
+        let updates = Arc::new(Updates::default());
         let mut view = None;
         let capture_size = capture_scale.map_or(size(px(900.), px(740.)), |scale| {
             size(px(frame.width as f32 * scale), px(frame_height as f32 * scale))
@@ -6688,7 +6688,7 @@ mod desktop {
             } else { 1 });
         let observation_timeout = Duration::from_secs(args.capture_application_timeout_seconds);
         let (sender, receiver) = mpsc::channel();
-        let updates = Arc::new(Mutex::new(None));
+        let updates = Arc::new(Updates::default());
         let worker_updates = updates.clone();
         struct Worker(mpsc::Sender<Command>, Option<std::thread::JoinHandle<()>>);
         impl Drop for Worker {
@@ -6705,10 +6705,9 @@ mod desktop {
         let mut input_delay = 0u32;
         let mut latest: Option<Update> = None;
         let update = loop {
-            // Match live polling: release the publication slot before drawing.
-            // An if-let temporary would hold this lock through Metal submission
-            // and scripted input, delaying the worker's next publication.
-            let pending_update = updates.lock().unwrap().take();
+            // Consume the same publication slot as the live view. Rendering
+            // and scripted input run after the mailbox releases its lock.
+            let pending_update = updates.take();
             if let Some(update) = pending_update {
                 assert!(update.frame.is_some(), "application worker failed: {}", update.status);
                 observations += 1;
@@ -7665,7 +7664,7 @@ mod desktop {
         let window_size = (f32::from(profile.screen_width) * display_scale.unwrap_or(1) as f32,
             f32::from(profile.screen_height) * display_scale.unwrap_or(1) as f32);
         let (commands, receiver) = mpsc::channel();
-        let updates = Arc::new(Mutex::new(None));
+        let updates = Arc::new(Updates::default());
         let worker_updates = updates.clone();
         let mut worker = Some(std::thread::spawn(move || run_guest(args, receiver, worker_updates, true)));
         let shutdown_commands = commands.clone();
@@ -7725,7 +7724,7 @@ mod desktop {
     #[cfg(feature = "gpui-demo-test")]
     fn capture_modeless_dialog_layout(output: &std::path::Path) {
         use gpui_kit::{platform, AppContext, HeadlessAppContext, RenderImage};
-        use std::sync::{mpsc, Arc, Mutex};
+        use std::sync::{mpsc, Arc};
         use systemless::runner::{DialogItemSnapshot, WindowSnapshot};
 
         let mut visual = HeadlessAppContext::with_platform(
@@ -7735,7 +7734,7 @@ mod desktop {
         );
         visual.update(gpui_kit::init);
         let (sender, _receiver) = mpsc::channel();
-        let updates = Arc::new(Mutex::new(None));
+        let updates = Arc::new(Updates::default());
         let mut view = None;
         let window = visual
             .open_window(size(px(360.), px(320.)), |_, cx| {
@@ -7921,7 +7920,7 @@ mod desktop {
         );
         visual.update(gpui_kit::init);
         let (sender, _receiver) = mpsc::channel();
-        let updates = Arc::new(Mutex::new(None));
+        let updates = Arc::new(Updates::default());
         let mut view = None;
         let window = visual
             .open_window(capture_scale.map_or(size(px(900.), px(740.)), |scale|
@@ -7978,7 +7977,7 @@ mod desktop {
     #[cfg(feature = "gpui-demo-test")]
     fn capture_custom_menu_fallback(output: &std::path::Path) {
         use gpui_kit::{platform, AppContext, HeadlessAppContext, RenderImage};
-        use std::sync::{mpsc, Arc, Mutex};
+        use std::sync::{mpsc, Arc};
         use systemless::menu_model::{GuestMenu, GuestMenuSnapshot};
         use systemless::runner::WindowSnapshot;
 
@@ -7989,7 +7988,7 @@ mod desktop {
         );
         visual.update(gpui_kit::init);
         let (sender, _receiver) = mpsc::channel();
-        let updates = Arc::new(Mutex::new(None));
+        let updates = Arc::new(Updates::default());
         let mut view = None;
         let window = visual
             .open_window(
@@ -8074,7 +8073,31 @@ mod desktop {
 
     #[cfg(all(test, feature = "gpui-demo-test"))]
     mod tests {
-        use super::{MacintoshInput, MacintoshSession, PathBuf};
+        use super::{MacintoshInput, MacintoshSession, PathBuf, Updates};
+
+        #[gpui_kit::test]
+        fn published_snapshots_reach_live_demo_without_advancing_the_poll_clock(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::AppContext;
+            use std::sync::{mpsc, Arc};
+            cx.update(gpui_kit::init);
+            let (commands, _receiver) = mpsc::channel();
+            let updates = Arc::new(Updates::default());
+            let publisher = updates.publisher();
+            let (_, view) = cx.update(|cx| gpui_kit::open_window(Default::default(), cx,
+                |_, cx| cx.new(|cx| super::Demo::new(commands, updates.clone(), cx))).unwrap());
+            cx.run_until_parked();
+            // GPUI's deterministic scheduler requires wakeups on its test thread.
+            // Real OS-thread publication is covered by the mailbox regression.
+            updates.publish(super::Update { status: "displaced snapshot".into(), ..Default::default() });
+            updates.publish(super::Update { status: "latest snapshot".into(), ..Default::default() });
+            // No advance_clock: the previous 16 ms timer would remain parked.
+            cx.run_until_parked();
+            cx.update(|cx| assert_eq!(view.read(cx).status, "latest snapshot"));
+            drop(publisher);
+            cx.run_until_parked();
+            assert!(!updates.publish(super::Update::default()));
+            cx.update(|cx| assert_eq!(view.read(cx).status, "latest snapshot"));
+        }
 
         #[test]
         fn open_menu_rebuilds_only_for_its_own_tree() {
@@ -8137,13 +8160,13 @@ mod desktop {
         fn worker_routes_command_shortcut_and_rapid_close_button_press() {
             use super::{run_guest, Args, Command, Update};
             use std::{
-                sync::{mpsc, Arc, Mutex},
+                sync::{mpsc, Arc},
                 time::{Duration, Instant},
             };
-            fn wait(updates: &Mutex<Option<Update>>, ready: impl Fn(&Update) -> bool) -> Update {
+            fn wait(updates: &Updates, ready: impl Fn(&Update) -> bool) -> Update {
                 let start = Instant::now();
                 loop {
-                    if let Some(update) = updates.lock().unwrap().take() {
+                    if let Some(update) = updates.take() {
                         if ready(&update) {
                             return update;
                         }
@@ -8156,7 +8179,7 @@ mod desktop {
                 }
             }
             for powerpc in [false, true] {
-            let updates = Arc::new(Mutex::new(None));
+            let updates = Arc::new(Updates::default());
             let (tx, rx) = mpsc::channel();
             let worker_updates = updates.clone();
             let worker = std::thread::spawn(move || {
@@ -9741,8 +9764,9 @@ mod desktop {
             use gpui_kit::{AppContext, test::TestWindowExt};
             cx.update(gpui_kit::init);
             use super::{Args, Command, Update};
-            use std::{sync::{mpsc, Arc, Mutex}, time::{Duration, Instant}};
+            use std::{sync::{mpsc, Arc}, time::{Duration, Instant}};
             use clap::Parser;
+            use std::sync::Mutex;
             struct CapturedAudio(Arc<Mutex<Vec<u8>>>);
             impl systemless::audio::AudioBackend for CapturedAudio {
                 fn queue_samples(&mut self, samples: &[u8]) { self.0.lock().unwrap().extend_from_slice(samples); }
@@ -9755,11 +9779,11 @@ mod desktop {
                     if let Some(handle) = self.1.take() { let _ = handle.join(); }
                 }
             }
-            fn wait(stage: &str, updates: &Mutex<Option<Update>>, ready: impl Fn(&Update) -> bool) -> Update {
+            fn wait(stage: &str, updates: &Updates, ready: impl Fn(&Update) -> bool) -> Update {
                 let start = Instant::now();
                 let mut last = String::new();
                 loop {
-                    if let Some(update) = updates.lock().unwrap().take() {
+                    if let Some(update) = updates.take() {
                         if ready(&update) { return update; }
                         last = format!("status={} notices={:?} alert={:?}", update.status,
                             update.notifications, update.notification_alert);
@@ -9777,7 +9801,7 @@ mod desktop {
                 if powerpc { arguments.push("--prefer-powerpc".into()); }
                 let args = Args::try_parse_from(arguments).unwrap();
                 let (sender, receiver) = mpsc::channel();
-                let updates = Arc::new(Mutex::new(None)); let output = updates.clone();
+                let updates = Arc::new(Updates::default()); let output = updates.clone();
                 let audio = Arc::new(Mutex::new(Vec::new()));
                 let worker_audio = audio.clone();
                 let worker = Worker(sender, Some(std::thread::spawn(move ||
@@ -9811,7 +9835,8 @@ mod desktop {
                 let blocked_menu = Command::Menu(129, 7, menu.guest_id, menu.generation);
                 let notice = initial.notifications[0].clone();
                 assert_eq!(notice.text.as_deref(), Some(b"Notification Caf\x8e".as_slice()));
-                let frontend_updates = Arc::new(Mutex::new(Some(initial)));
+                let frontend_updates = Arc::new(Updates::default());
+                frontend_updates.publish(initial);
                 let frontend_sender = worker.0.clone();
                 let (window, view) = cx.update(|cx| gpui_kit::open_window(Default::default(), cx,
                     |_, cx| cx.new(|cx| super::Demo::new(frontend_sender, frontend_updates.clone(), cx))).unwrap());
@@ -9830,7 +9855,7 @@ mod desktop {
                         "guest-installed system sound must reach the worker audio backend before acknowledgment");
                 }
                 worker.0.send(blocked_menu).unwrap();
-                *frontend_updates.lock().unwrap() = Some(owned);
+                frontend_updates.publish(owned);
                 cx.executor().advance_clock(Duration::from_millis(16));
                 cx.run_until_parked();
                 cx.update_window(window.into(), |_, window, cx| {
@@ -9870,7 +9895,7 @@ mod desktop {
         fn worker_publishes_guest_cursor_lifecycle_across_modes() {
             use clap::Parser;
             use super::{Args, Command, Update};
-            use std::sync::{mpsc, Arc, Mutex};
+            use std::sync::{mpsc, Arc};
             use std::time::{Duration, Instant};
             struct Worker(mpsc::Sender<Command>, Option<std::thread::JoinHandle<()>>);
             impl Drop for Worker {
@@ -9879,10 +9904,10 @@ mod desktop {
                     if let Some(handle) = self.1.take() { let _ = handle.join(); }
                 }
             }
-            fn wait(stage: &str, updates: &Mutex<Option<Update>>, ready: impl Fn(&Update) -> bool) -> Update {
+            fn wait(stage: &str, updates: &Updates, ready: impl Fn(&Update) -> bool) -> Update {
                 let start = Instant::now();
                 loop {
-                    if let Some(update) = updates.lock().unwrap().take() { if ready(&update) { return update; } }
+                    if let Some(update) = updates.take() { if ready(&update) { return update; } }
                     assert!(start.elapsed() < Duration::from_secs(20), "cursor worker timeout: {stage}");
                     std::thread::sleep(Duration::from_millis(10));
                 }
@@ -9894,7 +9919,7 @@ mod desktop {
                 if depth != 16 { argv.extend(["--screen-depth".into(), depth.to_string()]); }
                 let args = Args::try_parse_from(argv).unwrap();
                 let (sender, receiver) = mpsc::channel();
-                let updates = Arc::new(Mutex::new(None)); let output = updates.clone();
+                let updates = Arc::new(Updates::default()); let output = updates.clone();
                 let worker = Worker(sender, Some(std::thread::spawn(move || super::run_guest(args, receiver, output, false))));
                 let initial = wait("menus", &updates, |update| update.menus.menus.iter().any(|menu| menu.id == 129));
                 let arrow = initial.cursor.unwrap(); assert!(arrow.visible && arrow.image.is_some());
@@ -9938,7 +9963,7 @@ mod desktop {
         fn production_worker_shutdown_persists_new_folder() {
             use clap::Parser;
             use super::{Args, Command, Update};
-            use std::sync::{mpsc, Arc, Mutex};
+            use std::sync::{mpsc, Arc};
             use super::super::activation::FileAction;
             use std::time::{Duration, Instant};
             struct Worker(Option<mpsc::Sender<Command>>, Option<std::thread::JoinHandle<()>>);
@@ -9948,10 +9973,10 @@ mod desktop {
                     if let Some(handle) = self.1.take() { let _ = handle.join(); }
                 }
             }
-            fn wait(stage: &str, updates: &Mutex<Option<Update>>, ready: impl Fn(&Update) -> bool) -> Update {
+            fn wait(stage: &str, updates: &Updates, ready: impl Fn(&Update) -> bool) -> Update {
                 let start = Instant::now();
                 loop {
-                    if let Some(update) = updates.lock().unwrap().take() {
+                    if let Some(update) = updates.take() {
                         if ready(&update) { return update; }
                         assert!(!update.status.contains("unexpectedly"), "{stage}: {}", update.status);
                     }
@@ -9970,7 +9995,7 @@ mod desktop {
                 if depth != 16 { argv.extend(["--screen-depth".into(), depth.to_string()]); }
                 let args = Args::try_parse_from(argv).unwrap();
                 let (sender, receiver) = mpsc::channel();
-                let updates = Arc::new(Mutex::new(None)); let output = updates.clone();
+                let updates = Arc::new(Updates::default()); let output = updates.clone();
                 let mut worker = Worker(Some(sender), Some(std::thread::spawn(move || super::run_guest(args, receiver, output, true))));
                 let send = |command| worker.0.as_ref().unwrap().send(command).unwrap();
                 let initial = wait("menus", &updates, |update| update.menus.menus.iter().any(|menu| menu.id == 129));
@@ -10023,7 +10048,7 @@ mod desktop {
         fn production_worker_shutdown_persists_replacement_save() {
             use clap::Parser;
             use super::{Args, Command, Update};
-            use std::sync::{mpsc, Arc, Mutex};
+            use std::sync::{mpsc, Arc};
             use super::super::activation::FileAction;
             use std::time::{Duration, Instant};
             struct Worker(Option<mpsc::Sender<Command>>, Option<std::thread::JoinHandle<()>>);
@@ -10033,10 +10058,10 @@ mod desktop {
                     if let Some(handle) = self.1.take() { let _ = handle.join(); }
                 }
             }
-            fn wait(stage: &str, updates: &Mutex<Option<Update>>, ready: impl Fn(&Update) -> bool) -> Update {
+            fn wait(stage: &str, updates: &Updates, ready: impl Fn(&Update) -> bool) -> Update {
                 let start = Instant::now();
                 loop {
-                    if let Some(update) = updates.lock().unwrap().take() {
+                    if let Some(update) = updates.take() {
                         if ready(&update) { return update; }
                         assert!(!update.status.contains("unexpectedly"), "{stage}: {}", update.status);
                     }
@@ -10073,7 +10098,7 @@ mod desktop {
                 if depth != 16 { argv.extend(["--screen-depth".into(), depth.to_string()]); }
                 let args = Args::try_parse_from(argv).unwrap();
                 let (sender, receiver) = mpsc::channel();
-                let updates = Arc::new(Mutex::new(None)); let output = updates.clone();
+                let updates = Arc::new(Updates::default()); let output = updates.clone();
                 let mut worker = Worker(Some(sender), Some(std::thread::spawn(move || super::run_guest(args, receiver, output, true))));
                 let send = |command| worker.0.as_ref().unwrap().send(command).unwrap();
                 let initial = wait("menus", &updates, |update| update.menus.menus.iter().any(|menu| menu.id == 129));
@@ -11399,7 +11424,7 @@ mod desktop {
             use systemless::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
 
             let (sender, receiver) = std::sync::mpsc::channel();
-            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let updates = std::sync::Arc::new(Updates::default());
             cx.update(gpui_kit::init);
             let (window, view) = cx.update(|cx| {
                 gpui_kit::open_window(
@@ -11555,7 +11580,7 @@ mod desktop {
             use systemless::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
 
             let (sender, _receiver) = std::sync::mpsc::channel();
-            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let updates = std::sync::Arc::new(Updates::default());
             cx.update(gpui_kit::init);
             let (window, view) = cx.update(|cx| {
                 gpui_kit::open_window(
@@ -11706,7 +11731,7 @@ mod desktop {
             use systemless::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
 
             let (sender, receiver) = std::sync::mpsc::channel();
-            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let updates = std::sync::Arc::new(Updates::default());
             cx.update(gpui_kit::init);
             let (window, view) = cx.update(|cx| {
                 gpui_kit::open_window(
@@ -11877,7 +11902,7 @@ mod desktop {
         fn worker_preserves_rapid_composed_text_commits() {
             use clap::Parser;
             use super::{Args, Command, Update};
-            use std::sync::{mpsc, Arc, Mutex};
+            use std::sync::{mpsc, Arc};
             use std::time::{Duration, Instant};
             struct Worker(mpsc::Sender<Command>, Option<std::thread::JoinHandle<()>>);
             impl Drop for Worker {
@@ -11886,10 +11911,10 @@ mod desktop {
                     if let Some(handle) = self.1.take() { let _ = handle.join(); }
                 }
             }
-            fn wait(stage: &str, updates: &Mutex<Option<Update>>, ready: impl Fn(&Update) -> bool) -> Update {
+            fn wait(stage: &str, updates: &Updates, ready: impl Fn(&Update) -> bool) -> Update {
                 let start = Instant::now();
                 loop {
-                    if let Some(update) = updates.lock().unwrap().take() {
+                    if let Some(update) = updates.take() {
                         if ready(&update) { return update; }
                     }
                     assert!(start.elapsed() < Duration::from_secs(15), "worker did not complete composed text: {stage}");
@@ -11903,7 +11928,7 @@ mod desktop {
                 if let Some(depth) = depth { argv.extend(["--screen-depth".into(), depth.to_string()]); }
                 let args = Args::try_parse_from(argv).unwrap();
                 let (sender, receiver) = mpsc::channel();
-                let updates = Arc::new(Mutex::new(None));
+                let updates = Arc::new(Updates::default());
                 let output = updates.clone();
                 let worker = Worker(sender, Some(std::thread::spawn(move || super::run_guest(args, receiver, output, false))));
                 let initial = wait("menus", &updates, |update| update.menus.menus.iter().any(|menu| menu.id == 129));
@@ -12141,7 +12166,7 @@ mod desktop {
         fn worker_preserves_rapid_modal_composed_text_commits() {
             use clap::Parser;
             use super::{Args, Command, Update};
-            use std::sync::{mpsc, Arc, Mutex};
+            use std::sync::{mpsc, Arc};
             use std::time::{Duration, Instant};
             struct Worker(mpsc::Sender<Command>, Option<std::thread::JoinHandle<()>>);
             impl Drop for Worker {
@@ -12150,11 +12175,11 @@ mod desktop {
                     if let Some(handle) = self.1.take() { let _ = handle.join(); }
                 }
             }
-            fn wait(stage: &str, updates: &Mutex<Option<Update>>, ready: impl Fn(&Update) -> bool) -> Update {
+            fn wait(stage: &str, updates: &Updates, ready: impl Fn(&Update) -> bool) -> Update {
                 let start = Instant::now();
                 let mut last = String::new();
                 loop {
-                    if let Some(update) = updates.lock().unwrap().take() {
+                    if let Some(update) = updates.take() {
                         if ready(&update) { return update; }
                         last = format!("rejection={:?}, fields={:?}", update.text_commit_rejection,
                             update.dialogs.iter().filter_map(|dialog| dialog.items.get(8).map(|field|
@@ -12173,7 +12198,7 @@ mod desktop {
                 if let Some(depth) = depth { argv.extend(["--screen-depth".into(), depth.to_string()]); }
                 let args = Args::try_parse_from(argv).unwrap();
                 let (sender, receiver) = mpsc::channel();
-                let updates = Arc::new(Mutex::new(None));
+                let updates = Arc::new(Updates::default());
                 let output = updates.clone();
                 let worker = Worker(sender, Some(std::thread::spawn(move || super::run_guest(args, receiver, output, false))));
                 let initial = wait("menus", &updates, |update| update.menus.menus.iter().any(|menu| menu.id == 132));
@@ -12369,7 +12394,7 @@ mod desktop {
         fn worker_preserves_rapid_standard_file_composed_text_commits() {
             use clap::Parser;
             use super::{Args, Command, Update};
-            use std::sync::{mpsc, Arc, Mutex};
+            use std::sync::{mpsc, Arc};
             use std::time::{Duration, Instant};
             struct Worker(mpsc::Sender<Command>, Option<std::thread::JoinHandle<()>>);
             impl Drop for Worker {
@@ -12378,11 +12403,11 @@ mod desktop {
                     if let Some(handle) = self.1.take() { let _ = handle.join(); }
                 }
             }
-            fn wait(stage: &str, updates: &Mutex<Option<Update>>, ready: impl Fn(&Update) -> bool) -> Update {
+            fn wait(stage: &str, updates: &Updates, ready: impl Fn(&Update) -> bool) -> Update {
                 let start = Instant::now();
                 let mut last = String::new();
                 loop {
-                    if let Some(update) = updates.lock().unwrap().take() {
+                    if let Some(update) = updates.take() {
                         if ready(&update) { return update; }
                         last = format!("rejection={:?}, panel={:?}", update.text_commit_rejection,
                             update.standard_file.as_ref().map(|panel| (&panel.name, panel.name_selection, &panel.new_folder)));
@@ -12398,7 +12423,7 @@ mod desktop {
                 if let Some(depth) = depth { argv.extend(["--screen-depth".into(), depth.to_string()]); }
                 let args = Args::try_parse_from(argv).unwrap();
                 let (sender, receiver) = mpsc::channel();
-                let updates = Arc::new(Mutex::new(None));
+                let updates = Arc::new(Updates::default());
                 let output = updates.clone();
                 let worker = Worker(sender, Some(std::thread::spawn(move || super::run_guest(args, receiver, output, false))));
                 let initial = wait("menus", &updates, |update| update.menus.menus.iter().any(|menu| menu.id == 129));
@@ -13394,7 +13419,7 @@ mod desktop {
             use systemless::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
 
             let (sender, receiver) = std::sync::mpsc::channel();
-            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let updates = std::sync::Arc::new(Updates::default());
             cx.update(gpui_kit::init);
             let (window, view) = cx.update(|cx| {
                 gpui_kit::open_window(
@@ -14516,7 +14541,7 @@ mod desktop {
             use systemless::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
 
             let (sender, receiver) = std::sync::mpsc::channel();
-            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let updates = std::sync::Arc::new(Updates::default());
             cx.update(gpui_kit::init);
             let (window, view) = cx.update(|cx| {
                 gpui_kit::open_window(
@@ -16663,7 +16688,7 @@ mod desktop {
                     )
                 };
                 let (sender, receiver) = std::sync::mpsc::channel();
-                let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+                let updates = std::sync::Arc::new(Updates::default());
                 let (window, view) = cx.update(|cx| {
                     gpui_kit::open_window(
                         WindowOptions {
@@ -16955,7 +16980,7 @@ mod desktop {
             use systemless::runner::{WindowFrameSnapshot, WindowSnapshot};
 
             let (sender, receiver) = std::sync::mpsc::channel();
-            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let updates = std::sync::Arc::new(Updates::default());
             cx.update(gpui_kit::init);
             let (window, view) = cx.update(|cx| {
                 gpui_kit::open_window(
@@ -17052,7 +17077,7 @@ mod desktop {
             use gpui_kit::{test::TestWindowExt, AppContext, Bounds, WindowBounds, WindowOptions};
 
             let (sender, receiver) = std::sync::mpsc::channel();
-            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let updates = std::sync::Arc::new(Updates::default());
             cx.update(gpui_kit::init);
             let (window, view) = cx.update(|cx| {
                 gpui_kit::open_window(
@@ -17122,7 +17147,7 @@ mod desktop {
             use gpui_kit::{test::TestWindowExt, AppContext, Bounds, WindowBounds, WindowOptions};
 
             let (sender, receiver) = std::sync::mpsc::channel();
-            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let updates = std::sync::Arc::new(Updates::default());
             cx.update(gpui_kit::init);
             let (window, view) = cx.update(|cx| {
                 gpui_kit::open_window(
@@ -17225,7 +17250,7 @@ mod desktop {
         fn host_clipboard_export_respects_activation_and_new_host_contents(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::AppContext;
             let (sender, _receiver) = std::sync::mpsc::channel();
-            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let updates = std::sync::Arc::new(Updates::default());
             cx.update(gpui_kit::init);
             let view = cx.update(|cx| cx.new(|cx| super::Demo::new(sender, updates, cx)));
             cx.update(|cx| {
@@ -17347,7 +17372,7 @@ mod desktop {
         fn notification_alert_pointer_and_keyboard_do_not_leak_guest_input(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::{AppContext, test::TestWindowExt};
             let (sender, receiver) = std::sync::mpsc::channel();
-            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let updates = std::sync::Arc::new(Updates::default());
             let notice = systemless::runner::NotificationSnapshot {
                 guest_id: 1, instance_id: 2, response_started: false,
                 mark: 0, icon_handle: 0, sound_handle: 0,
@@ -17418,7 +17443,7 @@ mod desktop {
             use gpui_kit::{AppContext, test::TestWindowExt};
 
             let (sender, receiver) = std::sync::mpsc::channel();
-            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let updates = std::sync::Arc::new(Updates::default());
             cx.update(gpui_kit::init);
             let (window, view) = cx.update(|cx| {
                 gpui_kit::open_window(Default::default(), cx, |_, cx| {
@@ -17478,7 +17503,7 @@ mod desktop {
             use gpui_kit::AppContext;
 
             let (sender, receiver) = std::sync::mpsc::channel();
-            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let updates = std::sync::Arc::new(Updates::default());
             cx.update(gpui_kit::init);
             let view = cx.update(|cx| cx.new(|cx| super::Demo::new(sender, updates, cx)));
             cx.update(|cx| {
@@ -17516,7 +17541,7 @@ mod desktop {
         fn accessibility_text_dispatch_revalidates_current_focus_and_owner(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::AppContext;
             let (sender, receiver) = std::sync::mpsc::channel();
-            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let updates = std::sync::Arc::new(Updates::default());
             cx.update(gpui_kit::init);
             let (window, view) = cx.update(|cx| gpui_kit::open_window(
                 Default::default(), cx, |_, cx| cx.new(|cx| super::Demo::new(sender, updates, cx))).unwrap());
@@ -17578,7 +17603,7 @@ mod desktop {
             };
 
             let (sender, receiver) = std::sync::mpsc::channel();
-            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let updates = std::sync::Arc::new(Updates::default());
             cx.update(gpui_kit::init);
             let (window, view) = cx.update(|cx| {
                 gpui_kit::open_window(
@@ -17731,7 +17756,7 @@ mod desktop {
             };
 
             let (sender, receiver) = std::sync::mpsc::channel();
-            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let updates = std::sync::Arc::new(Updates::default());
             cx.update(gpui_kit::init);
             let (window, view) = cx.update(|cx| {
                 gpui_kit::open_window(
@@ -17893,7 +17918,7 @@ mod desktop {
             };
 
             let (sender, receiver) = std::sync::mpsc::channel();
-            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let updates = std::sync::Arc::new(Updates::default());
             cx.update(gpui_kit::init);
             let (window, view) = cx.update(|cx| {
                 gpui_kit::open_window(
@@ -18471,7 +18496,7 @@ mod desktop {
             use systemless::runner::{ListManagerSnapshot, WindowFrameSnapshot, WindowSnapshot};
 
             let (sender, receiver) = std::sync::mpsc::channel();
-            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let updates = std::sync::Arc::new(Updates::default());
             cx.update(gpui_kit::init);
             let (window, view) = cx.update(|cx| {
                 gpui_kit::open_window(
@@ -18578,7 +18603,7 @@ mod desktop {
             use systemless::runner::{ControlSnapshot, WindowFrameSnapshot, WindowSnapshot};
 
             let (sender, receiver) = std::sync::mpsc::channel();
-            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let updates = std::sync::Arc::new(Updates::default());
             cx.update(gpui_kit::init);
             let (window, view) = cx.update(|cx| {
                 gpui_kit::open_window(
@@ -18741,7 +18766,7 @@ mod desktop {
             use systemless::runner::{ControlSnapshot, WindowFrameSnapshot, WindowSnapshot};
 
             let (sender, receiver) = std::sync::mpsc::channel();
-            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let updates = std::sync::Arc::new(Updates::default());
             cx.update(gpui_kit::init);
             let (window, view) = cx.update(|cx| {
                 gpui_kit::open_window(

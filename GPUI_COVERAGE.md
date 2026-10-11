@@ -447,7 +447,7 @@ Original Escape Velocity colour-68k captures use the production worker and share
 
 A separate rebased EV gameplay capture completes all fourteen scheduled actions with zero readiness delay over 2,800 observed updates (47.15 seconds). No compiler jobs were active at its start. The reviewed image shows the flight scene and full HUD. The final 120 worker intervals average 16.01 ms, with p95 20.77 ms and maximum 23.12 ms; these are worker scheduling measurements, not native frame presentation or audio qualification.
 
-Live frontend timing remains a separate qualification requirement: `Demo::new` consumes worker publications on an independent 16 ms timer. Worker-cycle statistics and offscreen captures do not prove the latency or smoothness of that live handoff. Physical input, native audio/display timing, original Macintosh font fidelity and the full CPU/scale/state matrix remain open. No broad release gate closes.
+At this rebased checkpoint, `Demo::new` consumed worker publications on an independent 16 ms timer. Worker-cycle statistics and offscreen captures did not prove the latency or smoothness of that live handoff. The publication-driven follow-up below removes that timer; native presentation remains a separate qualification requirement. Physical input, native audio/display timing, original Macintosh font fidelity and the full CPU/scale/state matrix remain open. No broad release gate closes.
 
 ### Standard File filename abbreviation
 
@@ -6389,3 +6389,38 @@ Evidence: `reference/gpui-demo/notification-modal-semantics`. Native action
 delivery, complete background navigation exclusion, focus-loop/restoration,
 physical pointer behavior and composed fidelity remain unqualified. Acquisition
 is still explicit; no production gate closes.
+
+
+### Publication-driven frontend delivery (2026-10-12)
+
+The live Demo now awaits the worker's latest snapshot directly instead of polling
+on another 16 ms timer. The shared mailbox coalesces displaced snapshots, registers
+its waiter under the producer lock, and wakes outside that lock. Cancellation
+removes only its own waiter; worker termination wakes the consumer and delivers
+its final queued status before exhaustion. Synchronous offscreen drivers consume
+the same slot. Guest cadence, CPU/audio budgets and command/event routing retain
+their existing paths.
+
+All nine mailbox tests pass, including publication from a real OS thread,
+coalescing, cancellation, closure and reentrant wake/payload destruction. The
+GPUI delivery regression passes without advancing the deterministic test clock
+and preserves the final status after closure. GPUI's deterministic scheduler
+rejects wakeups from external OS threads, so that combined test was retained as
+a failure and split into the two checks above. Production GPUI routes foreground
+wakeups through its platform main-thread dispatcher; this source inspection is
+not a native end-to-end timing measurement.
+
+The updated example build passes (37.38 seconds), the ordinary desktop test build
+passes (30.76 seconds), and all 159 ordinary desktop tests pass with native
+pasteboard access (7.60 seconds). Its original EV colour68k
+ship-name capture completes four scheduled actions with zero readiness delay
+through 1,050 observed updates. The reviewed shared-compositor image retains
+resource artwork, shows smooth prompt text and the selected Journeyman name,
+and keeps Cancel/OK inside the dialog. Menus remain hidden and the guest scene
+keeps its full geometry. Ignored local evidence and producer hashes are in
+`target/gpui-qualification/escape-velocity/publication-pilot-dialog-review.json`.
+This run overlaps frontend tests and supports interaction/presentation only.
+
+The complete updated frontend suite is still running at this checkpoint.
+EV gameplay capture, native presentation/audio, sustained latency, and the wider
+production matrix remain unqualified for this change. No broad release gate closes.
