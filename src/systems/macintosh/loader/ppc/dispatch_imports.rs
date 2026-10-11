@@ -2973,6 +2973,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::ReadLocation
         | PpcImportDispatcherTarget::GetTime
         | PpcImportDispatcherTarget::Delay
+        | PpcImportDispatcherTarget::GetCaretTime
         | PpcImportDispatcherTarget::GetDblTime
         | PpcImportDispatcherTarget::LMGetTime
         | PpcImportDispatcherTarget::SecondsToDate

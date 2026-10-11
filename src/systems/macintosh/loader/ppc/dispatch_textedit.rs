@@ -608,7 +608,10 @@ pub(super) fn dispatch_textedit_import(
                 let previous = memory
                     .read_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET)
                     .unwrap_or(0);
-                if active && start == end && tick_count.wrapping_sub(previous) >= 32 {
+                let caret_time = memory
+                    .read_u32_be(crate::memory::globals::addr::CARET_TIME)
+                    .unwrap_or(PPC_DEFAULT_CARET_TIME_TICKS);
+                if active && start == end && tick_count.wrapping_sub(previous) >= caret_time {
                     let caret = memory
                         .read_u16_be(te_ptr + PPC_TE_CARET_STATE_OFFSET)
                         .unwrap_or(0);
