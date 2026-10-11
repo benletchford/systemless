@@ -5394,6 +5394,22 @@ fn set_port_updates_qd_globals_the_port() {
     run_test_import(&mut loaded, PpcImportDispatcherTarget::SetPort);
     assert_eq!(loaded.memory.read_u32_be(globals), Some(port));
 
+    // Window operations may already select this port internally while the
+    // guest-visible global still names the screen port. Explicit reselection
+    // must publish the selected port even when the host current port is equal.
+    for target in [
+        PpcImportDispatcherTarget::SetPort,
+        PpcImportDispatcherTarget::SetPortWindowPort,
+        PpcImportDispatcherTarget::SetPortDialogPort,
+        PpcImportDispatcherTarget::SetGWorld,
+    ] {
+        loaded.memory.write_u32_be(globals, PPC_MAIN_GWORLD).unwrap();
+        loaded.cpu.gpr[3] = port;
+        loaded.cpu.gpr[4] = 0;
+        run_test_import(&mut loaded, target);
+        assert_eq!(loaded.memory.read_u32_be(globals), Some(port));
+    }
+
     loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::SetPort);
     assert_eq!(loaded.memory.read_u32_be(globals), Some(PPC_MAIN_GWORLD));
