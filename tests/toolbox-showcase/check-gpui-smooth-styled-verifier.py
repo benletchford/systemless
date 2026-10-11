@@ -8,6 +8,11 @@ parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('source'
 base=json.loads((args.source/'progress.json').read_text());cases=base['cases'];base['cases']=cases[:1];base['complete']=False
 case=base['cases'][0];original=json.loads((args.source/case['evidence']).read_text())
 checks={
+ 'font-identity':lambda m,c,e:e['style_runs'][0].update(font=4),
+ 'font-size':lambda m,c,e:e['style_runs'][0].update(size=12),
+ 'style-face':lambda m,c,e:e['style_runs'][1].update(face=0),
+ 'style-boundary':lambda m,c,e:e['style_runs'][-1].update(start=e['style_runs'][-1]['start']+1),
+ 'style-run-set':lambda m,c,e:e.update(style_runs=e['style_runs'][:-1]),
  'actual-depth':lambda m,c,e:e.update(depth=1 if e['depth']!=1 else 8),
  'scene-scale':lambda m,c,e:e.update(scale=e['scale']+0.25),
  'active-state':lambda m,c,e:e.update(active=not e['active']),

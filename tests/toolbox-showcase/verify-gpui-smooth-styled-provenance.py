@@ -49,7 +49,11 @@ def verify(directory,partial=False):
   assert evidence['smooth_raster_support_1_through_8']==case['smooth_raster_support_1_through_8']==[True]*8
   assert all(value is True for value in evidence['smooth_raster_support_1_through_8'])
   assert all(value is True for value in case['smooth_raster_support_1_through_8'])
-  assert evidence['style_runs']
+  runs=evidence['style_runs']
+  assert all(type(run[key]) is int for run in runs for key in ['start','font','size','face'])
+  assert [tuple(run[key] for key in ['start','font','size','face']) for run in runs]==[
+   (0,3,10,0),(7,3,12,1),(11,3,10,0),(13,4,10,0),
+   (18,3,10,0),(20,4,14,2),(24,3,10,0),(27 if multiline else 26,3,10,4)]
   assert case['binary_ink_oracle']=='not applied to antialiased coverage'
   assert dims(path(case['guest']))==[800,600]
   assert dims(path(case['rendered']))==case['rendered_dimensions']==[round(800*case['scale']*2),round(600*case['scale']*2)]
