@@ -21,6 +21,24 @@ fn contains(rect: Rect, point: (i16, i16)) -> bool {
         && i32::from(point.1) < rect.right
 }
 
+/// Retained Standard File lists own their wheel input while their modal panel
+/// is visible. Nested confirmation/name dialogs must not scroll the parent.
+pub(crate) fn file_target(panel: &systemless::runner::StandardFileSnapshot,
+    point: (i16, i16), vertical: bool) -> Option<ScrollTarget> {
+    if !vertical || !panel.standard_entry_point || panel.confirming_replace || panel.new_folder.is_some() { return None; }
+    let (list, scroll, visible) = match panel.kind {
+        systemless::runner::StandardFileKind::Get => {
+            let layout = panel.get_layout.as_ref()?; (layout.list, layout.scroll, layout.visible_rows)
+        }
+        systemless::runner::StandardFileKind::Put => {
+            let layout = panel.put_layout.as_ref()?; (layout.list, layout.scroll, layout.visible_rows)
+        }
+    };
+    if panel.entries.as_ref()?.len() <= visible
+        || !(contains(Rect::from(list), point) || contains(Rect::from(scroll), point)) { return None; }
+    Some(ScrollTarget { id: panel.guest_id, generation: panel.generation, vertical: true })
+}
+
 /// Only an unambiguous standard scrollbar in the active, visible window owns
 /// a wheel gesture. Custom controls and overlapping windows retain ownership.
 pub(crate) fn target(

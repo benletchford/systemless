@@ -20,6 +20,15 @@ pub enum FileAction {
     CreateFolder,
     CancelNewFolder,
     DismissFolderError,
+    ScrollUp,
+    ScrollDown,
+}
+
+fn file_scroll_arrow(rect: (i16, i16, i16, i16), action: FileAction) -> (i16, i16, i16, i16) {
+    match action {
+        FileAction::ScrollUp => (rect.0, rect.1, rect.0.saturating_add(16).min(rect.2), rect.3),
+        _ => (rect.2.saturating_sub(16).max(rect.0), rect.1, rect.2, rect.3),
+    }
 }
 
 impl ControlActivation {
@@ -67,6 +76,7 @@ impl ControlActivation {
                         }
                         FileAction::Cancel => layout.cancel,
                         FileAction::Desktop => layout.desktop,
+                        FileAction::ScrollUp | FileAction::ScrollDown => file_scroll_arrow(layout.scroll, action),
                         _ => return None,
                     }
                 }
@@ -77,6 +87,7 @@ impl ControlActivation {
                         FileAction::Cancel => layout.cancel,
                         FileAction::Desktop => layout.desktop,
                         FileAction::NewFolder => layout.new_folder,
+                        FileAction::ScrollUp | FileAction::ScrollDown => file_scroll_arrow(layout.scroll, action),
                         _ => return None,
                     }
                 }
