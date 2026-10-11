@@ -590,6 +590,110 @@ pub(crate) fn classic_line(
     .size_full()
 }
 
+/// A styled line keeps measured insertion coordinates distinct from the
+/// actual pen used by successive native draw calls. All coordinates are
+/// port-local, so scrolling and justification stay in the guest domain.
+#[derive(Clone, Debug)]
+pub(crate) struct StyledTextEditLine {
+    pub geometry: systemless::runner::TextEditLineGeometry,
+    pub runs: Vec<StyledTextEditRun>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct StyledTextEditRun {
+    pub bytes: std::ops::Range<usize>,
+    pub left: i16,
+    pub measured_positions: Vec<i16>,
+    pub glyphs: ClassicLine,
+    pub ink: systemless::runner::TextEditInkSnapshot,
+}
+
+impl StyledTextEditLine {
+    pub fn from_guest(record: &systemless::runner::TextEditSnapshot, index: usize) -> Option<Self> {
+        use systemless::runner::TextEditLineLayoutPolicy;
+        if !record.styled { return None; }
+        let paint = record.paint.as_ref()?;
+        if !paint.supports_zero_spacing_src_or() { return None; }
+        let styles = record.style_runs.as_ref()?;
+        if styles.len() != paint.style_ink.len() { return None; }
+        let (geometry, measured) = record.guest_styled_line_geometry(index)?;
+        let mut left = geometry.left;
+        let mut runs = Vec::with_capacity(measured.len());
+        for (bytes, measured_positions) in measured {
+            let style_index = styles.iter().rposition(|style| style.start <= bytes.start)?;
+            let style = &styles[style_index];
+            let origin = i32::from(*measured_positions.first()?);
+            let positions = measured_positions.iter().map(|&x| i32::from(x) - origin).collect();
+            let text = record.text.get(bytes.clone())?;
+            let (glyphs, advance) = match record.line_layout_policy {
+                TextEditLineLayoutPolicy::CumulativeGuestMetrics =>
+                    ClassicLine::classic_textedit_run_with_paint_advance(text, style.font, style.size, style.face, positions)?,
+                TextEditLineLayoutPolicy::PpcRunMetrics =>
+                    ClassicLine::ppc_styled_run_with_paint_advance(text, style.font, style.size, style.face, positions)?,
+            };
+            let next = left.checked_add(i16::try_from(advance).ok()?)?;
+            runs.push(StyledTextEditRun { bytes, left, measured_positions, glyphs,
+                ink: paint.style_ink.get(style_index)?.clone() });
+            left = next;
+        }
+        Some(Self { geometry, runs })
+    }
+
+    /// srcOr's set mask pixels replace foreground in both native CPU paths.
+    /// Resolve overlapping runs in draw order, retaining the last run's ink.
+    /// Background erasure and selection are separate presentation operations.
+    pub fn pixels(&self) -> Option<std::collections::BTreeMap<(i16, i16), [u8; 3]>> {
+        let mut pixels = std::collections::BTreeMap::new();
+        let baseline = self.geometry.top.saturating_add(self.geometry.ascent);
+        for run in &self.runs {
+            for &(x, y, width) in &run.glyphs.ink {
+                let top = i16::try_from(i32::from(baseline).checked_add(y)?).ok()?;
+                for dx in 0..width {
+                    let left = i16::try_from(i32::from(run.left).checked_add(x)?.checked_add(dx)?).ok()?;
+                    pixels.insert((left, top), run.ink.rgb);
+                }
+            }
+        }
+        Some(pixels)
+    }
+}
+
+/// Paint styled native bitmap ink in the shared GPUI compositor. The caller
+/// owns background/selection, clipping and the port-to-scene transform.
+pub(crate) fn classic_styled_text_edit_ink(
+    line: StyledTextEditLine, scale: f32, port_origin: (f32, f32),
+) -> Option<impl gpui_kit::IntoElement> {
+    use gpui_kit::{prelude::*, *};
+    let pixels = line.pixels()?;
+    let mut paths: std::collections::BTreeMap<[u8; 3], Vec<(i16, i16)>> = std::collections::BTreeMap::new();
+    for (point, rgb) in pixels { paths.entry(rgb).or_default().push(point); }
+    Some(canvas(|bounds, _, _| bounds, move |_, _, window, _| {
+        let device_scale = window.scale_factor();
+        let snap = |value: f32| {
+            let device = value * device_scale;
+            px((device.abs() - 0.5).ceil().copysign(device) / device_scale)
+        };
+        for (color, pixels) in &paths {
+            let mut path = PathBuilder::fill();
+            for &(x, y) in pixels {
+                let x = port_origin.0 + f32::from(x) * scale;
+                let y = port_origin.1 + f32::from(y) * scale;
+                let left = snap(x); let top = snap(y);
+                let right = snap(x + scale); let bottom = snap(y + scale);
+                if right <= left || bottom <= top { continue; }
+                path.move_to(point(left, top));
+                path.line_to(point(right, top));
+                path.line_to(point(right, bottom));
+                path.line_to(point(left, bottom));
+                path.close();
+            }
+            let [r, g, b] = *color;
+            let ink: Hsla = rgb((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)).into();
+            window.paint_path(path.build().expect("guest styled TextEdit ink rectangles"), ink);
+        }
+    }).size_full())
+}
+
 /// Standard CDEF/dialog/Standard File buttons use the Roman system font.
 /// Center in integer guest coordinates before applying presentation scale.
 pub(crate) fn classic_button_label(
