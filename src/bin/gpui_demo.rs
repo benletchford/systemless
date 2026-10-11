@@ -237,6 +237,9 @@ mod desktop {
         capture_popup_controls_host_suspended: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_popup_controls_disabled: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_popup_controls_open: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -1756,6 +1759,7 @@ mod desktop {
                             let Some(selected) = super::frames::popup_control_label(control, &self.menus) else {
                                 continue;
                             };
+                            let popup_ink = control.popup_ink.unwrap_or(systemless::runner::ControlTextInk::Solid([0; 3]));
                             let popup_font = control.popup_font.unwrap_or_default();
                             let Some((box_top, box_left, box_bottom, box_right)) = control.popup_box_bounds else {
                                 continue;
@@ -1772,7 +1776,7 @@ mod desktop {
                                         .w(guest_px(title_width as f32)).h_full().overflow_hidden()
                                         .child(super::text::classic_popup_control_label(
                                             &control.title, popup_font, true, control.popup_text_inset, scene_scale,
-                                            if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })),
+                                            popup_ink, (source.top, source.left, source.bottom, i32::from(box_left)), self.display_origin)),
                                 )
                                 .child(
                                     div().absolute().left(guest_px(title_width as f32)).top(guest_px(box_y as f32))
@@ -1785,7 +1789,7 @@ mod desktop {
                                         .h(guest_px(box_height as f32)).overflow_hidden()
                                         .child(super::text::classic_popup_control_label(
                                             selected, popup_font, false, control.popup_text_inset, scene_scale,
-                                            if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })),
+                                            popup_ink, (i32::from(box_top), i32::from(box_left), i32::from(box_bottom), i32::from(box_right) - 19), self.display_origin)),
                                 )
                                 .child(
                                     div().absolute().left(guest_px((title_width + box_width - 18) as f32)).top(guest_px(box_y as f32))
@@ -2784,6 +2788,7 @@ mod desktop {
         PopupControls,
         PopupControlsSelected,
         PopupControlsHostSuspended,
+        PopupControlsDisabled,
         PopupControlsOpen,
         PopupControlsScrolled,
         StandardFileSave,
@@ -2804,6 +2809,8 @@ mod desktop {
         let runner = session.runner_mut();
         let (window_top, window_left, _, _) = runner.window_bounds();
         let (vertical, horizontal) = (window_top + 112, window_left + 280);
+        let original_value = runner.control_snapshot().iter().find(|control|
+            control.visible && control.popup_menu_id == Some(143)).unwrap().value;
         runner.set_mouse_position(vertical, horizontal);
         runner.push_mouse_down(vertical, horizontal);
         for _ in 0..20 {
@@ -2821,8 +2828,9 @@ mod desktop {
         assert!(opened.bounds.1 <= horizontal && horizontal < opened.bounds.3);
         assert_eq!(runner.control_snapshot().iter().find(|control| {
             control.visible && control.popup_menu_id == Some(143)
-        }).unwrap().value, 1, "opening must not commit a value");
-        runner.set_mouse_position(window_top + 146, horizontal);
+        }).unwrap().value, original_value, "opening must not commit a value");
+        let selected_vertical = opened.content_top + opened.row_heights[..3].iter().sum::<i16>() + opened.row_heights[3] / 2;
+        runner.set_mouse_position(selected_vertical, horizontal);
         for _ in 0..20 {
             runner.run_steps(50_000, None);
         }
@@ -2831,13 +2839,13 @@ mod desktop {
         assert_eq!(highlighted.menu.generation, opened.menu.generation);
         assert_eq!(highlighted.highlighted_item, 4);
         assert_eq!(highlighted.bounds, opened.bounds);
-        runner.push_mouse_up(window_top + 146, horizontal);
+        runner.push_mouse_up(selected_vertical, horizontal);
         assert!(
             (0..300).any(|_| {
                 runner.run_steps(50_000, None);
                 runner.control_snapshot().iter().any(|control| {
                     control.visible && control.popup_menu_id == Some(143) && control.value == 4
-                })
+                }) && runner.guest_popup_snapshot().is_none()
             }),
             "guest should select the popup's long item"
         );
@@ -2889,6 +2897,23 @@ mod desktop {
     }
 
     #[cfg(feature = "gpui-demo-test")]
+    fn set_showcase_popups_enabled(session: &mut MacintoshSession, enabled: bool) {
+        let (mac_key, character) = if enabled { (0x0e, b'e') } else { (0x02, b'd') };
+        session.deliver_input(MacintoshInput::KeyDown { mac_key, character });
+        session.deliver_input(MacintoshInput::KeyUp { mac_key, character });
+        assert!((0..300).any(|_| {
+            session.runner_mut().run_steps(10_000, None);
+            let controls = session.runner_mut().control_snapshot();
+            [143, 144].into_iter().all(|id| controls.iter().any(|control|
+                control.visible && control.popup_menu_id == Some(id) && control.enabled == enabled))
+        }), "guest HiliteControl must change both popup controls");
+        assert!((0..300).any(|_| {
+            session.runner_mut().run_steps(10_000, None);
+            session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0)
+        }), "guest must finish repainting disabled popup text");
+    }
+
+    #[cfg(feature = "gpui-demo-test")]
     fn capture_fixture_screen(
         game: &std::path::Path,
         output: &std::path::Path,
@@ -2926,7 +2951,7 @@ mod desktop {
         );
         let popup_page = matches!(
             capture,
-            CaptureCase::PopupControls | CaptureCase::PopupControlsSelected | CaptureCase::PopupControlsHostSuspended | CaptureCase::PopupControlsOpen | CaptureCase::PopupControlsScrolled
+            CaptureCase::PopupControls | CaptureCase::PopupControlsSelected | CaptureCase::PopupControlsHostSuspended | CaptureCase::PopupControlsDisabled | CaptureCase::PopupControlsOpen | CaptureCase::PopupControlsScrolled
         );
         let standard_file_save = matches!(
             capture,
@@ -3767,7 +3792,7 @@ mod desktop {
             for _ in 0..20 { runner.run_steps(50_000, None); }
             assert_eq!(runner.guest_popup_snapshot().unwrap().highlighted_item, 4);
         }
-        if matches!(capture, CaptureCase::PopupControlsSelected | CaptureCase::PopupControlsHostSuspended) {
+        if matches!(capture, CaptureCase::PopupControlsSelected | CaptureCase::PopupControlsHostSuspended | CaptureCase::PopupControlsDisabled) {
             select_showcase_resource_popup_long(&mut session);
             let controls = session.runner_mut().control_snapshot();
             let menus = session.runner_mut().guest_menu_snapshot();
@@ -3887,7 +3912,15 @@ mod desktop {
             assert_eq!(current.hilite, if matches!(capture, CaptureCase::RadioHeld) { 11 } else { 0 });
             assert_eq!(current.value, if matches!(capture, CaptureCase::RadioSelected) { 1 } else { 0 });
         }
+        if matches!(capture, CaptureCase::PopupControlsDisabled) {
+            set_showcase_popups_enabled(&mut session, false);
+        }
         let controls = session.runner_mut().control_snapshot();
+        if matches!(capture, CaptureCase::PopupControlsDisabled) {
+            assert!(controls.iter().filter(|c| c.visible && c.popup_menu_id.is_some()).all(|c| !c.enabled));
+            eprintln!("disabled popup ink: {:?}", controls.iter().filter(|c| c.visible && c.popup_menu_id.is_some())
+                .map(|c| (c.popup_menu_id, c.hilite, c.popup_ink)).collect::<Vec<_>>());
+        }
         let lists = session.runner_mut().list_manager_snapshot();
         if matches!(capture, CaptureCase::TextEditSelected | CaptureCase::TextEditEdited | CaptureCase::TextEditInactive | CaptureCase::TextEditReactivated | CaptureCase::TextEditHostSuspended | CaptureCase::TextEditHostResumed) {
             // The showcase Reset control invokes TESetText then
@@ -4558,6 +4591,12 @@ mod desktop {
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_popup_controls_disabled.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc,
+                args.screen_depth, CaptureCase::PopupControlsDisabled, args.capture_scale);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_popup_controls_host_suspended.as_ref() {
             capture_fixture_screen(&args.game, output, args.prefer_powerpc,
                 args.screen_depth, CaptureCase::PopupControlsHostSuspended, args.capture_scale);
@@ -5150,6 +5189,7 @@ mod desktop {
                         capture_popup_controls: None,
                         capture_popup_controls_selected: None,
                         capture_popup_controls_host_suspended: None,
+                        capture_popup_controls_disabled: None,
                         capture_popup_controls_open: None,
                         capture_popup_controls_scrolled: None,
                         capture_standard_file_save: None,
@@ -5961,6 +6001,31 @@ mod desktop {
                         super::super::frames::popup_control_label(control, &menus),
                         Some("Long-range Expedition Loadout"),
                     );
+                    super::set_showcase_popups_enabled(&mut session, false);
+                    let disabled = session.runner_mut().control_snapshot();
+                    let control = disabled.iter().find(|c| c.popup_menu_id == Some(143)).unwrap();
+                    assert!(!control.enabled);
+                    assert_eq!(control.value, 4);
+                    let ink = control.popup_ink.expect("disabled popup must expose guest ink");
+                    if !powerpc && depth == Some(1) {
+                        assert_eq!(ink, systemless::runner::ControlTextInk::Checker);
+                    } else {
+                        assert!(matches!(ink, systemless::runner::ControlTextInk::Solid(_)));
+                    }
+                    let (top, left, bottom, right) = control.popup_box_bounds.unwrap();
+                    let (vertical, horizontal) = ((top + bottom) / 2, (left + right) / 2);
+                    session.deliver_input(MacintoshInput::MouseDown { vertical, horizontal });
+                    settle(&mut session);
+                    assert!(session.runner_mut().guest_popup_snapshot().is_none(),
+                        "disabled guest popup must reject tracking on mouse-down");
+                    session.deliver_input(MacintoshInput::MouseUp { vertical, horizontal });
+                    settle(&mut session);
+                    assert_eq!(session.runner_mut().control_snapshot().iter()
+                        .find(|c| c.popup_menu_id == Some(143)).unwrap().value, 4);
+                    super::set_showcase_popups_enabled(&mut session, true);
+                    super::select_showcase_resource_popup_long(&mut session);
+                    assert_eq!(session.runner_mut().control_snapshot().iter()
+                        .find(|c| c.popup_menu_id == Some(143)).unwrap().value, 4);
                 }
             }
         }
@@ -10538,6 +10603,7 @@ mod desktop {
                         popup_menu_id: None,
                         popup_title_width: None,
                         popup_text_inset: 15,
+                        popup_ink: None,
                         popup_box_bounds: None,
                         popup_font: None,
                         font_style: None,
@@ -11072,6 +11138,7 @@ mod desktop {
                         popup_menu_id: None,
                         popup_title_width: None,
                         popup_text_inset: 15,
+                        popup_ink: None,
                         popup_box_bounds: None,
                         popup_font: None,
                         font_style: None,
@@ -11211,6 +11278,7 @@ mod desktop {
                         popup_menu_id: None,
                         popup_title_width: None,
                         popup_text_inset: 15,
+                        popup_ink: None,
                         popup_box_bounds: None,
                         popup_font: None,
                         font_style: None,

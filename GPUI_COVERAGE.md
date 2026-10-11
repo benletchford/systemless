@@ -3308,3 +3308,87 @@ fixture's active and suspended title at 0.75, 1.0, 1.5 and 2.0 on monochrome
 guest coordinates. Arbitrary title resources, native host input/activation,
 native font parity and performance remain unqualified; disabled popup ink and
 arrow shape still require faithful guest-resolved presentation.
+
+### Guest-resolved popup text ink candidate
+
+A new `ControlTextInk` snapshot candidate replaces host muted foreground for
+closed standard popup text. Classic disabled eight-bit ink resolves the CDEF's
+live device-CLUT entry through display gamma; monochrome dimming retains global
+guest checker phase. PPC uses the same active/deactivated control-palette helper
+as its CDEF painter, preserving the distinction between contrlHilite and
+Appearance DeactivateControl. Solid ink keeps bitmap-run batching. Font metrics,
+selected-label bounds and guest input paths are unchanged. The GPUI example
+check passed before extracting the shared classic ink helper; the existing
+live-palette guest-pixel regression is extended to compare snapshot ink, and its
+run plus a capture build are pending. Disabled composed captures, global phase
+under clipping/scales, custom palettes and interaction qualification remain
+required before claiming fidelity.
+
+The live-palette guest-pixel regression passes (0.04 s after compilation),
+including the new comparison between disabled snapshot ink and the actual
+palette entry written by the CDEF. The public showcase now accepts `d`/`e`
+on its popup page to disable/re-enable both controls through guest
+HiliteControl; the MPW 68K/PPC rebuild succeeded. A new disabled capture case
+waits for both guest records and completed painting, then uses the existing
+shared compositor. The three-mode popup regression now checks disabled
+mouse-down rejection, unchanged selected value, re-enabling and subsequent
+guest tracking. Its run is queued behind the capture build, which is still
+compiling. No disabled composed rendering qualification is established yet.
+
+The first disabled capture used a build that did not execute the disable action;
+its visibly enabled guest/composed text is retained at
+`/tmp/gpui-popup-disabled-mono-075*` and is not qualification evidence. The
+three-mode test also failed on the second selection because its helper assumed
+an initial value of 1, whereas re-enabling correctly retained value 4. The
+helper now retains the pre-tracking value and derives the target row from live
+popup geometry. Capture state now asserts every visible popup is disabled and
+logs guest hilite/ink. The fresh build passes (11.77 s); a new capture and the
+corrected guest interaction regression are running.
+
+The rebuilt mono 0.75 disabled capture completes with explicit guest hilite 255
+and Checker ink for both controls. Guest/composed frames are reviewed at
+`/tmp/gpui-popup-disabled-mono-075-v2*`: GPUI now shows patterned disabled glyphs.
+An independent black-pixel comparison against device-edge-scaled guest selected
+text is not exact (loadout: 71 missing/160 extra physical pixels; theme: 22/24
+in the inspected regions), so scale/phase fidelity remains unqualified. The
+production binary check passes (1m13s). A fresh twelve-capture disabled matrix
+is running against a fixed binary with source fingerprints recorded before it.
+The corrected interaction regression fails at completed-popup disappearance
+when reselecting an already-selected value: its readiness predicate accepts
+value 4 before tracking closes. Require both the retained value and closed
+tracking before retrying; do not treat this failure as interaction parity.
+
+The helper readiness predicate now requires the selected value and closed guest
+tracking together; its three-mode retry is running. The unchanged capture
+binary remains fixed during the matrix; its source copy and original hash are
+preserved separately before the helper edit. Mono 1.0 selected Theme black ink
+matches the device-edge-scaled guest exactly in the inspected text region. The
+Loadout region's only difference is a guest arrow pixel at (423,158), outside
+the selected-text boundary; exclude arrow ink from subsequent text comparisons.
+The remaining mono fractional-scale mismatch still needs layout/device-edge
+investigation rather than a font substitution or regenerated baseline.
+
+The corrected popup interaction regression passes on monochrome 68K, colour
+68K and PPC (224.96 s): disabled controls reject tracking, preserve selection,
+and track again after guest re-enabling. The original disabled twelve-capture
+matrix completed and was visually reviewed; its fractional-scale mismatch
+remains failed fidelity evidence. The GPUI bitmap text now derives its origin,
+width and height directly from guest CDEF bounds and the shared scene transform,
+avoiding fractional host layout rounding. The example check and capture build
+pass. A fresh mono 0.75 capture is reviewed at
+`/tmp/gpui-popup-disabled-canonical-mono-075.png`; independent device-edge-scaled
+black-pixel comparisons exactly match both selected labels (Loadout region
+305,153–419,169; Theme 295,189–370,205). Arrow ink is excluded. This single
+capture does not qualify other modes, scales, clipping or live letterboxing.
+A fresh fixed-binary twelve-capture matrix is running at
+`/tmp/gpui-popup-disabled-canonical-scales`, with source hashes recorded before
+capture in `/tmp/gpui-popup-disabled-canonical-source-sha.json`.
+
+All 24 original disabled-matrix PNGs are losslessly archived as
+`tests/toolbox-showcase/reference/gpui-demo/popup-disabled-layout-*`; the review
+manifest records the failed fractional-scale comparison, original source
+fingerprints, and binary provenance limits. The corrected matrix's mono 0.75
+and 1.0 selected-text regions both match the scaled guest black mask exactly
+and their composed images are reviewed. The public no-default-features check
+passes (15.41 s). The remaining ten corrected captures and their review are
+pending; this checkpoint does not claim complete popup or production fidelity.

@@ -5064,6 +5064,11 @@ static void DoEvent(EventRecord *event)
             } else if (gPage == pageTextEdit && gTE != nil) {
                 TEKey(key, gTE);
                 DrawMainWindow();
+            } else if (gPage == pagePopupLists && (key == 'd' || key == 'e')) {
+                /* Exercise the guest CDEF's disabled ink and hit testing. */
+                if (gPopupResource != nil) HiliteControl(gPopupResource, key == 'd' ? 255 : 0);
+                if (gPopupProgrammatic != nil) HiliteControl(gPopupProgrammatic, key == 'd' ? 255 : 0);
+                DrawMainWindow();
             } else if (gPage == pageEventsCursors) {
                 DrawMainWindow();
             }

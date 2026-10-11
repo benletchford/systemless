@@ -616,3 +616,7 @@ diff before committing it:
 SYSTEMLESS_UPDATE_TOOLBOX_REFERENCES=1 cargo test --locked --test toolbox_showcase
 SYSTEMLESS_PREFER_POWERPC=1 SYSTEMLESS_UPDATE_TOOLBOX_REFERENCES=1 cargo test --locked --test toolbox_showcase
 ```
+
+On the Popup & Dropdown Lists page, press `d` to disable both popup controls
+through guest `HiliteControl`, or `e` to re-enable them. These keys preserve
+the selected values and exercise disabled CDEF drawing and hit testing.
