@@ -1669,9 +1669,10 @@ mod desktop {
                                         .text_color(cx.theme().foreground)
                                         .child(selected),
                                 );
-                            } else if focused {
+                            } else if focused && item.caret_visible == Some(true) {
                                 field = field.child(
-                                    div().w(guest_px(1.)).h(guest_px(14.)).bg(cx.theme().foreground),
+                                    div().relative().w(px(0.)).h(guest_px(14.))
+                                        .child(div().absolute().left_0().top_0().w(guest_px(1.)).h_full().bg(cx.theme().foreground)),
                                 );
                             }
                             overlay.child(field.child(suffix))
@@ -3653,6 +3654,7 @@ mod desktop {
                         visible: true,
                         value: None,
                         selection: None,
+                        caret_visible: Some(true),
                     }],
                 }];
                 let mut pixels = image::RgbaImage::new(300, 220);
@@ -5907,6 +5909,7 @@ mod desktop {
                     visible: true,
                     value: None,
                     selection: None,
+                    caret_visible: Some(true),
                 });
                 assert!(super::standard_dbox_dialog(&[mixed.clone()], &windows).is_some());
                 mixed.items[1].value = None;
@@ -5973,6 +5976,7 @@ mod desktop {
                     .expect("preferences dialog should expose unchecked guest controls");
                 assert_eq!(dialog.edit_field, Some(7));
                 assert_eq!(dialog.items[6].selection, Some((0, 0)));
+                assert!(dialog.items[6].caret_visible.is_some(), "active dialog TERec must expose its blink phase");
                 session.deliver_input(MacintoshInput::KeyDown {
                     mac_key: 0x07,
                     character: b'X',
@@ -6966,6 +6970,7 @@ mod desktop {
                             visible: true,
                             value: None,
                             selection: None,
+                            caret_visible: Some(true),
                         }],
                     }];
                     demo.width = 800;
@@ -7069,6 +7074,7 @@ mod desktop {
                                 visible: true,
                                 value: Some(0),
                                 selection: None,
+                                caret_visible: Some(true),
                             },
                             DialogItemSnapshot {
                                 number: 2,
@@ -7079,6 +7085,7 @@ mod desktop {
                                 visible: true,
                                 value: None,
                                 selection: Some((0, 0)),
+                                caret_visible: Some(true),
                             },
                         ],
                     }];

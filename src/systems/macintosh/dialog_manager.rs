@@ -677,6 +677,8 @@ pub struct DialogItemSnapshot {
     pub value: Option<i16>,
     /// Only populated for editable text with a known guest selection.
     pub selection: Option<(i16, i16)>,
+    /// Blink phase of the dialog-owned active TERec, when available.
+    pub caret_visible: Option<bool>,
 }
 
 /// A live dialog's semantic state, separate from its guest-rendered pixels.

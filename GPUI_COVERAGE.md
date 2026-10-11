@@ -334,3 +334,11 @@ remaining authoritative. The painted caret has zero layout width so toggling
 it does not shift adjacent text. Focused classic and PPC checks exercise the
 32-tick blink boundary; dialog and Standard File caret presentation, physical
 focus transitions and composed blink captures remain separate qualification.
+
+Single-line dialog edit overlays now also consume the active DialogRecord
+TextEdit caret phase on both CPU paths. Non-active items have no phase, and
+unknown phases do not synthesize a caret. The caret has zero layout width.
+Seven focused dialog tests pass; the preferences interaction test additionally
+checks phase availability on monochrome 68K, colour 68K and PPC. This validates
+the snapshot connection, not full visual blink timing: composed visible/hidden
+pairs, focus transitions and Standard File caret behaviour remain open.

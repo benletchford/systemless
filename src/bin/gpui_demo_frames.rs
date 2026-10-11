@@ -709,6 +709,7 @@ mod tests {
                 visible: true,
                 value: None,
                 selection: None,
+                caret_visible: Some(true),
             }],
         };
         let viewport = Rect::from((0, 0, 300, 300));
