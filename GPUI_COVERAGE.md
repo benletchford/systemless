@@ -2965,3 +2965,14 @@ open-popup compositions were reviewed and archived losslessly in
 The selected long label is readable and the disabled row label remains present.
 This fixture does not qualify icons, marks/commands, alternate owner fonts,
 scroll arrows, further scales or native colour/disabled-pattern parity.
+
+### Popup scrolling indicator raster
+
+GPUI popup arrow slots now paint the shared Menu Manager up/down pixel rasters
+instead of host-font triangle characters. Each raster pixel uses the scene scale;
+centering follows integer guest coordinates within the unchanged 16-pixel slot.
+The updated example/test build and guest-content-origin indicator regression
+pass. The existing shared-raster/gray-phase regression also passes (0.02 seconds).
+The prior popup interaction matrix remains evidence for unchanged tracking,
+not composed verification of this new raster. Scrolled compositions across
+CPUs/scales and native colour/pattern fidelity remain unqualified.

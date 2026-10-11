@@ -79,7 +79,7 @@ pub fn popup(popup: &GuestPopupSnapshot, scale: f32, cx: &App) -> Div {
         pane = pane.child(row);
         offset += i32::from(*height);
     }
-    for (visible, y, arrow) in [(scroll_up, 0, "▴"), (scroll_down, height - 16, "▾")] {
+    for (visible, y, up) in [(scroll_up, 0, true), (scroll_down, height - 16, false)] {
         if visible {
             pane = pane.child(
                 div()
@@ -88,13 +88,9 @@ pub fn popup(popup: &GuestPopupSnapshot, scale: f32, cx: &App) -> Div {
                     .top(unit(y))
                     .w_full()
                     .h(unit(16))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(unit(12))
-                    .text_color(cx.theme().foreground)
+                    .overflow_hidden()
                     .bg(cx.theme().background)
-                    .child(arrow),
+                    .child(scroll_indicator(up, scale, cx.theme().foreground)),
             );
         }
     }
@@ -135,6 +131,19 @@ pub fn popup(popup: &GuestPopupSnapshot, scale: f32, cx: &App) -> Div {
         );
     }
     overlay.child(pane)
+}
+
+fn scroll_indicator(up: bool, scale: f32, foreground: Hsla) -> impl IntoElement {
+    let pixels = systemless::menu_model::standard_scroll_indicator_pixels(up);
+    canvas(move |bounds, _, _| bounds, move |_, bounds, window, _| {
+        let center = (f32::from(bounds.size.width) / scale).round() as i32 / 2;
+        for &(x, y) in &pixels {
+            window.paint_quad(fill(Bounds::new(
+                point(bounds.left() + px((center + i32::from(x)) as f32 * scale),
+                    bounds.top() + px(f32::from(y) * scale)),
+                size(px(scale), px(scale))), foreground));
+        }
+    }).size_full()
 }
 
 #[cfg(test)]
