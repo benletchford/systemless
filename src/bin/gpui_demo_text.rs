@@ -522,6 +522,49 @@ fn classic_label_canvas(
     .size_full()
 }
 
+/// Paint a standard popup row at guest MDEF anchors and the owner-port font.
+/// The caller owns row clipping and tracking; no host shaping or ellipsis occurs.
+pub(crate) fn classic_popup_row(
+    popup: &systemless::menu_model::GuestPopupSnapshot,
+    item: &systemless::menu_model::GuestMenuItem,
+    height: i16, scale: f32, foreground: gpui_kit::Hsla,
+) -> impl gpui_kit::IntoElement {
+    use gpui_kit::{prelude::*, *};
+    let font = popup.font;
+    let (mark_x, text_x, command_x, baseline) = popup.text_anchors(0, height);
+    let bytes: Vec<_> = item.text.chars().map(|ch|
+        systemless::systems::macintosh::mac_roman::encode_mac_roman_char(ch).unwrap_or(b'?')).collect();
+    let mut lines = vec![(text_x, ClassicLine::styled(&bytes, font.family, font.point_size(), item.style))];
+    if item.mark != 0 && item.submenu_id.is_none() {
+        lines.push((mark_x, ClassicLine::plain(&[item.mark], font.family, font.point_size())));
+    }
+    if let Some(key) = item.key_equivalent {
+        lines.push((command_x, ClassicLine::unicode(&format!("⌘{key}"), font.family, font.point_size())));
+    }
+    let hierarchy = item.submenu_id.is_some().then(|| {
+        let x = popup.bounds.3.saturating_sub(popup.bounds.1).saturating_sub(12);
+        (x, systemless::menu_model::standard_hierarchy_indicator_pixels())
+    });
+    canvas(move |bounds, _, _| bounds, move |_, bounds, window, _| {
+        if let Some((left, pixels)) = &hierarchy {
+            for &(x, y) in pixels {
+                window.paint_quad(fill(Bounds::new(
+                    point(bounds.left() + px((i32::from(*left) + i32::from(x)) as f32 * scale),
+                        bounds.top() + px((i32::from(height / 2) + i32::from(y)) as f32 * scale)),
+                    size(px(scale), px(scale))), foreground));
+            }
+        }
+        for (x, line) in &lines {
+            for &(ink_x, ink_y, width) in &line.ink {
+                window.paint_quad(fill(Bounds::new(
+                    point(bounds.left() + px((i32::from(*x) + ink_x) as f32 * scale),
+                        bounds.top() + px((i32::from(baseline) + ink_y) as f32 * scale)),
+                    size(px(width as f32 * scale), px(scale))), foreground));
+            }
+        }
+    }).size_full()
+}
+
 /// Standard File prompt layout uses the same word/hard-break algorithm as
 /// guest dialog drawing. Parent bounds own the clip, never host text shaping.
 pub(crate) fn classic_file_prompt(
