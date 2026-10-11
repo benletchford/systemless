@@ -53,6 +53,16 @@ pub struct WindowSnapshot {
     pub active: bool,
 }
 
+/// Frontend presentation metadata; guest window records remain authoritative.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WindowFrameSnapshot {
+    pub window: WindowSnapshot,
+    /// Unknown or application-defined WDEFs must retain guest presentation.
+    pub definition_id: Option<i16>,
+    pub close_box: bool,
+}
+
 const WINDOW_VISIBLE_OFFSET: u32 = WINDOW_VISIBLE_FLAG_OFFSET;
 const WINDOW_HILITED_OFFSET: u32 = WINDOW_HILITED_FLAG_OFFSET;
 

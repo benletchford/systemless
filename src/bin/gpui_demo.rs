@@ -12,6 +12,10 @@ fn main() {
 }
 
 #[cfg(target_os = "macos")]
+#[path = "gpui_demo_frames.rs"]
+mod frames;
+
+#[cfg(target_os = "macos")]
 mod desktop {
     //! Opt-in GPUI Kit presentation experiment for live guest menus.
 
@@ -34,6 +38,7 @@ mod desktop {
     use systemless::{
         memory::{globals::addr::MBAR_HEIGHT, MemoryBus},
         menu_model::GuestMenuSnapshot,
+        runner::WindowFrameSnapshot,
         systems::macintosh::session::{MacintoshInput, MacintoshSession},
     };
 
@@ -65,6 +70,7 @@ mod desktop {
     #[derive(Default)]
     struct Update {
         menus: GuestMenuSnapshot,
+        windows: Vec<WindowFrameSnapshot>,
         frame: Option<(u32, u32, u32, Vec<u8>)>,
         status: String,
     }
@@ -96,7 +102,14 @@ mod desktop {
                         Ok(Command::Menu(menu, item)) => {
                             session.runner_mut().select_guest_menu_item(menu, item);
                         }
-                        Ok(Command::Input(input)) => session.deliver_input(input),
+                        Ok(Command::Input(input)) => {
+                            session.deliver_input(input);
+                            // Tracking calls must observe the held button before
+                            // a queued release clears it (Inside Macintosh I, I-288).
+                            if matches!(input, MacintoshInput::MouseDown { .. }) {
+                                break;
+                            }
+                        }
                         Err(mpsc::TryRecvError::Empty) => break,
                         Err(mpsc::TryRecvError::Disconnected) => return Ok::<(), String>(()),
                     }
@@ -124,8 +137,10 @@ mod desktop {
                     (frame.width, frame.height - top, top, pixels)
                 });
                 let running = session.status().running;
+                let windows = session.runner_mut().window_frame_snapshot();
                 *updates.lock().unwrap() = Some(Update {
                     menus,
+                    windows,
                     frame,
                     status: format!(
                         "{architecture} · {} · GPUI Kit menu demo",
@@ -152,12 +167,15 @@ mod desktop {
     struct Demo {
         commands: mpsc::Sender<Command>,
         menus: GuestMenuSnapshot,
+        windows: Vec<WindowFrameSnapshot>,
         image: Option<Arc<RenderImage>>,
         width: u32,
         height: u32,
         crop_top: u32,
         status: String,
         focus: FocusHandle,
+        mouse_down: bool,
+        mouse_position: (i16, i16),
         _poll: Task<()>,
     }
 
@@ -176,6 +194,7 @@ mod desktop {
                     .update(cx, |this, cx| {
                         if let Some(update) = update {
                             this.menus = update.menus;
+                            this.windows = update.windows;
                             this.status = update.status;
                             if let Some((width, height, top, pixels)) = update.frame {
                                 this.width = width;
@@ -208,12 +227,15 @@ mod desktop {
             Self {
                 commands,
                 menus: Default::default(),
+                windows: Vec::new(),
                 image: None,
                 width: 640,
                 height: 460,
                 crop_top: 20,
                 status: "Loading guest…".into(),
                 focus: cx.focus_handle(),
+                mouse_down: false,
+                mouse_position: (0, 0),
                 _poll: poll,
             }
         }
@@ -317,11 +339,14 @@ mod desktop {
             }
             let mut screen = div()
                 .id("guest-screen")
+                .relative()
+                .overflow_hidden()
                 .w(px(self.width as f32))
                 .h(px(self.height as f32))
                 .flex_shrink_0()
                 .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, _| {
                     let (vertical, horizontal) = this.pointer(event.position);
+                    this.mouse_position = (vertical, horizontal);
                     let _ = this
                         .commands
                         .send(Command::Input(MacintoshInput::MouseMove {
@@ -332,8 +357,10 @@ mod desktop {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                        this.mouse_down = true;
                         this.focus.focus(window, cx);
                         let (vertical, horizontal) = this.pointer(event.position);
+                        this.mouse_position = (vertical, horizontal);
                         let _ = this
                             .commands
                             .send(Command::Input(MacintoshInput::MouseDown {
@@ -345,15 +372,127 @@ mod desktop {
                 .on_mouse_up(
                     MouseButton::Left,
                     cx.listener(|this, event: &MouseUpEvent, _, _| {
+                        this.mouse_down = false;
                         let (vertical, horizontal) = this.pointer(event.position);
                         let _ = this.commands.send(Command::Input(MacintoshInput::MouseUp {
                             vertical,
                             horizontal,
                         }));
                     }),
+                )
+                .on_mouse_up_out(
+                    MouseButton::Left,
+                    cx.listener(|this, event: &MouseUpEvent, _, _| {
+                        if this.mouse_down {
+                            this.mouse_down = false;
+                            let (vertical, horizontal) = this.pointer(event.position);
+                            let _ = this.commands.send(Command::Input(MacintoshInput::MouseUp {
+                                vertical,
+                                horizontal,
+                            }));
+                        }
+                    }),
                 );
             if let Some(image) = &self.image {
-                screen = screen.child(img(image.clone()).size_full());
+                screen = screen.child(img(image.clone()).absolute().top_0().left_0().size_full());
+            }
+            let viewport = super::frames::Rect {
+                top: self.crop_top as i32,
+                left: 0,
+                bottom: (self.crop_top + self.height) as i32,
+                right: self.width as i32,
+            };
+            for piece in super::frames::frame_pieces(&self.windows, viewport) {
+                let frame = &self.windows[piece.window];
+                let source = piece.source;
+                let clip = piece.clip;
+                let mut strip = div()
+                    .absolute()
+                    .left(px((source.left - clip.left) as f32))
+                    .top(px((source.top - clip.top) as f32))
+                    .w(px(source.width() as f32))
+                    .h(px(source.height() as f32))
+                    .bg(cx.theme().border);
+                if piece.title {
+                    let foreground = if frame.window.active {
+                        cx.theme().foreground
+                    } else {
+                        cx.theme().muted_foreground
+                    };
+                    strip = strip
+                        .bg(if frame.window.active {
+                            cx.theme().secondary
+                        } else {
+                            cx.theme().background
+                        })
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .text_color(foreground)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(12.))
+                        .child(
+                            div()
+                                .px(px(26.))
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(frame.window.title.clone()),
+                        );
+                    // Keep controls over the standard WDEF hit cells. Input still
+                    // reaches FindWindow/TrackGoAway/DragWindow in the guest.
+                    // Inside Macintosh I, I-287--I-289.
+                    if frame.close_box
+                        && frame.window.active
+                        && matches!(frame.definition_id, Some(0 | 4 | 8 | 12 | 16))
+                    {
+                        let (v, h) = self.mouse_position;
+                        let close_pressed = self.mouse_down
+                            && i32::from(v) >= source.top
+                            && v < frame.window.bounds.0
+                            && h >= frame.window.bounds.1
+                            && i32::from(h) < i32::from(frame.window.bounds.1) + 18;
+                        strip = strip.child(
+                            div()
+                                .absolute()
+                                .left(px((i32::from(frame.window.bounds.1) - source.left) as f32))
+                                .top_0()
+                                .w(px(18.))
+                                .h_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .when(close_pressed, |control| control.bg(cx.theme().accent))
+                                .child("×"),
+                        );
+                    }
+                    if frame.window.active && matches!(frame.definition_id, Some(8 | 12)) {
+                        strip = strip.child(
+                            div()
+                                .absolute()
+                                .left(px(
+                                    (i32::from(frame.window.bounds.3) - 15 - source.left) as f32
+                                ))
+                                .top_0()
+                                .w(px(15.))
+                                .h_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child("□"),
+                        );
+                    }
+                }
+                screen = screen.child(
+                    div()
+                        .absolute()
+                        .overflow_hidden()
+                        .left(px(clip.left as f32))
+                        .top(px((clip.top - self.crop_top as i32) as f32))
+                        .w(px(clip.width() as f32))
+                        .h(px(clip.height() as f32))
+                        .child(strip),
+                );
             }
             div()
                 .flex()
@@ -459,7 +598,133 @@ mod desktop {
 
     #[cfg(test)]
     mod tests {
-        use super::{MacintoshSession, PathBuf};
+        use super::{MacintoshInput, MacintoshSession, PathBuf};
+
+        #[test]
+        fn worker_preserves_rapid_close_button_press_and_release() {
+            use super::{run_guest, Args, Command, Update};
+            use std::{
+                sync::{mpsc, Arc, Mutex},
+                time::{Duration, Instant},
+            };
+            fn wait(updates: &Mutex<Option<Update>>, ready: impl Fn(&Update) -> bool) -> Update {
+                let start = Instant::now();
+                loop {
+                    if let Some(update) = updates.lock().unwrap().take() {
+                        if ready(&update) {
+                            return update;
+                        }
+                    }
+                    assert!(
+                        start.elapsed() < Duration::from_secs(30),
+                        "worker did not reach expected window state"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            let updates = Arc::new(Mutex::new(None));
+            let (tx, rx) = mpsc::channel();
+            let worker_updates = updates.clone();
+            let worker = std::thread::spawn(move || {
+                run_guest(
+                    Args {
+                        game: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("tests/toolbox-showcase/toolbox-showcase.sit"),
+                        prefer_powerpc: false,
+                        screen_depth: Some(8),
+                    },
+                    rx,
+                    worker_updates,
+                )
+            });
+            wait(&updates, |u| u.menus.menus.iter().any(|m| m.id == 129));
+            tx.send(Command::Menu(129, 3)).unwrap();
+            let update = wait(&updates, |u| u.windows.len() == 3);
+            let (top, left, _, _) = update.windows[0].window.bounds;
+            tx.send(Command::Input(MacintoshInput::MouseDown {
+                vertical: top - 9,
+                horizontal: left + 9,
+            }))
+            .unwrap();
+            tx.send(Command::Input(MacintoshInput::MouseUp {
+                vertical: top - 9,
+                horizontal: left + 9,
+            }))
+            .unwrap();
+            let update = wait(&updates, |u| u.windows.len() == 2);
+            assert_eq!(update.windows[0].window.title, "Auxiliary Window");
+            drop(tx);
+            worker.join().unwrap();
+        }
+
+        fn settle(session: &mut MacintoshSession) {
+            let start = session.runner().guest_tick();
+            for _ in 0..100 {
+                session.runner_mut().run_steps(10_000, None);
+                if session.runner().guest_tick().wrapping_sub(start) >= 2 {
+                    return;
+                }
+            }
+            panic!("guest did not advance while tracking input");
+        }
+
+        fn check_frames(session: &mut MacintoshSession) {
+            assert!(session.runner_mut().select_guest_menu_item(129, 3));
+            wait_for_menu(session, 129, 3, true);
+            for _ in 0..100 {
+                settle(session);
+                if session.runner_mut().window_frame_snapshot().len() == 3 {
+                    break;
+                }
+            }
+            settle(session);
+            let before = session.runner_mut().window_frame_snapshot();
+            assert_eq!(before.len(), 3);
+            assert_eq!(before[0].window.title, "Stacked Inspector");
+            assert_eq!(before[0].definition_id, Some(8));
+            assert!(before[0].close_box && before[0].window.active);
+            let (top, left, bottom, right) = before[0].window.bounds;
+            let from = (top - 9, (left + right) / 2);
+            session.deliver_input(MacintoshInput::MouseDown {
+                vertical: from.0,
+                horizontal: from.1,
+            });
+            settle(session);
+            session.deliver_input(MacintoshInput::MouseMove {
+                vertical: from.0 + 12,
+                horizontal: from.1 + 16,
+            });
+            settle(session);
+            session.deliver_input(MacintoshInput::MouseUp {
+                vertical: from.0 + 12,
+                horizontal: from.1 + 16,
+            });
+            settle(session);
+            let moved = session.runner_mut().window_frame_snapshot();
+            assert_eq!(
+                moved[0].window.bounds,
+                (top + 12, left + 16, bottom + 12, right + 16)
+            );
+            assert_eq!(
+                moved[0].window.structure_bounds.unwrap().0,
+                moved[0].window.bounds.0 - 19
+            );
+            let close = (moved[0].window.bounds.0 - 9, moved[0].window.bounds.1 + 9);
+            session.deliver_input(MacintoshInput::MouseDown {
+                vertical: close.0,
+                horizontal: close.1,
+            });
+            settle(session);
+            session.deliver_input(MacintoshInput::MouseUp {
+                vertical: close.0,
+                horizontal: close.1,
+            });
+            settle(session);
+            let closed = session.runner_mut().window_frame_snapshot();
+            assert_eq!(closed.len(), 2);
+            assert_eq!(closed[0].window.title, "Auxiliary Window");
+            assert!(closed[0].window.active);
+        }
 
         fn wait_for_menu(
             session: &mut MacintoshSession,
@@ -516,6 +781,7 @@ mod desktop {
                     .pixels
                     .chunks_exact(4)
                     .any(|p| p != &frame.pixels[..4]));
+                check_frames(&mut session);
             }
         }
     }
