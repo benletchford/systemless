@@ -1083,3 +1083,89 @@ not resolve Solitaire House's distribution scope or remaining PPC rendering.
 The separately merged FillRoundRect repair is queued in normal
 [release #4468](https://github.com/benletchford/systemless/pull/4468), v0.95.2;
 its release/publication gates remain pending.
+
+## Arashi original intake and public delivery
+
+Original Arashi 1.1: https://www.vintageapplemac.com/files/games/Arashi%201.1.sit,
+284885 bytes, SHA-256 `40947ddd897d260cfa5ac16ad31494111cdb2707d81337b081e52e5fd2643ad6`.
+All ten files and twenty forks match independent extraction; CODE 0–6 and no
+PPC slice. Original terms allow free non-profit distribution of the unchanged
+package. Selector `Arashi 1.1/Arashi 1.1`, depth 8.
+
+[Entry #4473](https://github.com/benletchford/systemless/pull/4473) and
+[SetPort repair #4472](https://github.com/benletchford/systemless/pull/4472)
+merged. Native keyboard gameplay passes twelve assertions. Ordinary preview
+and public v0.96.0 verify level selection, P pause, original A/D/F assignment,
+both directions and firing. Public archive HTTP 200 body matches the exact
+hash and size without interception. Production is a 68K worker/WebGL,
+800×600, 25 MHz, maximum two ticks per paint, crossOriginIsolated false.
+[Public evidence](https://github.com/benletchford/systemless/issues/4471#issuecomment-6103836720).
+The complete v0.96.0 release run 38098620644 passed; all six native archives
+and six checksum files are nonempty and the release is not a draft. This is
+qualified new live game fifteen. Full playthrough, saving and audio are unverified.
+
+## NS-SHAFT original intake
+
+Original English 1.2 archive: https://www.vintageapplemac.com/files/games/NS-SHAFT%201.2.sit,
+382228 bytes, SHA-256 `ced6dfcab13f4fd7a4a7f949467bcc4de0f7abd519dae379bf351761a8efcba1`.
+All five files and ten forks independently match. The original English Read Me
+and matching author page https://www.nagi-p.com/v1/eng/nsshaft.html permit
+unchanged-package distribution; other media such as CD-ROM require contact.
+Do not substitute another language/version's terms. Selector
+`NS-SHAFT 1.2/NS-SHAFT`, depth 8, literal arrows and menu bar. Four CODE
+resources, no CFM/PEF slice: 68K-only.
+
+Native movement/descent reaches B0002F with twenty assertions, 947 frontend /
+1547 guest ticks, no exhausted frames. A matched no-arrow run isolates movement.
+Ordinary Chrome preview verifies both directions and a deliberate lower-platform
+landing. Title-dialog remnants are tracked in #4477. Assets promoted and
+[catalogue #4476](https://github.com/benletchford/systemless/pull/4476) merged.
+[Evidence](https://github.com/benletchford/systemless/issues/4475).
+Release #4479 is reserved for human action; public gameplay remains unverified.
+
+## NS-TOWER original-author intake
+
+Author download https://www.nagi-p.com/v1/files/ns-tower-25.sit.hqx,
+829529 bytes, SHA-256 `50e9a1fd942cebf9d3a549fee19b590b0248e009d1c3cfcd613ae4ef600d3d51`.
+Original English 2.5 Read Me First matches
+https://www.nagi-p.com/v1/eng/nstower.html: free distribution of the unchanged
+package, contact for other media such as CD-ROM. Retain all four files and the
+US$10 reminder/Register program. All eight data/resource forks independently
+match production BinHex/StuffIt decoding, including the icon filename's carriage
+return. Four CODE resources and no CFM/PEF: 68K-only. Selector
+`NS-TOWER 2.5/NS-TOWER`, depth 8 and menu bar.
+
+Native Space charge/release jumps reach a raised platform and scroll the tower
+upward; six measured assertions pass at 1366 frontend / 1966 guest ticks with
+no exhausted frames. A matched no-Space run stays on the bottom floor. Floor
+counter advancement is unverified. Title-dialog residue remains outside the
+tower; no pixels or guest bytes are patched. [Intake #4480](https://github.com/benletchford/systemless/issues/4480),
+[catalogue #4481](https://github.com/benletchford/systemless/pull/4481).
+Assets promoted in run 38099796649; downloaded managed archive matches original
+hash. Ordinary Chrome v0.96.0 on promoted revision 3d26d9541dc82fff1304876ca0e02dd974f1ddcf
+verifies original startup, Space charge/release, raised moving-platform landing
+in successive captures and upward scrolling. Actual 68K worker/WebGL, 800×600,
+25 MHz, two ticks per paint, crossOriginIsolated true. Only localhost delivery
+uses an integrity-checked original byte fixture; no guest/archive patch. Launch
+is approved; merge, human release and public replay remain pending.
+
+## BOOM original fat-archive support intake
+
+Original BOOM 1.1 folder archive:
+https://www.vintageapplemac.com/files/games/BOOM%20%C6%92.sit,
+1999528 bytes, SHA-256 `a82d41b4ba6c3cb64a2c65e793a3a795cdb9f5d3ca21b9b7d525657bb480c41d`.
+All twenty-six files and fifty-two forks independently match. Selector
+`BOOM ƒ/BOOM 1.1`, depth 8. Five CODE resources plus PEF/cfrg: actual fat game.
+Original terms allow unchanged free distribution but require previous agreement
+for CD-ROMs and other software collections. The original FAQ describes Internet
+distribution; software-collection applicability still needs resolution before
+hosting. Registration and original trial restrictions remain intact.
+
+68K movement passes twelve assertions. Original `BOOM-P1` documents Control
+as the action key. Control places a bomb, destroys a block and increases Score
+0→10; nine fresh assertions pass at 1584 frontend / 2184 guest ticks without
+exhaustion. A matched no-Control run retains the block and Score 0. The player
+also takes blast damage; complete-level survival is unverified. PPC halts at
+frontend tick 1 on unsupported `InterfaceLib:IUDatePString`, PC $01F0033C.
+[Focused issue and native evidence #4478](https://github.com/benletchford/systemless/issues/4478).
+PPC support, browser gameplay and rights scope are pending; unhosted.
