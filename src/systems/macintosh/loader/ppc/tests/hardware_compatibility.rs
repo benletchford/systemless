@@ -172,3 +172,49 @@ fn native_ppc_nbp_entity_packs_three_pascal_components() {
         Some(vec![5, b'Z', b'o', b'n', b'e', b'!']),
     );
 }
+
+#[test]
+fn native_ppc_enqueue_and_dequeue_compatibility_manipulates_queue_headers() {
+    use crate::systems::macintosh::loader::ppc::dispatch_system::{
+        ppc_dequeue_compatibility, ppc_enqueue_compatibility,
+    };
+
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(0x1000, vec![0; 16]);
+    memory.add_region(0x2000, vec![0; 16]);
+    memory.add_region(0x3000, vec![0; 16]);
+
+    let qhdr = 0x1000;
+    let elem1 = 0x2000;
+    let elem2 = 0x3000;
+
+    assert!(ppc_enqueue_compatibility(&mut memory, elem1, qhdr));
+    assert_eq!(memory.read_u32_be(qhdr + 2), Some(elem1));
+    assert_eq!(memory.read_u32_be(qhdr + 6), Some(elem1));
+    assert_eq!(memory.read_u32_be(elem1), Some(0));
+
+    assert!(ppc_enqueue_compatibility(&mut memory, elem2, qhdr));
+    assert_eq!(memory.read_u32_be(qhdr + 2), Some(elem1));
+    assert_eq!(memory.read_u32_be(qhdr + 6), Some(elem2));
+    assert_eq!(memory.read_u32_be(elem1), Some(elem2));
+    assert_eq!(memory.read_u32_be(elem2), Some(0));
+
+    assert_eq!(
+        ppc_dequeue_compatibility(&mut memory, elem1, qhdr),
+        PPC_NO_ERR
+    );
+    assert_eq!(memory.read_u32_be(qhdr + 2), Some(elem2));
+    assert_eq!(memory.read_u32_be(qhdr + 6), Some(elem2));
+    assert_eq!(memory.read_u32_be(elem1), Some(0));
+
+    assert_eq!(
+        ppc_dequeue_compatibility(&mut memory, elem1, qhdr),
+        crate::queue_utilities::Q_ERR
+    );
+
+    assert_eq!(
+        ppc_dequeue_compatibility(&mut memory, elem2, 0),
+        PPC_PARAM_ERR
+    );
+}
+

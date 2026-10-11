@@ -182,18 +182,28 @@ pub(crate) fn ppc_enqueue_compatibility(
     if element == 0
         || header == 0
         || !ppc_memory_can_write_bytes(memory, element, 4)
-        || !ppc_memory_can_write_bytes(memory, header, 10)
+        || !ppc_memory_can_write_bytes(memory, header, crate::queue_utilities::Q_HDR_SIZE)
     {
         return false;
     }
-    let tail = memory.read_u32_be(header + 6).unwrap_or(0);
-    let _ = memory.write_u32_be(element, 0);
-    if tail == 0 {
-        let _ = memory.write_u32_be(header + 2, element);
-    } else {
-        let _ = memory.write_u32_be(tail, element);
+    let head = memory
+        .read_u32_be(header + crate::queue_utilities::Q_HEAD_OFFSET)
+        .unwrap_or(0);
+    let tail = memory
+        .read_u32_be(header + crate::queue_utilities::Q_TAIL_OFFSET)
+        .unwrap_or(0);
+    let eval = crate::queue_utilities::evaluate_enqueue(element, header, head, tail, |ptr| {
+        memory
+            .read_u32_be(ptr + crate::queue_utilities::Q_LINK_OFFSET)
+            .unwrap_or(0)
+    });
+    let mut ok = true;
+    for (addr, val) in eval.writes {
+        if memory.write_u32_be(addr, val).is_none() {
+            ok = false;
+        }
     }
-    memory.write_u32_be(header + 6, element).is_some()
+    ok
 }
 
 pub(crate) fn ppc_dequeue_compatibility(
@@ -201,29 +211,32 @@ pub(crate) fn ppc_dequeue_compatibility(
     element: u32,
     header: u32,
 ) -> i16 {
-    if element == 0 || header == 0 || !ppc_memory_can_write_bytes(memory, header, 10) {
+    if element == 0
+        || header == 0
+        || !ppc_memory_can_write_bytes(memory, header, crate::queue_utilities::Q_HDR_SIZE)
+    {
         return PPC_PARAM_ERR;
     }
-    let mut previous = 0;
-    let mut current = memory.read_u32_be(header + 2).unwrap_or(0);
-    while current != 0 {
-        let next = memory.read_u32_be(current).unwrap_or(0);
-        if current == element {
-            if previous == 0 {
-                let _ = memory.write_u32_be(header + 2, next);
-            } else {
-                let _ = memory.write_u32_be(previous, next);
-            }
-            if memory.read_u32_be(header + 6) == Some(element) {
-                let _ = memory.write_u32_be(header + 6, previous);
-            }
-            let _ = memory.write_u32_be(element, 0);
-            return PPC_NO_ERR;
+    let head = memory
+        .read_u32_be(header + crate::queue_utilities::Q_HEAD_OFFSET)
+        .unwrap_or(0);
+    let tail = memory
+        .read_u32_be(header + crate::queue_utilities::Q_TAIL_OFFSET)
+        .unwrap_or(0);
+    let eval = crate::queue_utilities::evaluate_dequeue(element, header, head, tail, |ptr| {
+        memory
+            .read_u32_be(ptr + crate::queue_utilities::Q_LINK_OFFSET)
+            .unwrap_or(0)
+    });
+    if eval.result == crate::queue_utilities::NO_ERR {
+        for (addr, val) in eval.writes {
+            let _ = memory.write_u32_be(addr, val);
         }
-        previous = current;
-        current = next;
+        let _ = memory.write_u32_be(element + crate::queue_utilities::Q_LINK_OFFSET, 0);
+        PPC_NO_ERR
+    } else {
+        crate::queue_utilities::Q_ERR
     }
-    -1
 }
 
 #[allow(clippy::too_many_arguments)]
