@@ -8,7 +8,7 @@ use std::collections::HashMap;
 pub(super) fn track_ppc_text_edit_selection(
     memory: &mut PpcSectionMem, handles: &[PpcHandleRecord], gworlds: &[PpcGWorldRecord],
     manager: &crate::process_context::SharedProcessTextEditManager,
-    input: PpcInputSnapshot, event_queue: &mut EventQueue, te_handle: u32,
+    input: PpcInputSnapshot, event_queue: &mut std::collections::VecDeque<PpcQueuedEvent>, te_handle: u32,
     initial_point: (i16, i16), extend: bool, tick_count: u32, current_gworld: u32,
     fore_color: PpcRgbColor, back_color: PpcRgbColor, fore_indices: &HashMap<u32, u8>,
 ) -> bool {

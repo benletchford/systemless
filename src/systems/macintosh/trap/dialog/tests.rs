@@ -5639,6 +5639,13 @@
         disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP, "held selection must retain the modal stack");
+        assert_eq!(bus.read_word(item_hit_ptr), 0xCAFE, "held selection must not return an item");
+        assert!(disp.dialog_tracking.is_some());
+        disp.input_state.set_mouse_button_for_test(false);
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
         let item = &disp.dialog_items[&dialog_ptr][1];
 
         ModalDialogEditTextMouseSnapshot {

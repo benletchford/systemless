@@ -12463,6 +12463,31 @@ impl super::TrapDispatcher {
                         return Some(Ok(()));
                     }
 
+                    if self.textedit_states.has_classic_click_tracking() {
+                        let (dialog_ptr, edit_item, item_hit_ptr, stack_ptr) =
+                            (tracking.dialog_ptr, tracking.edit_item, tracking.item_hit_ptr, tracking.stack_ptr);
+                        let handle = bus.read_long(dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+                        let held = self.track_text_edit_selection(cpu, bus, handle, (0, 0), false);
+                        let ptr = Self::te_record_ptr(bus, handle);
+                        if let Some(tracking) = self.dialog_tracking.as_mut() {
+                            if let Some(item) = tracking.items.get_mut((edit_item - 1) as usize) {
+                                item.sel_start = bus.read_word(ptr + Self::TE_SEL_START_OFFSET) as i16;
+                                item.sel_end = bus.read_word(ptr + Self::TE_SEL_END_OFFSET) as i16;
+                            }
+                        }
+                        if !held {
+                            let mut saved = self.dialog_tracking.take().unwrap();
+                            self.flush_dialog_edit_item_texts(bus, dialog_ptr, &saved.items,
+                                edit_item, &saved.edit_text);
+                            saved.rendered_pixels = self.save_dialog_pixels(bus, saved.bounds);
+                            self.persist_visible_dialog_snapshot(bus, &saved);
+                            self.dialog_saved_pixels.insert(dialog_ptr, saved.saved_pixels);
+                            if item_hit_ptr != 0 { bus.write_word(item_hit_ptr, edit_item as u16); }
+                            cpu.write_reg(Register::A7, stack_ptr + 8);
+                        }
+                        return Some(Ok(()));
+                    }
+
                     // With no filter, tracking, animation or event, only the active
                     // editor needs idle service before retaining the modal call.
                     if tracking.filter_proc == 0
@@ -13018,29 +13043,23 @@ impl super::TrapDispatcher {
                                                     bus, cpu, dlg_ptr, &items, edit_item,
                                                 );
                                                 let te_handle = bus.read_long(dlg_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+                                                let held = self.track_text_edit_selection(cpu, bus, te_handle,
+                                                    (e.where_v.saturating_sub(bounds.0), e.where_h.saturating_sub(bounds.1)),
+                                                    e.modifiers & 0x0200 != 0);
                                                 let te_ptr = Self::te_record_ptr(bus, te_handle);
                                                 if te_ptr != 0 {
-                                                    let bounds = self.dialog_tracking.as_ref().unwrap().bounds;
-                                                    let offset = self.te_point_to_char(bus, te_handle,
-                                                        (e.where_v.saturating_sub(bounds.0), e.where_h.saturating_sub(bounds.1))).max(0) as u16;
-                                                    let anchor = if e.modifiers & 0x0200 != 0 {
-                                                        let start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET);
-                                                        let end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET);
-                                                        if offset < start { end } else { start }
-                                                    } else { offset };
-                                                    let (start, end) = (anchor.min(offset), anchor.max(offset));
-                                                    bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, start);
-                                                    bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, end);
-                                                    items[(edit_item - 1) as usize].sel_start = start as i16;
-                                                    items[(edit_item - 1) as usize].sel_end = end as i16;
+                                                    let start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as i16;
+                                                    let end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as i16;
+                                                    items[(edit_item - 1) as usize].sel_start = start;
+                                                    items[(edit_item - 1) as usize].sel_end = end;
                                                     if let Some(tracking) = self.dialog_tracking.as_mut() {
                                                         if let Some(item) = tracking.items.get_mut((edit_item - 1) as usize) {
-                                                            item.sel_start = start as i16;
-                                                            item.sel_end = end as i16;
+                                                            item.sel_start = start;
+                                                            item.sel_end = end;
                                                         }
                                                     }
-                                                    self.draw_te_contents(cpu, bus, te_handle, true);
                                                 }
+                                                if held { return Some(Ok(())); }
                                                 self.flush_dialog_edit_item_texts(
                                                     bus, dlg_ptr, &items, edit_item, &edit_text,
                                                 );
