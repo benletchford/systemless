@@ -2698,6 +2698,10 @@ mod desktop {
                 }
                 if let Some(panel) = self.standard_file.as_ref().filter(|panel| {
                     panel.kind == StandardFileKind::Get
+                        && (panel.volume_text.is_none() || panel.get_layout.as_ref().is_some_and(|layout|
+                            layout.volume.2 > layout.volume.0 && layout.volume.3 - layout.volume.1 >= 19
+                                && panel.volume_indicator_rgba.as_ref().is_some_and(|pixels|
+                                    pixels.len() == 19 * (layout.volume.2 - layout.volume.0) as usize * 4)))
                         && panel.standard_entry_point
                         && panel.get_layout.is_some()
                         && panel.entries.is_some()
@@ -13654,7 +13658,9 @@ mod desktop {
                 step(&mut session);
                 session.deliver_input(MacintoshInput::MouseDown { vertical: 266, horizontal: if open { 126 } else { 400 } });
                 session.deliver_input(MacintoshInput::MouseUp { vertical: 266, horizontal: if open { 126 } else { 400 } });
-                let before = (0..100).find_map(|_| { step(&mut session); session.runner().standard_file_snapshot() }).unwrap();
+                let mut before = (0..100).find_map(|_| { step(&mut session); session.runner().standard_file_snapshot() }).unwrap();
+                let frame = session.video_frame().expect("retained file panel frame");
+                before.retain_volume_indicator(&frame.pixels, frame.width, frame.height);
                 let (list, visible_rows, first_visible) = if open {
                     let layout = before.get_layout.as_ref().unwrap(); (layout.list, layout.visible_rows, layout.first_visible)
                 } else {
@@ -17187,7 +17193,7 @@ mod desktop {
                 list_text_origin: (4, 11),
                 directory_marker: "▸",
                 list_name_limit: Some(36),
-                volume_indicator_rgba: None,
+                volume_indicator_rgba: Some(vec![255; 19 * 19 * 4].into()),
                 volume_text: Some(("Maci...".into(), (15, 11))),
                         confirming_replace: false,
                         new_folder: None,
@@ -17271,6 +17277,18 @@ mod desktop {
             }).collect();
             assert_eq!(disabled_inputs.iter().filter(|input| matches!(input, MacintoshInput::MouseDown { .. })).count(), 1);
             assert_eq!(disabled_inputs.iter().filter(|input| matches!(input, MacintoshInput::MouseUp { .. })).count(), 1);
+
+            cx.update_window(window.into(), |_, window, cx| {
+                for pixels in [None, Some(std::sync::Arc::from(vec![255; 4]))] {
+                    view.update(cx, |demo, cx| {
+                        demo.standard_file.as_mut().unwrap().volume_indicator_rgba = pixels;
+                        cx.notify();
+                    });
+                    window.render_frame(cx);
+                    assert!(window.try_find("guest-standard-open-list-7-1").is_none(),
+                        "missing or malformed selector chrome must retain the entire guest Open panel");
+                }
+            }).unwrap();
 
             cx.update(|cx| {
                 view.update(cx, |demo, cx| {
