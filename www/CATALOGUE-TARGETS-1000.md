@@ -142,7 +142,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 97 | 285 | Clue | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
 | 98 | 286 | Game of Life | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
 | 99 | 287 | Battleship | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 100 | 288 | Yahtzee! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/y/); [Garden](https://macintoshgarden.org/games/yahtzee) |
+| 100 | 288 | Yahtzee! | 68K (original 3.2.0) | U | [Original 3.2.0 archive](https://www.vintageapplemac.com/files/games/Yahtzee%21%20v3.2.0.sit); [intake evidence](CATALOGUE-SOURCES.md#yahtzee-320--target-100-original-package-intake) |
 | 101 | 289 | Shanghai Dynasty | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/shanghai-dynasty) |
 | 102 | 290 | Mahjong | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
 | 103 | 291 | MacTaipei | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
@@ -734,7 +734,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 674 | 862 | DeadEnd | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
 | 675 | 863 | Escape! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
 | 676 | 864 | Flip Out | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
-| 677 | 865 | Galactica | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
+| 677 | 865 | Galactica | Original 1.1.2: 68K CODE + PPC PEF; archive/name fixes merged, gameplay blocked | U | [Archive index](https://www.vintageapplemac.com/software/games/g/); [original grant and qualification evidence](CATALOGUE-SOURCES.md#galactica-112--target-677-original-fat-package); [68K setup blocker](https://github.com/benletchford/systemless/issues/4496); [PPC ordering blocker](https://github.com/benletchford/systemless/issues/4493) |
 | 678 | 866 | HeartQuest | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
 | 679 | 867 | iPoker 2000 | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
 | 680 | 868 | J. B. Harold: Blue Chicago Blues (J.B.ハロルド ブルー・シカゴ・ブルース | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/j-b-harold-blue-chicago-blues) |
