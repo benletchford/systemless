@@ -8740,6 +8740,49 @@ mod desktop {
                             eprintln!("PASS styled-menu powerpc={powerpc} depth={depth} scale={scale} keyboard={keyboard} item={item}");
                         }
                     }
+                    // Cancellation must preserve guest menu state and restore ordinary scene keys.
+                    let unchanged = session.runner_mut().guest_menu_snapshot();
+                    let menu = unchanged.menus.iter().find(|menu| menu.id == 129).unwrap();
+                    let trigger = format!("guest-menu-{}-{}", menu.guest_id, menu.generation);
+                    for keyboard in [false, true] {
+                        for item in 1..=4i16 {
+                            cx.update_window(window.into(), |_, window, cx| {
+                                view.update(cx, |demo, cx| { demo.menus = unchanged.clone(); cx.notify(); });
+                                window.render_frame(cx);
+                                receiver.try_iter().for_each(drop);
+                                window.click(trigger.clone(), cx);
+                                if keyboard {
+                                    for _ in 0..item { window.within("guest-popup-menu").press("down", cx); }
+                                } else {
+                                    window.hover(format!("guest-popup-item-129-{item}"), cx);
+                                    assert_eq!(window.find(format!("guest-popup-item-129-{item}")).selected(), Some(true));
+                                }
+                                window.within("guest-popup-menu").press("escape", cx);
+                            }).unwrap();
+                            cx.run_until_parked();
+                            cx.update_window(window.into(), |_, window, cx| {
+                                window.render_frame(cx);
+                                assert!(window.try_find("guest-popup-menu").is_none());
+                                assert!(view.read(cx).open_menus.is_empty());
+                                assert!(view.read(cx).focus.is_focused(window));
+                            }).unwrap();
+                            assert!(!receiver.try_iter().any(|command| matches!(command,
+                                super::Command::Menu(..) | super::Command::Input(_))),
+                                "cancellation must not select or leak menu input");
+                            settle(&mut session);
+                            assert_eq!(session.runner_mut().guest_menu_snapshot(), unchanged);
+                            cx.update_window(window.into(), |_, window, cx| window.press("z", cx)).unwrap();
+                            let input: Vec<_> = receiver.try_iter().filter_map(|command| match command {
+                                super::Command::Input(input) => Some(input),
+                                _ => None,
+                            }).collect();
+                            assert!(matches!(input.as_slice(), [
+                                MacintoshInput::KeyDown { character: b'z', .. },
+                                MacintoshInput::KeyUp { character: b'z', .. }
+                            ]), "cancelled menu must restore scene key routing: {input:?}");
+                            eprintln!("PASS styled-menu-cancel powerpc={powerpc} depth={depth} scale={scale} keyboard={keyboard} item={item}");
+                        }
+                    }
                     cx.update_window(window.into(), |_, window, cx| window.remove_window()).unwrap();
                 }
             }
