@@ -663,17 +663,86 @@ fn native_apple_event_parameters_round_trip_through_process_semantics() {
 
 #[test]
 fn native_ppc_object_support_initializes_before_creating_specifiers() {
-    let pef = synthetic_pef_with_library_import(b"ObjectSupportLib", b"AEObjectInit");
-    let mut native = load_pef_application(&pef).unwrap();
-    assert_eq!(
-        dispatcher_target_for_import("ObjectSupportLib", "AEObjectInit"),
-        PpcImportDispatcherTarget::ObjectSupportInit,
-    );
-    run_test_import(&mut native, PpcImportDispatcherTarget::ObjectSupportInit);
-    assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
-    assert!(native.apple_events.object_support_initialized);
+    for library in ["ObjectSupportLib", "CarbonLib", "InterfaceLib"] {
+        let pef = synthetic_pef_with_library_import(library.as_bytes(), b"AEObjectInit");
+        let mut native = load_pef_application(&pef).unwrap();
+        assert_eq!(
+            native.imports[0].dispatcher_target,
+            PpcImportDispatcherTarget::ObjectSupportInit
+        );
+        assert!(!native.apple_events.object_support_initialized);
+        let probe = native.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert!(native.apple_events.object_support_initialized);
+    }
 }
 
+#[test]
+fn carbon_object_support_weak_exports_bind_to_existing_stateful_operations() {
+    let operations = [
+        ("AEObjectInit", PpcImportDispatcherTarget::ObjectSupportInit),
+        (
+            "AEInstallObjectAccessor",
+            PpcImportDispatcherTarget::ObjectSupportInstallAccessor,
+        ),
+        (
+            "AEGetObjectAccessor",
+            PpcImportDispatcherTarget::ObjectSupportGetAccessor,
+        ),
+        (
+            "AECallObjectAccessor",
+            PpcImportDispatcherTarget::ObjectSupportCallAccessor,
+        ),
+        (
+            "AEDisposeToken",
+            PpcImportDispatcherTarget::ObjectSupportDisposeToken,
+        ),
+        (
+            "AERemoveObjectAccessor",
+            PpcImportDispatcherTarget::ObjectSupportRemoveAccessor,
+        ),
+        (
+            "AESetObjectCallbacks",
+            PpcImportDispatcherTarget::ObjectSupportSetCallbacks,
+        ),
+        ("AEResolve", PpcImportDispatcherTarget::ObjectSupportResolve),
+        (
+            "CreateObjSpecifier",
+            PpcImportDispatcherTarget::ObjectSupportCompatibility,
+        ),
+        (
+            "CreateOffsetDescriptor",
+            PpcImportDispatcherTarget::ObjectSupportCreateOffsetDescriptor,
+        ),
+    ];
+    for (symbol, target) in operations {
+        assert_eq!(
+            dispatcher_target_for_import("ObjectSupportLib", symbol),
+            target
+        );
+        assert_eq!(dispatcher_target_for_import("CarbonLib", symbol), target);
+        let bindings = PpcImportBindingPlan::prepare(
+            vec![PefResolvedImport {
+                library_index: 0,
+                symbol_index: 0,
+                library_name: "CarbonLib".into(),
+                symbol_name: symbol.into(),
+                class: 2,
+                weak: true,
+            }],
+            1,
+            0,
+            ppc_import_layout(),
+            &SystemlessPpcImportBindingPolicy,
+        )
+        .unwrap()
+        .into_initial_bindings();
+        assert_eq!(bindings[0].address, PPC_IMPORT_TVECTOR_BASE);
+        assert_eq!(bindings[0].dispatcher_target, target);
+    }
+}
 #[test]
 fn native_ppc_ae_resolve_rejects_non_object_specifiers_with_null_token() {
     let pef = synthetic_pef_with_library_import(b"ObjectSupportLib", b"AEResolve");
@@ -1056,11 +1125,11 @@ fn native_ppc_ae_resolve_calls_nested_accessors_and_releases_scratch() {
 
 #[test]
 fn native_ppc_object_accessor_registration_validates_and_replaces() {
-    let pef = synthetic_pef_with_library_import(b"ObjectSupportLib", b"AEInstallObjectAccessor");
+    let pef = synthetic_pef_with_library_import(b"CarbonLib", b"AEInstallObjectAccessor");
     let mut native = load_pef_application(&pef).unwrap();
     let target = PpcImportDispatcherTarget::ObjectSupportInstallAccessor;
     assert_eq!(
-        dispatcher_target_for_import("ObjectSupportLib", "AEInstallObjectAccessor"),
+        dispatcher_target_for_import("CarbonLib", "AEInstallObjectAccessor"),
         target,
     );
     let desired = u32::from_be_bytes(*b"docu");
@@ -1102,7 +1171,7 @@ fn native_ppc_object_accessor_registration_validates_and_replaces() {
     assert_eq!(native.apple_events.object_accessors.len(), 1);
 
     assert_eq!(
-        dispatcher_target_for_import("ObjectSupportLib", "AEGetObjectAccessor"),
+        dispatcher_target_for_import("CarbonLib", "AEGetObjectAccessor"),
         PpcImportDispatcherTarget::ObjectSupportGetAccessor,
     );
     let pointer_out = PPC_DATA_BASE + 0x2700;
@@ -1138,7 +1207,7 @@ fn native_ppc_object_accessor_registration_validates_and_replaces() {
     assert_eq!(native.memory.read_u32_be(refcon_out), Some(0));
 
     assert_eq!(
-        dispatcher_target_for_import("ObjectSupportLib", "AERemoveObjectAccessor"),
+        dispatcher_target_for_import("CarbonLib", "AERemoveObjectAccessor"),
         PpcImportDispatcherTarget::ObjectSupportRemoveAccessor,
     );
     native.cpu.gpr[3] = desired;
