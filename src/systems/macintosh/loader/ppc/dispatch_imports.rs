@@ -1030,6 +1030,7 @@ pub(crate) fn dispatch_supported_import(
             current_gworld: *current_gworld,
             toolbox_startup,
             input,
+            event_queue,
             vfs_resources,
             current_resource_refnum: *current_resource_refnum,
             last_resource_error,

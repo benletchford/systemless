@@ -61,6 +61,9 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_controls_changed: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_controls_dragged: Option<PathBuf>,
     }
 
     fn parse_depth(value: &str) -> Result<u16, String> {
@@ -905,6 +908,7 @@ mod desktop {
         screen_depth: Option<u16>,
         controls_page: bool,
         controls_changed: bool,
+        controls_dragged: bool,
     ) {
         use gpui_kit::{platform, VisualTestAppContext};
 
@@ -998,6 +1002,43 @@ mod desktop {
                 .iter()
                 .any(|control| control.visible && control.proc_id == 16 && control.value > 0));
         }
+        if controls_dragged {
+            let controls = session.runner_mut().control_snapshot();
+            let bar = controls
+                .iter()
+                .find(|control| control.visible && control.proc_id == 16)
+                .unwrap();
+            let thumb = super::frames::scrollbar_geometry(bar);
+            let from = (
+                (bar.bounds.0 + bar.bounds.2) / 2,
+                bar.bounds.1 + thumb.thumb_start as i16 + 8,
+            );
+            let to = (from.0, bar.bounds.3 - 28);
+            for input in [
+                MacintoshInput::MouseDown {
+                    vertical: from.0,
+                    horizontal: from.1,
+                },
+                MacintoshInput::MouseMove {
+                    vertical: to.0,
+                    horizontal: to.1,
+                },
+                MacintoshInput::MouseUp {
+                    vertical: to.0,
+                    horizontal: to.1,
+                },
+            ] {
+                session.deliver_input(input);
+                for _ in 0..20 {
+                    session.runner_mut().run_steps(10_000, None);
+                }
+            }
+            assert!(session
+                .runner_mut()
+                .control_snapshot()
+                .iter()
+                .any(|control| control.guest_id == bar.guest_id && control.value >= 8));
+        }
         let controls = session.runner_mut().control_snapshot();
         let menus = session.runner_mut().guest_menu_snapshot();
         let frame = session.video_frame().unwrap();
@@ -1063,6 +1104,7 @@ mod desktop {
                 args.screen_depth,
                 false,
                 false,
+                false,
             );
             return;
         }
@@ -1075,6 +1117,7 @@ mod desktop {
                 args.screen_depth,
                 true,
                 false,
+                false,
             );
             return;
         }
@@ -1086,6 +1129,20 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 true,
+                true,
+                false,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_controls_dragged.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                true,
+                false,
                 true,
             );
             return;
@@ -1169,6 +1226,7 @@ mod desktop {
                         capture_about_alert: None,
                         capture_controls: None,
                         capture_controls_changed: None,
+                        capture_controls_dragged: None,
                     },
                     rx,
                     worker_updates,
@@ -1411,6 +1469,74 @@ mod desktop {
                     .unwrap();
                 assert!(bar.value > 0 && bar.value <= bar.maximum);
                 assert_eq!(bar.generation, bar_generation);
+
+                let thumb = super::super::frames::scrollbar_geometry(bar);
+                let drag_from = (
+                    (bar.bounds.0 + bar.bounds.2) / 2,
+                    bar.bounds.1 + thumb.thumb_start as i16 + 8,
+                );
+                let drag_to = (drag_from.0, bar.bounds.3 - 28);
+                session.deliver_input(MacintoshInput::MouseDown {
+                    vertical: drag_from.0,
+                    horizontal: drag_from.1,
+                });
+                settle(&mut session);
+                session.deliver_input(MacintoshInput::MouseMove {
+                    vertical: drag_to.0,
+                    horizontal: drag_to.1,
+                });
+                settle(&mut session);
+                let held = session.runner_mut().control_snapshot();
+                assert_eq!(
+                    held.iter()
+                        .find(|control| control.guest_id == bar_id)
+                        .unwrap()
+                        .value,
+                    bar.value,
+                    "thumb value should commit on release"
+                );
+                session.deliver_input(MacintoshInput::MouseUp {
+                    vertical: drag_to.0,
+                    horizontal: drag_to.1,
+                });
+                settle(&mut session);
+                let dragged = session.runner_mut().control_snapshot();
+                let dragged_bar = dragged
+                    .iter()
+                    .find(|control| control.guest_id == bar_id)
+                    .unwrap();
+                assert!(dragged_bar.value >= 8, "{powerpc:?} {:?}", dragged_bar.value);
+
+                let thumb = super::super::frames::scrollbar_geometry(dragged_bar);
+                let cancel_from = (
+                    (dragged_bar.bounds.0 + dragged_bar.bounds.2) / 2,
+                    dragged_bar.bounds.1 + thumb.thumb_start as i16 + 8,
+                );
+                let cancel_to = (dragged_bar.bounds.0 - 40, cancel_from.1);
+                session.deliver_input(MacintoshInput::MouseDown {
+                    vertical: cancel_from.0,
+                    horizontal: cancel_from.1,
+                });
+                settle(&mut session);
+                session.deliver_input(MacintoshInput::MouseMove {
+                    vertical: cancel_to.0,
+                    horizontal: cancel_to.1,
+                });
+                settle(&mut session);
+                session.deliver_input(MacintoshInput::MouseUp {
+                    vertical: cancel_to.0,
+                    horizontal: cancel_to.1,
+                });
+                settle(&mut session);
+                let cancelled = session.runner_mut().control_snapshot();
+                assert_eq!(
+                    cancelled
+                        .iter()
+                        .find(|control| control.guest_id == bar_id)
+                        .unwrap()
+                        .value,
+                    dragged_bar.value
+                );
             }
         }
 
