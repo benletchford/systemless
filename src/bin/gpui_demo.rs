@@ -243,6 +243,9 @@ mod desktop {
         capture_standard_file_save_edited_composed: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_standard_file_save_caret_hidden_composed: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_standard_file_replace_composed: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -2521,7 +2524,7 @@ mod desktop {
                                 cx.theme().accent
                             } else { cx.theme().border }))
                             .child(super::text::classic_save_name(
-                                name, panel.name_selection.unwrap_or((0, 0)), focused,
+                                name, panel.name_selection.unwrap_or((0, 0)), focused, panel.name_caret_visible == Some(true),
                                 panel.name_text_layout.as_ref().unwrap(), scene_scale,
                                 cx.theme().foreground, cx.theme().selection,
                             ));
@@ -2805,6 +2808,7 @@ mod desktop {
         StandardFileSaveComposed,
         StandardFileOpenComposed,
         StandardFileSaveEditedComposed,
+        StandardFileSaveCaretHiddenComposed,
         StandardFileReplaceComposed,
         StandardFileNewFolderComposed,
         StandardFileNewFolderErrorComposed,
@@ -2946,6 +2950,7 @@ mod desktop {
             CaptureCase::StandardFileSave
                 | CaptureCase::StandardFileSaveComposed
                 | CaptureCase::StandardFileSaveEditedComposed
+                | CaptureCase::StandardFileSaveCaretHiddenComposed
                 | CaptureCase::StandardFileReplaceComposed
                 | CaptureCase::StandardFileNewFolderComposed
                 | CaptureCase::StandardFileNewFolderErrorComposed
@@ -3531,7 +3536,7 @@ mod desktop {
                 assert!(click.advance(&mut session).is_none());
                 assert!(session.runner().standard_file_snapshot().unwrap().confirming_replace);
             }
-            if matches!(capture, CaptureCase::StandardFileSaveEditedComposed) {
+            if matches!(capture, CaptureCase::StandardFileSaveEditedComposed | CaptureCase::StandardFileSaveCaretHiddenComposed) {
                 session.deliver_input(MacintoshInput::KeyDown {
                     mac_key: 0x00,
                     character: b'S',
@@ -3548,6 +3553,15 @@ mod desktop {
                         .standard_file_snapshot()
                         .is_some_and(|panel| panel.name.as_deref() == Some("S"))
                 }));
+                let visible = matches!(capture, CaptureCase::StandardFileSaveEditedComposed);
+                assert!((0..120).any(|_| {
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                    session.runner().standard_file_snapshot().is_some_and(|panel| {
+                        panel.name.as_deref() == Some("S") && panel.name_selection == Some((1, 1))
+                            && panel.name_caret_visible == Some(visible)
+                    })
+                }), "guest Save caret capture phase");
             }
             Vec::new()
         } else if popup_page {
@@ -4503,6 +4517,12 @@ mod desktop {
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_standard_file_save_caret_hidden_composed.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc,
+                args.screen_depth, CaptureCase::StandardFileSaveCaretHiddenComposed);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_standard_file_replace_composed.as_ref() {
             capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::StandardFileReplaceComposed);
             return;
@@ -5032,6 +5052,7 @@ mod desktop {
                         capture_standard_file_save_composed: None,
                         capture_standard_file_open_composed: None,
                         capture_standard_file_save_edited_composed: None,
+                        capture_standard_file_save_caret_hidden_composed: None,
                         capture_standard_file_replace_composed: None,
                         capture_standard_file_new_folder_composed: None,
                         capture_standard_file_new_folder_error_composed: None,
@@ -6442,6 +6463,18 @@ mod desktop {
                     let edited = session.runner().standard_file_snapshot().unwrap();
                     assert_eq!(edited.name.as_deref(), Some("é"));
                     assert_eq!(edited.name_selection, Some((1, 1)), "selection offsets are Mac Roman bytes");
+                    let mut saw_on = false;
+                    let mut saw_off = false;
+                    for _ in 0..90 {
+                        step(&mut session);
+                        let blinking = session.runner().standard_file_snapshot().unwrap();
+                        assert_eq!(blinking.name.as_deref(), Some("é"));
+                        assert_eq!(blinking.name_selection, Some((1, 1)));
+                        saw_on |= blinking.name_caret_visible == Some(true);
+                        saw_off |= blinking.name_caret_visible == Some(false);
+                    }
+                    assert!(saw_on && saw_off, "guest CaretTime must blink the Save insertion point, powerpc={powerpc}");
+
                     for character in [0xa3, b'S'] {
                         session.deliver_input(MacintoshInput::KeyDown { mac_key: 0, character });
                         session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character });
@@ -6475,10 +6508,12 @@ mod desktop {
                     session.deliver_input(MacintoshInput::MouseUp { vertical: rect.0 + 10, horizontal: h(1) });
                     for _ in 0..4 { step(&mut session); }
                     assert_eq!(session.runner().standard_file_snapshot().unwrap().name_selection, Some((1, 3)), "Shift extends guest Save selection");
+                    assert_eq!(session.runner().standard_file_snapshot().unwrap().name_caret_visible, Some(false));
                     session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x38, character: 0 });
                     step(&mut session);
                     session.deliver_input(MacintoshInput::MouseDown { vertical: rect.0 + 10, horizontal: h(1) });
                     step(&mut session);
+                    assert_eq!(session.runner().standard_file_snapshot().unwrap().name_caret_visible, Some(false), "held insertion capture suppresses the caret");
                     session.deliver_input(MacintoshInput::MouseMove { vertical: rect.0 + 10, horizontal: h(3) });
                     step(&mut session);
                     assert_eq!(session.runner().standard_file_snapshot().unwrap().name_selection, Some((1, 3)), "held selection follows moving glyph boundary");
@@ -10090,6 +10125,7 @@ mod desktop {
                         name: None,
                         name_selection: None,
                         name_text_layout: None,
+                        name_caret_visible: None,
                         name_has_focus: None,
                         directory_font: (0, 0, 0),
                         directory_text_layout: (1, 12, 16),
@@ -10177,6 +10213,7 @@ mod desktop {
                         name: Some("Untitled".into()),
                         name_selection: Some((0, 8)),
                         name_text_layout: Some(systemless::runner::StandardFileNameTextLayout { font: (0, 0, 0), origin: (1, 12), selection_top: 0, selection_height: 16, selection_to_edge: true, wraps: false }),
+                        name_caret_visible: Some(false),
                         name_has_focus: Some(true),
                         directory_font: (0, 0, 0),
                         directory_text_layout: (1, 12, 16),

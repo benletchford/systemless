@@ -757,6 +757,7 @@ pub struct DialogTrackingState {
 #[derive(Clone, Debug)]
 pub(crate) struct StandardFilePutTrackingState {
     pub(crate) pointer_anchor: Option<usize>,
+    pub(crate) caret: crate::standard_file_ui::StandardFileCaret,
     pub(crate) new_folder: Option<crate::standard_file_ui::StandardFileNewFolderState>,
     pub(crate) confirming_replace: bool,
     pub generation: u64,

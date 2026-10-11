@@ -2515,3 +2515,34 @@ pointer capture, clipboard/keyboard navigation and the scale/activation matrix
 remain unfinished. Other earlier sections describe evidence at their respective
 implementation stages; this entry supersedes their host-typography limitation
 for supported plain Save filename strikes only.
+
+
+### Save insertion caret driven by guest CaretTime
+
+Both retained Pack3 Save gateways own a shared guest-tick/CaretTime blink
+state. Ordinary field input resets visibility; idle toggles only an empty
+selection without a held selection gesture or subsidiary modal UI. PPC list
+focus also suppresses it. Snapshots supply visibility to GPUI and both guest
+painters use the same state. Carets clip at the field boundary and retain the
+guest top+2 through bottom-1 geometry, including 68k fields with smaller fonts.
+
+The final three-mode Save/edit/replacement regression passes (116.90s), covering
+on/off transitions preserving accented text and byte selection, held/Shift
+selection suppression, editing and encoded replies. The wrapping-clock timing
+unit test passes (0.00s). Headless/JIT checking and the capture build pass.
+Six phase captures and paired guest frames are recorded with hashes and whole
+frame difference bounds in `save-caret-review.json`: every pair differs only
+in a 1×17 guest caret or its 2×39 composed raster footprint. No text or scene
+geometry changes occur between phases.
+
+Reproduce the visible phase with `--capture-standard-file-save-edited-composed`
+and the hidden phase with `--capture-standard-file-save-caret-hidden-composed`
+after building the example with `gpui-demo-test`. Use `--screen-depth 1`,
+`--screen-depth 8` or `--prefer-powerpc` for the three modes. Both capture cases
+wait for the requested guest visibility without changing the insertion point.
+
+Changed CaretTime preference integration, scale/activation coverage,
+theme-provider caret/focus fidelity and native-oracle qualification remain
+pending. Horizontal scrolling and broader Save keyboard/clipboard coverage
+remain unfinished. This supersedes the interim static insertion-feedback
+limitation in the preceding Save glyph entry for these supported fields.

@@ -64,6 +64,7 @@ pub(super) struct PpcStandardFileFilteringState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PpcStandardFilePutTrackingState {
     pub(super) pointer_anchor: Option<usize>,
+    pub(super) caret: crate::standard_file_ui::StandardFileCaret,
     pub(super) new_folder: Option<crate::standard_file_ui::StandardFileNewFolderState>,
     pub(super) confirming_replace: bool,
     pub(super) generation: u64,
@@ -1051,6 +1052,16 @@ fn ppc_standard_file_draw_put_dialog(
         &tracking.name,
         PPC_RGB_BLACK,
     );
+    if tracking.caret.on && tracking.pointer_anchor.is_none() && tracking.sel_start == tracking.sel_end && !tracking.list_has_focus
+        && !tracking.confirming_replace && tracking.new_folder.is_none() {
+        let offset = tracking.sel_start.min(tracking.name.len());
+        let x = name.1.saturating_add(ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT,
+            PPC_QD_TEXT_SIZE_SYSTEM, 0, &tracking.name[..offset]));
+        if x >= name.1 && x < name.3.saturating_sub(1) {
+            let _ = ppc_fill_front_rect(memory, front, (name.0.saturating_add(2), x,
+                name.2.saturating_sub(1), x.saturating_add(1)), PPC_RGB_BLACK);
+        }
+    }
     if let Some(selection) = ppc_standard_file_name_selection_rect(tracking, name) {
         let _ = ppc_with_unclipped_screen_port(memory, |memory| {
             if !ppc_draw_themed_selection(memory, gworlds, PPC_MAIN_GWORLD, selection) {
@@ -1832,6 +1843,7 @@ fn ppc_standard_file_put_start(
     startup.next_standard_file_generation = startup.next_standard_file_generation.saturating_add(1);
     let tracking = PpcStandardFilePutTrackingState {
             pointer_anchor: None,
+            caret: crate::standard_file_ui::StandardFileCaret::default(),
         new_folder: None,
         confirming_replace: false,
         generation: startup.next_standard_file_generation,
@@ -1928,6 +1940,12 @@ fn ppc_dispatch_standard_file(
                         false,
                     );
                 }
+                let caret_active = tracking.sel_start == tracking.sel_end && tracking.pointer_anchor.is_none()
+                    && !tracking.list_has_focus && !tracking.confirming_replace && tracking.new_folder.is_none();
+                if tracking.caret.idle(tick_count,
+                    memory.read_u32_be(crate::memory::globals::addr::CARET_TIME).unwrap_or(crate::memory::globals::DEFAULT_CARET_TIME_TICKS), caret_active) {
+                    ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+                }
                 if let Some(anchor) = tracking.pointer_anchor {
                     let release = event_queue.iter().position(|event| event.what == 2)
                         .and_then(|index| event_queue.remove(index));
@@ -1981,6 +1999,7 @@ fn ppc_dispatch_standard_file(
                         }
                         event
                     });
+                if event.is_some() { tracking.caret.reset(tick_count); }
                 if let Some(mut folder) = tracking.new_folder.take() {
                     use crate::standard_file_ui::{StandardFileNewFolderAction, StandardFileNewFolderLayout};
                     let mut dismiss = false;

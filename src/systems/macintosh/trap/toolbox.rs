@@ -2824,6 +2824,14 @@ impl super::TrapDispatcher {
             false,
             0,
         );
+        let rect = STANDARD_FILE_NAME_RECT;
+        let focused = tracking.new_folder.is_none() && !tracking.confirming_replace;
+        let selection = (focused && tracking.sel_start != tracking.sel_end)
+            .then_some((tracking.sel_start.max(0) as usize, tracking.sel_end.max(0) as usize));
+        let cursor = (focused && tracking.caret.on && tracking.pointer_anchor.is_none() && tracking.sel_start == tracking.sel_end)
+            .then_some(tracking.sel_start.max(0) as usize);
+        self.draw_edit_text_with_cursor(bus, tracking.bounds.0 + rect.0, tracking.bounds.1 + rect.1,
+            tracking.bounds.0 + rect.2, tracking.bounds.1 + rect.3, &tracking.name, selection, cursor, true);
         let (top, left, _, _) = tracking.bounds;
         let (button_top, button_left, button_bottom, button_right) = STANDARD_FILE_SAVE_RECT;
         self.draw_button_state(
@@ -3181,6 +3189,7 @@ impl super::TrapDispatcher {
         self.next_standard_file_generation = self.next_standard_file_generation.saturating_add(1);
         let tracking = StandardFilePutTrackingState {
             pointer_anchor: None,
+            caret: crate::standard_file_ui::StandardFileCaret::default(),
             new_folder: None,
             confirming_replace: false,
             generation: self.next_standard_file_generation,
@@ -3209,6 +3218,11 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         mut tracking: StandardFilePutTrackingState,
     ) {
+        let caret_active = tracking.sel_start == tracking.sel_end && tracking.pointer_anchor.is_none()
+            && tracking.new_folder.is_none() && !tracking.confirming_replace;
+        if tracking.caret.idle(self.current_tick(), bus.read_long(addr::CARET_TIME), caret_active) {
+            self.draw_standard_file_put_dialog(bus, &tracking);
+        }
         if let Some(anchor) = tracking.pointer_anchor {
             let release = self.event_queue.iter().position(|event| event.what == 2)
                 .and_then(|index| self.event_queue.remove(index));
@@ -3254,6 +3268,7 @@ impl super::TrapDispatcher {
         let mut consumed_event = false;
         while let Some(event) = self.event_queue.pop_front() {
             consumed_event = true;
+            tracking.caret.reset(self.current_tick());
             if let Some(mut folder) = tracking.new_folder.take() {
                 use crate::standard_file_ui::{StandardFileNewFolderAction, StandardFileNewFolderLayout};
                 let layout = StandardFileNewFolderLayout::new(tracking.bounds);
