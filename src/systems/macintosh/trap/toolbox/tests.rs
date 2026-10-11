@@ -17592,6 +17592,101 @@ fn scriptutil_chartype_returns_ascii_and_european_categories() {
 }
 
 #[test]
+fn scriptutil_parsetable_fills_table_and_returns_boolean() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = TEST_SP;
+    let table_ptr = 0x365000u32;
+    bus.write_bytes(table_ptr, &[0xFF; 256]);
+
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, crate::text_utils::PARSE_TABLE_SELECTOR);
+    bus.write_long(sp + 4, table_ptr);
+    bus.write_word(sp + 8, 0xBEEF); // result slot
+
+    let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+    assert!(result.expect("ParseTable").is_ok());
+
+    // Single-byte Roman: returns false (0), table filled with 0
+    assert_eq!(bus.read_word(sp + 8), 0);
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+    assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+    assert!(bus.read_bytes(table_ptr, 256).iter().all(|&b| b == 0));
+}
+
+#[test]
+fn scriptutil_portiontext_evaluates_space_portion() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = TEST_SP;
+    let text_ptr = 0x365000u32;
+    bus.write_bytes(text_ptr, b"Three spaces here"); // 2 spaces
+
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, crate::text_utils::PORTION_TEXT_SELECTOR);
+    bus.write_long(sp + 4, 17); // textLen
+    bus.write_long(sp + 8, text_ptr);
+    bus.write_long(sp + 12, 0xDEAD_BEEF); // result slot
+
+    let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+    assert!(result.expect("PortionText").is_ok());
+
+    assert_eq!(bus.read_long(sp + 12), 0x0002_0000); // 2.0 Fixed
+    assert_eq!(cpu.read_reg(Register::D0), 0x0002_0000);
+    assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+}
+
+#[test]
+fn scriptutil_findscriptrun_returns_roman_and_run_length() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = TEST_SP;
+    let text_ptr = 0x365000u32;
+    let run_len_ptr = 0x366000u32;
+    bus.write_long(run_len_ptr, 0);
+
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, crate::text_utils::FIND_SCRIPT_RUN_SELECTOR);
+    bus.write_long(sp + 4, run_len_ptr);
+    bus.write_long(sp + 8, 42); // textLen
+    bus.write_long(sp + 12, text_ptr);
+    bus.write_word(sp + 16, 0xBEEF); // result slot
+
+    let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+    assert!(result.expect("FindScriptRun").is_ok());
+
+    assert_eq!(bus.read_long(run_len_ptr), 42);
+    assert_eq!(bus.read_word(sp + 16), 0); // smRoman
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+    assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+}
+
+#[test]
+fn scriptutil_findwordbreaks_encoded_selector_populates_offsettable() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = TEST_SP;
+    let offsets_ptr = 0x364000u32;
+    let text_ptr = 0x365000u32;
+    bus.write_bytes(text_ptr, b"Alpha   Beta");
+
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, crate::text_utils::FIND_WORD_BREAKS_SELECTOR);
+    bus.write_long(sp + 4, offsets_ptr);
+    bus.write_long(sp + 8, 0); // breaks
+    bus.write_word(sp + 12, 0); // leadingEdge
+    bus.write_word(sp + 14, 6); // offset in spaces "   "
+    bus.write_word(sp + 16, 12); // textLength
+    bus.write_long(sp + 18, text_ptr);
+    bus.write_bytes(offsets_ptr, &[0xFF; 12]);
+
+    let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+    assert!(result.expect("FindWordBreaks").is_ok());
+
+    assert_eq!(
+        bus.read_bytes(offsets_ptr, 12),
+        vec![0, 5, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0]
+    );
+    assert_eq!(cpu.read_reg(Register::A7), sp + 22);
+}
+
+#[test]
 fn scriptutil_getenvirons_and_getscript_evaluate_canonical_variables() {
     let (mut disp, mut cpu, mut bus) = setup();
     let sp = TEST_SP;

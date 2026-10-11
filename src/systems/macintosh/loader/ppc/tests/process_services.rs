@@ -2656,3 +2656,78 @@ fn ppc_script_manager_and_script_variable_compatibility() {
     assert_eq!(loaded.cpu.gpr[3], 0);
 }
 
+#[test]
+fn ppc_parse_table_and_portion_text_compatibility() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"ParseTable")).unwrap();
+    let table_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(table_ptr, vec![0xFF; 256]);
+
+    // ParseTable (Roman): fills table with 0, returns 0 (false)
+    loaded.cpu.gpr[3] = table_ptr;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::ParseTable,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert!((0..256).all(|i| loaded.memory.read_u8(table_ptr + i).unwrap() == 0));
+
+    // PortionText: "Hello world from PPC" (3 spaces) -> 3.0 Fixed ($00030000)
+    let text_ptr = PPC_DATA_BASE + 0x2000;
+    loaded.memory.add_region(text_ptr, b"Hello world from PPC".to_vec());
+    loaded.cpu.gpr[3] = text_ptr;
+    loaded.cpu.gpr[4] = 20;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::PortionText,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0x0003_0000);
+}
+
+#[test]
+fn ppc_find_script_run_and_find_word_breaks_compatibility() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"FindScriptRun")).unwrap();
+    let text_ptr = PPC_DATA_BASE + 0x3000;
+    let run_len_ptr = PPC_DATA_BASE + 0x3100;
+    loaded.memory.add_region(text_ptr, b"Sample Text Run".to_vec());
+    loaded.memory.add_region(run_len_ptr, vec![0; 4]);
+
+    // FindScriptRun: returns 0 (smRoman), writes run length
+    loaded.cpu.gpr[3] = text_ptr;
+    loaded.cpu.gpr[4] = 15;
+    loaded.cpu.gpr[5] = run_len_ptr;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::FindScriptRun,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(run_len_ptr), Some(15));
+
+    // FindWordBreaks: "Alpha   Beta" offset 6 in spaces -> [5, 8]
+    let offsets_ptr = PPC_DATA_BASE + 0x3200;
+    loaded.memory.add_region(offsets_ptr, vec![0xFF; 12]);
+    let text2_ptr = PPC_DATA_BASE + 0x3300;
+    loaded.memory.add_region(text2_ptr, b"Alpha   Beta".to_vec());
+
+    loaded.cpu.gpr[3] = text2_ptr;
+    loaded.cpu.gpr[4] = 12; // textLength
+    loaded.cpu.gpr[5] = 6; // offset in "   "
+    loaded.cpu.gpr[6] = 0; // leadingEdge
+    loaded.cpu.gpr[7] = 0; // breaks
+    loaded.cpu.gpr[8] = offsets_ptr;
+    loaded.cpu.gpr[9] = 0; // script
+
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::FindWordBreaks,
+        ),
+    );
+    assert_eq!(loaded.memory.read_u16_be(offsets_ptr), Some(5));
+    assert_eq!(loaded.memory.read_u16_be(offsets_ptr + 2), Some(8));
+}

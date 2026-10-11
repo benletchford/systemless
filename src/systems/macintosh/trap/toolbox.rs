@@ -15868,6 +15868,89 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A7, sp + 22);
                         return Some(Ok(()));
                     }
+                    // ParseTable ($82040022): FUNCTION ParseTable(VAR table: CharByteTable): Boolean.
+                    // Stack: selector(4), table_ptr(4), result(2). Pop 8 bytes.
+                    // Inside Macintosh Volume VI, pp. 14-131..14-132; IM:Text 6-77..6-78.
+                    crate::text_utils::PARSE_TABLE_SELECTOR => {
+                        let table_ptr = bus.read_long(sp + 4);
+                        let mut table = [0u8; 256];
+                        let script = self.scriptutil_font_script();
+                        let has_2byte = crate::text_utils::evaluate_parse_table(&mut table, script);
+                        if table_ptr != 0 {
+                            for (i, &b) in table.iter().enumerate() {
+                                bus.write_byte(table_ptr + i as u32, b);
+                            }
+                        }
+                        let result_word = if has_2byte { 0x0100 } else { 0x0000 };
+                        bus.write_word(sp + 8, result_word);
+                        cpu.write_reg(Register::D0, if has_2byte { 1 } else { 0 });
+                        cpu.write_reg(Register::A7, sp + 8);
+                        return Some(Ok(()));
+                    }
+                    // PortionText ($84080024): FUNCTION PortionText(textPtr: Ptr;
+                    //   textLen: LongInt): Fixed.
+                    // Stack: selector(4), textLen(4), textPtr(4), result(4). Pop 12 bytes.
+                    // Inside Macintosh: Text 1993, p. 5-73.
+                    crate::text_utils::PORTION_TEXT_SELECTOR => {
+                        let text_ptr = bus.read_long(sp + 8);
+                        let text_len = (bus.read_long(sp + 4) as i32).max(0) as usize;
+                        let bytes = if text_ptr != 0 && text_len > 0 {
+                            bus.read_bytes(text_ptr, text_len)
+                        } else {
+                            Vec::new()
+                        };
+                        let portion = crate::text_utils::evaluate_portion_text(&bytes);
+                        bus.write_long(sp + 12, portion as u32);
+                        cpu.write_reg(Register::D0, portion as u32);
+                        cpu.write_reg(Register::A7, sp + 12);
+                        return Some(Ok(()));
+                    }
+                    // FindScriptRun ($820C0026): FUNCTION FindScriptRun(textPtr: Ptr;
+                    //   textLen: LongInt; VAR runLen: LongInt): ScriptCode.
+                    // Stack: selector(4), runLen_ptr(4), textLen(4), textPtr(4), result(2). Pop 16 bytes.
+                    // Inside Macintosh: Text 1993, pp. 5-71..5-73.
+                    crate::text_utils::FIND_SCRIPT_RUN_SELECTOR => {
+                        let run_len_ptr = bus.read_long(sp + 4);
+                        let text_len = (bus.read_long(sp + 8) as i32).max(0) as usize;
+                        let _text_ptr = bus.read_long(sp + 12);
+                        let script = self.scriptutil_font_script();
+                        let (script_code, run_len) =
+                            crate::text_utils::evaluate_find_script_run(text_len, script);
+                        if run_len_ptr != 0 {
+                            bus.write_long(run_len_ptr, run_len as u32);
+                        }
+                        bus.write_word(sp + 16, script_code as u16);
+                        cpu.write_reg(Register::D0, script_code as u32);
+                        cpu.write_reg(Register::A7, sp + 16);
+                        return Some(Ok(()));
+                    }
+                    // FindWordBreaks ($C012001A): PROCEDURE FindWordBreaks(textPtr: Ptr;
+                    //   textLength, offset: INTEGER; leadingEdge: BOOLEAN; breaks: BreakTablePtr;
+                    //   VAR offsets: OffsetTable; script: ScriptCode)
+                    // Stack: selector(4), offsets_ptr(4), breaks(4), leadingEdge(2), offset(2),
+                    // textLength(2), textPtr(4). Pop 22 bytes.
+                    // Inside Macintosh: Text 1993, pp. 5-68..5-70.
+                    crate::text_utils::FIND_WORD_BREAKS_SELECTOR => {
+                        let offsets_ptr = bus.read_long(sp + 4);
+                        let _breaks = bus.read_long(sp + 8);
+                        let _leading_edge = bus.read_word(sp + 12);
+                        let offset = bus.read_word(sp + 14) as i16;
+                        let text_length = bus.read_word(sp + 16) as i16;
+                        let text_ptr = bus.read_long(sp + 18);
+                        let len = text_length.max(0) as usize;
+                        let bytes = if text_ptr != 0 && len > 0 {
+                            bus.read_bytes(text_ptr, len)
+                        } else {
+                            Vec::new()
+                        };
+                        let table = crate::text_utils::evaluate_find_word_breaks(
+                            &bytes,
+                            offset.max(0) as usize,
+                        );
+                        Self::write_offset_table(bus, offsets_ptr, table);
+                        cpu.write_reg(Register::A7, sp + 22);
+                        return Some(Ok(()));
+                    }
                     _ => {}
                 }
 
