@@ -1,3 +1,4 @@
+use super::memory::ppc_memory_read_bytes;
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -341,23 +342,51 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             }
         }
         PpcSystemCompatibilityOperation::StyledLineBreak => {
+            let text_ptr = cpu.gpr[3];
             let text_len = cpu.gpr[4];
-            let text_end = cpu.gpr[6].min(text_len);
+            let text_start = cpu.gpr[5];
+            let text_end = cpu.gpr[6];
+            let _flags = cpu.gpr[7];
             let width_ptr = cpu.gpr[8];
             let offset_ptr = cpu.gpr[9];
-            let width = memory.read_u32_be(width_ptr).unwrap_or(0) as i32;
-            let available_chars = (width.max(0) as u32 / (6 << 16)).max(1);
-            if text_end <= available_chars {
-                let _ = memory.write_u32_be(offset_ptr, text_end);
-                let used = text_end.saturating_mul(6 << 16);
-                let _ = memory.write_u32_be(width_ptr, (width as u32).saturating_sub(used));
-                PpcImportAction::Return(2)
+
+            let raw_width = if width_ptr != 0 {
+                memory.read_u32_be(width_ptr).unwrap_or(0)
             } else {
-                let break_at = available_chars.min(text_end);
-                let _ = memory.write_u32_be(offset_ptr, break_at);
-                let _ = memory.write_u32_be(width_ptr, 0);
-                PpcImportAction::Return(1)
+                0x7FFF
+            };
+            let input_offset = if offset_ptr != 0 {
+                memory.read_u32_be(offset_ptr).unwrap_or(0)
+            } else {
+                0
+            };
+            let first_style_run_on_line = input_offset != 0;
+            let available_pixels = crate::text_utils::fixed_to_pixels(raw_width);
+
+            let bytes = if text_ptr != 0 && text_len > 0 {
+                ppc_memory_read_bytes(memory, text_ptr, text_len).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+
+            let eval = crate::text_utils::evaluate_styled_line_break(
+                &bytes,
+                text_start,
+                text_end,
+                available_pixels,
+                first_style_run_on_line,
+                crate::text_utils::default_char_advance_measure,
+            );
+
+            if offset_ptr != 0 {
+                let _ = memory.write_u32_be(offset_ptr, eval.output_offset);
             }
+            if width_ptr != 0 {
+                let remaining_raw =
+                    crate::text_utils::pixels_to_width_like(raw_width, eval.remaining_width);
+                let _ = memory.write_u32_be(width_ptr, remaining_raw);
+            }
+            PpcImportAction::Return(u32::from(eval.code))
         }
         PpcSystemCompatibilityOperation::GetNextProcess => {
             let psn = cpu.gpr[3];

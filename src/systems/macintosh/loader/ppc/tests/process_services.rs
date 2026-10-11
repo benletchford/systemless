@@ -2243,3 +2243,74 @@ fn ppc_trunc_text_truncates_and_updates_length() {
     assert_eq!(truncated, [b'H', b'e', b'l', b'l', b'o', 0xC9]);
 }
 
+#[test]
+fn ppc_styled_line_break_breaks_at_word_boundary() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"StyledLineBreak")).unwrap();
+    let text = PPC_DATA_BASE + 0x1000;
+    let width_ptr = PPC_DATA_BASE + 0x1040;
+    let offset_ptr = PPC_DATA_BASE + 0x1050;
+    loaded.memory.add_region(text, vec![0; 64]);
+    loaded.memory.add_region(width_ptr, vec![0; 16]);
+    loaded.memory.add_region(offset_ptr, vec![0; 16]);
+
+    let input = b"HELLO WORLD";
+    loaded.memory.write_bytes(text, input).unwrap();
+    // 7 chars * 6 px = 42 px in 16.16 Fixed
+    loaded.memory.write_u32_be(width_ptr, 42 << 16).unwrap();
+    loaded.memory.write_u32_be(offset_ptr, 0xFFFF_FFFF).unwrap();
+
+    loaded.cpu.gpr[3] = text;
+    loaded.cpu.gpr[4] = input.len() as u32;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = input.len() as u32;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = width_ptr;
+    loaded.cpu.gpr[9] = offset_ptr;
+
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::StyledLineBreak,
+        ),
+    );
+
+    assert_eq!(loaded.cpu.gpr[3], 0); // smBreakWord
+    assert_eq!(loaded.memory.read_u32_be(offset_ptr), Some(6));
+    assert_eq!(loaded.memory.read_u32_be(width_ptr), Some(6 << 16));
+}
+
+#[test]
+fn ppc_styled_line_break_overflow_when_entire_run_fits() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"StyledLineBreak")).unwrap();
+    let text = PPC_DATA_BASE + 0x1000;
+    let width_ptr = PPC_DATA_BASE + 0x1040;
+    let offset_ptr = PPC_DATA_BASE + 0x1050;
+    loaded.memory.add_region(text, vec![0; 64]);
+    loaded.memory.add_region(width_ptr, vec![0; 16]);
+    loaded.memory.add_region(offset_ptr, vec![0; 16]);
+
+    let input = b"HELLO";
+    loaded.memory.write_bytes(text, input).unwrap();
+    // 5 chars * 6 px = 30 px. Available = 40 px in 16.16 Fixed.
+    loaded.memory.write_u32_be(width_ptr, 40 << 16).unwrap();
+    loaded.memory.write_u32_be(offset_ptr, 0xFFFF_FFFF).unwrap();
+
+    loaded.cpu.gpr[3] = text;
+    loaded.cpu.gpr[4] = input.len() as u32;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = input.len() as u32;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = width_ptr;
+    loaded.cpu.gpr[9] = offset_ptr;
+
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::StyledLineBreak,
+        ),
+    );
+
+    assert_eq!(loaded.cpu.gpr[3], 2); // smBreakOverflow
+    assert_eq!(loaded.memory.read_u32_be(offset_ptr), Some(5));
+    assert_eq!(loaded.memory.read_u32_be(width_ptr), Some(10 << 16));
+}

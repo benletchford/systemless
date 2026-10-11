@@ -384,6 +384,228 @@ pub fn evaluate_trunc_string(
     )
 }
 
+/// ScriptUtil selector for `StyledLineBreak` (`$821CFFFE`).
+pub const STYLED_LINE_BREAK_SELECTOR: u32 = 0x821C_FFFE;
+
+/// StyledLineBreak return code indicating a break at a word boundary (`smBreakWord = 0`).
+pub const SM_BREAK_WORD: u16 = 0;
+
+/// StyledLineBreak return code indicating a break at a character boundary (`smBreakChar = 1`).
+pub const SM_BREAK_CHAR: u16 = 1;
+
+/// StyledLineBreak return code indicating the entire style run fits on the line (`smBreakOverflow = 2`).
+pub const SM_BREAK_OVERFLOW: u16 = 2;
+
+/// Result code returned by `StyledLineBreak`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u16)]
+pub enum StyledLineBreakCode {
+    /// Line break occurs at a word boundary (e.g. after a space).
+    Word = SM_BREAK_WORD,
+    /// Line break occurs at a character boundary (overflow on first style run).
+    Char = SM_BREAK_CHAR,
+    /// The entire style run fits within the available width with room to spare.
+    Overflow = SM_BREAK_OVERFLOW,
+}
+
+impl StyledLineBreakCode {
+    /// Returns the raw numeric return code.
+    #[inline]
+    pub const fn to_code(self) -> u16 {
+        self as u16
+    }
+
+    /// Converts from a raw numeric return code.
+    #[inline]
+    pub const fn from_code(code: u16) -> Option<Self> {
+        match code {
+            SM_BREAK_WORD => Some(Self::Word),
+            SM_BREAK_CHAR => Some(Self::Char),
+            SM_BREAK_OVERFLOW => Some(Self::Overflow),
+            _ => None,
+        }
+    }
+}
+
+/// Evaluation outcome of `StyledLineBreak`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StyledLineBreakEvaluation {
+    /// Return code: `SM_BREAK_WORD` (0), `SM_BREAK_CHAR` (1), or `SM_BREAK_OVERFLOW` (2).
+    pub code: u16,
+    /// Break offset in bytes relative to the start of the text buffer.
+    pub output_offset: u32,
+    /// Remaining pixel width on the line.
+    pub remaining_width: i32,
+}
+
+impl StyledLineBreakEvaluation {
+    /// Returns the typed `StyledLineBreakCode`, if recognized.
+    #[inline]
+    pub fn break_code(&self) -> Option<StyledLineBreakCode> {
+        StyledLineBreakCode::from_code(self.code)
+    }
+
+    /// Returns true if the line break occurred at a word boundary.
+    #[inline]
+    pub fn is_word_break(&self) -> bool {
+        self.code == SM_BREAK_WORD
+    }
+
+    /// Returns true if the line break occurred at a character boundary.
+    #[inline]
+    pub fn is_char_break(&self) -> bool {
+        self.code == SM_BREAK_CHAR
+    }
+
+    /// Returns true if the entire style run fit on the current line.
+    #[inline]
+    pub fn is_overflow(&self) -> bool {
+        self.code == SM_BREAK_OVERFLOW
+    }
+}
+
+/// Returns true if `byte` is whitespace in Roman script systems (space, tab, CR, LF).
+#[inline]
+pub fn is_roman_break_space(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\r' | b'\n')
+}
+
+/// Finds the break point at the end of the last word (including trailing whitespace)
+/// that fits before or at `fit_end` within the range `start..text_end`.
+pub fn find_last_space_break(
+    text: &[u8],
+    start: usize,
+    fit_end: usize,
+    text_end: usize,
+) -> Option<usize> {
+    let mut break_offset = None;
+    let mut offset = start;
+    let limit = fit_end.min(text.len());
+    let end = text_end.min(text.len());
+    while offset < limit {
+        if is_roman_break_space(text[offset]) {
+            let mut after_spaces = offset + 1;
+            while after_spaces < end && is_roman_break_space(text[after_spaces]) {
+                after_spaces += 1;
+            }
+            break_offset = Some(after_spaces);
+            offset = after_spaces;
+        } else {
+            offset += 1;
+        }
+    }
+    break_offset
+}
+
+/// Converts a 16.16 Fixed or raw pixel width parameter to integer pixel width.
+#[inline]
+pub fn fixed_to_pixels(raw: u32) -> i32 {
+    let signed = raw as i32;
+    if (raw & 0xFFFF_0000) != 0 {
+        signed >> 16
+    } else {
+        signed
+    }
+}
+
+/// Converts an integer pixel width back to the representation (Fixed or raw pixels) of `raw`.
+#[inline]
+pub fn pixels_to_width_like(raw: u32, pixels: i32) -> u32 {
+    let pixels = pixels.clamp(0, 0x7FFF);
+    if (raw & 0xFFFF_0000) != 0 {
+        ((pixels as i32) << 16) as u32
+    } else {
+        pixels as u32
+    }
+}
+
+/// Monospace 6-pixel character advance fallback for `StyledLineBreak`.
+#[inline]
+pub fn default_char_advance_measure(_byte: u8) -> i32 {
+    6
+}
+
+/// Evaluates line break for a style run (`StyledLineBreak`).
+///
+/// References:
+/// - Inside Macintosh: Text (1993), Chapter 5 "Text Utilities", pp. 5-79..5-81, Table D-3
+///
+/// Parameters:
+/// - `text`: Byte slice representing the text buffer.
+/// - `text_start`: Starting byte offset of the style run.
+/// - `text_end`: Ending byte offset of the style run.
+/// - `available_pixels`: Available width in pixels on the current line.
+/// - `first_style_run_on_line`: True if this style run begins the line.
+/// - `measure_char`: Closure measuring advance in pixels of a single character byte.
+pub fn evaluate_styled_line_break(
+    text: &[u8],
+    text_start: u32,
+    text_end: u32,
+    available_pixels: i32,
+    first_style_run_on_line: bool,
+    mut measure_char: impl FnMut(u8) -> i32,
+) -> StyledLineBreakEvaluation {
+    let len = text.len() as u32;
+    let start = text_start.min(len) as usize;
+    let end = text_end.max(text_start).min(len) as usize;
+    let available = available_pixels.max(0);
+
+    let mut run_width = 0i32;
+    let mut fit_offset = start;
+    for offset in start..end {
+        let byte_width = measure_char(text[offset]).max(0);
+        if run_width.saturating_add(byte_width) > available {
+            break;
+        }
+        run_width = run_width.saturating_add(byte_width);
+        fit_offset = offset + 1;
+    }
+
+    if fit_offset == end {
+        let remaining = available.saturating_sub(run_width);
+        return StyledLineBreakEvaluation {
+            code: SM_BREAK_OVERFLOW,
+            output_offset: end as u32,
+            remaining_width: remaining,
+        };
+    }
+
+    if let Some(word_offset) = find_last_space_break(text, start, fit_offset, end) {
+        let mut word_width = 0i32;
+        for offset in start..word_offset {
+            word_width = word_width.saturating_add(measure_char(text[offset]).max(0));
+        }
+        let remaining = available.saturating_sub(word_width).max(0);
+        StyledLineBreakEvaluation {
+            code: SM_BREAK_WORD,
+            output_offset: word_offset as u32,
+            remaining_width: remaining,
+        }
+    } else if first_style_run_on_line {
+        let char_offset = if fit_offset > start {
+            fit_offset
+        } else {
+            (start + 1).min(end)
+        };
+        let mut char_width = 0i32;
+        for offset in start..char_offset {
+            char_width = char_width.saturating_add(measure_char(text[offset]).max(0));
+        }
+        let remaining = available.saturating_sub(char_width).max(0);
+        StyledLineBreakEvaluation {
+            code: SM_BREAK_CHAR,
+            output_offset: char_offset as u32,
+            remaining_width: remaining,
+        }
+    } else {
+        StyledLineBreakEvaluation {
+            code: SM_BREAK_WORD,
+            output_offset: start as u32,
+            remaining_width: available,
+        }
+    }
+}
+
 /// RelString ($A050) trap word.
 pub const REL_STRING_TRAP: u16 = 0xA050;
 
@@ -1227,4 +1449,141 @@ mod tests {
         assert_eq!(evaluate_string_to_num(b""), 0);
         assert_eq!(evaluate_string_to_num(b"2147483647"), i32::MAX);
     }
+
+    #[test]
+    fn test_styled_line_break_code_conversions() {
+        assert_eq!(StyledLineBreakCode::from_code(0), Some(StyledLineBreakCode::Word));
+        assert_eq!(StyledLineBreakCode::from_code(1), Some(StyledLineBreakCode::Char));
+        assert_eq!(StyledLineBreakCode::from_code(2), Some(StyledLineBreakCode::Overflow));
+        assert_eq!(StyledLineBreakCode::from_code(3), None);
+
+        assert_eq!(StyledLineBreakCode::Word.to_code(), 0);
+        assert_eq!(StyledLineBreakCode::Char.to_code(), 1);
+        assert_eq!(StyledLineBreakCode::Overflow.to_code(), 2);
+    }
+
+    #[test]
+    fn test_styled_line_break_fixed_pixels_conversions() {
+        // Raw pixel values (upper 16 bits zero)
+        assert_eq!(fixed_to_pixels(100), 100);
+        assert_eq!(pixels_to_width_like(100, 80), 80);
+
+        // Fixed 16.16 values
+        assert_eq!(fixed_to_pixels(50 << 16), 50);
+        assert_eq!(pixels_to_width_like(50 << 16, 35), 35 << 16);
+    }
+
+    #[test]
+    fn test_styled_line_break_overflow_when_entire_run_fits() {
+        let text = b"HELLO";
+        // 5 chars * 6 px = 30 px. Available = 40 px.
+        let eval = evaluate_styled_line_break(
+            text,
+            0,
+            text.len() as u32,
+            40,
+            true,
+            default_char_advance_measure,
+        );
+        assert_eq!(eval.code, SM_BREAK_OVERFLOW);
+        assert_eq!(eval.output_offset, 5);
+        assert_eq!(eval.remaining_width, 10);
+        assert!(eval.is_overflow());
+    }
+
+    #[test]
+    fn test_styled_line_break_breaks_at_word_boundary() {
+        let text = b"HELLO WORLD";
+        // "HELLO " is 6 chars * 6 px = 36 px.
+        // "HELLO W" is 7 chars * 6 px = 42 px.
+        let available = 42;
+        let eval = evaluate_styled_line_break(
+            text,
+            0,
+            text.len() as u32,
+            available,
+            true,
+            default_char_advance_measure,
+        );
+        assert_eq!(eval.code, SM_BREAK_WORD);
+        assert_eq!(eval.output_offset, 6);
+        assert_eq!(eval.remaining_width, 6); // 42 - 36
+        assert!(eval.is_word_break());
+    }
+
+    #[test]
+    fn test_styled_line_break_swallows_multiple_trailing_spaces() {
+        let text = b"FOO   BAR";
+        // "FOO" is 3 chars. Spaces at indices 3, 4, 5. "BAR" begins at 6.
+        // Available width fits "FOO " (4 chars = 24 px).
+        let available = 24;
+        let eval = evaluate_styled_line_break(
+            text,
+            0,
+            text.len() as u32,
+            available,
+            true,
+            default_char_advance_measure,
+        );
+        assert_eq!(eval.code, SM_BREAK_WORD);
+        // Break offset should advance past all spaces to index 6.
+        assert_eq!(eval.output_offset, 6);
+        assert!(eval.is_word_break());
+    }
+
+    #[test]
+    fn test_styled_line_break_char_break_on_first_style_run() {
+        let text = b"ABCDEFGHIJ";
+        // Fits 3 chars (18 px).
+        let available = 18;
+        let eval = evaluate_styled_line_break(
+            text,
+            0,
+            text.len() as u32,
+            available,
+            true,
+            default_char_advance_measure,
+        );
+        assert_eq!(eval.code, SM_BREAK_CHAR);
+        assert_eq!(eval.output_offset, 3);
+        assert_eq!(eval.remaining_width, 0);
+        assert!(eval.is_char_break());
+    }
+
+    #[test]
+    fn test_styled_line_break_no_char_break_on_subsequent_style_run() {
+        let text = b"ABCDEFGHIJ";
+        // If not first style run on line, cannot hyphenate/split character run:
+        let available = 18;
+        let eval = evaluate_styled_line_break(
+            text,
+            0,
+            text.len() as u32,
+            available,
+            false,
+            default_char_advance_measure,
+        );
+        assert_eq!(eval.code, SM_BREAK_WORD);
+        assert_eq!(eval.output_offset, 0);
+        assert_eq!(eval.remaining_width, available);
+        assert!(eval.is_word_break());
+    }
+
+    #[test]
+    fn test_styled_line_break_zero_width_first_style_run_makes_progress() {
+        let text = b"HELLO";
+        let eval = evaluate_styled_line_break(
+            text,
+            0,
+            text.len() as u32,
+            0,
+            true,
+            default_char_advance_measure,
+        );
+        // Zero available width on first style run must still break after at least 1 character.
+        assert_eq!(eval.code, SM_BREAK_CHAR);
+        assert_eq!(eval.output_offset, 1);
+        assert_eq!(eval.remaining_width, 0);
+    }
 }
+
