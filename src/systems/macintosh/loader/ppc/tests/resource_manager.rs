@@ -326,6 +326,8 @@ fn hle_import_runner_lm_get_cur_map_reads_shared_signed_reference_without_error_
     assert_eq!(dispatcher_target_for_import("InterfaceLib", "LMGetCurMap"),
         PpcImportDispatcherTarget::CurResFile);
     assert_eq!(dispatcher_target_for_import("CarbonLib", "LMGetCurMap"),
+        PpcImportDispatcherTarget::CurResFile);
+    assert_eq!(dispatcher_target_for_import("OtherLibrary", "LMGetCurMap"),
         PpcImportDispatcherTarget::Unsupported);
     for reference in [7i16, -1, i16::MIN] {
         let pef = synthetic_pef_with_import(b"LMGetCurMap");
