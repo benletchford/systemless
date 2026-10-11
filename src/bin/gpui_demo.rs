@@ -7597,6 +7597,10 @@ mod desktop {
                 if powerpc { session.runner_mut().set_powerpc_screen_depth(depth.unwrap()).unwrap(); }
                 let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                let temp = tempfile::tempdir().unwrap();
+                let save_path = temp.path().join("Showcase.sit");
+                let mut save_store = super::super::desktop_save_store::DesktopSaveStore::for_loaded_archive(
+                    &save_path, session.runner_mut());
                 session.initialize(&app);
                 wait_for_menu(&mut session, 129, 1, true);
                 assert!(session.runner_mut().select_guest_menu_item(129, 12));
@@ -7791,6 +7795,27 @@ mod desktop {
                         step(&mut session);
                         session.runner_mut().bus_mut().read_long(main + 152) == 0x53460001
                     }), "guest write/close/reopen/read/byte comparison failed: PPC={powerpc}, depth={depth:?}");
+                }
+                if !replacing {
+                    let saved = session.runner_mut().vfs_file_summaries().into_iter()
+                        .find(|file| file.path.rsplit('/').next() == Some(name.as_str())).unwrap();
+                    let original = session.runner_mut().vfs_file_snapshot(&saved.path).unwrap();
+                    assert_eq!(original.data_fork, b"Systemless Standard File round trip\n");
+                    save_store.sync_save_files_now(session.runner_mut());
+                    drop(save_store);
+                    drop(session);
+                    let mut restored = MacintoshSession::new(true, if powerpc { None } else { depth });
+                    restored.runner_mut().set_prefer_powerpc_executables(powerpc);
+                    if powerpc { restored.runner_mut().set_powerpc_screen_depth(depth.unwrap()).unwrap(); }
+                    let app = restored.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                    let mut store = super::super::desktop_save_store::DesktopSaveStore::for_loaded_archive(
+                        &save_path, restored.runner_mut());
+                    let files = store.load_saved_files();
+                    assert!(files.contains(&original), "exact forks and metadata must survive disk reload");
+                    for file in files { restored.runner_mut().import_vfs_file(&file); }
+                    restored.initialize(&app);
+                    assert_eq!(restored.runner_mut().vfs_file_snapshot(&saved.path), Some(original));
                 }
             }
         }

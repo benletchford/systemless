@@ -3025,10 +3025,7 @@ void DoStandardFileSave(void)
                 if (err == noErr) err = closeErr;
             }
         }
-        if (!gFileSaveReply.sfReplacing) {
-            closeErr = FSpDelete(&gFileSaveReply.sfFile);
-            if (err == noErr) err = closeErr;
-        }
+        /* Retain the result so desktop save/reload can exercise real guest writes. */
     }
     gFileSaveStatus = err == noErr ? fileStatusAccepted : fileStatusError;
     /* App-owned test checkpoint: status is published only after close/read/cleanup. */
