@@ -1221,6 +1221,9 @@ pub enum PpcImportDispatcherTarget {
     NewEventLoopTimerUPP,
     DisposeEventLoopTimerUPP,
     NewGrowZoneUPP,
+    NewObjectSupportUPP {
+        proc_info: u32,
+    },
     DisposeGrowZoneUPP,
     NewControlActionUPP,
     DisposeControlActionUPP,
@@ -4477,6 +4480,48 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::DisposeEventLoopTimerUPP
         }
         ("InterfaceLib", "NewGrowZoneUPP") => PpcImportDispatcherTarget::NewGrowZoneUPP,
+        // Apple AEObjects.h callback signatures; MixedMode.h Pascal size encoding.
+        ("InterfaceLib", "NewOSLAccessorUPP") => PpcImportDispatcherTarget::NewObjectSupportUPP {
+            proc_info: 0x000FFFE0,
+        },
+        ("InterfaceLib", "NewOSLCompareUPP") => PpcImportDispatcherTarget::NewObjectSupportUPP {
+            proc_info: 0x00003FE0,
+        },
+        ("InterfaceLib", "NewOSLCountUPP") => PpcImportDispatcherTarget::NewObjectSupportUPP {
+            proc_info: 0x00003FE0,
+        },
+        ("InterfaceLib", "NewOSLDisposeTokenUPP") => {
+            PpcImportDispatcherTarget::NewObjectSupportUPP {
+                proc_info: 0x000000E0,
+            }
+        }
+        ("InterfaceLib", "NewOSLGetMarkTokenUPP") => {
+            PpcImportDispatcherTarget::NewObjectSupportUPP {
+                proc_info: 0x00000FE0,
+            }
+        }
+        ("InterfaceLib", "NewOSLGetErrDescUPP") => PpcImportDispatcherTarget::NewObjectSupportUPP {
+            proc_info: 0x000000E0,
+        },
+        ("InterfaceLib", "NewOSLMarkUPP") => PpcImportDispatcherTarget::NewObjectSupportUPP {
+            proc_info: 0x00000FE0,
+        },
+        ("InterfaceLib", "NewOSLAdjustMarksUPP") => {
+            PpcImportDispatcherTarget::NewObjectSupportUPP {
+                proc_info: 0x00000FE0,
+            }
+        }
+        (
+            "InterfaceLib",
+            "DisposeOSLAccessorUPP"
+            | "DisposeOSLCompareUPP"
+            | "DisposeOSLCountUPP"
+            | "DisposeOSLDisposeTokenUPP"
+            | "DisposeOSLGetMarkTokenUPP"
+            | "DisposeOSLGetErrDescUPP"
+            | "DisposeOSLMarkUPP"
+            | "DisposeOSLAdjustMarksUPP",
+        ) => PpcImportDispatcherTarget::DisposeRoutineDescriptor,
         ("InterfaceLib", "DisposeGrowZoneUPP") => PpcImportDispatcherTarget::DisposeGrowZoneUPP,
         ("InterfaceLib", "NewControlActionUPP") => {
             PpcImportDispatcherTarget::NewControlActionUPP

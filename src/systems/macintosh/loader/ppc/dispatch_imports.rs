@@ -2626,6 +2626,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::NewEventLoopTimerUPP
         | PpcImportDispatcherTarget::DisposeEventLoopTimerUPP
         | PpcImportDispatcherTarget::NewGrowZoneUPP
+        | PpcImportDispatcherTarget::NewObjectSupportUPP { .. }
         | PpcImportDispatcherTarget::DisposeGrowZoneUPP
         | PpcImportDispatcherTarget::NewControlActionUPP
         | PpcImportDispatcherTarget::DisposeControlActionUPP

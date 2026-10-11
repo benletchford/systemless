@@ -256,6 +256,7 @@ mod menu_manager;
 pub(crate) use menu_manager::*;
 mod window_manager;
 mod mixed_mode;
+mod osl_callbacks;
 mod core_foundation;
 mod internet_config;
 mod icon_services;
