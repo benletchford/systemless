@@ -1999,3 +1999,22 @@ cards. Original DrawString arguments include Score 100 and card labels, despite
 incomplete visible text. Explicit same-port reselection skips the global update
 because of the current import-boundary equality guard. Regression coverage is
 being tested before the fix; card/text rendering must be replayed independently.
+
+
+On the Edge browser approval follow-up: the rebuilt supported **8 MHz** preview
+at runtime source `b3b61ca5510101a1eace9afb7e497d3a7bba65db` has only local
+candidate launch/clock metadata overrides. All twelve unchanged before/after
+browser pixel checks pass, and the unchanged pacing gate passes at approximately
+57.98 guest ticks/sec (minimum 50), 60.01 host FPS, no console errors. Ordinary
+File/New Game deals **five of hearts** in this run; placing it draws **six of
+spades** and raises Score 0 to 100. These are this browser run's actual cards,
+not the earlier native/25 MHz run's six of hearts and ace of clubs. Captures
+inspected. Real untouched hosted archive HTTP 200/22,676-byte body and original
+SHA-256 match again, with production-origin CORS and isolation. Independently
+fetched hosted native content screenshot matches 3,228 bytes and
+`379b25620693cd71d32c8bd3289cf1f4fbb19b93973df969c30276c67d46d724`.
+Launch approved for the verified default 68K route at 8 MHz in catalogue PR #4664.
+The original fat package and PPC startup evidence remain intact; PPC rendering
+issue #4667 is still being fixed. Full matches, removal, undo, saves and audio
+remain unqualified. Final catalogue CI/merge, human release and public replay
+remain pending. No release is triggered or live-qualified game counted.

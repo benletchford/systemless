@@ -10,6 +10,7 @@ architectures:
 - ppc
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -25,9 +26,8 @@ compatibility:
       passes twelve measured before/after pixel checks at 786 frontend / 1386 guest ticks
       with zero exhausted frames; captures inspected. Both files, all four original
       forks and Finder type/creator/flags match independent unar expansion. This proves
-      one placement only. Full matches, card removal, undo, saving, audio, hosted browser
-      input and public replay remain unverified. Launch stays disabled pending browser
-      approval.
+      one placement only. Full matches, card removal, undo, saving, audio and public
+      replay remain unverified. Browser qualification is recorded separately below.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4661
   - date: "2026-10-12"
@@ -70,12 +70,33 @@ compatibility:
       one placement show six of hearts, next ace of clubs and Score 100. Fresh
       replay passes twelve measured before/after browser pixel checks. Captures
       inspected. The separate pacing gate fails: about 19.33 guest ticks/second
-      versus the unchanged 50 minimum, despite about 60 host FPS. Browser launch
-      approval remains pending while the supported 8 MHz configuration is tested.
+      versus the unchanged 50 minimum, despite about 60 host FPS. This 25 MHz configuration did not qualify launch; the later 8 MHz
+      approval is recorded below.
       Full matches, card removal, undo, saves and audio remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4661
+  - date: "2026-10-12"
+    tester: Catalogue maintainer
+    systemless_version: b3b61ca5510101a1eace9afb7e497d3a7bba65db
+    architecture: 68k
+    environment: >-
+      Rebuilt optimized Chrome 151 preview with the supported 8 MHz catalogue
+      setting and local launch switch. WebGL worker, 800x600/depth 8, isolated.
+      Ordinary File/New Game deals five of hearts; an inner-square placement
+      draws six of spades and changes Score 0 to 100. All twelve unchanged measured
+      before/after browser checks pass. Captures inspected. The unchanged pacing
+      gate also passes: about 57.98 guest ticks/second against minimum 50, about
+      60.01 host FPS, no console errors. Direct untouched hosted archive response
+      is HTTP 200, 22676 bytes and the original SHA-256. Hosted content-only native
+      screenshot independently matches its 3228-byte size and hash. Browser launch
+      approved for this bounded 68K route at 8 MHz. PPC rendering, full matches,
+      card removal, undo, saves, audio, human release and public replay remain
+      unverified or pending; no PPC gameplay claim follows from this approval.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/4664
 runtime:
+  runtime_pacing:
+    cpu_mhz: 8
   executable_path: On the Edge 3.1/On the Edge
   screen_depth: 8
   show_menu_bar: true
