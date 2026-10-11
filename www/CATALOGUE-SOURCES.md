@@ -1807,8 +1807,11 @@ checks across 530 frontend / 1,102 guest ticks with no exhaustion. Ordinary matc
 input reproduces the first 5, then the next sequence 5 and 7, advancing score 0→1→3.
 Captures were inspected before assertions were added. This is bounded native gameplay,
 not independent audio fidelity or exhaustive difficulty qualification. [Repair #4657](https://github.com/benletchford/systemless/pull/4657)
-awaits updated full CI after correcting legacy null-channel and Boolean fixtures;
-production runtime code remains identical to the replayed binary.
+merged as `d5b3864bc4f1f9d59e2493fd41f8489041a004ec` after all nine ordinary CI/CLA
+checks passed, including normal/debug library and desktop tests, structured headless
+play, 68K/PPC showcase assertions and packaging. The sound/runner implementation
+matches the replayed binary; later default-branch utilities are being replayed in
+the integrated browser preview.
 
 A disabled catalogue intake now records the exact publisher archive and a content-only
 score-3 gameplay screenshot. [Intake #4656](https://github.com/benletchford/systemless/pull/4656) promoted the
@@ -1816,7 +1819,7 @@ unchanged archive and content-only screenshot to immutable Systemless assets.
 Production validation passes all 213 proposed entries. A fresh hosted archive
 fetch is 73,613 bytes with the original SHA-256 and byte-identical to the publisher
 file. Screenshot SHA-256 is `9f126808b4d5b80c37741d72ee20bfd06d335491b5d8d0f3c68174062c6561ac`
-(6,040 bytes). Bounded browser preview is verified below. Repair CI, launch approval, human release
+(6,040 bytes). Bounded browser preview is verified below. Integrated-runtime replay, launch approval, human release
 and independent public replay remain pending; there is no qualified live-count
 increment.
 
@@ -1834,5 +1837,5 @@ captures inspected, pacing probe passes and there are no console errors. The
 initial localhost fetch does not qualify (production-origin CORS is required),
 quick-click input never started the game, and a server-reset attempt ended before
 assertions; those attempts are excluded. Difficulty coverage and browser audio
-fidelity remain unverified. Runtime integration/CI, launch approval, human release
+fidelity remain unverified. Integrated-runtime replay, launch approval, human release
 and independent public replay remain pending. No qualified-live increment yet.

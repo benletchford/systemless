@@ -19,7 +19,7 @@ compatibility:
     environment: >-
       Unchanged publisher Classic 2.2 archive; explicit 68K, depth 8, complete
       original executable and embedded documentation. Native build includes the sound
-      sequence/draining repair in PR 4657, which must land before launch. Ordinary Start Game
+      sequence/draining repair in PR 4657, now merged at d5b3864b. Ordinary Start Game
       displays the first button-5 flash across eight frontend captures. A measured note
       interval yields 2761 non-silent PCM samples. Matching input advances score 0 to
       1; the next displayed sequence is 5 then 7, and ordinary matching clicks advance
@@ -48,8 +48,7 @@ compatibility:
       A preview-server reset interrupted the first asserted attempt before assertions;
       the unchanged retry passes. This is bounded browser preview qualification;
       all difficulty settings, browser audio fidelity, human release and independent
-      public replay remain unverified. Runtime repair CI/merge and launch approval
-      remain pending.
+      public replay remain unverified. Current integrated-runtime replay and launch approval remain pending.
     status: playable
     evidence: https://github.com/benletchford/systemless/pull/4656
 runtime:
