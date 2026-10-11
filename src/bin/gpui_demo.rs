@@ -1689,6 +1689,7 @@ mod desktop {
             }
             let mut screen = div()
                 .id("guest-screen")
+                .role(gpui_kit::Role::Group)
                 .test_support()
                 .relative()
                 .overflow_hidden()
@@ -3273,6 +3274,7 @@ mod desktop {
             }
             // System-owned notification alerts are painted by this same Demo
             // in live windows and headless captures after worker acquisition.
+            let mut notification_overlay = None;
             if let Some(plan) = self.notification_alert.as_ref().and_then(|notice|
                 super::notification::AlertPlan::build(notice,
                     super::frames::Rect::from((0, 0, self.height as i16, self.width as i16)))) {
@@ -3287,8 +3289,8 @@ mod desktop {
                 let active = self.host_active != Some(false);
                 let overlay = div().id("guest-notification-alert").test_support()
                     .role(gpui_kit::Role::AlertDialog).aria_label("Notification")
-                    .absolute().top(guest_px(plan.bounds.top as f32))
-                    .left(guest_px(plan.bounds.left as f32))
+                    .absolute().top(px(self.display_origin.1) + guest_px(plan.bounds.top as f32))
+                    .left(px(self.display_origin.0) + guest_px(plan.bounds.left as f32))
                     .w(guest_px(plan.bounds.width() as f32)).h(guest_px(plan.bounds.height() as f32))
                     .bg(cx.theme().background).border_2().border_color(cx.theme().border)
                     .child(at(plan.message).overflow_hidden().child(
@@ -3311,7 +3313,7 @@ mod desktop {
                             let _ = this.commands.send(Command::DismissNotificationAlert(accessibility_notice.clone()));
                             });
                         })));
-                screen = screen.child(super::a11y::AccessibleState::new(overlay, false).modal(true));
+                notification_overlay = Some(super::a11y::AccessibleState::new(overlay, false).modal(true));
             }
             let mut bar = Some(bar);
             if let Some(popup) = self.guest_popup.as_ref() {
@@ -3470,13 +3472,18 @@ mod desktop {
                         }
                     }
                 }).absolute().size_full())
-                .child(super::metrics::SceneMetrics::new(screen, window.rem_size() * scene_scale))
+                .child(super::metrics::SceneMetrics::new(
+                    super::a11y::AccessibleState::new(screen, false).hidden(self.notification_alert.is_some()),
+                    window.rem_size() * scene_scale))
                 .children(self.composition_surface(cx))
+                .children(notification_overlay.map(|overlay|
+                    super::metrics::SceneMetrics::new(overlay, window.rem_size() * scene_scale)))
                 .when(!guest_menu_fallback && self.guest_popup.is_none()
                     && (self.menu_presented || (menu_hovered && self.notification_alert.is_none())), |root| {
-                    root.child(bar.unwrap().absolute().top_0().left_0().when(self.menu_presented, |bar| {
+                    root.child(super::a11y::AccessibleState::new(
+                        bar.unwrap().role(gpui_kit::Role::MenuBar).absolute().top_0().left_0().when(self.menu_presented, |bar| {
                         bar.top(px(self.display_origin.1)).left(px(self.display_origin.0))
-                    }))
+                    }), self.notification_alert.is_some()).hidden(self.notification_alert.is_some()))
                 })
                 .children(cursor_element)
                 .when(self.image.is_none(), |root| {

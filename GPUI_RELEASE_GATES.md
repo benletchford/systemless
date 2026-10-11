@@ -1,5 +1,15 @@
 # GPUI production release gates
 
+Notification accessibility background separation: the alert is now a sibling
+of the painted guest scene; the background scene and retained menu bar carry
+hidden accessibility state during alert ownership. SceneMetrics forwards roles,
+metadata and synthetic children rather than dropping them. Five notification
+regressions pass (11.78s), six accessibility helper tests pass, and the wrapper
+role/identity/hidden-state regression passes. A recapture is pixel-identical to
+the previously reviewed mono notification scene. This establishes source/helper
+contracts and preserved selected appearance, not native assistive navigation,
+keyboard focus trapping or complete modal accessibility qualification.
+
 Notification menu retention fix: alert ownership previously removed the GPUI
 bar, exposing guest bitmap menus. Presented standard menus now retain the GPUI
 bar with disabled triggers; hidden menus retain their visibility policy.
