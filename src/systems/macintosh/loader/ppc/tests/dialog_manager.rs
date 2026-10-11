@@ -421,6 +421,105 @@ fn find_dialog_item_returns_zero_based_index_and_minus_one_for_miss() {
 }
 
 #[test]
+fn created_user_item_upp_draws_dialog_through_original_callback_and_rtoc() {
+    let pef = super::mixed_mode::relocated_dialog_upp_test_pef(b"CarbonLib", b"NewUserItemUPP");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut dlog = vec![0; 22];
+    dlog[4..6].copy_from_slice(&100i16.to_be_bytes());
+    dlog[6..8].copy_from_slice(&200i16.to_be_bytes());
+    dlog[10] = 1;
+    dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+    let mut ditl = vec![0; 16];
+    ditl[6..8].copy_from_slice(&10i16.to_be_bytes());
+    ditl[8..10].copy_from_slice(&12i16.to_be_bytes());
+    ditl[10..12].copy_from_slice(&40i16.to_be_bytes());
+    ditl[12..14].copy_from_slice(&80i16.to_be_bytes());
+    ditl[14] = PPC_DIALOG_ITEM_USER_ITEM;
+    for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
+        let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: 128,
+                name: Vec::new(),
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    loaded.cpu.gpr[3] = 128;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNewDialog);
+    let dialog = loaded.cpu.gpr[3];
+    let items_handle = loaded
+        .memory
+        .read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET)
+        .unwrap();
+    let items_ptr = loaded.memory.read_u32_be(items_handle).unwrap();
+    let callback = PPC_CODE_BASE + 0x1000;
+    let result = PPC_DATA_BASE + 0x1000;
+    let mut callback_code = Vec::new();
+    for word in [
+        d_form_u(15, 5, 0, (result >> 16) as u16), // lis r5, result@h
+        d_form_u(24, 5, 5, result as u16),         // ori r5, r5, result@l
+        d_form_u(36, 3, 5, 0),                     // stw r3, 0(r5)
+        d_form_u(36, 4, 5, 4),                     // stw r4, 4(r5)
+        d_form_u(14, 3, 0, 0x1234),                // overwrite volatile argument registers
+        d_form_u(14, 4, 0, 0x5678),
+        d_form_u(36, 2, 5, 8), // record callback RTOC
+        BLR,
+    ] {
+        callback_code.extend_from_slice(&word.to_be_bytes());
+    }
+    loaded.memory.add_region(callback, callback_code);
+    loaded.memory.add_region(result, vec![0; 12]);
+    let tvector = PPC_DATA_BASE + 0x1800;
+    let callback_rtoc = PPC_DATA_BASE + 0x1c00;
+    loaded.memory.add_region(tvector, vec![0; 8]);
+    loaded.memory.add_region(callback_rtoc, vec![0; 4]);
+    loaded.memory.write_u32_be(tvector, callback).unwrap();
+    loaded
+        .memory
+        .write_u32_be(tvector + 4, callback_rtoc)
+        .unwrap();
+    loaded.cpu.gpr[3] = tvector;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewUserItemUPP);
+    let upp = loaded.cpu.gpr[3];
+    assert_ne!(upp, 0);
+    loaded.memory.write_u32_be(items_ptr + 2, upp).unwrap();
+    let caller_rtoc = loaded.cpu.gpr[2];
+
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::DrawDialog;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = 0xcafe_babe;
+    loaded
+        .current_gworld
+        .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
+    let probe = loaded.run_with_hle_imports(128);
+
+    assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.memory.read_u32_be(result), Some(dialog));
+    assert_eq!(loaded.memory.read_u32_be(result + 4), Some(1));
+    assert_eq!(loaded.cpu.gpr[3], dialog);
+    assert_eq!(loaded.cpu.gpr[4], 0xcafe_babe);
+    assert_eq!(*loaded.current_gworld, dialog);
+    assert!(loaded.dialog_callback_stack.is_empty());
+
+    assert_eq!(loaded.memory.read_u32_be(result + 8), Some(callback_rtoc));
+    assert_eq!(loaded.cpu.gpr[2], caller_rtoc);
+    loaded.cpu.gpr[3] = upp;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeUserItemUPP);
+    assert_eq!(loaded.memory.read_u32_be(tvector), Some(callback));
+}
+
+#[test]
 fn draw_dialog_calls_native_user_item_procedure_with_dialog_and_item_number() {
     let pef = synthetic_pef_with_import(b"GetNewDialog");
     let mut loaded = load_pef_application(&pef).unwrap();
