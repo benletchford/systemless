@@ -1,0 +1,24 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 31.29s
+     Running unittests src/lib.rs (target/debug/deps/systemless-fb1873a31fc5e0eb)
+
+running 1 test
+test systems::macintosh::display::tests::monochrome_cursor_preserves_all_four_mask_data_cases_and_clips_hotspot ... FAILED
+
+failures:
+
+---- systems::macintosh::display::tests::monochrome_cursor_preserves_all_four_mask_data_cases_and_clips_hotspot stdout ----
+
+thread 'systems::macintosh::display::tests::monochrome_cursor_preserves_all_four_mask_data_cases_and_clips_hotspot' (1019487) panicked at src/systems/macintosh/display.rs:2343:9:
+assertion `left == right` failed
+  left: [64, 80, 96, 255, 64, 80, 96, 255, 255, 255, 255, 255, 0, 0, 0, 255]
+ right: [64, 80, 96, 255, 191, 175, 159, 255, 255, 255, 255, 255, 0, 0, 0, 255]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    systems::macintosh::display::tests::monochrome_cursor_preserves_all_four_mask_data_cases_and_clips_hotspot
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6701 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`
