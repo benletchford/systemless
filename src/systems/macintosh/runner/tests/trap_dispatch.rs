@@ -5,6 +5,44 @@ use crate::process_context::PendingFileCompletion;
 use crate::trap::dispatch::TrapTableProfile;
 
 #[test]
+fn notification_delivery_restores_full_guest_registers_and_condition_codes() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let resume_pc = 0x10000;
+    let resume_sp = 0x7fffc0;
+    for offset in (0..80).step_by(2) { runner.bus.write_word(resume_pc + offset, 0x4e71); }
+    let request = runner.bus.alloc(36);
+    let text = runner.bus.alloc(8);
+    let callback = runner.bus.alloc(24);
+    runner.bus.write_word(request + 4, 8);
+    runner.bus.write_long(request + 24, text);
+    runner.bus.write_long(request + 28, callback);
+    for (index, word) in [0x4e56, 0, 0x2e3c, 0x1122, 0x3344,
+        0x287c, 0x5566, 0x7788, 0x7000, 0x4e5e, 0x4e74, 4].into_iter().enumerate() {
+        runner.bus.write_word(callback + index as u32 * 2, word);
+    }
+    runner.m68k.cpu.write_reg(Register::PC, resume_pc);
+    runner.m68k.cpu.write_reg(Register::A7, resume_sp);
+    runner.m68k.cpu.write_reg(Register::A0, request);
+    runner.dispatcher.dispatch_memory(false, 0x5e, &mut runner.m68k.cpu, &mut runner.bus)
+        .unwrap().unwrap();
+    runner.m68k.cpu.write_reg(Register::D7, 0xabcdef12);
+    runner.m68k.cpu.write_reg(Register::A4, 0x12345678);
+    runner.m68k.cpu.core.set_sr_noint_nosp(0x2015);
+    let notice = runner.notification_snapshot().pop().unwrap();
+    assert!(runner.complete_notification_delivery(&notice));
+    assert!(!runner.callback_suspends_guest_clock());
+    assert!(!runner.complete_notification_delivery(&notice));
+    let (_, running) = runner.run_steps(24, None);
+    assert!(running);
+    assert!(runner.active_interrupt_callback.is_none());
+    assert_eq!(runner.m68k.cpu.read_reg(Register::A7), resume_sp);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::D7), 0xabcdef12);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::A4), 0x12345678);
+    assert_eq!(runner.m68k.cpu.core.get_sr(), 0x2015);
+    assert!(!runner.complete_notification_delivery(&notice));
+}
+
+#[test]
 fn file_completion_callback_uses_documented_registers_and_restores_foreground() {
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
     let interrupted_pc = 0x0001_0000;

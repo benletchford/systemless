@@ -2253,6 +2253,24 @@ impl FixtureRunner {
         }
     }
 
+    /// Complete an actually delivered notice. The frontend must supply the
+    /// displayed snapshot; this method does not establish delivery itself.
+    pub fn complete_notification_delivery(&mut self, expected: &NotificationSnapshot) -> bool {
+        if self.native.application_mut().is_some() || self.active_interrupt_callback.is_some()
+            || !self.notification_snapshot().iter().any(|current| current == expected) {
+            return false;
+        }
+        let saved = self.capture_callback_context(ActiveInterruptCallbackSource::NotificationResponse);
+        if !self.dispatcher.complete_notification_delivery(&mut self.m68k.cpu, &mut self.bus,
+            expected.guest_id, expected.instance_id) { return false; }
+        if self.m68k.cpu.read_reg(Register::PC) != saved.resume_pc {
+            // The Toolbox entry has already installed its return slot and
+            // trampoline. Retain the pre-entry state without pushing again.
+            self.active_interrupt_callback = Some(saved);
+        }
+        true
+    }
+
     pub fn notification_snapshot(&mut self) -> Vec<NotificationSnapshot> {
         let requests = self.dispatcher.notification_requests.iter().filter_map(|&request| {
             self.dispatcher.notification_requests.instance_id(request).map(|instance| (request, instance))
@@ -11194,6 +11212,7 @@ impl FixtureRunner {
                 callback.source,
                 ActiveInterruptCallbackSource::DialogDrawProc
                     | ActiveInterruptCallbackSource::DialogFilterProc
+                    | ActiveInterruptCallbackSource::NotificationResponse
             )
         })
     }
@@ -12190,12 +12209,7 @@ impl FixtureRunner {
         }
     }
 
-    fn inject_interrupt_callback(
-        &mut self,
-        source: ActiveInterruptCallbackSource,
-        trampoline: u32,
-    ) {
-        self.suspend_dialog_callback_for_interrupt();
+    fn capture_callback_context(&self, source: ActiveInterruptCallbackSource) -> ActiveInterruptCallback {
         let current_pc = self.m68k.cpu.read_reg(Register::PC);
         let sp = self.m68k.cpu.read_reg(Register::A7);
         let d_regs = [
@@ -12220,23 +12234,22 @@ impl FixtureRunner {
         ];
         let ccr = self.m68k.cpu.core.get_ccr();
         let sr = self.m68k.cpu.core.get_sr();
-        let new_sp = sp.wrapping_sub(4);
-        self.bus.write_long(new_sp, current_pc);
+        ActiveInterruptCallback {
+            source, resume_pc: current_pc, resume_sp: sp,
+            d_regs, a_regs, sr, ccr, restore_port: None,
+        }
+    }
+
+    fn inject_interrupt_callback(
+        &mut self, source: ActiveInterruptCallbackSource, trampoline: u32,
+    ) {
+        self.suspend_dialog_callback_for_interrupt();
+        let saved = self.capture_callback_context(source);
+        let new_sp = saved.resume_sp.wrapping_sub(4);
+        self.bus.write_long(new_sp, saved.resume_pc);
         self.m68k.cpu.write_reg(Register::A7, new_sp);
-        self.active_interrupt_callback = Some(ActiveInterruptCallback {
-            source,
-            resume_pc: current_pc,
-            resume_sp: sp,
-            d_regs,
-            a_regs,
-            sr,
-            ccr,
-            restore_port: None,
-        });
-        self.m68k
-            .cpu
-            .core
-            .set_sr_noint_nosp(interrupt_callback_sr(source, sr));
+        self.active_interrupt_callback = Some(saved);
+        self.m68k.cpu.core.set_sr_noint_nosp(interrupt_callback_sr(source, saved.sr));
         self.m68k.cpu.write_reg(Register::PC, trampoline);
     }
 

@@ -11,6 +11,7 @@ pub(crate) enum ActiveInterruptCallbackSource {
     SoundFileCompletion,
     SoundDoubleBack,
     FileCompletion,
+    NotificationResponse,
     DialogDrawProc,
     DialogFilterProc,
 }
