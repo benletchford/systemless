@@ -3122,7 +3122,14 @@ mod desktop {
         }
 
         #[test]
-        fn guest_command_p_uses_menukey_on_both_cpus() {
+        fn guest_command_p_stays_held_until_release_on_both_cpus() {
+            use systemless::memory::{globals::addr::KEY_MAP_LM, MemoryBus};
+
+            let key_is_down = |session: &MacintoshSession, key: u8| {
+                session.runner().bus().read_byte(KEY_MAP_LM + u32::from(key / 8))
+                    & (1 << (key % 8))
+                    != 0
+            };
             for powerpc in [false, true] {
                 let mut session = MacintoshSession::new(true, if powerpc { None } else { Some(8) });
                 session.runner_mut().set_prefer_powerpc_executables(powerpc);
@@ -3137,8 +3144,21 @@ mod desktop {
                 session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x37, character: 0 });
                 session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x23, character: b'p' });
                 wait_for_menu(&mut session, 129, 5, true);
+                assert!(
+                    key_is_down(&session, 0x37),
+                    "Command released while held on powerpc={powerpc}"
+                );
+                assert!(
+                    key_is_down(&session, 0x23),
+                    "P released while held on powerpc={powerpc}"
+                );
+                session.runner_mut().run_steps(100_000, None);
+                assert!(key_is_down(&session, 0x37));
+                assert!(key_is_down(&session, 0x23));
                 session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x23, character: b'p' });
                 session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x37, character: 0 });
+                assert!(!key_is_down(&session, 0x23));
+                assert!(!key_is_down(&session, 0x37));
             }
         }
 
