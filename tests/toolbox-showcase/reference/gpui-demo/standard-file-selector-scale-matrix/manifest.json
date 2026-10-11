@@ -1,0 +1,53 @@
+{
+  "scope": "16 current shared Demo Open-panel captures, all CPU/depth/scale metadata asserted and recorded source/executable hashes verified after run. Every panel crop directly reviewed at original pixel resolution. Only mono scale0.75 full scene reviewed in this matrix. No native font oracle, inactive-state matrix, physical host input, volume switching or production qualification.",
+  "sha256": {
+    "src/bin/gpui_demo.rs": "9f21dbb924a0509994eebbde7aa82e85bbb13ac276bdb4d4b17cba34b5fcb569",
+    "src/systems/macintosh/standard_file_ui.rs": "c501821175ff46d01d39a98922579b0a036ab6076f559d42d46bb0845a8a1fc8",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "7e9259cf65889bd1097a34439278ef4ecc1e69ec6272009488b169adeb72bb59"
+  },
+  "executable_sha256": "bc59208ca15ba2b5c4572ac8758f7c75f2599c87209d5b20accacfc19efd7b3f",
+  "completed": [
+    "mono-0.75",
+    "mono-1",
+    "mono-1.5",
+    "mono-2",
+    "colour-0.75",
+    "colour-1",
+    "colour-1.5",
+    "colour-2",
+    "ppc8-0.75",
+    "ppc8-1",
+    "ppc8-1.5",
+    "ppc8-2",
+    "ppc16-0.75",
+    "ppc16-1",
+    "ppc16-1.5",
+    "ppc16-2"
+  ],
+  "panel_crop_guest_rect": [
+    209,
+    220,
+    392,
+    580
+  ],
+  "panel_crop_device_factor": "2 * scene_scale",
+  "directly_reviewed_panel_crops": [
+    "mono-0.75.panel.png",
+    "mono-1.panel.png",
+    "mono-1.5.panel.png",
+    "mono-2.panel.png",
+    "colour-0.75.panel.png",
+    "colour-1.panel.png",
+    "colour-1.5.panel.png",
+    "colour-2.panel.png",
+    "ppc8-0.75.panel.png",
+    "ppc8-1.panel.png",
+    "ppc8-1.5.panel.png",
+    "ppc8-2.panel.png",
+    "ppc16-0.75.panel.png",
+    "ppc16-1.panel.png",
+    "ppc16-1.5.panel.png",
+    "ppc16-2.panel.png"
+  ],
+  "panel_review_viewer_resize": null
+}
