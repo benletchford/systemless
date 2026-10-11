@@ -8065,7 +8065,7 @@
         );
         assert!(classic.new_update_region.is_some());
         assert!(classic.new_update_event_queued);
-        assert_eq!(classic.new_edit_field, 0xFFFF);
+        assert_eq!(classic.new_edit_field, 0);
         assert_eq!(classic.new_default_item, 1);
 
         assert_ne!(classic.get_dialog_ptr, 0);
@@ -8094,7 +8094,7 @@
         );
         assert!(classic.get_update_region.is_some());
         assert!(classic.get_update_event_queued);
-        assert_eq!(classic.get_edit_field, 0xFFFF);
+        assert_eq!(classic.get_edit_field, 0);
         assert_eq!(classic.get_default_item, 1);
         assert_eq!(
             themed, classic,

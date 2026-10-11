@@ -5258,6 +5258,33 @@ impl super::TrapDispatcher {
         );
 
         self.initialize_dialog_item_handles(bus, dlg_ptr, &items);
+        // The first enabled editText item owns the shared TERec when the
+        // dialog is displayed. Its DITL rectangle is TextEdit's destination
+        // and view rectangle, and the insertion point starts at offset zero.
+        // Inside Macintosh Volume I, I-405, I-408; Macintosh Toolbox
+        // Essentials (1992), pp. 6-79--6-80.
+        if let Some((index, item)) = items
+            .iter()
+            .enumerate()
+            .find(|(_, item)| item.is_edit_text() && item.is_enabled())
+        {
+            self.initialize_te_record(bus, text_h, item.rect, item.rect);
+            let item_handle = Self::dialog_item_handle(bus, dlg_ptr, (index + 1) as i16);
+            let text = Self::text_item_bytes_from_handle_if_present(bus, item_handle)
+                .unwrap_or_else(|| encode_mac_roman_lossy(&item.text));
+            self.te_set_text_contents(bus, text_h, &text);
+            let te_ptr = Self::te_record_ptr(bus, text_h);
+            if te_ptr != 0 {
+                bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, 0);
+                bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, 0);
+                bus.write_word(te_ptr + Self::TE_ACTIVE_OFFSET, 1);
+            }
+            bus.write_word(
+                dlg_ptr + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET,
+                index as u16,
+            );
+            bus.write_word(dlg_ptr + crate::dialog_manager::DIALOG_EDIT_OPEN_OFFSET, 1);
+        }
         self.dialog_items.insert(dlg_ptr, items.clone());
         // A dialog's screen-backed GrafPort can receive application control
         // drawing even while its window is hidden. Establish the save-under
@@ -12949,32 +12976,34 @@ impl super::TrapDispatcher {
                                                 0x08 | 0x20..=0x7E => {
                                         let mut text_trace = None;
                                         let mut modified_key_to_set = None;
+                                        let mut te_update = None;
                                         if let Some(tracking) = self.dialog_tracking.as_mut() {
                                             let text_before = tracking.edit_text.clone();
                                             if tracking.edit_item > 0 {
-                                                if char_code == 0x08 {
-                                                    if !tracking.edit_text_modified {
-                                                        // First backspace clears selection
-                                                        tracking.edit_text.clear();
-                                                        tracking.edit_text_modified = true;
-                                                    } else if !tracking.edit_text.is_empty() {
-                                                        tracking.edit_text.pop();
-                                                    }
-                                                } else {
-                                                    if !tracking.edit_text_modified {
-                                                        // First keypress replaces selection
-                                                        tracking.edit_text.clear();
-                                                        tracking.edit_text_modified = true;
-                                                    }
-                                                    tracking.edit_text.push(char_code as char);
-                                                }
-                                                let cursor =
-                                                    encode_mac_roman_lossy(&tracking.edit_text)
-                                                        .len();
+                                                let selection = tracking
+                                                    .items
+                                                    .get((tracking.edit_item - 1) as usize)
+                                                    .map(|item| {
+                                                        (
+                                                            item.sel_start.max(0) as usize,
+                                                            item.sel_end.max(0) as usize,
+                                                        )
+                                                    })
+                                                    .unwrap_or((0, 0));
+                                                let (updated, cursor) = Self::textedit_key_result(
+                                                    &encode_mac_roman_lossy(&tracking.edit_text),
+                                                    selection.0,
+                                                    selection.1,
+                                                    char_code,
+                                                );
+                                                tracking.edit_text = decode_mac_roman(&updated);
+                                                tracking.edit_text_modified = true;
                                                 Self::set_tracking_active_edit_selection(
                                                     tracking, cursor, cursor,
                                                 );
                                                 Self::sync_tracking_active_edit_item(tracking);
+                                                te_update =
+                                                    Some((tracking.dialog_ptr, updated, cursor));
                                                 modified_key_to_set =
                                                     Some((tracking.dialog_ptr, tracking.edit_item));
 
@@ -12998,6 +13027,25 @@ impl super::TrapDispatcher {
                                                     text_after,
                                                     enabled_edit_text,
                                                 ));
+                                            }
+                                        }
+                                        if let Some((dialog, updated, cursor)) = te_update {
+                                            let text_handle = bus.read_long(
+                                                dialog
+                                                    + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET,
+                                            );
+                                            self.te_set_text_contents(bus, text_handle, &updated);
+                                            let te_ptr = Self::te_record_ptr(bus, text_handle);
+                                            if te_ptr != 0 {
+                                                let cursor = cursor.min(u16::MAX as usize) as u16;
+                                                bus.write_word(
+                                                    te_ptr + Self::TE_SEL_START_OFFSET,
+                                                    cursor,
+                                                );
+                                                bus.write_word(
+                                                    te_ptr + Self::TE_SEL_END_OFFSET,
+                                                    cursor,
+                                                );
                                             }
                                         }
                                         if let Some(key) = modified_key_to_set {

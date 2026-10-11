@@ -3115,10 +3115,43 @@ mod desktop {
                         })
                     })
                     .expect("preferences dialog should expose unchecked guest controls");
-                if powerpc {
-                    assert_eq!(dialog.edit_field, Some(7));
-                    assert_eq!(dialog.items[6].selection, Some((0, 0)));
-                }
+                assert_eq!(dialog.edit_field, Some(7));
+                assert_eq!(dialog.items[6].selection, Some((0, 0)));
+                session.deliver_input(MacintoshInput::KeyDown {
+                    mac_key: 0x07,
+                    character: b'X',
+                });
+                session.deliver_input(MacintoshInput::KeyUp {
+                    mac_key: 0x07,
+                    character: b'X',
+                });
+                assert!(
+                    (0..20).any(|_| {
+                        session.runner_mut().run_steps(100_000, None);
+                        session.runner_mut().dialog_snapshot().iter().any(|current| {
+                            current.guest_id == dialog.guest_id
+                                && current.items[6].text == "XCade Connelly"
+                                && current.items[6].selection == Some((1, 1))
+                        })
+                    }),
+                    "guest should insert before the dialog's initial text on {powerpc:?}"
+                );
+                session.deliver_input(MacintoshInput::KeyDown {
+                    mac_key: 0x33,
+                    character: 0x08,
+                });
+                session.deliver_input(MacintoshInput::KeyUp {
+                    mac_key: 0x33,
+                    character: 0x08,
+                });
+                assert!((0..20).any(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    session.runner_mut().dialog_snapshot().iter().any(|current| {
+                        current.guest_id == dialog.guest_id
+                            && current.items[6].text == "Cade Connelly"
+                            && current.items[6].selection == Some((0, 0))
+                    })
+                }));
                 let windows = session.runner_mut().window_frame_snapshot();
                 assert!(super::standard_dbox_dialog(&[dialog.clone()], &windows).is_some());
                 let checkbox = dialog.items.iter().find(|item| item.number == 4).unwrap();
