@@ -1946,6 +1946,11 @@ negation, then remainder -41. A memory-write watch observes the guest's shuffle
 store at `0100294C` repeatedly overwrite quit flag `0200047E`, ending with `1B`.
 The original event loop consequently returns. [Focused signed-result issue #4663](https://github.com/benletchford/systemless/issues/4663)
 tracks the fix; no guest archive or application state was patched. Corrected PPC
-replay, asset promotion, hosted browser qualification, launch approval, catalogue
-CI/merge, human release and independent public replay remain pending. The proposed
+replay, hosted browser qualification, launch approval, catalogue CI/merge, human
+release and independent public replay remain pending. Asset promotion in
+[catalogue PR #4664](https://github.com/benletchford/systemless/pull/4664) produced
+head `17b0de28ec3e663230a09a4f19feff29f4db0cad`. A fresh download of the
+[hosted original](https://assets.systemless.org/catalogue/objects/sha256/66/666d412e535e9be3d4b994be9ef1e04ec43ed77fa8a0820d7a877a9a4e80bde3.hqx)
+matches all 22,676 bytes and the original SHA-256. Canonical omission of the
+false launch flag retains the schema default of false. The proposed
 entry remains launch-disabled; no new live-qualified game is counted.
