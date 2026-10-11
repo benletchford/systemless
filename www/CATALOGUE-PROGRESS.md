@@ -465,7 +465,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 423 | Jailbreak | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 424 | Kalah | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 425 | Lunar Commando | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 426 | MacSolitaire | [Installer terms uninspected; publisher rechecked, held](CATALOGUE-SOURCES.md#macsolitaire-16--target-614-original-installer-intake) | Original 1.6; both installed game forks matched | N/A: installed game is PPC-only | [Mouse query passes; keyboard import and accessor ABI held](https://github.com/benletchford/systemless/issues/4500#issuecomment-6106019700) | Pending | Global mouse fix #4523 merged; unhosted | Pending |
+| 426 | MacSolitaire | [Installer terms uninspected; publisher rechecked, held](CATALOGUE-SOURCES.md#macsolitaire-16--target-614-original-installer-intake) | Original 1.6; both installed game forks matched | N/A: installed game is PPC-only | [Mouse/keyboard queries pass; FrontNonFloatingWindow held](https://github.com/benletchford/systemless/issues/4531) | Pending | Mouse #4523, keyboard #4527 and accessor #4530 merged; unhosted | Pending |
 | 427 | Nethergate | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 428 | Oilcap Pro | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 429 | Project Magellan | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
@@ -792,7 +792,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 750 | Hemiroids | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 751 | Iris Puzzle | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 752 | Jack Keane | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 753 | Klondike | [Original no-charge game/unchanged utility grants; approval pending](CATALOGUE-SOURCES.md#klondike-771--target-941-original-publisher-intake) | Original publisher 7.7.1; three files/six forks and Finder metadata matched | [Original hierarchy-control error; no board](https://github.com/benletchford/systemless/issues/4535) | FATCarbon/KlondikeX startup halt; no capture | Pending | [MacBinary packer #4534 pending](https://github.com/benletchford/systemless/pull/4534); unhosted | Pending |
+| 753 | Klondike | [Original no-charge game/unchanged utility grants; approval pending](CATALOGUE-SOURCES.md#klondike-771--target-941-original-publisher-intake) | Original publisher 7.7.1; three files/six forks and Finder metadata matched | [Original hierarchy-control error; no board](https://github.com/benletchford/systemless/issues/4535) | [GetQDGlobalsScreenBits startup halt; no capture](https://github.com/benletchford/systemless/issues/4539) | Pending | [MacBinary packer #4534 merged](https://github.com/benletchford/systemless/pull/4534); unhosted | Pending |
 | 754 | Lose Your Marbles! | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 755 | MacBaseball | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 756 | Nomis | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
