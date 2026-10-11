@@ -1,0 +1,20 @@
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1D0 bkLim=$0044A1D0 zcbFree=2400656 (2.3MB)
+[INIT] Set MainDevice=$00226388, TheGDevice=$00226388 (ptr=$00226354)
+[INIT] GDevice chain: $8A4→$00226388→$00226354 gdPMap→$00226350→$0022631C
+[INIT]   PixMap: rowBytes=$8070 bounds=(0,0,600,800) pixelSize=1
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FADDA randSeed_addr=$003FAD5C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=112 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$002263E4 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00226CE0 bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00226CE0 pixmap=$002059EC bounds=(50,40,420,600) goAway=true
+guest control font: id=2257304 proc=0 style=Some(ControlFontStyle { flags: 7, font: 3, size: 18, style: 1, mode: 0, justification: 0, foreground: [0, 0, 0], background: [0, 0, 0] })
+guest control font: id=2257632 proc=1 style=Some(ControlFontStyle { flags: 7, font: 3, size: 18, style: 1, mode: 0, justification: 0, foreground: [0, 0, 0], background: [0, 0, 0] })
+guest control font: id=2257960 proc=16 style=None
+styled control owner suspended with font, bounds, value and identity preserved
+saved guest frame to /tmp/gpui-control-fonts-inactive-mono.guest.png
+saved composed GPUI capture to /tmp/gpui-control-fonts-inactive-mono.png

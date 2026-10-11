@@ -5336,3 +5336,14 @@ The registry definition-change regression and actual PPC activation/hit-testing
 regression pass, with scoped logs and hashes in
 `reference/gpui-demo/control-definition-freshness`. Inactive composed appearance
 and full cross-CPU mutation/disposal qualification remain open.
+
+## Inactive styled standard-control captures (2026-10-11)
+
+The shared compositor now has reproducible styled-control suspension captures
+via `--capture-control-fonts-inactive`. Actual guest font changes and suspend
+handling preserve font override, bounds, value and control generation across
+mono68k scale0.75, colour68k scale1.5, PPC8 scale1 and PPC16 scale1.5. All four
+composed images were reviewed. Logs, sidecars and source/executable hashes are
+in `reference/gpui-demo/inactive-control-fonts`. These selected button/checkbox
+scenes do not prove physical host observer integration, full fonts/widgets/scales
+or independent Macintosh parity. All eight release gates remain open.
