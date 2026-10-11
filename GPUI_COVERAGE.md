@@ -3511,3 +3511,67 @@ The verifier passes all 72 artifact hashes/dimensions, committed source
 fingerprints, 144 nonempty exact ink regions and twelve unchanged disabled
 guest rasters. Binary/fixture fingerprints were independently verified at
 matrix completion; the archived verifier does not require that old executable.
+
+### Styled run projection and editable fixture candidate
+
+The actual GPUI plain document click/drag regression for `e56522b8` passes
+across monochrome 68K, colour 68K and PPC at 0.75/1/1.5/2 scales (226.49s).
+
+`TextEditSnapshot::visible_style_runs` now intersects canonical style records
+with each guest-wrapped visible line, retaining absolute Mac Roman byte ranges
+and the original font/face/size/RGB16 attributes. Both guest drawing paths trim
+trailing spaces and line breaks for ink; line metrics still use the full range.
+The projection rejects missing, overlapping or out-of-bounds style ownership.
+Unit and real three-mode snapshot checks are running; no styled GPUI ink,
+palette, selection or editing qualification is claimed from this API.
+
+The showcase styled field gains click-to-focus `TEActivate`/`TEClick`, `TEKey`,
+`TEIdle` and activation-event routes. Initial sample presentation stays unfocused;
+leaving the page clears focus. This provides public guest-driven editing
+coverage instead of writing TERec fields directly from the host. Its new
+three-mode regression checks insertion, shifted run attributes, suspend/resume
+and deletion restoring the original text and styles. The final fat fixture
+build and this regression remain pending. Styled frontend ownership remains
+guarded until faithful GPUI rendering and interactions are established.
+
+The final MPW fat fixture build passes and its copied `showcase.c` input matches
+current source. Archive SHA256 is
+`17e3cd4dd1a2510627b55487db166773759319f93454bb9141ad8a80bc40d4b8`.
+The extended real three-mode style projection test passes (4.68s); the shared
+unit regression and public no-default-features check also pass (16.55s for the
+latter). The archived popup verifier still passes against its pinned old source.
+
+The new editing regression fails in colour 68K: insertion changes the text but
+observed style run starts remain at their original offsets. Waiting for a null
+event after insertion/redraw reproduces the failure (29.48s), so the first
+failure was not qualified away as partial painting. Monochrome passes before
+that failing mode; PPC editing is not reached. Conditional TextEdit tracing
+now records the edited span, original/edited run starts and write result. A
+fresh traced reproduction is compiling. This guest editing failure must be
+resolved before styled GPUI replacement; the failed test is retained.
+
+The completed trace corrects the earlier mode attribution: **PPC** is the
+failing CPU. Both 68K modes write, draw and restore shifted style runs correctly;
+PPC initialization does not produce the same `[INIT]` log prefix. The PPC edit
+commit path called `ppc_te_set_text` without restyling the changed span. The
+candidate now moves styles before recalculating layout, using shared byte-span
+and run-movement semantics with 68K. It retains null-style insertion intent,
+font/face/size/RGB16/metrics, and the native text-length limit. Text allocation
+growth is reserved before changing style ownership; resize errors propagate.
+The existing PPC style-table serializer is shared with `TESetStyle`.
+
+The initial fix passes both real three-mode styled snapshot/editing tests
+(21.07s together), including guest clicks, insertion, suspend/resume and deletion
+restoring original attributes. A subsequent allocation-growth safeguard and
+inside-blue-bold-run insertion case are undergoing fresh checks. Temporary
+style diagnostics were removed. This is guest editing support and the model
+needed for faithful replacement; styled GPUI painting remains unfinished.
+
+The final styled regression passes (38.07s for both tests), including insertion
+at the first byte and inside the blue bold run, inherited insertion style,
+unchanged surrounding attributes, suspend/resume and backspace restoring the
+original runs in all three modes. Both helper regressions pass: identical-byte
+insertion remains anchored to the guest caret and classic TEDelete/TEInsert
+retain their established style semantics. The latest example check passes;
+production command check (13.78s) and public no-default-features check (7.24s)
+pass. This completes the identified PPC edit bug, not styled GPUI rendering.

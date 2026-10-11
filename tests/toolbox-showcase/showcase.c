@@ -505,6 +505,7 @@ void PollShowcaseSound(void)
 
 /* Page 11: Styled TextEdit & Font Manager */
 static TEHandle gStyledTE;
+static Boolean gStyledEditFocused;
 static Rect gStyledTERect;
 static short gStyledGenevaFont;
 static short gStyledMonacoFont;
@@ -4213,6 +4214,10 @@ static void SetPage(short page)
     if (gPage == pageTextEdit && page != pageTextEdit) {
         if (gTE != nil) TEDeactivate(gTE);
     }
+    if (gPage == pageStyledText && page != pageStyledText) {
+        if (gStyledTE != nil) TEDeactivate(gStyledTE);
+        gStyledEditFocused = false;
+    }
     if (gPage == pagePalettes && page != pagePalettes) {
         SetPalette(gMainWindow, gOriginalPalette, true);
         ActivatePalette(gMainWindow);
@@ -4684,6 +4689,14 @@ static void DoContentClick(WindowPtr window, EventRecord *event)
         DrawMainWindow();
         return;
     }
+    if (gPage == pageStyledText && gStyledTE != nil && PtInRect(where, &gStyledTERect)) {
+        Boolean shift = (event->modifiers & shiftKey) != 0;
+        gStyledEditFocused = true;
+        TEActivate(gStyledTE);
+        TEClick(where, shift, gStyledTE);
+        DrawMainWindow();
+        return;
+    }
 
     if (gPage == pageLists && gInventoryList != nil && gListActive) {
         /* LClick also accepts the List Manager scroll-bar strip. */
@@ -4936,6 +4949,10 @@ static void ActivateShowcaseWindow(WindowPtr window, Boolean active)
             if (active) TEActivate(gTE);
             else TEDeactivate(gTE);
         }
+        if (gPage == pageStyledText && gStyledTE != nil && gStyledEditFocused) {
+            if (active) TEActivate(gStyledTE);
+            else TEDeactivate(gStyledTE);
+        }
         if (gInventoryList != nil) {
             gListActive = gPage == pageLists && active;
             LActivate(gListActive, gInventoryList);
@@ -5064,6 +5081,9 @@ static void DoEvent(EventRecord *event)
             } else if (gPage == pageTextEdit && gTE != nil) {
                 TEKey(key, gTE);
                 DrawMainWindow();
+            } else if (gPage == pageStyledText && gStyledTE != nil && gStyledEditFocused) {
+                TEKey(key, gStyledTE);
+                DrawMainWindow();
             } else if (gPage == pagePopupLists && (key == 'd' || key == 'e')) {
                 /* Exercise the guest CDEF's disabled ink and hit testing. */
                 if (gPopupResource != nil) HiliteControl(gPopupResource, key == 'd' ? 255 : 0);
@@ -5103,6 +5123,8 @@ void main(void)
             HandleModelessDialogEvent(&event);
         } else if (!gInBackground && gPage == pageTextEdit && gTE != nil) {
             TEIdle(gTE);
+        } else if (!gInBackground && gPage == pageStyledText && gStyledTE != nil && gStyledEditFocused) {
+            TEIdle(gStyledTE);
         } else if (gPage == pageSound) {
             PollShowcaseSound();
         }

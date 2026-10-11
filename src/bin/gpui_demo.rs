@@ -6837,12 +6837,116 @@ mod desktop {
                 for index in 0..record.line_count {
                     let geometry = record.line_geometry(index, 0).expect("styled guest line anchors");
                     assert!(geometry.height > 0 && geometry.ascent >= 0);
+                    let projected = record.visible_style_runs(index).expect("canonical visible style spans");
+                    let starts = record.line_starts.as_ref().unwrap();
+                    let mut visible_end = starts[index + 1];
+                    while visible_end > starts[index]
+                        && matches!(record.text[visible_end - 1], b' ' | b'\r' | b'\n')
+                    { visible_end -= 1; }
+                    let mut cursor = starts[index];
+                    for (range, style) in projected {
+                        assert_eq!(range.start, cursor, "no gaps or duplicated bytes in guest style projection");
+                        assert!(range.end <= visible_end);
+                        assert!(runs.iter().any(|canonical| canonical == style));
+                        cursor = range.end;
+                    }
+                    assert_eq!(cursor, visible_end, "cover all and only guest visible text bytes");
                 }
                 // Mixed run presentation remains guest-owned until the GPUI
                 // renderer preserves its line metrics and editing boundaries.
                 let windows = session.runner_mut().window_frame_snapshot();
                 assert!(super::super::frames::text_edit_pieces(&[record], &[], &[], &windows,
                     super::super::frames::Rect::from((0, 0, 600, 800))).is_empty());
+            }
+        }
+
+        #[test]
+        fn styled_text_edit_guest_click_typing_and_activation_preserve_runs() {
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 11));
+                wait_for_menu(&mut session, 129, 11, true);
+                settle(&mut session);
+                let original = session.runner_mut().text_edit_snapshot().records.into_iter()
+                    .find(|record| record.styled).expect("styled guest record");
+                assert!(!original.active, "sample remains unfocused until clicked");
+                for insertion in [0, 9] {
+                    let dest = original.global_dest_rect.unwrap();
+                    let geometry = original.line_geometry(0, 0).unwrap();
+                    let vertical = dest.0 - original.dest_rect.0 + geometry.top + geometry.ascent;
+                    let horizontal = dest.1 - original.dest_rect.1 + geometry.left;
+                    session.deliver_input(MacintoshInput::MouseDown { vertical, horizontal });
+                    for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
+                    session.deliver_input(MacintoshInput::MouseUp { vertical, horizontal });
+                    settle(&mut session);
+                    let focused = session.runner_mut().text_edit_snapshot().records.into_iter()
+                        .find(|record| record.guest_id == original.guest_id).unwrap();
+                    assert!(focused.active);
+                    assert_eq!(focused.selection, (0, 0));
+                    for _ in 0..insertion {
+                        session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x7c, character: 0x1d });
+                        session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x7c, character: 0x1d });
+                        session.runner_mut().run_steps(100_000, None);
+                    }
+                    session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x06, character: b'z' });
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x06, character: b'z' });
+                    let _inserted = (0..100).find_map(|_| {
+                        session.runner_mut().run_steps(100_000, None);
+                        session.runner_mut().text_edit_snapshot().records.into_iter()
+                            .find(|record| record.guest_id == original.guest_id
+                                && record.text.len() == original.text.len() + 1)
+                    }).expect("guest TEKey must insert into styled field");
+                    assert!((0..300).any(|_| {
+                        session.runner_mut().run_steps(10_000, None);
+                        session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0)
+                    }), "guest must finish styled insertion and redraw");
+                    let inserted = session.runner_mut().text_edit_snapshot().records.into_iter()
+                        .find(|record| record.guest_id == original.guest_id).unwrap();
+                    assert_eq!(inserted.text[insertion], b'z');
+                    assert_eq!(&inserted.text[..insertion], &original.text[..insertion]);
+                    assert_eq!(&inserted.text[insertion + 1..], &original.text[insertion..]);
+                    assert_eq!(inserted.selection, (insertion + 1, insertion + 1));
+                    let shifted: Vec<_> = original.style_runs.as_ref().unwrap().iter().cloned()
+                        .map(|mut run| { if run.start > insertion { run.start += 1; } run }).collect();
+                    assert_eq!(inserted.style_runs.as_ref().unwrap(), &shifted,
+                        "typing must preserve all existing font, face and RGB16 run attributes: PPC={powerpc}, depth={depth:?}, insertion={insertion}");
+                    session.request_foreground(false);
+                    let suspended = (0..100).find_map(|_| {
+                        session.runner_mut().run_steps(100_000, None);
+                        session.runner_mut().text_edit_snapshot().records.into_iter()
+                            .find(|record| record.guest_id == original.guest_id && !record.active)
+                    }).expect("guest styled TEDeactivate on suspend");
+                    assert_eq!(suspended.text, inserted.text);
+                    assert_eq!(suspended.selection, inserted.selection);
+                    assert_eq!(suspended.style_runs, inserted.style_runs);
+                    session.request_foreground(true);
+                    let resumed = (0..100).find_map(|_| {
+                        session.runner_mut().run_steps(100_000, None);
+                        session.runner_mut().text_edit_snapshot().records.into_iter()
+                            .find(|record| record.guest_id == original.guest_id && record.active)
+                    }).expect("guest styled TEActivate on resume");
+                    assert_eq!(resumed.style_runs, inserted.style_runs);
+                    session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x33, character: 0x08 });
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x33, character: 0x08 });
+                    let _restored = (0..100).find_map(|_| {
+                        session.runner_mut().run_steps(100_000, None);
+                        session.runner_mut().text_edit_snapshot().records.into_iter()
+                            .find(|record| record.guest_id == original.guest_id && record.text == original.text)
+                    }).expect("guest backspace after styled resume");
+                    assert!((0..300).any(|_| {
+                        session.runner_mut().run_steps(10_000, None);
+                        session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0)
+                    }), "guest must finish styled deletion and redraw");
+                    let restored = session.runner_mut().text_edit_snapshot().records.into_iter()
+                        .find(|record| record.guest_id == original.guest_id).unwrap();
+                    assert_eq!(restored.selection, (insertion, insertion));
+                    assert_eq!(restored.style_runs, original.style_runs);
+                }
             }
         }
 

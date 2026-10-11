@@ -9,6 +9,48 @@ pub(crate) use drawing::TextEditDrawing;
 use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 
+/// Changed byte span, anchored at the guest's original selection rather than
+/// moving an edit past repeated characters with the same value.
+pub(crate) fn edited_byte_span(old: &[u8], new: &[u8], selection_start: usize) -> Option<(usize, usize, usize)> {
+    if old == new { return None; }
+    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let start = prefix.min(selection_start);
+    let room = old.len().min(new.len()) - start;
+    let suffix = old[start..].iter().rev().zip(new[start..].iter().rev())
+        .take(room).take_while(|(a, b)| a == b).count();
+    Some((start, old.len() - start - suffix, new.len() - start - suffix))
+}
+
+/// Architecture-neutral movement of style ownership with edited bytes. CPU
+/// adapters resolve insertion/following styles and serialize their own ABI.
+pub(crate) fn style_runs_after_edit<S: Copy + Eq>(
+    runs: &[(usize, S)],
+    (start, deleted, inserted): (usize, usize, usize),
+    inserted_style: S,
+    following_style: S,
+    new_len: usize,
+) -> Vec<(usize, S)> {
+    let mut edited = Vec::with_capacity(runs.len() + 2);
+    for &(offset, style) in runs {
+        if offset < start { edited.push((offset, style)); }
+        else if offset > start + deleted { edited.push((offset - deleted + inserted, style)); }
+    }
+    if inserted > 0 { edited.push((start, inserted_style)); }
+    edited.push((start + inserted, following_style));
+    edited.sort_by_key(|(offset, _)| *offset);
+    let mut folded: Vec<(usize, S)> = Vec::with_capacity(edited.len());
+    for (offset, style) in edited {
+        if offset >= new_len && offset != 0 { continue; }
+        match folded.last_mut() {
+            Some((last_offset, last_style)) if *last_offset == offset => *last_style = style,
+            Some((_, last_style)) if *last_style == style => {}
+            _ => folded.push((offset, style)),
+        }
+    }
+    if let Some(first) = folded.first_mut() { first.0 = 0; }
+    folded
+}
+
 /// Private feature flags associated with one guest `TERec`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ProcessTextEditState {
@@ -231,6 +273,20 @@ pub(crate) fn aligned_line_left(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn styled_edits_keep_insertion_anchor_and_following_attributes() {
+        let original = b"aaaaaa";
+        let inserted = b"aaaaaaa";
+        let change = super::edited_byte_span(original, inserted, 2).unwrap();
+        assert_eq!(change, (2, 0, 1), "same-valued bytes must not move insertion to the end");
+        let styles = [(0, "red"), (2, "blue"), (4, "green")];
+        let shifted = super::style_runs_after_edit(&styles, change, "purple", "blue", inserted.len());
+        assert_eq!(shifted, [(0, "red"), (2, "purple"), (3, "blue"), (5, "green")]);
+        let removed = super::style_runs_after_edit(&shifted, (2, 1, 0), "purple", "blue", original.len());
+        assert_eq!(removed, styles, "deleting the inserted byte restores each original character's style");
+        assert_eq!(super::edited_byte_span(original, original, 2), None);
+    }
+
     use super::{aligned_line_left, ProcessTextEditManagerState, TextEditBuffer};
 
     #[test]
@@ -314,6 +370,19 @@ mod tests {
         let runs = record.style_runs.as_ref().unwrap();
         assert_eq!((runs[0].start, runs[0].font, runs[0].size), (0, 3, 9));
         assert_eq!((runs[1].start, runs[1].face, runs[1].color), (2, 3, (0xffff, 0, 0)));
+        assert_eq!(record.visible_style_runs(0).unwrap().iter()
+            .map(|(range, run)| (range.clone(), run.start)).collect::<Vec<_>>(), vec![(0..1, 0)]);
+        assert_eq!(record.visible_style_runs(1).unwrap().iter()
+            .map(|(range, run)| (range.clone(), run.color)).collect::<Vec<_>>(), vec![(2..4, (0xffff, 0, 0))]);
+        let mut split = record.clone();
+        split.text = b"a\x8eb \r".to_vec();
+        split.line_count = 1;
+        split.line_starts = Some(vec![0, 5]);
+        assert_eq!(split.visible_style_runs(0).unwrap().iter()
+            .map(|(range, run)| (range.clone(), run.start)).collect::<Vec<_>>(),
+            vec![(0..2, 0), (2..3, 2)], "retain byte boundaries while trimming styled whitespace");
+        split.style_runs.as_mut().unwrap()[1].start = 0;
+        assert!(split.visible_style_runs(0).is_none(), "reject overlapping style ownership");
         let mut layout = record.clone();
         layout.dest_rect = (10, 20, 100, 200);
         layout.view_rect = layout.dest_rect;
@@ -443,6 +512,34 @@ pub struct TextEditSnapshot {
 }
 
 impl TextEditSnapshot {
+    /// Intersect canonical style runs with one guest-wrapped visible line.
+    /// Ranges remain absolute Macintosh Roman byte offsets. Trailing spaces
+    /// and line breaks are omitted from ink, as in both guest draw paths;
+    /// line metrics still include the complete untrimmed range.
+    pub fn visible_style_runs(&self, index: usize) -> Option<Vec<(Range<usize>, &TextEditStyleRunSnapshot)>> {
+        if !self.styled || index >= self.line_count { return None; }
+        let starts = self.line_starts.as_ref()?;
+        let start = *starts.get(index)?;
+        let mut end = *starts.get(index + 1)?;
+        self.text.get(start..end)?;
+        while end > start && matches!(self.text[end - 1], b' ' | b'\r' | b'\n') {
+            end -= 1;
+        }
+        let runs = self.style_runs.as_ref()?;
+        if runs.first()?.start != 0
+            || runs.iter().any(|run| run.start > self.text.len())
+            || runs.windows(2).any(|pair| pair[0].start >= pair[1].start)
+        { return None; }
+        let mut visible = Vec::new();
+        for (index, run) in runs.iter().enumerate() {
+            let run_end = runs.get(index + 1).map_or(self.text.len(), |next| next.start);
+            let left = start.max(run.start);
+            let right = end.min(run_end);
+            if left < right { visible.push((left..right, run)); }
+        }
+        Some(visible)
+    }
+
     fn metrics_for_line(&self, index: usize) -> Option<(i16, i16)> {
         if index >= self.line_count { return None; }
         let (height, ascent) = if !self.styled {

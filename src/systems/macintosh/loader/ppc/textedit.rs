@@ -955,7 +955,7 @@ pub(super) fn ppc_te_write_style_table_element(
 }
 
 pub(super) fn ppc_te_set_style_for_range(
-    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
+    allocator: Option<&mut PpcProcessAllocatorView<'_>>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -1080,7 +1080,22 @@ pub(super) fn ppc_te_set_style_for_range(
     if folded.first().is_none_or(|(start, _)| *start != 0) {
         folded.insert(0, (0, ppc_te_style_at_offset(&existing_runs, 0)));
     }
-    let run_count = folded.len().min(u16::MAX as usize);
+    ppc_te_write_style_runs(allocator, memory, heap_cursor, heap_limit,
+        last_mem_error, handles, te_handle, &folded, text_len)
+}
+
+fn ppc_te_write_style_runs(
+    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    te_handle: u32,
+    runs: &[(usize, PpcTeResolvedStyle)],
+    text_len: usize,
+) -> bool {
+    let run_count = runs.len().min(u16::MAX as usize);
     let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
         return false;
     };
@@ -1151,7 +1166,7 @@ pub(super) fn ppc_te_set_style_for_range(
     };
     let _ = memory.write_u16_be(style_ptr + PPC_TE_STYLE_N_RUNS_OFFSET, run_count as u16);
     let _ = memory.write_u16_be(style_ptr + PPC_TE_STYLE_N_STYLES_OFFSET, run_count as u16);
-    for (index, (start, style)) in folded.iter().take(run_count).enumerate() {
+    for (index, (start, style)) in runs.iter().take(run_count).enumerate() {
         ppc_te_write_style_table_element(
             memory,
             style_table_ptr + index as u32 * PPC_TE_ST_ELEMENT_SIZE,
@@ -1403,6 +1418,34 @@ pub(super) fn ppc_te_commit_edit_buffer(
     te_handle: u32,
     buffer: &crate::text_edit::TextEditBuffer,
 ) -> i16 {
+    let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
+        return PPC_NIL_HANDLE_ERR;
+    };
+    let text = &buffer.text()[..buffer.text().len().min(i16::MAX as usize)];
+    if memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) == Some(0xffff) {
+        let Some(old) = ppc_te_text_bytes(memory, handles, te_handle) else { return PPC_PARAM_ERR; };
+        let selection_start = usize::from(memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET).unwrap_or(0));
+        if let Some(change @ (start, deleted, _)) = crate::text_edit::edited_byte_span(&old, text, selection_start) {
+            // Reserve growth before changing style ownership. A failed text
+            // allocation must not shift styles while leaving the old bytes.
+            if text.len() > old.len() {
+                let text_handle = memory.read_u32_be(te_ptr + PPC_TE_HTEXT_OFFSET).unwrap_or(0);
+                let result = ppc_allocator_view_resize_handle(allocator.as_deref_mut(), memory,
+                    heap_cursor, heap_limit, last_mem_error, handles, text_handle, text.len() as u32);
+                if result != PPC_NO_ERR { return result; }
+            }
+            let runs = ppc_te_style_runs(memory, handles, te_handle, old.len());
+            let inserted_style = ppc_te_null_style_resolved_style(memory, te_handle)
+                .unwrap_or_else(|| ppc_te_style_at_offset(&runs, start.checked_sub(1).unwrap_or(start + deleted)));
+            let edited = crate::text_edit::style_runs_after_edit(
+                &runs.iter().map(|run| (run.start, run.style)).collect::<Vec<_>>(), change,
+                inserted_style, ppc_te_style_at_offset(&runs, start + deleted), text.len(),
+            );
+            if !ppc_te_write_style_runs(allocator.as_deref_mut(), memory, heap_cursor,
+                heap_limit, last_mem_error, handles, te_handle, &edited, text.len())
+            { return if *last_mem_error != PPC_NO_ERR { *last_mem_error } else { PPC_PARAM_ERR }; }
+        }
+    }
     let result = ppc_te_set_text(
         allocator.as_deref_mut(),
         memory,
@@ -1411,7 +1454,7 @@ pub(super) fn ppc_te_commit_edit_buffer(
         last_mem_error,
         handles,
         te_handle,
-        buffer.text(),
+        text,
     );
     if result != PPC_NO_ERR {
         return result;
