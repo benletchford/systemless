@@ -745,3 +745,5 @@ spacing bits. Non-normal halo requests reject the unqualified binary oracle
 before output creation. Full halo matrices remain unfinished.
 
 On Styled Text & Fonts, Option-M sets the first four Pages items to outline, shadow, underlined outline+shadow, and bold+italic+underline+outline+shadow through guest SetItemStyle. Hidden capture option `--capture-standard-menu-styled` applies that guest control before opening the shared Demo Pages menu; `--capture-scale` controls the scene scale. The capture asserts actual CPU and retains all menu snapshot fields except the requested four styles. `styled-menu-halos` archives sixteen CPU/depth/scale probes; styled menu selection and keyboard tracking still need qualification.
+
+Styled TextEdit scroll qualification uses Option-V to call guest TEScroll(0,-12) and Option-R for TEScroll(0,12). Add `--capture-styled-scroll` to `--capture-styled-text-edit-multiline PATH` to capture the scrolled field after a guest click at the second-line byte boundary. This verifies guest editing/scrolling and the shared renderer; it does not establish physical host input or automatic selection reveal.

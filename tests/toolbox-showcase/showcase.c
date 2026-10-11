@@ -5147,6 +5147,13 @@ static void DoEvent(EventRecord *event)
                 }
             } else if (gPage == pageStyledText && gStyledTE != nil &&
                        (event->modifiers & optionKey) != 0 &&
+                       (key == 'v' || key == 'r')) {
+                /* Exercise scrolling through the guest Toolbox, preserving
+                   the text, styles and selection while moving destRect. */
+                TEScroll(0, key == 'v' ? -12 : 12, gStyledTE);
+                DrawMainWindow();
+            } else if (gPage == pageStyledText && gStyledTE != nil &&
+                       (event->modifiers & optionKey) != 0 &&
                        (key == 'c' || key == 'e' || key == 'b' || key == 'n' ||
                         key == 'o' || key == 's' || key == 'h' || key == 'a')) {
                 if (key == 'o' || key == 's' || key == 'h' || key == 'a') {
