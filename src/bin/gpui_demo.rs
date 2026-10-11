@@ -206,7 +206,7 @@ mod desktop {
         #[arg(long, hide = true)]
         capture_lists_transition: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
-        #[arg(long, hide = true, default_value = "scrolled", value_parser = ["scrolled", "inactive", "reactivated"])]
+        #[arg(long, hide = true, default_value = "scrolled", value_parser = ["scrolled", "inactive", "reactivated", "mutated", "resized"])]
         capture_list_transition: String,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true, value_parser = parse_capture_scale)]
@@ -2827,6 +2827,8 @@ mod desktop {
         ListsScrolled,
         ListsInactive,
         ListsReactivated,
+        ListsMutated,
+        ListsResized,
         TextEdit,
         TextEditSelected,
         TextEditEdited,
@@ -2994,7 +2996,7 @@ mod desktop {
                 | CaptureCase::WindowsMainPromoted
         );
         let lists_page = matches!(capture, CaptureCase::Lists | CaptureCase::ListsSelected | CaptureCase::ListsHeld | CaptureCase::ListsCancelled
-            | CaptureCase::ListsScrolled | CaptureCase::ListsInactive | CaptureCase::ListsReactivated);
+            | CaptureCase::ListsScrolled | CaptureCase::ListsInactive | CaptureCase::ListsReactivated | CaptureCase::ListsMutated | CaptureCase::ListsResized);
         let text_edit_page = matches!(
             capture,
             CaptureCase::TextEdit | CaptureCase::TextEditSelected | CaptureCase::TextEditEdited | CaptureCase::TextEditInactive | CaptureCase::TextEditReactivated | CaptureCase::TextEditHostSuspended | CaptureCase::TextEditHostResumed
@@ -3803,7 +3805,7 @@ mod desktop {
                 .iter()
                 .any(|control| control.visible && control.proc_id == 16 && control.value > 0));
         }
-        if matches!(capture, CaptureCase::ListsSelected | CaptureCase::ListsScrolled | CaptureCase::ListsInactive | CaptureCase::ListsReactivated) {
+        if matches!(capture, CaptureCase::ListsSelected | CaptureCase::ListsScrolled | CaptureCase::ListsInactive | CaptureCase::ListsReactivated | CaptureCase::ListsMutated | CaptureCase::ListsResized) {
             let list = session
                 .runner_mut()
                 .list_manager_snapshot()
@@ -3834,8 +3836,15 @@ mod desktop {
                 .iter()
                 .any(|list| list.guest_id == list_id && list.selected.contains(&(7, 0))));
         }
-        if matches!(capture, CaptureCase::ListsScrolled | CaptureCase::ListsInactive | CaptureCase::ListsReactivated) {
-            let title = if matches!(capture, CaptureCase::ListsScrolled) { "Scroll Four Rows" } else { "Toggle Activation" };
+        if matches!(capture, CaptureCase::ListsScrolled | CaptureCase::ListsInactive | CaptureCase::ListsReactivated | CaptureCase::ListsMutated | CaptureCase::ListsResized) {
+            let before = session.runner_mut().list_manager_snapshot().into_iter()
+                .find(|list| list.draw_enabled && list.definition_id == 0).unwrap();
+            let title = match capture {
+                CaptureCase::ListsScrolled => "Scroll Four Rows",
+                CaptureCase::ListsMutated => "Update Selected Row",
+                CaptureCase::ListsResized => "Resize List",
+                _ => "Toggle Activation",
+            };
             let repetitions = if matches!(capture, CaptureCase::ListsReactivated) { 2 } else { 1 };
             for _ in 0..repetitions {
                 let control = session.runner_mut().control_snapshot().into_iter()
@@ -3849,9 +3858,22 @@ mod desktop {
             }
             let after = session.runner_mut().list_manager_snapshot().into_iter()
                 .find(|list| list.draw_enabled && list.definition_id == 0).unwrap();
-            assert!(after.selected.contains(&(7, 0)), "transition preserves guest selection");
+            assert_eq!((after.guest_id, after.generation, after.owner_port),
+                (before.guest_id, before.generation, before.owner_port), "transition preserves list identity");
+            assert_eq!(after.selected, before.selected, "transition preserves guest selection");
             if matches!(capture, CaptureCase::ListsScrolled) { assert_eq!(after.visible.0, 4); }
-            else { assert_eq!(after.active, matches!(capture, CaptureCase::ListsReactivated)); }
+            else if matches!(capture, CaptureCase::ListsMutated) {
+                let mut expected = before.cells[&(7, 0)].clone();
+                expected.extend_from_slice(b"  * updated");
+                assert_eq!(after.cells[&(7, 0)], expected);
+                assert!(after.cells.iter().filter(|(cell, _)| **cell != (7, 0))
+                    .all(|(cell, bytes)| before.cells.get(cell) == Some(bytes)));
+                assert!(after.active);
+            } else if matches!(capture, CaptureCase::ListsResized) {
+                assert_eq!(after.view_rect, (78, 24, 192, 474));
+                assert_eq!(after.cells, before.cells);
+                assert!(after.active);
+            } else { assert_eq!(after.active, matches!(capture, CaptureCase::ListsReactivated)); }
         }
         if matches!(capture, CaptureCase::PopupControlsScrolled) {
             scroll_showcase_theme_popup(&mut session);
@@ -4178,11 +4200,15 @@ mod desktop {
                 "list_state": lists.iter().map(|list| serde_json::json!({
                     "id": list.guest_id, "generation": list.generation, "active": list.active,
                     "visible": list.visible, "selected": list.selected,
+                    "view_rect": list.view_rect, "cells": list.cells.iter().map(|(cell, bytes)|
+                        serde_json::json!({"cell": cell, "bytes": bytes})).collect::<Vec<_>>(),
                 })).collect::<Vec<_>>(),
                 "transition": match capture {
                     CaptureCase::ListsScrolled => "scrolled",
                     CaptureCase::ListsInactive => "inactive",
                     CaptureCase::ListsReactivated => "reactivated",
+                    CaptureCase::ListsMutated => "mutated",
+                    CaptureCase::ListsResized => "resized",
                     _ => "none",
                 },
             })).unwrap()).unwrap();
@@ -4891,6 +4917,8 @@ mod desktop {
                 "scrolled" => CaptureCase::ListsScrolled,
                 "inactive" => CaptureCase::ListsInactive,
                 "reactivated" => CaptureCase::ListsReactivated,
+                "mutated" => CaptureCase::ListsMutated,
+                "resized" => CaptureCase::ListsResized,
                 _ => unreachable!(),
             };
             capture_fixture_screen(&args.game, output, args.prefer_powerpc,

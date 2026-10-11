@@ -20,6 +20,8 @@ def verify(path):
     assert all(len(value) == 64 for value in manifest['source_sha256'].values())
     states = ['scrolled', 'inactive', 'reactivated'] if any(
         'state' in case for case in manifest['cases']) else ['selected']
+    states = manifest.get('states', states)
+    assert states in [['selected'], ['scrolled', 'inactive', 'reactivated'], ['mutated', 'resized']]
     depths = {'mono': 1, 'colour': 8, 'ppc8': 8, 'ppc16': 16}
     required = {(mode, state, scale) for mode in depths for state in states
                 for scale in [0.75, 1, 1.5, 2]}
