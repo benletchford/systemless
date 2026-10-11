@@ -734,7 +734,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 674 | 862 | DeadEnd | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
 | 675 | 863 | Escape! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
 | 676 | 864 | Flip Out | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
-| 677 | 865 | Galactica | Original 1.1.2: 68K CODE + PPC PEF; archive/name fixes merged, gameplay blocked | U | [Archive index](https://www.vintageapplemac.com/software/games/g/); [original grant and qualification evidence](CATALOGUE-SOURCES.md#galactica-112--target-677-original-fat-package); [68K setup blocker](https://github.com/benletchford/systemless/issues/4496); [PPC ordering blocker](https://github.com/benletchford/systemless/issues/4493) |
+| 677 | 865 | Galactica | Original 1.1.2: 68K CODE + PPC PEF; archive/name fixes merged, gameplay blocked | U | [Archive index](https://www.vintageapplemac.com/software/games/g/); [original grant and qualification evidence](CATALOGUE-SOURCES.md#galactica-112--target-677-original-fat-package); [68K setup/login investigation](https://github.com/benletchford/systemless/issues/4496); [PPC ordering blocker](https://github.com/benletchford/systemless/issues/4493) |
 | 678 | 866 | HeartQuest | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
 | 679 | 867 | iPoker 2000 | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
 | 680 | 868 | J. B. Harold: Blue Chicago Blues (J.B.ハロルド ブルー・シカゴ・ブルース | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/j-b-harold-blue-chicago-blues) |
