@@ -375,3 +375,21 @@ background is retained. Standard-only dialogs keep their existing exposed-backgr
 repaint behaviour. All 633 library dialog tests passed with this distinction;
 both focused edit-field provider tests also passed.
 All seven GPUI dialog regressions pass after the PPC painter consolidation.
+
+The existing composed capture path now supports
+`--capture-modal-dialog-caret-visible <png>` and
+`--capture-modal-dialog-caret-hidden <png>`. Both open the showcase preferences
+through guest input and wait for the requested live TERec phase; neither
+changes the guest selection or forces the caret state. Run the example with
+`tests/toolbox-showcase/toolbox-showcase.sit`, adding `--screen-depth 1` for
+monochrome 68K or `--prefer-powerpc` for PPC.
+
+All six captures were generated and visually reviewed. Each 1800×1480 pair
+differs in exactly 62 pixels, confined to the same two-pixel-wide,
+31-pixel-high caret rectangle; text and surrounding layout remain stationary.
+This qualifies the composed initial insertion-point blink for this standard
+dialog, not other caret positions, fonts, modal filters or nested dialogs.
+The same visual review exposes thin residual outlines around standard buttons,
+including the default button; their paint ownership and overlay bounds still
+need investigation. The monochrome custom page background also differs from
+the colour page and needs separate guest/oracle comparison.
