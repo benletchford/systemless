@@ -1305,6 +1305,23 @@ mod desktop {
             (point.0, map.horizontal(f32::from(position.x)).unwrap_or(point.1))
         }
 
+        // Called only by explicit acquisition tests until the real-worker and
+        // composed delivery path is qualified for automatic acquisition.
+        fn request_notification_alert(&mut self) -> bool {
+            if self.notification_alert.is_some() || self.mouse_down
+                || self.host_active == Some(false) || !self.open_menus.is_empty()
+                || self.guest_menu_tracking || self.guest_popup.is_some()
+                || self.composition.preedit.is_some() {
+                return false;
+            }
+            let Some(notice) = self.notifications.iter().find(|notice| !notice.response_started)
+                .filter(|notice| super::notification::AlertPlan::build(notice,
+                    super::frames::Rect::from((0, 0, self.height as i16, self.width as i16))).is_some())
+                .cloned() else { return false; };
+            self.release_host_input();
+            self.commands.send(Command::BeginNotificationAlert(notice)).is_ok()
+        }
+
         fn inside_guest_pane(&self, position: Point<Pixels>) -> bool {
             let x = f32::from(position.x);
             let y = f32::from(position.y);
@@ -16305,6 +16322,43 @@ mod desktop {
                     assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), "new host copy");
                 });
             });
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn notification_acquisition_releases_keys_before_foreground_ownership(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::AppContext;
+            let (sender, receiver) = std::sync::mpsc::channel();
+            cx.update(gpui_kit::init);
+            let (_window, view) = cx.update(|cx| gpui_kit::open_window(Default::default(), cx,
+                |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap());
+            let notice = systemless::runner::NotificationSnapshot {
+                guest_id: 1, instance_id: 2, response_started: false, mark: 0,
+                icon_handle: 0, sound_handle: 0, text: Some(b"Notice".to_vec()),
+                response: 0, ref_con: 0,
+            };
+            view.update(cx, |demo, _| {
+                demo.width = 512; demo.height = 342;
+                demo.notifications = vec![notice.clone()];
+                demo.host_active = Some(false);
+                assert!(!demo.request_notification_alert());
+                demo.host_active = Some(true);
+                demo.mouse_down = true;
+                assert!(!demo.request_notification_alert());
+                demo.mouse_down = false;
+                demo.guest_menu_tracking = true;
+                assert!(!demo.request_notification_alert());
+                demo.guest_menu_tracking = false;
+                demo.press_host_key(0, b'a');
+            });
+            receiver.try_iter().for_each(drop);
+            view.update(cx, |demo, _| assert!(demo.request_notification_alert()));
+            let commands = receiver.try_iter().collect::<Vec<_>>();
+            let release = commands.iter().position(|command| matches!(command,
+                super::Command::Input(MacintoshInput::KeyUp { .. }))).expect("release held guest key");
+            let acquire = commands.iter().position(|command| matches!(command,
+                super::Command::BeginNotificationAlert(expected) if expected == &notice)).expect("exact acquisition request");
+            assert!(release < acquire, "held input must release before guest foreground pauses");
         }
 
         #[cfg(feature = "gpui-demo-test")]

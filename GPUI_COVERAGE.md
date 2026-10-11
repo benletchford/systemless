@@ -5904,3 +5904,16 @@ selected registration lifecycle, not a worker-delivered alert, physical IME,
 staged composition cancellation, styled variants or composed visual fidelity.
 Automatic acquisition and complete notification delivery remain unfinished;
 all eight production gates remain open.
+
+### Explicit notification acquisition ordering (2026-10-11)
+
+Shared Demo now has an explicit acquisition helper that requires a fitting alert
+plan and declines while host inactive, pointer/menu/popup tracking or marked
+composition owns input. It releases held input before queuing the exact notice.
+The shared GPUI ordering regression passes (0.04s): held-key release precedes
+BeginNotificationAlert. The runner additionally declines acquisition during UI
+tracking or deferred tracking return. All21 notification runner regressions pass
+on the modified source. Evidence: `reference/gpui-demo/notification-acquisition`.
+Automatic polling remains disconnected pending real-worker and composed delivery
+qualification. This is acquisition-order evidence, not completed notification
+presentation or complete tracking coverage. All eight production gates stay open.

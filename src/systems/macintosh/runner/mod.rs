@@ -2261,6 +2261,8 @@ impl FixtureRunner {
     /// can use this entry. This does not establish that any pixels were painted.
     pub fn begin_notification_alert(&mut self, expected: &NotificationSnapshot) -> bool {
         if self.notification_alert_snapshot().is_some()
+            || self.is_ui_tracking_active()
+            || self.deferred_tracking_refire_pc.is_some()
             || self.active_interrupt_callback.is_some()
             || expected.response_started || expected.text.is_none()
             || expected.mark != 0 || expected.icon_handle != 0 || expected.sound_handle != 0 {

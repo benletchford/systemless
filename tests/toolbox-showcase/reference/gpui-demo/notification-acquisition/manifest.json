@@ -1,0 +1,7 @@
+{
+  "source_hashes": {
+    "src/bin/gpui_demo.rs": "84b7dbf0ee1a80f8e0a7f7a3c6bd0f205662a845d77366a54d9669a480d9dad3",
+    "src/systems/macintosh/runner/mod.rs": "8e83b609391500edccad22c09f9dc0e6227d6dbb4b4acaed3f297af5f664c472"
+  },
+  "scope": "Explicit shared Demo acquisition eligibility and key-release-before-acquisition ordering; runner regression checks after adding guest tracking guard. No automatic acquisition, real worker delivery or composed/native qualification."
+}
