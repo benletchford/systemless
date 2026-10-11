@@ -1,0 +1,197 @@
+warning: method `instrument` is never used
+   --> src/systems/macintosh/sound.rs:609:19
+    |
+403 | impl SndChannel {
+    | --------------- method in this implementation
+...
+609 |     pub(crate) fn instrument(&self) -> Option<&SampledInstrument> {
+    |                   ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `dispatch_toolbox` is never used
+    --> src/systems/macintosh/trap/toolbox.rs:6187:19
+     |
+1169 | impl super::TrapDispatcher {
+     | -------------------------- method in this implementation
+...
+6187 |     pub(crate) fn dispatch_toolbox<C: CpuOps>(
+     |                   ^^^^^^^^^^^^^^^^
+
+warning: `systemless` (lib) generated 2 warnings
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+warning: fields `game`, `prefer_powerpc`, `screen_depth`, and `debug_socket` are never read
+  --> src/bin/gpui_demo.rs:4:9
+   |
+ 3 | pub(crate) struct LaunchOptions {
+   |                   ------------- fields in this struct
+ 4 |     pub game: std::path::PathBuf,
+   |         ^^^^
+ 5 |     pub prefer_powerpc: bool,
+   |         ^^^^^^^^^^^^^^
+ 6 |     pub screen_depth: Option<u16>,
+   |         ^^^^^^^^^^^^
+...
+12 |     pub debug_socket: Option<std::path::PathBuf>,
+   |         ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `launch` is never used
+  --> src/bin/gpui_demo.rs:17:15
+   |
+17 | pub(crate) fn launch(options: LaunchOptions) {
+   |               ^^^^^^
+
+warning: field `geometry` is never read
+    --> src/bin/gpui_demo_text.rs:1143:9
+     |
+1142 | pub(crate) struct StyledTextEditLine {
+     |                   ------------------ field in this struct
+1143 |     pub geometry: systemless::runner::TextEditLineGeometry,
+     |         ^^^^^^^^
+     |
+     = note: `StyledTextEditLine` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `pixels_with_selection` is never used
+    --> src/bin/gpui_demo_text.rs:1535:12
+     |
+1497 | impl StyledTextEditLine {
+     | ----------------------- method in this implementation
+...
+1535 |     pub fn pixels_with_selection(
+     |            ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_ink` is never used
+    --> src/bin/gpui_demo_text.rs:1598:15
+     |
+1598 | pub(crate) fn classic_styled_text_edit_ink(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_selection` is never used
+    --> src/bin/gpui_demo_text.rs:1604:15
+     |
+1604 | pub(crate) fn classic_styled_text_edit_selection(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_solid_caret` is never used
+    --> src/bin/gpui_demo_text.rs:1613:15
+     |
+1613 | pub(crate) fn classic_styled_text_edit_solid_caret(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_pixels` is never used
+    --> src/bin/gpui_demo_text.rs:1631:4
+     |
+1631 | fn classic_styled_text_pixels(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_pixels_with_background` is never used
+    --> src/bin/gpui_demo_text.rs:1638:4
+     |
+1638 | fn classic_styled_text_pixels_with_background(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `launch` is never used
+    --> src/bin/gpui_demo.rs:4650:19
+     |
+4650 |     pub(super) fn launch(options: super::LaunchOptions) {
+     |                   ^^^^^^
+
+warning: `systemless` (example "gpui-menu-demo" test) generated 10 warnings
+    Finished `ci-test` profile [optimized + debuginfo] target(s) in 18.10s
+     Running unittests src/bin/gpui_demo.rs (target/ci-test/examples/gpui_menu_demo-957ebf4d71285d8e)
+
+running 1 test
+test desktop::tests::spaced_styled_document_glyph_clicks_reach_guest_at_centered_scene_scales ... [INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1A8 bkLim=$0044A1A8 zcbFree=2400616 (2.3MB)
+[INIT] Set MainDevice=$002260A8, TheGDevice=$002260A8 (ptr=$00226074)
+[INIT] GDevice chain: $8A4→$002260A8→$00226074 gdPMap→$00226070→$0022603C
+[INIT]   PixMap: rowBytes=$8070 bounds=(0,0,600,800) pixelSize=1
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAF0A randSeed_addr=$003FAE8C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=112 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$00226104 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00226A00 bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00226A00 pixmap=$0020570C bounds=(50,40,420,600) goAway=true
+PASS styled spacing=32 runtime_powerpc=false depth=1 scale=0.75
+PASS styled spacing=32 runtime_powerpc=false depth=1 scale=1
+PASS styled spacing=32 runtime_powerpc=false depth=1 scale=1.5
+PASS styled spacing=32 runtime_powerpc=false depth=1 scale=2
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1A8 bkLim=$0044A1A8 zcbFree=2400616 (2.3MB)
+[INIT] Set MainDevice=$00226898, TheGDevice=$00226898 (ptr=$00226864)
+[INIT] GDevice chain: $8A4→$00226898→$00226864 gdPMap→$00226860→$0022682C
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAF0A randSeed_addr=$003FAE8C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=816 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$002268F4 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$002271F0 bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$002271F0 pixmap=$0020570C bounds=(50,40,420,600) goAway=true
+PASS styled spacing=32 runtime_powerpc=false depth=8 scale=0.75
+PASS styled spacing=32 runtime_powerpc=false depth=8 scale=1
+PASS styled spacing=32 runtime_powerpc=false depth=8 scale=1.5
+PASS styled spacing=32 runtime_powerpc=false depth=8 scale=2
+PASS styled spacing=32 runtime_powerpc=true depth=16 scale=0.75
+PASS styled spacing=32 runtime_powerpc=true depth=16 scale=1
+PASS styled spacing=32 runtime_powerpc=true depth=16 scale=1.5
+PASS styled spacing=32 runtime_powerpc=true depth=16 scale=2
+PASS styled spacing=32 runtime_powerpc=true depth=8 scale=0.75
+PASS styled spacing=32 runtime_powerpc=true depth=8 scale=1
+PASS styled spacing=32 runtime_powerpc=true depth=8 scale=1.5
+PASS styled spacing=32 runtime_powerpc=true depth=8 scale=2
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1A8 bkLim=$0044A1A8 zcbFree=2400616 (2.3MB)
+[INIT] Set MainDevice=$002260A8, TheGDevice=$002260A8 (ptr=$00226074)
+[INIT] GDevice chain: $8A4→$002260A8→$00226074 gdPMap→$00226070→$0022603C
+[INIT]   PixMap: rowBytes=$8070 bounds=(0,0,600,800) pixelSize=1
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAF0A randSeed_addr=$003FAE8C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=112 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$00226104 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00226A00 bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00226A00 pixmap=$0020570C bounds=(50,40,420,600) goAway=true
+PASS styled spacing=64 runtime_powerpc=false depth=1 scale=0.75
+PASS styled spacing=64 runtime_powerpc=false depth=1 scale=1
+PASS styled spacing=64 runtime_powerpc=false depth=1 scale=1.5
+PASS styled spacing=64 runtime_powerpc=false depth=1 scale=2
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1A8 bkLim=$0044A1A8 zcbFree=2400616 (2.3MB)
+[INIT] Set MainDevice=$00226898, TheGDevice=$00226898 (ptr=$00226864)
+[INIT] GDevice chain: $8A4→$00226898→$00226864 gdPMap→$00226860→$0022682C
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAF0A randSeed_addr=$003FAE8C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=816 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$002268F4 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$002271F0 bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$002271F0 pixmap=$0020570C bounds=(50,40,420,600) goAway=true
+PASS styled spacing=64 runtime_powerpc=false depth=8 scale=0.75
+PASS styled spacing=64 runtime_powerpc=false depth=8 scale=1
+PASS styled spacing=64 runtime_powerpc=false depth=8 scale=1.5
+PASS styled spacing=64 runtime_powerpc=false depth=8 scale=2
+PASS styled spacing=64 runtime_powerpc=true depth=16 scale=0.75
+PASS styled spacing=64 runtime_powerpc=true depth=16 scale=1
+PASS styled spacing=64 runtime_powerpc=true depth=16 scale=1.5
+PASS styled spacing=64 runtime_powerpc=true depth=16 scale=2
+PASS styled spacing=64 runtime_powerpc=true depth=8 scale=0.75
+PASS styled spacing=64 runtime_powerpc=true depth=8 scale=1
+PASS styled spacing=64 runtime_powerpc=true depth=8 scale=1.5
+PASS styled spacing=64 runtime_powerpc=true depth=8 scale=2
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 128 filtered out; finished in 67.48s
+
