@@ -6528,3 +6528,23 @@ hashes are retained in `target/gpui-qualification/package-current-review.json`.
 The registry warns that locked yoke-derive0.8.3 is yanked; this check retains the
 lockfile and does not qualify fresh online resolution. No package is published.
 This closes this selected packaging check, not the wider release gate.
+
+
+### Dialog selection capture focus correction (2026-10-12)
+
+The selected dialog capture had verified guest selection but left the headless
+window inactive, hiding its highlight in the purported active image. The fixture
+now establishes simulated host focus after the initial render installs the
+activation observer, asserts the focused item and selected range, and writes
+retained text/bounds/selection sidecars. Production behavior is unchanged.
+
+The example rebuild passes. All sixteen captures pass across requested mono68k,
+colour68k, PPC8 and PPC16 modes at scales 0.75 and 2, selected nickname versus
+focus moved to the pilot field. Both sheets of original-pixel field crops were
+reviewed: range3..6 is highlighted in the focused nickname and hides on field
+switch without changing Maverick. Producer/image hashes and sidecars are in
+`target/gpui-qualification/dialog-selection-scale-matrix/review.json`.
+The earlier inactive headless-window images remain in its
+`inactive-headless-window` subdirectory and do not qualify active selection.
+This checks guest field focus and explicitly simulated host focus, not physical
+activation, native typography, full dialog lifecycle or broad release readiness.

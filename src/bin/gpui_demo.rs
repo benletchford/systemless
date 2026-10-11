@@ -5762,6 +5762,28 @@ mod desktop {
             })).unwrap();
             visual.run_until_parked();
         }
+        if matches!(capture, CaptureCase::ModalDialogSelection | CaptureCase::ModalDialogSelectionInactive) {
+            // The headless platform starts inactive. Establish the simulated
+            // host focus after the first render installs its activation observer.
+            visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                demo.host_active = Some(true);
+                window.focus(&demo.focus, cx);
+                let dialog = demo.dialogs.iter().find(|dialog| dialog.visible && dialog.active).unwrap();
+                let selected = matches!(capture, CaptureCase::ModalDialogSelection);
+                assert_eq!(dialog.edit_field, Some(if selected { 9 } else { 7 }));
+                if selected { assert_eq!(dialog.items[8].selection, Some((3, 6))); }
+                std::fs::write(output.with_extension("selection-state.json"), serde_json::to_vec_pretty(
+                    &serde_json::json!({ "simulated_host_active": true, "dialog": dialog.guest_id,
+                        "generation": dialog.generation, "edit_field": dialog.edit_field,
+                        "items": dialog.items.iter().filter(|item| item.kind == DialogItemKind::EditText)
+                            .map(|item| serde_json::json!({ "number": item.number, "text": item.text,
+                                "bounds": item.bounds, "selection": item.selection })).collect::<Vec<_>>(),
+                        "scope": "Guest selection and focus retained; explicitly simulated host focus, not native activation." }))
+                    .unwrap()).unwrap();
+                cx.notify();
+            })).unwrap();
+            visual.run_until_parked();
+        }
         let composed = visual.capture_screenshot(window.into()).unwrap();
         let (scene_scale, scene_origin) = visual.update(|cx| {
             view.update(cx, |demo, _| (demo.display_scale, demo.display_origin))
