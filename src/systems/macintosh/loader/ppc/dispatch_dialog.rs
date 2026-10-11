@@ -1132,6 +1132,7 @@ pub(super) fn dispatch_dialog_import(
                     .then_some(record.port)
             });
             if dialog.is_none() {
+                let previous_front = ppc_front_visible_process_window(memory, window_list);
                 let created = ppc_new_alert_dialog(
                     cpu,
                     process_memory_manager,
@@ -1154,6 +1155,14 @@ pub(super) fn dispatch_dialog_import(
                 if created == 0 {
                     return Some(PpcImportAction::Return(ppc_i16_result(-1)));
                 }
+                ppc_recalculate_window_vis_regions(process_memory_manager, memory, window_list,
+                    heap_cursor, heap_limit, last_mem_error, handles);
+                ppc_transition_front_window_chrome(memory, gworlds, window_list, previous_front,
+                    toolbox_startup.host_menu_bar_hidden);
+                let next_front = ppc_front_visible_process_window(memory, window_list);
+                ppc_enqueue_window_activation_transition(memory, event_queue, previous_front, next_front, tick_count);
+                let _ = ppc_activate_front_window_palette(memory, gworlds, *current_gdevice,
+                    screen_clut, color_manager_clut, toolbox_startup);
                 *current_gworld = created;
                 *current_gdevice = ppc_gworld_device(gworlds, created).unwrap_or(*current_gdevice);
                 let _ = ppc_draw_dialog(
@@ -1309,6 +1318,7 @@ pub(super) fn dispatch_dialog_import(
                     .then_some(record.port)
             });
             if dialog.is_none() {
+                let previous_front = ppc_front_visible_process_window(memory, window_list);
                 let created = ppc_new_alert_dialog(
                     cpu,
                     process_memory_manager,
@@ -1331,6 +1341,14 @@ pub(super) fn dispatch_dialog_import(
                 if created == 0 {
                     return Some(PpcImportAction::Return(ppc_i16_result(*last_resource_error)));
                 }
+                ppc_recalculate_window_vis_regions(process_memory_manager, memory, window_list,
+                    heap_cursor, heap_limit, last_mem_error, handles);
+                ppc_transition_front_window_chrome(memory, gworlds, window_list, previous_front,
+                    toolbox_startup.host_menu_bar_hidden);
+                let next_front = ppc_front_visible_process_window(memory, window_list);
+                ppc_enqueue_window_activation_transition(memory, event_queue, previous_front, next_front, tick_count);
+                let _ = ppc_activate_front_window_palette(memory, gworlds, *current_gdevice,
+                    screen_clut, color_manager_clut, toolbox_startup);
                 *current_gworld = created;
                 *current_gdevice = ppc_gworld_device(gworlds, created).unwrap_or(*current_gdevice);
                 let _ = ppc_draw_dialog(

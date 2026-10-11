@@ -1,0 +1,28 @@
+{
+  "base": "e591ff473917ec3a50d64b9402a98ce17c5f2dd0",
+  "tests": {
+    "dialog": "14 passed, 2.41s; all four CPU/display modes",
+    "text": "29 passed, 2.51s"
+  },
+  "captures": {
+    "ppc8": "scale 1, original-font smooth wrapped field; reviewed",
+    "ppc16": "scale 1.5, original-font smooth wrapped field; reviewed"
+  },
+  "limits": "Actual guest wrapped record, only first line visible because guest field height is one line. Not physical input, scrolling, composition, native oracle, or complete dialog qualification. Classic direct dialog recipe exercised by tests, not newly captured here.",
+  "sha256": {
+    "dialog-final-integration.log": "ffecca5f1a775e52eff377c1b34cb8b5452dc684b97fa974a412418d2030811b",
+    "dialog-multiline-ppc16-smooth.log": "be1298b2bd9563ec01680774eff94f56d40376932d54ab7f6694e6c718a543da",
+    "dialog-multiline-ppc16-smooth.guest.png": "36d9d0a1ce97326e13adb9c0511b29f05f686876a3f1e308d0a4c29ed7f1e957",
+    "source.patch": "97d2eb1b3a315bad02e0d31cb6e7bef120d64822a29b9e05cdff089a2ca377f1",
+    "dialog-multiline-ppc8-smooth.png": "6cc6334914094fbceeea5c9a35b92b84d4b79fddd911e4e1cf1861cf5bb11234",
+    "dialog-multiline-ppc16-smooth.capture.json": "20e11d2cb0ba9231434f3f6798c733f66a8da84a357624bdf9169bb010778b29",
+    "dialog-multiline-ppc8-smooth.json": "6fd413a91e7ee623d29c74d153174579afa18658163df12eed3f6d19318bc2ac",
+    "dialog-multiline-ppc8-smooth.log": "592491454ad2869dc856c79cd5e9ad7a23f9d435a1340705b12752e9dfebd61a",
+    "dialog-multiline-ppc8-smooth.guest.png": "c12cbf520225d97cf38bc94ace18df1c1fe8571350ab84c733aab0ea1f080f08",
+    "dialog-smoothing-text-suite.log": "717f60f4a9f36f83debe440f61e435102ddd783ed601f01c09a7a6dd4bc33141",
+    "dialog-multiline-capture-build.log": "2b8d1714e24032f7fd7295abecf1b845e9f0d47f51ea29797a4ad5cfb2a0977a",
+    "dialog-multiline-ppc16-smooth.png": "bb673b1762ff28c3e60ac9a43c181e6ef2f172f5075ee910c4c74a8e0ea28628",
+    "dialog-multiline-ppc8-smooth.capture.json": "80ad02b2aac43183f66703fb244c8a0fb6ebe6040e6c248bf7ecbed2d0b0dc57",
+    "dialog-multiline-ppc16-smooth.json": "b8002d792ae4270dbf282a0c4b2a1086c0fbc033d8502f32a4fbe1b1f4420ac2"
+  }
+}

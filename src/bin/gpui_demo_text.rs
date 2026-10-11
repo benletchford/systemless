@@ -801,6 +801,27 @@ mod tests {
     }
 
     #[test]
+    fn smooth_visible_ink_preserves_trailing_guest_caret_offsets() {
+        let base = ClassicLine::plain(b"abc", 3, 12);
+        let mut wrapped = base.clone();
+        wrapped.positions = ClassicLine::plain(b"abc \r", 3, 12).positions;
+        assert!(wrapped.positions.len() > base.positions.len());
+        for raster in [1, 2, 4] {
+            let original = resolve_smooth_run(&base, raster).unwrap();
+            let actual = resolve_smooth_run(&wrapped, raster).unwrap();
+            assert_eq!(actual.len(), original.len());
+            for ((pen, mask), (expected_pen, expected)) in actual.iter().zip(&original) {
+                assert_eq!(pen, expected_pen);
+                assert_eq!((mask.left, mask.top, mask.width, mask.height),
+                    (expected.left, expected.top, expected.width, expected.height));
+                assert_eq!(mask.pixels, expected.pixels);
+            }
+        }
+        wrapped.positions.truncate(2);
+        assert!(resolve_smooth_run(&wrapped, 1).is_none());
+    }
+
+    #[test]
     fn ppc_run_preserves_guest_insertion_positions_and_binary_ink() {
         use std::collections::BTreeSet;
         let bytes = b"A i\x8e";
@@ -2130,7 +2151,7 @@ pub(crate) fn classic_popup_control_label(
 fn resolve_smooth_run(
     line: &ClassicLine, raster: u32,
 ) -> Option<Vec<(i32, systemless::quickdraw::text::SmoothGlyphSnapshot)>> {
-    if line.smooth_sources.is_empty() || line.smooth_sources.len() + 1 != line.positions.len() {
+    if line.smooth_sources.is_empty() || line.smooth_sources.len() + 1 > line.positions.len() {
         return None;
     }
     if !line.smooth_halo_underlines.is_empty() && line.smooth_halo_underlines.len() != line.smooth_sources.len() {
@@ -2390,7 +2411,9 @@ fn paint_smooth_label(
     scale: f32, foreground: gpui_kit::Hsla, window: &mut gpui_kit::Window,
 ) -> bool {
     use gpui_kit::*;
-    if line.smooth_sources.is_empty() || line.smooth_sources.len() + 1 != line.positions.len() { return false; }
+    // Canonical trailing space/CR offsets can exceed the visible glyph count.
+    // resolve_smooth_run validates the positions needed by the painted ink.
+    if line.smooth_sources.is_empty() { return false; }
     // Paint pens can be translated for negative menu bearings independently
     // of insertion advances. Resolution validates the complete source run;
     // equating the two coordinate roles would silently reject styled labels.

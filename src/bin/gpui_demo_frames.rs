@@ -293,13 +293,31 @@ fn text_edit_pieces_for_kind(
         let Some(structure) = window.structure_bounds.map(Rect::from) else {
             continue;
         };
+        let dialog = dialogs.iter().find(|dialog| dialog.guest_id == frame.guest_id);
+        let standard_dialog = frame.presentation_definition_id() == Some(1)
+            && dialog.is_some_and(|dialog| dialog.generation == frame.generation
+                && dialog.visible && dialog.active);
         if !matches!(frame.presentation_definition_id(), Some(0 | 4 | 8 | 12 | 16))
-            || dialogs.iter().any(|dialog| dialog.guest_id == frame.guest_id)
+            && !standard_dialog
         {
             covers.push(structure);
             continue;
         }
         for (index, record) in records.iter().enumerate() {
+            if let Some(dialog) = dialog {
+                // A separately qualified simple field owns its own overlay.
+                // Otherwise use the actual active TERec, never inferred wrapping.
+                let field = dialog.items.iter().find(|item| Some(item.number) == dialog.edit_field
+                    && item.kind == systemless::runner::DialogItemKind::EditText
+                    && item.enabled && item.visible && item.edit_text_layout.is_none());
+                if !standard_dialog || !record.active || !field.is_some_and(|item|
+                    record.global_view_rect == Some(item.bounds)
+                    && item.text == systemless::systems::macintosh::mac_roman::decode_mac_roman(&record.text)
+                    && i16::try_from(record.selection.0).ok().zip(i16::try_from(record.selection.1).ok())
+                        .is_some_and(|selection| item.selection == Some(selection))) {
+                    continue;
+                }
+            }
             if !record.drawing_intact || record.owner_port != frame.guest_id
                 || record.styled != styled
                 || (!styled && (record.face != 0 || record.justification != 0 || record.line_height <= 0
@@ -1147,6 +1165,38 @@ mod tests {
         let mut scaled = record.clone();
         scaled.size = 120;
         assert!(text_edit_pieces(&[scaled], &[], &[], &[back.clone()], viewport).is_empty());
+        let mut modal = back.clone();
+        modal.definition_id = Some(1);
+        let mut editor = record.clone();
+        editor.text = b"one\rtwo".to_vec();
+        editor.line_starts = Some(vec![0, 4, 7]);
+        editor.line_count = 2;
+        let mut dialog = DialogSnapshot {
+            content_revision: 0, guest_id: modal.guest_id, generation: modal.generation,
+            bounds: modal.window.bounds, visible: true, active: true,
+            default_item: None, cancel_item: None, edit_field: Some(4),
+            items: vec![DialogItemSnapshot {
+                static_text_layout: None, edit_text_layout: None, control_identity: None,
+                pressed: false, number: 4, kind: DialogItemKind::EditText,
+                bounds: editor.global_view_rect.unwrap(), text: "one\rtwo".into(),
+                enabled: true, visible: true, value: None, selection: Some((0, 0)),
+                caret_visible: Some(true),
+            }],
+        };
+        assert!(!text_edit_pieces(&[editor.clone()], &[dialog.clone()], &[], &[modal.clone()], viewport).is_empty());
+        for mutation in 0..5 {
+            let mut invalid = dialog.clone();
+            match mutation {
+                0 => invalid.generation += 1,
+                1 => invalid.active = false,
+                2 => invalid.items[0].text.push('x'),
+                3 => invalid.items[0].selection = Some((1, 1)),
+                _ => invalid.items[0].bounds.0 += 1,
+            }
+            assert!(text_edit_pieces(&[editor.clone()], &[invalid], &[], &[modal.clone()], viewport).is_empty());
+        }
+        dialog.items[0].enabled = false;
+        assert!(text_edit_pieces(&[editor], &[dialog], &[], &[modal], viewport).is_empty());
         let mut styled = record;
         styled.styled = true;
         assert!(text_edit_pieces(&[styled.clone()], &[], &[], &[back.clone()], viewport).is_empty());

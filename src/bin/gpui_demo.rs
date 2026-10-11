@@ -140,6 +140,10 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_modal_dialog: Option<PathBuf>,
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_modal_dialog_multiline: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_modal_dialog_checked: Option<PathBuf>,
@@ -2940,6 +2944,7 @@ mod desktop {
         WindowsPromoted,
         WindowsMainPromoted,
         ModalDialog,
+        ModalDialogMultiline,
         ModalDialogChecked,
         ModalDialogSelection,
         ModalDialogSelectionInactive,
@@ -3214,7 +3219,7 @@ mod desktop {
             CaptureCase::ModelessDialog | CaptureCase::NestedModalDialog
         ) {
             (132, 7)
-        } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked | CaptureCase::ModalDialogSelection | CaptureCase::ModalDialogSelectionInactive | CaptureCase::ModalDialogCaretVisible | CaptureCase::ModalDialogCaretHidden | CaptureCase::ModalDialogButtonHeld | CaptureCase::ModalDialogButtonOutside | CaptureCase::ModalDialogCheckboxHeld | CaptureCase::ModalDialogCheckboxCheckedHeld | CaptureCase::ModalDialogCheckboxOutside) {
+        } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogMultiline | CaptureCase::ModalDialogChecked | CaptureCase::ModalDialogSelection | CaptureCase::ModalDialogSelectionInactive | CaptureCase::ModalDialogCaretVisible | CaptureCase::ModalDialogCaretHidden | CaptureCase::ModalDialogButtonHeld | CaptureCase::ModalDialogButtonOutside | CaptureCase::ModalDialogCheckboxHeld | CaptureCase::ModalDialogCheckboxCheckedHeld | CaptureCase::ModalDialogCheckboxOutside) {
             (129, 6)
         } else if lists_page {
             (129, 9)
@@ -3544,7 +3549,7 @@ mod desktop {
             } else {
                 modeless
             }
-        } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked | CaptureCase::ModalDialogSelection | CaptureCase::ModalDialogSelectionInactive | CaptureCase::ModalDialogCaretVisible | CaptureCase::ModalDialogCaretHidden | CaptureCase::ModalDialogButtonHeld | CaptureCase::ModalDialogButtonOutside | CaptureCase::ModalDialogCheckboxHeld | CaptureCase::ModalDialogCheckboxCheckedHeld | CaptureCase::ModalDialogCheckboxOutside) {
+        } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogMultiline | CaptureCase::ModalDialogChecked | CaptureCase::ModalDialogSelection | CaptureCase::ModalDialogSelectionInactive | CaptureCase::ModalDialogCaretVisible | CaptureCase::ModalDialogCaretHidden | CaptureCase::ModalDialogButtonHeld | CaptureCase::ModalDialogButtonOutside | CaptureCase::ModalDialogCheckboxHeld | CaptureCase::ModalDialogCheckboxCheckedHeld | CaptureCase::ModalDialogCheckboxOutside) {
             assert!((0..300).any(|_| {
                 session.runner_mut().run_steps(100_000, None);
                 session.runner_mut().guest_menu_snapshot().menus.iter().any(|menu| {
@@ -3572,6 +3577,31 @@ mod desktop {
                     }).then_some(dialogs)
                 })
                 .expect("modal preferences dialog should expose a live checkbox");
+            if matches!(capture, CaptureCase::ModalDialogMultiline) {
+                assert!(prefer_powerpc, "multiline dialog capture requires the PPC TERec painter");
+                let dialog = dialogs.iter().find(|dialog| dialog.visible && dialog.active).unwrap();
+                let id = dialog.guest_id;
+                let bounds = dialog.items[8].bounds;
+                session.deliver_input(MacintoshInput::MouseDown { vertical: bounds.0 + 5, horizontal: bounds.1 + 1 });
+                session.deliver_input(MacintoshInput::MouseUp { vertical: bounds.0 + 5, horizontal: bounds.1 + 1 });
+                for _ in 0..10 {
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                }
+                for character in b"a long guest dialog field with enough text to wrap across several lines " {
+                    session.deliver_input(MacintoshInput::KeyDown { mac_key: 0, character: *character });
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character: *character });
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                }
+                for _ in 0..10 {
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                }
+                dialogs = session.runner_mut().dialog_snapshot();
+                assert!(session.runner_mut().text_edit_snapshot().records.iter()
+                    .any(|record| record.owner_port == id && record.active && record.line_count > 1));
+            }
             if matches!(capture, CaptureCase::ModalDialogChecked | CaptureCase::ModalDialogCheckboxCheckedHeld) {
                 for input in [
                     MacintoshInput::MouseDown { vertical: 155, horizontal: 300 },
@@ -4295,6 +4325,24 @@ mod desktop {
         let menus = session.runner_mut().guest_menu_snapshot();
         let guest_popup = session.runner_mut().guest_popup_snapshot();
         let frame = session.video_frame().unwrap();
+        if matches!(capture, CaptureCase::ModalDialogMultiline) {
+            let record = text_edits.iter().find(|record| record.active && record.line_count > 1
+                && dialogs.iter().any(|dialog| dialog.guest_id == record.owner_port)).unwrap();
+            let pieces = super::frames::text_edit_pieces(&text_edits, &dialogs, &controls, &windows,
+                super::frames::Rect::from((0, 0, frame.height as i16, frame.width as i16)));
+            assert!(pieces.iter().any(|piece| text_edits[piece.record].guest_id == record.guest_id),
+                "capture must actually replace the multiline guest field through the shared renderer");
+            std::fs::write(output.with_extension("json"), serde_json::to_vec_pretty(&serde_json::json!({
+                "case": capture_name, "depth": session.runner().presented_screen_depth(),
+                "powerpc": session.runner().is_powerpc_app(), "scale": capture_scale.unwrap_or(1.),
+                "record": record.guest_id, "owner": record.owner_port, "text": record.text,
+                "selection": record.selection, "line_starts": record.line_starts,
+                "font": [record.font, record.size], "smooth_support": super::text::ClassicLine::plain(&record.text, record.font, record.size).smooth_raster_support(),
+                "line_count": record.line_count, "dest": record.global_dest_rect,
+                "view": record.global_view_rect, "drawing_intact": record.drawing_intact,
+                "scope": "Actual guest wrapped dialog TERec, rendered by shared Demo; no physical input or native reference qualification."
+            })).unwrap()).unwrap();
+        }
         let styled_text_plans = qualify_styled_text_fields(&text_edits, &frame.pixels, frame.width, frame.height);
         let list_text_plans = qualify_list_text_fields(&lists, &frame.pixels, frame.width, frame.height);
         if matches!(capture, CaptureCase::WindowsZoomRestored) {
@@ -5159,6 +5207,12 @@ mod desktop {
                 CaptureCase::Alert,
                 args.capture_scale,
             );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_modal_dialog_multiline.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth,
+                CaptureCase::ModalDialogMultiline, args.capture_scale);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -6131,6 +6185,7 @@ mod desktop {
                         options: None,
                         capture_about_alert: None,
                         capture_modal_dialog: None,
+                        capture_modal_dialog_multiline: None,
                         capture_modal_dialog_checked: None,
                         capture_modal_dialog_selection: None,
                         capture_modal_dialog_selection_inactive: None,
@@ -11024,9 +11079,10 @@ mod desktop {
         fn dialog_items_have_shared_geometry_and_identity_across_guest_modes() {
             use systemless::runner::DialogItemKind;
 
-            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
-                let mut session = MacintoshSession::new(true, depth);
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, Some(8)), (true, Some(16))] {
+                let mut session = MacintoshSession::new(true, if powerpc { None } else { depth });
                 session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth.unwrap()).unwrap(); }
                 let app = session
                     .load_path(
                         &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -11034,18 +11090,22 @@ mod desktop {
                     )
                     .unwrap();
                 session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                settle(&mut session);
                 wait_for_menu(&mut session, 128, 1, false);
                 assert!(session.runner_mut().select_guest_menu_item(128, 1));
                 let dialog = (0..300)
                     .find_map(|_| {
-                        session.runner_mut().run_steps(100_000, None);
+                        let tick = session.runner().guest_tick().saturating_add(1);
+                        session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
                         session
                             .runner_mut()
                             .dialog_snapshot()
                             .into_iter()
                             .find(|dialog| dialog.visible && dialog.active)
                     })
-                    .expect("About alert should expose a live dialog snapshot");
+                    .unwrap_or_else(|| panic!("About alert missing: PPC={powerpc}, depth={depth:?}, dialogs={:?}, windows={:?}",
+                        session.runner_mut().dialog_snapshot(), session.runner_mut().window_frame_snapshot()));
                 assert_ne!(dialog.guest_id, 0);
                 assert_ne!(dialog.generation, 0);
                 assert_eq!(dialog.default_item, Some(1));
@@ -11112,10 +11172,15 @@ mod desktop {
                     horizontal,
                 });
                 let dismissed = (0..300).any(|_| {
-                    session.runner_mut().run_steps(100_000, None);
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
                     session.runner_mut().dialog_snapshot().is_empty()
                 });
                 assert!(dismissed, "guest should dismiss the About alert after its button click");
+                let windows = session.runner_mut().window_frame_snapshot();
+                assert_eq!(windows.iter().filter(|frame| frame.window.active).count(), 1);
+                assert!(windows.iter().any(|frame| frame.window.title == "Toolbox Showcase" && frame.window.active),
+                    "dismissing modal alert must restore document activation: PPC={powerpc} depth={depth:?}");
             }
         }
 
@@ -11682,6 +11747,64 @@ mod desktop {
                 assert_eq!(after.items[8].bounds, dialog.items[8].bounds);
                 assert!(guest_dialog_commit_inputs(&mut session, &owner, b"x").is_none());
                 eprintln!("PASS modal-composition-commit powerpc={powerpc} depth={depth}");
+            }
+        }
+
+        #[test]
+        fn active_multiline_dialog_uses_guest_textedit_candidates() {
+            for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, if powerpc { None } else { Some(depth) });
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(132, 6));
+                settle(&mut session);
+                let dialog = session.runner_mut().dialog_snapshot().into_iter()
+                    .find(|dialog| dialog.visible && dialog.items.len() == 10).unwrap();
+                let bounds = dialog.items[8].bounds;
+                session.deliver_input(MacintoshInput::MouseDown { vertical: bounds.0 + 5, horizontal: bounds.1 + 1 });
+                session.deliver_input(MacintoshInput::MouseUp { vertical: bounds.0 + 5, horizontal: bounds.1 + 1 });
+                settle(&mut session);
+                let before = session.video_frame().unwrap();
+                for character in b"a long guest dialog field with enough text to wrap across several lines " {
+                    session.deliver_input(MacintoshInput::KeyDown { mac_key: 0, character: *character });
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character: *character });
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                }
+                settle(&mut session);
+                let dialogs = session.runner_mut().dialog_snapshot();
+                let records = session.runner_mut().text_edit_snapshot().records;
+                let windows = session.runner_mut().window_frame_snapshot();
+                if !powerpc {
+                    // The classic Dialog Manager owns its editor directly;
+                    // it does not create a caller-owned TERec for this field.
+                    assert!(!records.iter().any(|record| record.owner_port == dialog.guest_id));
+                    assert!(dialogs.iter().find(|current| current.guest_id == dialog.guest_id)
+                        .unwrap().items[8].edit_text_layout.is_some());
+                    continue;
+                }
+                let record = records.iter().find(|record| record.active && record.owner_port == dialog.guest_id)
+                    .expect("PPC dialog TERec must be discoverable by the shared renderer");
+                assert!(record.line_count > 1, "guest must actually wrap: PPC={powerpc} depth={depth}");
+                let after = session.video_frame().unwrap();
+                assert_eq!((before.width, before.height), (after.width, after.height));
+                for y in 0..after.height {
+                    for x in 0..after.width {
+                        if y >= bounds.0 as u32 && y < bounds.2 as u32
+                            && x >= bounds.1 as u32 && x < bounds.3 as u32 { continue; }
+                        let at = ((y * after.width + x) * 4) as usize;
+                        assert_eq!(&after.pixels[at..at + 4], &before.pixels[at..at + 4],
+                            "dialog typing/caret must preserve pixels outside field: depth={depth}, x={x}, y={y}");
+                    }
+                }
+                let pieces = super::super::frames::text_edit_pieces(&records, &dialogs, &[], &windows,
+                    super::super::frames::Rect::from((0, 0, 600, 800)));
+                assert!(pieces.iter().any(|piece| records[piece.record].guest_id == record.guest_id),
+                    "actual guest multiline field must reach shared renderer: PPC={powerpc} depth={depth}");
             }
         }
 

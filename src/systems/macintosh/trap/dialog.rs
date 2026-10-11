@@ -4084,6 +4084,7 @@ impl super::TrapDispatcher {
             Self::duplicate_handle_data(bus, handle)
         };
         let bounds = self.positioned_window_bounds(bus, bounds, position, 1);
+        let previous_front = self.front_window;
         let dialog_ptr = self.finish_dialog_creation(
             bus,
             cpu,
@@ -4103,6 +4104,9 @@ impl super::TrapDispatcher {
         if dialog_ptr == 0 {
             return false;
         }
+        // Alert owns modal keyboard focus. Use the guest Window Manager path
+        // so the covered document is deactivated and the alert is hilited.
+        self.activate_created_front_window(bus, dialog_ptr, previous_front);
         let cancel_item = crate::dialog_manager::evaluate_dialog_cancel_item(
             None,
             items.iter().map(|item| (item.item_type, &item.text)),
