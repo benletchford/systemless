@@ -5950,3 +5950,16 @@ notification tests pass (0.16s). Evidence/failure log:
 This qualifies the selected classic worker response path, not PPC worker delivery,
 shared visual fidelity, physical input or complete ordered notification stages.
 All eight production gates remain open.
+
+### Notification modal semantics and presentation ownership (2026-10-11)
+
+Systemless AccessibleState now supplies the modal flag missing from Kit setters;
+the owned notification preserves AlertDialog role, identity and label. OK has an
+explicit accessibility Click route carrying the displayed snapshot. Host menu
+overlays cannot appear above an owned alert, and guest cursor ownership no longer
+hides the host pointer during alert interaction. Modal node metadata passes its
+regression; the injected-alert pointer/keyboard regression passes (0.11s).
+Evidence: `reference/gpui-demo/notification-modal-semantics`. Native action
+delivery, complete background navigation exclusion, focus-loop/restoration,
+physical pointer behavior and composed fidelity remain unqualified. Acquisition
+is still explicit; no production gate closes.
