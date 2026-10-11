@@ -229,8 +229,12 @@ is mapped back to unchanged guest coordinates; component relative font metrics
 scale with the scene. Permanently visible menus cover the scaled guest menu
 rectangle, while fullscreen hover menus remain host-edge overlays.
 Keyboard forwarding covers Return, Escape, Space, Tab and
-Backspace; this is not a full game-input frontend. Audio is serviced but muted,
-saves are not persisted, and host-native window integration is not included.
+Backspace; this is not a full game-input frontend. Interactive runs attach the
+existing native stereo audio backend on the guest worker. Capture paths remain
+headless. Device initialization failure is reported and execution continues
+without output. Audible continuity and real-game performance still require
+qualification. Saves are not persisted, and host-native window integration is
+not included.
 The prototype has not been ported to the browser. GPUI dependencies are optional
 and compile only with `gpui-demo`, but add a substantial first-build cost.
 

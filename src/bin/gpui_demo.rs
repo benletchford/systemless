@@ -52,7 +52,7 @@ mod desktop {
     include!("gpui_demo_menu.rs");
 
     #[derive(Parser)]
-    #[command(about = "Experimental GPUI Kit guest menu runner (no audio or persistent saves)")]
+    #[command(about = "Experimental GPUI Kit guest menu runner (no persistent saves)")]
     struct Args {
         game: PathBuf,
         #[arg(long)]
@@ -248,6 +248,13 @@ mod desktop {
                 .set_prefer_powerpc_executables(args.prefer_powerpc);
             let app = session.load_path(&args.game)?;
             session.initialize(&app);
+            // Keep the device and its stream on the guest worker, matching
+            // the ordinary desktop runner's stereo delivery and lifetime.
+            if let Some(audio) = systemless::systems::macintosh::audio::CpalAudioBackend::new() {
+                session.runner_mut().set_audio(Box::new(audio));
+            } else {
+                eprintln!("[GPUI] Could not initialize audio output");
+            }
             let instructions_per_tick = configure_realtime_execution(&mut session);
             let architecture = if session.status().powerpc_application {
                 "PowerPC"
