@@ -10,7 +10,7 @@ The initial 10 October stocktake recorded **188 game records** directly under `w
 
 Baseline category declarations: Arcade: 69, Puzzle: 42, Strategy: 35, Role-Playing: 15, Simulation: 12, FPS: 12, Space Trading: 3. The catalogue is concentrated in 68K arcade and puzzle games. The first wave below gives PowerPC strategy, action and 3D games deliberate priority. Aim for at least 300 PPC-capable records and 500 68K-capable records across the eventual catalogue; overlap is welcome, and these are planning goals rather than a result proven by this list.
 
-Execution stages and per-target evidence are tracked in [the qualification ledger](CATALOGUE-PROGRESS.md).
+Execution stages and per-target evidence are tracked in [the qualification ledger](CATALOGUE-PROGRESS.md). Matching added games now link their inspected original-package grants and actual architecture evidence below. This reconciliation does not add games or infer public qualification from launch flags; native, browser, merge and public-release stages remain separate in the ledger.
 
 ## How to use this list
 
@@ -95,8 +95,8 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 50 | 238 | Avara | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
 | 51 | 239 | Ares | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
 | 52 | 240 | Barrack | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 53 | 241 | Bubble Trouble | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 54 | 242 | Chiral | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 53 | 241 | Bubble Trouble | Original 68K/PPC; see per-slice qualification | P | [Original grant, architecture and bounded evidence](catalogue/bubble-trouble.md) |
+| 54 | 242 | Chiral | Original 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/chiral.md) |
 | 55 | 243 | Cythera | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
 | 56 | 244 | Mars Rising | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
 | 57 | 245 | Pillars of Garendall | PPC lead | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
@@ -105,7 +105,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 60 | 248 | Pararena | 68K lead | D | [Demo index](https://classicmacdemos.com/pararena-20) |
 | 61 | 249 | Bonkheads | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
 | 62 | 250 | Bonkheads Deluxe | 68K lead | D | [Demo index](https://classicmacdemos.com/bonkheads-deluxe) |
-| 63 | 251 | Monkey Shines | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 63 | 251 | Monkey Shines | Original 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/monkey-shines.md) |
 | 64 | 252 | Space Cab | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
 | 65 | 253 | King of Dragon Pass | PPC lead | D | [Demo index](https://classicmacdemos.com/king-of-dragon-pass) |
 | 66 | 254 | Afterlife | 68K/PPC (repo notes) | D | [Demo index](https://classicmacdemos.com/afterlife) |
@@ -118,11 +118,11 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 73 | 261 | Capitalism | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/capitalism); [Archive index](https://www.vintageapplemac.com/software/games/c/) |
 | 74 | 262 | MacGo | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
 | 75 | 263 | Macgammon | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 76 | 264 | Solitaire Till Dawn | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 76 | 264 | Solitaire Till Dawn | Original 4.0.1 CODE: 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/solitaire-till-dawn.md) |
 | 77 | 265 | Mike's Cards | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 78 | 266 | Angband | PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 79 | 267 | Moria | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 80 | 268 | Rogue | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
+| 78 | 266 | Angband | Original 68K/PPC packages; see per-slice qualification | P | [Original grant, architecture and bounded evidence](catalogue/angband.md) |
+| 79 | 267 | Moria | Original 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/moria.md) |
+| 80 | 268 | Rogue | Original 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/rogue.md) |
 | 81 | 269 | MacSokoban | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
 | 82 | 270 | Sokoban | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
 | 83 | 271 | MacBrickout | 3.1 CODE / 4.1 native PPC; both unqualified | U | [Original package, independent parity and runtime evidence](CATALOGUE-SOURCES.md#macbrickout-41-original-package-and-current-startup) |
@@ -484,7 +484,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 429 | 617 | Project Magellan | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
 | 430 | 618 | Quidditch Practice | Verify 68K/PPC | F | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
 | 431 | 619 | R.I.P | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/rip) |
-| 432 | 620 | Sigma Chess | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 432 | 620 | Sigma Chess | Original Lite 4.0: 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/sigma-chess.md) |
 | 433 | 621 | TakeAway | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
 | 434 | 622 | Unprovoked | Verify 68K/PPC | F | [Archive index](https://www.vintageapplemac.com/software/games/u/) |
 | 435 | 623 | Vampire Chess | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
@@ -527,7 +527,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 472 | 660 | Earth Command | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/earth-command) |
 | 473 | 661 | FastGun | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
 | 474 | 662 | Grid Warrior | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
-| 475 | 663 | Halma | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
+| 475 | 663 | Halma | Original 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/halma.md) |
 | 476 | 664 | iConcentration | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
 | 477 | 665 | Jetpack | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/) |
 | 478 | 666 | Kablooey | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/); [Garden](https://macintoshgarden.org/games/kablooey) |
@@ -560,7 +560,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 505 | 693 | Lites Out | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
 | 506 | 694 | Munchkinstein | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
 | 507 | 695 | NetBoxes | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
-| 508 | 696 | On the Edge | Original fat game; 68K native/browser placement verified, pacing pending; PPC startup fixed, rendering pending | S | [Original grant and intake](CATALOGUE-SOURCES.md#on-the-edge-31--primary-508-complete-original-package) |
+| 508 | 696 | On the Edge | Original fat game; 68K native/browser placement verified, pacing pending; PPC startup fixed, rendering pending | P | [Original grant and intake](CATALOGUE-SOURCES.md#on-the-edge-31--primary-508-complete-original-package) |
 | 509 | 697 | Pajatso | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
 | 510 | 698 | Quarry | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
 | 511 | 699 | Radiant Weirdness Zone | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/radiant-weirdness-zone) |
@@ -631,7 +631,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 576 | 764 | Five Dice | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
 | 577 | 765 | Galactic Conquest | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/galactic-conquest) |
 | 578 | 766 | Happyweed! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
-| 579 | 767 | Ingemar's skiing game | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
+| 579 | 767 | Ingemar's skiing game | Original 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/ingemars-skiing-game.md) |
 | 580 | 768 | Jotto ][ | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/) |
 | 581 | 769 | Keno Buddies | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
 | 582 | 770 | Labyrinth | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
@@ -659,7 +659,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | Slot | Catalogue total | Target | Architecture evidence / lead | Rights route | Discovery source |
 | ---: | ---: | --- | --- | :---: | --- |
 | 601 | 789 | FiveStones | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
-| 602 | 790 | Galactic Frontiers | Original 68K only; machine-requirement startup blocker | G | [Archive index](https://www.vintageapplemac.com/software/games/g/); [conditional grant and original evidence](CATALOGUE-SOURCES.md#galactic-frontiers-102--target-790-primary-slot-602) |
+| 602 | 790 | Galactic Frontiers | Original 68K only; new game and turn advancement verified | P | [Original grant, architecture and bounded evidence](catalogue/galactic-frontiers.md) |
 | 603 | 791 | Hardwood Solitaire II | 68K/PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
 | 604 | 792 | IntelliBots | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
 | 605 | 793 | Joy Of Hex | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/) |
@@ -735,7 +735,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 675 | 863 | Escape! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
 | 676 | 864 | Flip Out | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
 | 677 | 865 | Galactica | Original 1.1.2: 68K CODE + PPC PEF; archive/name fixes merged, gameplay blocked | U | [Archive index](https://www.vintageapplemac.com/software/games/g/); [original grant and qualification evidence](CATALOGUE-SOURCES.md#galactica-112--target-677-original-fat-package); [68K setup/login investigation](https://github.com/benletchford/systemless/issues/4496); [PPC ordering blocker](https://github.com/benletchford/systemless/issues/4493) |
-| 678 | 866 | HeartQuest | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
+| 678 | 866 | HeartQuest | Original 68K/PPC; bounded public gameplay verified on both | P | [Original grant, architecture and bounded evidence](catalogue/heartquest.md) |
 | 679 | 867 | iPoker 2000 | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
 | 680 | 868 | J. B. Harold: Blue Chicago Blues (J.B.ハロルド ブルー・シカゴ・ブルース | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/j-b-harold-blue-chicago-blues) |
 | 681 | 869 | King Albert II | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
@@ -811,7 +811,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 751 | 939 | Iris Puzzle | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
 | 752 | 940 | Jack Keane | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/jack-keane) |
 | 753 | 941 | Klondike | 68K/PPC (original 7.7.1; startup held) | S | [Publisher original](https://www.casteel.org/klondike.html); [Original intake](CATALOGUE-SOURCES.md#klondike-771--target-941-original-publisher-intake) |
-| 754 | 942 | Lose Your Marbles! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
+| 754 | 942 | Lose Your Marbles! | Original 68K only; native/browser 5x5 win verified | P | [Original grant, architecture and bounded evidence](catalogue/lose-your-marbles.md) |
 | 755 | 943 | MacBaseball | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
 | 756 | 944 | Nomis | 68K/PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
 | 757 | 945 | O!Kay! CD-ROMs 2001 | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/okay-cd-roms-2001) |
@@ -854,13 +854,13 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 794 | 982 | Expert Blackjack | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
 | 795 | 983 | Fly Don't Die | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
 | 796 | 984 | Game of the Winds | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
-| 797 | 985 | Hexmines | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
+| 797 | 985 | Hexmines | Original 68K only; bounded native/public gameplay verified | P | [Original grant, architecture and bounded evidence](catalogue/hexmines.md) |
 | 798 | 986 | iTarget | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
 | 799 | 987 | Jack Nicklaus' Greatest 18 Holes of Major Championship Golf | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/jack-nicklaus-greatest-18-holes-of-major-championship-golf) |
 | 800 | 988 | Knot | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
 | 801 | 989 | Lost New York | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
 | 802 | 990 | MacCrypt | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 803 | 991 | NS-SHAFT | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
+| 803 | 991 | NS-SHAFT | Original 68K only; native/browser movement and descent | P | [Original grant, architecture and bounded evidence](catalogue/ns-shaft.md) |
 | 804 | 992 | O!Kay! CD-ROMs 2003 + 2004 | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/okay2004) |
 | 805 | 993 | Pillbug Golf | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
 | 806 | 994 | QBz | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/qbz) |
