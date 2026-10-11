@@ -10310,3 +10310,47 @@ fn menu_tracking_and_popup_selection_commands_dispatch_with_canonical_evaluation
     run_test_import(&mut loaded, PpcImportDispatcherTarget::PopUpMenuSelect);
     assert_eq!(loaded.cpu.gpr[3], 0);
 }
+
+#[test]
+fn menu_id_setter_import_updates_live_lookup_and_preserves_menu_contents() {
+    for library in ["InterfaceLib", "CarbonLib"] {
+        for symbol in ["SetMenuID", "setmenuid"] {
+            let loader = synthetic_loader_with_symbol_class(
+                library.as_bytes(), symbol.as_bytes(), 0x82, &[run_reloc(0x23, 1)],
+            );
+            let mut loaded = load_pef_application(&synthetic_pef_with_loader(loader)).unwrap();
+            let setter = PpcImportDispatcherTarget::SetMenuID;
+            assert_eq!(loaded.imports[0].dispatcher_target, setter);
+            assert!(loaded.imports[0].weak);
+            assert_ne!(loaded.imports[0].address, 0);
+            let scratch = PPC_DATA_BASE + 0x2800;
+            let menu = install_test_menu(&mut loaded, scratch, 128, b"Game", b"Play/P;Quit/Q");
+            let other = install_test_menu(&mut loaded, scratch + 0x400, 129, b"Help", b"About");
+            let record = loaded.memory.read_u32_be(menu).unwrap();
+            let handles = test_handle_records!(loaded).to_vec();
+            let before = ppc_menu_handle_bytes(&mut loaded.memory, &handles, menu).unwrap();
+            let mut old_id = 128;
+            for id in [0x1234_007f_u32, 0xffff_8000, 0xabcd_ffff] {
+                loaded.cpu.gpr[3] = menu;
+                loaded.cpu.gpr[4] = id;
+                run_test_import(&mut loaded, setter.clone());
+                assert_eq!(loaded.cpu.gpr[3], menu); // void ABI
+                assert_eq!(loaded.memory.read_u16_be(record), Some(id as u16));
+                let list = ppc_current_menu_list(&mut loaded.memory);
+                assert_eq!(ppc_get_menu_handle(&mut loaded.memory, list, old_id), 0);
+                assert_eq!(ppc_get_menu_handle(&mut loaded.memory, list, id as u16 as i16), menu);
+                assert_eq!(ppc_get_menu_handle(&mut loaded.memory, list, 129), other);
+                let after = ppc_menu_handle_bytes(&mut loaded.memory, &handles, menu).unwrap();
+                assert_eq!(&after[2..], &before[2..]);
+                old_id = id as u16 as i16;
+            }
+            for invalid in [0, 0xffff_fffc] {
+                loaded.cpu.gpr[3] = invalid;
+                loaded.cpu.gpr[4] = 1;
+                run_test_import(&mut loaded, setter.clone());
+                assert_eq!(loaded.cpu.gpr[3], invalid);
+                assert_eq!(loaded.memory.read_u16_be(record), Some(0xffff));
+            }
+        }
+    }
+}

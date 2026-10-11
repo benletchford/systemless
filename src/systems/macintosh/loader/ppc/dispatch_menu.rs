@@ -832,6 +832,16 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::SetMenuID => {
+            // CarbonLib 1.0 accessor: void SetMenuID(MenuRef, SInt16).
+            // Menu-list lookup reads this live record, not a cached ID.
+            if let Some(menu) = memory.read_u32_be(cpu.gpr[3]).filter(|menu| *menu != 0) {
+                if ppc_memory_can_write_bytes(memory, menu, 2) {
+                    let _ = memory.write_u16_be(menu, cpu.gpr[4] as u16);
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::GetMenuHandle => {
             let params =
                 crate::menu_manager::evaluate_get_menu_handle_parameters(cpu.gpr[3] as u16 as i16);
