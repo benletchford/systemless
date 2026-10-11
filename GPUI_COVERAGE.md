@@ -176,6 +176,35 @@ across 16 fixture pages. Hosted headless/package validation passes on revision
 clearing the stale-reference gate. This evidence repair does not qualify
 unfinished GPUI components.
 
+### Current recognition boundary audit (2026-10-11)
+
+Source audit at `4733f2d5`: the following are actual overlay eligibility rules
+in `gpui_demo_frames.rs`, not claims that every eligible variant is qualified.
+All CPU modes share these rules after their guest snapshots are normalized.
+
+| Surface | Current eligible variants | Guest rendering boundary and remaining evidence |
+| --- | --- | --- |
+| Frames | Recognized WDEF IDs 0, 1, 2, 3, 4, 5, 8, 12, 16; title strips only for 0, 4, 5, 8, 12, 16. Structure must contain content. | Unknown definitions and unavailable/complex presentation geometry retain guest pixels. `hidden_and_custom_frames_keep_guest_presentation` checks model fallback; actual lifecycle coverage for each listed variant remains required. |
+| Controls | CDEF proc IDs 0, 1, 2, 16, plus popup IDs 1008–1023 with a resolvable selected nonseparator item. | Any `ControlFontStyle` override currently declines replacement. This preserves guest font/style/mode/justification/colors but leaves GPUI support for these recognized styled controls unfinished. `overlapping_controls_follow_guest_draw_order_and_custom_fallback` checks model ownership boundaries. |
+| Dialog items | The listed recognized WDEFs, exact dialog/window identity and generation, and a wholly recognized item set: button, static text, EditText, checkbox/radio with known value. | Other item kinds retain the dialog's guest presentation. `inactive_standard_dialog_items_clip_below_front_window` checks model clipping; mixed custom-content and item lifecycle qualification remain open. |
+| TextEdit | Document WDEFs 0, 4, 8, 12, 16; additionally active WDEF1 dialog fields whose actual TERec text, selection and bounds match the current edit item. Drawing must remain intact and owner port must match. | Plain candidates require face0, left justification, positive line height, supported display lines and matching resolved strike size. Styled candidates require separate whole-field paint qualification. Unsupported records retain guest pixels. `text_edit_clips_to_owner_and_front_window_with_custom_fallback` is model evidence; document and wrapped-dialog worker/compositor evidence retains its recorded scope. |
+| Lists | Document WDEFs 0, 4, 8, 12, 16; LDEF0, drawing enabled, retained text cells and matching owner port. | Overlapping nonstandard controls decline list replacement. `standard_list_clips_beneath_front_window_and_custom_definition_falls_back` checks model fallback; real draw mutation/disposal evidence and complete cell recipes remain separate requirements. |
+
+The classification guards establish where guest ownership is retained; they do
+not establish that a custom fallback has complete CPU lifecycle qualification.
+In particular, recognized ControlFontStyle overrides remain an implementation
+gap, and the final inventory must associate every supported variant with actual
+rendering, interaction and lifecycle evidence before the inventory gate closes.
+
+The control-font source trace also identifies a guest-side prerequisite:
+`trap/control.rs::draw_control_text` fixes classic labels to font0/12;
+`loader/ppc/dispatch_control.rs::ppc_control_title_style` resolves Appearance
+font/face/size flags but explicitly retains mode, justification and background
+without drawing them, and limits foreground overrides to static-text proc288.
+Retaining guest pixels therefore establishes preservation of existing behavior,
+not complete ControlFontStyle fidelity. A shared guest/GPUI resolved paint recipe
+and actual cross-CPU control scenes are required before this variant closes.
+
 | System UI | Existing state and presentation path | Missing GPUI work | Status |
 | --- | --- | --- | --- |
 | Menu bar and standard menus | `menu_model.rs` supplies `GuestMenuSnapshot`, including live, resource-aware standard MDEF classification on both CPUs, the current menu list's MBDF ID, and each MenuHandle with a process-shared lifetime generation. GPUI menu button identity and queued command validation follow the handle and generation instead of the reusable menu ID; both CPU menu disposal, resource-release, and direct handle-disposal paths invalidate the generation. `gpui_demo.rs` retains a Systemless-owned GPUI Kit popup and reconciles its selected guest item when the menu snapshot changes, renders standard menu buttons and items, and dispatches selected items to the guest. A headless GPUI interaction test confirms live item text, dismissal/reopening, and removal when the guest menu disappears. Translatable Command-key presses and releases enter the guest KeyMap/event path instead of synthesizing a menu click; the showcase responds to Command+P on both CPUs, and a held-key test checks that both guest KeyMap bits remain set through further execution and clear on release. GPUI modifier changes and focus loss clear held keys, and host repeat callbacks do not duplicate guest keyDown events. A custom MDEF or MBDF selects the full guest framebuffer at original coordinates so GPUI chrome cannot cover it. Classic `InitProcMenu` retains the ID and loads its MBDF resource. A synthetic headless composed capture checks placement and pointer translation. Focused guest tests confirm fallback selection during a real 68K MDEF callback in a PowerPC app and during a native PowerPC MDEF invocation; the cross-CPU tracking test confirms live menu pixels and save-under restoration. | Custom MBDF message execution is not implemented: Inside Macintosh V-250 defines Draw, Hit, Calc, Init, Dispose, Hilite, Height, Save, Restore, Rect, SaveAlt, ResetAlt, and MenuRgn messages. Verify a real guest composed capture and standalone 68K custom MDEF tracking; qualify guest autoKey timing during real held shortcuts, submenus, and tracking order. Qualify submenu contents, hover selection, disabled-state transitions, focus, and menu scrolling in composed and interaction tests across real applications. | Demo only |
