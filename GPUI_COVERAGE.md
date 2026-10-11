@@ -3847,3 +3847,12 @@ no-default-features check passes (8.87s). Themed caps and nonuniform caret raste
 still need faithful GPUI painting, and production styled scene ownership,
 multiple insertion positions, blink/activation and the complete scale matrix
 remain unfinished. No new native Macintosh oracle qualification is claimed.
+
+Caret fixture captures accept `--capture-styled-caret-offset BYTE_OFFSET`
+(default 26). Pointer interaction also asserts unchanged text, canonical style
+runs and owner generation. At offset 0, colour 68k's actual caret is purple
+(RGB 179/84/179), whereas PPC16's is black: the native final drawing pen and
+insertion style differ even at the same guest byte boundary. Both initial
+scale-1 captures match every composed field pixel at device density 2 and were
+visually inspected. This is a targeted policy counterexample, not a complete
+caret matrix. Example build passes (15.11s), production check passes (14.75s).
