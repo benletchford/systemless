@@ -2007,6 +2007,9 @@ fn tracked_menu_draws_partial_text_without_overwriting_scroll_slots() {
         pixels
     };
     let before = render(&mut loaded);
+    let white = ppc_physical_screen_color_pixel(front, PPC_RGB_WHITE, &loaded.screen_clut);
+    assert_eq!(before.iter().find(|pixel| (pixel.0, pixel.1) == (30, 22)).unwrap().2,
+        white, "scroll slot background must contrast with its black arrow");
     let (address, length) = ppc_menu_item(&mut loaded.memory, menu, 2).unwrap();
     assert_eq!(length, 4);
     for offset in 1..=4 {

@@ -1054,3 +1054,27 @@ the known whole-row omission in both guest painters. Fresh composed captures,
 scrolling interactions with partial icon rows and broad presentation-scale
 qualification remain outstanding; no complete popup-readiness claim follows
 from these focused tests.
+
+
+### Paired guest/composed popup verification
+
+The shared fixture capture path now saves `<output-stem>.guest.png` alongside
+composed captures, from the same RGBA frame before GPUI overlays. No second
+guest run or alternate layout is involved. The existing guest-only Standard
+File capture keeps its existing output behavior. The example builds, and
+fresh scrolled-popup capture pairs completed in monochrome 68k, colour 68k
+and PPC. Composed captures show the partial Archive 09 row, upper arrow and
+Archive 55 highlight consistently; both 68k guest captures show those pixels
+as well.
+
+The PPC guest companion exposes a defect concealed by the GPUI overlay:
+menu pixels outside the application window disappear during host composition.
+The upper scroll slot also previously had a black fill behind a black arrow.
+That fill now uses the menu background; the five focused tracked-menu tests
+pass with a new background assertion, and a fresh PPC pair visually confirms
+the arrow correction. The missing outer menu area persists.
+
+Investigate `retained_host_overlay_rects` and the subsequent host chrome pass:
+the current PPC retained-overlay list includes Standard File panels but no
+menu panes. This is a suspected compositing cause, not yet a verified fix.
+PPC raw-frame parity remains incomplete despite the correct themed overlay.

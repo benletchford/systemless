@@ -2914,7 +2914,7 @@ pub(crate) fn ppc_draw_tracked_menu(
                         i32::from(state.popup_left()) + x,
                         i32::from(state.popup_top()) + y,
                     ),
-                    black,
+                    background,
                 );
             }
         }
