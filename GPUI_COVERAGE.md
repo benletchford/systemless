@@ -5560,3 +5560,15 @@ PPC caret removal are visible. Final build/test compilation pass (6.06s/7.02s).
 Evidence is under `reference/gpui-demo/movable-dialog-states`. Guest drag,
 reactivation/lifecycle, broader scales, physical observer integration and
 independent font fidelity remain open; all production gates remain open.
+
+### Movable dialog repeated reactivation/editing (2026-10-11)
+
+Four reviewed shared Demo captures now pass two guest suspend/resume cycles,
+then actual guest typing, across mono68k/0.75, colour68k/1, PPC8/2 and PPC16/1.5.
+Each transition preserves identity, bounds, text, values and selection. After
+resume, guest key events produce exact zPilot and caret1; smooth title/field ink
+and the PPC caret position are visible. Source/binary hashes, state manifests,
+paired images and build/test-compile logs are in `reference/gpui-demo/movable-dialog-resume`.
+This qualifies the selected guest/session reactivation workflow, not physical
+host activation or every lifecycle/scale. Drag, broader lifecycle and independent
+Macintosh fidelity remain open; all release gates remain open.
