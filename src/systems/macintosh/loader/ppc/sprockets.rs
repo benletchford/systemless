@@ -1504,7 +1504,7 @@ fn ppc_dsp_restore_underlay(
     let bytes_per_pixel = back.depth / 8;
     let mut rows = Vec::new();
     for rect in rects {
-        let count = ((rect.3 - rect.1) as u32 * bytes_per_pixel) as usize;
+        let count = (rect.3 - rect.1) as u32 * bytes_per_pixel;
         for row in rect.0..rect.2 {
             let Some(src) = source
                 .base_addr
@@ -1525,7 +1525,7 @@ fn ppc_dsp_restore_underlay(
             {
                 return false;
             }
-            let mut bytes = vec![0; count];
+            let mut bytes = vec![0; count as usize];
             if memory.read_bytes_into(src, &mut bytes).is_none() {
                 return false;
             }
