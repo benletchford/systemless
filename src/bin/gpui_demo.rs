@@ -2187,25 +2187,15 @@ mod desktop {
                             .border_color(cx.theme().border)
                             .text_color(cx.theme().foreground)
                             .text_size(guest_px(13.));
-                        let volume_abbreviation: String = panel
-                            .directory_label
-                            .as_deref()
-                            .unwrap_or_default()
-                            .chars()
-                            .take(4)
-                            .collect();
-                        overlay = overlay.child(
-                            at(layout.volume)
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .bg(cx.theme().secondary)
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .child(format!("{volume_abbreviation}…")),
-                        );
+                        if let Some((text, origin)) = &panel.volume_text {
+                            overlay = overlay.child(
+                                at(layout.volume)
+                                    .overflow_hidden()
+                                    .bg(cx.theme().secondary)
+                                    .child(div().absolute().size_full().border_1().border_color(cx.theme().border))
+                                    .child(super::text::classic_file_row(text, *origin, scene_scale, cx.theme().foreground)),
+                            );
+                        }
                         overlay = overlay.child(
                             at(layout.directory_label)
                                 .flex()
@@ -6098,6 +6088,16 @@ mod desktop {
                 assert!(opened.entries.as_ref().is_some_and(|entries| !entries.is_empty()));
                 assert!(opened.directory_label.as_ref().is_some_and(|label| !label.is_empty()));
                 let layout = opened.get_layout.as_ref().expect("standard Open geometry");
+                let (volume_text, origin) = opened.volume_text.as_ref().expect("guest volume typography");
+                if powerpc {
+                    assert_eq!(volume_text, "Maci...");
+                    assert_eq!(*origin, (0, 12));
+                } else {
+                    assert_eq!(origin.0, 15);
+                    let line = super::super::text::ClassicLine::unicode(volume_text, 0, 12);
+                    assert!(line.positions.last().copied().unwrap_or(0) <= i32::from(layout.volume.3 - layout.volume.1 - 34));
+                    assert!(volume_text.ends_with("..."));
+                }
                 for rect in [
                     layout.volume,
                     layout.directory_label,
@@ -10016,6 +10016,7 @@ mod desktop {
                 list_text_origin: (4, 11),
                 directory_marker: "▸",
                 list_name_limit: Some(36),
+                volume_text: Some(("Maci...".into(), (15, 11))),
                         confirming_replace: false,
                         new_folder: None,
                         standard_entry_point: true,
@@ -10104,6 +10105,7 @@ mod desktop {
                 list_text_origin: (4, 11),
                 directory_marker: "▸",
                 list_name_limit: Some(36),
+                volume_text: None,
                         confirming_replace: false,
                         new_folder: None,
                         standard_entry_point: true,

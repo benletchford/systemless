@@ -2391,3 +2391,21 @@ ink, so the painter retains the guest missing-glyph behavior rather than
 substituting a host font. Authentic Apple font fidelity, exact panel pixel
 geometry, Open captures, selected/scrolled rows and scale/state qualification
 remain open, along with the other unfinished text surfaces.
+
+
+### Open volume text in the guest glyph canvas
+
+The Open popup no longer invents a host-font four-character abbreviation. Its
+snapshot carries the text and origin produced by the actual CPU painter. The
+68k adapter reuses the popup's guest-font width truncation and centered baseline
+with a 15-pixel inset; PPC preserves the literal `Maci...` at origin (0,12). GPUI
+paints font 0/12 guest glyphs through the shared canvas. The decorative border
+does not inset text coordinates. Adjacent directory labels remain unfinished.
+
+The modal snapshot regression passes in monochrome 68k, colour 68k and PPC with
+pointer and semantic routes (7.50 seconds), including volume text and width
+checks. Default binary type-check and capture build pass. All three actual Open
+compositor captures are reviewed and retained with paired guest frames and
+hashes in `text-classic-open-volume-review.json`. This is one viewport/scale
+and modal state; exact geometry, other scales and activation states, Save
+volume UI and authentic Macintosh font qualification remain open.

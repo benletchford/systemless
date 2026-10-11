@@ -80,6 +80,8 @@ pub struct StandardFileSnapshot {
     pub directory_marker: &'static str,
     /// Guest painter character limit; full entry names remain canonical.
     pub list_name_limit: Option<usize>,
+    /// Guest Open volume text and origin relative to its popup rectangle.
+    pub volume_text: Option<(String, (i16, i16))>,
     pub confirming_replace: bool,
     pub new_folder: Option<StandardFileNewFolderSnapshot>,
     /// True only for the modern standard entry points. This alone does not
