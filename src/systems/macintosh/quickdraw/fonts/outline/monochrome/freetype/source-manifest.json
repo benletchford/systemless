@@ -1,0 +1,13 @@
+{
+  "origin": "freetype-sys 0.20.1 bundled freetype2 sources",
+  "original_sha256": {
+    "ftraster.c": "a6923fede460424503bb1d01feb5e7004e320039723c327be95c6e15ad7b51e4",
+    "ftmisc.h": "74e975a762aeb0ca91e07d2e2b452f8ddb23a2eea826a117cf62fa09c75a3a02",
+    "ftimage.h": "6e205ce3792bc3a4f06ea3e217e19d71e6f024b880efa009ba45f27839c4ba5d",
+    "LICENSE.TXT": "2e3bbb7d7c5c396368dd0853a790ec29ce5b8647163dde42a0493fb0d6556b2b",
+    "FTL.TXT": "08c135755dd589039470f1fdbb400daaabaaa50d0b366d19cebff4d22986baa1",
+    "GPLv2.TXT": "c4120c6752c910c299e3bd9cb3a46ff262c268303ca2069b61f92f10a5656c18"
+  },
+  "modifications": "Standalone raster context uses calloc/free instead of a shared static object; scan conversion is unchanged",
+  "licensing": "FreeType License (FTL) alternative, accompanying LICENSE.TXT and FTL.TXT"
+}

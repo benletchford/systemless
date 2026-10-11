@@ -1,5 +1,31 @@
 # GPUI production release gates
 
+### Source-outline monochrome stroke correction (2026-10-11)
+
+Small source-outline glyphs previously lost strokes when antialiased masks were
+thresholded. A statically linked, namespaced FreeType monochrome converter now
+uses the existing hinted outlines and bounds on macOS, preserving advances,
+bearings, layout and resource precedence. Guest bitmap strikes and smooth GPUI
+system-text coverage retain their existing paths. Failed conversion retains the
+same source mask instead of authorizing another font family. Contexts are owned
+independently; vendored sources include provenance and FTL notices.
+
+The initial smart-dropout prototype was rejected: four traced glyphs differed
+from independent rendering despite equal hinted outlines. Default simple dropout
+control matches those source instructions. The stronger exact-row regression
+passes A/M/4/S (0.02s); the prior font suite passes 26 cases (1.68s). Corrected
+Marathon gameplay reaches 1350 observations in 68.80s and its shared composition
+was reviewed. All twelve traced HUD ink shapes match independent FreeType for
+the same Nimbus Mono source after exterior-padding normalization. This is not an
+original Apple-font oracle: the existing Monaco substitute remains visible.
+The ordinary no-default-features library check passes (46.92s), and the
+GPUI TextEdit geometry/interaction regression passes twelve CPU/depth/alignment
+cases (31.24s) after temporary tracing removal.
+Per-glyph SCANCTRL/SCANTYPE propagation, other host platforms, physical input,
+performance and full font fidelity remain unqualified. No broad gate closes.
+Evidence: `tests/toolbox-showcase/reference/gpui-demo/source-monochrome-raster/review.json`.
+
+
 ### Current Marathon gameplay fidelity check (2026-10-11)
 
 The verified catalogue archive (a8ddcadc...) reaches an active 3D scene, HUD and

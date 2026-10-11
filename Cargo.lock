@@ -8241,6 +8241,7 @@ version = "0.96.0"
 dependencies = [
  "base64 0.22.1",
  "bzip2",
+ "cc",
  "clap",
  "cpal",
  "flate2",

@@ -1,0 +1,116 @@
+{
+  "scope": "macOS source-outline raster correction; does not qualify original Apple fonts, other host platforms, physical input or production release",
+  "diagnosis": "Thresholded antialiasing omitted small-font strokes. Static monochrome scan conversion preserves them; simple rather than invented smart dropout control matches sampled source glyph instructions.",
+  "source": "NimbusMonoPS-Regular.ttf resolved by the existing Monaco alias policy",
+  "source_sha256": "bf749d47bf69f4bf6963833afb66a3a5b6e62185bfffaf068b7a1b3f0276ba82",
+  "independent_comparison": "FreeType monochrome rendering of the same font, not a native Macintosh oracle",
+  "sampled_outlines_equal": [
+    "A",
+    "M",
+    "4",
+    "S"
+  ],
+  "exact_pixel_regression": "monaco9_preserves_independent_source_monochrome_strokes: 1 passed, 0 failed, 0.02s",
+  "font_suite_before_stronger_regression": "26 passed, 0 failed, 1.68s",
+  "gameplay_capture": {
+    "compositor": "shared Demo renderer",
+    "worker": "production run_guest with host services disabled",
+    "archive": "target/gpui-qualification/marathon.sit",
+    "prefer_powerpc": false,
+    "requested_depth": 8,
+    "observed_worker_updates": 1350,
+    "observation_elapsed_ms": 68804.126125,
+    "guest_key_input": [
+      49,
+      32
+    ],
+    "guest_mouse_input_v_h": [
+      220,
+      400
+    ],
+    "notification_identity": null,
+    "input_after_updates": 800,
+    "release_after_updates": 802,
+    "key_after_updates": 1100,
+    "key_release_after_updates": 1102,
+    "observation_timeout_seconds": 120,
+    "status": "68k \u00b7 Running",
+    "guest_dimensions": [
+      800,
+      600
+    ],
+    "scene_scale": 1.0,
+    "scene_origin": [
+      0.0,
+      0.0
+    ],
+    "menu_presented": false,
+    "menu_height": 0,
+    "scope": "Real application worker snapshot, optionally after held guest key or mouse input. Observed updates are not frontend ticks or frame latency. No physical input, live frame delivery, audio continuity or persistence qualification."
+  },
+  "ink_comparison": {
+    "scope": "Same bundled source; exterior blank padding normalized; bearings and Apple font fidelity excluded",
+    "glyphs": [
+      {
+        "character": ".",
+        "same_trimmed_ink": true
+      },
+      {
+        "character": "4",
+        "same_trimmed_ink": true
+      },
+      {
+        "character": " ",
+        "same_trimmed_ink": true
+      },
+      {
+        "character": "M",
+        "same_trimmed_ink": true
+      },
+      {
+        "character": "A",
+        "same_trimmed_ink": true
+      },
+      {
+        "character": "G",
+        "same_trimmed_ink": true
+      },
+      {
+        "character": "N",
+        "same_trimmed_ink": true
+      },
+      {
+        "character": "U",
+        "same_trimmed_ink": true
+      },
+      {
+        "character": "E",
+        "same_trimmed_ink": true
+      },
+      {
+        "character": "C",
+        "same_trimmed_ink": true
+      },
+      {
+        "character": "L",
+        "same_trimmed_ink": true
+      },
+      {
+        "character": "S",
+        "same_trimmed_ink": true
+      }
+    ]
+  },
+  "visual_review": "Shared composition inspected; source text remains application-drawn and tiny. All twelve sampled ink shapes match after exterior-padding normalization. Original guest bearings/advances remain authoritative.",
+  "runtime_dependencies": "Static converter; linked-library audit found no dynamic FreeType or Homebrew dependency",
+  "capture_source_note": "Capture used temporary debug-only HUD trace, subsequently removed; formatting-only edits to the two small new Rust files occurred after its build. Critical raster policy is unchanged.",
+  "artifact_sha256": {
+    "simple-mono.png": "ea084901427d2fc5620f714bd8b6b3d300b6697515c6aa15f9a7f79f84c51efd",
+    "simple-mono.guest.png": "1c3d24f7e45402c8629b9c1e4ae02df78ca9148cc5acf84cbd0e08aa74555327",
+    "simple-mono.capture.json": "2e87d578d331f64f1e5db76d1f06aa4067a2bd48f289cb3c6cc48603669861f8",
+    "simple-mono.log": "479bce9dc665f4db3bb901aa12033de42fa1714a00baefd12f376e615fe0c840",
+    "simple-mono-input-hashes.txt": "b65c6657603132cdc8bbca2e9429ebd4a030eb52bde6ae9011dfbcc32427c069"
+  },
+  "ordinary_library_build": "cargo check --locked --no-default-features --lib passed, 46.92s",
+  "textedit_geometry_and_interaction": "plain_guest_text_service_geometry_uses_actual_field passed all twelve CPU/depth/alignment cases, 31.24s, after temporary tracing removal"
+}

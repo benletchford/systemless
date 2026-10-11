@@ -2,6 +2,9 @@
 use super::bundled::bytes;
 use super::*;
 
+#[cfg(target_os = "macos")]
+mod monochrome;
+
 type Faces = (&'static FontFace, &'static MacRomanFace);
 static FACES: LazyLock<Mutex<HashMap<(i16, i16), Faces>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -118,6 +121,8 @@ pub(super) fn rasterize(
     // stem positions and therefore loses strokes when thresholded. Mono fits
     // both axes to the pixel grid and returns matching adjusted advances.
     let hinter = HintingInstance::new(&outlines, ppem, location, Target::Mono).ok()?;
+    #[cfg(target_os = "macos")]
+    let mono = monochrome::Rasterizer::new();
     let mut data = Vec::new();
     let mut ids = Vec::new();
     let mut glyph = |ch: char| {
@@ -162,6 +167,22 @@ pub(super) fn rasterize(
             result.height = u8::try_from(placement.height).ok()?;
             result.origin_x = i8::try_from(placement.left).ok()?;
             result.origin_y = i8::try_from(-placement.top).ok()?;
+            #[cfg(target_os = "macos")]
+            {
+                // A rejected outline must not reject the entire face and make
+                // font resolution select another family. Retain the same
+                // source mask and metrics when conversion is unavailable.
+                let pixels = mono
+                    .as_ref()
+                    .and_then(|raster| raster.render(&path, &placement))
+                    .unwrap_or_else(|| {
+                        coverage.iter().map(|&alpha| {
+                            if alpha >= MONO_COVERAGE_THRESHOLD { 255 } else { 0 }
+                        }).collect()
+                    });
+                data.extend(pixels);
+            }
+            #[cfg(not(target_os = "macos"))]
             data.extend(coverage.iter().map(|&alpha| {
                 if alpha >= MONO_COVERAGE_THRESHOLD {
                     255
@@ -532,6 +553,29 @@ mod tests {
             .max()
             .unwrap();
         assert_eq!(bundled.metrics.wid_max, i16::from(expected_wid_max));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn monaco9_preserves_independent_source_monochrome_strokes() {
+        let (face, _) = super::rasterize(FONT_MONACO, 9, super::bytes(FONT_MONACO).unwrap(), None, None).unwrap();
+        // Independent FreeType monochrome rendering of the same bundled
+        // Nimbus Mono source, not an original Macintosh font oracle. Keep
+        // Systemless's existing exterior padding, bearings and advances.
+        for (ch, expected) in [
+            ('A', vec![".##...", ".#.#..", ".###..", "#...#.", "##.##."]),
+            ('M', vec![".#..#.", ".####.", ".####.", ".##.#.", "######"]),
+            ('4', vec![".##.", "#.#.", "#.#.", "####", ".###"]),
+            ('S', vec!["##.", "#..", "#..", ".##", "..#", "###"]),
+        ] {
+            let glyph = &face.glyphs[ch as usize - usize::from(b' ')];
+            let pixels = &face.data[glyph.data_offset..glyph.data_offset
+                + usize::from(glyph.width) * usize::from(glyph.height)];
+            let rows: Vec<String> = pixels.chunks_exact(usize::from(glyph.width))
+                .map(|row| row.iter().map(|&pixel| if pixel == 0 { '.' } else { '#' }).collect())
+                .collect();
+            assert_eq!(rows, expected, "source monochrome strokes for {ch}");
+        }
     }
 
     #[test]
