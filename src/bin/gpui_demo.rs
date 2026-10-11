@@ -73,6 +73,9 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_lists_selected: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_standard_file_save: Option<PathBuf>,
     }
 
     fn parse_depth(value: &str) -> Result<u16, String> {
@@ -1177,6 +1180,7 @@ mod desktop {
         ControlsHeld,
         Lists,
         ListsSelected,
+        StandardFileSave,
     }
 
     #[cfg(feature = "gpui-demo-test")]
@@ -1197,6 +1201,7 @@ mod desktop {
                 | CaptureCase::ControlsHeld
         );
         let lists_page = matches!(capture, CaptureCase::Lists | CaptureCase::ListsSelected);
+        let standard_file_save = matches!(capture, CaptureCase::StandardFileSave);
         let controls_changed = matches!(capture, CaptureCase::ControlsChanged);
         let controls_dragged = matches!(capture, CaptureCase::ControlsDragged);
         let controls_held = matches!(capture, CaptureCase::ControlsHeld);
@@ -1219,7 +1224,9 @@ mod desktop {
                 break;
             }
         }
-        let (menu_id, item) = if lists_page {
+        let (menu_id, item) = if standard_file_save {
+            (129, 12)
+        } else if lists_page {
             (129, 9)
         } else if controls_page {
             (129, 2)
@@ -1227,7 +1234,40 @@ mod desktop {
             (128, 1)
         };
         assert!(session.runner_mut().select_guest_menu_item(menu_id, item));
-        let dialogs = if lists_page {
+        let dialogs = if standard_file_save {
+            for _ in 0..300 {
+                session.runner_mut().run_steps(100_000, None);
+                if session.runner_mut().guest_menu_snapshot().menus.iter().any(|menu| {
+                    menu.id == 129
+                        && menu.items.iter().any(|item| item.number == 12 && item.checked)
+                }) {
+                    break;
+                }
+            }
+            let tick = session.runner().guest_tick().saturating_add(1);
+            session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+            for input in [
+                MacintoshInput::MouseDown {
+                    vertical: 266,
+                    horizontal: 400,
+                },
+                MacintoshInput::MouseUp {
+                    vertical: 266,
+                    horizontal: 400,
+                },
+            ] {
+                session.deliver_input(input);
+            }
+            assert!((0..100).any(|_| {
+                let tick = session.runner().guest_tick().saturating_add(1);
+                session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                session.runner_mut().standard_file_snapshot().is_some_and(|panel| {
+                    panel.kind == systemless::runner::StandardFileKind::Put
+                        && panel.entries.as_ref().is_some_and(|entries| !entries.is_empty())
+                })
+            }));
+            Vec::new()
+        } else if lists_page {
             for _ in 0..300 {
                 session.runner_mut().run_steps(100_000, None);
                 if session
@@ -1273,7 +1313,7 @@ mod desktop {
                 .expect("About alert should become visible")
         };
         let windows = session.runner_mut().window_frame_snapshot();
-        if !controls_page && !lists_page {
+        if !controls_page && !lists_page && !standard_file_save {
             assert!(standard_dbox_dialog(&dialogs, &windows).is_some());
         }
         if controls_changed {
@@ -1406,6 +1446,14 @@ mod desktop {
             pixel.swap(0, 2);
         }
         let frame_height = frame.height - top;
+        if standard_file_save {
+            image::RgbaImage::from_raw(frame.width, frame_height, pixels)
+                .unwrap()
+                .save(output)
+                .unwrap();
+            eprintln!("saved guest Standard File capture to {}", output.display());
+            return;
+        }
 
         let mut visual = VisualTestAppContext::with_asset_source(
             platform::current_platform(true),
@@ -1536,6 +1584,17 @@ mod desktop {
             );
             return;
         }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_standard_file_save.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::StandardFileSave,
+            );
+            return;
+        }
         let (commands, receiver) = mpsc::channel();
         let updates = Arc::new(Mutex::new(None));
         let worker_updates = updates.clone();
@@ -1619,6 +1678,7 @@ mod desktop {
                         capture_controls_held: None,
                         capture_lists: None,
                         capture_lists_selected: None,
+                        capture_standard_file_save: None,
                     },
                     rx,
                     worker_updates,

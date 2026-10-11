@@ -181,10 +181,10 @@ pub(super) const PPC_STANDARD_FILE_PUT_DIALOG_WIDTH: i16 = 360;
 pub(super) const PPC_STANDARD_FILE_PUT_DIALOG_HEIGHT: i16 = 270;
 pub(super) const PPC_STANDARD_FILE_PUT_CANCEL_RECT: (i16, i16, i16, i16) = (239, 166, 261, 246);
 pub(super) const PPC_STANDARD_FILE_PUT_SAVE_RECT: (i16, i16, i16, i16) = (239, 258, 261, 338);
-pub(super) const PPC_STANDARD_FILE_PUT_NAME_RECT: (i16, i16, i16, i16) = (52, 24, 72, 330);
-pub(super) const PPC_STANDARD_FILE_PUT_LIST_RECT: (i16, i16, i16, i16) = (98, 18, 226, 234);
-pub(super) const PPC_STANDARD_FILE_PUT_SCROLL_RECT: (i16, i16, i16, i16) = (98, 235, 226, 251);
-pub(super) const PPC_STANDARD_FILE_PUT_DESKTOP_RECT: (i16, i16, i16, i16) = (77, 258, 98, 338);
+pub(super) const PPC_STANDARD_FILE_PUT_NAME_RECT: (i16, i16, i16, i16) = (204, 24, 224, 330);
+pub(super) const PPC_STANDARD_FILE_PUT_LIST_RECT: (i16, i16, i16, i16) = (39, 18, 167, 314);
+pub(super) const PPC_STANDARD_FILE_PUT_SCROLL_RECT: (i16, i16, i16, i16) = (39, 314, 167, 330);
+pub(super) const PPC_STANDARD_FILE_PUT_DESKTOP_RECT: (i16, i16, i16, i16) = (239, 24, 261, 104);
 
 fn ppc_standard_file_reply_ptr(mode: PpcStandardFileMode, cpu: &PpcCpu) -> u32 {
     match mode {
@@ -320,6 +320,9 @@ fn ppc_standard_file_directory_name(
     vfs_directories: &[PpcVfsDirectory],
     dir_id: u32,
 ) -> Vec<u8> {
+    if dir_id == PPC_ROOT_DIR_ID {
+        return crate::trap::dispatch::BOOT_VOLUME_NAME.as_bytes().to_vec();
+    }
     ppc_directory_path_for_id(vfs_directories, dir_id)
         .map(ppc_vfs_basename)
         .filter(|name| !name.is_empty())
@@ -929,21 +932,9 @@ fn ppc_standard_file_draw_put_dialog(
         memory,
         gworlds,
         (
-            bounds.0.saturating_add(14),
+            bounds.0.saturating_add(183),
             bounds.1.saturating_add(18),
-            bounds.0.saturating_add(32),
-            bounds.1.saturating_add(330),
-        ),
-        b"Save File",
-        PPC_RGB_BLACK,
-    );
-    ppc_draw_dialog_text(
-        memory,
-        gworlds,
-        (
-            bounds.0.saturating_add(32),
-            bounds.1.saturating_add(18),
-            bounds.0.saturating_add(50),
+            bounds.0.saturating_add(201),
             bounds.1.saturating_add(330),
         ),
         &tracking.prompt,
@@ -989,7 +980,7 @@ fn ppc_standard_file_draw_put_dialog(
     ppc_draw_dialog_text(
         memory,
         gworlds,
-        ppc_standard_file_global_rect(bounds, (78, 18, 97, 236)),
+        ppc_standard_file_global_rect(bounds, (16, 18, 36, 236)),
         &tracking.directory_name,
         PPC_RGB_BLACK,
     );
