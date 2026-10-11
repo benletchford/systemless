@@ -659,7 +659,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 610 | OTChess | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 611 | Par Pyramid | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 612 | Querkz | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 613 | Re-Pete | [Publisher unchanged-package grant](CATALOGUE-SOURCES.md#re-pete-22-original-package-and-sequence-playback) | Exact 2.2; one file / two forks and Finder metadata independently matched | Score 0→1: eight measured checks; sequence/audio repair [#4649](https://github.com/benletchford/systemless/issues/4649) | No native PPC slice in 2.2 | Pending | Unhosted; gameplay held | Pending |
+| 613 | Re-Pete | [Publisher unchanged-package grant](CATALOGUE-SOURCES.md#re-pete-22-original-package-and-sequence-playback) | Exact 2.2; one file / two forks and Finder metadata independently matched | Two matching rounds, score 0→1→3; 16 pixel/audio checks on [repair #4654](https://github.com/benletchford/systemless/pull/4654) | No native PPC slice in 2.2 | Pending | Disabled intake prepared; promotion and repair CI pending | Human release + public replay pending |
 | 614 | Sword Dream II 3D | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 615 | Tanks of Terror | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 616 | Ultris | Pending | Pending | Pending | Pending | Pending | Pending | Pending |

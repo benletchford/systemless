@@ -1799,9 +1799,18 @@ of draining it. The first 100-frame diagnostic ended before the highlight and
 must not be interpreted as proof that the original never called HiliteControl.
 [Compatibility defect #4649](https://github.com/benletchford/systemless/issues/4649)
 tracks note playback, Boolean decoding and scheduler-based draining disposal.
-The local repair is under test; no successful repaired-game outcome is claimed.
+Repaired native build `1df6ea6dc2b5deab2f3466134b123ac308f13a70` now holds the
+first flash across eight frontend captures. A diagnostic measured 2,761 non-silent
+PCM samples during that note interval; its deliberately unreachable assertion was
+measurement only. A fresh bounded two-round scenario passes 16 measured pixel/audio
+checks across 530 frontend / 1,102 guest ticks with no exhaustion. Ordinary matching
+input reproduces the first 5, then the next sequence 5 and 7, advancing score 0→1→3.
+Captures were inspected before assertions were added. This is bounded native gameplay,
+not independent audio fidelity or exhaustive difficulty qualification. [Repair #4654](https://github.com/benletchford/systemless/pull/4654)
+awaits updated full CI after correcting legacy null-channel and Boolean fixtures;
+production runtime code remains identical to the replayed binary.
 
-Visible/audible sequence playback, further matching/error interactions, browser
-qualification, asset promotion, launch approval, human release and independent
-public replay remain pending. The archive is unhosted and there is no qualified
-live-count increment.
+A disabled catalogue intake now records the exact publisher archive and a content-only
+score-3 gameplay screenshot. Browser qualification, asset promotion, launch approval,
+human release and independent public replay remain pending. The archive is still
+unhosted at preparation and there is no qualified live-count increment.
