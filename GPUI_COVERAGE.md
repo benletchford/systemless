@@ -595,3 +595,17 @@ repetition, nested callback frames and broader cross-CPU lifetime parity remain
 open.
 The seven GPUI tests matching `control` and the radio tracking regression also
 pass against this change.
+
+The equivalent 68K nil-action standard-control path now consumes queued mouse-up
+positions both before initial entry and while tracking. A regression matrix
+covers buttons, checkboxes and radios, inside/outside releases, and early/held
+entry, with the current pointer deliberately opposite the release location.
+It verifies part codes, stack completion, cleared tracking/highlights, event
+consumption and unchanged application-owned values. The test reproduced an
+outside release incorrectly returning a successful hit before the fix. Immediate
+checkbox/radio completion also now returns part 11 instead of the button part 10.
+All 246 library tests matching `control` pass. This establishes release-position
+parity for these standard nil-action controls; it does not qualify callback
+repetition, custom definitions or all control lifetime cases.
+The seven GPUI control tests and the three-mode radio tracking regression also
+pass with the 68K release-position change.
