@@ -1,0 +1,16 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 34.85s
+     Running unittests src/lib.rs (target/debug/deps/systemless-257ba83b63f6679f)
+
+running 8 tests
+test systems::macintosh::text_edit::drawing::tests::monochrome_neighbours_do_not_invalidate_the_view ... ok
+test systems::macintosh::text_edit::drawing::tests::unlimited_clip_is_intersected_before_translating_port_origin ... ok
+test systems::macintosh::text_edit::drawing::tests::records_pixels_without_optional_outline_surface_at_every_depth ... ok
+test systems::macintosh::text_edit::drawing::tests::solid_caret_evidence_checks_full_fragment_and_packed_view_edges ... ok
+test systems::macintosh::text_edit::drawing::tests::unchanged_regions_preserve_every_unmodified_native_pixel ... ok
+test systems::macintosh::text_edit::drawing::tests::retained_coverage_uses_the_clip_at_draw_time ... ok
+test systems::macintosh::text_edit::drawing::tests::disposal_and_handle_reuse_require_fresh_drawing ... ok
+test systems::macintosh::text_edit::drawing::tests::editor_mutation_requires_fresh_ink_even_when_pixels_match ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 6707 filtered out; finished in 0.01s
+

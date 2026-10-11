@@ -2905,7 +2905,7 @@ impl MacMemoryBus {
         &self, handle: u32, port: u32, view: (i16, i16, i16, i16),
         caret: Option<(i16, i16, i16, i16)>,
     ) {
-        let mut drawing = crate::text_edit::TextEditDrawing::capture(port, view, |addr| Some(self.read_byte(addr)));
+        let mut drawing = crate::text_edit::TextEditDrawing::capture_editor(handle, port, view, |addr| Some(self.read_byte(addr)));
         if let (Some(drawing), Some(rect)) = (&mut drawing, caret) { drawing.qualify_solid_caret(rect); }
         self.presentation.record_text_edit_drawing(handle, drawing);
     }
@@ -2913,7 +2913,7 @@ impl MacMemoryBus {
         self.presentation.text_edit_solid_caret(handle)
     }
     pub(crate) fn text_edit_drawing_regions(&self, handle: u32, port: u32, rect: (i16, i16, i16, i16), screen_base: u32) -> Vec<(i16, i16, i16, i16)> {
-        let drawing = crate::text_edit::TextEditDrawing::capture(port, rect, |addr| Some(self.read_byte(addr)));
+        let drawing = crate::text_edit::TextEditDrawing::capture_editor(handle, port, rect, |addr| Some(self.read_byte(addr)));
         self.presentation.text_edit_drawing_regions(handle, drawing, screen_base)
     }
 

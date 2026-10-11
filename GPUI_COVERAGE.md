@@ -5508,3 +5508,20 @@ or correct application-owned state. Reproducible capture flags and build/source
 hashes are archived. This paired visual checkpoint is not every scale/state
 combination, collapsed caret or scrolling/marked staging qualification, a
 Macintosh oracle, or physical host input evidence. All release gates stay open.
+
+### TextEdit completed-paint recipe (2026-10-11)
+
+Completed native TextEdit ink now retains canonical guest contents and layout,
+including font/style, wrapping, alignment, selection, activation and caret
+state. Both CPU draw/query paths require this recipe to match alongside screen
+pixels before GPUI owns the field. Direct guest record/text mutations therefore
+retain guest rendering until a completed redraw establishes fresh ownership.
+List-cell raster ownership remains separate. Eight shared ownership/raster tests
+pass, and actual plain-editor GPUI geometry/hit-testing/editing passes all twelve
+CPU/depth/alignment cases in 32.40s. Evidence and the corrected test-build failure
+are in `reference/gpui-demo/textedit-paint-recipe`. Physical input, independent
+font fidelity and the full release gates remain open.
+
+The same candidate additionally passes styled halo editing across four modes
+(174.32s) and spacing-style editing across four modes (56.85s), with the combined
+log archived in `reference/gpui-demo/textedit-paint-recipe`.

@@ -126,3 +126,20 @@ that launch `current_exe` children can use newer artifacts. Its eventual result
 must therefore be treated as mixed-checkpoint regression evidence, not a full
 final-candidate qualification. Preserve that run rather than restarting on an
 observation timeout; a stable final candidate needs a separate pinned artifact.
+
+## TextEdit completed-paint ownership (2026-10-11)
+
+Both CPU paths now retain canonical TextEdit contents/layout alongside completed
+native raster evidence. Changes to guest text, font/style, wrapping/alignment,
+selection, activation or caret state cannot authorize premature GPUI replacement
+merely because old screen pixels remain unchanged. Completed native redraws
+establish fresh ownership. Shared ownership/raster tests pass eight cases; the
+actual plain-editor geometry/hit-testing/editing regression passes all twelve
+CPU/depth/alignment cases (32.40s). Styled halo editing passes all four modes
+(174.32s). These checks do not close physical-input, independent-font-fidelity,
+performance or final-candidate qualification. Evidence is archived under
+`reference/gpui-demo/textedit-paint-recipe`; all eight gates remain open.
+
+The same candidate additionally passes styled halo editing across four modes
+(174.32s) and spacing-style editing across four modes (56.85s), with the combined
+log archived in `reference/gpui-demo/textedit-paint-recipe`.

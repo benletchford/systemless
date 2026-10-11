@@ -1,0 +1,8 @@
+{
+  "src/systems/macintosh/text_edit/drawing.rs": "fc28df9f7ae18e89f21c2d610b1fb755a2f7d6f2c89df9708aa22feebf4273bd",
+  "src/systems/macintosh/memory/presentation.rs": "fe9084f292daafc214749b6209843051568f3ee651eec0896718e5b9dcada3ed",
+  "src/systems/macintosh/loader/ppc/textedit.rs": "2d5596c0af75234438e1fb2ec994c295bfd9a58ae109bc20e86b7c0868b29da7",
+  "src/systems/macintosh/runner/mod.rs": "9c4f6086bb43e853cd988864215a218669d5598ed8db460d48133b577ff3659a",
+  "src/bin/gpui_demo.rs": "f0a629d454b4164ef82207dabb124e38ef76afd8690b7d9d69342440997fb283",
+  "tests/toolbox-showcase/toolbox-showcase.sit": "28433983ced239f85c319718528a19c558adb0b355c5e28e0daf9b1a1e824aa8"
+}

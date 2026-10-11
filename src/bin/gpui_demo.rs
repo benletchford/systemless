@@ -7300,6 +7300,8 @@ mod desktop {
                         capture_list_transition: "scrolled".into(),
                         capture_scale: None,
                         capture_text_edit: None,
+                        capture_text_alignment: None,
+                        capture_text_aligned_inactive: false,
                         capture_styled_text_edit_ink: None,
                         capture_styled_text_edit_multiline: None,
                         capture_styled_scroll: false,
