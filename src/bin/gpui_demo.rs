@@ -1459,9 +1459,12 @@ mod desktop {
             }
         }
 
-        fn route_modal_tab(&mut self, modifiers: Modifiers, window: &mut Window, cx: &mut Context<Self>) {
+        fn route_guest_tab(&mut self, modifiers: Modifiers, window: &mut Window, cx: &mut Context<Self>) {
             let volume_owned = self.standard_file.as_ref().is_some_and(|panel| panel.volume_popup.is_some());
-            if self.notification_alert.is_none() && !volume_owned {
+            // Base Root resolves Tab before raw key capture. Preserve ordinary
+            // guest keys too, while leaving host menu/control focus to GPUI.
+            if self.notification_alert.is_none() && !volume_owned
+                && (!self.focus.is_focused(window) || !self.open_menus.is_empty()) {
                 return;
             }
             if self.host_active != Some(false) {
@@ -1585,7 +1588,7 @@ mod desktop {
                 self._modal_keys = Some(cx.intercept_keystrokes(move |event, window, cx| {
                     if window.window_handle() != owner || event.keystroke.key != "tab" { return; }
                     if let Some(view) = view.upgrade() {
-                        view.update(cx, |this, cx| this.route_modal_tab(event.keystroke.modifiers, window, cx));
+                        view.update(cx, |this, cx| this.route_guest_tab(event.keystroke.modifiers, window, cx));
                     }
                 }));
             }
@@ -12285,6 +12288,66 @@ mod desktop {
 
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
+        fn guest_root_tab_reaches_plain_editor_across_modes(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::{AppContext, test::TestWindowExt};
+            cx.update(gpui_kit::init);
+            for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 7));
+                wait_for_menu(&mut session, 129, 7, true); settle(&mut session);
+                let initial = session.runner_mut().text_edit_snapshot().records.into_iter()
+                    .find(|record| !record.styled && record.global_view_rect.is_some()).unwrap();
+                let rect = initial.global_view_rect.unwrap();
+                for input in [MacintoshInput::MouseDown { vertical: rect.0 + 4, horizontal: rect.1 + 4 },
+                    MacintoshInput::MouseUp { vertical: rect.0 + 4, horizontal: rect.1 + 4 }] {
+                    session.deliver_input(input); settle(&mut session);
+                }
+                let before = session.runner_mut().text_edit_snapshot().records.into_iter()
+                    .find(|record| record.guest_id == initial.guest_id).unwrap();
+                assert!(before.active);
+                let (sender, receiver) = std::sync::mpsc::channel();
+                let (window, view) = cx.update(|cx| gpui_kit::open_window(Default::default(), cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap());
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.render_frame(cx);
+                    view.update(cx, |demo, cx| {
+                        demo.width = 800; demo.height = 600;
+                        demo.text_edits = vec![before.clone()];
+                        demo.windows = session.runner_mut().window_frame_snapshot();
+                        demo.menus = session.runner_mut().guest_menu_snapshot();
+                        demo.host_active = Some(true); demo.focus.focus(window, cx); cx.notify();
+                    });
+                    window.render_frame(cx);
+                    view.update(cx, |demo, _| demo.host_active = Some(true));
+                    receiver.try_iter().for_each(drop);
+                    window.press("tab", cx);
+                    assert!(view.read(cx).focus.is_focused(window));
+                }).unwrap();
+                let inputs: Vec<_> = receiver.try_iter().filter_map(|command| match command {
+                    super::Command::Input(input) => Some(input), _ => None,
+                }).collect();
+                assert_eq!(inputs.iter().filter(|input| matches!(input,
+                    MacintoshInput::KeyDown { mac_key: 0x30, character: 9 })).count(), 1);
+                for input in inputs { session.deliver_input(input); }
+                settle(&mut session);
+                let after = session.runner_mut().text_edit_snapshot().records.into_iter()
+                    .find(|record| record.guest_id == before.guest_id).unwrap();
+                let mut expected = before.text.clone();
+                expected.splice(before.selection.0..before.selection.1, [9]);
+                assert_eq!(after.text, expected, "guest TEKey Tab, powerpc={powerpc} depth={depth}");
+                assert_eq!(after.selection, (before.selection.0 + 1, before.selection.0 + 1));
+                cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
+            }
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
         fn plain_guest_text_service_geometry_uses_actual_field(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::{AppContext, EntityInputHandler, Bounds, point, px};
             cx.update(gpui_kit::init);
@@ -17616,6 +17679,17 @@ mod desktop {
             view.update(cx, |demo, _| {
                 demo.host_active = Some(true); demo.standard_file.as_mut().unwrap().volume_popup = None;
             });
+
+            cx.update_window(window.into(), |_, window, cx| {
+                view.update(cx, |demo, cx| { demo.focus.focus(window, cx); });
+                for key in ["tab", "shift-tab"] { window.press(key, cx); }
+                assert!(view.read(cx).focus.is_focused(window));
+            }).unwrap();
+            let ordinary_tabs: Vec<_> = receiver.try_iter().collect();
+            assert_eq!(ordinary_tabs.iter().filter(|command| matches!(command,
+                super::Command::Input(MacintoshInput::KeyDown { mac_key: 0x30, character: 9 }))).count(), 2,
+                "ordinary guest root Tab must bypass Base Root traversal");
+            assert!(!ordinary_tabs.iter().any(|command| matches!(command, super::Command::ActivateFile(..))));
 
             cx.update_window(window.into(), |_, window, cx| {
                 view.update(cx, |demo, cx| {

@@ -24,6 +24,10 @@ capture run is archived in `styled-text-single-line-shared`, pinned to f565b695.
 All 192 fixture raster/state cases pass; this earlier bitmap evidence does not
 qualify the newer smooth typography or production readiness.
 
+### Ordinary guest Tab routing
+
+The window-scoped interceptor now preserves Tab/Shift-Tab when the guest root has focus, before Base Root bindings consume them. Host menu/control focus retains GPUI handling; notification and volume-popup ownership retain their boundaries. The shared Open pointer/keyboard regression passes3.30s. Actual GPUI-to-session plain TextEdit editing passes four CPU/depth modes6.73s, verifying exactly one Tab insertion and guest caret advancement. Five notification regressions pass29.50s. Evidence: `reference/gpui-demo/guest-root-tab`. Physical keyboard, broader focus transitions and native accessibility remain open; no broad release gate closes.
+
 ### PPC mounted-volume custom filter
 
 Custom Open callbacks now receive the tracked mounted-volume reference in ioVRefNum. The compiled PPC callback regression passes (0.50s), recording boot then -42 across guest popup navigation while retaining modal ownership. All five custom_get_file regressions pass (0.71s). Evidence: `reference/gpui-demo/mounted-filter`. This is callback/event-loop evidence; physical GPUI input, full custom variants, mounted legacy acceptance and cross-CPU callback equivalence remain open. No broad release gate closes.
