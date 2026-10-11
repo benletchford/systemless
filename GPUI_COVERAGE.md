@@ -1284,6 +1284,12 @@ button labels fit and default/non-default presentation remains distinct. This
 is six initial-state captures, not qualification of all scales, themes or held
 states. The monochrome modal capture contains a black guest background region
 behind the dialog. The paired raw guest framebuffer contains the same black
-region, so it is not introduced by GPUI button composition. Guest drawing and
-native monochrome equivalence still need investigation before claiming complete
-visual readiness.
+region, so it is not introduced by GPUI button composition. This is the same
+custom-panel drawing already matched by the one-bit BasiliskII qualification
+above and covered by `one_bit_color_port_light_gray_fill_matches_native_pattern_fallback`.
+It must be preserved rather than recoloured by the frontend. The broader
+monochrome qualification remains open.
+
+The document-button regression also verifies the rendered accessibility node's
+Button role, label and disabled flag through inactive, disabled and re-enabled
+states. This checks node metadata, not native screen-reader dispatch.

@@ -4982,8 +4982,10 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // RGBForeColor ($AA14)
-            // RGBForeColor ($AA14): Sets fg_color (R, G, B)
+            // RGBForeColor (0xAA14)
+            // Sets the foreground RGB color and resolves its current-port pixel value.
+            // PROCEDURE RGBForeColor (color: RGBColor);
+            // Imaging With QuickDraw (1994), pp. 4-70--4-71.
             (true, 0x214) => {
                 let sp = cpu.read_reg(Register::A7);
                 let color_ptr = bus.read_long(sp);
