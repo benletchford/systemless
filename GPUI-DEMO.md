@@ -108,7 +108,10 @@ the guest promotes and activates its owner window. Use
 [68K](tests/toolbox-showcase/reference/gpui-demo/22-windows-activated-68k.png)
 and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/22-windows-activated-ppc.png).
 The capture sends guest input directly; off-pane drag capture remains to be
-qualified.
+qualified in composed images. The GPUI interaction test also drags the newly
+activated title bar beyond the guest pane inside the host window, checks one
+release at the clamped guest edge, and verifies movement on both CPUs. Dragging
+beyond the outer host-window boundary still needs qualification.
 The gutter overlays are presentation only: scrollbar tracks do not invent a
 thumb or scroll state, and input in those areas still reaches the guest. Real
 standard scrollbar controls in document windows now show a guest-value thumb;

@@ -5309,6 +5309,52 @@ mod desktop {
                 assert_eq!(activated[0].guest_id, before[1].guest_id, "powerpc={powerpc}");
                 assert!(activated[0].window.active, "powerpc={powerpc}");
                 assert!(!activated[1].window.active, "powerpc={powerpc}");
+
+                let aux_bounds = activated[0].window.bounds;
+                let aux_title = (aux_bounds.0 - 9, (aux_bounds.1 + aux_bounds.3) / 2);
+                cx.update(|cx| {
+                    view.update(cx, |demo, cx| {
+                        demo.windows = activated.clone();
+                        cx.notify();
+                    });
+                });
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.drag(
+                        host(aux_title),
+                        gpui_kit::point(gpui_kit::px(850.), host(aux_title).y),
+                        cx,
+                    );
+                })
+                .unwrap();
+                let mut presses = 0;
+                let mut releases = 0;
+                let mut release_at = None;
+                for command in receiver.try_iter() {
+                    if let super::Command::Input(input) = command {
+                        match input {
+                            MacintoshInput::MouseDown { .. } => presses += 1,
+                            MacintoshInput::MouseUp {
+                                vertical,
+                                horizontal,
+                            } => {
+                                releases += 1;
+                                release_at = Some((vertical, horizontal));
+                            }
+                            _ => {}
+                        }
+                        session.deliver_input(input);
+                        settle(&mut session);
+                    }
+                }
+                assert_eq!((presses, releases), (1, 1), "powerpc={powerpc}");
+                assert_eq!(release_at, Some((aux_title.0, 799)), "powerpc={powerpc}");
+                let off_pane_moved = session.runner_mut().window_frame_snapshot();
+                assert_eq!(off_pane_moved[0].guest_id, activated[0].guest_id);
+                assert!(
+                    off_pane_moved[0].window.bounds.1 > aux_bounds.1,
+                    "off-pane drag should move guest window on powerpc={powerpc}: {:?}",
+                    off_pane_moved[0].window.bounds
+                );
             }
         }
 
