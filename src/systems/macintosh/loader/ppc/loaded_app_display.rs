@@ -214,6 +214,6 @@ impl PpcLoadedApp {
         Some(TextEditPaintSnapshot { depth: front.depth as u16, mode,
             char_extra: TextEditCharExtraSnapshot::PpcPacked(ppc_port_char_extra_packed(&mut self.memory, record.owner_port)),
             space_extra: self.memory.read_u32_be(record.owner_port.checked_add(76)?)? as i32,
-            style_ink })
+            solid_caret: None, style_ink })
     }
 }

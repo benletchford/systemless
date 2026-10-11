@@ -3824,3 +3824,26 @@ classic 68k pending pen/pattern metadata rather than substituting insertion
 style ink for classic's final painting pen. These two temporary captures are
 initial evidence, not an archived CPU/scale/blink/activation matrix or native
 Macintosh oracle evidence. Production styled scene ownership is still guarded.
+
+Classic 68k caret qualification now retains the actual painted fragment at
+TextEdit's native drawing boundary. A completed drawing stores solid-caret
+metadata only when every pixel in the clipped fragment is identical; mixed
+patterns, empty/out-of-view rectangles and unsupported depths are refused.
+The snapshot resolves that physical pixel through the current screen palette
+and gamma only while the original drawing remains intact. GPUI checks the
+current active/blink/collapsed selection and owner geometry against the retained
+fragment before composing it. This avoids inferring classic caret colour from
+the insertion style or the restored caller foreground. Disposal, reuse and a
+fresh non-caret drawing clear the retained metadata.
+
+The same `--capture-styled-text-edit-caret` command now accepts classic 68k.
+Initial monochrome scale-1 and colour scale-0.75 captures both match every field
+pixel in the shared compositor at device density 2 and were visually inspected.
+These join the earlier initial PPC captures, not a complete archived matrix.
+All six drawing-evidence regressions pass (0.01s), including packed view edges,
+uniform/mixed fragments, clipping and caret metadata disposal/replacement.
+The capture example builds (59.15s); production check passes (53.83s), and the
+no-default-features check passes (8.87s). Themed caps and nonuniform caret rasters
+still need faithful GPUI painting, and production styled scene ownership,
+multiple insertion positions, blink/activation and the complete scale matrix
+remain unfinished. No new native Macintosh oracle qualification is claimed.

@@ -11,9 +11,39 @@ pub(crate) struct TextEditDrawing {
     view: (i16, i16, i16, i16),
     pixels: Vec<u8>,
     pub(crate) painted_regions: Vec<(i16, i16, i16, i16)>,
+    pub(crate) solid_caret: Option<((i16, i16, i16, i16), u16, u16)>,
 }
 
 impl TextEditDrawing {
+    /// Establish a uniform caret raster from this completed native drawing.
+    /// Mixed patterns and partially clipped/nonuniform paint stay guest-owned.
+    pub(crate) fn qualify_solid_caret(&mut self, rect: (i16, i16, i16, i16)) {
+        self.solid_caret = None;
+        let (top, left, bottom, right) = rect;
+        if top < self.view.0 || left < self.view.1 || bottom > self.view.2
+            || right > self.view.3 || top >= bottom || left >= right
+            || !matches!(self.depth, 1 | 8 | 16) { return; }
+        let depth = u32::from(self.depth);
+        let first_byte = (i32::from(self.view.1) - i32::from(self.bounds.1)) as u32 * depth / 8;
+        let end_byte = ((i32::from(self.view.3) - i32::from(self.bounds.1)) as u32 * depth).div_ceil(8);
+        let stride = (end_byte - first_byte) as usize;
+        let mut uniform = None;
+        for y in top..bottom { for x in left..right {
+            let bit = (i32::from(x) - i32::from(self.bounds.1)) as u32 * depth;
+            let at = (i32::from(y) - i32::from(self.view.0)) as usize * stride
+                + (bit / 8 - first_byte) as usize;
+            let value = match self.depth {
+                1 => u16::from((self.pixels[at] >> (7 - bit % 8)) & 1),
+                8 => u16::from(self.pixels[at]),
+                16 => u16::from_be_bytes([self.pixels[at], self.pixels[at + 1]]),
+                _ => unreachable!(),
+            };
+            if uniform.is_some_and(|held| held != value) { return; }
+            uniform = Some(value);
+        } }
+        self.solid_caret = uniform.map(|pixel| (rect, self.depth, pixel));
+    }
+
     pub(crate) fn same_pixels(&self, other: &Self) -> bool {
         self.base == other.base
             && self.port == other.port
@@ -153,6 +183,7 @@ impl TextEditDrawing {
             view,
             pixels,
             painted_regions,
+            solid_caret: None,
         })
     }
 }
@@ -160,6 +191,28 @@ impl TextEditDrawing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn solid_caret_evidence_checks_full_fragment_and_packed_view_edges() {
+        for depth in [1, 8, 16] {
+            let mut mem = memory(depth);
+            // The view starts midway through a packed monochrome byte.
+            let mut drawing = TextEditDrawing::capture(16, (0, 3, 2, 7), |a| mem.get(a as usize).copied()).unwrap();
+            drawing.qualify_solid_caret((0, 3, 2, 4));
+            assert_eq!(drawing.solid_caret, Some(((0, 3, 2, 4), depth, 0)));
+            let stride = (16 * depth).div_ceil(8) as usize;
+            let bit = 3 * usize::from(depth);
+            let at = 256 + stride + bit / 8;
+            mem[at] = if depth == 1 { 1 << (7 - bit % 8) } else { 1 };
+            let mut mixed = TextEditDrawing::capture(16, (0, 3, 2, 7), |a| mem.get(a as usize).copied()).unwrap();
+            mixed.qualify_solid_caret((0, 3, 2, 4));
+            assert_eq!(mixed.solid_caret, None, "mixed depth {depth}");
+            drawing.qualify_solid_caret((0, 2, 2, 4));
+            assert_eq!(drawing.solid_caret, None, "outside the owned view");
+            drawing.qualify_solid_caret((0, 3, 0, 4));
+            assert_eq!(drawing.solid_caret, None, "empty fragment");
+        }
+    }
 
     fn memory(depth: u16) -> Vec<u8> {
         let mut mem = vec![0; 1024];
@@ -267,13 +320,19 @@ mod tests {
         let drawing = TextEditDrawing::capture(16, (0, 1, 2, 7), |a| mem.get(a as usize).copied());
         let slot = crate::memory::presentation::PresentationSlot::default();
         assert!(!slot.text_edit_drawing_intact(42, drawing.clone(), 256));
-        slot.record_text_edit_drawing(42, drawing.clone());
+        let mut caret_drawing = drawing.clone().unwrap();
+        caret_drawing.qualify_solid_caret((0, 3, 2, 4));
+        slot.record_text_edit_drawing(42, Some(caret_drawing));
+        assert_eq!(slot.text_edit_solid_caret(42), Some(((0, 3, 2, 4), 1, 0)));
         assert!(slot.text_edit_drawing_intact(42, drawing.clone(), 256));
         assert!(
             !slot.text_edit_drawing_intact(42, drawing.clone(), 512),
             "offscreen drawing is not visible"
         );
         slot.forget_text_edit_drawing(42);
-        assert!(!slot.text_edit_drawing_intact(42, drawing, 256));
+        assert_eq!(slot.text_edit_solid_caret(42), None);
+        assert!(!slot.text_edit_drawing_intact(42, drawing.clone(), 256));
+        slot.record_text_edit_drawing(42, drawing);
+        assert_eq!(slot.text_edit_solid_caret(42), None, "fresh non-caret drawing clears retained ink");
     }
 }
