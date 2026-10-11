@@ -670,7 +670,10 @@ fn load_pef_application_with_optional_disk_fragment(
         crate::memory::globals::addr::CARET_TIME,
         PPC_DEFAULT_CARET_TIME_TICKS,
     );
-    let _ = memory.write_u8(crate::memory::globals::addr::SD_VOLUME, 1);
+    let _ = memory.write_u8(
+        crate::memory::globals::addr::SD_VOLUME,
+        crate::memory::bus::LEGACY_SPEAKER_VOLUME,
+    );
     memory.add_region(
         PPC_CLASSIC_APP_MEMORY_BASE,
         vec![0u8; PPC_CLASSIC_APP_MEMORY_SIZE],

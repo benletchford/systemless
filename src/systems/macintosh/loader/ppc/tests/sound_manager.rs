@@ -2,6 +2,102 @@ use super::*;
 use crate::sound::PendingSoundCallback;
 
     #[test]
+    fn legacy_sound_volume_apis_update_one_shared_speaker_control() {
+        use crate::memory::bus::{LEGACY_SOUND_PORT_A_OFFSET, LEGACY_SPEAKER_VOLUME};
+        use crate::memory::globals::addr;
+        for name in [
+            b"SetSoundVol".as_slice(),
+            b"Control".as_slice(),
+            b"PBControl".as_slice(),
+        ] {
+            for (level, expected) in [
+                (0u16, 0u8),
+                (7, 7),
+                (3, 3),
+                (8, 7),
+                (0x0100, 7),
+                (0xFFFF, 7),
+            ] {
+                for device in [true, false] {
+                    let mut loaded = load_pef_application(&synthetic_pef_with_import(name)).unwrap();
+                    assert_eq!(
+                        loaded.memory.read_u8(addr::SD_VOLUME),
+                        Some(LEGACY_SPEAKER_VOLUME)
+                    );
+                    let pb = PPC_HEAP_BASE;
+                    let via = pb + 0x400;
+                    let port_a = via + LEGACY_SOUND_PORT_A_OFFSET;
+                    loaded.memory.add_region(pb, vec![0; 0x3000]);
+                    loaded
+                        .memory
+                        .write_u32_be(addr::VIA_BASE, if device { via } else { 0 })
+                        .unwrap();
+                    loaded.memory.write_u8(port_a, 0xaf).unwrap();
+                    // Only the low three bits of SdVolume hold the level.
+                    loaded.memory.write_u8(addr::SD_VOLUME, 0xf8 | 2).unwrap();
+                    match name {
+                        b"SetSoundVol" => loaded.cpu.gpr[3] = u32::from(level),
+                        b"Control" => {
+                            loaded.cpu.gpr[3] = (-4i32) as u32;
+                            loaded.cpu.gpr[4] = 2;
+                            loaded.cpu.gpr[5] = pb + 28;
+                        }
+                        _ => {
+                            loaded.cpu.gpr[3] = pb;
+                            loaded.memory.write_u16_be(pb + 16, 0x7777).unwrap();
+                            loaded.memory.write_u16_be(pb + 24, (-4i16) as u16).unwrap();
+                            loaded.memory.write_u16_be(pb + 26, 2).unwrap();
+                        }
+                    }
+                    loaded.memory.write_u16_be(pb + 28, level).unwrap();
+                    let probe = loaded.run_with_hle_imports(64);
+                    assert_eq!(probe.unsupported_import_index, None);
+                    assert_eq!(loaded.memory.read_u8(addr::SD_VOLUME), Some(0xf8 | expected));
+                    let port = if device { (0xaf & !7) | expected } else { 0xaf };
+                    assert_eq!(loaded.memory.read_u8(port_a), Some(port));
+                    assert_eq!(loaded.sound.manager.legacy_speaker_muted, expected == 0);
+                    if name != b"SetSoundVol" {
+                        assert_eq!(loaded.cpu.gpr[3], 0);
+                    }
+                    if name == b"PBControl" {
+                        assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(0));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_sound_driver_control_sets_amplitude_and_rejects_other_codes() {
+        use crate::memory::globals::addr;
+        for name in [b"Control".as_slice(), b"PBControl".as_slice()] {
+            for (code, result, amplitude) in [(3u16, 0i16, 200u8), (4, -17, 0)] {
+                let mut loaded = load_pef_application(&synthetic_pef_with_import(name)).unwrap();
+                let pb = PPC_HEAP_BASE;
+                loaded.memory.add_region(pb, vec![0; 0x100]);
+                loaded.memory.write_u8(addr::SOUND_LEVEL, 0).unwrap();
+                if name == b"Control" {
+                    loaded.cpu.gpr[3] = (-4i32) as u32;
+                    loaded.cpu.gpr[4] = u32::from(code);
+                    loaded.cpu.gpr[5] = pb + 28;
+                } else {
+                    loaded.cpu.gpr[3] = pb;
+                    loaded.memory.write_u16_be(pb + 24, (-4i16) as u16).unwrap();
+                    loaded.memory.write_u16_be(pb + 26, code).unwrap();
+                }
+                loaded.memory.write_u16_be(pb + 28, 200).unwrap();
+                let probe = loaded.run_with_hle_imports(64);
+                assert_eq!(probe.unsupported_import_index, None);
+                assert_eq!(loaded.cpu.gpr[3] as u16 as i16, result);
+                if name == b"PBControl" {
+                    assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(result as u16));
+                }
+                assert_eq!(loaded.memory.read_u8(addr::SOUND_LEVEL), Some(amplitude));
+            }
+        }
+    }
+
+    #[test]
     fn hle_import_runner_builds_standard_sound_resource_header() {
         let pef = synthetic_pef_with_import(b"SetupSndHeader");
         let mut loaded = load_pef_application(&pef).unwrap();

@@ -6804,6 +6804,68 @@ fn rmv_time_returns_zero_for_inactive_task() {
 }
 
 #[test]
+fn legacy_sound_volume_control_uses_inline_word_and_preserves_video_state() {
+    let (mut dispatcher, mut cpu, mut bus) = setup();
+    let pb = 0x300000;
+    let via = bus.read_long(addr::VIA_BASE);
+    let mode = dispatcher.screen_mode;
+    let port_a = via + crate::memory::bus::LEGACY_SOUND_PORT_A_OFFSET;
+    bus.write_byte(port_a, 0xaf);
+    // Only the low three bits of SdVolume hold the level.
+    bus.write_byte(addr::SD_VOLUME, 0xf8 | 2);
+    bus.write_word(pb + 24, (-4i16) as u16);
+    bus.write_word(pb + 26, 2);
+    bus.write_word(pb + 30, 0xdead);
+    cpu.write_reg(Register::A0, pb);
+    for (level, expected) in [(0u16, 0u8), (7, 7), (8, 7), (0xFFFF, 7), (3, 3)] {
+        bus.write_word(pb + 28, level);
+        dispatcher
+            .dispatch_memory(false, 0x04, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert_eq!(bus.read_byte(addr::SD_VOLUME), 0xf8 | expected);
+        assert_eq!(bus.read_byte(port_a), 0xa8 | expected);
+        assert_eq!(dispatcher.sound_manager.legacy_speaker_muted, expected == 0);
+        assert_eq!(dispatcher.screen_mode, mode);
+        assert_eq!(bus.read_word(pb + 30), 0xdead);
+    }
+
+    // csCode 3 changes a square wave's amplitude, reflected in SoundLevel.
+    bus.write_word(pb + 26, 3);
+    bus.write_word(pb + 28, 200);
+    dispatcher
+        .dispatch_memory(false, 0x04, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(bus.read_word(pb + 16), 0);
+    assert_eq!(bus.read_byte(addr::SOUND_LEVEL), 200);
+    assert_eq!(bus.read_byte(addr::SD_VOLUME), 0xf8 | 3);
+
+    bus.write_word(pb + 26, 4);
+    dispatcher
+        .dispatch_memory(false, 0x04, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(bus.read_word(pb + 16) as i16, -17);
+    assert_eq!(cpu.read_reg(Register::D0) as i32, -17);
+    assert_eq!(bus.read_byte(addr::SD_VOLUME), 0xf8 | 3);
+
+    // Once VBase no longer names the device, the volume still reaches
+    // SdVolume but is not written through the stale register address.
+    bus.write_word(pb + 26, 2);
+    bus.write_word(pb + 28, 5);
+    bus.write_long(addr::VIA_BASE, 0);
+    dispatcher
+        .dispatch_memory(false, 0x04, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(bus.read_byte(addr::SD_VOLUME), 0xf8 | 5);
+    assert_eq!(bus.read_byte(port_a), 0xa8 | 3);
+}
+
+#[test]
 fn test_control_set_mode_uses_vdpginfo_pointer() {
     let (mut dispatcher, mut cpu, mut bus) = setup();
     let pb = 0x300000u32;

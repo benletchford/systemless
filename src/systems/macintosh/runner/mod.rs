@@ -184,6 +184,7 @@ fn resource_manager_snapshot_powerpc(
 pub mod audio;
 pub mod idle;
 pub mod interrupt;
+mod legacy_sound;
 pub mod ppc_exec;
 pub mod vfs;
 mod virtual_idle;
@@ -1847,6 +1848,7 @@ pub struct FixtureRunner {
     /// Accumulated audio samples for external consumers (e.g. WASM).
     /// Unsigned 8-bit mono PCM at OUTPUT_RATE Hz (silence = 0x80).
     audio_buffer: Vec<u8>,
+    legacy_sound: legacy_sound::LegacySound,
     /// Guest-memory address of the SndPlayDoubleBuffer doubleback trampoline.
     /// Allocated once on first use and reused for all double-buffer callbacks.
     sound_doubleback_trampoline: u32,
@@ -2074,6 +2076,7 @@ impl FixtureRunner {
             deferred_tracking_refire_pc: None,
             audio: None,
             audio_buffer: Vec::new(),
+            legacy_sound: legacy_sound::LegacySound::default(),
             sound_doubleback_trampoline: 0,
             sound_callback_trampoline: 0,
             sound_file_completion_trampoline: 0,
@@ -2934,8 +2937,9 @@ impl FixtureRunner {
         )
     }
 
-    /// Return the system-owned synthetic code range that a native loader must
-    /// exclude from startup allocations. The live shared mapping is attached
+    /// Return the system-owned synthetic slab (the legacy sound device prefix
+    /// plus synthetic code) that a native loader must exclude from startup
+    /// allocations. The live shared mapping is attached
     /// only after the loaded state has crossed its detached snapshot boundary.
     pub(crate) fn powerpc_system_reservation_range(&self) -> Option<(u32, u32)> {
         self.bus.synthetic_reservation_range()
@@ -4130,14 +4134,23 @@ impl FixtureRunner {
         // Inside Macintosh Volume V, V-245
         self.bus.write_word(addr::MBAR_HEIGHT, 20);
         // SdVolume ($0260): current speaker volume, low three bits only.
-        // Inside Macintosh Volume III, III-425. Some classic apps also read
-        // this byte directly as a "Sound Driver present" sentinel — most
-        // notably Marathon 1, whose sound module (CODE 5 +$0003F2:
-        // `MOVE.B (mem $260).W, (A0)`) short-circuits its audio submission
-        // path when this byte is zero. Initialize it to the minimum nonzero
-        // compatibility value; higher legacy volume values can change old
-        // Sound Driver clients' control flow.
-        self.bus.write_byte(addr::SD_VOLUME, 1);
+        // Inside Macintosh Volume II, II-232; Volume III, III-166. Some
+        // classic apps also read this byte directly and skip all audio when
+        // it is zero — most notably Marathon 1, whose sound module (CODE 5
+        // +$0003F2: `MOVE.B (mem $260).W, (A0)`) short-circuits its audio
+        // submission path. Boot at full volume: the ROM Sound Driver sets
+        // SdVolume and the hardware volume together, so GetSoundVol must
+        // agree with the level the compatibility VIA plays. The level also
+        // scales HLE Sound Driver Write output. The readers found in classic
+        // code and ROMs branch on it only to test for zero or to clamp it at
+        // 7.
+        self.bus
+            .write_byte(addr::SD_VOLUME, crate::memory::bus::LEGACY_SPEAKER_VOLUME);
+        self.bus.reset_legacy_sound_device();
+        self.legacy_sound = legacy_sound::LegacySound::default();
+        self.dispatcher
+            .sound_manager
+            .with_mut(|manager| manager.legacy_speaker_muted = false);
 
         // Memory Manager zone globals
         // Inside Macintosh Volume II, II-19 and II-29..II-30.
@@ -4859,7 +4872,13 @@ impl FixtureRunner {
         // Reapply the documented constant after adopting native low memory.
         // Inside Macintosh Volume I (1985), p. I-85; Volume III, p. III-228.
         self.bus.write_long(addr::LO3_BYTES, 0x00FF_FFFF);
-        self.bus.write_byte(addr::SD_VOLUME, 1);
+        self.bus
+            .write_byte(addr::SD_VOLUME, crate::memory::bus::LEGACY_SPEAKER_VOLUME);
+        self.bus.reset_legacy_sound_device();
+        self.legacy_sound = legacy_sound::LegacySound::default();
+        self.dispatcher
+            .sound_manager
+            .with_mut(|manager| manager.legacy_speaker_muted = false);
         self.bus.write_word(0x09dc, 1); // PaintWhite
         let ram_size = self.bus.ram_size();
         ppc_app.toolbox_startup.physical_ram_size = ram_size;
@@ -4976,14 +4995,15 @@ impl FixtureRunner {
         }
 
         // Check the native layout before our own RAM overlays occupy its holes.
-        let system_reservation =
-            self.bus
-                .shared_synthetic_reservation()
-                .filter(|(base, region)| {
-                    let len = u32::try_from(region.len())
-                        .expect("synthetic reservation fits guest address");
-                    ppc_app.prepare_shared_system_reservation(*base, len)
-                });
+        // Exclude the complete slab from native allocations, including its
+        // writable sound-device prefix. Only the code suffix is mapped as
+        // read-only below; the exclusion API's historical name describes
+        // allocation protection, not permissions on the shared RAM holes.
+        let system_reservation = self
+            .bus
+            .synthetic_reservation_range()
+            .filter(|(base, len)| ppc_app.prepare_shared_system_reservation(*base, *len))
+            .and_then(|_| self.bus.shared_synthetic_reservation());
 
         let process_low_memory = self
             .bus
@@ -5001,8 +5021,23 @@ impl FixtureRunner {
                 .attach_memory(base, process_memory, &mut ppc_app.memory);
         }
         let Some((base, region)) = system_reservation else {
+            self.bus
+                .write_long(crate::memory::globals::addr::VIA_BASE, 0);
             return;
         };
+        let (slab_base, _) = self.bus.synthetic_reservation_range().unwrap();
+        if slab_base < base {
+            let device = self
+                .bus
+                .shared_ram_region(slab_base, base - slab_base)
+                .expect("sound device is inside the owned slab");
+            // SAFETY: as for the code mapping below, the runner serializes
+            // both CPUs. Override a low-level loader's unused heap tail so
+            // it cannot shadow our initialized sound buffers/registers.
+            unsafe {
+                ppc_app.memory.add_shared_region(slab_base, device);
+            }
+        }
         // SAFETY: the same serialized ownership contract applies, while the
         // read-only mapping preserves the ROM-like protection enforced by the
         // 68k bus for trap gateways and permanent come-from heads.
@@ -5098,6 +5133,12 @@ impl FixtureRunner {
 
             let mut samples = self.dispatcher.sound_manager.mix_frame_stereo(chunk);
             self.dispatcher.mix_movie_music(&mut samples, chunk);
+            self.legacy_sound.mix_stereo(
+                &self.bus,
+                &mut samples,
+                chunk,
+                self.dispatcher.sound_manager.legacy_speaker_muted,
+            );
             if samples.is_empty() {
                 self.queue_host_silence_audio(remaining_samples);
                 self.dispatcher
@@ -10454,6 +10495,7 @@ impl FixtureRunner {
     }
 
     fn advance_guest_tick(&mut self) -> u32 {
+        self.legacy_sound.capture_frame(&mut self.bus);
         // A same-tick cycle proof is invalid as soon as any ordinary clock
         // advancement or interrupt work occurs during the observed cycle.
         self.cancel_idle_cycle_detector();

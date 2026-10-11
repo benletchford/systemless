@@ -1178,7 +1178,8 @@
             });
             match failure {
                 1 => {
-                    assert_ne!(bus.alloc_synthetic(64 * 1024), 0);
+                    let (_, code) = bus.shared_synthetic_reservation().unwrap();
+                    assert_ne!(bus.alloc_synthetic(code.len() as u32), 0);
                 }
                 2 => bus.protect_readonly_code(TOOLBOX_TRAP_TABLE_BASE, 4),
                 5 => bus.protect_readonly_code(0x28, 4),

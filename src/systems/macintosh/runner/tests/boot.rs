@@ -184,34 +184,62 @@ fn init_app_sets_legacy_sound_driver_low_memory_defaults() {
         size_resource: None,
     };
 
+    use crate::memory::bus::{
+        LEGACY_SOUND_ALTERNATE_OFFSET, LEGACY_SOUND_PORT_A_OFFSET, LEGACY_SPEAKER_VOLUME,
+    };
+    use crate::memory::globals::addr;
+    let (floor, _) = runner.bus.synthetic_reservation_range().unwrap();
+    let via = runner.bus.read_long(addr::VIA_BASE);
+    let sound_base = runner.bus.read_long(addr::SOUND_BASE);
+    let alternate = sound_base - LEGACY_SOUND_ALTERNATE_OFFSET;
+    // Leave the device as a previous application could have: enabled on the
+    // alternate buffer at low volume, muted, with queued audio, nonneutral
+    // samples and a stray register value.
+    runner.bus.write_byte(via, 0);
+    runner
+        .bus
+        .write_byte(via + LEGACY_SOUND_PORT_A_OFFSET, 0x01);
+    runner.bus.write_byte(via + 13 * 0x200, 0x7F); // vIFR
+    runner.bus.write_byte(sound_base, 0x55);
+    runner.bus.write_byte(alternate, 0x55);
+    runner.bus.write_byte(addr::SD_VOLUME, 0);
+    runner
+        .dispatcher
+        .sound_manager
+        .with_mut(|manager| manager.legacy_speaker_muted = true);
+    runner.force_advance_guest_tick();
+    assert!(!runner.legacy_sound.queued().is_empty());
+
     runner.init_app(&app);
 
     assert_eq!(
-        runner
-            .bus
-            .read_byte(crate::memory::globals::addr::SD_VOLUME),
-        1,
-        "SdVolume ($0260) should boot to the nonzero legacy compatibility value"
+        runner.bus.read_byte(addr::SD_VOLUME),
+        LEGACY_SPEAKER_VOLUME,
+        "SdVolume ($0260) boots at the volume the compatibility VIA plays"
     );
     assert_eq!(
-        runner
-            .bus
-            .read_byte(crate::memory::globals::addr::SOUND_LEVEL),
+        runner.bus.read_byte(addr::SOUND_LEVEL),
         0,
         "SoundLevel ($027F) is a distinct Sound Driver amplitude byte"
     );
-    let sound_base = runner
-        .bus
-        .read_long(crate::memory::globals::addr::SOUND_BASE);
+    assert_eq!(alternate, floor);
+    assert_eq!(runner.bus.read_long(addr::SOUND_BASE), sound_base);
+    assert_eq!(runner.bus.read_long(addr::VIA_BASE), via);
+    assert_eq!(runner.bus.read_byte(via), 0x80, "sound starts disabled");
     assert_eq!(
-        sound_base, 0x007F_7880,
-        "SoundBase ($0266) should point at the 370-word legacy sound buffer in reserved display memory"
+        runner.bus.read_byte(via + LEGACY_SOUND_PORT_A_OFFSET),
+        0x08 | LEGACY_SPEAKER_VOLUME,
+        "main buffer at full volume"
     );
+    assert_eq!(runner.bus.read_byte(via + 13 * 0x200), 0);
     assert_eq!(
         runner.bus.read_byte(sound_base),
         0x80,
         "legacy SoundBase buffer starts at neutral amplitude"
     );
+    assert_eq!(runner.bus.read_byte(alternate), 0x80);
+    assert!(!runner.dispatcher.sound_manager.legacy_speaker_muted);
+    assert!(runner.legacy_sound.queued().is_empty());
 }
 
 #[test]
