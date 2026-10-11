@@ -223,8 +223,11 @@ shows the guest's selection span and caret; caret blink, text composition,
 replacement confirmation, New Folder, and full keyboard navigation need more
 work before this can replace the ordinary frontend.
 
-Guest-owned fullscreen scenes scale to fit the window while preserving their
-aspect ratio. Standard window and control overlays retain 1:1 guest geometry.
+The guest scene and standard window/control overlays share one aspect-fit
+transform. Opening a window or dialog does not change the scene scale. Input
+is mapped back to unchanged guest coordinates; component relative font metrics
+scale with the scene. Permanently visible menus cover the scaled guest menu
+rectangle, while fullscreen hover menus remain host-edge overlays.
 Keyboard forwarding covers Return, Escape, Space, Tab and
 Backspace; this is not a full game-input frontend. Audio is serviced but muted,
 saves are not persisted, and host-native window integration is not included.

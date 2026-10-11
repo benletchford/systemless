@@ -16,6 +16,10 @@ fn main() {
 mod frames;
 
 #[cfg(target_os = "macos")]
+#[path = "gpui_demo_metrics.rs"]
+mod metrics;
+
+#[cfg(target_os = "macos")]
 mod desktop {
     //! Opt-in GPUI Kit presentation experiment for live guest menus.
 
@@ -687,10 +691,31 @@ mod desktop {
                     cx.notify();
                 }));
             }
+            let guest_menu_fallback = self.guest_menu_fallback();
+            let fill_display = self.image.is_some();
+            let (screen_width, screen_height) = if fill_display {
+                let viewport = window.viewport_size();
+                let available_width = f32::from(viewport.width);
+                let available_height = f32::from(viewport.height);
+                let scale = (available_width / self.width as f32)
+                    .min(available_height / self.height as f32);
+                self.display_scale = scale;
+                self.display_size = (self.width as f32 * scale, self.height as f32 * scale);
+                self.display_origin = (
+                    (available_width - self.display_size.0) / 2.,
+                    (available_height - self.display_size.1) / 2.,
+                );
+                self.display_size
+            } else {
+                self.display_scale = 1.;
+                self.display_size = (self.width as f32, self.height as f32);
+                self.display_origin = (0., 0.);
+                self.display_size
+            };
             // The guest reserves MBarHeight, not a fixed 20-pixel strip.
             // Inside Macintosh V, Menu Manager: menu-bar height and MBarHeight.
             let bar_height = if self.menu_presented {
-                f32::from(self.menu_height.max(1))
+                f32::from(self.menu_height.max(1)) * self.display_scale
             } else {
                 36.
             };
@@ -702,6 +727,7 @@ mod desktop {
                 .items_center()
                 .h(px(bar_height))
                 .w_full()
+                .when(self.menu_presented, |bar| bar.w(px(self.display_size.0)))
                 .flex_shrink_0()
                 .bg(cx.theme().background)
                 .border_b_1()
@@ -801,34 +827,6 @@ mod desktop {
                         }),
                 );
             }
-            let guest_menu_fallback = self.guest_menu_fallback();
-            let fill_display = self.image.is_some()
-                && !guest_menu_fallback
-                && self.windows.is_empty()
-                && self.dialogs.is_empty()
-                && self.controls.is_empty()
-                && self.lists.is_empty()
-                && self.text_edits.is_empty()
-                && self.standard_file.is_none();
-            let (screen_width, screen_height) = if fill_display {
-                let viewport = window.viewport_size();
-                let available_width = f32::from(viewport.width);
-                let available_height = f32::from(viewport.height);
-                let scale = (available_width / self.width as f32)
-                    .min(available_height / self.height as f32);
-                self.display_scale = scale;
-                self.display_size = (self.width as f32 * scale, self.height as f32 * scale);
-                self.display_origin = (
-                    (available_width - self.display_size.0) / 2.,
-                    (available_height - self.display_size.1) / 2.,
-                );
-                self.display_size
-            } else {
-                self.display_scale = 1.;
-                self.display_size = (self.width as f32, self.height as f32);
-                self.display_origin = (0., 0.);
-                self.display_size
-            };
             let mut screen = div()
                 .id("guest-screen")
                 .test_support()
@@ -908,6 +906,8 @@ mod desktop {
             // Keep those pixels, but present standard windows and dialogs
             // while the custom menu is closed.
             // Macintosh Toolbox Essentials (1992), pp. 3-3, 3-87.
+            let scene_scale = self.display_scale;
+            let guest_px = |value: f32| gpui_kit::px(value * scene_scale);
             if !self.guest_menu_fallback() || !self.guest_menu_tracking {
                 let viewport = super::frames::Rect {
                     top: 0,
@@ -921,10 +921,10 @@ mod desktop {
                     let clip = piece.clip;
                     let mut strip = div()
                         .absolute()
-                        .left(px((source.left - clip.left) as f32))
-                        .top(px((source.top - clip.top) as f32))
-                        .w(px(source.width() as f32))
-                        .h(px(source.height() as f32))
+                        .left(guest_px((source.left - clip.left) as f32))
+                        .top(guest_px((source.top - clip.top) as f32))
+                        .w(guest_px(source.width() as f32))
+                        .h(guest_px(source.height() as f32))
                         .bg(cx.theme().border);
                     if piece.title {
                         let foreground = if frame.window.active {
@@ -944,10 +944,10 @@ mod desktop {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .text_size(px(12.))
+                            .text_size(guest_px(12.))
                             .child(
                                 div()
-                                    .px(px(26.))
+                                    .px(guest_px(26.))
                                     .overflow_hidden()
                                     .text_ellipsis()
                                     .child(frame.window.title.clone()),
@@ -971,9 +971,9 @@ mod desktop {
                             strip = strip.child(
                                 div()
                                     .absolute()
-                                    .left(px((i32::from(frame.window.bounds.1) - source.left) as f32))
+                                    .left(guest_px((i32::from(frame.window.bounds.1) - source.left) as f32))
                                     .top_0()
-                                    .w(px(18.))
+                                    .w(guest_px(18.))
                                     .h_full()
                                     .flex()
                                     .items_center()
@@ -988,11 +988,11 @@ mod desktop {
                             strip = strip.child(
                                 div()
                                     .absolute()
-                                    .left(px(
+                                    .left(guest_px(
                                         (i32::from(frame.window.bounds.3) - 15 - source.left) as f32
                                     ))
                                     .top_0()
-                                    .w(px(15.))
+                                    .w(guest_px(15.))
                                     .h_full()
                                     .flex()
                                     .items_center()
@@ -1005,10 +1005,10 @@ mod desktop {
                         div()
                             .absolute()
                             .overflow_hidden()
-                            .left(px(clip.left as f32))
-                            .top(px(clip.top as f32))
-                            .w(px(clip.width() as f32))
-                            .h(px(clip.height() as f32))
+                            .left(guest_px(clip.left as f32))
+                            .top(guest_px(clip.top as f32))
+                            .w(guest_px(clip.width() as f32))
+                            .h(guest_px(clip.height() as f32))
                             .child(strip),
                     );
                 }
@@ -1019,10 +1019,10 @@ mod desktop {
                     let clip = piece.clip;
                     let mut gutter = div()
                         .absolute()
-                        .left(px((source.left - clip.left) as f32))
-                        .top(px((source.top - clip.top) as f32))
-                        .w(px(source.width() as f32))
-                        .h(px(source.height() as f32))
+                        .left(guest_px((source.left - clip.left) as f32))
+                        .top(guest_px((source.top - clip.top) as f32))
+                        .w(guest_px(source.width() as f32))
+                        .h(guest_px(source.height() as f32))
                         .bg(cx.theme().border)
                         .border_color(cx.theme().border);
                     gutter = match piece.kind {
@@ -1045,10 +1045,10 @@ mod desktop {
                                     corner = corner.child(
                                         div()
                                             .absolute()
-                                            .left(px(left))
-                                            .top(px(top))
-                                            .w(px(2.))
-                                            .h(px(2.))
+                                            .left(guest_px(left))
+                                            .top(guest_px(top))
+                                            .w(guest_px(2.))
+                                            .h(guest_px(2.))
                                             .bg(cx.theme().muted_foreground),
                                     );
                                 }
@@ -1060,10 +1060,10 @@ mod desktop {
                         div()
                             .absolute()
                             .overflow_hidden()
-                            .left(px(clip.left as f32))
-                            .top(px(clip.top as f32))
-                            .w(px(clip.width() as f32))
-                            .h(px(clip.height() as f32))
+                            .left(guest_px(clip.left as f32))
+                            .top(guest_px(clip.top as f32))
+                            .w(guest_px(clip.width() as f32))
+                            .h(guest_px(clip.height() as f32))
                             .child(gutter),
                     );
                 }
@@ -1085,10 +1085,10 @@ mod desktop {
                     let clip = piece.clip;
                     let mut overlay = div()
                         .absolute()
-                        .left(px((source.left - clip.left) as f32))
-                        .top(px((source.top - clip.top) as f32))
-                        .w(px(source.width() as f32))
-                        .h(px(source.height() as f32))
+                        .left(guest_px((source.left - clip.left) as f32))
+                        .top(guest_px((source.top - clip.top) as f32))
+                        .w(guest_px(source.width() as f32))
+                        .h(guest_px(source.height() as f32))
                         .bg(cx.theme().background);
                     for (&(row, column), text) in cells {
                         if row < list.visible.0
@@ -1113,10 +1113,10 @@ mod desktop {
                             .aria_label(text.clone())
                             .aria_selected(selected)
                             .absolute()
-                            .left(px(left as f32))
-                            .top(px(top as f32))
-                            .w(px(f32::from(list.cell_size.1.max(1))))
-                            .h(px(f32::from(list.cell_size.0.max(1))))
+                            .left(guest_px(left as f32))
+                            .top(guest_px(top as f32))
+                            .w(guest_px(f32::from(list.cell_size.1.max(1))))
+                            .h(guest_px(f32::from(list.cell_size.0.max(1))))
                             .overflow_hidden()
                             .flex()
                             .items_center()
@@ -1126,7 +1126,7 @@ mod desktop {
                                 cx.theme().background
                             })
                             .px_1()
-                            .text_size(px(13.))
+                            .text_size(guest_px(13.))
                             .child(text.clone()),
                         );
                     }
@@ -1134,10 +1134,10 @@ mod desktop {
                         div()
                             .absolute()
                             .overflow_hidden()
-                            .left(px(clip.left as f32))
-                            .top(px(clip.top as f32))
-                            .w(px(clip.width() as f32))
-                            .h(px(clip.height() as f32))
+                            .left(guest_px(clip.left as f32))
+                            .top(guest_px(clip.top as f32))
+                            .w(guest_px(clip.width() as f32))
+                            .h(guest_px(clip.height() as f32))
                             .child(overlay),
                     );
                 }
@@ -1162,10 +1162,10 @@ mod desktop {
                     let clip = piece.clip;
                     let mut overlay = div()
                         .absolute()
-                        .left(px((source.left - clip.left) as f32))
-                        .top(px((source.top - clip.top) as f32))
-                        .w(px(source.width() as f32))
-                        .h(px(source.height() as f32))
+                        .left(guest_px((source.left - clip.left) as f32))
+                        .top(guest_px((source.top - clip.top) as f32))
+                        .w(guest_px(source.width() as f32))
+                        .h(guest_px(source.height() as f32))
                         .bg(cx.theme().background);
                     for (index, line) in lines.into_iter().enumerate() {
                         let top = dest.top + index as i32 * i32::from(record.line_height) - source.top;
@@ -1189,17 +1189,17 @@ mod desktop {
                             div()
                                 .id(format!("guest-text-edit-line-{}-{}-{index}", record.guest_id, record.generation))
                                 .absolute()
-                                .left(px((dest.left - source.left) as f32))
-                                .top(px(top as f32))
-                                .w(px(dest.width().max(1) as f32))
-                                .h(px(f32::from(record.line_height)))
+                                .left(guest_px((dest.left - source.left) as f32))
+                                .top(guest_px(top as f32))
+                                .w(guest_px(dest.width().max(1) as f32))
+                                .h(guest_px(f32::from(record.line_height)))
                                 .overflow_hidden()
                                 .flex()
                                 .items_center()
-                                .text_size(px(f32::from(record.size.clamp(9, 18))))
+                                .text_size(guest_px(f32::from(record.size.clamp(9, 18))))
                                 .child(before)
                                 .when(caret, |row| row.child(
-                                    div().w(px(1.)).h(px(f32::from(record.line_height.max(1)))).bg(cx.theme().foreground)
+                                    div().w(guest_px(1.)).h(guest_px(f32::from(record.line_height.max(1)))).bg(cx.theme().foreground)
                                 ))
                                 .when(!selected.is_empty(), |row| row.child(
                                     div().bg(cx.theme().selection).child(selected)
@@ -1211,10 +1211,10 @@ mod desktop {
                         div()
                             .absolute()
                             .overflow_hidden()
-                            .left(px(clip.left as f32))
-                            .top(px(clip.top as f32))
-                            .w(px(clip.width() as f32))
-                            .h(px(clip.height() as f32))
+                            .left(guest_px(clip.left as f32))
+                            .top(guest_px(clip.top as f32))
+                            .w(guest_px(clip.width() as f32))
+                            .h(guest_px(clip.height() as f32))
                             .child(overlay),
                     );
                 }
@@ -1235,10 +1235,10 @@ mod desktop {
                     let clip = piece.clip;
                     let mut overlay = div()
                         .absolute()
-                        .left(px((source.left - clip.left) as f32))
-                        .top(px((source.top - clip.top) as f32))
-                        .w(px(source.width() as f32))
-                        .h(px(source.height() as f32))
+                        .left(guest_px((source.left - clip.left) as f32))
+                        .top(guest_px((source.top - clip.top) as f32))
+                        .w(guest_px(source.width() as f32))
+                        .h(guest_px(source.height() as f32))
                         .bg(cx.theme().background);
                     match control.proc_id {
                         proc_id if (1008..=1023).contains(&proc_id) => {
@@ -1252,10 +1252,10 @@ mod desktop {
                                 .items_center()
                                 .child(
                                     div()
-                                        .w(px(title_width as f32))
+                                        .w(guest_px(title_width as f32))
                                         .overflow_hidden()
                                         .text_ellipsis()
-                                        .text_size(px(12.))
+                                        .text_size(guest_px(12.))
                                         .text_color(if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })
                                         .child(control.title.clone()),
                                 )
@@ -1263,7 +1263,7 @@ mod desktop {
                                     div()
                                         .flex_1()
                                         .h_full()
-                                        .min_w(px(1.))
+                                        .min_w(guest_px(1.))
                                         .border_1()
                                         .border_color(cx.theme().border)
                                         .bg(cx.theme().secondary)
@@ -1272,15 +1272,15 @@ mod desktop {
                                         .child(
                                             div()
                                                 .flex_1()
-                                                .min_w(px(1.))
+                                                .min_w(guest_px(1.))
                                                 .overflow_hidden()
                                                 .text_ellipsis()
                                                 .px_1()
-                                                .text_size(px(12.))
+                                                .text_size(guest_px(12.))
                                                 .text_color(if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })
                                                 .child(selected.to_owned()),
                                         )
-                                        .child(div().w(px(18.)).flex().items_center().justify_center().child("▾")),
+                                        .child(div().w(guest_px(18.)).flex().items_center().justify_center().child("▾")),
                                 );
                         }
                         0 => {
@@ -1377,8 +1377,8 @@ mod desktop {
                                         .absolute()
                                         .top_0()
                                         .left_0()
-                                        .w(px(arrow_width))
-                                        .h(px(arrow_height))
+                                        .w(guest_px(arrow_width))
+                                        .h(guest_px(arrow_height))
                                         .flex()
                                         .items_center()
                                         .justify_center()
@@ -1392,10 +1392,10 @@ mod desktop {
                                 .child(
                                     div()
                                         .absolute()
-                                        .left(px(end_left))
-                                        .top(px(end_top))
-                                        .w(px(arrow_width))
-                                        .h(px(arrow_height))
+                                        .left(guest_px(end_left))
+                                        .top(guest_px(end_top))
+                                        .w(guest_px(arrow_width))
+                                        .h(guest_px(arrow_height))
                                         .flex()
                                         .items_center()
                                         .justify_center()
@@ -1410,10 +1410,10 @@ mod desktop {
                                 overlay = overlay.child(
                                     div()
                                         .absolute()
-                                        .left(px(thumb_left))
-                                        .top(px(thumb_top))
-                                        .w(px(thumb_width))
-                                        .h(px(thumb_height))
+                                        .left(guest_px(thumb_left))
+                                        .top(guest_px(thumb_top))
+                                        .w(guest_px(thumb_width))
+                                        .h(guest_px(thumb_height))
                                         .bg(cx.theme().accent)
                                         .border_1()
                                         .border_color(cx.theme().border),
@@ -1433,10 +1433,10 @@ mod desktop {
                                             overlay = overlay.child(
                                                 div()
                                                     .absolute()
-                                                    .left(px(left))
-                                                    .top(px(top))
-                                                    .w(px(thumb_width))
-                                                    .h(px(thumb_height))
+                                                    .left(guest_px(left))
+                                                    .top(guest_px(top))
+                                                    .w(guest_px(thumb_width))
+                                                    .h(guest_px(thumb_height))
                                                     .border_2()
                                                     .border_color(cx.theme().foreground),
                                             );
@@ -1451,10 +1451,10 @@ mod desktop {
                         div()
                             .absolute()
                             .overflow_hidden()
-                            .left(px(clip.left as f32))
-                            .top(px(clip.top as f32))
-                            .w(px(clip.width() as f32))
-                            .h(px(clip.height() as f32))
+                            .left(guest_px(clip.left as f32))
+                            .top(guest_px(clip.top as f32))
+                            .w(guest_px(clip.width() as f32))
+                            .h(guest_px(clip.height() as f32))
                             .child(overlay),
                     );
                 }
@@ -1472,10 +1472,10 @@ mod desktop {
                     let clip = piece.clip;
                     let mut overlay = div()
                         .absolute()
-                        .left(px((source.left - clip.left) as f32))
-                        .top(px((source.top - clip.top) as f32))
-                        .w(px(source.width() as f32))
-                        .h(px(source.height() as f32))
+                        .left(guest_px((source.left - clip.left) as f32))
+                        .top(guest_px((source.top - clip.top) as f32))
+                        .w(guest_px(source.width() as f32))
+                        .h(guest_px(source.height() as f32))
                         .bg(cx.theme().background);
                     overlay = match item.kind {
                         DialogItemKind::Button => overlay.child(
@@ -1489,13 +1489,13 @@ mod desktop {
                             .tab_stop(false)
                             .disabled(!item.enabled)
                             .absolute()
-                            .left(px((item_rect.left - source.left) as f32))
-                            .top(px((item_rect.top - source.top) as f32))
-                            .w(px(item_rect.width() as f32))
-                            .h(px(item_rect.height() as f32)),
+                            .left(guest_px((item_rect.left - source.left) as f32))
+                            .top(guest_px((item_rect.top - source.top) as f32))
+                            .w(guest_px(item_rect.width() as f32))
+                            .h(guest_px(item_rect.height() as f32)),
                         ),
                         DialogItemKind::StaticText => overlay
-                            .text_size(px(13.))
+                            .text_size(guest_px(13.))
                             .text_color(cx.theme().foreground)
                             .child(item.text.replace('\r', "\n")),
                         DialogItemKind::EditText => {
@@ -1516,10 +1516,10 @@ mod desktop {
                                 ))
                                 .test_support()
                                 .absolute()
-                                .left(px((item_rect.left - source.left) as f32))
-                                .top(px((item_rect.top - source.top) as f32))
-                                .w(px(item_rect.width() as f32))
-                                .h(px(item_rect.height() as f32))
+                                .left(guest_px((item_rect.left - source.left) as f32))
+                                .top(guest_px((item_rect.top - source.top) as f32))
+                                .w(guest_px(item_rect.width() as f32))
+                                .h(guest_px(item_rect.height() as f32))
                                 .overflow_hidden()
                                 .flex()
                                 .items_center()
@@ -1531,7 +1531,7 @@ mod desktop {
                                     cx.theme().border
                                 })
                                 .bg(cx.theme().background)
-                                .text_size(px(13.))
+                                .text_size(guest_px(13.))
                                 .text_color(if item.enabled {
                                     cx.theme().foreground
                                 } else {
@@ -1547,7 +1547,7 @@ mod desktop {
                                 );
                             } else if focused {
                                 field = field.child(
-                                    div().w(px(1.)).h(px(14.)).bg(cx.theme().foreground),
+                                    div().w(guest_px(1.)).h(guest_px(14.)).bg(cx.theme().foreground),
                                 );
                             }
                             overlay.child(field.child(suffix))
@@ -1584,10 +1584,10 @@ mod desktop {
                         div()
                             .absolute()
                             .overflow_hidden()
-                            .left(px(clip.left as f32))
-                            .top(px(clip.top as f32))
-                            .w(px(clip.width() as f32))
-                            .h(px(clip.height() as f32))
+                            .left(guest_px(clip.left as f32))
+                            .top(guest_px(clip.top as f32))
+                            .w(guest_px(clip.width() as f32))
+                            .h(guest_px(clip.height() as f32))
                             .child(overlay),
                     );
                 }
@@ -1604,24 +1604,24 @@ mod desktop {
                             let rect = super::frames::Rect::from(rect);
                             div()
                                 .absolute()
-                                .top(px((rect.top - bounds.top) as f32))
-                                .left(px((rect.left - bounds.left) as f32))
-                                .w(px(rect.width() as f32))
-                                .h(px(rect.height() as f32))
+                                .top(guest_px((rect.top - bounds.top) as f32))
+                                .left(guest_px((rect.left - bounds.left) as f32))
+                                .w(guest_px(rect.width() as f32))
+                                .h(guest_px(rect.height() as f32))
                         };
                         let mut overlay = div()
                             .id(format!("guest-standard-open-{}-{}", panel.guest_id, panel.generation))
                             .test_support()
                             .absolute()
-                            .top(px(bounds.top as f32))
-                            .left(px(bounds.left as f32))
-                            .w(px(bounds.width() as f32))
-                            .h(px(bounds.height() as f32))
+                            .top(guest_px(bounds.top as f32))
+                            .left(guest_px(bounds.left as f32))
+                            .w(guest_px(bounds.width() as f32))
+                            .h(guest_px(bounds.height() as f32))
                             .bg(cx.theme().background)
                             .border_2()
                             .border_color(cx.theme().border)
                             .text_color(cx.theme().foreground)
-                            .text_size(px(13.));
+                            .text_size(guest_px(13.));
                         let volume_abbreviation: String = panel
                             .directory_label
                             .as_deref()
@@ -1675,10 +1675,10 @@ mod desktop {
                                     .aria_label(entry.name.clone())
                                     .aria_selected(selected)
                                     .absolute()
-                                    .top(px(2. + row as f32 * f32::from(layout.row_height)))
-                                    .left(px(2.))
-                                    .w(px((list_width - 4).max(1) as f32))
-                                    .h(px(f32::from(layout.row_height)))
+                                    .top(guest_px(2. + row as f32 * f32::from(layout.row_height)))
+                                    .left(guest_px(2.))
+                                    .w(guest_px((list_width - 4).max(1) as f32))
+                                    .h(guest_px(f32::from(layout.row_height)))
                                     .overflow_hidden()
                                     .flex()
                                     .items_center()
@@ -1722,7 +1722,7 @@ mod desktop {
                                         .absolute()
                                         .top_0()
                                         .w_full()
-                                        .h(px(16.))
+                                        .h(guest_px(16.))
                                         .flex()
                                         .items_center()
                                         .justify_center()
@@ -1733,7 +1733,7 @@ mod desktop {
                                         .absolute()
                                         .bottom_0()
                                         .w_full()
-                                        .h(px(16.))
+                                        .h(guest_px(16.))
                                         .flex()
                                         .items_center()
                                         .justify_center()
@@ -1742,9 +1742,9 @@ mod desktop {
                                 .child(
                                     div()
                                         .absolute()
-                                        .top(px(thumb_top as f32))
+                                        .top(guest_px(thumb_top as f32))
                                         .w_full()
-                                        .h(px(thumb_height as f32))
+                                        .h(guest_px(thumb_height as f32))
                                         .bg(cx.theme().accent)
                                         .border_1()
                                         .border_color(cx.theme().border),
@@ -1795,24 +1795,24 @@ mod desktop {
                             let rect = super::frames::Rect::from(rect);
                             div()
                                 .absolute()
-                                .top(px((rect.top - bounds.top) as f32))
-                                .left(px((rect.left - bounds.left) as f32))
-                                .w(px(rect.width() as f32))
-                                .h(px(rect.height() as f32))
+                                .top(guest_px((rect.top - bounds.top) as f32))
+                                .left(guest_px((rect.left - bounds.left) as f32))
+                                .w(guest_px(rect.width() as f32))
+                                .h(guest_px(rect.height() as f32))
                         };
                         let mut overlay = div()
                             .id(format!("guest-standard-save-{}-{}", panel.guest_id, panel.generation))
                             .test_support()
                             .absolute()
-                            .top(px(bounds.top as f32))
-                            .left(px(bounds.left as f32))
-                            .w(px(bounds.width() as f32))
-                            .h(px(bounds.height() as f32))
+                            .top(guest_px(bounds.top as f32))
+                            .left(guest_px(bounds.left as f32))
+                            .w(guest_px(bounds.width() as f32))
+                            .h(guest_px(bounds.height() as f32))
                             .bg(cx.theme().background)
                             .border_2()
                             .border_color(cx.theme().border)
                             .text_color(cx.theme().foreground)
-                            .text_size(px(13.));
+                            .text_size(guest_px(13.));
                         overlay = overlay.child(
                             at(layout.directory_label)
                                 .flex()
@@ -1847,10 +1847,10 @@ mod desktop {
                                     .aria_label(entry.name.clone())
                                     .aria_selected(selected)
                                     .absolute()
-                                    .top(px(2. + row as f32 * f32::from(layout.row_height)))
-                                    .left(px(2.))
-                                    .w(px((list_width - 4).max(1) as f32))
-                                    .h(px(f32::from(layout.row_height)))
+                                    .top(guest_px(2. + row as f32 * f32::from(layout.row_height)))
+                                    .left(guest_px(2.))
+                                    .w(guest_px((list_width - 4).max(1) as f32))
+                                    .h(guest_px(f32::from(layout.row_height)))
                                     .overflow_hidden()
                                     .flex()
                                     .items_center()
@@ -1894,7 +1894,7 @@ mod desktop {
                                         .absolute()
                                         .top_0()
                                         .w_full()
-                                        .h(px(16.))
+                                        .h(guest_px(16.))
                                         .flex()
                                         .items_center()
                                         .justify_center()
@@ -1905,7 +1905,7 @@ mod desktop {
                                         .absolute()
                                         .bottom_0()
                                         .w_full()
-                                        .h(px(16.))
+                                        .h(guest_px(16.))
                                         .flex()
                                         .items_center()
                                         .justify_center()
@@ -1914,9 +1914,9 @@ mod desktop {
                                 .child(
                                     div()
                                         .absolute()
-                                        .top(px(thumb_top as f32))
+                                        .top(guest_px(thumb_top as f32))
                                         .w_full()
-                                        .h(px(thumb_height as f32))
+                                        .h(guest_px(thumb_height as f32))
                                         .bg(cx.theme().accent)
                                         .border_1()
                                         .border_color(cx.theme().border),
@@ -1963,7 +1963,7 @@ mod desktop {
                             );
                         } else if focused {
                             name_field = name_field.child(
-                                div().w(px(1.)).h(px(14.)).bg(cx.theme().foreground),
+                                div().w(guest_px(1.)).h(guest_px(14.)).bg(cx.theme().foreground),
                             );
                         }
                         overlay = overlay.child(name_field.child(suffix));
@@ -2053,9 +2053,11 @@ mod desktop {
                 .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, _| {
                     this.sync_command_key(event.modifiers.platform);
                 }))
-                .child(screen)
+                .child(super::metrics::SceneMetrics::new(screen, window.rem_size() * scene_scale))
                 .when(!guest_menu_fallback && (self.menu_presented || menu_hovered), |root| {
-                    root.child(bar.absolute().top_0().left_0())
+                    root.child(bar.absolute().top_0().left_0().when(self.menu_presented, |bar| {
+                        bar.top(px(self.display_origin.1)).left(px(self.display_origin.0))
+                    }))
                 })
                 .when(self.image.is_none(), |root| {
                     root.child(
@@ -4768,13 +4770,45 @@ mod desktop {
             cx.update_window(window.into(), |_, window, cx| {
                 window.render_frame(cx);
                 assert!(window.try_find("guest-menu-1-1").is_some());
-                assert_eq!(window.find("guest-menu-bar").bounds().size.height, gpui_kit::px(24.));
+                assert_eq!(window.find("guest-menu-bar").bounds().size.height, gpui_kit::px(36.));
                 let screen = window.find("guest-screen");
                 assert_eq!(screen.bounds().origin.x, gpui_kit::px(0.));
                 assert_eq!(screen.bounds().origin.y, gpui_kit::px(0.));
                 assert_eq!(screen.bounds().size.width, gpui_kit::px(1200.));
                 assert_eq!(screen.bounds().size.height, gpui_kit::px(900.));
             }).unwrap();
+            cx.update(|cx| {
+                view.update(cx, |demo, cx| {
+                    demo.windows.push(systemless::runner::WindowFrameSnapshot {
+                        guest_id: 7,
+                        generation: 1,
+                        window: systemless::runner::WindowSnapshot {
+                            title: "Dialog over scene".into(),
+                            bounds: (100, 100, 300, 500),
+                            structure_bounds: Some((80, 99, 302, 502)),
+                            visible_region: None,
+                            update_region: None,
+                            visible: true,
+                            active: true,
+                        },
+                        definition_id: Some(0),
+                        rectangular_regions: true,
+                        visible_content_rects: Some(vec![(100, 100, 300, 500)]),
+                        close_box: true,
+                        grow_icon_drawn: false,
+                    });
+                    cx.notify();
+                });
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                let screen = window.find("guest-screen");
+                assert_eq!(screen.bounds().size.width, gpui_kit::px(1200.));
+                assert_eq!(screen.bounds().size.height, gpui_kit::px(900.));
+            }).unwrap();
+            assert_eq!(view.read_with(cx, |demo, _| {
+                demo.pointer(gpui_kit::point(gpui_kit::px(450.), gpui_kit::px(300.)))
+            }), (200, 300));
         }
 
         #[cfg(feature = "gpui-demo-test")]
@@ -6984,6 +7018,9 @@ mod desktop {
                     }];
                     demo.width = 800;
                     demo.height = 600;
+                    demo.image = Some(std::sync::Arc::new(gpui_kit::RenderImage::new(vec![
+                        image::Frame::new(image::RgbaImage::new(800, 600)),
+                    ])));
 
                     cx.notify();
                 });
