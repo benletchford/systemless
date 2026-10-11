@@ -834,6 +834,12 @@ mod desktop {
                     cx.notify();
                 }));
             }
+            self.open_menus.retain(|identity| {
+                self.menus.menus.iter().any(|menu| {
+                    menu.visible_in_menu_bar
+                        && *identity == format!("guest-menu-{}-{}", menu.guest_id, menu.generation)
+                })
+            });
             let guest_menu_fallback = self.guest_menu_fallback();
             let fill_display = self.image.is_some();
             let (screen_width, screen_height) = if fill_display {
@@ -5985,6 +5991,48 @@ mod desktop {
                 received,
                 super::Command::Menu(129, 2, 0x1000, 1)
             ));
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window.click("guest-menu-4096-1", cx);
+                window.within("guest-popup-menu").press("down", cx);
+            })
+            .unwrap();
+            cx.update(|cx| {
+                view.update(cx, |demo, cx| {
+                    let replacement = &mut demo.menus.menus[0];
+                    replacement.generation = 2;
+                    replacement.items[0].enabled = true;
+                    replacement.items[0].text = "Replacement command".into();
+                    cx.notify();
+                });
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert!(window.try_find("guest-menu-4096-1").is_none());
+                assert!(window.try_find("guest-popup-menu").is_none());
+                assert!(
+                    view.read(cx).open_menus.is_empty(),
+                    "disposed menus must not pin the auto-revealed bar"
+                );
+                assert!(
+                    !receiver.try_iter().any(|command| matches!(command, super::Command::Menu(..))),
+                    "disposal must not select a command"
+                );
+                window.click("guest-menu-4096-2", cx);
+                window.within("guest-popup-menu").press("down", cx);
+                window.within("guest-popup-menu").press("enter", cx);
+            })
+            .unwrap();
+            assert!(matches!(
+                receiver
+                    .try_iter()
+                    .find(|command| matches!(command, super::Command::Menu(..)))
+                    .expect("replacement menu command"),
+                super::Command::Menu(129, 1, 0x1000, 2)
+            ));
+            assert!(
+                !receiver.try_iter().any(|command| matches!(command, super::Command::Menu(..)))
+            );
         }
 
         #[cfg(feature = "gpui-demo-test")]

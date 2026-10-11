@@ -54,8 +54,11 @@ list checkpoints likewise retain their reviewed outcomes and now have current
 capture identities. The 14 window and 18 TextEdit checkpoints are refreshed as
 well, with differences confined to pointer positions and the blinking edit
 caret. The local coverage gate now passes all seven native scenario manifests
-across 16 fixture pages. Hosted CI still needs to confirm the staged refresh;
-this evidence repair does not qualify unfinished GPUI components.
+across 16 fixture pages. Hosted headless/package validation passes on revision
+`ae2129aaca769ab13801acc27359f8996d61eb9f`
+([CI run 37848619909](https://github.com/benletchford/systemless/actions/runs/37848619909)),
+clearing the stale-reference gate. This evidence repair does not qualify
+unfinished GPUI components.
 
 | System UI | Existing state and presentation path | Missing GPUI work | Status |
 | --- | --- | --- | --- |
@@ -114,8 +117,13 @@ changes and an unrelated menu appearing while the popup is open. Offscreen
 composed captures of the real showcase menu
 cover both 68K and PowerPC. An interaction test confirms a 40-item menu scrolls
 its last keyboard-selected item into view. The interaction test also verifies
-that removing the guest menu unmounts the open popup; replacement with a reused
-MenuHandle still needs qualification. Selections still pass through
+that removing the guest menu unmounts the open popup. A replacement at the same
+MenuHandle with a new generation now also has a GPUI interaction regression:
+the old popup disappears, stale open-menu state no longer pins the revealed
+bar, disposal sends no menu command, and the replacement dispatches its current
+generation. All 64 GPUI interaction tests pass with this cleanup. This checks
+the frontend snapshot lifecycle; a real application's
+disposal/reallocation sequence still needs end-to-end qualification. Selections still pass through
 `FixtureRunner::select_guest_menu_item` for guest-side validation and Toolbox
 event ordering. Inside Macintosh Volume I, I-352 and I-356–I-358, defines
 menu lifetime, item state, and `MenuSelect` tracking; a visual refresh must
@@ -129,8 +137,10 @@ Systemless input and guest clock path; actual host key-hold timing and menu
 tracking during repeated shortcuts still need a GPUI interaction check.
 GPUI focus loss also releases a held guest mouse button through the input
 queue and clears local scrollbar/popup tracking, with a test for exactly one
-release. Scroll-wheel translation still needs a defined guest event route;
-the frontend does not synthesize direct scrollbar value changes.
+release. Standard-scrollbar wheel translation now posts guest arrow clicks,
+with execution between press and release; it does not change control values
+directly. General wheel routing and the broader qualification listed in the
+inventory remain open.
 
 Standard DITL items are now selected by their owning window identity and
 generation rather than by the active-dialog flag. The supported standard
