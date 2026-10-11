@@ -1484,7 +1484,26 @@ pub(super) fn ppc_te_key(
     let Some(mut buffer) = ppc_te_edit_buffer(memory, handles, te_handle) else {
         return PPC_NIL_HANDLE_ERR;
     };
-    buffer.apply_key(key);
+    if matches!(key, 0x1e | 0x1f) {
+        let te_ptr = ppc_te_record_ptr(memory, te_handle).unwrap();
+        let count = usize::from(memory.read_u16_be(te_ptr + PPC_TE_N_LINES_OFFSET).unwrap_or(0));
+        let selection = buffer.selection();
+        let offset = if key == 0x1e { selection.start } else { selection.end };
+        let line = (1..count).take_while(|index|
+            memory.read_u16_be(te_ptr + PPC_TE_LINE_STARTS_OFFSET + *index as u32 * 2)
+                .is_some_and(|start| usize::from(start) <= offset)).count();
+        let target = if key == 0x1e && line == 0 { 0 }
+            else if key == 0x1f && line + 1 >= count { buffer.text().len() }
+            else {
+                let adjacent = if key == 0x1e { line - 1 } else { line + 1 };
+                let start = memory.read_u16_be(te_ptr + PPC_TE_LINE_STARTS_OFFSET + adjacent as u32 * 2).unwrap_or(0);
+                let point = ppc_te_get_point(memory, handles, te_handle, offset as u16);
+                let row = ppc_te_get_point(memory, handles, te_handle, start);
+                ppc_te_point_to_offset(memory, handles, te_handle,
+                    ((row >> 16) as i16).saturating_add(1), point as i16).unwrap_or(offset)
+            };
+        buffer.move_caret_to(target);
+    } else { buffer.apply_key(key); }
     ppc_te_commit_edit_buffer(
         allocator,
         memory,
