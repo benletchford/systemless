@@ -5657,6 +5657,63 @@ mod desktop {
         }
 
         #[test]
+        fn semantic_standard_file_save_returns_guest_reply_across_modes() {
+            use super::super::activation::{ControlActivation, FileAction};
+            use systemless::systems::macintosh::debug::{handle_debug_request, DebugReply, DebugRequest, M68K_SPACE, PPC_SPACE};
+
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 12));
+                wait_for_menu(&mut session, 129, 12, true);
+                settle(&mut session);
+                let step = |session: &mut MacintoshSession| {
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                };
+                step(&mut session);
+                session.deliver_input(MacintoshInput::MouseDown { vertical: 266, horizontal: 400 });
+                session.deliver_input(MacintoshInput::MouseUp { vertical: 266, horizontal: 400 });
+                let panel = (0..100).find_map(|_| {
+                    step(&mut session);
+                    session.runner().standard_file_snapshot()
+                }).expect("Save panel");
+                // Standard File owns name editing; type over the selected default.
+                session.deliver_input(MacintoshInput::KeyDown { mac_key: 0, character: b'S' });
+                session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character: b'S' });
+                assert!((0..100).any(|_| {
+                    step(&mut session);
+                    session.runner().standard_file_snapshot().is_some_and(|p| p.name.as_deref() == Some("S"))
+                }));
+                let origin = session.runner().dispatcher().mouse_position();
+                let click = ControlActivation::begin_file(&mut session, panel.guest_id, panel.generation, FileAction::Accept).unwrap();
+                step(&mut session);
+                let click = click.advance(&mut session).unwrap();
+                step(&mut session);
+                assert!(click.advance(&mut session).is_none());
+                assert_eq!(session.runner().dispatcher().mouse_position(), origin);
+                assert!((0..100).any(|_| {
+                    step(&mut session);
+                    session.runner().standard_file_snapshot().is_none()
+                }));
+                let DebugReply::Memory(reply) = handle_debug_request(session.runner_mut(), DebugRequest::ReadMemory {
+                    space: if powerpc { PPC_SPACE } else { M68K_SPACE },
+                    address: u64::from(panel.guest_id), length: 88,
+                }).unwrap() else { panic!("StandardFileReply memory"); };
+                // StandardFileReply layout: Files (1992), p. 3-69; FSSpec name
+                // follows its volume reference and directory ID at reply + 12.
+                assert_eq!(reply.bytes.len(), 88);
+                assert_eq!(reply.bytes[0], 1, "sfGood, PPC={powerpc}, depth={depth:?}");
+                assert_eq!(reply.bytes[1], 0, "new file must not replace an existing one");
+                assert_eq!(&reply.bytes[12..14], &[1, b'S'], "guest-edited FSSpec name");
+            }
+        }
+
+        #[test]
         fn text_edit_snapshots_resolve_guest_port_geometry_on_both_cpus() {
             for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
                 let mut session = MacintoshSession::new(true, depth);
