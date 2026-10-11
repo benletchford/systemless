@@ -171,7 +171,7 @@ struct Cli {
     #[arg(long)]
     addressing_24_bit: bool,
 
-    /// Override the guest framebuffer depth (defaults to 8-bit for 68K and 16-bit for PPC)
+    /// Override guest depth: 1, 2, 4, 8, or 16 (PPC; 68K retains 8). Defaults: 68K 8, PPC 16
     #[arg(long, value_name = "BITS", value_parser = parse_screen_depth)]
     screen_depth: Option<u16>,
 
@@ -217,7 +217,8 @@ fn parse_screen_depth(value: &str) -> Result<u16, String> {
         "2" => Ok(2),
         "4" => Ok(4),
         "8" => Ok(8),
-        _ => Err("screen depth must be 1, 2, 4, or 8".to_string()),
+        "16" => Ok(16),
+        _ => Err("screen depth must be 1, 2, 4, 8, or 16".to_string()),
     }
 }
 

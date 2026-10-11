@@ -1,5 +1,14 @@
 # GPUI production release gates
 
+Explicit PPC16 launch correction: both frontend parsers accept 16; the shared
+constructor retains the supported 8-bit classic configuration and selects
+16-bit native PowerPC presentation, with that distinction documented in CLI
+help. The constructor regression passes all five explicit depths (0.08s), the
+eight-case guest notification workflow now passes explicit PPC16 rather than
+an omitted-depth workaround (10.20s), and the default application compile check
+passes (15.17s). This corrects the reproduced explicit-depth launch rejection;
+it does not establish full 16-bit application or release qualification.
+
 Notification inactivity correction: OK pointer/accessibility handlers now
 revalidate current exact ownership and host activity; Return is also excluded
 while inactive. The inactive button is not presented as primary. The shared
