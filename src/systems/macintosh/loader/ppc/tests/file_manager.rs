@@ -2948,6 +2948,95 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn hle_standard_put_file_navigates_directory_before_writing_reply() {
+        let pef = synthetic_pef_with_import(b"StandardPutFile");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let reply = PPC_DATA_BASE + 0x1a00;
+        let default_name = PPC_DATA_BASE + 0x1b00;
+        let fixtures_dir = 42;
+        loaded.memory.add_region(reply, vec![0xaa; 88]);
+        loaded.memory.add_region(default_name, vec![0; 64]);
+        write_ppc_pstring(&mut loaded.memory, default_name, b"New Document");
+        loaded.vfs_directories.push(PpcVfsDirectory {
+            dir_id: fixtures_dir,
+            parent_dir_id: PPC_ROOT_DIR_ID,
+            path: "Fixtures".to_string(),
+            creator: PPC_DIRECTORY_CREATOR,
+            file_type: PPC_DIRECTORY_FILE_TYPE,
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: "Fixtures/Old Document".to_string(),
+            data: b"old".to_vec().into(),
+            creator: u32::from_be_bytes(*b"SHWC"),
+            file_type: u32::from_be_bytes(*b"TEXT"),
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = default_name;
+        loaded.cpu.gpr[5] = reply;
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        let tracking = loaded.toolbox_startup.standard_file_put_tracking.as_ref().unwrap();
+        assert!(tracking.entries.iter().any(|entry| entry.dir_id == fixtures_dir));
+        let bounds = tracking.bounds;
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 1,
+            message: 0,
+            when: 0,
+            where_v: bounds.0 + PPC_STANDARD_FILE_PUT_LIST_RECT.0 + 5,
+            where_h: bounds.1 + PPC_STANDARD_FILE_PUT_LIST_RECT.1 + 5,
+            modifiers: 0,
+        }]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        assert_eq!(
+            loaded.toolbox_startup.standard_file_put_tracking.as_ref().unwrap().selected,
+            Some(0)
+        );
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 3,
+            message: (u32::from(PPC_KEY_RETURN) << 8) | 0x0d,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        }]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        let tracking = loaded.toolbox_startup.standard_file_put_tracking.as_ref().unwrap();
+        assert_eq!(tracking.dir_id, fixtures_dir);
+        assert_eq!(tracking.directory_name, b"Fixtures");
+        assert!(tracking.entries.iter().any(|entry| entry.name == b"Old Document"));
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 1,
+            message: 0,
+            when: 0,
+            where_v: bounds.0 + PPC_STANDARD_FILE_PUT_SAVE_RECT.0 + 5,
+            where_h: bounds.1 + PPC_STANDARD_FILE_PUT_SAVE_RECT.1 + 5,
+            modifiers: 0,
+        }]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::Halted { .. }
+        ));
+        assert_eq!(loaded.memory.read_u8(reply), Some(1));
+        assert_eq!(loaded.memory.read_u32_be(reply + 8), Some(fixtures_dir));
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, reply + 12),
+            Some(b"New Document".to_vec())
+        );
+    }
+
+    #[test]
     fn hle_import_runner_sf_put_file_gui_cancel_uses_legacy_reply_abi() {
         let pef = synthetic_pef_with_import(b"SFPutFile");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -2989,6 +3078,10 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
             },
             vref: PPC_BOOT_VOLUME_REF_NUM,
             dir_id: PPC_ROOT_DIR_ID,
+            directory_name: b"Macintosh HD".to_vec(),
+            entries: Vec::new(),
+            selected: None,
+            list_has_focus: false,
             prompt: Vec::new(),
             name: vec![b'x'; 63],
             sel_start: 63,
