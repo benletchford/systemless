@@ -1,0 +1,5 @@
+{
+  "base": "9c926235",
+  "source_sha256": "333a2cc1fa3c3f44b4643fdf3cb102718ff3e3a3f084f06b5cf5e28be33fbfab",
+  "note": "Worker built final behavioral source before a format-comment-only addition. Earlier11 store tests precede staging cleanup ownership correction; final worker regression includes that correction."
+}

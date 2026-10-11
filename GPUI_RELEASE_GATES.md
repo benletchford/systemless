@@ -190,3 +190,15 @@ actual guest Open/read/close with exact fork/metadata comparison. Evidence is
 under `reference/gpui-demo/worker-replacement-shutdown`. This does not isolate
 periodic/final flush timing or establish physical close/crash durability; the
 sequential-write audit remains open. All eight release gates remain open.
+
+### Atomic save snapshot checkpoint (2026-10-11)
+
+Both forks and metadata are now staged/synced as a single binary snapshot,
+published by rename and containing-directory sync. Legacy saves remain readable.
+Store11 tests pass migration, interrupted publication and malformed lengths;
+abrupt subprocess exits before/after publication recover complete old/new saves.
+Final actual-worker replacement exits pass12 cases across four modes (88.42s),
+with fresh-process guest readback. Evidence: `reference/gpui-demo/atomic-save-snapshots`.
+This addresses the audited mixed-generation process-interruption risk. Sudden
+power loss, tree creation/deletion durability, disk failure injection and full
+storage barriers remain unqualified. No overall production gate closes here.
