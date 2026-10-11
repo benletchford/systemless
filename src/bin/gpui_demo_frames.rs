@@ -1055,6 +1055,7 @@ mod tests {
             selected: Default::default(),
             vertical_scrollbar: None,
             horizontal_scrollbar: None,
+            standard_cell_paint: Default::default(),
         };
         let viewport = Rect::from((20, 0, 160, 180));
         let pieces = list_pieces(&[list.clone()], &[], &[front.clone(), back.clone()], viewport);

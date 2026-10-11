@@ -13,6 +13,43 @@ pub(crate) fn new_list_generation() -> u64 {
         .expect("list lifetime generation exhausted")
 }
 
+/// Text recipe retained only after the built-in standard LDEF paints a cell.
+/// Captured bytes and anchors belong to that draw, not later caller port state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StandardListCellDrawing {
+    pub(crate) generation: u64,
+    pub(crate) font: i16,
+    pub(crate) size: i16,
+    pub(crate) left: i16,
+    pub(crate) baseline: i16,
+    pub(crate) clip: (i16, i16, i16, i16),
+    pub(crate) stop_before: Option<i16>,
+    pub(crate) char_extra: crate::text_edit::TextEditCharExtraSnapshot,
+    pub(crate) space_extra: i32,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) source_bytes: Vec<u8>,
+    pub(crate) selected: bool,
+    pub(crate) pixels: crate::text_edit::TextEditDrawing,
+}
+
+/// Draw-time standard LDEF text inputs with current raster evidence.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StandardListCellPaintSnapshot {
+    pub font: i16,
+    pub size: i16,
+    pub left: i16,
+    pub baseline: i16,
+    pub clip: (i16, i16, i16, i16),
+    pub stop_before: Option<i16>,
+    pub char_extra: crate::text_edit::TextEditCharExtraSnapshot,
+    pub space_extra: i32,
+    pub bytes: Vec<u8>,
+    pub selected: bool,
+    pub drawing_intact: bool,
+    pub painted_regions: Vec<(i16, i16, i16, i16)>,
+}
+
 /// Canonical host-side state for one guest `ListRec`.
 ///
 /// The relocatable list record and cell-data handle remain guest-visible, but
@@ -36,9 +73,35 @@ pub struct ProcessListRecord {
     pub(crate) selected: BTreeSet<(i16, i16)>,
     pub(crate) last_click: (i16, i16),
     pub(crate) last_click_tick: u32,
+    pub(crate) standard_cell_drawings: std::rc::Rc<std::cell::RefCell<HashMap<(i16, i16), StandardListCellDrawing>>>,
 }
 
 impl ProcessListRecord {
+    pub(crate) fn standard_cell_paint_snapshot(
+        &self, mut read: impl FnMut(u32) -> Option<u8>,
+    ) -> std::collections::BTreeMap<(i16, i16), StandardListCellPaintSnapshot> {
+        if self.definition_id != 0 { return Default::default(); }
+        self.standard_cell_drawings.borrow().iter().map(|(&cell, held)| {
+            let top = self.view_rect.0.saturating_add(cell.0.saturating_sub(self.visible.0).saturating_mul(self.cell_size.0));
+            let left = self.view_rect.1.saturating_add(cell.1.saturating_sub(self.visible.1).saturating_mul(self.cell_size.1));
+            let clip = (top, left, top.saturating_add(self.cell_size.0).min(self.view_rect.2),
+                left.saturating_add(self.cell_size.1).min(self.view_rect.3));
+            let selected = self.active && self.selected.contains(&cell);
+            let eligible = self.generation == held.generation && self.draw_enabled && clip == held.clip
+                && selected == held.selected
+                && self.cells.get(&cell).map(Vec::as_slice).unwrap_or(&[]) == held.source_bytes;
+            let current = eligible.then(|| crate::text_edit::TextEditDrawing::capture(self.port, held.clip, &mut read)).flatten();
+            let intact = current.as_ref().is_some_and(|current| held.pixels.same_pixels(current));
+            let painted_regions = current.as_ref().map(|current| held.pixels.unchanged_painted_regions(current)).unwrap_or_default();
+            (cell, StandardListCellPaintSnapshot {
+                font: held.font, size: held.size, left: held.left, baseline: held.baseline,
+                clip: held.clip, stop_before: held.stop_before, char_extra: held.char_extra.clone(),
+                space_extra: held.space_extra, bytes: held.bytes.clone(), selected: held.selected,
+                drawing_intact: intact, painted_regions,
+            })
+        }).collect()
+    }
+
     /// LScroll is bounded by fully visible cells; a clipped last row must
     /// still be scrollable into full view. More Macintosh Toolbox, pp. 4-89--4-90;
     /// confirmed with 150-pixel views and 18-pixel rows on Mac OS 8.1.
@@ -359,6 +422,65 @@ mod tests {
     use super::*;
 
     #[test]
+    fn standard_cell_evidence_rejects_mutation_and_custom_definitions() {
+        let mut memory = vec![0u8; 512];
+        let port = 16usize;
+        memory[port + 2..port + 6].copy_from_slice(&256u32.to_be_bytes());
+        memory[port + 6..port + 8].copy_from_slice(&2u16.to_be_bytes());
+        memory[port + 12..port + 14].copy_from_slice(&4u16.to_be_bytes());
+        memory[port + 14..port + 16].copy_from_slice(&16u16.to_be_bytes());
+        for (offset, handle, region) in [(24, 144usize, 160usize), (28, 148, 176)] {
+            memory[port + offset..port + offset + 4].copy_from_slice(&(handle as u32).to_be_bytes());
+            memory[handle..handle + 4].copy_from_slice(&(region as u32).to_be_bytes());
+            memory[region..region + 2].copy_from_slice(&10u16.to_be_bytes());
+            memory[region + 6..region + 8].copy_from_slice(&4u16.to_be_bytes());
+            memory[region + 8..region + 10].copy_from_slice(&16u16.to_be_bytes());
+        }
+        let clip = (0, 0, 2, 16);
+        let pixels = crate::text_edit::TextEditDrawing::capture(port as u32, clip,
+            |address| memory.get(address as usize).copied()).unwrap();
+        let mut record = ProcessListRecord {
+            handle: 1, generation: 1, definition_id: 0, cells_handle: 0,
+            view_rect: clip, data_bounds: (0, 0, 1, 1), cell_size: (2, 16), visible: (0, 0, 1, 1),
+            port: port as u32, draw_enabled: true, active: true,
+            cells: [((0, 0), b"A".to_vec())].into(), selected: Default::default(),
+            last_click: (0, 0), last_click_tick: 0, standard_cell_drawings: Default::default(),
+        };
+        record.standard_cell_drawings.borrow_mut().insert((0, 0), StandardListCellDrawing {
+            generation: 1, font: 3, size: 9, left: 3, baseline: 1, clip, stop_before: Some(13),
+            char_extra: crate::text_edit::TextEditCharExtraSnapshot::ClassicFixed(0), space_extra: 0,
+            bytes: b"A".to_vec(), source_bytes: b"A".to_vec(), selected: false, pixels,
+        });
+        let intact = |record: &ProcessListRecord, memory: &[u8]| record.standard_cell_paint_snapshot(
+            |address| memory.get(address as usize).copied())[&(0, 0)].drawing_intact;
+        assert!(intact(&record, &memory));
+        memory[256] ^= 1;
+        assert!(!intact(&record, &memory), "application drawing invalidates retained raster");
+        let changed = record.standard_cell_paint_snapshot(|address| memory.get(address as usize).copied());
+        let regions = &changed[&(0, 0)].painted_regions;
+        assert!(!regions.is_empty(), "unchanged pixels retain standard painter ownership");
+        assert!(!regions.iter().any(|&(t, l, b, r)| 0 >= t && 0 < b && 7 >= l && 7 < r),
+            "the modified pixel remains native");
+        memory[256] ^= 1;
+        record.cells.insert((0, 0), b"B".to_vec());
+        assert!(!intact(&record, &memory), "changed bytes require a new native draw");
+        record.cells.insert((0, 0), b"A".to_vec());
+        record.selected.insert((0, 0));
+        assert!(!intact(&record, &memory), "selection changes require native paint");
+        record.selected.clear();
+        record.visible.0 = 1;
+        assert!(!intact(&record, &memory), "scrolling invalidates the old cell anchor");
+        record.visible.0 = 0;
+        record.definition_id = 128;
+        assert!(record.standard_cell_paint_snapshot(|_| panic!("custom LDEF must not sample paint")).is_empty());
+        record.definition_id = 0;
+        record.generation = 2;
+        assert!(!intact(&record, &memory), "reused identities cannot inherit old paint");
+        record.standard_cell_drawings = Default::default();
+        assert!(record.standard_cell_paint_snapshot(|_| None).is_empty(), "new lifetimes start without ownership");
+    }
+
+    #[test]
     fn retained_list_arrow_uses_ticks_and_exposed_hit_region() {
         let mut tracking = ListScrollbarTracking {
             list: 1,
@@ -392,6 +514,7 @@ mod tests {
             selected: BTreeSet::new(),
             last_click: (0, 0),
             last_click_tick: 0,
+            standard_cell_drawings: Default::default(),
         };
         assert_eq!(tracking.step((102, 28), 0, &record), Some(1));
         assert_eq!(tracking.step((102, 28), 1, &record), None);
@@ -427,6 +550,7 @@ mod tests {
             selected: BTreeSet::new(),
             last_click: (0, 0),
             last_click_tick: 0,
+            standard_cell_drawings: Default::default(),
         };
         record.view_rect = (0, 0, 114, 450);
         record.cell_size = (18, 450);
@@ -514,6 +638,7 @@ mod tests {
             selected: BTreeSet::new(),
             last_click: (0, 0),
             last_click_tick: 0,
+            standard_cell_drawings: Default::default(),
         };
         assert_eq!(list.scrollbar_limits(true), (0, 0, 4));
         list.set_visible_origin(4, 0);
@@ -553,6 +678,7 @@ mod tests {
             selected: BTreeSet::new(),
             last_click: (0, 0),
             last_click_tick: 0,
+            standard_cell_drawings: Default::default(),
         };
         state.insert_record(0x1000, record.clone());
         assert!(!state.is_pristine());

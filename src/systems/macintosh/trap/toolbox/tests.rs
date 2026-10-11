@@ -7629,7 +7629,7 @@ fn list_tracking_cleanup_restores_retained_outline_pixels() {
                 view_rect: (0, 0, 100, 100), data_bounds: (0, 0, 20, 1),
                 cell_size: (10, 100), visible: (0, 0, 10, 1), port: 0,
                 draw_enabled: true, active: true, cells: Default::default(),
-                selected: Default::default(), last_click: (-1, -1), last_click_tick: 0,
+                selected: Default::default(), last_click: (-1, -1), last_click_tick: 0, standard_cell_drawings: Default::default(),
             });
         }
         cpu.write_reg(Register::A7, TEST_SP);
@@ -7663,7 +7663,7 @@ fn list_custom_draw_excludes_cells_beyond_data_bounds() {
         cells: Default::default(),
         selected: Default::default(),
         last_click: (-1, -1),
-        last_click_tick: 0,
+        last_click_tick: 0, standard_cell_drawings: Default::default(),
     };
     let cells = TrapDispatcher::list_cells_to_draw(&state, None);
     assert_eq!(cells.len(), 36);
@@ -7693,7 +7693,7 @@ fn pack0_lnextcell_advances_across_rows() {
             cells: Default::default(),
             selected: Default::default(),
             last_click: (-1, -1),
-            last_click_tick: 0,
+            last_click_tick: 0, standard_cell_drawings: Default::default(),
         },
     );
     bus.write_word(cell, 0);

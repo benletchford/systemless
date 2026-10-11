@@ -44,7 +44,7 @@ impl TextEditDrawing {
         self.solid_caret = uniform.map(|pixel| (rect, self.depth, pixel));
     }
 
-    pub(crate) fn same_pixels(&self, other: &Self) -> bool {
+    fn same_surface(&self, other: &Self) -> bool {
         self.base == other.base
             && self.port == other.port
             && self.bitmap == other.bitmap
@@ -52,7 +52,59 @@ impl TextEditDrawing {
             && self.depth == other.depth
             && self.bounds == other.bounds
             && self.view == other.view
-            && self.pixels == other.pixels
+    }
+
+    pub(crate) fn same_pixels(&self, other: &Self) -> bool {
+        self.same_surface(other) && self.pixels == other.pixels
+    }
+
+    /// Keep every unchanged pixel of a completed native draw. Application
+    /// modifications stay native, including borders crossing standard cells.
+    pub(crate) fn unchanged_painted_regions(&self, other: &Self) -> Vec<(i16, i16, i16, i16)> {
+        if !self.same_surface(other) { return Vec::new(); }
+        if self.pixels == other.pixels { return self.painted_regions.clone(); }
+        let sample = |drawing: &Self, gx: i16, gy: i16| -> Option<u32> {
+            let x = i32::from(gx) + i32::from(drawing.bounds.1);
+            let y = i32::from(gy) + i32::from(drawing.bounds.0);
+            if x < i32::from(drawing.view.1) || x >= i32::from(drawing.view.3)
+                || y < i32::from(drawing.view.0) || y >= i32::from(drawing.view.2) { return None; }
+            let depth = u32::from(drawing.depth);
+            let first = (i32::from(drawing.view.1) - i32::from(drawing.bounds.1)) as u32 * depth / 8;
+            let end = ((i32::from(drawing.view.3) - i32::from(drawing.bounds.1)) as u32 * depth).div_ceil(8);
+            let bit = (x - i32::from(drawing.bounds.1)) as u32 * depth;
+            let at = (y - i32::from(drawing.view.0)) as usize * (end - first) as usize
+                + (bit / 8 - first) as usize;
+            Some(match drawing.depth {
+                1 | 2 | 4 => u32::from(*drawing.pixels.get(at)? >> (8 - depth - bit % 8)) & ((1 << depth) - 1),
+                8 => u32::from(*drawing.pixels.get(at)?),
+                16 => u32::from(u16::from_be_bytes(drawing.pixels.get(at..at + 2)?.try_into().ok()?)),
+                32 => u32::from_be_bytes(drawing.pixels.get(at..at + 4)?.try_into().ok()?),
+                _ => return None,
+            })
+        };
+        let mut output: Vec<(i16, i16, i16, i16)> = Vec::new();
+        for &(top, left, bottom, right) in &self.painted_regions {
+            let mut previous: std::collections::HashMap<(i16, i16), usize> = std::collections::HashMap::new();
+            for y in top..bottom {
+                let mut current = std::collections::HashMap::new();
+                let mut x = left;
+                while x < right {
+                    let unchanged = |x| sample(self, x, y).is_some_and(|pixel| Some(pixel) == sample(other, x, y));
+                    if !unchanged(x) { x += 1; continue; }
+                    let start = x;
+                    while x < right && unchanged(x) { x += 1; }
+                    let index = match previous.get(&(start, x)).copied() {
+                        Some(index) => { output[index].2 = y + 1; index }
+                        None => { output.push((y, start, y + 1, x)); output.len() - 1 }
+                    };
+                    current.insert((start, x), index);
+                    // Complex custom modifications retain the native cell.
+                    if output.len() > 256 { return Vec::new(); }
+                }
+                previous = current;
+            }
+        }
+        output
     }
 
     /// Text (1993), pp. 2-16, 2-88: allocation does not paint a view.
@@ -242,6 +294,24 @@ mod tests {
             mem[region + 8..region + 10].copy_from_slice(&16u16.to_be_bytes());
         }
         mem
+    }
+
+    #[test]
+    fn unchanged_regions_preserve_every_unmodified_native_pixel() {
+        for depth in [1, 2, 4, 8, 16, 32] {
+            let mut mem = memory(depth);
+            let capture = |mem: &[u8]| TextEditDrawing::capture(16, (0, 0, 2, 16),
+                |address| mem.get(address as usize).copied()).unwrap();
+            let held = capture(&mem);
+            assert_eq!(held.unchanged_painted_regions(&held), held.painted_regions);
+            mem[256] ^= 0x80;
+            let current = capture(&mem);
+            let regions = held.unchanged_painted_regions(&current);
+            for y in 0..2 { for x in 0..16 {
+                let retained = regions.iter().any(|&(t, l, b, r)| y >= t && y < b && x >= l && x < r);
+                assert_eq!(retained, (x, y) != (0, 0), "depth={depth}, point=({x},{y})");
+            } }
+        }
     }
 
     #[test]

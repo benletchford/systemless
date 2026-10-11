@@ -4127,8 +4127,46 @@ PPC16 and 0.75/1/1.5/2x combinations: two styled insertion clicks and a drag
 across style boundaries per combination reach the guest event path and produce
 the expected byte selections. A stronger revision additionally asserts visible
 standard ownership and refreshes snapshots during held gestures; that revision
-is being verified separately. New capture matrices support `--multiline` and
+passed separately (424.20 seconds). New capture matrices support `--multiline` and
 require `shared Demo renderer` sidecars. The verifier retains legacy matrix
 scope and rejects missing, duplicate, wrong-depth, wrong-state or wrong-pixel
 cases. Neither these checks nor native-pixel equality establish arbitrary guest
 font replacement, native host activation observation or release readiness.
+
+The `7c2e238f` shared Demo multiline matrix completed 16/16 cases and passed
+independent verification before and after lossless archival at
+`tests/toolbox-showcase/reference/gpui-demo/styled-text-multiline-shared/review.json`.
+All four display/CPU modes and scales have actual-depth sidecars, original and
+archived hashes, and complete field pixel equality. Two representative composed
+visuals were reviewed. Native field pixels were erased before rendering. This
+establishes the selected two-line fixture in the production renderer, while
+inactive/caret/lifecycle matrices in that renderer remain outstanding.
+
+List Manager snapshots now retain actual standard-painter cell inputs on both
+CPU paths: draw-time font/size, baseline/inset/clipping/stopping policy, original
+and painter-decoded bytes, spacing representation, selection and raster evidence.
+Only the built-in resource-zero painter records evidence. Snapshot eligibility
+checks the current cell data, geometry, selection, lifetime and backing raster;
+new allocations start empty and old visible-cell evidence is pruned on redraw.
+The four-mode native row test verifies retained font and baseline metadata before
+and after guest selection. Production list rows now use the exact guest cell canvas after retained raster
+and complete physical-pixel qualification over every retained region. Application
+modifications remain native at their exact pixel locations; unchanged regions
+are coalesced vertically, with complex fragmented custom drawing declining.
+Uniform ink/background candidates
+come from the native standard draw and must match every retained pixel; host theme
+or text sizing no longer substitutes list typography. Unsupported spacing,
+patterns, missing evidence, modified cells and custom LDEFs retain guest pixels.
+Standard cell accessibility labels and selection semantics remain exposed even
+when paint declines; guest LClick still owns interaction. Canvas clips combine
+list visibility, cell bounds and the native painted regions. Full live/headless
+list capture, scrolling, activation, lifecycle and scale matrices remain required.
+
+The production list qualification regression now passes all four modes after
+native guest selection and requires at least one retained cell plan. The exact
+unchanged-region primitive preserves every unaffected pixel at 1/2/4/8/16/32-bit
+depths and excludes the modified pixel. List evidence guards pass changes to
+raster, bytes, selection, scroll anchor, custom definition and reused lifetime.
+The existing GPUI row click test passes with native fallback and retained
+accessibility semantics. These tests do not replace composed list image or
+performance qualification.

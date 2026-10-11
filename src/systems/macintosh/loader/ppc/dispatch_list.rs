@@ -1276,6 +1276,7 @@ fn ppc_list_new(
         selected: std::collections::BTreeSet::new(),
         last_click: (-1, -1),
         last_click_tick: 0,
+        standard_cell_drawings: Default::default(),
     };
     let v_scroll = if scroll_vert {
         ppc_new_control_record_values(
@@ -1413,6 +1414,8 @@ pub(super) fn ppc_list_draw(
     let cell_h = memory
         .read_u16_be(list_ptr + PPC_LIST_CELL_SIZE_OFFSET + 2)
         .unwrap_or(1) as i16;
+    record.standard_cell_drawings.borrow_mut().retain(|&(row, column), _|
+        row >= visible.0 && row < visible.2 && column >= visible.1 && column < visible.3);
     let active = memory
         .read_u8(list_ptr + PPC_LIST_ACTIVE_OFFSET)
         .unwrap_or(1)
@@ -1483,6 +1486,22 @@ pub(super) fn ppc_list_draw(
                     .map(Vec::as_slice)
                     .unwrap_or(&[]),
             );
+            if record.definition_id == 0 {
+                let clip = (top, left, top.saturating_add(cell_v).min(view_bottom),
+                    left.saturating_add(cell_h).min(view_right));
+                let mut drawings = record.standard_cell_drawings.borrow_mut();
+                if let Some(pixels) = crate::text_edit::TextEditDrawing::capture(
+                    port, clip, |address| memory.read_u8(address),
+                ) {
+                    drawings.insert((row, column), crate::list_manager::StandardListCellDrawing {
+                        generation: record.generation, font, size, left: left.saturating_add(1), baseline: top.saturating_add(ascent),
+                        clip, stop_before: None, char_extra: crate::text_edit::TextEditCharExtraSnapshot::PpcPacked(ppc_port_char_extra_packed(memory, port)),
+                        space_extra: 0,
+                        bytes: record.cells.get(&(row, column)).cloned().unwrap_or_default(),
+                        source_bytes: record.cells.get(&(row, column)).cloned().unwrap_or_default(), selected, pixels,
+                    });
+                } else { drawings.remove(&(row, column)); }
+            }
         }
     }
 }

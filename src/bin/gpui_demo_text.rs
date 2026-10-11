@@ -695,6 +695,64 @@ pub(crate) struct ClassicListCellPaintPlan {
 }
 
 impl ClassicListCellPaintPlan {
+    /// Uniform physical ink/background candidates come from the intact native
+    /// standard draw. The complete cell must match the guest bitmap recipe.
+    pub fn from_guest(
+        paint: &systemless::runner::StandardListCellPaintSnapshot,
+        global_clip: (i16, i16, i16, i16), native: &[u8], width: u32, height: u32,
+    ) -> Option<Self> {
+        use systemless::runner::TextEditCharExtraSnapshot;
+        if paint.painted_regions.is_empty() || !matches!(paint.char_extra,
+            TextEditCharExtraSnapshot::ClassicFixed(0) | TextEditCharExtraSnapshot::PpcPacked(0))
+            || (matches!(paint.char_extra, TextEditCharExtraSnapshot::ClassicFixed(_)) && paint.space_extra >> 16 != 0) {
+            return None;
+        }
+        let layout = ClassicListCellLayout { font: paint.font, size: paint.size,
+            left: paint.left, baseline: paint.baseline, clip: paint.clip,
+            stop_before: paint.stop_before, char_extra: 0 };
+        let pixels = layout.pixels(&paint.bytes)?;
+        let (top, left, bottom, right) = global_clip;
+        if top < 0 || left < 0 || top >= bottom || left >= right
+            || u32::try_from(bottom).ok()? > height || u32::try_from(right).ok()? > width
+            || i32::from(bottom) - i32::from(top) != i32::from(paint.clip.2) - i32::from(paint.clip.0)
+            || i32::from(right) - i32::from(left) != i32::from(paint.clip.3) - i32::from(paint.clip.1)
+            || native.len() != (width as usize).checked_mul(height as usize)?.checked_mul(4)? { return None; }
+        let sample = |x: i16, y: i16| -> Option<[u8; 3]> {
+            let gx = i32::from(left) + i32::from(x) - i32::from(paint.clip.1);
+            let gy = i32::from(top) + i32::from(y) - i32::from(paint.clip.0);
+            if gx < 0 || gy < 0 || gx >= width as i32 || gy >= height as i32 { return None; }
+            let at = (gy as usize * width as usize + gx as usize) * 4;
+            native.get(at..at + 3)?.try_into().ok()
+        };
+        let stride = usize::try_from(i32::from(right) - i32::from(left)).ok()?;
+        let rows = usize::try_from(i32::from(bottom) - i32::from(top)).ok()?;
+        let mut ownership = vec![false; stride.checked_mul(rows)?];
+        for &(t, l, b, r) in &paint.painted_regions {
+            let t = t.max(top); let l = l.max(left); let b = b.min(bottom); let r = r.min(right);
+            if t >= b || l >= r { continue; }
+            for y in t..b {
+                let at = (i32::from(y) - i32::from(top)) as usize * stride;
+                ownership[at + (i32::from(l) - i32::from(left)) as usize..
+                    at + (i32::from(r) - i32::from(left)) as usize].fill(true);
+            }
+        }
+        let owned = |x: i16, y: i16| ownership[(i32::from(y) - i32::from(paint.clip.0)) as usize * stride
+            + (i32::from(x) - i32::from(paint.clip.1)) as usize];
+        let empty = (paint.clip.0..paint.clip.2).flat_map(|y|
+            (paint.clip.1..paint.clip.3).map(move |x| (x, y))).find(|&(x, y)| owned(x, y) && !pixels.contains(&(x, y)))?;
+        let background = sample(empty.0, empty.1)?;
+        let foreground = match pixels.iter().find(|&&(x, y)| owned(x, y)) {
+            Some(&(x, y)) => sample(x, y)?, None => background,
+        };
+        for y in paint.clip.0..paint.clip.2 { for x in paint.clip.1..paint.clip.3 {
+            if owned(x, y) && sample(x, y)? != if pixels.contains(&(x, y)) { foreground } else { background } {
+                return None;
+            }
+        } }
+        Some(Self { pixels: pixels.into_iter().map(|point| (point, foreground)).collect(),
+            background, clip: paint.clip })
+    }
+
     /// The caller must establish standard painter ownership and intact drawing;
     /// equality alone cannot establish that an application-drawn cell is ours.
     pub fn qualify(
