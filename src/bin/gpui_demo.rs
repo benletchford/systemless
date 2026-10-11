@@ -637,9 +637,21 @@ mod desktop {
                             let valid = caret.is_none_or(|caret| caret >= range.start && caret <= range.start.saturating_add(bytes.len()))
                                 && caret.is_none_or(|_| session.runner().event_manager_snapshot().key_map[0x7b / 8] & (1 << (0x7b % 8)) == 0)
                                 && !pointer_down && super::input::guest_commit_inputs(&mut session, &owner, &bytes).is_some();
-                            let record = valid.then(|| session.runner_mut().text_edit_snapshot().records.into_iter()
-                                .find(|record| (record.guest_id, record.generation) == owner.identity)).flatten();
-                            if record.as_ref().is_some_and(|record| session.runner_mut().select_text_edit_range(record, range.clone())) {
+                            let selected_range = valid && match owner.target {
+                                super::input::TextInputTarget::Document { .. } => {
+                                    let record = session.runner_mut().text_edit_snapshot().records.into_iter()
+                                        .find(|record| (record.guest_id, record.generation) == owner.identity);
+                                    record.as_ref().is_some_and(|record|
+                                        session.runner_mut().select_text_edit_range(record, range.clone()))
+                                }
+                                super::input::TextInputTarget::StandardFile { .. } => {
+                                    let panel = session.runner().standard_file_snapshot();
+                                    panel.as_ref().is_some_and(|panel|
+                                        session.runner_mut().select_standard_file_text_range(panel, range.clone()))
+                                }
+                                super::input::TextInputTarget::Dialog { .. } => false,
+                            };
+                            if selected_range {
                                 text_commit_wait = None;
                                 let mut selected = owner; selected.selection = range;
                                 if let Some(caret) = caret {
@@ -653,9 +665,14 @@ mod desktop {
                             } else {
                                 let events = session.runner().event_manager_snapshot();
                                 let in_event = events.queue_len != 0 || events.last_record.is_some_and(|event| event.what != 0);
-                                let same_field = matches!(owner.target, super::input::TextInputTarget::Document { port }
-                                    if session.runner_mut().text_edit_snapshot().records.iter().any(|record|
-                                        record.active && (record.guest_id, record.generation) == owner.identity && record.owner_port == port));
+                                let same_field = match owner.target {
+                                    super::input::TextInputTarget::Document { port } => session.runner_mut().text_edit_snapshot().records.iter().any(|record|
+                                        record.active && (record.guest_id, record.generation) == owner.identity && record.owner_port == port),
+                                    super::input::TextInputTarget::StandardFile { new_folder } => session.runner().standard_file_snapshot()
+                                        .and_then(|panel| super::input::standard_file_text_owner(&panel)).is_some_and(|actual|
+                                            actual.identity == owner.identity && actual.new_folder == new_folder),
+                                    super::input::TextInputTarget::Dialog { .. } => false,
+                                };
                                 if !pointer_down && same_field && in_event
                                     && text_commit_wait.get_or_insert_with(Instant::now).elapsed() < Duration::from_millis(250) {
                                     queued.push_front(Command::ReplaceText(owner, range, bytes, caret)); break;
@@ -9956,6 +9973,20 @@ mod desktop {
                     panel.name.as_deref() == Some(corrected_name.as_str()) && panel.name_selection == Some((insertion + 1, insertion + 1))))
                     .standard_file.unwrap();
                 eprintln!("PASS worker-save-retained-suffix-caret powerpc={powerpc} depth={actual_depth}");
+                let current = super::super::input::standard_file_text_owner(&actual).unwrap();
+                let replacement_owner = super::super::input::TextInputOwner { identity: current.identity,
+                    target: super::super::input::TextInputTarget::StandardFile { new_folder: false },
+                    text: current.text.clone(), selection: current.selection };
+                worker.0.send(Command::ReplaceText(replacement_owner.clone(), 0..1, current.text[..1].to_vec(), Some(1))).unwrap();
+                let actual = wait("Save explicit replacement", &updates, |update| update.standard_file.as_ref().is_some_and(|panel|
+                    panel.name.as_deref() == Some(corrected_name.as_str()) && panel.name_selection == Some((1, 1))))
+                    .standard_file.unwrap();
+                worker.0.send(Command::ReplaceText(replacement_owner.clone(), 0..1, vec![b'X'], None)).unwrap();
+                let rejected = wait("stale Save replacement", &updates, |update| update.text_commit_rejection.as_ref()
+                    .is_some_and(|(_, owner)| owner == &replacement_owner));
+                assert_eq!(rejected.standard_file.unwrap().name, actual.name);
+                eprintln!("PASS worker-save-explicit-replacement powerpc={powerpc} depth={actual_depth}");
+
                 eprintln!("PASS worker-standard-file-rapid-composition-and-rejection powerpc={powerpc} depth={actual_depth}");
                 worker.0.send(Command::ActivateFile(actual.guest_id, actual.generation,
                     super::super::activation::FileAction::NewFolder)).unwrap();
@@ -9993,6 +10024,24 @@ mod desktop {
                         && folder.selection == (insertion + 1, insertion + 1)))).standard_file.unwrap();
                 assert_eq!(edited.name, actual.name);
                 eprintln!("PASS worker-new-folder-retained-suffix-caret powerpc={powerpc} depth={actual_depth}");
+                let current = super::super::input::standard_file_text_owner(&edited).unwrap();
+                let replacement_owner = super::super::input::TextInputOwner { identity: current.identity,
+                    target: super::super::input::TextInputTarget::StandardFile { new_folder: true },
+                    text: current.text.clone(), selection: current.selection };
+                let mut replacement = current.text.clone(); replacement.splice(0..1, [b'K', b'L']);
+                let replacement = systemless::systems::macintosh::mac_roman::decode_mac_roman(&replacement);
+                worker.0.send(Command::ReplaceText(replacement_owner.clone(), 0..1, b"KL".to_vec(), Some(1))).unwrap();
+                let edited = wait("New Folder explicit replacement", &updates, |update| update.standard_file.as_ref().is_some_and(|panel|
+                    panel.new_folder.as_ref().is_some_and(|folder| folder.name == replacement && folder.selection == (1, 1))))
+                    .standard_file.unwrap();
+                assert_eq!(edited.name, actual.name);
+                assert_eq!(edited.entries, actual.entries);
+                worker.0.send(Command::ReplaceText(replacement_owner.clone(), 0..1, vec![b'X'], None)).unwrap();
+                let rejected = wait("stale folder replacement", &updates, |update| update.text_commit_rejection.as_ref()
+                    .is_some_and(|(_, owner)| owner == &replacement_owner));
+                assert_eq!(rejected.standard_file.unwrap().new_folder.unwrap().name, replacement);
+                eprintln!("PASS worker-new-folder-explicit-replacement powerpc={powerpc} depth={actual_depth}");
+
                 worker.0.send(Command::ActivateFile(edited.guest_id, edited.generation,
                     super::super::activation::FileAction::CancelNewFolder)).unwrap();
                 let returned = wait("return to Save", &updates, |update| update.standard_file.as_ref().is_some_and(|panel|
@@ -12545,6 +12594,27 @@ mod desktop {
                 if new_folder { assert_eq!(selected.new_folder.as_ref().unwrap().name, after.new_folder.as_ref().unwrap().name); }
                 assert!(session.runner_mut().select_standard_file_text_range(&selected, actual.selection.clone()));
                 eprintln!("PASS guarded-file-selection powerpc={powerpc} depth={depth} new_folder={new_folder}");
+                cx.update_window(window.into(), |_, window, cx| {
+                    view.update(cx, |demo, cx| {
+                        demo.standard_file = Some(after.clone());
+                        demo.synchronize_composition(window, cx);
+                        demo.replace_text_in_range(Some(0..1), "KL", window, cx);
+                    });
+                }).unwrap();
+                let requests: Vec<_> = receiver.try_iter().collect();
+                assert_eq!(requests.len(), 1);
+                let super::Command::ReplaceText(owner, range, bytes, caret) = &requests[0] else {
+                    panic!("explicit filename replacement must use the guarded worker request");
+                };
+                assert_eq!(owner.identity, actual.identity);
+                assert_eq!(owner.selection, actual.selection);
+                assert!(matches!(owner.target, super::super::input::TextInputTarget::StandardFile { new_folder: folder } if folder == new_folder));
+                assert_eq!(*range, 0..1); assert_eq!(bytes, b"KL"); assert_eq!(*caret, None);
+                cx.update_window(window.into(), |_, _, cx| {
+                    view.update(cx, |demo, _| { demo.composition.reject(owner); });
+                }).unwrap();
+                eprintln!("PASS file-platform-explicit-replacement powerpc={powerpc} depth={depth} new_folder={new_folder}");
+
                 // A modal transition must cancel pending marked text and replace ownership.
                 cx.update_window(window.into(), |_, window, cx| {
                     view.update(cx, |demo, cx| {

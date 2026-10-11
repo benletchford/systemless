@@ -4825,3 +4825,18 @@ and bounds, then restoring selection before modality checks. Evidence is in
 `tests/toolbox-showcase/reference/gpui-demo/guarded-file-selection`. Frontend
 explicit file replacement wiring remains unfinished; composed visual, physical
 input and independent native qualification remain open.
+
+
+### Explicit Standard File replacement through GPUI
+
+Save/New Folder now accept pinned explicit replacement ranges through the GPUI
+input handler and guarded guest selection operation, followed by ordinary guest
+character events. Active-stage overlapping ranges use the existing fragment
+preservation path. The worker retains lifetime/field validation, stale rejection
+and guest caret restoration. Four-mode worker checks pass (79.32s), including
+New Folder text mutation, Save selection replacement, stale rejection and parent
+preservation/return. Eight editor/mode platform cases pass (54.86s), verifying
+the emitted explicit request and prior composition regressions. Logs and hashes
+are archived in `reference/gpui-demo/explicit-file-replacement`. Arbitrary dialog
+selection, disjoint stage replacement, physical IME and composed visual/native
+qualification remain open.
