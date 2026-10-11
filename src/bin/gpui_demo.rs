@@ -908,7 +908,9 @@ mod desktop {
                 // afterward so queued Toolbox events cannot be starved by UI work.
                 let cpu_deadline = Instant::now() + Duration::from_millis(12);
                 super::cpu_frame::advance(session.runner_mut(), batch, deadline, cpu_deadline);
+                session.runner_mut().advance_notification_system_sounds();
                 session.runner_mut().mix_gui_audio_slice(367);
+                session.runner_mut().advance_notification_system_sounds();
                 if session.runner().has_pending_sound_work()
                     && Instant::now() < cpu_deadline
                 {
@@ -9100,7 +9102,7 @@ mod desktop {
                 }
             }
             for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
-            for (procedure, sound) in [(false, false), (true, false), (false, true)] {
+            for (procedure, sound, sound_only) in [(false, false, false), (true, false, false), (false, true, false), (false, true, true), (true, true, true)] {
                 let mut arguments = vec!["gpui-menu-demo".to_string(),
                     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                         .join("tests/toolbox-showcase/toolbox-showcase.sit").to_string_lossy().into_owned(),
@@ -9117,9 +9119,25 @@ mod desktop {
 
                 wait("ready", &updates, |update| update.menus.menus.iter().any(|menu| menu.id == 129));
                 audio.lock().unwrap().clear();
-                let (mac_key, character) = if sound { (11, b'b') } else if procedure { (15, b'r') } else { (45, b'n') };
+                let (mac_key, character) = if sound_only { if procedure { (17, b't') } else { (1, b's') } } else if sound { (11, b'b') } else if procedure { (15, b'r') } else { (45, b'n') };
                 worker.0.send(Command::Input(MacintoshInput::KeyDown { mac_key, character })).unwrap();
                 worker.0.send(Command::Input(MacintoshInput::KeyUp { mac_key, character })).unwrap();
+                if sound_only {
+                    let completed = wait("sound-only response", &updates, |update| {
+                        assert!(update.notification_alert.is_none(), "sound-only notice must not acquire an alert");
+                        audio.lock().unwrap().iter().any(|sample| *sample != 0x80)
+                            && if procedure { update.notifications.len() == 1
+                                && update.notifications[0].response_started && update.notifications[0].ref_con == 1 }
+                            else { update.notifications.is_empty() }
+                    });
+                    assert!(!completed.status.contains("Guest stopped"));
+                    let menu = completed.menus.menus.iter().find(|menu| menu.id == 129).unwrap();
+                    worker.0.send(Command::Menu(129, 7, menu.guest_id, menu.generation)).unwrap();
+                    let after_menu = wait("sound-only foreground menu", &updates, |update| update.menus.menus.iter()
+                        .any(|menu| menu.id == 129 && menu.items.iter().any(|item| item.number == 7 && item.checked)));
+                    if procedure { assert_eq!(after_menu.notifications[0].ref_con, 1); }
+                    continue;
+                }
                 let initial = wait("install", &updates, |update| update.notifications.len() == 1
                     && update.menus.menus.iter().any(|menu| menu.id == 129));
                 let menu = initial.menus.menus.iter().find(|menu| menu.id == 129).unwrap();

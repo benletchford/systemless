@@ -5,8 +5,10 @@ with automatic removal after acknowledgment; `r` installs the same Mac Roman
 message with a compiled response procedure that increments its NMRec refCon.
 `b` installs an automatically removed text alert with the system-alert sound
 sentinel; the worker regression captures its audio before acknowledging it.
+`s` requests only the system sound with automatic removal; `t` requests only
+the system sound with the compiled response procedure. Neither requests an alert.
 Both CPU slices use the original NMInstall/NMRemove and NewNMUPP interfaces.
-The response uses only its supplied record. Repeating either trigger removes
+The response uses only its supplied record. Repeating a trigger removes
 the previous request before reinstalling it.
 
 This directory contains the source and reproducible build for a classic
