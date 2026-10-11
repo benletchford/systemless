@@ -1,0 +1,9 @@
+{
+  "scope": "Fixture mutation/resize provenance/geometry and lossless archive only; no disposal, reuse or general lifecycle qualification",
+  "cases": 32,
+  "provenance_before_and_after_archive": "passed",
+  "decoded_rgba_preserved": true,
+  "visually_reviewed_cases": 8,
+  "verifier_sha256": "f53a172e1014b6a36ccc4c13191baacfef844c5d41ff752b1e0f60dad5292e80",
+  "archiver_sha256": "e55db63630ca56c202100239b7cdc0ed72b3df548277b10253766f8b55c1eb91"
+}

@@ -1,0 +1,482 @@
+{
+  "source_commit": "060af1aa138a750fa92a0b077e622a18474ac0a5",
+  "scope": "Explicit mutation/resize visual samples; retained source cannot prove complete replacement, no disposal/identity reuse/performance qualification",
+  "cases": [
+    {
+      "rendered": "mono-mutated-0.75.png",
+      "rendered_sha256": "d0f0ac1af358888071ab6cc70cf3b1260be1b6431a9286d03356595bb582dab7",
+      "observations": "Updated selected label remains smooth including appended star updated suffix; native black panel and row7 geometry retained",
+      "archived_rendered_sha256": "910fd5771d63efe2a3bbe70e08560a6e32fb64e8af34238f1ca34944f50dfff7"
+    },
+    {
+      "rendered": "mono-resized-0.75.png",
+      "rendered_sha256": "e78be3bbf102b2be4882f7b88d8aa7ffb70aaea42ee47c066701cbf69bd44f45",
+      "observations": "List narrows and shortens at native resized bounds; smooth chrome remains; selected row7 lies outside reduced view and is clipped; original black panel retained",
+      "archived_rendered_sha256": "325568d8ea2b323e0dfda13990cc02e697a5edb89944ed5074e0c099ce74a4a5"
+    },
+    {
+      "rendered": "colour-mutated-0.75.png",
+      "rendered_sha256": "19e750ace47059f20957bd31cf6bb0053053b8fc06a60c3b6529d077d8d4089e",
+      "observations": "Updated selected white-on-green label remains smooth including appended suffix; normal rows and native lower partial-row clipping retained",
+      "archived_rendered_sha256": "aae78ecda659e9e49c835960205752eaeaafa4723bed21c77c268e80abe9adbc"
+    },
+    {
+      "rendered": "colour-resized-0.75.png",
+      "rendered_sha256": "83638bf262010c45e66c713ffb32afbc84c84a28147ef598c73129dded41cb9e",
+      "observations": "Smooth normal labels remain in narrower/shorter native list bounds; row7 selection is outside reduced view; native scrollbar moves with reduced bounds",
+      "archived_rendered_sha256": "83f3ffc7e49635534716903b750d99ba096cdebda9602626c782ba12c0338b50"
+    },
+    {
+      "rendered": "ppc8-mutated-0.75.png",
+      "rendered_sha256": "5f8904dcebe7d1309698133993246769eaf185a677af8a4b68b34bbb142a10d1",
+      "observations": "Smooth updated selected white-on-black label including appended suffix; native clipping retained",
+      "archived_rendered_sha256": "073dc022f1047b579f588fc9f077c1ca377a7f7d35cce52e86e15463cc62883c"
+    },
+    {
+      "rendered": "ppc8-resized-0.75.png",
+      "rendered_sha256": "3ac3228ed158afb2df7b88e0d6416b555dcd31b07b9e4f64d072b818d283e881",
+      "observations": "Smooth normal labels inside reduced guest bounds; selection outside view and lower partial row clipped",
+      "archived_rendered_sha256": "f85d86b2a6e2e1f6806470e9137e37e0a9df635f883415477c8c315698e04d83"
+    },
+    {
+      "rendered": "ppc16-mutated-0.75.png",
+      "rendered_sha256": "932cbb6e66e6b487135962a036e4001522d0b32bb002abaade9d8686161efaaf",
+      "observations": "Smooth updated selected white-on-black label including appended suffix; native clipping retained",
+      "archived_rendered_sha256": "d2415ecf3398d787d35b4736e8ffa739852fc4366bed8a2e5497a5d05be70a4c"
+    },
+    {
+      "rendered": "ppc16-resized-0.75.png",
+      "rendered_sha256": "0cb9020c50f6d309410e0a096a7a25aa643c371cca1c66ebd46437a2a550b1ed",
+      "observations": "Smooth normal labels inside reduced guest bounds; selection outside view and lower partial row clipped",
+      "archived_rendered_sha256": "45fc408ff578f8cef7aa02e3c412da4187ca023c987568e2db009165827c7f18"
+    }
+  ],
+  "comparisons": [
+    {
+      "scope": "Colour68k0.75 original-size vs reduced-size retained-source owned pieces only; no glyph parity or other scales qualified",
+      "before": "tests/toolbox-showcase/reference/gpui-demo/smooth-list-selected-shared/colour-selected-0.75.png",
+      "before_sha256": "e8496e3eb8850b88a3f5716cde2a107a52afa262f9ada842e42fe5b43d53b436",
+      "after": "colour-resized-0.75.png",
+      "after_sha256": "83638bf262010c45e66c713ffb32afbc84c84a28147ef598c73129dded41cb9e",
+      "results": [
+        {
+          "cell": [
+            0,
+            0
+          ],
+          "guest_rect": [
+            129,
+            65,
+            146,
+            513
+          ],
+          "unchanged_rgba": true
+        },
+        {
+          "cell": [
+            1,
+            0
+          ],
+          "guest_rect": [
+            146,
+            65,
+            164,
+            513
+          ],
+          "unchanged_rgba": true
+        },
+        {
+          "cell": [
+            2,
+            0
+          ],
+          "guest_rect": [
+            164,
+            65,
+            182,
+            513
+          ],
+          "unchanged_rgba": true
+        },
+        {
+          "cell": [
+            3,
+            0
+          ],
+          "guest_rect": [
+            182,
+            65,
+            200,
+            513
+          ],
+          "unchanged_rgba": true
+        },
+        {
+          "cell": [
+            4,
+            0
+          ],
+          "guest_rect": [
+            200,
+            65,
+            218,
+            513
+          ],
+          "unchanged_rgba": true
+        },
+        {
+          "cell": [
+            5,
+            0
+          ],
+          "guest_rect": [
+            218,
+            65,
+            236,
+            513
+          ],
+          "unchanged_rgba": true
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            236,
+            65,
+            241,
+            513
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            67,
+            242,
+            71
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            72,
+            242,
+            73
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            75,
+            242,
+            76
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            77,
+            242,
+            78
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            80,
+            242,
+            81
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            82,
+            242,
+            83
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            88,
+            242,
+            92
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            94,
+            242,
+            95
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            97,
+            242,
+            98
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            99,
+            242,
+            100
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            102,
+            242,
+            103
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            140,
+            242,
+            141
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            144,
+            242,
+            145
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            149,
+            242,
+            150
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            158,
+            242,
+            159
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            163,
+            242,
+            164
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            166,
+            242,
+            167
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            168,
+            242,
+            169
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            173,
+            242,
+            174
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            176,
+            242,
+            177
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            178,
+            242,
+            179
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            184,
+            242,
+            185
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            186,
+            242,
+            187
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            189,
+            242,
+            190
+          ],
+          "unchanged_rgba": false
+        },
+        {
+          "cell": [
+            6,
+            0
+          ],
+          "guest_rect": [
+            241,
+            192,
+            242,
+            193
+          ],
+          "unchanged_rgba": false
+        }
+      ],
+      "finding": "Full rows0..5 match exactly; partial row6 differs. The 68k native painter centers its baseline using clipped rect height (toolbox.rs baseline recipe), and GPUI retains that captured baseline; PPC uses top+ascent. Difference is explained by guest CPU-specific partial-cell layout, not evidence alone of a GPUI shift. No broad resize parity claim."
+    }
+  ]
+}
