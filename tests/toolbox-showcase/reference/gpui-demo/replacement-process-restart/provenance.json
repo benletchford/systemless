@@ -1,0 +1,6 @@
+{
+  "base": "23edcc55",
+  "source_sha256": "05b6b9178689207c972ca371787b4bb2044e0616c941c69a1b37838b36ebc97e",
+  "fixture_sha256": "28433983ced239f85c319718528a19c558adb0b355c5e28e0daf9b1a1e824aa8",
+  "scope": "Guest/session Save and desktop store explicit flush; not actual worker shutdown or crash durability"
+}

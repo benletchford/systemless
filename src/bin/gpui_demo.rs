@@ -9341,7 +9341,7 @@ mod desktop {
             let Ok(phase) = std::env::var(PHASE) else {
                 for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
                     let temp = tempfile::tempdir().unwrap();
-                    for phase in ["write", "read"] {
+                    for phase in ["write", "replace", "read"] {
                         let output = std::process::Command::new(std::env::current_exe().unwrap())
                             .args(["--exact", "desktop::tests::standard_file_save_survives_separate_process_and_guest_read", "--nocapture"])
                             .env(PHASE, phase).env("SYSTEMLESS_GPUI_SAVE_PROCESS_ROOT", temp.path())
@@ -9355,7 +9355,7 @@ mod desktop {
                 }
                 return;
             };
-            assert!(matches!(phase.as_str(), "write" | "read"));
+            assert!(matches!(phase.as_str(), "write" | "replace" | "read"));
             let root = PathBuf::from(std::env::var_os("SYSTEMLESS_GPUI_SAVE_PROCESS_ROOT").unwrap());
             let powerpc = std::env::var("SYSTEMLESS_GPUI_SAVE_PROCESS_CPU").unwrap() == "ppc";
             let depth: u16 = std::env::var("SYSTEMLESS_GPUI_SAVE_PROCESS_DEPTH").unwrap().parse().unwrap();
@@ -9366,11 +9366,26 @@ mod desktop {
             let app = session.load_path(&fixture).unwrap();
             let mut store = super::super::desktop_save_store::DesktopSaveStore::for_loaded_archive(
                 &root.join("Showcase.sit"), session.runner_mut());
-            let saved = if phase == "read" {
+            let saved = if phase != "write" {
                 let expected: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("expected.json")).unwrap()).unwrap();
                 assert_ne!(expected["writer_pid"].as_u64().unwrap(), u64::from(std::process::id()));
                 let files = store.load_saved_files();
-                for file in &files { session.runner_mut().import_vfs_file(file); }
+                for mut file in files {
+                    if phase == "replace" && file.path.rsplit('/').next() == Some("Restarté") {
+                        // Seed distinct existing content before guest replacement; the
+                        // reader must never recover this old data from the save store.
+                        file.data_fork = b"old contents before replacement".to_vec();
+                        file.resource_fork = vec![0, 128, 255, 82, 83, 82, 67];
+                    }
+                    session.runner_mut().import_vfs_file(&file);
+                }
+                if phase == "replace" {
+                    store.sync_save_files_now(session.runner_mut());
+                    let persisted = store.load_saved_files().into_iter()
+                        .find(|file| file.path.rsplit('/').next() == Some("Restarté")).unwrap();
+                    assert_eq!(persisted.data_fork, b"old contents before replacement");
+                    assert_eq!(persisted.resource_fork, vec![0, 128, 255, 82, 83, 82, 67]);
+                }
                 Some(expected)
             } else { None };
             session.initialize(&app);
@@ -9390,12 +9405,12 @@ mod desktop {
                 "file_type": file.file_type, "creator": file.creator, "finder_flags": file.finder_flags,
                 "created_date": file.created_date, "modified_date": file.modified_date });
             step(&mut session);
-            for input in [MacintoshInput::MouseDown { vertical: 266, horizontal: if phase == "write" { 400 } else { 126 } },
-                MacintoshInput::MouseUp { vertical: 266, horizontal: if phase == "write" { 400 } else { 126 } }] {
+            for input in [MacintoshInput::MouseDown { vertical: 266, horizontal: if phase != "read" { 400 } else { 126 } },
+                MacintoshInput::MouseUp { vertical: 266, horizontal: if phase != "read" { 400 } else { 126 } }] {
                 session.deliver_input(input);
             }
             let panel = (0..100).find_map(|_| { step(&mut session); session.runner().standard_file_snapshot() }).unwrap();
-            if phase == "write" {
+            if phase != "read" {
                 let bytes = b"Restart\x8e";
                 for &character in bytes {
                     session.deliver_input(MacintoshInput::KeyDown { mac_key: 0, character });
@@ -9423,13 +9438,27 @@ mod desktop {
             let click = ControlActivation::begin_file(&mut session, panel.guest_id, panel.generation, FileAction::Accept).unwrap();
             step(&mut session); let click = click.advance(&mut session).unwrap(); step(&mut session);
             assert!(click.advance(&mut session).is_none());
+            if phase == "replace" {
+                let confirmation = (0..100).find_map(|_| {
+                    step(&mut session);
+                    session.runner().standard_file_snapshot().filter(|panel| panel.confirming_replace)
+                }).expect("existing saved file must require guest replacement confirmation");
+                let click = ControlActivation::begin_file(&mut session, confirmation.guest_id,
+                    confirmation.generation, FileAction::Replace).unwrap();
+                step(&mut session); let click = click.advance(&mut session).unwrap(); step(&mut session);
+                assert!(click.advance(&mut session).is_none());
+            }
             assert!((0..100).any(|_| { step(&mut session); session.runner().standard_file_snapshot().is_none() }));
-            if phase == "write" {
+            if phase != "read" {
                 assert!((0..100).any(|_| { step(&mut session); session.runner_mut().bus_mut().read_long(main + 152) == 0x53460001 }));
                 let file = session.runner_mut().vfs_file_summaries().into_iter()
                     .find(|file| file.path.rsplit('/').next() == Some("Restarté")).unwrap();
                 let snapshot = session.runner_mut().vfs_file_snapshot(&file.path).unwrap();
                 assert_eq!(snapshot.data_fork, b"Systemless Standard File round trip\n");
+                if phase == "replace" {
+                    assert_eq!(snapshot.resource_fork, vec![0, 128, 255, 82, 83, 82, 67],
+                        "guest SetEOF/FSWrite replacement must preserve the unrelated resource fork");
+                }
                 store.sync_save_files_now(session.runner_mut());
                 std::fs::write(root.join("expected.json"), serde_json::to_vec_pretty(&serde_json::json!({
                     "writer_pid": std::process::id(), "snapshot": snapshot_json(&snapshot) })).unwrap()).unwrap();
