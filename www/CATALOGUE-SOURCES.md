@@ -1964,6 +1964,34 @@ selector and explicit PPC/depth 8 now completes startup at 600/600 ticks, four
 measured table-pixel assertions, zero exhaustion. Command-N plus an inner-square
 click completes 786/786 ticks without the prior halt. Captures inspected.
 Dealt-card artwork and score text remain incomplete, so this is startup evidence
-only. No PPC gameplay or public support claim follows; fix CI/merge and browser
-qualification remain pending. The original halt trace above remains historical
+only. PR #4665 passed all nine checks at the exact native head and merged as
+`2cf2a6b8c4c8342f633b11dac26b5277d8405cdb` on 11 October 2026 20:23:55 UTC.
+No release was triggered. PPC rendering and browser qualification remain pending. The original halt trace above remains historical
 baseline evidence.
+
+
+Fresh 68K replay on native `ed9db4de2310b638252f7d5d8f43158896e45598`
+passes the same twelve placement assertions at 786/1,386 ticks, zero exhaustion;
+inspected six of hearts, next ace of clubs and Score 100 remain correct.
+Real Chrome 151 preview at integrated source `b3b61ca5` (promoted candidate plus
+signed Random fix), WebGL worker, 800×600/depth 8/default 25 MHz, completes the
+same turn through ordinary File/New Game and pointer input. Twelve fresh
+before/after browser pixel assertions pass. Production-origin frontend files are
+intercepted; the archive is not. Its direct hosted HTTP 200 response matches the
+22,676-byte original SHA-256 and permits Origin https://systemless.org.
+Cross-origin isolation is true. Captures account for document scroll and the
+798×598 CSS presentation of the 800×600 guest canvas.
+The separate unchanged pacing gate fails at approximately 19.33 guest ticks/sec
+(minimum 50), with approximately 60 host FPS, 13 ms CPU budget and no console
+errors. The supported 8 MHz configuration is prepared for testing; it has not
+been qualified yet. Launch remains disabled and no new live game is counted.
+
+[PPC rendering issue #4667](https://github.com/benletchford/systemless/issues/4667):
+a fresh original-game native probe passes six startup assertions, including two
+word reads showing QDGlobals.thePort at `020005AA` still names `02F00000`, while
+the font trace uses current window port `03000250`. CopyBits targets screen
+portBits `02F00002` with window-local rectangles; suit images appear outside
+cards. Original DrawString arguments include Score 100 and card labels, despite
+incomplete visible text. Explicit same-port reselection skips the global update
+because of the current import-boundary equality guard. Regression coverage is
+being tested before the fix; card/text rendering must be replayed independently.

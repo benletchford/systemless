@@ -15,7 +15,7 @@ compatibility:
   verified:
   - date: "2026-10-12"
     tester: Catalogue maintainer
-    systemless_version: 392e612c55387756ec217577f085b387948da491
+    systemless_version: ed9db4de2310b638252f7d5d8f43158896e45598
     architecture: 68k
     environment: >-
       Optimized native replay of the complete unchanged On the Edge 3.1
@@ -49,16 +49,32 @@ compatibility:
     systemless_version: ed9db4de2310b638252f7d5d8f43158896e45598
     architecture: ppc
     environment: >-
-      Experimental signed Random result fix in PR 4665, optimized native build,
+      Signed Random result fix from merged PR 4665, optimized native build,
       identical original archive and selector, explicit PPC/depth 8. Startup now
       runs 600 frontend / 600 guest ticks with four measured table-pixel assertions
       and zero exhausted frames. Command-N and an inner-square click also finish
       786/786 ticks without the previous halt. Captures inspected. The table appears,
       but dealt-card artwork and score text are incomplete; no PPC gameplay
-      qualification is claimed. Runtime fix CI/merge and browser validation remain
-      pending. The 68K slice remains the proposed default.
+      qualification is claimed. Further rendering fixes and browser validation remain pending. The 68K slice remains the proposed default.
     status: boots
     evidence: https://github.com/benletchford/systemless/pull/4665
+  - date: "2026-10-12"
+    tester: Catalogue maintainer
+    systemless_version: b3b61ca5
+    architecture: 68k
+    environment: >-
+      Real Chrome 151 preview, WebGL worker, 800x600 guest display and 8-bit depth,
+      default 25 MHz. Production-origin frontend interception only; the hosted
+      original archive is fetched directly with HTTP 200, 22676 bytes and its
+      unchanged SHA-256, cross-origin isolation true. Ordinary File/New Game and
+      one placement show six of hearts, next ace of clubs and Score 100. Fresh
+      replay passes twelve measured before/after browser pixel checks. Captures
+      inspected. The separate pacing gate fails: about 19.33 guest ticks/second
+      versus the unchanged 50 minimum, despite about 60 host FPS. Browser launch
+      approval remains pending while the supported 8 MHz configuration is tested.
+      Full matches, card removal, undo, saves and audio remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4661
 runtime:
   executable_path: On the Edge 3.1/On the Edge
   screen_depth: 8
