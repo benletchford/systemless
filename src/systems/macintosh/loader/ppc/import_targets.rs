@@ -2734,6 +2734,18 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetQDGlobalsArrow") => PpcImportDispatcherTarget::GetQDGlobalsArrow,
         ("InterfaceLib" | "CarbonLib", "GetQDGlobalsScreenBits" | "getqdglobalsscreenbits") =>
             PpcImportDispatcherTarget::GetQDGlobalsScreenBits,
+        ("CarbonLib", "QDIsPortBuffered" | "qdisportbuffered") =>
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::IsPortBuffered,
+            ),
+        ("CarbonLib", "QDIsPortBufferDirty" | "qdisportbufferdirty") =>
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::IsPortBufferDirty,
+            ),
+        ("CarbonLib", "QDFlushPortBuffer" | "qdflushportbuffer") =>
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::FlushPortBuffer,
+            ),
         ("InterfaceLib", "HideCursor") => PpcImportDispatcherTarget::HideCursor,
         ("InterfaceLib", "ShowCursor") => PpcImportDispatcherTarget::ShowCursor,
         ("InterfaceLib", "ShieldCursor") => PpcImportDispatcherTarget::ShieldCursor,
