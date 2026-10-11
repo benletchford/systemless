@@ -28,6 +28,15 @@ The opt-in implementation is staged in a draft PR and must not be merged.
 | Cursors and notifications | Cursor bitmap, mask, hotspot, visibility, and hide/show level are guest state presented by the desktop host. Classic notification records and callbacks are tracked; equivalent PowerPC install and visible-notice coverage is unproven. The draw-path inventory separates these boundaries. | Qualify resource-backed versus application-built cursors, notification imagery, sound, acknowledgment, callback timing, and PowerPC installation before GPUI presentation. | State extraction needed |
 | QuickDraw and custom definitions | Framebuffer remains the presentation source. | Mask only verified standard system pixels; keep unknown WDEF, CDEF, MDEF, user items, and application drawing unchanged. | Required fallback |
 
+The existing `tests/toolbox-showcase/oracle/windows.json` replays 64 guest
+actions across seven window checkpoints. Current PowerPC and 68K replays both
+completed the sequence; visual review against the committed SheepShaver and
+BasiliskII references confirms the same stacking, activation, movement, growth,
+hit-test, and close-promotion transitions. The reference emulators' desktop,
+palette, and window metrics differ, so whole-screen pixel equality is not an
+acceptance test here. GPUI composed captures currently cover the initial stack,
+drag, and activation; growth and close promotion still need composed review.
+
 For live menu validation, GPUI Kit 0.7.1's `PopupMenu::rebuild` clears its
 private selected row. Systemless now owns a retained standard-menu popup built
 with GPUI Kit's `Popover`, theme, focus, and accessibility primitives. It keys
