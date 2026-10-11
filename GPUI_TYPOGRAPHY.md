@@ -75,7 +75,10 @@ adjustment without stretching the resolved glyph. Native paint pens and guest
 insertion positions remain separate; PPC's minimum advance remains intact.
 Both flags together cancel their spacing adjustments. The original outline
 coverage and its bounds remain unchanged. Supported basic label and TextEdit
-styles, plus non-underlined TextEdit halos, use this spacing policy.
+styles use this spacing policy. Label outline/shadow synthesis preserves the
+native one-pixel upward shadow baseline and separate continuous underline;
+TextEdit retains its distinct CPU-specific underline recipe. Label recipe and
+raster tests pass, while composed styled-menu/widget qualification remains open.
 
 Underline/halo combinations now combine CPU-specific guest strokes with the
 original outline before smear/exclusion. Classic preserves per-character

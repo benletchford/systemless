@@ -1,0 +1,14 @@
+{
+  "base_commit": "3a35a6d0b9842ffe73d878efe617681bf2f9d419",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "9d03b348e144a3546a137911de1b5304a6b1b37bdcc83e9045dbf01767df0268",
+    "src/bin/gpui_demo_text.rs": "2b1670dfc7dac7147d3ed579e91342bf59b99ee18f478f41b0306c98d7702d8c",
+    "src/systems/macintosh/quickdraw/text.rs": "13d48af835cb1f3a45162c877caf0e98439a355d672d4a88b861cacfa1be6ab3",
+    "src/systems/macintosh/quickdraw/fonts/outline.rs": "2f57a2783f586f4279984bda73b3e189d1ac399ec96e8bc21927c0124a787e7b",
+    "src/systems/macintosh/quickdraw/fonts/style.rs": "1be20f2155e9dfa4ed2cbc0669f49898dc3a336e50e972d08534170826b60c1c"
+  },
+  "binary": "target/ci-test/examples/gpui_menu_demo-957ebf4d71285d8e",
+  "binary_sha256": "cea1820e82e5b11389b63200724642158b033bda6e5a1556a1ca90bddaab68ba",
+  "tests_passed": 24,
+  "scope": "Original-source label mask unit tests. All128 supported faces at font0/12,font3/12,font4/10 resolve rasters1..8 with native paint pens and continuous line underline. All halo faces match native binary silhouettes, shadow baseline offset and exact advances; invalid faces retain atomic fallback. Existing TextEdit tests pass. Initial failure was a stale test expecting outline labels to remain unsupported, corrected to test acceptance plus reserved-face atomic rejection. No composed menu/widget appearance, interaction, independent Macintosh font identity or production performance qualification."
+}
