@@ -4957,14 +4957,21 @@ impl super::TrapDispatcher {
             return false;
         }
 
+        let previous_edit_field = bus.read_word(
+            dialog_ptr + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET,
+        );
+        let text_handle =
+            bus.read_long(dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+        let te_ptr = Self::te_record_ptr(bus, text_handle);
+        if previous_edit_field != (edit_item - 1) as u16 && te_ptr != 0 {
+            bus.write_word(te_ptr + Self::TE_ACTIVE_OFFSET, 0);
+            self.draw_te_contents(cpu, bus, text_handle, true);
+        }
         bus.write_word(
             dialog_ptr + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET,
             (edit_item - 1) as u16,
         );
 
-        let text_handle =
-            bus.read_long(dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
-        let te_ptr = Self::te_record_ptr(bus, text_handle);
         if te_ptr == 0 {
             return true;
         }
@@ -4972,6 +4979,12 @@ impl super::TrapDispatcher {
         let item_handle = Self::dialog_item_handle(bus, dialog_ptr, edit_item);
         let text = Self::text_item_bytes_from_handle_if_present(bus, item_handle)
             .unwrap_or_else(|| encode_mac_roman_lossy(&item.text));
+        // A dialog shares one TERec among its editText items. Move its
+        // layout and owner before recalculating text or interpreting clicks.
+        Self::te_write_rect_words(bus, te_ptr + Self::TE_DEST_RECT_OFFSET, item.rect);
+        Self::te_write_rect_words(bus, te_ptr + Self::TE_VIEW_RECT_OFFSET, item.rect);
+        Self::te_write_rect_words(bus, te_ptr + Self::TE_SEL_RECT_OFFSET, item.rect);
+        bus.write_long(te_ptr + Self::TE_IN_PORT_OFFSET, dialog_ptr);
         self.te_set_text_contents(bus, text_handle, &text);
 
         let text_len = text.len().min(u16::MAX as usize);
@@ -11630,6 +11643,11 @@ impl super::TrapDispatcher {
                                             let default_item = bus.read_word(dialog_ptr + crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET) as i16;
                                             self.redraw_standard_dialog_items(bus, bounds, &items, default_item,
                                                 &edit_text, item_no, dialog_ptr, Some(item_no));
+                                            if bus.read_word(ptr + Self::TE_SEL_START_OFFSET)
+                                                == bus.read_word(ptr + Self::TE_SEL_END_OFFSET)
+                                            {
+                                                self.draw_te_contents(cpu, bus, handle, false);
+                                            }
                                         }
                                     }
                                 }

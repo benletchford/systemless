@@ -2732,3 +2732,21 @@ This qualifies the tested modeless field's guest behavior and geometry. It does
 not establish composed selected-field scale/state coverage, switching among
 multiple edit fields, ClikLoop callbacks, native Macintosh fidelity or the
 remaining styled/multiline/scrolled field requirements.
+
+Work in progress: classic DialogSelect field activation now moves the shared
+TERec destination, view, selection rectangle and owner port to the selected
+DITL item before calculating text and interpreting clicks. A collapsed caret
+is repainted after the Dialog Manager item redraw. The two-field mouse/null
+regression checks the second field's rectangles and owner and now expects the
+clicked insertion point `(3, 3)`, rather than the previous stored selection.
+It passes under both themes (0.08 seconds). All 12 `dialog_select` tests pass
+(0.04 seconds), including the caret blink regression corrected to read the
+dialog bitmap's actual row stride. On switching fields, classic TextEdit also
+deactivates and erases its previous highlight/caret before moving the record.
+PPC DialogSelect now uses the existing SelectDialogItemText field-switch helper,
+which detaches the borrowed DITL text handle before replacing the TERec. A native
+import regression switches second/first/second and checks active field, borrowed
+handle, text, destination and view rectangles (passes, 0.08 seconds). The
+three-mode real-fixture selection/pixel/editing regression passes (21.09 seconds)
+with the geometry and caret changes; it exercises one field, so real-fixture
+multi-field coverage and composed field-switch captures remain unfinished.

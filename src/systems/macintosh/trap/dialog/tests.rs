@@ -5451,6 +5451,16 @@
                 240,
             );
         let mouse_edit_field = bus.read_word(dialog_ptr + 164);
+        assert_eq!(
+            TrapDispatcher::te_read_rect(&bus, te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET),
+            (42, 20, 62, 120),
+            "switching fields must move the shared TextEdit layout"
+        );
+        assert_eq!(
+            TrapDispatcher::te_read_rect(&bus, te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET),
+            (42, 20, 62, 120)
+        );
+        assert_eq!(bus.read_long(te_ptr + TrapDispatcher::TE_IN_PORT_OFFSET), dialog_ptr);
         let mouse_item = &disp.dialog_items[&dialog_ptr][1];
         let mouse_item_selection = (mouse_item.sel_start, mouse_item.sel_end);
         let mouse_te_text = TrapDispatcher::te_text_bytes(&bus, text_h);
@@ -8306,10 +8316,10 @@
         assert_eq!(classic.mouse_item_hit, 2);
         assert_eq!(classic.mouse_stack_after, TEST_SP + 12);
         assert_eq!(classic.mouse_edit_field, 1);
-        assert_eq!(classic.mouse_item_selection, (2, 4));
+        assert_eq!(classic.mouse_item_selection, (3, 3));
         assert_eq!(classic.mouse_te_text, b"Second".to_vec());
         assert_eq!(classic.mouse_te_length, 6);
-        assert_eq!(classic.mouse_te_selection, (2, 4));
+        assert_eq!(classic.mouse_te_selection, (3, 3));
         assert_eq!(classic.null_result, 0);
         assert_eq!(classic.null_dialog_out, 0xDEAD_BEEF);
         assert_eq!(classic.null_item_hit, 0xCAFE);
@@ -8317,7 +8327,7 @@
         assert_eq!(classic.null_edit_field, 1);
         assert_eq!(classic.null_te_text, b"Second".to_vec());
         assert_eq!(classic.null_te_length, 6);
-        assert_eq!(classic.null_te_selection, (2, 4));
+        assert_eq!(classic.null_te_selection, (3, 3));
         assert_eq!(
             themed, classic,
             "systemless-default must not change DialogSelect editText mouse/null handling"
@@ -9064,6 +9074,10 @@
         // events call TEIdle so the insertion point blinks.
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         let dialog_ptr = bus.alloc(170);
+        let port_bytes = bus.read_bytes(0x181000, 108);
+        bus.write_bytes(dialog_ptr, &port_bytes);
+        bus.write_long(dialog_ptr + 76, 33); // QuickDraw blackColor
+        bus.write_long(dialog_ptr + 80, 30); // QuickDraw whiteColor
         let event_ptr = bus.alloc(16);
         let dialog_out_ptr = bus.alloc(4);
         let item_hit_ptr = bus.alloc(2);
@@ -9072,7 +9086,8 @@
         let text_item_handle = TrapDispatcher::allocate_handle_with_data(&mut bus, 0);
         let text_h = make_te_with_text(&mut disp, &mut bus, b"");
         let te_ptr = bus.read_long(text_h);
-        let (screen_base, row_bytes, _screen_w, _screen_h, _pixel_size) = disp.screen_mode;
+        let screen_base = bus.read_long(dialog_ptr + 2);
+        let row_bytes = u32::from(bus.read_word(dialog_ptr + 6));
 
         for i in 0..(row_bytes * 80) {
             bus.write_byte(screen_base + i, 0);
@@ -9149,7 +9164,7 @@
             0
         );
         assert!(
-            screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 21, 20),
             "DialogSelect editText mouse-down should display the insertion caret"
         );
 
@@ -9162,7 +9177,7 @@
             0
         );
         assert!(
-            screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 21, 20),
             "DialogSelect null event before 32 ticks should keep the caret visible"
         );
 
@@ -9176,7 +9191,7 @@
             1
         );
         assert!(
-            !screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            !screen_pixel_is_set(&bus, screen_base, row_bytes, 21, 20),
             "DialogSelect null event at the 32-tick boundary should hide the caret"
         );
 
@@ -9190,7 +9205,7 @@
             0
         );
         assert!(
-            screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 21, 20),
             "the next DialogSelect null-event blink interval should show the caret again"
         );
         // GetCaretTime is an inline low-memory read on 68k. DialogSelect's

@@ -1845,6 +1845,25 @@ fn ppc_dispatch_dialog_compatibility(
                     ..
                 } => {
                     if is_edit_text {
+                        let current_field = memory
+                            .read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET)
+                            .unwrap_or(u16::MAX);
+                        if current_field != (item_no - 1) as u16 {
+                            let mut allocator = PpcProcessAllocatorView {
+                                memory_manager: process_memory_manager,
+                            };
+                            ppc_select_dialog_item_text(
+                                Some(&mut allocator), None, memory, heap_cursor,
+                                heap_limit, last_mem_error, handles,
+                                SelectDialogItemTextParameters::new(dialog, item_no as usize, 0, 0),
+                                event.when, PPC_QD_TEXT_MODE_SRC_OR,
+                                PPC_QD_TEXT_SIZE_SYSTEM, fore_color,
+                            );
+                            let _ = ppc_draw_dialog(
+                                memory, handles, controls, gworlds, screen_clut,
+                                vfs_resources, current_resource_refnum, dialog,
+                            );
+                        }
                         let te_handle = memory
                             .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
                             .unwrap_or(0);
