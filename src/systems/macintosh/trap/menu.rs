@@ -3410,7 +3410,7 @@ impl super::TrapDispatcher {
             // ICON (32×32 monochrome) resources; cicn / 'cicn' colour
             // icons go through GetCIcon ($AA1E) -> PlotCIcon ($AA1F)
             // separately. Pixel-format dispatch handles dst.pixel_size
-            // 1 (b/w fb OR-paint) + 8 (8-bit fb white-paint = 0xFF);
+            // 1 (monochrome bits) + 8 (indexed black/white pixels);
             // 16/32-bit colour fb is silently no-op (matches the
             // IM:V V-65 "no colour" assumption for legacy ICON paths).
             // Status note: this was tagged Stub since the
@@ -3498,9 +3498,6 @@ impl super::TrapDispatcher {
                                 }
                             }
                         }
-                        if !any_set {
-                            continue;
-                        }
                         let px = left as i32 + dx;
                         if px < dst.bounds_left as i32 || px >= dst.bounds_right as i32 {
                             continue;
@@ -3511,11 +3508,13 @@ impl super::TrapDispatcher {
                                 let addr = dst.base + row_off * dst.row_bytes + (col / 8);
                                 let bit = 7 - (col % 8);
                                 let byte = bus.read_byte(addr);
-                                bus.write_byte(addr, byte | (1 << bit));
+                                let mask = 1 << bit;
+                                let pixel = if any_set { byte | mask } else { byte & !mask };
+                                bus.write_byte(addr, pixel);
                             }
                             8 => {
                                 let addr = dst.base + row_off * dst.row_bytes + col;
-                                bus.write_byte(addr, 255);
+                                bus.write_byte(addr, if any_set { 255 } else { 0 });
                             }
                             _ => {}
                         }
