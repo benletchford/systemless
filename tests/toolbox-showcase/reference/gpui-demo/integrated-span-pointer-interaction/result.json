@@ -1,0 +1,14 @@
+{
+  "outcome": "Actual GPUI styled document glyph clicks and drag selection test passed in361.87s",
+  "renderer_source_commit": "b41bb6c4",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "862d8af764beececc6392ba64036a3f0ec969999d9ee73541d3a401740391741",
+    "src/bin/gpui_demo_clipboard.rs": "eae2ea7f62301935413e7dacc8ea793544d20e78fbd11f95489e9d4c35d03557",
+    "src/bin/gpui_demo_text.rs": "4ff4517132eea13c280c5b1f18cf277ff262acf24d1e0d3af893d1c0b9e0f605"
+  },
+  "source_hash_timing": "Main/clipboard pinned shortly after job launch and unchanged through terminal success. Text source is the pre-spacing b41bb6c4 committed file and matches independently pinned completed capture source019cae5d; current text source advanced during the immutable old test executable run.",
+  "test_executable": "target/debug/examples/gpui_menu_demo-5b8d3de0cdbde419",
+  "test_executable_sha256": "ddaaf78423f8552b1e0bc2955afde5ed30242de0720519bf32a2667f3fc452fe",
+  "binary_hash_timing": "Pinned shortly after launch and identical after terminal success; no rebuild of this executable during job.",
+  "scope": "Actual GPUI input events through shared frontend transforms for glyph clicks at guest offsets3/20 and drag9..26, CPU/depth mono68k, colour68k, PPC8, PPC16, requested/actual centered viewport scales0.75/1/1.5/2. Guest selection assertions. Pre-spacing integrated span renderer. Does not qualify new condensed/extended styles, physical native observer/input, full font fidelity or performance."
+}
