@@ -1,0 +1,4 @@
+usage: capture-gpui-styled-text-matrix.py [-h] [--multiline] [--smooth-review]
+                                          [--spacing {normal,condensed,extended,both}]
+                                          output
+capture-gpui-styled-text-matrix.py: error: spacing style capture requires --smooth-review; the binary ink oracle is not qualified for these styles

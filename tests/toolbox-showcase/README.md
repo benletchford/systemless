@@ -698,3 +698,11 @@ typing and the default sample remain unchanged. The ordinary
 CPU/depth and retained style intent, then clicks and types in condensed and
 extended fields on mono68k, colour68k, PPC8 and PPC16. Current qualification
 status and composed rendering gaps are recorded in GPUI_COVERAGE.md.
+
+For guest-driven spacing captures, add `--spacing condensed|extended|both` and
+`--smooth-review` to `capture-gpui-styled-text-matrix.py`; the default is normal.
+For example, `--multiline --spacing condensed --smooth-review` requests all16
+CPU/depth/scale cases. Build and commit clean source before starting the driver,
+and keep its pinned source, executable and fixture unchanged until it exits.
+Spacing metadata must agree across the request, sidecar and guest style runs.
+These smooth captures require visual review and do not use a binary ink oracle.

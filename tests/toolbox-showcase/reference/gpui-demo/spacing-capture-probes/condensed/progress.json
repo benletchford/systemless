@@ -1,0 +1,72 @@
+{
+  "smooth_review": true,
+  "compositor": "shared Demo renderer",
+  "source_commit": "3529c7dff6004b21e2ce2f5046c722f0557a32ec",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "eb1d0874482535b67bd31b34df84a9c78ced082f5e6b4207e3e59d005f848ccc",
+    "src/bin/gpui_demo_text.rs": "3e8870b2a2ab33cabd04300be212e1f558f656484478dc3f632256d1983b1c8b",
+    "tests/toolbox-showcase/capture-gpui-styled-text-matrix.py": "1df6b7465fef6f0cf4f2991360754d003f2d158443500e306c4bd381addf8502",
+    "tests/toolbox-showcase/verify-gpui-smooth-styled-provenance.py": "56e9ae61b0fc90aae04c731f64e097fce38dccf9a3882caae095da6b5d34774b",
+    "tests/toolbox-showcase/check-gpui-smooth-styled-verifier.py": "61524df3e71282bda09bc5f265c384d860bc5d6e8da0985a83fd08e1f3e57513",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "ab6ea5665bb0e3743122b51b7035475275ce88c48c040f3e52b536a581123bbc"
+  },
+  "capture_binary_sha256": "2b3595270f8495feee3962e5bfa68aa86c748a51f4e06ab21fbe4a6fcd409b2c",
+  "fixture_sha256": "ab6ea5665bb0e3743122b51b7035475275ce88c48c040f3e52b536a581123bbc",
+  "matrix_kind": "multiline",
+  "spacing_style": "condensed",
+  "field_bounds": [
+    126,
+    74,
+    164,
+    561
+  ],
+  "runtime_cpu_evidence": "active application runtime",
+  "complete": false,
+  "cases": [
+    {
+      "kind": "multiline",
+      "mode": "ppc16",
+      "actual_depth": 16,
+      "state": "selected",
+      "insertion_offset": null,
+      "scale": 1,
+      "device_scale": 2,
+      "rendered": "systemless-condensed-native-probe.png",
+      "guest": "systemless-condensed-native-probe.guest.png",
+      "evidence": "systemless-condensed-native-probe.json",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "1",
+        "--capture-styled-spacing",
+        "condensed",
+        "--capture-styled-text-edit-multiline",
+        "/tmp/systemless-condensed-native-probe.png"
+      ],
+      "smooth_raster_support_1_through_8": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "rendered_dimensions": [
+        1600,
+        1200
+      ],
+      "device_scale_evidence": "inferred from composed dimensions and requested scene scale",
+      "binary_ink_oracle": "not applied to antialiased coverage",
+      "rendered_sha256": "60b40cb5c50f954aeb518d4c6f796198d93a3ff1f7f847e3d2ae892cc8e05d8b",
+      "guest_sha256": "0ac32fbe8ce56772a4dc09e2a07369ca3e1278ee7a6e2d8476121e69a7311ab6",
+      "evidence_sha256": "d0bdb33f31dd69ab064b60d86adb02033e7cbc6640c21ab330690b0f4f48e5cf",
+      "capture_rendered_sha256": "d8f011ce1c88ba228a39790d5c0a986b497f4945ba307f58118f62e388022a0d",
+      "capture_guest_sha256": "63fc108b1f33247fa657fc86be92288e6ab2243948213a592f4c7d997f2c118a"
+    }
+  ],
+  "scope": "One actual uncommitted-source manual PPC16 condensed multiline probe; partial metadata only, not a completed matrix or native font oracle."
+}
