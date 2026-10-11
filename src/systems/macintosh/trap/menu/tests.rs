@@ -5344,6 +5344,21 @@ fn initprocmenu_consumes_mbresid_and_preserves_stack_pointer() {
         sp_pre_five,
         "InitProcMenu must pop 2 bytes per call across a 5-call composition"
     );
+
+    // The upper 13 bits identify the MBDF; the low three are its variant.
+    // Macintosh Toolbox Essentials (1992), pp. 3-103--3-105.
+    let sp = cpu.read_reg(Register::A7) - 2;
+    bus.write_word(sp, 0x0803); // application MBDF 256, variant 3
+    cpu.write_reg(Register::A7, sp);
+    assert!(disp.dispatch_menu(true, 0x008, &mut cpu, &mut bus).unwrap().is_ok());
+    assert_eq!(disp.current_menu_list(&bus).unwrap().mb_res_id, 0x0803);
+    assert!(disp.guest_menu_snapshot(&bus).custom_bar_definition);
+
+    let sp = cpu.read_reg(Register::A7) - 2;
+    bus.write_word(sp, 0x0003); // standard MBDF, variant 3
+    cpu.write_reg(Register::A7, sp);
+    assert!(disp.dispatch_menu(true, 0x008, &mut cpu, &mut bus).unwrap().is_ok());
+    assert!(!disp.guest_menu_snapshot(&bus).custom_bar_definition);
 }
 
 // 0x137 — DrawMenuBar: no stack params, calls draw_menu_bar_to_fb.

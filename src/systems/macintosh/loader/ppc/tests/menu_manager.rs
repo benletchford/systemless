@@ -508,6 +508,9 @@ fn native_insert_menu_preserves_regular_and_hierarchical_partitions() {
     assert!(snapshot.menus[0].standard_definition);
     assert!(snapshot.menus[1].hierarchical);
     assert!(!snapshot.menus[1].visible_in_menu_bar);
+    loaded.memory.write_u16_be(menu_list + 4, 0x0800).unwrap();
+    assert!(ppc_guest_menu_snapshot(&mut loaded.memory, menu_list_handle).custom_bar_definition);
+    loaded.memory.write_u16_be(menu_list + 4, 0).unwrap();
     assert_eq!(
         ppc_get_menu_handle(&mut loaded.memory, menu_list_handle, 200),
         hierarchical

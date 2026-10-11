@@ -3521,7 +3521,13 @@ impl MenuList {
                 })
             })
             .collect();
-        GuestMenuSnapshot { menus }
+        GuestMenuSnapshot {
+            menus,
+            // InitProcMenu stores the MBDF resource ID in the upper 13 bits;
+            // the low three bits select its variant. Macintosh Toolbox
+            // Essentials (1992), pp. 3-103--3-105.
+            custom_bar_definition: (self.mb_res_id as u16) >> 3 != 0,
+        }
     }
 
     pub(crate) fn hierarchical_handles(&self) -> impl DoubleEndedIterator<Item = u32> + '_ {

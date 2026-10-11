@@ -2717,6 +2717,7 @@ mod desktop {
         visual.update(|cx| {
             view.update(cx, |demo, cx| {
                 demo.menus = GuestMenuSnapshot {
+                    custom_bar_definition: false,
                     menus: vec![GuestMenu {
                         id: 128,
                         title: "Custom".into(),

@@ -10,13 +10,16 @@
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct GuestMenuSnapshot {
     pub menus: Vec<GuestMenu>,
+    /// The current DynamicMenuList names an application MBDF rather than
+    /// the standard menu bar definition function.
+    pub custom_bar_definition: bool,
 }
 
 impl GuestMenuSnapshot {
     /// A custom MDEF can draw arbitrary pixels and define its own hit regions.
     /// Macintosh Toolbox Essentials (1992), pp. 3-3, 3-87.
     pub fn requires_guest_menu_rendering(&self) -> bool {
-        self.menus.iter().any(|menu| !menu.standard_definition)
+        self.custom_bar_definition || self.menus.iter().any(|menu| !menu.standard_definition)
     }
 
     /// Validate a host-presented command against the immutable projection of
@@ -67,6 +70,7 @@ mod tests {
 
     fn snapshot(menu_enabled: bool, item: GuestMenuItem) -> GuestMenuSnapshot {
         GuestMenuSnapshot {
+            custom_bar_definition: false,
             menus: vec![GuestMenu {
                 id: -120,
                 title: "File".to_owned(),
@@ -115,6 +119,9 @@ mod tests {
         let mut menus = snapshot(true, item());
         assert!(!menus.requires_guest_menu_rendering());
         menus.menus[0].standard_definition = false;
+        assert!(menus.requires_guest_menu_rendering());
+        menus.menus[0].standard_definition = true;
+        menus.custom_bar_definition = true;
         assert!(menus.requires_guest_menu_rendering());
     }
 }
