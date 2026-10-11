@@ -3518,6 +3518,7 @@ impl MenuList {
                         let number = i16::try_from(index + 1).unwrap_or(i16::MAX);
                         let submenu_id = hierarchical_menu_id(item.command, item.mark);
                         GuestMenuItem {
+                            mark: item.mark,
                             style: item.style,
                             number,
                             text: decode_mac_roman(&item.text),
@@ -5838,6 +5839,8 @@ mod tests {
 
         assert_eq!(snapshot.menus.len(), 2);
         assert_eq!(snapshot.menus[0].items[0].style, 0x03);
+        assert_eq!(snapshot.menus[0].items[0].mark, 200);
+        assert_eq!(snapshot.menus[1].items[0].mark, 0x12);
         assert_eq!(snapshot.menus[1].items[0].style, 0x03);
         assert_eq!(snapshot.menus[0].guest_id, 0x1000);
         assert_eq!(snapshot.menus[1].guest_id, 0x2000);

@@ -466,6 +466,17 @@ pub(crate) fn classic_menu_label(
         .overflow_hidden().child(classic_label_canvas(line, false, scale, foreground))
 }
 
+/// Symbols use the same Unicode-to-guest-glyph resolver as Menu Manager.
+pub(crate) fn classic_menu_symbol(
+    label: &str, foreground: gpui_kit::Hsla,
+) -> impl gpui_kit::IntoElement {
+    use gpui_kit::{prelude::*, *};
+    let line = ClassicLine::unicode(label, 0, 12);
+    let width = line.positions.last().copied().unwrap_or(0).max(1);
+    div().w(px(width as f32)).h(px(18.)).flex_shrink_0()
+        .overflow_hidden().child(classic_label_canvas(line, false, 1., foreground))
+}
+
 fn classic_label_canvas(
     line: ClassicLine, centered: bool, scale: f32, foreground: gpui_kit::Hsla,
 ) -> impl gpui_kit::IntoElement {
@@ -805,4 +816,20 @@ pub(crate) fn classic_save_name(
         },
     )
     .size_full()
+}
+
+/// Use the guest Menu Manager raster, never a host-font chevron.
+pub(crate) fn classic_menu_hierarchy_indicator(
+    foreground: gpui_kit::Hsla,
+) -> impl gpui_kit::IntoElement {
+    use gpui_kit::{prelude::*, *};
+    let pixels = systemless::menu_model::standard_hierarchy_indicator_pixels();
+    canvas(move |bounds, _, _| bounds, move |_, bounds, window, _| {
+        let middle = bounds.top() + bounds.size.height / 2.;
+        for &(x, y) in &pixels {
+            window.paint_quad(fill(Bounds::new(
+                point(bounds.left() + px(f32::from(x)), middle + px(f32::from(y))),
+                size(px(1.), px(1.))), foreground));
+        }
+    }).w(px(6.)).h(px(18.)).flex_shrink_0()
 }

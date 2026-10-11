@@ -2884,3 +2884,26 @@ title-bar crops were reviewed and archived in `menu-guest-title-review.json`:
 titles fit at the historical viewport and Pages opens beneath its control.
 Explicit scales/states, full-scene review of this revision, symbols, guest row
 geometry and native Macintosh font/input qualification remain open.
+
+
+Menu symbols work in progress: snapshots retain the raw Menu Manager mark
+byte, including hierarchical menu IDs; projection assertions now cover the
+standard checkmark and submenu marks. GPUI marks and Command shortcuts use the
+same Unicode-to-guest-glyph resolver as the guest painters. The hierarchy
+triangle uses an exported presentation wrapper around the existing shared
+Menu Manager raster rather than a host chevron. No final build/test or capture
+result is established for this revision yet; verification is running. Guest
+row/column geometry, command display case, scale/state and native font/input
+qualification remain open.
+
+
+Symbol revision verification: shared projection passes (0.01 s), the example
+check and build pass, and live-update keyboard selection passes (0.36 s). All
+three captures completed; reviewed checkmark/name crops show the guest glyph
+beside Graphics. Losslessly archived compositions/crops and source/file/pixel
+hashes are in `menu-guest-symbol-review.json`. These captures contain neither
+Command shortcuts nor submenu triangles; their visual evidence, arbitrary
+marks, exact columns, command case, scale/state and native fidelity remain open.
+
+The hierarchical keyboard-selection interaction regression also passes (0.36 s);
+it establishes event routing, not native triangle pixel parity.
