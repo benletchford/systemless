@@ -2899,7 +2899,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::StillDown
         | PpcImportDispatcherTarget::WaitMouseUp
         | PpcImportDispatcherTarget::GetKeys
-        | PpcImportDispatcherTarget::GetMouse => {
+        | PpcImportDispatcherTarget::GetMouse
+        | PpcImportDispatcherTarget::GetGlobalMouse => {
             unreachable!("event imports return through dispatch_event_import")
         }
         PpcImportDispatcherTarget::LMGetMenuList
