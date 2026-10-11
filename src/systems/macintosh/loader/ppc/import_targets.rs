@@ -1235,6 +1235,8 @@ pub enum PpcImportDispatcherTarget {
         proc_info: u32,
     },
     DisposeGrowZoneUPP,
+    NewModalFilterUPP,
+    DisposeModalFilterUPP,
     NewUserItemUPP,
     DisposeUserItemUPP,
     NewControlActionUPP,
@@ -4575,6 +4577,12 @@ pub(crate) fn dispatcher_target_for_import(
             | "DisposeOSLAdjustMarksUPP",
         ) => PpcImportDispatcherTarget::DisposeRoutineDescriptor,
         ("InterfaceLib", "DisposeGrowZoneUPP") => PpcImportDispatcherTarget::DisposeGrowZoneUPP,
+        ("InterfaceLib", "NewModalFilterUPP" | "newmodalfilterupp") => {
+            PpcImportDispatcherTarget::NewModalFilterUPP
+        }
+        ("InterfaceLib", "DisposeModalFilterUPP" | "disposemodalfilterupp") => {
+            PpcImportDispatcherTarget::DisposeModalFilterUPP
+        }
         ("InterfaceLib", "NewUserItemUPP" | "newuseritemupp") => {
             PpcImportDispatcherTarget::NewUserItemUPP
         }

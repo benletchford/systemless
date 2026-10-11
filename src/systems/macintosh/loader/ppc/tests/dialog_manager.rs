@@ -635,7 +635,7 @@ const MODAL_FILTER_TRUE: u16 = 0x7f01;
 /// also stores that item number through itemHit.
 ///
 /// Record: call count, r3 (dialog), r4 (&event), r5 (&itemHit), r1, then a
-/// copy of the 16-byte EventRecord.
+/// copy of the 16-byte EventRecord, then r2 (callback RTOC).
 fn install_recording_modal_filter(
     loaded: &mut PpcLoadedApp,
     code: u32,
@@ -653,6 +653,7 @@ fn install_recording_modal_filter(
         d_form_u(36, 4, 11, 8),                     // stw r4, 8(r11)
         d_form_u(36, 5, 11, 12),                    // stw r5, 12(r11)
         d_form_u(36, 1, 11, 16),                    // stw r1, 16(r11)
+        d_form_u(36, 2, 11, 36),                    // stw r2, 36(r11)
     ];
     for offset in [0u16, 4, 8, 12] {
         words.push(d_form_u(32, 12, 4, offset)); // lwz r12, offset(r4)
@@ -670,7 +671,7 @@ fn install_recording_modal_filter(
     ]);
     let bytes = words.iter().flat_map(|word| word.to_be_bytes()).collect();
     loaded.memory.add_region(code, bytes);
-    loaded.memory.add_region(record, vec![0; 36]);
+    loaded.memory.add_region(record, vec![0; 40]);
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -756,6 +757,66 @@ fn modal_filter_mouse_down(v: i16, h: i16) -> PpcQueuedEvent {
         where_v: v,
         where_h: h,
         modifiers: 0x0100,
+    }
+}
+
+#[test]
+fn created_modal_filter_upp_invokes_original_callback_and_masks_boolean_result() {
+    for answer in [MODAL_FILTER_FALSE, MODAL_FILTER_TRUE] {
+        let callback = PPC_CODE_BASE + 0x1000;
+        let record = PPC_DATA_BASE + 0x1800;
+        let tvector = PPC_DATA_BASE + 0x2000;
+        let callback_rtoc = PPC_DATA_BASE + 0x2400;
+        let (mut loaded, dialog, item_hit_ptr) = modal_dialog_with_filter(0);
+        install_recording_modal_filter(&mut loaded, callback, record, answer, Some(2));
+        loaded.memory.add_region(tvector, vec![0; 8]);
+        loaded.memory.write_u32_be(tvector, callback).unwrap();
+        loaded
+            .memory
+            .write_u32_be(tvector + 4, callback_rtoc)
+            .unwrap();
+        loaded.cpu.gpr[3] = tvector;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::NewModalFilterUPP);
+        let upp = loaded.cpu.gpr[3];
+        assert_ne!(upp, 0);
+        assert_ne!(upp, tvector);
+        let caller_rtoc = loaded.cpu.gpr[2];
+        let caller_sp = loaded.cpu.gpr[1];
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ModalDialog;
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = upp;
+        loaded.cpu.gpr[4] = item_hit_ptr;
+        let click = modal_filter_mouse_down(80, 130);
+        loaded.set_event_queue([click]);
+        let probe = loaded.run_with_hle_imports(512);
+        assert!(matches!(
+            probe.result,
+            PpcRunResult::Halted {
+                pc: PPC_HALT_PC,
+                ..
+            }
+        ));
+        let call = recorded_modal_filter_call(&mut loaded, record);
+        assert_eq!(call.count, 1);
+        assert_eq!(call.dialog, dialog);
+        assert_eq!(call.event, click);
+        assert_eq!(call.item_hit_ptr, item_hit_ptr);
+        assert_eq!(
+            loaded.memory.read_u16_be(item_hit_ptr),
+            Some(if answer == MODAL_FILTER_TRUE { 2 } else { 1 })
+        );
+        assert_eq!(loaded.memory.read_u32_be(record + 36), Some(callback_rtoc));
+        assert_eq!(loaded.cpu.gpr[2], caller_rtoc);
+        assert_eq!(loaded.cpu.gpr[1], caller_sp);
+        assert_eq!(loaded.cpu.gpr[3..5], [upp, item_hit_ptr]);
+        assert!(loaded.dialog_callback_stack.is_empty());
+        loaded.cpu.gpr[3] = upp;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::DisposeModalFilterUPP,
+        );
+        assert_eq!(loaded.memory.read_u32_be(tvector), Some(callback));
     }
 }
 
