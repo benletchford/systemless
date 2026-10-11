@@ -22,7 +22,7 @@ use std::sync::OnceLock;
 use super::dispatch::{
     raw_trap_route, selector_operation_route, OsRoutineVariant, SelectorOperationRoute,
 };
-use super::memory::{mac_roman_strip_diacriticals, mac_roman_to_upper};
+
 static TRACE_MENU_PICT: OnceLock<bool> = OnceLock::new();
 static TRACE_FSSPEC: OnceLock<bool> = OnceLock::new();
 static TRACE_SOUND_RESOURCE: OnceLock<bool> = OnceLock::new();
@@ -5668,7 +5668,7 @@ impl super::TrapDispatcher {
             // Macintosh: Text (1993), pp. 5-51--5-52. This later four-row table
             // supersedes the opposite MARKS annotation in Volume II (1985),
             // p. II-377. D0 is 0 for equal and 1 for unequal.
-            (false, 0x3C) => {
+            (false, crate::text_utils::CMP_STRING_TRAP_NUM) => {
                 let a_ptr = cpu.read_reg(Register::A0);
                 let b_ptr = cpu.read_reg(Register::A1);
                 let d0 = cpu.read_reg(Register::D0);
@@ -5682,19 +5682,18 @@ impl super::TrapDispatcher {
                 let result: u32 = if a_len != b_len {
                     1
                 } else {
-                    let equal = (0..a_len).all(|offset| {
-                        let mut a = bus.read_byte(a_ptr + offset);
-                        let mut b = bus.read_byte(b_ptr + offset);
-                        if !diacritic_sensitive {
-                            a = mac_roman_strip_diacriticals(a);
-                            b = mac_roman_strip_diacriticals(b);
-                        }
-                        if !case_sensitive {
-                            a = mac_roman_to_upper(a, false);
-                            b = mac_roman_to_upper(b, false);
-                        }
-                        a == b
-                    });
+                    let mut bytes_a = Vec::with_capacity(a_len as usize);
+                    let mut bytes_b = Vec::with_capacity(b_len as usize);
+                    for i in 0..a_len {
+                        bytes_a.push(bus.read_byte(a_ptr + i));
+                        bytes_b.push(bus.read_byte(b_ptr + i));
+                    }
+                    let equal = crate::text_utils::evaluate_equal_string(
+                        &bytes_a,
+                        &bytes_b,
+                        case_sensitive,
+                        diacritic_sensitive,
+                    );
                     u32::from(!equal)
                 };
                 cpu.write_reg(Register::D0, result);

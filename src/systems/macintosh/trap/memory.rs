@@ -2959,7 +2959,7 @@ impl super::TrapDispatcher {
             //   On entry: A0 = ptr to first string, A1 = ptr to second string
             //             D0 high word = length of first, D0 low word = length of second
             //   On exit:  D0 = -1 (less), 0 (equal), or 1 (greater) as long word
-            (false, 0x50) => {
+            (false, crate::text_utils::REL_STRING_TRAP_NUM) => {
                 let ptr_a = cpu.read_reg(Register::A0);
                 let ptr_b = cpu.read_reg(Register::A1);
                 let d0 = cpu.read_reg(Register::D0);
@@ -2970,35 +2970,21 @@ impl super::TrapDispatcher {
                     .text_comparison_sensitivity()
                     .expect("RelString trap word must have a classified comparison variant");
 
-                let min_len = std::cmp::min(len_a, len_b);
-                let mut result: i32 = 0;
-                for i in 0..min_len {
-                    let mut a = bus.read_byte(ptr_a + i);
-                    let mut b = bus.read_byte(ptr_b + i);
-                    if !diacritic_sensitive {
-                        a = mac_roman_strip_diacriticals(a);
-                        b = mac_roman_strip_diacriticals(b);
-                    }
-                    if !case_sensitive {
-                        a = mac_roman_to_upper(a, false);
-                        b = mac_roman_to_upper(b, false);
-                    }
-                    if a < b {
-                        result = -1;
-                        break;
-                    } else if a > b {
-                        result = 1;
-                        break;
-                    }
+                let mut bytes_a = Vec::with_capacity(len_a as usize);
+                for i in 0..len_a {
+                    bytes_a.push(bus.read_byte(ptr_a + i));
                 }
-                if result == 0 {
-                    if len_a < len_b {
-                        result = -1;
-                    } else if len_a > len_b {
-                        result = 1;
-                    }
+                let mut bytes_b = Vec::with_capacity(len_b as usize);
+                for i in 0..len_b {
+                    bytes_b.push(bus.read_byte(ptr_b + i));
                 }
-                cpu.write_reg(Register::D0, result as u32);
+                let result = crate::text_utils::evaluate_rel_string(
+                    &bytes_a,
+                    &bytes_b,
+                    case_sensitive,
+                    diacritic_sensitive,
+                );
+                cpu.write_reg(Register::D0, result as i32 as u32);
                 Ok(())
             }
 
@@ -4613,124 +4599,9 @@ impl super::TrapDispatcher {
     }
 }
 
-/// Convert a Mac Roman character to uppercase per Inside Macintosh IV, IV-235.
-/// If `strip_marks` is true, diacritical marks are also stripped.
-///
-/// Mac Roman uppercase conversion table (from IM:IV case conversion):
-///   à(0x88)→À(0xCB), ã(0x8B)→Ã(0xCC), ä(0x8A)→Ä(0x80), å(0x8C)→Å(0x81),
-///   æ(0xBE)→Æ(0xAE), ç(0x8D)→Ç(0x82), é(0x8E)→É(0x83), ñ(0x96)→Ñ(0x84),
-///   ö(0x9A)→Ö(0x85), õ(0x9B)→Õ(0xCD), ø(0xBF)→Ø(0xAF), œ(0xCF)→Œ(0xCE),
-///   ü(0x9F)→Ü(0x86)
-pub(crate) fn mac_roman_to_upper(ch: u8, strip_marks: bool) -> u8 {
-    if strip_marks {
-        // Strip diacriticals first, then uppercase the base letter
-        let stripped = mac_roman_strip_diacriticals(ch);
-        if stripped.is_ascii_lowercase() {
-            return stripped - 32;
-        }
-        return stripped;
-    }
-    // Standard ASCII lowercase → uppercase
-    if ch.is_ascii_lowercase() {
-        return ch - 32;
-    }
-    // Mac Roman accented lowercase → accented uppercase
-    // Only the pairs that exist in Mac Roman per IM:IV IV-235
-    match ch {
-        0x88 => 0xCB, // à → À
-        0x8A => 0x80, // ä → Ä
-        0x8B => 0xCC, // ã → Ã
-        0x8C => 0x81, // å → Å
-        0x8D => 0x82, // ç → Ç
-        0x8E => 0x83, // é → É
-        0x96 => 0x84, // ñ → Ñ
-        0x9A => 0x85, // ö → Ö
-        0x9B => 0xCD, // õ → Õ
-        0x9F => 0x86, // ü → Ü
-        0xBE => 0xAE, // æ → Æ
-        0xBF => 0xAF, // ø → Ø
-        0xCF => 0xCE, // œ → Œ
-        _ => ch,
-    }
-}
-
-/// Convert a Mac Roman character to lowercase.
-fn mac_roman_to_lower(ch: u8) -> u8 {
-    if ch.is_ascii_uppercase() {
-        return ch + 32;
-    }
-    // Mac Roman uppercase accented → lowercase accented (reverse of to_upper)
-    match ch {
-        0x80 => 0x8A, // Ä → ä
-        0x81 => 0x8C, // Å → å
-        0x82 => 0x8D, // Ç → ç
-        0x83 => 0x8E, // É → é
-        0x84 => 0x96, // Ñ → ñ
-        0x85 => 0x9A, // Ö → ö
-        0x86 => 0x9F, // Ü → ü
-        0xAE => 0xBE, // Æ → æ
-        0xAF => 0xBF, // Ø → ø
-        0xCB => 0x88, // À → à
-        0xCC => 0x8B, // Ã → ã
-        0xCD => 0x9B, // Õ → õ
-        0xCE => 0xCF, // Œ → œ
-        _ => ch,
-    }
-}
-
-/// Strip diacritical marks from a Mac Roman character without case conversion.
-/// Per IM:IV IV-235 stripping table.
-pub(crate) fn mac_roman_strip_diacriticals(ch: u8) -> u8 {
-    match ch {
-        // Uppercase accented → uppercase base
-        0x80 => b'A', // Ä → A
-        0x81 => b'A', // Å → A
-        0x82 => b'C', // Ç → C
-        0x83 => b'E', // É → E
-        0x84 => b'N', // Ñ → N
-        0x85 => b'O', // Ö → O
-        0x86 => b'U', // Ü → U
-        0xAE => b'A', // Æ → A
-        0xAF => b'O', // Ø → O
-        0xCB => b'A', // À → A
-        0xCC => b'A', // Ã → A
-        0xCD => b'O', // Õ → O
-        0xCE => b'O', // Œ → O
-        // Lowercase accented → lowercase base
-        0x87 => b'a', // á → a
-        0x88 => b'a', // à → a
-        0x89 => b'a', // â → a
-        0x8A => b'a', // ä → a
-        0x8B => b'a', // ã → a
-        0x8C => b'a', // å → a
-        0x8D => b'c', // ç → c
-        0x8E => b'e', // é → e
-        0x8F => b'e', // è → e
-        0x90 => b'e', // ê → e
-        0x91 => b'e', // ë → e
-        0x92 => b'i', // í → i
-        0x93 => b'i', // ì → i
-        0x94 => b'i', // î → i
-        0x95 => b'i', // ï → i
-        0x96 => b'n', // ñ → n
-        0x97 => b'o', // ó → o
-        0x98 => b'o', // ò → o
-        0x99 => b'o', // ô → o
-        0x9A => b'o', // ö → o
-        0x9B => b'o', // õ → o
-        0x9C => b'u', // ú → u
-        0x9D => b'u', // ù → u
-        0x9E => b'u', // û → u
-        0x9F => b'u', // ü → u
-        0xBB => b'a', // ª → a
-        0xBC => b'o', // º → o
-        0xBE => b'a', // æ → a
-        0xBF => b'o', // ø → o
-        0xCF => b'o', // œ → o
-        0xD8 => b'y', // ÿ → y
-        _ => ch,
-    }
-}
+pub(crate) use crate::text_utils::{
+    mac_roman_strip_diacriticals, mac_roman_to_lower, mac_roman_to_upper,
+};
 
 #[cfg(test)]
 mod tests;

@@ -1944,6 +1944,48 @@ fn iu_equal_string_uses_primary_mac_roman_ordering() {
 }
 
 #[test]
+fn iu_comp_string_uses_primary_mac_roman_ordering() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"IUCompString")).unwrap();
+    let left = PPC_DATA_BASE + 0x1000;
+    let right = PPC_DATA_BASE + 0x1040;
+    loaded.memory.add_region(left, vec![0; 64]);
+    loaded.memory.add_region(right, vec![0; 64]);
+    write_ppc_pstring(&mut loaded.memory, left, b"Rose");
+    write_ppc_pstring(&mut loaded.memory, right, b"ros\x8e");
+    loaded.cpu.gpr[3] = left;
+    loaded.cpu.gpr[4] = right;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::IuCompString,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+    write_ppc_pstring(&mut loaded.memory, right, b"Rope");
+    loaded.cpu.gpr[3] = left;
+    loaded.cpu.gpr[4] = right;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::IuCompString,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, 1);
+
+    write_ppc_pstring(&mut loaded.memory, right, b"Row");
+    loaded.cpu.gpr[3] = left;
+    loaded.cpu.gpr[4] = right;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::IuCompString,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, -1);
+}
+
+#[test]
 fn ppc_nminstall_and_nmremove_validate_record() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NMInstall")).unwrap();
     let nm_rec = PPC_DATA_BASE + 0x1000;

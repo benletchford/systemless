@@ -46,24 +46,12 @@ pub(super) fn dispatch_toolbox_import(
             let right = ppc_read_pstring_bytes(memory, cpu.gpr[4])?;
             let case_sensitive = cpu.gpr[5] != 0;
             let diac_sensitive = cpu.gpr[6] != 0;
-            let normalize = |byte| {
-                let byte = if diac_sensitive {
-                    byte
-                } else {
-                    crate::trap::mac_roman_strip_diacriticals(byte)
-                };
-                if case_sensitive {
-                    byte
-                } else {
-                    crate::trap::mac_roman_to_upper(byte, false)
-                }
-            };
-            let order = left.into_iter().map(normalize).cmp(right.into_iter().map(normalize));
-            let result: i16 = match order {
-                std::cmp::Ordering::Less => -1,
-                std::cmp::Ordering::Equal => 0,
-                std::cmp::Ordering::Greater => 1,
-            };
+            let result = crate::text_utils::evaluate_rel_string(
+                &left,
+                &right,
+                case_sensitive,
+                diac_sensitive,
+            );
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::InitEditionPackVersion => {
@@ -232,25 +220,27 @@ pub(crate) fn ppc_equal_string(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> u32 
     let a_ptr = cpu.gpr[3];
     let b_ptr = cpu.gpr[4];
     let case_sensitive = (cpu.gpr[5] & 0xff) != 0;
-    let _diac_sensitive = (cpu.gpr[6] & 0xff) != 0;
+    let diac_sensitive = (cpu.gpr[6] & 0xff) != 0;
     let Some(a_bytes) = ppc_read_pstring_bytes(memory, a_ptr) else {
         return 0;
     };
     let Some(b_bytes) = ppc_read_pstring_bytes(memory, b_ptr) else {
         return 0;
     };
-    let equal = if case_sensitive {
-        a_bytes == b_bytes
-    } else {
-        a_bytes.eq_ignore_ascii_case(&b_bytes)
-    };
+    let equal = crate::text_utils::evaluate_equal_string(
+        &a_bytes,
+        &b_bytes,
+        case_sensitive,
+        diac_sensitive,
+    );
 
     if ppc_hle_trace_enabled() {
         eprintln!(
-            "[PPC-TRACE] EqualString a={:?} b={:?} case_sensitive={} -> {}",
+            "[PPC-TRACE] EqualString a={:?} b={:?} case_sensitive={} diac_sensitive={} -> {}",
             decode_mac_roman(&a_bytes),
             decode_mac_roman(&b_bytes),
             case_sensitive,
+            diac_sensitive,
             equal
         );
     }

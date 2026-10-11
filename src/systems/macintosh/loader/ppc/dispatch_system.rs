@@ -292,19 +292,7 @@ pub(crate) fn ppc_dispatch_system_compatibility(
         PpcSystemCompatibilityOperation::IuCompString => {
             let lhs = ppc_read_pstring_bytes(memory, cpu.gpr[3]).unwrap_or_default();
             let rhs = ppc_read_pstring_bytes(memory, cpu.gpr[4]).unwrap_or_default();
-            let lhs = lhs
-                .into_iter()
-                .map(|byte| byte.to_ascii_uppercase())
-                .collect::<Vec<_>>();
-            let rhs = rhs
-                .into_iter()
-                .map(|byte| byte.to_ascii_uppercase())
-                .collect::<Vec<_>>();
-            let ordering = match lhs.cmp(&rhs) {
-                std::cmp::Ordering::Less => -1i16,
-                std::cmp::Ordering::Equal => 0,
-                std::cmp::Ordering::Greater => 1,
-            };
+            let ordering = crate::text_utils::evaluate_iu_comp_string(&lhs, &rhs);
             PpcImportAction::Return(ppc_i16_result(ordering))
         }
         PpcSystemCompatibilityOperation::IuEqualString => {
@@ -314,11 +302,7 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             // FUNCTION IUEqualString(aStr,bStr: Str255): INTEGER;
             let lhs = ppc_read_pstring_bytes(memory, cpu.gpr[3]).unwrap_or_default();
             let rhs = ppc_read_pstring_bytes(memory, cpu.gpr[4]).unwrap_or_default();
-            let primary = |byte| crate::trap::mac_roman_to_upper(byte, true);
-            let equal = lhs
-                .into_iter()
-                .map(primary)
-                .eq(rhs.into_iter().map(primary));
+            let equal = crate::text_utils::evaluate_iu_equal_string(&lhs, &rhs);
             PpcImportAction::Return(u32::from(!equal))
         }
         PpcSystemCompatibilityOperation::TruncText => {
