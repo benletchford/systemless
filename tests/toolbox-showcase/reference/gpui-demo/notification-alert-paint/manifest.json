@@ -1,0 +1,7 @@
+{
+  "source_hashes": {
+    "src/bin/gpui_demo.rs": "259d0cb43f8c569a3a3befe4922719a2256f5e3d19af0db3880edd01002957e3"
+  },
+  "scope": "Compile/source evidence for explicit owned-alert painting by shared Demo. No automatic acquisition, enabled acknowledgment interaction, reviewed capture or native geometry/icon qualification.",
+  "check_seconds": 4.7
+}

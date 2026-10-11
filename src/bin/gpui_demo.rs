@@ -3228,6 +3228,31 @@ mod desktop {
                     screen = screen.child(overlay);
                 }
             }
+            // System-owned notification alerts are painted by this same Demo
+            // in live windows and headless captures. Acquisition remains explicit.
+            if let Some(plan) = self.notification_alert.as_ref().and_then(|notice|
+                super::notification::AlertPlan::build(notice,
+                    super::frames::Rect::from((0, 0, self.height as i16, self.width as i16)))) {
+                let at = |rect: super::frames::Rect| {
+                    div().absolute().top(guest_px((rect.top - plan.bounds.top) as f32))
+                        .left(guest_px((rect.left - plan.bounds.left) as f32))
+                        .w(guest_px(rect.width() as f32)).h(guest_px(rect.height() as f32))
+                };
+                let overlay = div().id("guest-notification-alert").test_support()
+                    .role(gpui_kit::Role::AlertDialog).aria_label("Notification")
+                    .absolute().top(guest_px(plan.bounds.top as f32))
+                    .left(guest_px(plan.bounds.left as f32))
+                    .w(guest_px(plan.bounds.width() as f32)).h(guest_px(plan.bounds.height() as f32))
+                    .bg(cx.theme().background).border_2().border_color(cx.theme().border)
+                    .child(at(plan.message).overflow_hidden().child(
+                        super::text::classic_notification_message(
+                            plan.notice.text.as_deref().unwrap_or_default(), scene_scale,
+                            cx.theme().foreground)))
+                    .child(at(plan.button).child(super::choices::guest_button(
+                        "guest-notification-ok".into(), "OK".into(),
+                        false, true, false, true, scene_scale, cx).w_full().h_full()));
+                screen = screen.child(overlay);
+            }
             let mut bar = Some(bar);
             if let Some(popup) = self.guest_popup.as_ref() {
                 // A screen-height guest popup may cover the menu bar. Keep it
