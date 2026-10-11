@@ -471,7 +471,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 416 | 604 | Candy Crisis | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
 | 417 | 605 | DragonMaze | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
 | 418 | 606 | ExaChess_Lite | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
-| 419 | 607 | Fanorona | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
+| 419 | 607 | Fanorona | Original Java/MRJ game; native CPU routes unqualified | U | [Original package and runtime/rights findings](CATALOGUE-SOURCES.md#fanorona-original-java-package--target-607) |
 | 420 | 608 | GL Tron | PPC-only original PEF; no CODE | F | [Original 0.61 intake and GPL/component checks](CATALOGUE-SOURCES.md#gltron-061--target-608-original-ppc-package-intake) |
 | 421 | 609 | HipHop | 68K (original 1.0.1; rights/startup held) | F | [Archive index](https://www.vintageapplemac.com/software/games/h/); [Original intake](CATALOGUE-SOURCES.md#hiphop-101--target-609-original-68k-installer-intake) |
 | 422 | 610 | Imp Fodder | Verify 68K/PPC | F | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
