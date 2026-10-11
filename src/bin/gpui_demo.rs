@@ -2146,6 +2146,7 @@ mod desktop {
                         let mut overlay = div()
                             .id(format!("guest-standard-save-{}-{}", panel.guest_id, panel.generation))
                             .test_support()
+                            .role(gpui_kit::Role::Group).aria_label("Save file")
                             .absolute()
                             .top(guest_px(bounds.top as f32))
                             .left(guest_px(bounds.left as f32))
@@ -2324,9 +2325,9 @@ mod desktop {
                                 at(rect).child(
                                     super::a11y::AccessibleComponent::new(super::choices::guest_button(
                                         format!("guest-standard-save-{}-{}-{}", panel.guest_id, panel.generation, label),
-                                        label.into(), true, true, false, false, scene_scale, cx,
+                                        label.into(), true, !panel.confirming_replace, false, false, scene_scale, cx,
                                     ).w_full().h_full()
-                                    .when(label != "Eject", |button| {
+                                    .when(!panel.confirming_replace, |button| {
                                         let action = match label {
                                             "Cancel" => super::activation::FileAction::Cancel,
                                             "Desktop" => super::activation::FileAction::Desktop,
@@ -2342,11 +2343,11 @@ mod desktop {
                                         }).on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
                                             let _ = accessibility_sender.send(Command::ActivateFile(id, generation, action));
                                         })
-                                    }), false),
+                                    }), panel.confirming_replace),
                                 ),
                             );
                         }
-                        screen = screen.child(overlay);
+                        screen = screen.child(super::a11y::AccessibleState::new(overlay, false).hidden(panel.confirming_replace));
                     }
                 }
                 if let Some(panel) = self.standard_file.as_ref().filter(|p| p.standard_entry_point && p.confirming_replace) {
@@ -8757,6 +8758,10 @@ mod desktop {
                 });
                 window.render_frame(cx);
                 assert_eq!(window.find("guest-standard-replace").role(), Some(gpui_kit::Role::AlertDialog));
+                for label in ["Desktop", "Cancel", "Save"] {
+                    assert_eq!(window.find(format!("guest-standard-save-8-2-{label}")).focused(), None,
+                        "modal background must not accept host focus");
+                }
                 window.click("guest-standard-replace-8-2-Replace", cx);
             }).unwrap();
             let confirmation_inputs: Vec<_> = receiver.try_iter().filter_map(|command| match command {
@@ -8788,6 +8793,8 @@ mod desktop {
                         cx.notify();
                     });
                     window.render_frame(cx);
+                    assert!(window.find("guest-standard-save-8-2-Save").focused().is_some(),
+                        "closing confirmation restores the Save button focus handle");
                     let row = window.find("guest-standard-save-entry-8-2-0");
                     assert_eq!(row.role(), Some(gpui_kit::Role::ListBoxOption));
                     assert_eq!(row.selected(), Some(selected == Some(0)));
