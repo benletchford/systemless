@@ -470,17 +470,39 @@ impl EntityInputHandler for Demo {
     }
     fn replace_text_in_range(&mut self, range: Option<Range<usize>>, text: &str,
         _: &mut Window, cx: &mut Context<Self>) {
-        if self.composition.preedit.is_none() {
-            if let Some(range) = range.as_ref().filter(|range|
-                self.composition.owner().is_some_and(|owner| **range != owner.selection)) {
-                if let Some((expected, request, bytes)) = self.composition.commit_range(range.clone(), text) {
-                    let _ = self.commands.send(Command::ReplaceText(expected, request.selection, bytes));
+        if self.composition.preedit.is_some() && self.composition.owner().is_some_and(|owner|
+            matches!(owner.target, super::super::input::TextInputTarget::Document { .. })) {
+            if let Some(range) = range.clone() {
+                if let Some((expected, request, bytes, caret)) = self.composition.commit_overlapping_range(range, text) {
+                    if request.selection == expected.selection && caret == request.selection.start + bytes.len() {
+                        let _ = self.commands.send(Command::CommitText(expected, bytes));
+                    } else {
+                        let _ = self.commands.send(Command::ReplaceText(expected, request.selection, bytes, Some(caret)));
+                    }
                     cx.notify();
                 }
                 return;
             }
         }
-        let Some((text, _)) = self.composition.replacement_text(range.as_ref(), text) else { return; };
+        if self.composition.preedit.is_none() {
+            if let Some(range) = range.as_ref().filter(|range|
+                self.composition.owner().is_some_and(|owner| **range != owner.selection)) {
+                if let Some((expected, request, bytes)) = self.composition.commit_range(range.clone(), text) {
+                    let _ = self.commands.send(Command::ReplaceText(expected, request.selection, bytes, None));
+                    cx.notify();
+                }
+                return;
+            }
+        }
+        let Some((text, _)) = self.composition.replacement_text(range.as_ref(), text) else {
+            if let Some(range) = range {
+                if let Some((expected, request, bytes, caret)) = self.composition.commit_overlapping_range(range, text) {
+                    let _ = self.commands.send(Command::ReplaceText(expected, request.selection, bytes, Some(caret)));
+                    cx.notify();
+                }
+            }
+            return;
+        };
         if let Some((owner, bytes)) = self.composition.commit(&text) {
             let _ = self.commands.send(Command::CommitText(owner, bytes));
             cx.notify();

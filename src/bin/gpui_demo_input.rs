@@ -198,7 +198,7 @@ pub(crate) struct Preedit {
 #[derive(Default)]
 pub(crate) struct GuestComposition {
     owner: Option<TextInputOwner>,
-    pending_commits: Vec<(TextInputOwner, Vec<u8>, Option<TextInputOwner>)>,
+    pending_commits: Vec<(TextInputOwner, Vec<u8>, Option<TextInputOwner>, Option<usize>)>,
     pub preedit: Option<Preedit>,
 }
 
@@ -219,14 +219,17 @@ impl GuestComposition {
                 // A frame can show the old snapshot or a partially consumed
                 // commit. Retain the host's future caret instead of restarting
                 // the next commit at that stale guest selection.
-                if self.pending_commits.iter().any(|(base, bytes, prior)| {
+                if self.pending_commits.iter().any(|(base, bytes, prior, caret)| {
                     if prior.as_ref() == Some(actual) { return true; }
                     if actual == base { return true; }
                     if actual.identity != base.identity || actual.target != base.target { return false; }
                     let retained = base.text.len() - base.selection.len();
                     let Some(inserted) = actual.text.len().checked_sub(retained) else { return false; };
                     inserted <= bytes.len()
-                        && actual.selection == (base.selection.start + inserted..base.selection.start + inserted)
+                        && (actual.selection == (base.selection.start + inserted..base.selection.start + inserted)
+                            || inserted == bytes.len() && caret.is_some_and(|caret|
+                                actual.selection.is_empty() && actual.selection.start >= caret
+                                    && actual.selection.start <= base.selection.start + inserted))
                         && actual.text[..base.selection.start] == base.text[..base.selection.start]
                         && actual.text[base.selection.start..base.selection.start + inserted] == bytes[..inserted]
                         && actual.text[base.selection.start + inserted..] == base.text[base.selection.end..]
@@ -241,7 +244,7 @@ impl GuestComposition {
     /// A rejected request invalidates dependent predicted ranges. Ignore delayed
     /// rejections from an older field or an already acknowledged request.
     pub fn reject(&mut self, rejected: &TextInputOwner) {
-        if self.pending_commits.iter().any(|(base, _, prior)| base == rejected || prior.as_ref() == Some(rejected)) {
+        if self.pending_commits.iter().any(|(base, _, prior, _)| base == rejected || prior.as_ref() == Some(rejected)) {
             self.pending_commits.clear();
             self.owner = None;
             self.preedit = None;
@@ -341,6 +344,32 @@ impl GuestComposition {
         Some((prefix + text + &suffix, start))
     }
 
+    /// Commit a range crossing an active stage boundary without rewriting
+    /// untouched guest text between disjoint edits. Retain staged fragments.
+    pub fn commit_overlapping_range(&mut self, range: std::ops::Range<usize>, text: &str)
+        -> Option<(TextInputOwner, TextInputOwner, Vec<u8>, usize)> {
+        self.geometry_ranges(range.clone())?;
+        let owner = self.owner.as_ref()?;
+        let preedit = self.preedit.as_ref()?;
+        let units: Vec<_> = preedit.text.encode_utf16().collect();
+        let start = owner.selection.start;
+        let end = start.checked_add(units.len())?;
+        if if range.is_empty() { range.start < start || range.start > end }
+            else { range.end <= start || range.start >= end } { return None; }
+        let prefix = String::from_utf16(&units[..range.start.saturating_sub(start)]).ok()?;
+        let suffix = String::from_utf16(&units[range.end.saturating_sub(start).min(units.len())..]).ok()?;
+        let guest = range.start.min(start)..owner.selection.end.checked_add(range.end.saturating_sub(end))?;
+        let insertion_length = (prefix.clone() + text).replace("\r\n", "\r").replace('\n', "\r").chars().count();
+        let caret = guest.start.checked_add(insertion_length)?;
+        let payload = prefix + text + &suffix;
+        let saved = self.preedit.take();
+        let result = self.commit_range(guest, &payload);
+        let Some((expected, request, bytes)) = result else { self.preedit = saved; return None; };
+        self.owner.as_mut()?.selection = caret..caret;
+        self.pending_commits.last_mut()?.3 = Some(caret);
+        Some((expected, request, bytes, caret))
+    }
+
     /// Pin both the original selection and an explicit document replacement.
     /// Old frames remain valid while the guest consumes the selection request.
     pub fn commit_range(&mut self, range: std::ops::Range<usize>, text: &str)
@@ -357,7 +386,7 @@ impl GuestComposition {
             self.owner = Some(expected); return None;
         };
         if self.pending_commits.len() == pending {
-            self.pending_commits.push((request.clone(), bytes.clone(), Some(expected.clone())));
+            self.pending_commits.push((request.clone(), bytes.clone(), Some(expected.clone()), None));
         } else {
             self.pending_commits.last_mut()?.2 = Some(expected.clone());
         }
@@ -379,7 +408,7 @@ impl GuestComposition {
         predicted.text.splice(owner.selection.clone(), bytes.iter().copied());
         let caret = owner.selection.start + bytes.len();
         predicted.selection = caret..caret;
-        self.pending_commits.push((owner.clone(), bytes.clone(), None));
+        self.pending_commits.push((owner.clone(), bytes.clone(), None, None));
         self.owner = Some(predicted);
         Some((owner, bytes))
     }
@@ -423,6 +452,34 @@ mod composition_tests {
         assert_eq!(state.geometry_ranges(4..4), Some(vec![4..4]));
         for range in [2..3, 3..5, 0..6, 5..4] {
             assert!(state.geometry_ranges(range).is_none());
+        }
+    }
+
+    #[test]
+    fn crossing_replacement_retains_stage_fragments_and_rejects_invalid_unicode_atomically() {
+        for (range, guest, payload, result, caret) in [
+            (0..2, 0..2, vec![b'Q', b'Z'], vec![b'Q', b'Z', b'b'], 1),
+            (2..4, 1..3, vec![0x8e, b'Q'], vec![b'a', 0x8e, b'Q'], 3),
+            (0..4, 0..3, vec![b'Q'], vec![b'Q'], 1),
+            (1..2, 1..2, vec![b'Q', b'Z'], vec![b'a', b'Q', b'Z', b'b'], 2),
+            (2..2, 1..2, vec![0x8e, b'Q', b'Z'], vec![b'a', 0x8e, b'Q', b'Z', b'b'], 3),
+        ] {
+            let mut state = GuestComposition::default(); state.synchronize(Some(owner()));
+            assert!(state.mark("éZ", 1..2));
+            let (expected, request, bytes, insertion) = state.commit_overlapping_range(range, "Q").unwrap();
+            assert_eq!(insertion, caret);
+            assert_eq!(expected, owner()); assert_eq!(request.selection, guest); assert_eq!(bytes, payload);
+            assert_eq!(state.owner().unwrap().text, result); assert!(state.preedit.is_none());
+            assert_eq!(state.owner().unwrap().selection, caret..caret, "caret follows inserted text before retained stage suffix");
+            let future = state.owner().unwrap().clone(); state.synchronize(Some(expected));
+            assert_eq!(state.owner(), Some(&future));
+        }
+        let mut state = GuestComposition::default(); state.synchronize(Some(owner()));
+        assert!(state.mark("日😀", 1..3));
+        let before = state.preedit.clone();
+        for range in [0..2, 0..3, 0..9, 4..5] {
+            assert!(state.commit_overlapping_range(range, "Q").is_none());
+            assert_eq!(state.owner(), Some(&owner())); assert_eq!(state.preedit, before);
         }
     }
 

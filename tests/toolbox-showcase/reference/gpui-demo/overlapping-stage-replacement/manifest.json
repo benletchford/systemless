@@ -1,0 +1,20 @@
+{
+  "base_head": "341ead76556d45445304e7069fc7afd19329a8f9",
+  "scope": "Document replacement within/crossing active Unicode stage; UTF-16 validation and retained stage fragments; guest range selection, ordinary typing and Left events restore insertion caret before retained suffix; predicted state tolerates intermediate caret positions",
+  "results": {
+    "state": "8PASS; five within/crossing/empty replacement cases plus atomic Unicode rejection",
+    "worker": "four CPU/depth modes, PASS9.90s",
+    "platform": "3PASS41.14s; document crossing request reaches guest editing across four modes; dialog and Save/New Folder composition regressions pass"
+  },
+  "limitations": [
+    "Disjoint outside-stage replacement remains unfinished",
+    "Explicit dialog/Standard File replacement and retained-suffix modal caret remain unfinished",
+    "No composed visual, physical IME or independent Macintosh oracle claim"
+  ],
+  "hashes": {
+    "state.log": "f690c56209ae86d700a752e584b984607e8714b73b2561282749d4ff544e7400",
+    "worker.log": "67556b82981fbd68ea1730c05ba48f0ed790028dcbe4d1edd3424b9d32ac087a",
+    "platform.log": "de363e1d51e0d55c755a03db1731f4481669df441fd04cdafe3b82acf95812d7",
+    "caret-failure.log": "0956c9bf7f571ee780504ad2f76b7e89b405b73cefaff819a22144a408f493d9"
+  }
+}
