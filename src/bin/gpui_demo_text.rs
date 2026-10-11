@@ -54,6 +54,42 @@ mod tests {
     }
 
     #[test]
+    fn smooth_field_preserves_physical_inversion_order_clipping_and_caret() {
+        use super::{smooth_textedit_pixels, ClassicLine, StyledTextEditPaintOp as Op};
+        use systemless::runner::TextEditInkSnapshot;
+        // Deliberately non-complementary indexed colours.
+        let background = TextEditInkSnapshot { pixel: 0, rgb: [220; 3], inverted_rgb: [17; 3] };
+        let ink = TextEditInkSnapshot { pixel: 1, rgb: [50; 3], inverted_rgb: [170; 3] };
+        let line = ClassicLine::plain(b"W", 3, 12);
+        let view = (0, 0, 18, 18);
+        let run = Op::Run { glyphs: line, left: 1, baseline: 13, ink };
+        for raster in 1..=4 {
+            let normal = smooth_textedit_pixels(&[run.clone()], raster, view, &background).unwrap();
+            let (&at, _) = normal.iter().find(|(_, rgb)| **rgb == [50; 3]).unwrap();
+            assert!(normal.values().any(|rgb| rgb[0] > 50 && rgb[0] < 220));
+            let after = smooth_textedit_pixels(&[run.clone(), Op::Invert(view)], raster, view, &background).unwrap();
+            let before = smooth_textedit_pixels(&[Op::Invert(view), run.clone()], raster, view, &background).unwrap();
+            assert_eq!(after[&at], [170; 3]);
+            assert_eq!(before[&at], [50; 3]);
+            assert_eq!(after[&(0, 0)], [17; 3]);
+            let twice = smooth_textedit_pixels(&[run.clone(), Op::Invert(view), Op::Invert(view)], raster, view, &background).unwrap();
+            for (point, rgb) in &normal { assert_eq!(twice[point], *rgb); }
+            let crop = (3, 2, 10, 6);
+            let clipped = smooth_textedit_pixels(&[run.clone()], raster, crop, &background).unwrap();
+            assert_eq!(clipped, normal.iter().filter(|(p, _)|
+                p.0 >= 2 * raster as i32 && p.0 < 6 * raster as i32
+                && p.1 >= 3 * raster as i32 && p.1 < 10 * raster as i32)
+                .map(|(&p, &rgb)| (p, rgb)).collect());
+            let caret = TextEditInkSnapshot { pixel: 2, rgb: [90; 3], inverted_rgb: [110; 3] };
+            let final_ink = smooth_textedit_pixels(&[run.clone(), Op::Invert(view),
+                Op::Caret((0, 0, 18, 2), caret)], raster, view, &background).unwrap();
+            for y in 0..18 * raster as i32 { for x in 0..2 * raster as i32 {
+                assert_eq!(final_ink[&(x, y)], [90; 3]);
+            } }
+        }
+    }
+
+    #[test]
     fn styled_outline_preflight_is_atomic_and_keeps_native_paint_pens() {
         use super::{ClassicLine, StyledTextEditPaintOp as Op, ResolvedTextEditPaintOp as Resolved};
         let ink = systemless::runner::TextEditInkSnapshot {
@@ -905,7 +941,7 @@ pub(crate) fn classic_list_cell(
     plan: ClassicListCellPaintPlan, scale: f32, port_origin: (f32, f32),
 ) -> Option<impl gpui_kit::IntoElement> {
     classic_text_pixels_with_smooth(plan.pixels, scale, port_origin,
-        Some((plan.clip, plan.background)), Some(plan.smooth))
+        Some((plan.clip, plan.background)), Some(plan.smooth), None)
 }
 
 impl ClassicListCellLayout {
@@ -977,6 +1013,61 @@ impl StyledTextEditPaintOp {
     }
 }
 
+/// Compose coverage in guest-coordinate subpixels. Both physical ink values
+/// are retained because indexed Macintosh inversion is not an RGB complement.
+fn smooth_textedit_pixels(
+    ops: &[StyledTextEditPaintOp], raster: u32, view: (i16, i16, i16, i16),
+    background: &systemless::runner::TextEditInkSnapshot,
+) -> Option<std::collections::BTreeMap<(i32, i32), [u8; 3]>> {
+    let resolved = StyledTextEditPaintOp::resolve_all(ops, raster)?;
+    let r = i32::try_from(raster).ok()?;
+    let (top, left, bottom, right) = view;
+    if top >= bottom || left >= right { return None; }
+    let clip = (i32::from(top) * r, i32::from(left) * r,
+        i32::from(bottom) * r, i32::from(right) * r);
+    let base = (background.rgb, background.inverted_rgb);
+    let mut pixels = std::collections::BTreeMap::<(i32, i32), ([u8; 3], [u8; 3])>::new();
+    fn blend(old: [u8; 3], ink: [u8; 3], alpha: u8) -> [u8; 3] {
+        std::array::from_fn(|i| ((u32::from(old[i]) * (255 - u32::from(alpha))
+            + u32::from(ink[i]) * u32::from(alpha) + 127) / 255) as u8)
+    }
+    for op in resolved {
+        match op {
+            ResolvedTextEditPaintOp::Run { glyphs, left, baseline, ink } => {
+                for (pen, glyph) in glyphs {
+                    let origin_x = (i32::from(left).checked_add(pen)?).checked_mul(r)?.checked_add(glyph.left)?;
+                    let origin_y = i32::from(baseline).checked_mul(r)?.checked_add(glyph.top)?;
+                    for y in 0..glyph.height { for x in 0..glyph.width {
+                        let at = (origin_x.checked_add(x)?, origin_y.checked_add(y)?);
+                        if at.0 < clip.1 || at.0 >= clip.3 || at.1 < clip.0 || at.1 >= clip.2 { continue; }
+                        let alpha = glyph.pixels[(y * glyph.width + x) as usize];
+                        if alpha == 0 { continue; }
+                        let pair = pixels.entry(at).or_insert(base);
+                        pair.0 = blend(pair.0, ink.rgb, alpha);
+                        pair.1 = blend(pair.1, ink.inverted_rgb, alpha);
+                    } }
+                }
+            }
+            op => {
+                let (rect, caret) = match op {
+                    ResolvedTextEditPaintOp::Invert(rect) => (rect, None),
+                    ResolvedTextEditPaintOp::Caret(rect, ink) => (rect, Some(ink)),
+                    ResolvedTextEditPaintOp::Run { .. } => unreachable!(),
+                };
+                let (top, left, bottom, right) = rect;
+                for y in (i32::from(top) * r).max(clip.0)..(i32::from(bottom) * r).min(clip.2) {
+                    for x in (i32::from(left) * r).max(clip.1)..(i32::from(right) * r).min(clip.3) {
+                        let pair = pixels.entry((x, y)).or_insert(base);
+                        if let Some(ink) = &caret { *pair = (ink.rgb, ink.inverted_rgb); }
+                        else { std::mem::swap(&mut pair.0, &mut pair.1); }
+                    }
+                }
+            }
+        }
+    }
+    Some(pixels.into_iter().map(|(at, pair)| (at, pair.0)).collect())
+}
+
 /// A whole-field recipe, qualified against native pixels before ownership.
 /// The caller supplies resolved background and caret paint; no host font or
 /// theme colour is inferred. Application drawing or unsupported paint declines.
@@ -986,6 +1077,7 @@ pub(crate) struct StyledTextEditPaintPlan {
     pub background: [u8; 3],
     pub view: (i16, i16, i16, i16),
     ops: Vec<StyledTextEditPaintOp>,
+    background_ink: systemless::runner::TextEditInkSnapshot,
 }
 
 impl StyledTextEditPaintPlan {
@@ -1064,7 +1156,7 @@ impl StyledTextEditPaintPlan {
             let at = (gy as usize * width as usize + gx as usize) * 4;
             if native[at..at + 3] != pixels.get(&(x, y)).copied().unwrap_or(background.rgb) { return None; }
         } }
-        Some(Self { pixels, background: background.rgb, view, ops })
+        Some(Self { pixels, background: background.rgb, view, ops, background_ink: background.clone() })
     }
 }
 
@@ -1197,8 +1289,9 @@ pub(crate) fn classic_styled_text_edit_solid_caret(
 pub(crate) fn classic_styled_text_edit_field(
     plan: StyledTextEditPaintPlan, scale: f32, port_origin: (f32, f32),
 ) -> Option<impl gpui_kit::IntoElement> {
-    classic_styled_text_pixels_with_background(plan.pixels, scale, port_origin,
-        Some((plan.view, plan.background)))
+    classic_text_pixels_with_smooth(plan.pixels, scale, port_origin,
+        Some((plan.view, plan.background)), None,
+        Some((plan.ops, plan.view, plan.background_ink)))
 }
 
 fn classic_styled_text_pixels(
@@ -1213,7 +1306,7 @@ fn classic_styled_text_pixels_with_background(
     scale: f32, port_origin: (f32, f32),
     background: Option<((i16, i16, i16, i16), [u8; 3])>,
 ) -> Option<impl gpui_kit::IntoElement> {
-    classic_text_pixels_with_smooth(pixels, scale, port_origin, background, None)
+    classic_text_pixels_with_smooth(pixels, scale, port_origin, background, None, None)
 }
 
 fn classic_text_pixels_with_smooth(
@@ -1221,6 +1314,7 @@ fn classic_text_pixels_with_smooth(
     scale: f32, port_origin: (f32, f32),
     background: Option<((i16, i16, i16, i16), [u8; 3])>,
     smooth: Option<(ClassicLine, i16, i16, [u8; 3])>,
+    field: Option<(Vec<StyledTextEditPaintOp>, (i16, i16, i16, i16), systemless::runner::TextEditInkSnapshot)>,
 ) -> Option<impl gpui_kit::IntoElement> {
     if !scale.is_finite() || scale <= 0. || !port_origin.0.is_finite() || !port_origin.1.is_finite() {
         return None;
@@ -1248,6 +1342,28 @@ fn classic_text_pixels_with_smooth(
             let ink: Hsla = rgb((u32::from(*r) << 16) | (u32::from(*g) << 8) | u32::from(*b)).into();
             if paint_smooth_label(line, px(port_origin.0 + f32::from(*left) * scale),
                 px(port_origin.1 + f32::from(*baseline) * scale), scale, ink, window) { return; }
+        }
+        if let Some((ops, view, background)) = &field {
+            let raster = (scale * device_scale).ceil().max(1.) as u32;
+            if let Some(pixels) = smooth_textedit_pixels(ops, raster, *view, background) {
+                let unit = scale / raster as f32;
+                let mut coverage_paths = std::collections::BTreeMap::new();
+                for ((x, y), color) in pixels {
+                    let left = snap(port_origin.0 + x as f32 * unit);
+                    let top = snap(port_origin.1 + y as f32 * unit);
+                    let right = snap(port_origin.0 + (x + 1) as f32 * unit);
+                    let bottom = snap(port_origin.1 + (y + 1) as f32 * unit);
+                    if right <= left || bottom <= top { continue; }
+                    let path = coverage_paths.entry(color).or_insert_with(PathBuilder::fill);
+                    path.move_to(point(left, top)); path.line_to(point(right, top));
+                    path.line_to(point(right, bottom)); path.line_to(point(left, bottom)); path.close();
+                }
+                for ([r, g, b], path) in coverage_paths {
+                    let ink: Hsla = rgb((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)).into();
+                    window.paint_path(path.build().expect("resolved styled field coverage"), ink);
+                }
+                return;
+            }
         }
         for (color, pixels) in &paths {
             let mut path = PathBuilder::fill();
