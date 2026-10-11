@@ -3468,6 +3468,15 @@ impl super::TrapDispatcher {
             STANDARD_FILE_PUT_DESKTOP_RECT,
         ) {
             Some(StandardFilePutAction::Desktop)
+        } else if Self::standard_file_point_in_rect(local_v, local_h, STANDARD_FILE_NAME_RECT) {
+            let bytes = encode_mac_roman_lossy(&tracking.name);
+            let offset = crate::standard_file_ui::classic_text_offset_at_x(
+                &bytes, i32::from(local_h - STANDARD_FILE_NAME_RECT.1 - 1),
+                |prefix| i32::from(Self::fb_measure_string(&decode_mac_roman(prefix), self.tx_font, self.tx_size)),
+            );
+            tracking.sel_start = offset as i16;
+            tracking.sel_end = offset as i16;
+            None
         } else if Self::standard_file_point_in_rect(local_v, local_h, STANDARD_FILE_PUT_SCROLL_RECT)
             && !tracking.entries.is_empty()
         {

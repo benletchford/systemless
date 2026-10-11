@@ -2447,3 +2447,18 @@ selection (1,1), reinsert the suffix and inspect the returned FSSpec's encoded
 name bytes. Existing replacement cancellation/confirmation paths remain covered.
 This is guest editing evidence; the Save editor still uses host typography and
 needs glyph-aligned pointer selection, caret, scrolling and interaction work.
+
+
+### Save filename guest click placement
+
+Both retained Save handlers now place an insertion point when the name field
+receives a guest mouseDown. The shared nearest-boundary calculation uses Mac
+Roman prefix advances; 68k measures its active QuickDraw font with the editText
+one-pixel inset, and PPC measures system text from the field's left edge. The
+same calculation serves New Folder without changing its scrolling policy.
+
+The three-mode Save/replacement regression passes (41.65 seconds). It clicks
+every insertion boundary in `é£S`, asserts guest selection offsets, and checks
+the final encoded FSSpec reply. This does not qualify held or Shift selection,
+caret blinking, horizontal scrolling, GPUI glyph pointer mapping or field
+painting; the Save field still uses host typography.

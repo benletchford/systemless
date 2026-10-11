@@ -268,6 +268,19 @@ impl Default for StandardFileNewFolderState {
     }
 }
 
+/// TEClick chooses the nearest Mac Roman insertion boundary using guest advances.
+pub(crate) fn classic_text_offset_at_x(text: &[u8], x: i32, measure: impl Fn(&[u8]) -> i32) -> usize {
+    let mut left = 0;
+    for end in 1..=text.len() {
+        let right = measure(&text[..end]);
+        if i64::from(x) * 2 < i64::from(left) + i64::from(right) {
+            return end - 1;
+        }
+        left = right;
+    }
+    text.len()
+}
+
 impl StandardFileNewFolderState {
     pub(crate) fn caret_visible(&self) -> bool {
         self.error.is_none() && self.edit.selection().is_empty() && self.caret_on
@@ -295,17 +308,7 @@ impl StandardFileNewFolderState {
     }
 
     pub(crate) fn offset_at_x(&self, x: i32, measure: impl Fn(&[u8]) -> i32) -> usize {
-        let text = self.edit.text();
-        let x = x.saturating_add(i32::from(self.scroll_x));
-        let mut left = 0;
-        for end in 1..=text.len() {
-            let right = measure(&text[..end]);
-            if i64::from(x) * 2 < i64::from(left) + i64::from(right) {
-                return end - 1;
-            }
-            left = right;
-        }
-        text.len()
+        classic_text_offset_at_x(self.edit.text(), x.saturating_add(i32::from(self.scroll_x)), measure)
     }
 
     /// TESelView keeps the selection start visible; held selection tracking
