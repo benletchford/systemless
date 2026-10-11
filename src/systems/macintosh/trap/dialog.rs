@@ -11438,9 +11438,26 @@ impl super::TrapDispatcher {
                                     "bounds=({},{},{},{}) edit_item={} item_type=${:02X} disabled=false outcome=enabled_edittext",
                                     bounds.0, bounds.1, bounds.2, bounds.3, edit_item, item_type
                                 );
-                                self.apply_dialog_select_key_to_edit_item(
+                                if self.apply_dialog_select_key_to_edit_item(
                                     bus, dialog_ptr, &mut items, edit_item, character,
-                                );
+                                ) {
+                                    // DialogSelect uses TextEdit for key input; TEKey
+                                    // redraws the changed field before returning.
+                                    // Macintosh Toolbox Essentials (1992), pp. 6-140--6-141;
+                                    // Text (1993), pp. 2-81--2-82.
+                                    let (edit_text, active_edit, default_item) =
+                                        Self::dialog_edit_state(bus, dialog_ptr, &items);
+                                    self.redraw_standard_dialog_items(
+                                        bus,
+                                        bounds,
+                                        &items,
+                                        default_item,
+                                        &edit_text,
+                                        active_edit,
+                                        dialog_ptr,
+                                        Some(edit_item),
+                                    );
+                                }
                                 result = true;
                             }
                             crate::dialog_manager::DialogSelectAction::NoAction => {

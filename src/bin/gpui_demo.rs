@@ -4532,6 +4532,36 @@ mod desktop {
                     })
                 }));
 
+                let edit = &dialog.items[3];
+                let edit_point = (
+                    (edit.bounds.0 + edit.bounds.2) / 2,
+                    (edit.bounds.1 + edit.bounds.3) / 2,
+                );
+                session.deliver_input(MacintoshInput::MouseDown {
+                    vertical: edit_point.0,
+                    horizontal: edit_point.1,
+                });
+                settle(&mut session);
+                session.deliver_input(MacintoshInput::MouseUp {
+                    vertical: edit_point.0,
+                    horizontal: edit_point.1,
+                });
+                session.deliver_input(MacintoshInput::KeyDown {
+                    mac_key: 0x06,
+                    character: b'z',
+                });
+                session.deliver_input(MacintoshInput::KeyUp {
+                    mac_key: 0x06,
+                    character: b'z',
+                });
+                assert!((0..100).any(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    session.runner_mut().dialog_snapshot().iter().any(|current| {
+                        current.guest_id == dialog.guest_id
+                            && current.items[3].text.contains('z')
+                    })
+                }), "modeless edit field should accept guest key input on {powerpc:?}");
+
                 session.deliver_input(MacintoshInput::MouseDown {
                     vertical: 70,
                     horizontal: 70,
@@ -4552,7 +4582,9 @@ mod desktop {
                 assert!((0..100).any(|_| {
                     session.runner_mut().run_steps(100_000, None);
                     session.runner_mut().dialog_snapshot().iter().any(|current| {
-                        current.guest_id == dialog.guest_id && current.active
+                        current.guest_id == dialog.guest_id
+                            && current.active
+                            && current.items[3].text.contains('z')
                     })
                 }));
                 let close = &dialog.items[0];
