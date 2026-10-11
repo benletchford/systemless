@@ -171,3 +171,177 @@ pub(crate) fn guest_key(keystroke: &Keystroke) -> Option<(u8, u8)> {
     Some((virtual_key, character))
 }
 
+
+/// Host preedit is transient: the guest is changed only after a complete commit.
+/// Mac Roman guest offsets are UTF-16 offsets because every decoded byte is BMP.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TextInputOwner {
+    pub identity: (u32, u64),
+    pub port: u32,
+    pub text: Vec<u8>,
+    pub selection: std::ops::Range<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Preedit {
+    pub text: String,
+    pub selection_utf16: std::ops::Range<usize>,
+}
+
+#[derive(Default)]
+pub(crate) struct GuestComposition {
+    owner: Option<TextInputOwner>,
+    awaiting_guest_change: Option<TextInputOwner>,
+    pub preedit: Option<Preedit>,
+}
+
+impl GuestComposition {
+    /// Focus loss, modality changes, selection changes and disposal invalidate
+    /// preedit. A recycled address cannot inherit another field's composition.
+    pub fn synchronize(&mut self, owner: Option<TextInputOwner>) {
+        let owner = owner.filter(|owner| owner.selection.start <= owner.selection.end
+            && owner.selection.end <= owner.text.len());
+        if owner.is_some() && owner == self.awaiting_guest_change {
+            // Rendering may still hold the pre-commit snapshot. It cannot
+            // authorize another replacement of that stale selection.
+            return;
+        }
+        self.awaiting_guest_change = None;
+        if self.owner != owner { self.preedit = None; }
+        self.owner = owner;
+    }
+
+    pub fn mark(&mut self, text: &str, selected: std::ops::Range<usize>) -> bool {
+        if self.owner.is_none() || selected.start > selected.end { return false; }
+        // Host ranges must not split surrogate pairs in marked Unicode text.
+        let boundaries: std::collections::BTreeSet<_> = std::iter::once(0)
+            .chain(text.chars().scan(0, |offset, ch| {
+                *offset += ch.len_utf16(); Some(*offset)
+            })).collect();
+        if !boundaries.contains(&selected.start) || !boundaries.contains(&selected.end) {
+            return false;
+        }
+        self.preedit = Some(Preedit { text: text.into(), selection_utf16: selected });
+        true
+    }
+
+    pub fn cancel(&mut self) { self.preedit = None; }
+
+    /// Return a pinned request for the guest event path. Reject the entire
+    /// commit on unrepresentable Unicode; never synthesize replacement glyphs.
+    pub fn commit(&mut self, text: &str) -> Option<(TextInputOwner, Vec<u8>)> {
+        let owner = self.owner.as_ref()?.clone();
+        let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
+        let bytes = normalized.chars()
+            .map(systemless::systems::macintosh::mac_roman::encode_mac_roman_char)
+            .collect::<Option<Vec<_>>>()?;
+        self.preedit = None;
+        if bytes.is_empty() && owner.selection.is_empty() { return Some((owner, bytes)); }
+        // A new guest snapshot must establish ownership before another commit;
+        // otherwise asynchronous commits could reuse a stale selection.
+        self.awaiting_guest_change = Some(owner.clone());
+        self.owner = None;
+        Some((owner, bytes))
+    }
+}
+
+#[cfg(test)]
+mod composition_tests {
+    use super::{GuestComposition, TextInputOwner};
+
+    fn owner() -> TextInputOwner {
+        TextInputOwner { identity: (42, 3), port: 100,
+            text: vec![b'a', 0x8e, b'b'], selection: 1..2 }
+    }
+
+    #[test]
+    fn composition_keeps_unicode_preedit_and_commits_mac_roman_atomically() {
+        let mut state = GuestComposition::default();
+        state.synchronize(Some(owner()));
+        assert!(state.mark("日😀", 1..3));
+        assert!(!state.mark("日😀", 1..2));
+        assert!(state.commit("é😀").is_none());
+        assert_eq!(state.preedit.as_ref().unwrap().text, "日😀");
+        let (pinned, bytes) = state.commit("é\r\nx\ny").unwrap();
+        assert_eq!(pinned, owner());
+        assert_eq!(bytes, [0x8e, b'\r', b'x', b'\r', b'y']);
+        assert!(state.preedit.is_none());
+        assert!(state.commit("z").is_none());
+        state.synchronize(Some(owner()));
+        assert!(state.commit("z").is_none(), "old snapshot cannot reopen stale selection");
+        let mut updated = owner();
+        updated.text = bytes;
+        updated.selection = 5..5;
+        state.synchronize(Some(updated));
+        assert!(state.commit("z").is_some());
+    }
+
+    #[test]
+    fn composition_cancels_on_guest_mutation_focus_loss_and_identity_reuse() {
+        for mutation in 0..5 {
+            let mut state = GuestComposition::default();
+            let initial = owner();
+            state.synchronize(Some(initial.clone()));
+            assert!(state.mark("é", 1..1));
+            state.synchronize(Some(initial.clone()));
+            assert!(state.preedit.is_some());
+            let mut changed = initial;
+            match mutation {
+                0 => changed.identity.1 += 1,
+                1 => changed.port += 1,
+                2 => changed.text.push(b'x'),
+                3 => changed.selection = 0..0,
+                _ => changed.selection = 0..99,
+            }
+            state.synchronize(Some(changed));
+            assert!(state.preedit.is_none());
+            if mutation == 4 { assert!(state.commit("z").is_none()); }
+            state.synchronize(None);
+            assert!(!state.mark("x", 0..1));
+            assert!(state.commit("z").is_none());
+        }
+        let mut state = GuestComposition::default();
+        state.synchronize(Some(owner()));
+        assert!(state.mark("x", 0..1));
+        state.cancel();
+        assert!(state.preedit.is_none());
+        assert!(state.commit("z").is_some());
+    }
+}
+
+/// Resolve only the exact live guest-owned document field. Dialogs and file
+/// panels have separate modal input ownership and must use their own paths.
+pub(crate) fn guest_commit_inputs(
+    session: &mut systemless::systems::macintosh::session::MacintoshSession,
+    owner: &TextInputOwner,
+    bytes: &[u8],
+) -> Option<Vec<MacintoshInput>> {
+    if session.runner().is_ui_tracking_active()
+        || session.runner().standard_file_snapshot().is_some()
+        || session.runner_mut().dialog_snapshot().iter().any(|dialog| dialog.visible && dialog.active) {
+        return None;
+    }
+    let keys = session.runner().event_manager_snapshot().key_map;
+    // Never release a real held A key or interpret committed characters as
+    // Command/Control/Option shortcuts. Physical modifiers stay guest-owned.
+    if [0u8, 0x37, 0x3a, 0x3b].iter().any(|key|
+        keys[usize::from(*key / 8)] & (1 << (*key % 8)) != 0) { return None; }
+    let records = session.runner_mut().text_edit_snapshot().records;
+    let record = records.iter().find(|record| record.active && record.drawing_intact
+        && (record.guest_id, record.generation) == owner.identity
+        && record.owner_port == owner.port && record.text == owner.text
+        && record.selection == (owner.selection.start, owner.selection.end))?;
+    if records.iter().filter(|record| record.active && record.drawing_intact).count() != 1
+        || record.global_view_rect.is_none() { return None; }
+    // Control characters are commands, not committed text. Newlines have
+    // already been normalized; Return remains an ordinary guest TEKey event.
+    if bytes.iter().any(|byte| *byte < 32 && !matches!(*byte, b'\r' | b'\t')) {
+        return None;
+    }
+    let delete = [8u8];
+    let bytes = if bytes.is_empty() && !owner.selection.is_empty() { &delete[..] } else { bytes };
+    Some(bytes.iter().flat_map(|&character| [
+        MacintoshInput::KeyDown { mac_key: 0x00, character },
+        MacintoshInput::KeyUp { mac_key: 0x00, character },
+    ]).collect())
+}
