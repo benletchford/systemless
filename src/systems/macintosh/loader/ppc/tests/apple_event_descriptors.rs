@@ -902,9 +902,10 @@ fn native_ppc_ae_resolve_calls_nested_accessors_and_releases_scratch() {
     let scratch = PPC_DATA_BASE + 0x2900;
     let specifier_ptr = scratch;
     let tvector = scratch + 0x100;
-    let entry = scratch + 0x120;
+    let entry = scratch + 0x400;
+    let observed = scratch + 0x300;
     let token = scratch + 0x200;
-    native.memory.add_region(scratch, vec![0; 0x300]);
+    native.memory.add_region(scratch, vec![0; 0x500]);
     native
         .memory
         .write_u32_be(specifier_ptr, PPC_TYPE_OBJECT_SPECIFIER)
@@ -914,18 +915,36 @@ fn native_ppc_ae_resolve_calls_nested_accessors_and_releases_scratch() {
         .memory
         .write_u32_be(tvector + 4, 0x0200_1234)
         .unwrap();
-    native.memory.write_u32_be(entry, 0x906a_0000).unwrap(); // stw r3,0(r10)
-    native.memory.write_u32_be(entry + 4, 0x3860_0000).unwrap(); // li r3,0
-    native.memory.write_u32_be(entry + 8, 0x4e80_0020).unwrap(); // blr
+    // Read both AEDescs and selection-handle contents during the callback.
+    // This would fail if single-level resolve supplied values or freed storage.
+    let code = [
+        0x3d80_0000 | (observed >> 16), // lis r12,observed@hi
+        0x618c_0000 | (observed & 0xffff), // ori r12,r12,observed@lo
+        0x8164_0000, // lwz r11,0(r4): container descriptor type
+        0x916c_0000, // stw r11,0(r12)
+        0x8167_0000, // lwz r11,0(r7): selection descriptor type
+        0x916c_0004, // stw r11,4(r12)
+        0x8167_0004, // lwz r11,4(r7): selection handle
+        0x816b_0000, // lwz r11,0(r11): dereference handle
+        0x816b_0000, // lwz r11,0(r11): selection bytes
+        0x916c_0008, // stw r11,8(r12)
+        0x9068_0000, // stw r3,0(r8): output descriptor type
+        0x3860_0000, // li r3,0
+        0x4e80_0020, // blr
+    ];
+    for (index, instruction) in code.into_iter().enumerate() {
+        native.memory.write_u32_be(entry + index as u32 * 4, instruction).unwrap();
+    }
     let document = u32::from_be_bytes(*b"docu");
     let window = u32::from_be_bytes(*b"cwin");
     let base = ProcessAeDescriptor {
         desc_type: PPC_TYPE_NULL,
         ..Default::default()
     };
-    let outer = specifier(window, specifier(document, base));
+    let single = specifier(document, base.clone());
+    let outer = specifier(window, single.clone());
     native.apple_events.descriptors.with_mut(|state| {
-        state.descriptors.insert(specifier_ptr, outer);
+        state.descriptors.insert(specifier_ptr, outer.clone());
     });
     native.apple_events.object_support_initialized = true;
     for (desired, container_type) in [(document, PPC_TYPE_NULL), (window, document)] {
@@ -939,6 +958,24 @@ fn native_ppc_ae_resolve_calls_nested_accessors_and_releases_scratch() {
     }
     let handles_before = native.handles();
     let ptrs_before = native.ptrs();
+    native.apple_events.descriptors.with_mut(|state| {
+        state.descriptors.insert(specifier_ptr, single);
+    });
+    native.cpu.gpr[3] = specifier_ptr;
+    native.cpu.gpr[4] = 0;
+    native.cpu.gpr[5] = token;
+    run_test_import(&mut native, PpcImportDispatcherTarget::ObjectSupportResolve);
+    assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(native.memory.read_u32_be(token), Some(document));
+    assert_eq!(native.memory.read_u32_be(observed), Some(PPC_TYPE_NULL));
+    assert_eq!(native.memory.read_u32_be(observed + 4), Some(u32::from_be_bytes(*b"TEXT")));
+    assert_eq!(native.memory.read_u32_be(observed + 8), Some(u32::from_be_bytes(*b"Room")));
+    assert_eq!(native.handles(), handles_before);
+    assert_eq!(native.ptrs(), ptrs_before);
+    assert!(native.apple_events.pending_resolutions.is_empty());
+    native.apple_events.descriptors.with_mut(|state| {
+        state.descriptors.insert(specifier_ptr, outer.clone());
+    });
     native.cpu.gpr[3] = specifier_ptr;
     native.cpu.gpr[4] = 0;
     native.cpu.gpr[5] = token;
@@ -947,6 +984,7 @@ fn native_ppc_ae_resolve_calls_nested_accessors_and_releases_scratch() {
 
     assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
     assert_eq!(native.memory.read_u32_be(token), Some(window));
+    assert_eq!(native.memory.read_u32_be(observed), Some(document));
     assert!(
         native.apple_events.pending_resolutions.is_empty(),
         "pending={:?} pc={:#x} lr={:#x} depth={}",
@@ -989,8 +1027,8 @@ fn native_ppc_ae_resolve_calls_nested_accessors_and_releases_scratch() {
         .unwrap();
     native
         .memory
-        .write_u32_be(first_entry, 0x906a_0000)
-        .unwrap(); // stw r3,0(r10)
+        .write_u32_be(first_entry, 0x9068_0000)
+        .unwrap(); // stw r3,0(r8)
     native
         .memory
         .write_u32_be(first_entry + 4, 0x3c80_0000 | (intermediate_handle >> 16))
@@ -1004,8 +1042,8 @@ fn native_ppc_ae_resolve_calls_nested_accessors_and_releases_scratch() {
         .unwrap(); // ori r4,r4,handle@lo
     native
         .memory
-        .write_u32_be(first_entry + 12, 0x908a_0004)
-        .unwrap(); // stw r4,4(r10)
+        .write_u32_be(first_entry + 12, 0x9088_0004)
+        .unwrap(); // stw r4,4(r8)
     native
         .memory
         .write_u32_be(first_entry + 16, 0x3860_0000)
@@ -1306,7 +1344,7 @@ fn native_ppc_object_accessor_lookup_prefers_application_and_specific_entries() 
 }
 
 #[test]
-fn native_ppc_call_object_accessor_passes_refcon_as_ninth_word() {
+fn native_ppc_call_object_accessor_passes_descriptor_pointers_and_seventh_word_refcon() {
     let pef = synthetic_pef_with_library_import(b"ObjectSupportLib", b"AECallObjectAccessor");
     let mut native = load_pef_application(&pef).unwrap();
     assert_eq!(
@@ -1317,13 +1355,19 @@ fn native_ppc_call_object_accessor_passes_refcon_as_ninth_word() {
     let tvector = scratch;
     let entry = scratch + 0x100;
     let token = scratch + 0x200;
+    let container = scratch + 0x220;
+    let selection = scratch + 0x230;
     native.memory.add_region(scratch, vec![0; 0x300]);
     native.memory.write_u32_be(tvector, entry).unwrap();
     native
         .memory
         .write_u32_be(tvector + 4, 0x0200_1234)
         .unwrap();
-    native.memory.write_u32_be(entry, 0x8061_0038).unwrap(); // lwz r3,56(r1)
+    native.memory.write_u32_be(container, PPC_TYPE_NULL).unwrap();
+    native.memory.write_u32_be(container + 4, 0).unwrap();
+    native.memory.write_u32_be(selection, u32::from_be_bytes(*b"TEXT")).unwrap();
+    native.memory.write_u32_be(selection + 4, 0x12345678).unwrap();
+    native.memory.write_u32_be(entry, 0x7d23_4b78).unwrap(); // mr r3,r9
     native.memory.write_u32_be(entry + 4, 0x4e80_0020).unwrap(); // blr
     native.apple_events.object_support_initialized = true;
     native.apple_events.object_accessors.insert(
@@ -1334,13 +1378,12 @@ fn native_ppc_call_object_accessor_passes_refcon_as_ninth_word() {
         },
     );
     native.cpu.gpr[3] = u32::from_be_bytes(*b"docu");
-    native.cpu.gpr[4] = PPC_TYPE_NULL;
-    native.cpu.gpr[5] = 0;
-    native.cpu.gpr[6] = PPC_TYPE_NULL;
-    native.cpu.gpr[7] = u32::from_be_bytes(*b"name");
-    native.cpu.gpr[8] = u32::from_be_bytes(*b"TEXT");
-    native.cpu.gpr[9] = 0;
-    native.cpu.gpr[10] = token;
+    native.cpu.gpr[4] = container;
+    native.cpu.gpr[5] = PPC_TYPE_NULL;
+    native.cpu.gpr[6] = u32::from_be_bytes(*b"name");
+    native.cpu.gpr[7] = selection;
+    native.cpu.gpr[8] = token;
+    native.cpu.gpr[9] = 0xdeadbeef;
 
     run_test_import(
         &mut native,
@@ -1351,22 +1394,32 @@ fn native_ppc_call_object_accessor_passes_refcon_as_ninth_word() {
     assert_eq!(native.cpu.gpr[2], native.rtoc);
     assert_eq!(native.memory.read_u32_be(token), Some(PPC_TYPE_NULL));
 
-    native.memory.write_u32_be(entry, 0x910a_0000).unwrap(); // stw r8,0(r10)
-    native.memory.write_u32_be(entry + 4, 0x3860_0000).unwrap(); // li r3,0
-    native.memory.write_u32_be(entry + 8, 0x4e80_0020).unwrap(); // blr
+    // Dereference both input AEDesc pointers and copy selection to output.
+    for (offset, instruction) in [
+        (0, 0x8164_0000),   // lwz r11,0(r4): container type
+        (4, 0x8187_0000),   // lwz r12,0(r7): selection type
+        (8, 0x9188_0000),   // stw r12,0(r8)
+        (12, 0x8187_0004),  // lwz r12,4(r7): selection handle
+        (16, 0x9188_0004),  // stw r12,4(r8)
+        (20, 0x3860_0000), // li r3,0
+        (24, 0x4e80_0020), // blr
+    ] {
+        native.memory.write_u32_be(entry + offset, instruction).unwrap();
+    }
     native.cpu.gpr[3] = u32::from_be_bytes(*b"docu");
-    native.cpu.gpr[4] = PPC_TYPE_NULL;
-    native.cpu.gpr[5] = 0;
-    native.cpu.gpr[6] = PPC_TYPE_NULL;
-    native.cpu.gpr[7] = u32::from_be_bytes(*b"name");
-    native.cpu.gpr[8] = u32::from_be_bytes(*b"TEXT");
-    native.cpu.gpr[9] = 0;
-    native.cpu.gpr[10] = token;
+    native.cpu.gpr[4] = container;
+    native.cpu.gpr[5] = PPC_TYPE_NULL;
+    native.cpu.gpr[6] = u32::from_be_bytes(*b"name");
+    native.cpu.gpr[7] = selection;
+    native.cpu.gpr[8] = token;
+    native.cpu.gpr[9] = 0xdeadbeef;
     run_test_import(
         &mut native,
         PpcImportDispatcherTarget::ObjectSupportCallAccessor,
     );
     assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(native.cpu.gpr[11], PPC_TYPE_NULL);
+    assert_eq!(native.memory.read_u32_be(token + 4), Some(0x12345678));
     assert_eq!(
         native.memory.read_u32_be(token),
         Some(u32::from_be_bytes(*b"TEXT"))
