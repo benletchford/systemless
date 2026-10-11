@@ -90,7 +90,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 48 | Cro-Mag Rally | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 49 | Otto Matic | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 50 | Avara | [Conditional nonprofit grant](CATALOGUE-SOURCES.md#avara-expansion-intake); remaining terms pending | [1.0.1 receipt and payload](CATALOGUE-SOURCES.md#avara-expansion-intake) | [Mission/spawn unqualified](https://github.com/benletchford/systemless/issues/4355) | Embedded modules; route unqualified | Pending | Pending | Pending |
-| 51 | Ares | [Conditional game grant; auxiliary terms pending](CATALOGUE-SOURCES.md#ares-expansion-intake) | [1.1.1 receipt; 56 files](CATALOGUE-SOURCES.md#ares-expansion-intake) | Pending | [Special-handler fix attempted; coercion import halt](https://github.com/benletchford/systemless/pull/4367) | Pending | Pending | Pending |
+| 51 | Ares | [GameRanger bundling permission and auxiliary terms held](CATALOGUE-SOURCES.md#ares-expansion-intake) | Original 1.1.1; current production extraction has sixty files; independent fork parity pending | Pending | [Current coercion-handler halt](https://github.com/benletchford/systemless/issues/4364#issuecomment-6105524171) | Pending | Special-handler fix merged; unhosted | Pending |
 | 52 | Barrack | [Complete unchanged nonprofit grant; 30-day trial retained](CATALOGUE-SOURCES.md#barrack-expansion-intake) | [1.0.4 exact receipt, 18 files](CATALOGUE-SOURCES.md#barrack-expansion-intake) | Black startup; unqualified | Trial dismissal; incomplete menu; [callback defect #4403](https://github.com/benletchford/systemless/issues/4403) | Pending | Pending | Pending |
 | 53 | Bubble Trouble | [Complete nonprofit original grant](CATALOGUE-SOURCES.md#bubble-trouble-expansion-intake) | SHA-256 / 1,670,970 bytes | Native + browser movement | Native + browser movement; background defect | [Both release-player slices checked](CATALOGUE-SOURCES.md#bubble-trouble-browser-qualification) | [Merged #4392](https://github.com/benletchford/systemless/pull/4392) | [Live v0.87.0, both slices checked](https://systemless.org/bubble-trouble/) |
 | 54 | Chiral | [Complete nonprofit original grant](catalogue/chiral.md) | SHA-256 / 1,043,239 bytes | Native + browser atom placement | 68K-only original | [Fresh release-player startup + placement](CATALOGUE-SOURCES.md#chiral-release-player-qualification) | [Merged #4394](https://github.com/benletchford/systemless/pull/4394) | [Live v0.87.0, 68K checked](https://systemless.org/chiral/) |
@@ -460,12 +460,12 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 418 | ExaChess_Lite | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 419 | Fanorona | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 420 | GL Tron | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 421 | HipHop | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 421 | HipHop | [No grant in bundled ReadMe; held](CATALOGUE-SOURCES.md#hiphop-101--target-609-original-68k-installer-intake) | Original 1.0.1; four files/eight forks matched | [Runtime alert recurs after dismissal](https://github.com/benletchford/systemless/issues/4504#issuecomment-6105410319) | N/A: no PEF/cfrg in installed game | Pending | Intake documented; unhosted | Pending |
 | 422 | Imp Fodder | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 423 | Jailbreak | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 424 | Kalah | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 425 | Lunar Commando | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 426 | MacSolitaire | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 426 | MacSolitaire | [Installer terms uninspected; held](CATALOGUE-SOURCES.md#macsolitaire-16--target-614-original-installer-intake) | Original 1.6; both installed game forks matched | N/A: installed game is PPC-only | [Initialization advances; menu import and accessor ABI held](https://github.com/benletchford/systemless/issues/4500#issuecomment-6105690236) | Pending | Grow-zone, Internet Config and CarbonLib fixes merged; unhosted | Pending |
 | 427 | Nethergate | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 428 | Oilcap Pro | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 429 | Project Magellan | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
@@ -716,7 +716,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 674 | DeadEnd | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 675 | Escape! | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 676 | Flip Out | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 677 | Galactica | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 677 | Galactica | [Unchanged complete unregistered-package grant](CATALOGUE-SOURCES.md#galactica-112--target-677-original-fat-package) | Original fat 1.1.2; fourteen files/twenty-eight forks matched | [Setup/save/login reached; gameplay held](https://github.com/benletchford/systemless/issues/4496) | [IUStringOrder startup halt](https://github.com/benletchford/systemless/issues/4493) | Pending | Archive, basename and text/window ABI fixes merged; unhosted | Pending |
 | 678 | HeartQuest | [Original sharing/upload grant](catalogue/heartquest.md) | [Exact fat package; both files/forks independently matched](catalogue/heartquest.md) | Collection to score 10; six assertions | Steering/collection to score 30; 16 assertions | Public v0.95.0: 68K score 0→10; PPC 0→20 | Promoted, both routes approved; whole v0.95.0 release passed | [Verified both routes](https://github.com/benletchford/systemless/issues/4452#issuecomment-6102945362) |
 | 679 | iPoker 2000 | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 680 | J. B. Harold: Blue Chicago Blues (J.B.ハロルド ブルー・シカゴ・ブルース | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
