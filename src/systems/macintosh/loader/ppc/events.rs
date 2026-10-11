@@ -233,6 +233,50 @@ pub(crate) fn ppc_dequeue_event(
     (0, 0, tick_count, input.mouse_v, input.mouse_h, 0, false)
 }
 
+/// Process-switch notifications belong to the Toolbox event stream, outside
+/// the flushable OS queue. Ordinary event-class priority still applies.
+/// Toolbox Essentials (1992), pp. 2-18--2-19 and 2-59--2-61.
+pub(crate) fn ppc_poll_process_event(
+    event_queue: &mut EventQueue,
+    event_mask: u16,
+    input: PpcInputSnapshot,
+    os_only: bool,
+    tick_count: u32,
+    remove: bool,
+) -> (u16, u32, u32, i16, i16, u16, bool) {
+    if !os_only {
+        event_queue.activation.prepare_os_event(
+            tick_count,
+            (input.mouse_v, input.mouse_h),
+            ppc_current_event_modifiers(input),
+        );
+        if let Some(event) = event_queue.activation.peek_os_event(event_mask) {
+            let queued = ppc_peek_event(event_queue, event_mask, input, false, tick_count);
+            if !queued.6
+                || ppc_toolbox_event_priority(event.what) < ppc_toolbox_event_priority(queued.0)
+            {
+                if remove {
+                    event_queue.activation.consume();
+                }
+                return (
+                    event.what,
+                    event.message,
+                    event.when,
+                    event.where_v,
+                    event.where_h,
+                    event.modifiers,
+                    true,
+                );
+            }
+        }
+    }
+    if remove {
+        ppc_dequeue_event(event_queue, event_mask, input, os_only, tick_count)
+    } else {
+        ppc_peek_event(event_queue, event_mask, input, os_only, tick_count)
+    }
+}
+
 pub(crate) fn ppc_enqueue_window_update_event(
     event_queue: &mut VecDeque<PpcQueuedEvent>,
     window: u32,

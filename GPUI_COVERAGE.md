@@ -1974,9 +1974,13 @@ Its model tests cover suspend handling before yielding, delayed activation
 availability, peeking without consumption, policy combinations, modality,
 background-only applications, rapid requests, and clipboard conversion flags.
 Queue tests cover snapshot isolation, merge conflicts, preservation during
-event replacement, and launch reset. This is internal sequencing infrastructure:
-Toolbox event scans and the host activation callback are not yet connected to
-it, so these tests do not qualify guest suspend/resume behavior.
+event replacement, and launch reset. Both Toolbox Event Manager gateways can
+now select a prepared suspend/resume record with normal event priority and
+masking. Paired tests verify stable posting ticks across repeated EventAvail
+peeks, exclusion from GetOSEvent, survival of FlushEvents, key-event precedence,
+and delivery before high-level events. Switch scheduling, the following Window
+Manager activation, and the host activation callback still need connecting;
+these tests do not qualify a complete guest suspend/resume lifecycle.
 
 The existing Window Manager adapters already own activation delivery through
 `CurActivate`/`CurDeactive` and coalesced activation records. A new host bridge

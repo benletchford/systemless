@@ -52,6 +52,7 @@ pub(crate) struct ProcessActivation {
     requested_foreground: bool,
     clipboard_changed: bool,
     transition: Option<Transition>,
+    os_event: Option<crate::event_queue::QueuedEvent>,
 }
 
 impl Default for ProcessActivation {
@@ -61,6 +62,7 @@ impl Default for ProcessActivation {
             requested_foreground: true,
             clipboard_changed: false,
             transition: None,
+            os_event: None,
         }
     }
 }
@@ -88,6 +90,33 @@ impl ProcessActivation {
 
     pub(crate) fn is_foreground(&self) -> bool {
         self.foreground
+    }
+
+    /// Materialize once at the Event Manager boundary. Repeated peeks must
+    /// retain the posting time and pointer/modifier snapshot (Toolbox
+    /// Essentials (1992), EventRecord, pp. 2-79--2-80).
+    pub(crate) fn prepare_os_event(&mut self, when: u32, position: (i16, i16), modifiers: u16) {
+        if self.os_event.is_some() {
+            return;
+        }
+        if let Some(message) = self.peek().and_then(ActivationNotification::os_message) {
+            self.os_event = Some(crate::event_queue::QueuedEvent {
+                what: 15,
+                message,
+                when,
+                where_v: position.0,
+                where_h: position.1,
+                modifiers,
+            });
+        }
+    }
+
+    pub(crate) fn peek_os_event(&self, mask: u16) -> Option<crate::event_queue::QueuedEvent> {
+        if mask & 0x8000 == 0 {
+            None
+        } else {
+            self.os_event
+        }
     }
 
     /// Called before an event scan. The caller identifies scheduling calls
@@ -170,7 +199,8 @@ impl ProcessActivation {
         let transition = self.transition.as_mut().unwrap();
         match notification {
             ActivationNotification::OperatingSystem { .. } => {
-                transition.operating_system_pending = false
+                transition.operating_system_pending = false;
+                self.os_event = None;
             }
             ActivationNotification::Window { .. } => transition.activation_pending = false,
         }

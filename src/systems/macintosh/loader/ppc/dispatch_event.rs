@@ -1266,7 +1266,7 @@ pub(super) fn dispatch_event_import(
             }
             ppc_suppress_window_updates(event_queue, &toolbox_startup.windows_without_updates);
             let (what, message, when, where_v, where_h, modifiers, has_event) =
-                ppc_dequeue_event(event_queue, event_mask, input, os_only, tick_count);
+                ppc_poll_process_event(event_queue, event_mask, input, os_only, tick_count, true);
             if has_event && what == 8 {
                 let pending = if (modifiers & 1) != 0 { 0x0A64 } else { 0x0A68 };
                 if memory.read_u32_be(pending) == Some(message) {
@@ -1344,7 +1344,7 @@ pub(super) fn dispatch_event_import(
             }
             ppc_suppress_window_updates(event_queue, &toolbox_startup.windows_without_updates);
             let (what, message, when, where_v, where_h, modifiers, has_event) =
-                ppc_peek_event(event_queue, event_mask, input, os_only, tick_count);
+                ppc_poll_process_event(event_queue, event_mask, input, os_only, tick_count, false);
             if event_ptr != 0
                 && ppc_write_event_record(
                     memory, event_ptr, what, message, when, where_v, where_h, modifiers,

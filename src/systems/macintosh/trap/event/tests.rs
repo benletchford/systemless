@@ -1621,3 +1621,61 @@ fn get_os_event_mouse_up_reports_button_up_modifier() {
     assert_eq!(where_h, 150);
     assert_eq!(modifiers & 0x0080, 0x0080);
 }
+
+#[test]
+fn process_suspend_event_respects_masks_priority_and_stable_peeking() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let policy = Some(crate::loader::ApplicationSizeResource {
+        flags: 0x4000,
+        preferred_size: 0,
+        minimum_size: 0,
+    });
+    disp.set_tick_count_for_test(&mut bus, 41);
+    disp.event_queue.with_mut(|queue| {
+        queue.activation.request(false);
+        queue.activation.begin_event_call(policy, true, true);
+    });
+    assert_eq!(disp.peek_toolbox_event(&bus, 0), None);
+    disp.set_tick_count_for_test(&mut bus, 99);
+    let first = disp.peek_toolbox_event(&bus, 0x8000).unwrap();
+    assert_eq!(
+        (first.what, first.message, first.when),
+        (15, 0x0100_0000, 41)
+    );
+    assert_eq!(disp.peek_toolbox_event(&bus, 0x8000), Some(first));
+    disp.flush_events_with_masks(0xffff, 0);
+    assert_eq!(disp.peek_toolbox_event(&bus, 0x8000), Some(first));
+    // Low-level OS calls must not consume Process Manager notifications.
+    assert!(!disp.dequeue_event(&mut bus, 0xffff).6);
+    disp.event_queue.push_back(QueuedEvent {
+        what: 3,
+        message: 0x0061,
+        when: 42,
+        where_v: 0,
+        where_h: 0,
+        modifiers: 0,
+    });
+    disp.event_queue.push_back(QueuedEvent {
+        what: 23,
+        message: 0x1234,
+        when: 42,
+        where_v: 0,
+        where_h: 0,
+        modifiers: 0,
+    });
+    assert_eq!(disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xffff).0, 3);
+    let delivered = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xffff);
+    assert_eq!(
+        (delivered.0, delivered.1, delivered.2, delivered.6),
+        (15, 0x0100_0000, 41, true)
+    );
+    assert!(disp
+        .event_queue
+        .with_ref(|queue| queue.activation.is_foreground()));
+    assert_eq!(disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xffff).0, 23);
+    assert_eq!(disp.peek_toolbox_event(&bus, 0x8000), None);
+    assert_eq!(
+        disp.event_queue.with_ref(|queue| queue.activation.peek()),
+        Some(crate::process_manager::activation::ActivationNotification::Window { active: false })
+    );
+}
