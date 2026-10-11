@@ -2722,6 +2722,12 @@ impl FixtureRunner {
     /// Macintosh Toolbox Essentials (1992), pp. 6-13--6-15, 6-120--6-124.
     #[doc(hidden)]
     pub fn dialog_snapshot(&mut self) -> Vec<DialogSnapshot> {
+        // A titleless modal box can own Dialog Manager input without a
+        // Window Manager hilite flag (as in Escape Velocity's New Pilot).
+        // Preserve that explicit modal ownership without changing guest
+        // window flags or inferring activation from front-window ordering.
+        let modal_owner = self.native.application().is_none().then(||
+            self.dispatcher.dialog_tracking.as_ref().map(|tracking| tracking.dialog_ptr)).flatten();
         self.window_frame_snapshot()
             .into_iter()
             .filter_map(|frame| {
@@ -2816,7 +2822,7 @@ impl FixtureRunner {
                     generation: frame.generation,
                     bounds,
                     visible: frame.window.visible,
-                    active: frame.window.active,
+                    active: frame.window.visible && modal_owner.map_or(frame.window.active, |owner| owner == guest_id),
                     default_item: valid_item(default),
                     cancel_item: valid_item(cancel),
                     edit_field,

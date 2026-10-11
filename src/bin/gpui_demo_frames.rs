@@ -223,22 +223,26 @@ pub fn dialog_item_pieces(
                     && dialog.guest_id == frame.guest_id
                     && dialog.generation == frame.generation
                     && !dialog.items.is_empty()
-                    && dialog.items.iter().all(|item| match item.kind {
-                        DialogItemKind::Button
-                        | DialogItemKind::StaticText
-                        | DialogItemKind::EditText => true,
-                        DialogItemKind::Checkbox | DialogItemKind::RadioButton => {
-                            item.value.is_some()
-                        }
-                        _ => false,
-                    })
+                    // Resource pictures/icons have bounded Toolbox-owned paint.
+                    // Unknown callbacks/CDEFs may draw beyond their item bounds;
+                    // retain the complete dialog until their ownership is proven.
+                    && dialog.items.iter().all(|item| matches!(item.kind,
+                        DialogItemKind::Button | DialogItemKind::Checkbox | DialogItemKind::RadioButton
+                        | DialogItemKind::StaticText | DialogItemKind::EditText
+                        | DialogItemKind::Picture | DialogItemKind::Icon))
             }) {
+                let supported = |item: &systemless::runner::DialogItemSnapshot| match item.kind {
+                    DialogItemKind::Button => true,
+                    DialogItemKind::StaticText => item.static_text_layout.is_some(),
+                    DialogItemKind::EditText => item.edit_text_layout.is_some()
+                        && !item.text.contains('\r') && item.bounds.2 - item.bounds.0 <= 24,
+                    DialogItemKind::Checkbox | DialogItemKind::RadioButton => item.value.is_some(),
+                    _ => false,
+                };
+                let custom_bounds: Vec<_> = dialog.items.iter().filter(|item| item.visible && !supported(item))
+                    .map(|item| Rect::from(item.bounds)).collect();
                 for (item_index, item) in dialog.items.iter().enumerate() {
-                    if (item.kind == DialogItemKind::StaticText && item.static_text_layout.is_none())
-                        || !item.visible
-                        || (item.kind == DialogItemKind::EditText
-                            && (item.edit_text_layout.is_none() || item.text.contains('\r') || item.bounds.2 - item.bounds.0 > 24))
-                    {
+                    if !supported(item) || !item.visible {
                         continue;
                     }
                     let item_rect = Rect::from(item.bounds);
@@ -261,7 +265,10 @@ pub fn dialog_item_pieces(
                         .into_iter()
                         .collect();
                     let mut clips = clip_to_guest_visible_content(clips, frame);
-                    for cover in &covers {
+                    // Mixed DITLs retain bounded guest picture/icon pixels.
+                    // Do not erase them even when a standard item's decoration
+                    // or guest bounds overlap their drawing region.
+                    for cover in covers.iter().chain(&custom_bounds) {
                         clips = clips.into_iter().flat_map(|clip| clip.subtract(*cover)).collect();
                     }
                     pieces.extend(clips.into_iter().map(|clip| DialogItemPiece {
@@ -514,8 +521,10 @@ pub fn dialog_activation_point(
     viewport: Rect,
 ) -> Option<(i16, i16)> {
     let dialog = dialogs.iter().find(|d| d.guest_id == id && d.generation == generation)?;
+    // DialogSnapshot.active includes the actual modal owner. Its titleless
+    // guest window can legitimately have hilite clear (EV's New Pilot).
     if !dialog.active || !dialog.visible || !windows.iter().any(|frame| {
-        frame.guest_id == id && frame.generation == generation && frame.window.active && frame.window.visible
+        frame.guest_id == id && frame.generation == generation && frame.window.visible
     }) {
         return None;
     }
@@ -931,7 +940,14 @@ mod tests {
         assert_eq!(resolve(&dialogs, &windows), None);
         dialogs[0].active = true;
         windows[0].window.active = false;
+        assert_eq!(resolve(&dialogs, &windows), Some((100, 135)),
+            "an explicit modal owner can activate controls with a clear window hilite flag");
+        dialogs[0].active = false;
+        assert_eq!(resolve(&dialogs, &windows), None, "modal ownership remains required");
+        dialogs[0].active = true;
+        windows[0].window.visible = false;
         assert_eq!(resolve(&dialogs, &windows), None);
+        windows[0].window.visible = true;
         windows[0].window.active = true;
         let mut cover = window((80, 80, 130, 200), true, 1);
         cover.guest_id = 2;
@@ -987,6 +1003,21 @@ mod tests {
         assert_eq!(pieces.len(), 1);
         assert_eq!(pieces[0].source, Rect::from((90, 90, 110, 180)));
         assert_eq!(pieces[0].clip, Rect::from((90, 152, 110, 180)));
+
+        let mut picture = dialog.items[0].clone();
+        picture.kind = DialogItemKind::Picture;
+        picture.number = 2;
+        picture.bounds = (98, 160, 105, 170);
+        dialog.items.push(picture);
+        let mixed = dialog_item_pieces(&[dialog.clone()], &windows, viewport);
+        assert!(mixed.iter().all(|piece| piece.item == 0
+            && piece.clip.intersection(Rect::from((98, 160, 105, 170))).is_none()),
+            "mixed DITL must retain picture pixels while replacing standard text");
+        assert_eq!(mixed.iter().map(|piece| piece.clip.width() * piece.clip.height()).sum::<i32>(), 490);
+        dialog.items[1].kind = DialogItemKind::UserItem;
+        assert!(dialog_item_pieces(&[dialog.clone()], &windows, viewport).is_empty(),
+            "unbounded application callbacks must retain the entire dialog");
+        dialog.items.pop();
 
         let text_layout = dialog.items[0].static_text_layout.take();
         assert!(dialog_item_pieces(&[dialog.clone()], &windows, viewport).is_empty(),
