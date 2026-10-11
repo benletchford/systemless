@@ -445,8 +445,31 @@ fn classic_control_label(
     scale: f32,
     foreground: gpui_kit::Hsla,
 ) -> impl gpui_kit::IntoElement {
+    classic_label_canvas(ClassicLine::unicode(label, 0, 12), centered, scale, foreground)
+}
+
+pub(crate) fn classic_menu_label(
+    label: &str, face: u8, foreground: gpui_kit::Hsla,
+) -> impl gpui_kit::IntoElement {
     use gpui_kit::{prelude::*, *};
-    let line = ClassicLine::unicode(label, 0, 12);
+    let bytes: Vec<_> = label.chars().map(|ch|
+        systemless::systems::macintosh::mac_roman::encode_mac_roman_char(ch).unwrap_or(b'?')).collect();
+    let mut line = ClassicLine::styled(&bytes, 0, 12, face);
+    // Outline/italic ink can extend outside its advance. Include that ink in
+    // the label bounds instead of clipping it to the unstylized width.
+    let left = line.ink.iter().map(|&(x, _, _)| x).min().unwrap_or(0).min(0);
+    let right = line.ink.iter().map(|&(x, _, width)| x + width).max().unwrap_or(0)
+        .max(line.positions.last().copied().unwrap_or(0));
+    for ink in &mut line.ink { ink.0 -= left; }
+    let width = (right - left).max(1);
+    div().w(px(width as f32)).h(px(18.)).flex_shrink_0()
+        .overflow_hidden().child(classic_label_canvas(line, false, 1., foreground))
+}
+
+fn classic_label_canvas(
+    line: ClassicLine, centered: bool, scale: f32, foreground: gpui_kit::Hsla,
+) -> impl gpui_kit::IntoElement {
+    use gpui_kit::{prelude::*, *};
     let metrics = systemless::quickdraw::text::get_font_metrics(0, 12);
     canvas(
         move |bounds, _, _| bounds,

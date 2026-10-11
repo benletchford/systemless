@@ -362,7 +362,10 @@ impl Render for GuestMenuPopup {
                             ))
                         })
                         .child(if item.checked { "✓ " } else { "  " })
-                        .child(label)
+                        .child(super::text::classic_menu_label(&item.text, item.style,
+                            if enabled { cx.theme().foreground } else { cx.theme().muted_foreground }))
+                        .when(item.key_equivalent.is_some(), |row| row.child(
+                            format!("    ⌘{}", item.key_equivalent.unwrap().to_uppercase())))
                         .when(item.submenu_id.is_some(), |row| row.child("  ›").aria_expanded(selected)),
                     !enabled,
                 ).test_support());
