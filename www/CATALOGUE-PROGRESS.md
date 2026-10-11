@@ -793,7 +793,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 751 | Iris Puzzle | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 752 | Jack Keane | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 753 | Klondike | [Original grants and custom metadata reviewed; hosting approval pending](CATALOGUE-SOURCES.md#klondike-771--target-941-original-publisher-intake) | Original publisher 7.7.1; three files/six forks and Finder metadata matched | [Original hierarchy-control error; no board](https://github.com/benletchford/systemless/issues/4535) | [Original hierarchy-control error after screen-bitmap fix; no board](https://github.com/benletchford/systemless/issues/4535) | Pending | MacBinary packer #4534 and screen-bitmap #4540 merged; unhosted | Pending |
-| 754 | Lose Your Marbles! | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 754 | Lose Your Marbles! | [Original GPL-2.0-or-later grant and matching source](CATALOGUE-SOURCES.md#lose-your-marbles-10--target-942) | Original BinHex/Compact Pro binary and 66-file source, pinned receipts; production parity pending | [Placement/erase: eight assertions; 5x5 win: three assertions](https://github.com/benletchford/systemless/issues/4547) | N/A: original game is 68K-only | Pending | [BinHex packing #4550 pending](https://github.com/benletchford/systemless/pull/4550); catalogue prepared, launch disabled | Pending |
 | 755 | MacBaseball | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 756 | Nomis | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 757 | O!Kay! CD-ROMs 2001 | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
