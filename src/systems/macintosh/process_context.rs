@@ -9461,22 +9461,40 @@ impl ProcessNativeMemoryManager {
             self.set_native_mem_error(Self::MEM_FULL_ERR);
             return Self::MEM_FULL_ERR;
         }
-        let mut bytes = Vec::with_capacity(record.size as usize);
-        for offset in 0..record.size {
-            let Some(byte) = PpcMemory::read_u8(memory, record.ptr + offset) else {
+        if new_ptr == record.ptr {
+            // Keep the live prefix in place. Preflight uses bounded bulk
+            // chunks; clearing starts at the logical end, including stale
+            // capacity left by a previous shrink, just as relocation does.
+            let tail_ptr = new_ptr + record.size;
+            if !memory.preflight_writable_range(new_ptr, record.size)
+                || !Self::prepare_native_allocation(
+                    memory,
+                    tail_ptr,
+                    new_aligned - record.size,
+                    true,
+                )
+            {
                 self.set_native_mem_error(Self::PARAM_ERR);
                 return Self::PARAM_ERR;
-            };
-            bytes.push(byte);
-        }
-        if !Self::prepare_native_allocation(memory, new_ptr, new_aligned, true)
-            || bytes.iter().copied().enumerate().any(|(offset, byte)| {
-                PpcMemory::write_u8(memory, new_ptr + offset as u32, byte).is_none()
-            })
-            || (new_ptr != record.ptr && PpcMemory::write_u32_be(memory, handle, new_ptr).is_none())
-        {
-            self.set_native_mem_error(Self::PARAM_ERR);
-            return Self::PARAM_ERR;
+            }
+        } else {
+            let mut bytes = Vec::with_capacity(record.size as usize);
+            for offset in 0..record.size {
+                let Some(byte) = PpcMemory::read_u8(memory, record.ptr + offset) else {
+                    self.set_native_mem_error(Self::PARAM_ERR);
+                    return Self::PARAM_ERR;
+                };
+                bytes.push(byte);
+            }
+            if !Self::prepare_native_allocation(memory, new_ptr, new_aligned, true)
+                || bytes.iter().copied().enumerate().any(|(offset, byte)| {
+                    PpcMemory::write_u8(memory, new_ptr + offset as u32, byte).is_none()
+                })
+                || PpcMemory::write_u32_be(memory, handle, new_ptr).is_none()
+            {
+                self.set_native_mem_error(Self::PARAM_ERR);
+                return Self::PARAM_ERR;
+            }
         }
         let old = record;
         self.ptr_to_handle.remove(&record.ptr);
@@ -12381,6 +12399,50 @@ mod tests {
 
         // The master pointer is recycled by the next NewHandle.
         assert_eq!(manager.new_native_handle(&mut native, 8, false), handle);
+    }
+
+    #[test]
+    fn native_handle_in_place_growth_preserves_locked_prefix_and_clears_shrunk_tail() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let mut native = GuestAddressSpace::new();
+        native.add_region(HEAP_BASE, vec![0xA5; 0x200]);
+        let mut manager = ProcessMemoryManager::default();
+        manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: HEAP_BASE,
+                heap_cursor: HEAP_BASE,
+                heap_limit: HEAP_BASE + 0x200,
+                last_mem_error: 0,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[],
+            &[],
+            &[],
+        );
+        let handle = manager.new_native_handle(&mut native, 16, false);
+        let original = manager.native_allocation(handle).unwrap().ptr;
+        native.write_bytes(original, b"keep me!obsolete").unwrap();
+        manager.set_state_for_handle(handle, 0x80);
+        assert_eq!(
+            manager.set_native_handle_size(&mut native, handle, 8),
+            ProcessMemoryManager::NO_ERR
+        );
+        for size in [20, 36, 52] {
+            assert_eq!(
+                manager.set_native_handle_size(&mut native, handle, size),
+                ProcessMemoryManager::NO_ERR
+            );
+            let record = manager.native_allocation(handle).unwrap();
+            assert_eq!((record.ptr, record.size), (original, size));
+            assert_eq!(native.read_u32_be(handle), Some(original));
+            let mut prefix = [0; 8];
+            native.read_bytes_into(original, &mut prefix).unwrap();
+            assert_eq!(&prefix, b"keep me!");
+            for offset in 8..size {
+                assert_eq!(native.read_u8(original + offset), Some(0));
+            }
+        }
     }
 
     #[test]
