@@ -3023,3 +3023,26 @@ compositions are reviewed and archived losslessly with hashes in
 `popup-title-aligned-review.json`. Titles align before the selection boxes
 while the long selected label retains clipping. These captures do not
 qualify long-title policy, exact CDEF geometry, scales/states or native parity.
+
+### Shared popup selected-label truncation work
+
+The classic and PPC CDEFs now call one shared truncation loop with their
+existing guest measurement adapters. GPUI selected labels use that loop with
+painted guest advances and three periods, replacing hard clipping of the full
+label. Host padding is removed and the guest 15-pixel text inset is used inside
+the allocated content pane. Type-check and capture binary build pass. Boundary
+and guest regressions plus three composed recaptures are still running; exact
+CDEF border/content geometry, scale/state and native fidelity remain open.
+
+All three recaptures complete and full compositions are reviewed: the long
+selected label ends in three guest periods and title alignment is retained.
+Lossless captures with source/fixture/file/pixel hashes are archived in
+`popup-guest-ellipsis-review.json`. The regression build remains live; these
+images do not qualify exact geometry, other scales/states or native parity.
+
+The shared boundary regression passes (0.02 seconds), covering suffix-only,
+insufficient-space, exact-fit and accented character boundaries. PPC
+fixed-width truncation passes (0.02 seconds), as does the classic CDEF
+text/arrow clipping regression (0.08 seconds). Capture/source hashes
+revalidate. This closes the running-build checkpoint; exact control geometry,
+other scales/states and native parity remain unqualified.

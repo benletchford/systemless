@@ -1784,7 +1784,6 @@ mod desktop {
                                                 .min_w(guest_px(1.))
                                                 .overflow_hidden()
                                                 .h_full()
-                                                .px_1()
                                                 .child(super::text::classic_popup_control_label(
                                                     selected, popup_font, false, scene_scale,
                                                     if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })),

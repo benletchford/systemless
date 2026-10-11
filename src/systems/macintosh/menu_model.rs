@@ -297,3 +297,6 @@ pub fn standard_scroll_indicator_pixels(up: bool) -> Vec<(i16, i16)> {
     }
     pixels
 }
+
+/// Shared CDEF popup text truncation for frontend guest-glyph painters.
+pub use crate::control_manager::popup_display_text;

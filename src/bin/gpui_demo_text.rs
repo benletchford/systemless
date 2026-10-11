@@ -489,11 +489,34 @@ pub(crate) fn classic_menu_symbol(
 }
 
 pub(crate) fn classic_popup_control_label(
-    label: &str, font: systemless::menu_model::GuestMenuFont, title: bool,
+    label: &str, guest_font: systemless::menu_model::GuestMenuFont, title: bool,
     scale: f32, foreground: gpui_kit::Hsla,
 ) -> impl gpui_kit::IntoElement {
-    classic_label_canvas_with_font(ClassicLine::unicode(label, font.family, font.point_size()),
-        false, scale, foreground, (font.family, font.point_size()), title.then_some(6))
+    use gpui_kit::{prelude::*, *};
+    let label = label.to_owned();
+    let metrics = systemless::quickdraw::text::get_font_metrics(guest_font.family, guest_font.point_size());
+    canvas(move |bounds, _, _| bounds, move |_, bounds, window, _| {
+        let width = (f32::from(bounds.size.width) / scale).round() as i32;
+        let height = (f32::from(bounds.size.height) / scale).round() as i32;
+        let display = if title { label.clone() } else {
+            let chars: Vec<_> = label.chars().collect();
+            systemless::menu_model::popup_display_text(&chars, &['.', '.', '.'],
+                (width - 15).clamp(0, i32::from(i16::MAX)) as i16, |chars| {
+                    let text: String = chars.iter().collect();
+                    ClassicLine::unicode(&text, guest_font.family, guest_font.point_size())
+                        .positions.last().copied().unwrap_or(0).clamp(0, i32::from(i16::MAX)) as i16
+                }).into_iter().collect()
+        };
+        let line = ClassicLine::unicode(&display, guest_font.family, guest_font.point_size());
+        let x = if title { (width - 6 - line.positions.last().copied().unwrap_or(0)).max(0) } else { 15 };
+        let baseline = (height - i32::from(metrics.ascent) - i32::from(metrics.descent)) / 2 + i32::from(metrics.ascent);
+        for &(ink_x, ink_y, ink_width) in &line.ink {
+            window.paint_quad(fill(Bounds::new(
+                point(bounds.left() + px((x + ink_x) as f32 * scale),
+                    bounds.top() + px((baseline + ink_y) as f32 * scale)),
+                size(px(ink_width as f32 * scale), px(scale))), foreground));
+        }
+    }).size_full()
 }
 
 fn classic_label_canvas(
