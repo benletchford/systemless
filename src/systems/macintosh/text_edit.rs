@@ -490,11 +490,26 @@ mod tests {
         layout.selection = (2, 2);
         layout.clips_line_offsets_to_visible_text = true;
         assert_eq!(layout.caret_line(), Some((0, 1)), "styled native wrap caret trims CR");
+        assert_eq!(layout.guest_styled_caret_rect(0, 4), Some(Some((10, 199, 24, 200))),
+            "PPC caret trims CR and retains its native one-pixel width");
+        assert_eq!(layout.guest_styled_caret_rect(1, 4), Some(None), "one line owns the caret");
         layout.line_layout_policy = super::TextEditLineLayoutPolicy::CumulativeGuestMetrics;
         layout.line_metrics = Some(vec![(14, 11), (18, 13)]);
         layout.clips_line_offsets_to_visible_text = false;
         layout.view_rect.0 = 25;
         assert_eq!(layout.caret_line(), Some((1, 0)), "styled classic caret follows visible cumulative lines");
+        let left = layout.guest_styled_line_geometry(1).unwrap().0.left;
+        assert_eq!(layout.guest_styled_caret_rect(1, 3), Some(Some((25, left, 42, left + 3))),
+            "classic caret keeps the supplied width and clips a partial line");
+        layout.caret_visible = false;
+        assert_eq!(layout.guest_styled_caret_rect(1, 3), Some(None));
+        layout.caret_visible = true;
+        layout.active = false;
+        assert_eq!(layout.guest_styled_caret_rect(1, 3), Some(None));
+        layout.active = true;
+        layout.selection = (2, 3);
+        assert_eq!(layout.guest_styled_caret_rect(1, 3), Some(None));
+        layout.selection = (2, 2);
         assert_eq!(layout.line_geometry(2, 80), None);
         let mut scrolled = layout.clone();
         scrolled.styled = false;
@@ -794,6 +809,29 @@ impl TextEditSnapshot {
         }
         let rect = (top.max(self.view_rect.0), left.max(self.view_rect.1),
             top.saturating_add(geometry.height).min(self.view_rect.2), right.min(self.view_rect.3));
+        Some((rect.0 < rect.2 && rect.1 < rect.3).then_some(rect))
+    }
+
+    /// Visible caret geometry for the guest-owned line and blink phase.
+    /// Classic uses its theme caret width; PPC's native painter uses one pixel.
+    /// Ink/pen patterns and any guest pixels outside viewRect remain separate.
+    pub fn guest_styled_caret_rect(
+        &self, index: usize, classic_width: i16,
+    ) -> Option<Option<(i16, i16, i16, i16)>> {
+        let (geometry, _) = self.guest_styled_line_geometry(index)?;
+        let Some((owner, offset)) = self.caret_line() else { return Some(None); };
+        if owner != index { return Some(None); }
+        let start = *self.line_starts.as_ref()?.get(index)?;
+        let width = self.guest_styled_range_width(start..start.checked_add(offset)?)?;
+        let mut left = geometry.left.checked_add(width)?;
+        if offset > 0 { left = left.saturating_sub(1); }
+        let caret_width = match self.line_layout_policy {
+            TextEditLineLayoutPolicy::CumulativeGuestMetrics => classic_width.max(1),
+            TextEditLineLayoutPolicy::PpcRunMetrics => 1,
+        };
+        let rect = (geometry.top.max(self.view_rect.0), left.max(self.view_rect.1),
+            geometry.top.saturating_add(geometry.height).min(self.view_rect.2),
+            left.saturating_add(caret_width).min(self.view_rect.3));
         Some((rect.0 < rect.2 && rect.1 < rect.3).then_some(rect))
     }
 
