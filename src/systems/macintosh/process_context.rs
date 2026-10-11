@@ -1842,6 +1842,10 @@ impl SharedProcessNotificationQueue {
     pub(crate) fn instance_id(&self, request: u32) -> Option<u64> {
         self.0.with_ref(|queue| queue.instances.get(&request).copied())
     }
+    pub(crate) fn response_started(&self, request: u32, instance: u64) -> bool {
+        self.0.with_ref(|queue| queue.instances.get(&request) == Some(&instance)
+            && queue.completed_responses.contains(&instance))
+    }
     pub(crate) fn begin_response(&self, request: u32, instance: u64) -> bool {
         self.0.with_mut(|queue| {
             queue.instances.get(&request) == Some(&instance)

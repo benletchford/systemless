@@ -2273,15 +2273,16 @@ impl FixtureRunner {
 
     pub fn notification_snapshot(&mut self) -> Vec<NotificationSnapshot> {
         let requests = self.dispatcher.notification_requests.iter().filter_map(|&request| {
-            self.dispatcher.notification_requests.instance_id(request).map(|instance| (request, instance))
+            self.dispatcher.notification_requests.instance_id(request).map(|instance|
+                (request, instance, self.dispatcher.notification_requests.response_started(request, instance)))
         }).collect::<Vec<_>>();
         if let Some(app) = self.native.application_mut() {
-            requests.into_iter().filter_map(|(request, instance)| {
-                notification::snapshot_request(request, instance, |address| app.memory.read_u8(address))
+            requests.into_iter().filter_map(|(request, instance, started)| {
+                notification::snapshot_request(request, instance, started, |address| app.memory.read_u8(address))
             }).collect()
         } else {
-            requests.into_iter().filter_map(|(request, instance)| {
-                notification::snapshot_request(request, instance, |address| {
+            requests.into_iter().filter_map(|(request, instance, started)| {
+                notification::snapshot_request(request, instance, started, |address| {
                     (self.bus.translate_guest_address(address) < self.bus.ram_size())
                         .then(|| self.bus.read_byte(address))
                 })

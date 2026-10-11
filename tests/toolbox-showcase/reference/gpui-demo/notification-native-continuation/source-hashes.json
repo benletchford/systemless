@@ -1,0 +1,10 @@
+{
+  "src/systems/macintosh/loader/ppc/loaded_app.rs": "593b9770d1e956dde6d96f24d519d2d3d55929a6bb694eff186450779f2bbdec",
+  "src/systems/macintosh/loader/ppc/loaded_app_callbacks.rs": "fb5beafe8eae9534814e3c3b40244b57a98ae90d7f69beebec9ea6ea5940483a",
+  "src/systems/macintosh/loader/ppc/pef_loader.rs": "8980436441b9e0719fca8e469c45d45bde612b5afd86cbaec6ea5682bcb7135f",
+  "src/systems/macintosh/loader/ppc/tests/file_manager.rs": "6b88ae58f1d1ee80e70b1b84d179bfe23f0501eae8ab6974faf9a9cf0e515295",
+  "src/systems/macintosh/process_context.rs": "93b5407949b146200c85df49fd7fd1a10c2213bd84298ba8fa0f6bb10f901cf7",
+  "src/systems/macintosh/runner/mod.rs": "b6fcf4565f26661bfcb6c852c1a39a91dd2a9f7eec3ce2d5cf388956fe94c41d",
+  "src/systems/macintosh/runner/notification.rs": "1e570b39fa13aeaee71f9113835603c6a64febaf1fd13f460d3005ccbe1ad691",
+  "src/systems/macintosh/runner/tests/trap_dispatch.rs": "7e18f6487bebbcd8ad79c71edf7ed743db6c906837cf2183e51efae5bd577ef6"
+}

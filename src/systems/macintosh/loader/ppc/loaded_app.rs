@@ -34,6 +34,7 @@ pub struct PpcLoadedApp {
     /// A callback that exhausted its current runner slice, in queue-front
     /// order, with the stack pointer of its private callback frame.
     pub(crate) file_completion_context: Option<(PpcExecutionContext, u32)>,
+    pub(crate) notification_response_context: Option<(u32, u64, u32, PpcExecutionContext, u32)>,
     /// A callback the runner entered asynchronously (an interrupt-level task
     /// or completion, or a Carbon event-loop timer) that is waiting on a 68K
     /// Mixed Mode call. It keeps the native CPU until it returns; what it
