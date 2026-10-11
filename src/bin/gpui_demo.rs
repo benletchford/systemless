@@ -1220,6 +1220,24 @@ mod desktop {
 
         fn map_text_pointer(&mut self, position: Point<Pixels>, begin: bool) -> (i16, i16) {
             let point = self.pointer(position);
+            // Standard aligned TextEdit painting trims trailing spaces; guest
+            // TEClick measures its complete line. Translate origins only, keeping
+            // the guest's own byte lookup, tracking and selection authoritative.
+            let viewport = super::frames::Rect::from((0, 0,
+                self.height.min(i16::MAX as u32) as i16, self.width.min(i16::MAX as u32) as i16));
+            for piece in super::frames::text_edit_pieces(&self.text_edits, &self.dialogs, &self.controls, &self.windows, viewport) {
+                let record = &self.text_edits[piece.record];
+                let inside = i32::from(point.0) >= piece.clip.top && i32::from(point.0) < piece.clip.bottom
+                    && i32::from(point.1) >= piece.clip.left && i32::from(point.1) < piece.clip.right;
+                let identity = (record.guest_id, record.generation);
+                let owns_pointer = if begin { inside } else {
+                    self.text_pointer_capture.map_or(inside, |captured| captured == identity)
+                };
+                if !record.styled && matches!(record.justification, -1 | 1) && owns_pointer {
+                    if begin { self.text_pointer_capture = Some(identity); }
+                    if let Some(mapped) = composition::aligned_plain_guest_point(record, point) { return mapped; }
+                }
+            }
             let map = self.text_pointer_map.borrow();
             let Some(map) = map.as_ref() else { return point; };
             let Some(panel) = self.standard_file.as_ref() else { return point; };
@@ -11409,57 +11427,122 @@ mod desktop {
             use gpui_kit::{AppContext, EntityInputHandler, Bounds, point, px};
             cx.update(gpui_kit::init);
             for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
-                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
-                session.runner_mut().set_prefer_powerpc_executables(powerpc);
-                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
-                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
-                session.initialize(&app);
-                wait_for_menu(&mut session, 129, 1, true);
-                assert!(session.runner_mut().select_guest_menu_item(129, 7));
-                wait_for_menu(&mut session, 129, 7, true);
-                settle(&mut session);
-                let initial = session.runner_mut().text_edit_snapshot().records.into_iter()
-                    .find(|record| !record.styled && record.global_view_rect.is_some()).unwrap();
-                let rect = initial.global_view_rect.unwrap();
-                for input in [MacintoshInput::MouseDown { vertical: rect.0 + 4, horizontal: rect.1 + 4 },
-                    MacintoshInput::MouseUp { vertical: rect.0 + 4, horizontal: rect.1 + 4 }] {
-                    session.deliver_input(input); settle(&mut session);
-                }
-                let records = session.runner_mut().text_edit_snapshot().records;
-                let before = records.iter().find(|record| record.guest_id == initial.guest_id).unwrap().clone();
-                assert!(before.active && before.drawing_intact);
-                let original = before.clone();
-                let (sender, _receiver) = std::sync::mpsc::channel();
-                let (window, view) = cx.update(|cx| gpui_kit::open_window(Default::default(), cx,
-                    |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap());
-                cx.update_window(window.into(), |_, window, cx| {
-                    view.update(cx, |demo, cx| {
-                        demo.width = 800; demo.height = 600;
-                        demo.text_edits = records;
-                        demo.windows = session.runner_mut().window_frame_snapshot();
-                        demo.host_active = Some(true);
-                        window.focus(&demo.focus, cx);
-                        demo.synchronize_composition(window, cx);
-                        assert!(demo.composition.owner().is_some());
-                        let geometry = super::composition::text_line_geometry(&before, 0).unwrap();
-                        let start = before.line_starts.as_ref().unwrap()[0];
-                        let offset = start + 1;
-                        let dest = before.global_dest_rect.unwrap();
-                        let x = i32::from(dest.1) - i32::from(before.dest_rect.1) + i32::from(geometry.left)
-                            + i32::from(super::composition::text_range_width(&before, start..offset).unwrap());
-                        let y = i32::from(dest.0) - i32::from(before.dest_rect.0) + i32::from(geometry.top);
-                        for scale in [0.75, 1., 1.5, 2.] {
-                            demo.display_origin = (37., 29.); demo.display_scale = scale;
-                            let bounds = demo.bounds_for_range(offset..offset, Bounds::default(), window, cx).unwrap();
-                            assert_eq!(f32::from(bounds.origin.x), 37. + x as f32 * scale);
-                            assert_eq!(demo.character_index_for_point(point(px(37. + x as f32 * scale), px(29. + (y as f32 + 1.) * scale)), window, cx), Some(offset));
+                for justification in [0, 1, -1] {
+                    let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
+                    session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                    if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                    let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                    session.initialize(&app);
+                    wait_for_menu(&mut session, 129, 1, true);
+                    assert!(session.runner_mut().select_guest_menu_item(129, 7));
+                    wait_for_menu(&mut session, 129, 7, true);
+                    settle(&mut session);
+                    let initial = session.runner_mut().text_edit_snapshot().records.into_iter()
+                        .find(|record| !record.styled && record.global_view_rect.is_some()).unwrap();
+                    let rect = initial.global_view_rect.unwrap();
+                    for input in [MacintoshInput::MouseDown { vertical: rect.0 + 4, horizontal: rect.1 + 4 },
+                        MacintoshInput::MouseUp { vertical: rect.0 + 4, horizontal: rect.1 + 4 }] {
+                        session.deliver_input(input); settle(&mut session);
+                    }
+                    if justification != 0 {
+                        let title = if justification == 1 { "Center" } else { "Right" };
+                        let control = session.runner_mut().control_snapshot().into_iter()
+                            .find(|control| control.title == title && control.visible).unwrap();
+                        let mut activation = Some(super::super::activation::ControlActivation::begin(
+                            &mut session, control.guest_id, control.generation).unwrap());
+                        for _ in 0..20 {
+                            settle(&mut session);
+                            activation = activation.and_then(|click| click.advance(&mut session));
+                            if activation.is_none() { break; }
                         }
-                        assert_eq!(demo.text_edits.iter().find(|record| record.guest_id == original.guest_id).unwrap(), &original);
-                    });
-                }).unwrap();
-                eprintln!("PASS plain-guest-text-geometry powerpc={powerpc} depth={depth}");
-                cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
+                        assert!(activation.is_none());
+                        settle(&mut session);
+                    }
+                    let records = session.runner_mut().text_edit_snapshot().records;
+                    let before = records.iter().find(|record| record.guest_id == initial.guest_id).unwrap().clone();
+                    assert!(before.active && before.drawing_intact);
+                    assert_eq!(before.justification, justification);
+                    let pieces = super::super::frames::text_edit_pieces(&records, &[], &[],
+                        &session.runner_mut().window_frame_snapshot(), super::super::frames::Rect::from((0, 0, 600, 800)));
+                    assert!(pieces.iter().any(|piece| records[piece.record].guest_id == before.guest_id));
+                    let original = before.clone();
+                    let (sender, _receiver) = std::sync::mpsc::channel();
+                    let (window, view) = cx.update(|cx| gpui_kit::open_window(Default::default(), cx,
+                        |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap());
+                    cx.update_window(window.into(), |_, window, cx| {
+                        view.update(cx, |demo, cx| {
+                            demo.width = 800; demo.height = 600;
+                            demo.text_edits = records;
+                            demo.windows = session.runner_mut().window_frame_snapshot();
+                            demo.host_active = Some(true);
+                            window.focus(&demo.focus, cx);
+                            demo.synchronize_composition(window, cx);
+                            assert!(demo.composition.owner().is_some());
+                            let geometry = super::composition::text_line_geometry(&before, 0).unwrap();
+                            let start = before.line_starts.as_ref().unwrap()[0];
+                            let offset = start + 1;
+                            let dest = before.global_dest_rect.unwrap();
+                            let x = i32::from(dest.1) - i32::from(before.dest_rect.1) + i32::from(geometry.left)
+                                + i32::from(super::composition::text_range_width(&before, start..offset).unwrap());
+                            let y = i32::from(dest.0) - i32::from(before.dest_rect.0) + i32::from(geometry.top);
+                            for scale in [0.75, 1., 1.5, 2.] {
+                                demo.display_origin = (37., 29.); demo.display_scale = scale;
+                                let bounds = demo.bounds_for_range(offset..offset, Bounds::default(), window, cx).unwrap();
+                                assert_eq!(f32::from(bounds.origin.x), 37. + x as f32 * scale);
+                                assert_eq!(demo.character_index_for_point(point(px(37. + x as f32 * scale), px(29. + (y as f32 + 1.) * scale)), window, cx), Some(offset));
+                                let host = point(px(37. + x as f32 * scale), px(29. + (y as f32 + 1.) * scale));
+                                let visual = demo.pointer(host);
+                                let expected = super::composition::aligned_plain_guest_point(&before, visual).unwrap_or(visual);
+                                assert_eq!(demo.text_pointer(host, true), expected);
+                                if justification != 0 {
+                                    assert_eq!(demo.text_pointer_capture, Some((before.guest_id, before.generation)));
+                                    let outside = point(px(37. + (x as f32 + 350.) * scale), host.y);
+                                    let visual = demo.pointer(outside);
+                                    assert_eq!(demo.text_pointer(outside, false),
+                                        super::composition::aligned_plain_guest_point(&before, visual).unwrap_or(visual));
+                                    demo.text_pointer_capture = Some((before.guest_id, before.generation + 1));
+                                    assert_eq!(demo.text_pointer(host, false), demo.pointer(host), "stale capture must not retarget the field");
+                                }
+                                demo.text_pointer_capture = None;
+                            }
+                            assert_eq!(demo.text_edits.iter().find(|record| record.guest_id == original.guest_id).unwrap(), &original);
+                        });
+                    }).unwrap();
+                    // Keep the probe separate from the focus click: PPC's
+                    // legitimate double-click path otherwise selects a word.
+                    let click_tick = session.runner().guest_tick();
+                    assert!((0..300).any(|_| {
+                        session.runner_mut().run_steps(100_000, None);
+                        session.runner().guest_tick().wrapping_sub(click_tick) > 60
+                    }));
+                    let geometry = super::composition::text_line_geometry(&before, 0).unwrap();
+                    let dest = before.global_dest_rect.unwrap();
+                    let width = super::composition::text_range_width(&before, 0..1).unwrap();
+                    let visual_x = dest.1 - before.dest_rect.1 + geometry.left + width;
+                    let visual_y = dest.0 - before.dest_rect.0 + geometry.top + geometry.ascent;
+                    let (y, x) = super::composition::aligned_plain_guest_point(&before, (visual_y, visual_x))
+                        .unwrap_or((visual_y, visual_x));
+                    for input in [MacintoshInput::MouseDown { vertical: y, horizontal: x },
+                        MacintoshInput::MouseUp { vertical: y, horizontal: x }] {
+                        session.deliver_input(input); settle(&mut session);
+                    }
+                    let clicked = session.runner_mut().text_edit_snapshot().records.into_iter()
+                        .find(|record| record.guest_id == before.guest_id).unwrap();
+                    assert_eq!(clicked.selection, (1, 1), "PPC={powerpc} depth={depth} just={justification} point=({y},{x}) font={:?} text={:?} geometry={geometry:?} paint={:?}",
+                        (before.font, before.size), &before.text[..before.text.len().min(20)], before.paint);
+                    session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x06, character: b'Z' });
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x06, character: b'Z' });
+                    settle(&mut session);
+                    let edited = session.runner_mut().text_edit_snapshot().records.into_iter()
+                        .find(|record| record.guest_id == before.guest_id).unwrap();
+                    let mut expected = before.text.clone(); expected.insert(1, b'Z');
+                    assert_eq!(edited.text, expected);
+                    assert_eq!(edited.selection, (2, 2));
+                    assert_eq!(edited.justification, justification);
+                    eprintln!("PASS plain-guest-text-geometry-and-edit powerpc={powerpc} depth={depth} justification={justification}");
+                    cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
+                }
             }
         }
 

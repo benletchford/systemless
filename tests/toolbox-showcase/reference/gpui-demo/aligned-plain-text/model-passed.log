@@ -1,0 +1,147 @@
+warning: method `instrument` is never used
+   --> src/systems/macintosh/sound.rs:609:19
+    |
+403 | impl SndChannel {
+    | --------------- method in this implementation
+...
+609 |     pub(crate) fn instrument(&self) -> Option<&SampledInstrument> {
+    |                   ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `dispatch_toolbox` is never used
+    --> src/systems/macintosh/trap/toolbox.rs:6210:19
+     |
+1169 | impl super::TrapDispatcher {
+     | -------------------------- method in this implementation
+...
+6210 |     pub(crate) fn dispatch_toolbox<C: CpuOps>(
+     |                   ^^^^^^^^^^^^^^^^
+
+warning: `systemless` (lib) generated 2 warnings
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+warning: unused variable: `slot`
+   --> src/bin/desktop/../gpui_demo_composition.rs:413:23
+    |
+413 |         active: bool, slot: usize, top_override: Option<f32>, cx: &Context<Self>) -> Option<AnyElement> {
+    |                       ^^^^ help: if this is intentional, prefix it with an underscore: `_slot`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `window`
+    --> src/bin/gpui_demo.rs:5094:53
+     |
+5094 |             visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+     |                                                     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_window`
+
+warning: unused variable: `cx`
+     --> src/bin/gpui_demo.rs:11954:65
+      |
+11954 |                     cx.update_window(window.into(), |_, window, cx| window.remove_window()).unwrap();
+      |                                                                 ^^ help: if this is intentional, prefix it with an underscore: `_cx`
+
+warning: fields `game`, `prefer_powerpc`, `screen_depth`, and `debug_socket` are never read
+  --> src/bin/gpui_demo.rs:4:9
+   |
+ 3 | pub(crate) struct LaunchOptions {
+   |                   ------------- fields in this struct
+ 4 |     pub game: std::path::PathBuf,
+   |         ^^^^
+ 5 |     pub prefer_powerpc: bool,
+   |         ^^^^^^^^^^^^^^
+ 6 |     pub screen_depth: Option<u16>,
+   |         ^^^^^^^^^^^^
+...
+12 |     pub debug_socket: Option<std::path::PathBuf>,
+   |         ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `launch` is never used
+  --> src/bin/gpui_demo.rs:17:15
+   |
+17 | pub(crate) fn launch(options: LaunchOptions) {
+   |               ^^^^^^
+
+warning: field `geometry` is never read
+    --> src/bin/gpui_demo_text.rs:1473:9
+     |
+1472 | pub(crate) struct StyledTextEditLine {
+     |                   ------------------ field in this struct
+1473 |     pub geometry: systemless::runner::TextEditLineGeometry,
+     |         ^^^^^^^^
+     |
+     = note: `StyledTextEditLine` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `pixels_with_selection` is never used
+    --> src/bin/gpui_demo_text.rs:1861:12
+     |
+1827 | impl StyledTextEditLine {
+     | ----------------------- method in this implementation
+...
+1861 |     pub fn pixels_with_selection(
+     |            ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_ink` is never used
+    --> src/bin/gpui_demo_text.rs:1924:15
+     |
+1924 | pub(crate) fn classic_styled_text_edit_ink(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_selection` is never used
+    --> src/bin/gpui_demo_text.rs:1930:15
+     |
+1930 | pub(crate) fn classic_styled_text_edit_selection(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_solid_caret` is never used
+    --> src/bin/gpui_demo_text.rs:1939:15
+     |
+1939 | pub(crate) fn classic_styled_text_edit_solid_caret(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_pixels` is never used
+    --> src/bin/gpui_demo_text.rs:1957:4
+     |
+1957 | fn classic_styled_text_pixels(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_pixels_with_background` is never used
+    --> src/bin/gpui_demo_text.rs:1964:4
+     |
+1964 | fn classic_styled_text_pixels_with_background(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_button_label` is never used
+    --> src/bin/gpui_demo_text.rs:2054:15
+     |
+2054 | pub(crate) fn classic_button_label(
+     |               ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_choice_label` is never used
+    --> src/bin/gpui_demo_text.rs:2062:15
+     |
+2062 | pub(crate) fn classic_choice_label(
+     |               ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_control_label` is never used
+    --> src/bin/gpui_demo_text.rs:2070:4
+     |
+2070 | fn classic_control_label(
+     |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `launch` is never used
+    --> src/bin/gpui_demo.rs:5825:19
+     |
+5825 |     pub(super) fn launch(options: super::LaunchOptions) {
+     |                   ^^^^^^
+
+warning: `systemless` (example "gpui-menu-demo" test) generated 16 warnings (run `cargo fix --example "gpui-menu-demo" -p systemless --tests` to apply 3 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.07s
+     Running unittests src/bin/gpui_demo.rs (target/debug/examples/gpui_menu_demo-86e8ad501bd72ccf)
+
+running 1 test
+test frames::tests::text_edit_clips_to_owner_and_front_window_with_custom_fallback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 190 filtered out; finished in 0.04s
+

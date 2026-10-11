@@ -20,6 +20,27 @@ pub(super) fn text_line_geometry(record: &systemless::runner::TextEditSnapshot, 
     record.line_geometry(index, text_range_width(record, start..end)?)
 }
 
+pub(super) fn aligned_plain_guest_point(record: &systemless::runner::TextEditSnapshot,
+    point: (i16, i16)) -> Option<(i16, i16)> {
+    if record.styled || !matches!(record.justification, -1 | 1) { return None; }
+    let dest = record.global_dest_rect?;
+    let dy = i32::from(dest.0) - i32::from(record.dest_rect.0);
+    for (index, span) in record.line_starts.as_ref()?.windows(2).enumerate() {
+        let geometry = text_line_geometry(record, index)?;
+        let top = dy + i32::from(geometry.top);
+        if i32::from(point.0) < top || i32::from(point.0) >= top + i32::from(geometry.height) { continue; }
+        let bytes = record.text.get(span[0]..span[1])?.iter().copied()
+            .filter(|byte| !matches!(byte, b'\r' | b'\n')).collect::<Vec<_>>();
+        let width = *super::super::text::ClassicLine::plain(&bytes, record.font, record.size).positions.last()?;
+        let classic = record.line_layout_policy == systemless::runner::TextEditLineLayoutPolicy::CumulativeGuestMetrics;
+        let remaining = i32::from(record.dest_rect.3) - i32::from(record.dest_rect.1) - width - i32::from(classic);
+        let guest_left = i32::from(record.dest_rect.1) + if record.justification == 1 { remaining / 2 } else { remaining };
+        let mapped = i32::from(point.1) + guest_left - i32::from(geometry.left);
+        return Some((point.0, i16::try_from(mapped).ok()?));
+    }
+    None
+}
+
 pub(super) fn accessible_line_geometry(record: &systemless::runner::TextEditSnapshot,
     clip: super::super::frames::Rect, scale: f32) -> Vec<Option<super::super::a11y::TextRunGeometry>> {
     let Some(starts) = record.line_starts.as_ref() else { return Vec::new(); };
