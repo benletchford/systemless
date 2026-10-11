@@ -5848,3 +5848,17 @@ accented bytes, CR breaks, clipping eligibility and message/button separation.
 Evidence: `reference/gpui-demo/notification-alert-layout`. Actual shared Demo paint,
 modal input, standard icon/frame fidelity, CPU/scale captures and native alert
 comparison remain unfinished. No production gate closes.
+
+### Shared Demo notification alert paint scaffolding (2026-10-11)
+
+Explicitly owned notification alerts now reach the same Demo rendering tree used
+by live windows and headless captures. The system-owned AlertPlan provides
+message/button geometry; message painting uses raw Macintosh Roman and original
+system-font advances with the existing smooth-source/strike fallback. The shell
+uses existing themed frame/button components. Capture-feature compilation passes
+(4.70s), archived in `reference/gpui-demo/notification-alert-paint`.
+This is paint source/compile evidence only: no automatic acquisition is enabled,
+the acknowledgment button remains disabled pending modal input integration,
+and no reviewed composed image, CPU/scale interaction or native icon/frame
+reference qualification is claimed. Ordered delivery stages and complete
+Notification Manager behavior remain open; no production gate closes.
