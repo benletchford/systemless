@@ -1400,6 +1400,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::InsertResMenu
         | PpcImportDispatcherTarget::EnableMenuItem
         | PpcImportDispatcherTarget::DisableMenuItem
+        | PpcImportDispatcherTarget::IsMenuItemEnabled
         | PpcImportDispatcherTarget::SetItemMark
         | PpcImportDispatcherTarget::CheckItem
         | PpcImportDispatcherTarget::GetMenuBar

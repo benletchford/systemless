@@ -253,6 +253,7 @@ mod draw_sprocket;
 mod input_sprocket;
 mod qd3d;
 mod menu_manager;
+mod menu_item_enabled;
 pub(crate) use menu_manager::*;
 mod window_manager;
 mod mixed_mode;
