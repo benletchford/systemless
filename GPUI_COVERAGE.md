@@ -12,7 +12,35 @@ row.
 
 The guest remains authoritative for state, hit regions, event order, and
 callbacks. Unknown or application-defined definitions retain guest pixels.
-The opt-in implementation is staged in a draft PR and must not be merged.
+The implementation is staged in a draft PR and must not be merged or released
+until explicitly authorized.
+
+GPUI is now the default and sole desktop presentation frontend on this branch.
+Release readiness is the completion gate, not a feature flag. Superseded winit,
+software-buffer, Metal, D3D and native-menu presentation paths are removed.
+Headless execution and guest Toolbox/CPU services remain authoritative. Native
+guest identity and Dock icons remain host services connected to GPUI. Other
+host platforms currently retain headless execution only; GPUI presentation is
+macOS-only and cross-platform production readiness is not claimed.
+
+The text gate covers every recognized standard menu, window title, button,
+dialog, list, Standard File panel and TextEdit field in monochrome 68k, colour
+68k and PPC. GPUI must preserve guest text, font/style intent, bounds, wrapping,
+alignment, clipping, selection, caret, scrolling and editing. Displayed glyphs
+and guest hit testing must agree across scales and active/inactive states in
+the shared live/headless compositor. Extend Systemless components when GPUI Kit
+cannot express these requirements. Modern host typography is not evidence of
+classic Macintosh font fidelity: changed metrics require an explicit policy
+and layout/interaction qualification. Application-drawn text retains guest
+rendering until its ownership and faithful replacement are established.
+
+Current typography does not pass that gate: several standard surfaces use
+fixed host sizes and inherited GPUI theme fonts; document TextEdit clamps its
+guest size to 9..18 points. The painted-glyph input map currently covers New
+Folder only. Guest-owned line boundaries alone do not establish metric fidelity,
+and tests for that field cannot qualify menus, titles, other editable fields or
+styled/multiline TextEdit. These are explicit migration gaps requiring font
+selection/metrics policy, broader shared text layout and interaction evidence.
 
 On macOS with a working GPUI graphics context, reproduce the popup capture
 matrix with `sh .github/scripts/capture-gpui-popups.sh output/gpui-popups`. It runs
@@ -2157,8 +2185,40 @@ regression passes: both attached CPU adapters see the replacement, old formats
 are cleared, and conversion is requested on the next resume only. This is
 shared-state evidence, not end-to-end native clipboard qualification.
 
-The GPUI host bridge remains unfinished. Continue with host text conversion,
-change detection that preserves newer guest scrap, import-before-resume ordering,
-and guest-to-host export after guest suspend handling. Define behavior for
-unrepresentable Unicode and non-text clipboard formats, and verify actual guest
-conversion on both CPUs. No host clipboard reads or writes are wired yet.
+The GPUI text-import bridge now reads actual string clipboard entries on initial
+active presentation and host-window resume. It uses the shared Macintosh Roman
+encoder, normalizes LF/CRLF to CR, and queues import before the foreground
+request. Unchanged host text leaves newer guest scrap intact. Unrepresentable
+Unicode rejects the entire import; non-text contents leave guest scrap intact.
+Empty string entries import empty TEXT. File paths are not synthesized as text.
+
+The two conversion/change-detection policy tests and real showcase
+resume/private-scrap conversion regression pass (three tests, 30.08s). The
+showcase test runs monochrome 68k, colour 68k and PPC, observes changed and
+unchanged resume message bits, and preserves document text/selection. The
+platform-observer ordering regression also passes within the full installed
+binary suite (113 tests, zero failures, 368.42s). Guest-to-host export after guest suspend handling remains
+unfinished. Native clipboard integration, non-text format transport and native
+oracle clipboard lifecycle qualification remain open; this does not qualify
+the complete clipboard bridge or overall GPUI readiness.
+
+### GPUI-only default migration
+
+The installed `systemless` binary now launches the same GPUI frontend used by
+the example/capture harness. CLI address mode, executable preference, guest
+theme, arrow-to-keypad input, explicit fullscreen, initial physical display
+scale, preference reset and save storage remain connected. Guest identity and
+Dock artwork are retained independently of presentation. The removed legacy
+window/menu/presenter and alternate-owner modules are not fallback choices.
+A bounded CPU-frame helper now serves live GPUI execution and the existing
+headless modal-scheduling regression. This is not complete live/headless
+scheduler equivalence or game-performance qualification.
+
+The default binary type-check, macOS no-default-features library check and
+WebAssembly no-default-features library check pass. All 113 installed-binary
+tests pass (368.42s), including platform activation/clipboard ordering and the
+headless modal-scheduling regression. Offline packaging and verification of
+the default packaged binary pass; its transparent logo is now a packaged
+runtime asset, byte-identical to the website SVG. Post-migration physical
+host/window, composed captures and real-game qualification remain pending. Windows/Linux desktop presentation remains unsupported; headless
+buildability alone is not cross-platform production readiness.

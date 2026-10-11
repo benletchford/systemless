@@ -1,9 +1,9 @@
 # GPUI Kit menu, window-frame, and alert demo
 
-This prototype presents a running Macintosh application's menu bar and standard window frames using
-[GPUI Kit 0.7.1](https://gpui-kit.com/). It is a separate experimental runner;
-the usual `systemless` runner remains independent of GPUI. The shared PowerPC
-scrollbar hit region was corrected to match its existing painted thumb.
+GPUI Kit is now the default desktop presentation path on this branch. The
+`gpui-menu-demo` example remains a capture and interaction harness for the same
+frontend. The former desktop presenters are removed; release qualification is
+still incomplete and recorded in [GPUI_COVERAGE.md](GPUI_COVERAGE.md).
 
 Frames use GPUI elements and GPUI Kit theme colours over the guest's existing
 frame rectangles. Standard document windows receive thin themed separators
@@ -19,15 +19,15 @@ geometry and behaviour remain guest-owned.
 From a checkout of [systemless](https://github.com/benletchford/systemless):
 
 ```sh
-cargo run --release --no-default-features --features gpui-demo --example gpui-menu-demo -- tests/toolbox-showcase/toolbox-showcase.sit
+cargo run --release -- tests/toolbox-showcase/toolbox-showcase.sit
 ```
 
-Add `--prefer-powerpc` before the archive path to run the PPC slice, or
+PowerPC is preferred by default for fat archives; add `--prefer-68k` for 68k, or
 `--screen-depth 1` to try monochrome 68k presentation. Other supported game
 archives can replace the showcase path. The release build is important for
 guest execution speed; the default development build runs the emulator much
-more slowly. The demo opens in a normal window, which can be enlarged or put
-into macOS fullscreen manually.
+more slowly. The frontend opens in a normal window; `--fullscreen` explicitly requests
+fullscreen startup.
 
 Open **Pages → Controls** and reopen Pages to see the guest update its checkmark.
 Use **Options → Difficulty** to try nested menus. Open the Apple menu's About

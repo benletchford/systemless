@@ -448,35 +448,26 @@ mod tests {
 
     #[test]
     fn retained_modal_wait_matches_desktop_tick_scheduling_without_a_window() {
-        use super::super::{runtime_driver::GuiDriver, FRAME_DURATION};
         let mut timed = modal_runner();
+        let mut live = modal_runner();
         let start = timed.guest_tick();
-        let mut driver = GuiDriver::new(
-            "dummy".into(),
-            false,
-            true,
-            false,
-            Some(8),
-            systemless::ui_theme::UiThemeId::ClassicSystem7,
-        );
-        driver.runner = Some(modal_runner());
-        let origin = std::time::Instant::now();
-        driver.start_time = Some(GuiDriver::wall_clock_origin_for_guest_tick(origin, start));
+        let mut instructions = 0;
         for elapsed in 0..10 {
-            let now = origin + FRAME_DURATION * elapsed;
-            driver.next_frame_time = Some(now + FRAME_DURATION);
-            driver.step_frame_with_clock(|| now);
             let work = frame(&mut timed, 366);
             assert_eq!(work.foreground, 1, "one modal refire per frontend tick");
             assert!(!work.budget_exhausted);
-            let gui = driver.runner.as_ref().unwrap();
+            instructions += super::super::cpu_frame::advance(
+                &mut live, super::super::CPU_BATCH_INSTRUCTIONS,
+                start + elapsed + 1, std::time::Instant::now() + std::time::Duration::from_secs(1),
+            );
+            live.finish_gui_frame();
             assert_eq!(timed.guest_tick(), start + elapsed + 1);
-            assert_eq!(timed.guest_tick(), gui.guest_tick());
+            assert_eq!(timed.guest_tick(), live.guest_tick());
             for register in [Register::PC, Register::A7] {
-                assert_eq!(timed.cpu().read_reg(register), gui.cpu().read_reg(register));
+                assert_eq!(timed.cpu().read_reg(register), live.cpu().read_reg(register));
             }
         }
-        assert_eq!(driver.total_instructions, 10);
+        assert_eq!(instructions, 10);
     }
 
     #[test]
