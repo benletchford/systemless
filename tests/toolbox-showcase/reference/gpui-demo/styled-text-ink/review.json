@@ -1,0 +1,358 @@
+{
+  "schema_version": 1,
+  "source_commit": "9c43d1f15c94f1bb571db1ca354c6247473fb2fc",
+  "fixture": "tests/toolbox-showcase/toolbox-showcase.sit",
+  "fixture_sha256": "17e3cd4dd1a2510627b55487db166773759319f93454bb9141ad8a80bc40d4b8",
+  "platform": "macOS ARM64; shared GPUI Metal headless compositor",
+  "state": "inactive, unselected; zero-spacing srcOr; white erased fixture background",
+  "field_bounds": [
+    126,
+    74,
+    164,
+    561
+  ],
+  "scope": "Exact field raster only; no production scene ownership, active selection/caret, interaction, lifecycle or general background qualification",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "9564011cac424455c772eea988f795828b68666f6f65b826c34f0776994ff87b",
+    "src/bin/gpui_demo_text.rs": "b9782ffbc21e4ee739b644c16073f29d16197e0bba6e429e541cb94802374c51"
+  },
+  "cases": [
+    {
+      "mode": "mono",
+      "scale": 0.75,
+      "device_scale": 2,
+      "rendered": "mono-0.75.png",
+      "guest": "mono-0.75.guest.png",
+      "rendered_sha256": "94a56924d9ac6acd9569c8b3098a654155f9345d23e177827885a17dbf921495",
+      "guest_sha256": "4427a3d6a7a6df1b193c43130a47ea222c8cc9c0b1c865738e6d0e1ebe58b24e",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "0.75",
+        "--capture-styled-text-edit-ink",
+        "/tmp/systemless-styled-ink-review/mono-0.75.png"
+      ],
+      "guest_original_capture_sha256": "e88087c39f02d9e3d9d504718b0ee5bcf424cafb1e050216f9ebc41b4dac953a",
+      "rendered_original_capture_sha256": "89c1a1c9e1ea92f94959182af5918079eeb8670247ddf7cc7830fa933043c8f3"
+    },
+    {
+      "mode": "mono",
+      "scale": 1.0,
+      "device_scale": 2,
+      "rendered": "mono-1.png",
+      "guest": "mono-1.guest.png",
+      "rendered_sha256": "b362a28a6aa6aecf0404a3ba0c779f59c070556664e7f0b7c1b688f50234cf95",
+      "guest_sha256": "4427a3d6a7a6df1b193c43130a47ea222c8cc9c0b1c865738e6d0e1ebe58b24e",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "1",
+        "--capture-styled-text-edit-ink",
+        "/tmp/systemless-styled-ink-review/mono-1.png"
+      ],
+      "guest_original_capture_sha256": "e88087c39f02d9e3d9d504718b0ee5bcf424cafb1e050216f9ebc41b4dac953a",
+      "rendered_original_capture_sha256": "1cdd4c88e840a4e79c6c1198c051cb332c2be7517bce8ea9771b39bd58c0a2c8"
+    },
+    {
+      "mode": "mono",
+      "scale": 1.5,
+      "device_scale": 2,
+      "rendered": "mono-1.5.png",
+      "guest": "mono-1.5.guest.png",
+      "rendered_sha256": "97ae9fcc9a2fe678a11597708f7157b021baa44d41f62390bb6b5789e29e6af0",
+      "guest_sha256": "4427a3d6a7a6df1b193c43130a47ea222c8cc9c0b1c865738e6d0e1ebe58b24e",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "1.5",
+        "--capture-styled-text-edit-ink",
+        "/tmp/systemless-styled-ink-review/mono-1.5.png"
+      ],
+      "guest_original_capture_sha256": "e88087c39f02d9e3d9d504718b0ee5bcf424cafb1e050216f9ebc41b4dac953a",
+      "rendered_original_capture_sha256": "881310c33c3114126e1ffbca2178c14f1ba6747c18eb1201bdaab81b508a0a1f"
+    },
+    {
+      "mode": "mono",
+      "scale": 2.0,
+      "device_scale": 2,
+      "rendered": "mono-2.png",
+      "guest": "mono-2.guest.png",
+      "rendered_sha256": "9f2f252e212b49b56e48b15ba5693f0234cd3b264f49f6f6dc794892709ca265",
+      "guest_sha256": "4427a3d6a7a6df1b193c43130a47ea222c8cc9c0b1c865738e6d0e1ebe58b24e",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "2",
+        "--capture-styled-text-edit-ink",
+        "/tmp/systemless-styled-ink-review/mono-2.png"
+      ],
+      "guest_original_capture_sha256": "e88087c39f02d9e3d9d504718b0ee5bcf424cafb1e050216f9ebc41b4dac953a",
+      "rendered_original_capture_sha256": "c85ff7eb93fa8feda7a74c1af26df80e9bcc674b7cecba9c13c197b046126240"
+    },
+    {
+      "mode": "colour",
+      "scale": 0.75,
+      "device_scale": 2,
+      "rendered": "colour-0.75.png",
+      "guest": "colour-0.75.guest.png",
+      "rendered_sha256": "76134862f6bf5afd5b9a0d86bf50e1584a762ee84c9c60e553065677cdd1eb49",
+      "guest_sha256": "a733be4f8942d903a2dd3143ef2b81669953210a54023b1daea6f5d2efc9d596",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "0.75",
+        "--capture-styled-text-edit-ink",
+        "/tmp/systemless-styled-ink-review/colour-0.75.png"
+      ],
+      "guest_original_capture_sha256": "8e61a5e819675982c7be3f37ec612eb3163e253a81ea4ff609fcf3ee614d8950",
+      "rendered_original_capture_sha256": "179aec7bc07367d33bbe8d553e80d35587d1ddae3d6d229ab0dd02ebe70f2d37"
+    },
+    {
+      "mode": "colour",
+      "scale": 1.0,
+      "device_scale": 2,
+      "rendered": "colour-1.png",
+      "guest": "colour-1.guest.png",
+      "rendered_sha256": "f10d37ff56fffba2296d8bc1f7eb280487630e15448d93bc38dc1fc64f0605a0",
+      "guest_sha256": "a733be4f8942d903a2dd3143ef2b81669953210a54023b1daea6f5d2efc9d596",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1",
+        "--capture-styled-text-edit-ink",
+        "/tmp/systemless-styled-ink-review/colour-1.png"
+      ],
+      "guest_original_capture_sha256": "8e61a5e819675982c7be3f37ec612eb3163e253a81ea4ff609fcf3ee614d8950",
+      "rendered_original_capture_sha256": "57a0c7325b3e2b0e5a10bb5e2d4480112127ab60c6465ee303f597b190b3a0cb"
+    },
+    {
+      "mode": "colour",
+      "scale": 1.5,
+      "device_scale": 2,
+      "rendered": "colour-1.5.png",
+      "guest": "colour-1.5.guest.png",
+      "rendered_sha256": "6562fd82561d61500a5c142adebd1bae99e98da0ac3d6e69b5692850682ed142",
+      "guest_sha256": "a733be4f8942d903a2dd3143ef2b81669953210a54023b1daea6f5d2efc9d596",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1.5",
+        "--capture-styled-text-edit-ink",
+        "/tmp/systemless-styled-ink-review/colour-1.5.png"
+      ],
+      "guest_original_capture_sha256": "8e61a5e819675982c7be3f37ec612eb3163e253a81ea4ff609fcf3ee614d8950",
+      "rendered_original_capture_sha256": "ac2b50aa4d4786316a3735b7949061d968d02b70acb4e21daf657c41be144616"
+    },
+    {
+      "mode": "colour",
+      "scale": 2.0,
+      "device_scale": 2,
+      "rendered": "colour-2.png",
+      "guest": "colour-2.guest.png",
+      "rendered_sha256": "78438fd8394f79fa021534e98b5821702769a8d687eaf3ad358acc600c56a3e7",
+      "guest_sha256": "a733be4f8942d903a2dd3143ef2b81669953210a54023b1daea6f5d2efc9d596",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "2",
+        "--capture-styled-text-edit-ink",
+        "/tmp/systemless-styled-ink-review/colour-2.png"
+      ],
+      "guest_original_capture_sha256": "8e61a5e819675982c7be3f37ec612eb3163e253a81ea4ff609fcf3ee614d8950",
+      "rendered_original_capture_sha256": "872afb2a05a5a290479641fb552f5973f906b2878cc3402f9d9012cdfaf4e3a0"
+    },
+    {
+      "mode": "ppc16",
+      "scale": 0.75,
+      "device_scale": 2,
+      "rendered": "ppc16-0.75.png",
+      "guest": "ppc16-0.75.guest.png",
+      "rendered_sha256": "76134862f6bf5afd5b9a0d86bf50e1584a762ee84c9c60e553065677cdd1eb49",
+      "guest_sha256": "a733be4f8942d903a2dd3143ef2b81669953210a54023b1daea6f5d2efc9d596",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "0.75",
+        "--capture-styled-text-edit-ink",
+        "/tmp/systemless-styled-ink-review/ppc16-0.75.png"
+      ],
+      "guest_original_capture_sha256": "8e61a5e819675982c7be3f37ec612eb3163e253a81ea4ff609fcf3ee614d8950",
+      "rendered_original_capture_sha256": "179aec7bc07367d33bbe8d553e80d35587d1ddae3d6d229ab0dd02ebe70f2d37"
+    },
+    {
+      "mode": "ppc16",
+      "scale": 1.0,
+      "device_scale": 2,
+      "rendered": "ppc16-1.png",
+      "guest": "ppc16-1.guest.png",
+      "rendered_sha256": "f10d37ff56fffba2296d8bc1f7eb280487630e15448d93bc38dc1fc64f0605a0",
+      "guest_sha256": "a733be4f8942d903a2dd3143ef2b81669953210a54023b1daea6f5d2efc9d596",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "1",
+        "--capture-styled-text-edit-ink",
+        "/tmp/systemless-styled-ink-review/ppc16-1.png"
+      ],
+      "guest_original_capture_sha256": "8e61a5e819675982c7be3f37ec612eb3163e253a81ea4ff609fcf3ee614d8950",
+      "rendered_original_capture_sha256": "57a0c7325b3e2b0e5a10bb5e2d4480112127ab60c6465ee303f597b190b3a0cb"
+    },
+    {
+      "mode": "ppc16",
+      "scale": 1.5,
+      "device_scale": 2,
+      "rendered": "ppc16-1.5.png",
+      "guest": "ppc16-1.5.guest.png",
+      "rendered_sha256": "6562fd82561d61500a5c142adebd1bae99e98da0ac3d6e69b5692850682ed142",
+      "guest_sha256": "a733be4f8942d903a2dd3143ef2b81669953210a54023b1daea6f5d2efc9d596",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "1.5",
+        "--capture-styled-text-edit-ink",
+        "/tmp/systemless-styled-ink-review/ppc16-1.5.png"
+      ],
+      "guest_original_capture_sha256": "8e61a5e819675982c7be3f37ec612eb3163e253a81ea4ff609fcf3ee614d8950",
+      "rendered_original_capture_sha256": "ac2b50aa4d4786316a3735b7949061d968d02b70acb4e21daf657c41be144616"
+    },
+    {
+      "mode": "ppc16",
+      "scale": 2.0,
+      "device_scale": 2,
+      "rendered": "ppc16-2.png",
+      "guest": "ppc16-2.guest.png",
+      "rendered_sha256": "78438fd8394f79fa021534e98b5821702769a8d687eaf3ad358acc600c56a3e7",
+      "guest_sha256": "a733be4f8942d903a2dd3143ef2b81669953210a54023b1daea6f5d2efc9d596",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "2",
+        "--capture-styled-text-edit-ink",
+        "/tmp/systemless-styled-ink-review/ppc16-2.png"
+      ],
+      "guest_original_capture_sha256": "8e61a5e819675982c7be3f37ec612eb3163e253a81ea4ff609fcf3ee614d8950",
+      "rendered_original_capture_sha256": "872afb2a05a5a290479641fb552f5973f906b2878cc3402f9d9012cdfaf4e3a0"
+    },
+    {
+      "mode": "ppc8",
+      "scale": 0.75,
+      "device_scale": 2,
+      "rendered": "ppc8-0.75.png",
+      "guest": "ppc8-0.75.guest.png",
+      "rendered_sha256": "76134862f6bf5afd5b9a0d86bf50e1584a762ee84c9c60e553065677cdd1eb49",
+      "guest_sha256": "a733be4f8942d903a2dd3143ef2b81669953210a54023b1daea6f5d2efc9d596",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "0.75",
+        "--capture-styled-text-edit-ink",
+        "/tmp/systemless-styled-ink-review/ppc8-0.75.png"
+      ],
+      "guest_original_capture_sha256": "8e61a5e819675982c7be3f37ec612eb3163e253a81ea4ff609fcf3ee614d8950",
+      "rendered_original_capture_sha256": "179aec7bc07367d33bbe8d553e80d35587d1ddae3d6d229ab0dd02ebe70f2d37"
+    },
+    {
+      "mode": "ppc8",
+      "scale": 1.0,
+      "device_scale": 2,
+      "rendered": "ppc8-1.png",
+      "guest": "ppc8-1.guest.png",
+      "rendered_sha256": "f10d37ff56fffba2296d8bc1f7eb280487630e15448d93bc38dc1fc64f0605a0",
+      "guest_sha256": "a733be4f8942d903a2dd3143ef2b81669953210a54023b1daea6f5d2efc9d596",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1",
+        "--capture-styled-text-edit-ink",
+        "/tmp/systemless-styled-ink-review/ppc8-1.png"
+      ],
+      "guest_original_capture_sha256": "8e61a5e819675982c7be3f37ec612eb3163e253a81ea4ff609fcf3ee614d8950",
+      "rendered_original_capture_sha256": "57a0c7325b3e2b0e5a10bb5e2d4480112127ab60c6465ee303f597b190b3a0cb"
+    },
+    {
+      "mode": "ppc8",
+      "scale": 1.5,
+      "device_scale": 2,
+      "rendered": "ppc8-1.5.png",
+      "guest": "ppc8-1.5.guest.png",
+      "rendered_sha256": "6562fd82561d61500a5c142adebd1bae99e98da0ac3d6e69b5692850682ed142",
+      "guest_sha256": "a733be4f8942d903a2dd3143ef2b81669953210a54023b1daea6f5d2efc9d596",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1.5",
+        "--capture-styled-text-edit-ink",
+        "/tmp/systemless-styled-ink-review/ppc8-1.5.png"
+      ],
+      "guest_original_capture_sha256": "8e61a5e819675982c7be3f37ec612eb3163e253a81ea4ff609fcf3ee614d8950",
+      "rendered_original_capture_sha256": "ac2b50aa4d4786316a3735b7949061d968d02b70acb4e21daf657c41be144616"
+    },
+    {
+      "mode": "ppc8",
+      "scale": 2.0,
+      "device_scale": 2,
+      "rendered": "ppc8-2.png",
+      "guest": "ppc8-2.guest.png",
+      "rendered_sha256": "78438fd8394f79fa021534e98b5821702769a8d687eaf3ad358acc600c56a3e7",
+      "guest_sha256": "a733be4f8942d903a2dd3143ef2b81669953210a54023b1daea6f5d2efc9d596",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "2",
+        "--capture-styled-text-edit-ink",
+        "/tmp/systemless-styled-ink-review/ppc8-2.png"
+      ],
+      "guest_original_capture_sha256": "8e61a5e819675982c7be3f37ec612eb3163e253a81ea4ff609fcf3ee614d8950",
+      "rendered_original_capture_sha256": "872afb2a05a5a290479641fb552f5973f906b2878cc3402f9d9012cdfaf4e3a0"
+    }
+  ],
+  "archive_encoding": "Lossless PNG recompression; RGBA pixels verified unchanged; original capture byte hashes retained per case"
+}

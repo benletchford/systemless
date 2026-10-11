@@ -3713,3 +3713,17 @@ device density 2. The production binary check passes (3.78s), and the capture
 example builds (5.79s). Styled document scene ownership is still guarded:
 these captures qualify inactive ink on this fixture, not live input, general
 backgrounds, active selection/caret, or lifecycle replacement.
+The 16 composed captures and 16 untouched-pixel guest baselines are archived in
+`tests/toolbox-showcase/reference/gpui-demo/styled-text-ink/review.json`, pinned
+to source commit `9c43d1f1`, fixture/source hashes, original capture byte hashes,
+CPU/depth/scale commands and final PNG hashes. PNG archives were losslessly
+recompressed with RGBA equality checked. Recheck the exact field matrix with:
+
+```sh
+python3 tests/toolbox-showcase/verify-gpui-styled-text-ink.py \
+  tests/toolbox-showcase/reference/gpui-demo/styled-text-ink/review.json
+```
+
+The verifier requires all four modes and four scales once each, device density
+2, file hashes and zero mismatched field pixels. This is implementation-to-
+guest comparison; it does not add new Macintosh-oracle evidence.
