@@ -1843,7 +1843,12 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
             PpcSystemCompatibilityOperation::CallComponentUpp,
         ),
         ("CharByte", PpcSystemCompatibilityOperation::CharByte),
+        (
+            "CharacterByteType",
+            PpcSystemCompatibilityOperation::CharByte,
+        ),
         ("CharType", PpcSystemCompatibilityOperation::CharType),
+        ("CharacterType", PpcSystemCompatibilityOperation::CharType),
         ("DIBadMount", PpcSystemCompatibilityOperation::DiBadMount),
         ("DIFormat", PpcSystemCompatibilityOperation::DiFormat),
         ("DILoad", PpcSystemCompatibilityOperation::DiLoad),
@@ -1944,6 +1949,7 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
             "KeyTranslate",
             PpcSystemCompatibilityOperation::KeyTranslate,
         ),
+        ("KeyTrans", PpcSystemCompatibilityOperation::KeyTranslate),
         (
             "LaunchApplication",
             PpcSystemCompatibilityOperation::LaunchApplication,
@@ -3163,4 +3169,66 @@ fn ppc_string_order_pascal_lengths_six_argument_abi_and_signed_result() {
         ),
     );
     assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
+fn ppc_character_byte_type_character_type_and_keytrans_compatibility() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"CharacterByteType")).unwrap();
+    let text_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(text_ptr, b"Hello World".to_vec());
+
+    // CharacterByteType (smSingleByte = 0 for ASCII in Roman)
+    loaded.cpu.gpr[3] = text_ptr;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::CharByte),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+    // CharacterType (smCharAscii = 0)
+    loaded.cpu.gpr[3] = text_ptr;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::CharType),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+    // FontToScript vs Font2Script
+    loaded.cpu.gpr[3] = 0; // Chicago -> smRoman
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FontToScript);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    loaded.cpu.gpr[3] = 0; // Chicago -> smRoman
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::Font2Script,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // KeyTrans via KeyTranslate compatibility
+    let kchr_cache = PpcImportDispatcherTarget::SystemCompatibility(
+        PpcSystemCompatibilityOperation::GetScriptManagerVariable,
+    );
+    loaded.cpu.gpr[3] = 38; // smKCHRCache
+    run_test_import(&mut loaded, kchr_cache);
+    let kchr = loaded.cpu.gpr[3];
+    assert_ne!(kchr, 0);
+
+    let state = PPC_DATA_BASE + 0x3200;
+    loaded.memory.add_region(state, vec![0; 4]);
+    loaded.cpu.gpr[3] = kchr;
+    loaded.cpu.gpr[4] = 0x00AD; // keycode for 'n'
+    loaded.cpu.gpr[5] = state;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::KeyTranslate,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], u32::from(b'n'));
 }

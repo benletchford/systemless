@@ -15975,12 +15975,12 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A7, sp + 4); // pop selector, result stays
                     }
                     // IntlScript (2): FUNCTION IntlScript: INTEGER
-                    2 => {
+                    crate::text_utils::INTL_SCRIPT_SELECTOR => {
                         bus.write_word(sp + 4, 0); // smRoman
                         cpu.write_reg(Register::A7, sp + 4);
                     }
                     // KeyScript (4): FUNCTION KeyScript: INTEGER
-                    4 => {
+                    crate::text_utils::KEY_SCRIPT_SELECTOR => {
                         bus.write_word(sp + 4, 0); // smRoman
                         cpu.write_reg(Register::A7, sp + 4);
                     }
