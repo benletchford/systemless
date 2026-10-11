@@ -2823,7 +2823,7 @@ fn alternate_buffer_invalidation_updates_pixels_and_restores_sprites_after_prese
     front.width = 4;
     front.height = 4;
     front.depth = 8;
-    front.row_bytes = 4;
+    front.row_bytes = ppc_row_bytes(front.width, front.depth).unwrap();
     let mut back = front;
     back.port = 0x03000200;
     back.base_addr = 0x0A000100;
@@ -2832,7 +2832,10 @@ fn alternate_buffer_invalidation_updates_pixels_and_restores_sprites_after_prese
     underlay.base_addr = 0x0A000200;
     loaded.gworlds = vec![front, back, underlay];
     for world in [front, back, underlay] {
-        loaded.memory.add_region(world.base_addr, vec![10; 16]);
+        loaded.memory.add_region(
+            world.base_addr,
+            vec![10; (world.row_bytes * world.height) as usize],
+        );
     }
     loaded.draw_sprocket.front_buffer_gworld = front.port;
     loaded.draw_sprocket.back_buffer_gworld = back.port;
@@ -2852,8 +2855,8 @@ fn alternate_buffer_invalidation_updates_pixels_and_restores_sprites_after_prese
     loaded.memory.add_region(rect, vec![0; 8]);
     loaded.memory.add_region(output, vec![0; 4]);
     ppc_write_rect(&mut loaded.memory, rect, 1, 1, 2, 2).unwrap();
-    loaded.memory.write_u8(underlay.base_addr + 5, 20).unwrap();
-    loaded.memory.write_u8(back.base_addr + 15, 99).unwrap();
+    loaded.memory.write_u8(underlay.base_addr + 17, 20).unwrap();
+    loaded.memory.write_u8(back.base_addr + 51, 99).unwrap();
     loaded.cpu.gpr[3] = underlay.port;
     loaded.cpu.gpr[4] = rect;
     let probe = loaded.run_with_hle_imports(64);
@@ -2861,13 +2864,13 @@ fn alternate_buffer_invalidation_updates_pixels_and_restores_sprites_after_prese
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
     assert_eq!(
-        loaded.memory.read_u8(back.base_addr + 5),
+        loaded.memory.read_u8(back.base_addr + 17),
         Some(10),
         "invalidation is retained until buffer acquisition"
     );
     // A second disjoint invalidation must not erase the unchanged gap.
-    loaded.memory.write_u8(back.base_addr + 6, 77).unwrap();
-    loaded.memory.write_u8(underlay.base_addr + 7, 30).unwrap();
+    loaded.memory.write_u8(back.base_addr + 18, 77).unwrap();
+    loaded.memory.write_u8(underlay.base_addr + 19, 30).unwrap();
     ppc_write_rect(&mut loaded.memory, rect, 1, 3, 2, 4).unwrap();
     loaded.cpu.pc = loaded.entry_pc;
     loaded.cpu.gpr[3] = underlay.port;
@@ -2887,20 +2890,20 @@ fn alternate_buffer_invalidation_updates_pixels_and_restores_sprites_after_prese
         ),
         PPC_NO_ERR
     );
-    assert_eq!(loaded.memory.read_u8(back.base_addr + 5), Some(20));
-    assert_eq!(loaded.memory.read_u8(back.base_addr + 7), Some(30));
+    assert_eq!(loaded.memory.read_u8(back.base_addr + 17), Some(20));
+    assert_eq!(loaded.memory.read_u8(back.base_addr + 19), Some(30));
     assert_eq!(
-        loaded.memory.read_u8(back.base_addr + 6),
+        loaded.memory.read_u8(back.base_addr + 18),
         Some(77),
         "disjoint invalidation must preserve its gap"
     );
     ppc_write_rect(&mut loaded.memory, rect, 1, 1, 2, 2).unwrap();
     assert_eq!(
-        loaded.memory.read_u8(back.base_addr + 15),
+        loaded.memory.read_u8(back.base_addr + 51),
         Some(99),
         "pixels outside explicit invalidation stay intact"
     );
-    loaded.memory.write_u8(back.base_addr + 5, 42).unwrap(); // draw sprite
+    loaded.memory.write_u8(back.base_addr + 17, 42).unwrap(); // draw sprite
     loaded.cpu.gpr[4] = rect;
     assert_eq!(
         ppc_dsp_context_inval_back_rect(
@@ -2921,7 +2924,7 @@ fn alternate_buffer_invalidation_updates_pixels_and_restores_sprites_after_prese
         PPC_NO_ERR
     );
     assert_eq!(
-        loaded.memory.read_u8(front.base_addr + 5),
+        loaded.memory.read_u8(front.base_addr + 17),
         Some(42),
         "sprite must be presented before restoration"
     );
@@ -2936,16 +2939,16 @@ fn alternate_buffer_invalidation_updates_pixels_and_restores_sprites_after_prese
         PPC_NO_ERR
     );
     assert_eq!(
-        loaded.memory.read_u8(back.base_addr + 5),
+        loaded.memory.read_u8(back.base_addr + 17),
         Some(20),
         "next frame erases sprite from underlay"
     );
     assert_eq!(
-        loaded.memory.read_u8(front.base_addr + 5),
+        loaded.memory.read_u8(front.base_addr + 17),
         Some(42),
         "restoration must not rewrite the displayed frame"
     );
-    assert_eq!(loaded.memory.read_u8(back.base_addr + 15), Some(99));
+    assert_eq!(loaded.memory.read_u8(back.base_addr + 51), Some(99));
 }
 
 #[test]
