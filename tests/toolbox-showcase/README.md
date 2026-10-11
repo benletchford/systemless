@@ -3,6 +3,8 @@
 On the Graphics page, `n` installs a text-only Notification Manager request
 with automatic removal after acknowledgment; `r` installs the same Mac Roman
 message with a compiled response procedure that increments its NMRec refCon.
+`b` installs an automatically removed text alert with the system-alert sound
+sentinel; the worker regression captures its audio before acknowledging it.
 Both CPU slices use the original NMInstall/NMRemove and NewNMUPP interfaces.
 The response uses only its supplied record. Repeating either trigger removes
 the previous request before reinstalling it.

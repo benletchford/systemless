@@ -9074,6 +9074,11 @@ mod desktop {
             use super::{Args, Command, Update};
             use std::{sync::{mpsc, Arc, Mutex}, time::{Duration, Instant}};
             use clap::Parser;
+            struct CapturedAudio(Arc<Mutex<Vec<u8>>>);
+            impl systemless::audio::AudioBackend for CapturedAudio {
+                fn queue_samples(&mut self, samples: &[u8]) { self.0.lock().unwrap().extend_from_slice(samples); }
+                fn stop(&mut self) {}
+            }
             struct Worker(mpsc::Sender<Command>, Option<std::thread::JoinHandle<()>>);
             impl Drop for Worker {
                 fn drop(&mut self) {
@@ -9094,9 +9099,8 @@ mod desktop {
                     std::thread::sleep(Duration::from_millis(10));
                 }
             }
-            for (powerpc, depth, procedure) in [(false, 1u16, false), (false, 8, false),
-                (true, 8, false), (true, 16, false), (false, 1, true),
-                (false, 8, true), (true, 8, true), (true, 16, true)] {
+            for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
+            for (procedure, sound) in [(false, false), (true, false), (false, true)] {
                 let mut arguments = vec!["gpui-menu-demo".to_string(),
                     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                         .join("tests/toolbox-showcase/toolbox-showcase.sit").to_string_lossy().into_owned(),
@@ -9105,10 +9109,15 @@ mod desktop {
                 let args = Args::try_parse_from(arguments).unwrap();
                 let (sender, receiver) = mpsc::channel();
                 let updates = Arc::new(Mutex::new(None)); let output = updates.clone();
+                let audio = Arc::new(Mutex::new(Vec::new()));
+                let worker_audio = audio.clone();
                 let worker = Worker(sender, Some(std::thread::spawn(move ||
-                    super::run_guest(args, receiver, output, false))));
+                    super::run_guest_with_setup(args, receiver, output, false, move |session|
+                        session.runner_mut().set_audio(Box::new(CapturedAudio(worker_audio)))))));
+
                 wait("ready", &updates, |update| update.menus.menus.iter().any(|menu| menu.id == 129));
-                let (mac_key, character) = if procedure { (15, b'r') } else { (45, b'n') };
+                audio.lock().unwrap().clear();
+                let (mac_key, character) = if sound { (11, b'b') } else if procedure { (15, b'r') } else { (45, b'n') };
                 worker.0.send(Command::Input(MacintoshInput::KeyDown { mac_key, character })).unwrap();
                 worker.0.send(Command::Input(MacintoshInput::KeyUp { mac_key, character })).unwrap();
                 let initial = wait("install", &updates, |update| update.notifications.len() == 1
@@ -9130,6 +9139,11 @@ mod desktop {
                 cx.run_until_parked();
                 let owned = wait("acquire", &updates, |update| update.notification_alert.as_ref() == Some(&notice));
                 assert!(!owned.notifications[0].response_started);
+                assert_eq!(owned.notifications[0].sound_handle, if sound { u32::MAX } else { 0 });
+                if sound {
+                    assert!(audio.lock().unwrap().iter().any(|sample| *sample != 0x80),
+                        "guest-installed system sound must reach the worker audio backend before acknowledgment");
+                }
                 worker.0.send(blocked_menu).unwrap();
                 *frontend_updates.lock().unwrap() = Some(owned);
                 cx.executor().advance_clock(Duration::from_millis(16));
@@ -9163,6 +9177,7 @@ mod desktop {
                 assert!(!completed.menus.menus.iter().find(|menu| menu.id == 129).unwrap()
                     .items.iter().find(|item| item.number == 7).unwrap().checked,
                     "background menu command must not replay after dismissal");
+            }
             }
         }
 

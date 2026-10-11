@@ -1,5 +1,14 @@
 # GPUI production release gates
 
+Guest-installed system-sound workflow: the dual-CPU fixture now requests the
+system alert sound through NMInstall (`b` on Graphics). Twelve actual worker
+and GPUI cases pass across mono68k, colour68k, PPC8 and explicit PPC16 (16.75s).
+System-sound cases capture non-silent output at the AudioBackend before rendered
+OK acknowledgment; the workflow also preserves menu exclusion, autoremove and
+compiled response behavior. Evidence and hashes are under
+`reference/gpui-demo/notification-system-sound`. Physical audio, sustained game
+continuity, custom sounds and mark/icon stages remain open.
+
 Notification system-sound stage: text alerts can now use the `nmSound == -1`
 system-alert sentinel. Per-installation sound delivery is retained in the
 shared queue; native/classic Sound Manager paths queue the tone before alert
