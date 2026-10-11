@@ -7114,6 +7114,31 @@ mod desktop {
                             "ordered styled ink at ({x},{y}), PPC={powerpc}, depth={depth:?}, override={ppc_depth:?}");
                     }
                 }
+                let background = systemless::runner::TextEditInkSnapshot {
+                    pixel: if paint.depth == 16 { 0x7fff } else { 0 },
+                    rgb: [255; 3], inverted_rgb: [0; 3],
+                };
+                let plan = super::super::text::StyledTextEditPaintPlan::qualify(
+                    &record, &background, None, &frame.pixels, frame.width, frame.height,
+                ).expect("whole-field styled recipe matches native ink and background");
+                assert_eq!(plan.background, [255; 3]);
+                assert!(!plan.pixels.is_empty());
+                let mut changed = frame.pixels.clone();
+                let at = ((view.0 as u32 * frame.width + view.1 as u32) * 4) as usize;
+                changed[at] ^= 1;
+                assert!(super::super::text::StyledTextEditPaintPlan::qualify(
+                    &record, &background, None, &changed, frame.width, frame.height,
+                ).is_none(), "modified application pixels refuse replacement");
+                let mut stale = record.clone();
+                stale.drawing_intact = false;
+                assert!(super::super::text::StyledTextEditPaintPlan::qualify(
+                    &stale, &background, None, &frame.pixels, frame.width, frame.height,
+                ).is_none(), "pixel equality cannot replace missing drawing ownership evidence");
+                changed = frame.pixels.clone();
+                changed[0] ^= 1;
+                assert!(super::super::text::StyledTextEditPaintPlan::qualify(
+                    &record, &background, None, &changed, frame.width, frame.height,
+                ).is_some(), "unrelated guest drawing outside the field remains independent");
                 let metrics = record.line_metrics.as_ref().unwrap();
                 assert_eq!(metrics.len(), record.line_count);
                 assert!(metrics.iter().all(|&(height, ascent)| height > 0 && ascent > 0 && ascent <= height));
@@ -7146,6 +7171,74 @@ mod desktop {
                 let windows = session.runner_mut().window_frame_snapshot();
                 assert!(super::super::frames::text_edit_pieces(&[record], &[], &[], &windows,
                     super::super::frames::Rect::from((0, 0, 600, 800))).is_empty());
+            }
+        }
+
+        #[test]
+        fn multiline_styled_selection_plan_matches_native_paint_order() {
+            for (powerpc, depth) in [(false, 1), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, if powerpc { None } else { Some(depth) });
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 11));
+                wait_for_menu(&mut session, 129, 11, true);
+                settle(&mut session);
+                let original = session.runner_mut().text_edit_snapshot().records.into_iter()
+                    .find(|record| record.styled).unwrap();
+                let dest = original.global_dest_rect.unwrap();
+                let geometry = original.guest_styled_line_geometry(0).unwrap().0;
+                let origin = (dest.0 - original.dest_rect.0, dest.1 - original.dest_rect.1);
+                let horizontal = origin.1 + geometry.left + original.guest_styled_range_width(0..26).unwrap();
+                let vertical = origin.0 + geometry.top + geometry.ascent;
+                for input in [MacintoshInput::MouseDown { vertical, horizontal }, MacintoshInput::MouseUp { vertical, horizontal }] {
+                    session.deliver_input(input);
+                    for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
+                }
+                session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x24, character: b'\r' });
+                session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x24, character: b'\r' });
+                let record = (0..300).find_map(|_| {
+                    session.runner_mut().run_steps(10_000, None);
+                    let settled = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
+                    session.runner_mut().text_edit_snapshot().records.into_iter().find(|record|
+                        settled && record.guest_id == original.guest_id && record.line_count == 2 && record.drawing_intact)
+                }).expect("guest Return creates two mixed-metric styled lines");
+                assert_eq!(record.text[26], b'\r');
+                let first = record.guest_styled_line_geometry(0).unwrap().0;
+                let second = record.guest_styled_line_geometry(1).unwrap().0;
+                let start = (origin.0 + first.top + first.ascent, origin.1 + first.left);
+                let line_start = record.line_starts.as_ref().unwrap()[1];
+                let end = (origin.0 + second.top + second.ascent,
+                    origin.1 + second.left + record.guest_styled_range_width(line_start..record.text.len()).unwrap());
+                for input in [MacintoshInput::MouseDown { vertical: start.0, horizontal: start.1 },
+                    MacintoshInput::MouseMove { vertical: end.0, horizontal: end.1 },
+                    MacintoshInput::MouseUp { vertical: end.0, horizontal: end.1 }] {
+                    session.deliver_input(input);
+                    for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
+                }
+                let selected = (0..300).find_map(|_| {
+                    session.runner_mut().run_steps(10_000, None);
+                    let settled = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
+                    session.runner_mut().text_edit_snapshot().records.into_iter().find(|next|
+                        settled && next.guest_id == record.guest_id && next.active && next.drawing_intact
+                            && next.selection == (0, record.text.len()))
+                }).expect("guest drag selects both styled lines");
+                if powerpc {
+                    let first = selected.guest_styled_selection_rect(0).unwrap().unwrap();
+                    let second = selected.guest_styled_selection_rect(1).unwrap().unwrap();
+                    assert!(first.0 < second.2 && second.0 < first.2,
+                        "mixed PPC line heights must exercise overlapping highlight boxes");
+                }
+                let frame = session.video_frame().unwrap();
+                let background = systemless::runner::TextEditInkSnapshot {
+                    pixel: if depth == 16 { 0x7fff } else { 0 }, rgb: [255; 3], inverted_rgb: [0; 3],
+                };
+                assert!(super::super::text::StyledTextEditPaintPlan::qualify(
+                    &selected, &background, None, &frame.pixels, frame.width, frame.height,
+                ).is_some(), "CPU-native line/selection order: PPC={powerpc}, depth={depth}");
             }
         }
 

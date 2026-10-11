@@ -3948,3 +3948,21 @@ been independently rechecked. The archive tool refuses a live incomplete job,
 verifies originals, retains original byte hashes, losslessly recompresses PNGs
 with RGBA equality and verifies the archive again. The original corrected job
 continues on its unchanged executable; the final archive is not yet produced.
+
+### Whole-field styled paint qualification
+
+`StyledTextEditPaintPlan::qualify` constructs a clipped field recipe from guest
+strikes, run paint and measured geometry, then checks every field pixel against
+intact native drawing. The caller supplies resolved background and caret paint;
+this does not infer host typography or theme colours. Classic paints visible
+line ink before highlights; PPC highlights after each line, allowing later ink
+to overwrite earlier selection in overlapping mixed-height lines. Repeated
+highlights invert the current physical colour pair in native order.
+
+The four-mode snapshot regression checks the inactive field and rejects modified
+field pixels or missing drawing evidence while tolerating unrelated drawing
+outside its bounds. The multiline regression inserts Return and selects both
+lines through guest events; PPC additionally requires overlapping highlight
+boxes. These checks qualify a native field recipe, not production ownership,
+GPUI multiline compositor output, live pointer alignment, arbitrary backgrounds
+or themes. Styled production ownership remains guarded pending those checks.

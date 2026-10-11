@@ -636,6 +636,87 @@ pub(crate) struct StyledTextEditRun {
     pub ink: systemless::runner::TextEditInkSnapshot,
 }
 
+/// A whole-field recipe, qualified against native pixels before ownership.
+/// The caller supplies resolved background and caret paint; no host font or
+/// theme colour is inferred. Application drawing or unsupported paint declines.
+#[derive(Clone, Debug)]
+pub(crate) struct StyledTextEditPaintPlan {
+    pub pixels: std::collections::BTreeMap<(i16, i16), [u8; 3]>,
+    pub background: [u8; 3],
+}
+
+impl StyledTextEditPaintPlan {
+    pub fn qualify(
+        record: &systemless::runner::TextEditSnapshot,
+        background: &systemless::runner::TextEditInkSnapshot,
+        caret: Option<((i16, i16, i16, i16), systemless::runner::TextEditInkSnapshot)>,
+        native: &[u8], width: u32, height: u32,
+    ) -> Option<Self> {
+        use systemless::runner::TextEditLineLayoutPolicy;
+        if !record.drawing_intact { return None; }
+        let view = record.view_rect;
+        let global = record.global_view_rect?;
+        if global.0 < 0 || global.1 < 0 || global.0 >= global.2 || global.1 >= global.3
+            || i32::from(global.2) > i32::try_from(height).ok()?
+            || i32::from(global.3) > i32::try_from(width).ok()?
+            || native.len() != (width as usize).checked_mul(height as usize)?.checked_mul(4)?
+            || i32::from(global.2) - i32::from(global.0) != i32::from(view.2) - i32::from(view.0)
+            || i32::from(global.3) - i32::from(global.1) != i32::from(view.3) - i32::from(view.1) { return None; }
+        let inside = |&(x, y): &(i16, i16)| x >= view.1 && x < view.3 && y >= view.0 && y < view.2;
+        type InkPairs = std::collections::BTreeMap<(i16, i16), ([u8; 3], [u8; 3])>;
+        fn invert(pixels: &mut InkPairs, rect: (i16, i16, i16, i16), background: &systemless::runner::TextEditInkSnapshot) {
+            let (top, left, bottom, right) = rect;
+            for y in top..bottom { for x in left..right {
+                let pair = pixels.entry((x, y)).or_insert((background.rgb, background.inverted_rgb));
+                std::mem::swap(&mut pair.0, &mut pair.1);
+            } }
+        }
+        let mut pairs = InkPairs::new();
+        let mut selections = Vec::new();
+        for index in 0..record.line_count {
+            let (geometry, _) = record.guest_styled_line_geometry(index)?;
+            if record.line_layout_policy == TextEditLineLayoutPolicy::CumulativeGuestMetrics
+                && (geometry.top.saturating_add(geometry.height) <= view.0 || geometry.top >= view.2) { continue; }
+            let line = StyledTextEditLine::from_guest(record, index)?;
+            for run in &line.runs {
+                for &(x, y, count) in &run.glyphs.ink {
+                    let y = i16::try_from(i32::from(line.baseline).checked_add(y)?).ok()?;
+                    for dx in 0..count {
+                        let x = i16::try_from(i32::from(run.left).checked_add(x)?.checked_add(dx)?).ok()?;
+                        if inside(&(x, y)) { pairs.insert((x, y), (run.ink.rgb, run.ink.inverted_rgb)); }
+                    }
+                }
+            }
+            if let Some(rect) = line.selection {
+                // PPC highlights immediately after each line. Later run ink
+                // can overwrite earlier selected pixels in overlapping boxes.
+                if record.line_layout_policy == TextEditLineLayoutPolicy::PpcRunMetrics {
+                    invert(&mut pairs, rect, background);
+                } else { selections.push(rect); }
+            }
+        }
+        // Classic highlights after all visible line ink. Every inversion
+        // swaps the actual current physical ink pair, including prior highlights.
+        for rect in selections { invert(&mut pairs, rect, background); }
+        let mut pixels: std::collections::BTreeMap<_, _> = pairs.into_iter()
+            .map(|(point, (rgb, _))| (point, rgb)).collect();
+        if let Some((rect, ink)) = caret {
+            if !record.active || !record.caret_visible || record.selection.0 != record.selection.1 { return None; }
+            let (top, left, bottom, right) = rect;
+            if top >= bottom || left >= right || top < view.0 || left < view.1
+                || bottom > view.2 || right > view.3 { return None; }
+            for y in top..bottom { for x in left..right { pixels.insert((x, y), ink.rgb); } }
+        }
+        for y in view.0..view.2 { for x in view.1..view.3 {
+            let gx = i32::from(global.1) + i32::from(x) - i32::from(view.1);
+            let gy = i32::from(global.0) + i32::from(y) - i32::from(view.0);
+            let at = (gy as usize * width as usize + gx as usize) * 4;
+            if native[at..at + 3] != pixels.get(&(x, y)).copied().unwrap_or(background.rgb) { return None; }
+        } }
+        Some(Self { pixels, background: background.rgb })
+    }
+}
+
 impl StyledTextEditLine {
     pub fn from_guest(record: &systemless::runner::TextEditSnapshot, index: usize) -> Option<Self> {
         use systemless::runner::TextEditLineLayoutPolicy;
