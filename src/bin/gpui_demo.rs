@@ -6954,6 +6954,27 @@ mod desktop {
                         .find(|i| i.number == number).unwrap().control_identity, None);
                     assert!(super::super::activation::ControlActivation::begin_dialog(&mut session, id, generation, number, identity).is_none());
                     session.runner_mut().bus_mut().write_long(control_identity.0, pointer);
+                    // Exercise a changed live DITL slot without changing the dialog lifetime.
+                    // Macintosh Toolbox Essentials (1992), pp. 6-122--6-123.
+                    let replacement = dialog.items.iter().find(|other|
+                        other.number != number && other.kind == DialogItemKind::Checkbox
+                    ).unwrap().control_identity.unwrap();
+                    let bus = session.runner().bus();
+                    let ditl = bus.read_long(bus.read_long(id + 156));
+                    let mut entry = ditl + 2;
+                    for _ in 1..number {
+                        let length = u32::from(bus.read_byte(entry + 13));
+                        entry += 14 + ((length + 1) & !1);
+                    }
+                    assert_eq!(bus.read_long(entry), control_identity.0);
+                    let origin = session.runner().dispatcher().mouse_position();
+                    session.runner_mut().bus_mut().write_long(entry, replacement.0);
+                    let replaced = session.runner_mut().dialog_snapshot();
+                    assert_eq!(replaced.iter().find(|d| d.guest_id == id).unwrap().items.iter()
+                        .find(|i| i.number == number).unwrap().control_identity, Some(replacement));
+                    assert!(super::super::activation::ControlActivation::begin_dialog(&mut session, id, generation, number, identity).is_none());
+                    assert_eq!(session.runner().dispatcher().mouse_position(), origin);
+                    session.runner_mut().bus_mut().write_long(entry, control_identity.0);
                 }
                 let before = session.runner().dispatcher().mouse_position();
                 assert!(super::super::activation::ControlActivation::begin_dialog(&mut session, id, generation, number, None).is_none());
