@@ -341,7 +341,7 @@ fn text_edit_pieces_for_kind(
             }
             if !record.drawing_intact || record.owner_port != frame.guest_id
                 || record.styled != styled
-                || (!styled && (record.face != 0 || record.justification != 0 || record.line_height <= 0
+                || (!styled && (record.face != 0 || !matches!(record.justification, -1 | 0 | 1) || record.line_height <= 0
                     // Plain scaled substitutes retain their existing qualification guard.
                     || systemless::quickdraw::fonts::get_font_face_or_default(record.font, record.size).size
                         != if record.size == 0 { 12 } else { record.size }
@@ -1201,6 +1201,23 @@ mod tests {
         let partial_pieces = text_edit_pieces(&[partial], &[], &[], &[back.clone()], viewport);
         assert_eq!(partial_pieces.len(), 1);
         assert_eq!(partial_pieces[0].clip, Rect::from((100, 30, 110, 70)));
+        for justification in [-1, 1] {
+            let mut aligned = record.clone();
+            aligned.justification = justification;
+            let aligned_pieces = text_edit_pieces(&[aligned.clone()], &[], &[], &[back.clone()], viewport);
+            assert!(!aligned_pieces.is_empty(), "standard alignment must keep the owned field eligible");
+            assert_eq!(aligned_pieces.iter().map(|piece| piece.clip).collect::<Vec<_>>(),
+                text_edit_pieces(&[record.clone()], &[], &[], &[back.clone()], viewport)
+                    .iter().map(|piece| piece.clip).collect::<Vec<_>>());
+            let width = 20;
+            let geometry = aligned.line_geometry(0, width).unwrap();
+            let remaining = aligned.dest_rect.3 - aligned.dest_rect.1 - width;
+            assert_eq!(geometry.left, aligned.dest_rect.1 +
+                if justification == 1 { remaining / 2 } else { remaining });
+        }
+        let mut unsupported = record.clone();
+        unsupported.justification = 2;
+        assert!(text_edit_pieces(&[unsupported], &[], &[], &[back.clone()], viewport).is_empty());
         let mut scaled = record.clone();
         scaled.size = 120;
         assert!(text_edit_pieces(&[scaled], &[], &[], &[back.clone()], viewport).is_empty());

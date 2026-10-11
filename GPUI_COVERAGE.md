@@ -187,7 +187,7 @@ All CPU modes share these rules after their guest snapshots are normalized.
 | Frames | Recognized WDEF IDs 0, 1, 2, 3, 4, 5, 8, 12, 16; title strips only for 0, 4, 5, 8, 12, 16. Structure must contain content. | Unknown definitions and unavailable/complex presentation geometry retain guest pixels. `hidden_and_custom_frames_keep_guest_presentation` checks model fallback; actual lifecycle coverage for each listed variant remains required. |
 | Controls | CDEF proc IDs 0, 1, 2, 16, plus popup IDs 1008–1023 with a resolvable selected nonseparator item. | Buttons/checkboxes/radio buttons accept selected `ControlFontStyle` flags within mask `0x0187` (font/face/size and supported additive/system selectors). Other selected Appearance fields and popup overrides retain guest drawing. Buttons/checkboxes/radio buttons additionally require an exact current retained background for their bounds; raw recipe mutation invalidates that evidence until redraw. `overlapping_controls_follow_guest_draw_order_and_custom_fallback` checks model ownership boundaries. |
 | Dialog items | The listed recognized WDEFs, exact dialog/window identity and generation, and a wholly recognized item set: button, static text, EditText, checkbox/radio with known value. | Other item kinds retain the dialog's guest presentation. `inactive_standard_dialog_items_clip_below_front_window` checks model clipping; mixed custom-content and item lifecycle qualification remain open. |
-| TextEdit | Document WDEFs 0, 4, 8, 12, 16; additionally active WDEF1 dialog fields whose actual TERec text, selection and bounds match the current edit item. Drawing must remain intact and owner port must match. | Plain candidates require face0, left justification, positive line height, supported display lines and matching resolved strike size. Styled candidates require separate whole-field paint qualification. Unsupported records retain guest pixels. `text_edit_clips_to_owner_and_front_window_with_custom_fallback` is model evidence; document and wrapped-dialog worker/compositor evidence retains its recorded scope. |
+| TextEdit | Document WDEFs 0, 4, 8, 12, 16; additionally active WDEF1 dialog fields whose actual TERec text, selection and bounds match the current edit item. Drawing must remain intact and owner port must match. | Plain candidates require face0, justification0/1/-1, positive line height, supported display lines and matching resolved strike size. Styled candidates require separate whole-field paint qualification. Unsupported records retain guest pixels. `text_edit_clips_to_owner_and_front_window_with_custom_fallback` is model evidence; document and wrapped-dialog worker/compositor evidence retains its recorded scope. |
 | Lists | Document WDEFs 0, 4, 8, 12, 16; LDEF0, drawing enabled, retained text cells and matching owner port. | Overlapping nonstandard controls decline list replacement. `standard_list_clips_beneath_front_window_and_custom_definition_falls_back` checks model fallback; real draw mutation/disposal evidence and complete cell recipes remain separate requirements. |
 
 The classification guards establish where guest ownership is retained; they do
@@ -5472,3 +5472,23 @@ painter ownership. Evidence is in `control-reregister-paint/guest-cpu-tests.log`
 with source hashes and limits in `guest-cpu-review.json`. This establishes the
 focused CPU drawing boundary; complete display-depth/composed lifecycle and
 physical input qualification remain open.
+
+## Aligned plain TextEdit presentation (2026-10-11)
+
+Recognized centered and right-aligned plain fields now use the existing GPUI
+original-font painter and guest line geometry. Previously eligibility retained
+guest raster for these alignments despite the layout path supporting them.
+Painting trims trailing spaces for alignment, while TEClick measures the whole
+line; frontend pointer translation now reconciles those origins using the CPU
+policy, leaving lookup/selection/editing in the guest Toolbox. Horizontal drag
+capture pins field identity/generation and declines stale captures.
+
+The actual guest-control/TextEdit regression passes left/center/right across
+mono68k, colour68k, PPC8/PPC16, with bounds/point lookup and frontend translation
+at four scales, captured horizontal motion, stale capture rejection and real
+guest click/typing (32.47s). Model fallback/clip tests pass (0.04s), and default
+application compilation passes (11.09s). Evidence is in
+`reference/gpui-demo/aligned-plain-text`. Early alignment-hit and double-click
+probe failures are retained; the final test separates clicks with guest time.
+Composed visual review, physical interaction, other justification values and
+scaled plain-field qualification remain open.

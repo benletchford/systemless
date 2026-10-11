@@ -1,0 +1,21 @@
+{
+  "implementation": "Enable centered/right-aligned plain TextEdit using guest line geometry. Translate visual origin to guest TEClick origin without changing guest text/Toolbox state. Pin drag translation to field identity/generation.",
+  "results": {
+    "model": "PASS 0.04s",
+    "guest_frontend": "PASS 12 CPU/depth/alignment cases with four display scales, 32.47s",
+    "default_build": "PASS 11.09s"
+  },
+  "assertions": [
+    "Guest alignment controls reach real TERec",
+    "Frontend bounds and point lookup agree at scales0.75/1/1.5/2",
+    "Live pointer translation matches native click origin",
+    "Horizontal capture remains pinned; stale capture declines translation",
+    "Actual guest click selects offset1 and typing inserts exact byte/caret2"
+  ],
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "d6860fc33960ca0985268ff4290e473823f1872725bc074651205f60584ec035",
+    "src/bin/gpui_demo_composition.rs": "64cd97f7f5bc34a3b55a29207f213fee4b6e987d625fd835cf8003d0a64c4840",
+    "src/bin/gpui_demo_frames.rs": "296b392906d9a4dd84a80e0e459bbf5ddc29a86473d82d379c53a3b9da8f188e"
+  },
+  "limitations": "No composed appearance review or physical host qualification. Other justification values and scaled plain strikes still retain guest pixels. Full older suite excludes final changes."
+}
