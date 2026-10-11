@@ -545,7 +545,7 @@ fn user_item_upp_weak_import_owns_descriptor_with_dialog_callback_abi() {
                 library.as_bytes(),
                 create.as_bytes(),
                 0x82,
-                &[run_reloc(0x23, 1)],
+                &[sm_index_reloc(0x30, 0)],
             );
             let mut loaded = load_pef_application(&synthetic_pef_with_loader(loader)).unwrap();
             assert!(loaded.imports[0].weak);
@@ -628,7 +628,7 @@ fn user_item_upp_weak_import_owns_descriptor_with_dialog_callback_abi() {
                 library.as_bytes(),
                 dispose.as_bytes(),
                 0x82,
-                &[run_reloc(0x23, 1)],
+                &[sm_index_reloc(0x30, 0)],
             );
             let mut disposal = load_pef_application(&synthetic_pef_with_loader(loader)).unwrap();
             assert!(disposal.imports[0].weak);

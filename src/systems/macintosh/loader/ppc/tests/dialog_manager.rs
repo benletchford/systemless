@@ -426,7 +426,7 @@ fn created_user_item_upp_draws_dialog_through_original_callback_and_rtoc() {
         b"CarbonLib",
         b"NewUserItemUPP",
         0x82,
-        &[run_reloc(0x23, 1)],
+        &[sm_index_reloc(0x30, 0)],
     ));
     let mut loaded = load_pef_application(&pef).unwrap();
     let mut dlog = vec![0; 22];
