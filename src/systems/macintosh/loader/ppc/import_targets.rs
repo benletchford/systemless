@@ -2476,7 +2476,9 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::DSpSetBlankingColor
         }
         ("DrawSprocketLib", "DSpAltBuffer_New") => PpcImportDispatcherTarget::DSpAltBufferNew,
-        ("DrawSprocketLib", "DSpAltBuffer_InvalRect") => PpcImportDispatcherTarget::DSpAltBufferInvalRect,
+        ("DrawSprocketLib", "DSpAltBuffer_InvalRect") => {
+            PpcImportDispatcherTarget::DSpAltBufferInvalRect
+        }
         ("DrawSprocketLib", "DSpAltBuffer_GetCGrafPtr") => {
             PpcImportDispatcherTarget::DSpAltBufferGetCGrafPtr
         }
@@ -5580,8 +5582,46 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetSysBeepVolume") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::GetSysBeepVolume,
         ),
-        ("InterfaceLib", "IUCompString") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::IuCompString,
+        ("InterfaceLib" | "CarbonLib", "IUCompString" | "IUCompPString" | "CompareString") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::CompareString,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "IUEqualString" | "IdenticalString") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::IdenticalString,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "CompareText" | "IUMagPString" | "IUMagString") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::CompareText,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "IdenticalText" | "IUMagIDPString" | "IUMagIDString") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::IdenticalText,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "ScriptOrder" | "IUScriptOrder") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::IuScriptOrder,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "LanguageOrder" | "IULangOrder") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::IuLangOrder,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "TextOrder" | "IUTextOrder") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::IuTextOrder,
+            )
+        }
+        ("InterfaceLib", "IUMetric") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::IuMetric,
+        ),
+        ("InterfaceLib", "IUClearCache") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::IuClearCache,
         ),
         ("InterfaceLib", "IUDatePString" | "DateString") => {
             PpcImportDispatcherTarget::SystemCompatibility(
@@ -5598,9 +5638,6 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "IUTimeString") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::IuTimeString,
-        ),
-        ("InterfaceLib", "IUEqualString") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::IuEqualString,
         ),
         ("InterfaceLib", "Char2Pixel") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::Char2Pixel,

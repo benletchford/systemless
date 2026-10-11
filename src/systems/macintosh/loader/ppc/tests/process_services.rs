@@ -2874,3 +2874,134 @@ fn ppc_measure_just_and_transliterate_compatibility() {
     let updated_dst = ppc_handle_bytes(&mut loaded.memory, &handles, dst_handle).unwrap();
     assert_eq!(updated_dst, b"hello world");
 }
+
+#[test]
+fn ppc_compare_string_and_identical_string_compatibility() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CompareString")).unwrap();
+    let a_ptr = PPC_DATA_BASE + 0x1000;
+    let b_ptr = PPC_DATA_BASE + 0x1100;
+    loaded.memory.add_region(a_ptr, vec![0; 32]);
+    loaded.memory.add_region(b_ptr, vec![0; 32]);
+    ppc_write_pstring_bytes(&mut loaded.memory, a_ptr, b"apple");
+    ppc_write_pstring_bytes(&mut loaded.memory, b_ptr, b"banana");
+
+    loaded.cpu.gpr[3] = a_ptr;
+    loaded.cpu.gpr[4] = b_ptr;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::CompareString,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i32 as i16, -1);
+
+    // IdenticalString: "apple" vs "APPLE" are equal under primary order -> returns 0
+    ppc_write_pstring_bytes(&mut loaded.memory, b_ptr, b"APPLE");
+    loaded.cpu.gpr[3] = a_ptr;
+    loaded.cpu.gpr[4] = b_ptr;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::IdenticalString,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
+fn ppc_compare_text_and_identical_text_compatibility() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CompareText")).unwrap();
+    let a_ptr = PPC_DATA_BASE + 0x1000;
+    let b_ptr = PPC_DATA_BASE + 0x1100;
+    loaded.memory.add_region(a_ptr, b"Hello World".to_vec());
+    loaded.memory.add_region(b_ptr, b"hello world".to_vec());
+
+    // CompareText: 'H' < 'h' in ASCII -> -1
+    loaded.cpu.gpr[3] = a_ptr;
+    loaded.cpu.gpr[4] = b_ptr;
+    loaded.cpu.gpr[5] = 11;
+    loaded.cpu.gpr[6] = 11;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::CompareText,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i32 as i16, -1);
+
+    // IdenticalText: case-insensitive equal -> 0
+    loaded.cpu.gpr[3] = a_ptr;
+    loaded.cpu.gpr[4] = b_ptr;
+    loaded.cpu.gpr[5] = 11;
+    loaded.cpu.gpr[6] = 11;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::IdenticalText,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
+fn ppc_script_order_lang_order_and_text_order_compatibility() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"ScriptOrder")).unwrap();
+
+    // ScriptOrder
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::IuScriptOrder,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i32 as i16, -1);
+
+    // LanguageOrder
+    loaded.cpu.gpr[3] = 2;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::IuLangOrder,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 1);
+
+    // TextOrder
+    let a_ptr = PPC_DATA_BASE + 0x1000;
+    let b_ptr = PPC_DATA_BASE + 0x1100;
+    loaded.memory.add_region(a_ptr, b"Sample".to_vec());
+    loaded.memory.add_region(b_ptr, b"Sample".to_vec());
+    loaded.cpu.gpr[3] = a_ptr;
+    loaded.cpu.gpr[4] = b_ptr;
+    loaded.cpu.gpr[5] = 6;
+    loaded.cpu.gpr[6] = 6;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = 0;
+    loaded.cpu.gpr[9] = 0;
+    loaded.cpu.gpr[10] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::IuTextOrder,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // IUMetric
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::IuMetric),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // IUClearCache
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::IuClearCache,
+        ),
+    );
+}

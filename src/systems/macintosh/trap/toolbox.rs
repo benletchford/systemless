@@ -13256,7 +13256,7 @@ impl super::TrapDispatcher {
                     //                        VAR result: Str255);
                     // IM:I I-487, I-504. Stack: sel(2) + result(4)
                     // + form(2) + dateTime(4) = 12.
-                    0x0000 => {
+                    crate::text_utils::PACK6_IU_DATE_STRING_SELECTOR => {
                         let result_ptr = bus.read_long(sp + 2);
                         let form = bus.read_word(sp + 6) as i16;
                         let date_time = bus.read_long(sp + 8);
@@ -13282,7 +13282,7 @@ impl super::TrapDispatcher {
                     //                        VAR result: Str255);
                     // IM:I I-487, I-504. Stack: sel(2) + result(4)
                     // + wantSec(2) + dateTime(4) = 12.
-                    0x0002 => {
+                    crate::text_utils::PACK6_IU_TIME_STRING_SELECTOR => {
                         let result_ptr = bus.read_long(sp + 2);
                         let want_seconds = bus.read_word(sp + 6) != 0;
                         let date_time = bus.read_long(sp + 8);
@@ -13301,10 +13301,11 @@ impl super::TrapDispatcher {
                     // FUNCTION IUMetric: Boolean;
                     // IM:I I-487, I-505. Stack: sel(2) + result(2)
                     // = 4. Pop 2, leave result word at new SP+0.
-                    0x0004 => {
-                        bus.write_word(sp + 2, 0);
+                    crate::text_utils::PACK6_IU_METRIC_SELECTOR => {
+                        let result = crate::text_utils::evaluate_iu_metric();
+                        bus.write_word(sp + 2, result as u16);
                         cpu.write_reg(Register::A7, sp + 2);
-                        cpu.write_reg(Register::D0, 0);
+                        cpu.write_reg(Register::D0, result as u32);
                         Ok(())
                     }
                     // FUNCTION IUGetIntl(theID: Integer): Handle;
@@ -13312,7 +13313,7 @@ impl super::TrapDispatcher {
                     // + result(4) = 8. Pop 4, leave result long at
                     // new SP+0. Search loaded resource files first, then use
                     // the built-in U.S. System-file records for IDs 0 and 1.
-                    0x0006 => {
+                    crate::text_utils::PACK6_IU_GET_INTL_SELECTOR => {
                         let id = bus.read_word(sp + 2) as i16;
                         let handle = if let Some((refnum, ptr)) =
                             self.find_or_load_resource_any(bus, *b"INTL", id)
@@ -13337,7 +13338,7 @@ impl super::TrapDispatcher {
                     // IM:I I-487, I-503. Stack: sel(2) +
                     // intlParam(4) + theID(2) + refNum(2) = 10.
                     // No-op (HLE doesn't track INTL overrides).
-                    0x0008 => {
+                    crate::text_utils::PACK6_IU_SET_INTL_SELECTOR => {
                         cpu.write_reg(Register::A7, sp + 10);
                         cpu.write_reg(Register::D0, 0);
                         Ok(())
@@ -13348,18 +13349,14 @@ impl super::TrapDispatcher {
                     // IM:I I-487, I-507. Stack: sel(2) + bLen(2) +
                     // aLen(2) + bPtr(4) + aPtr(4) + result(2) = 16.
                     // Pop 14, leave result at new SP+0.
-                    0x000A => {
+                    crate::text_utils::PACK6_IU_MAG_STRING_SELECTOR => {
                         let a_ptr = bus.read_long(sp + 10);
                         let b_ptr = bus.read_long(sp + 6);
                         let a_len = bus.read_word(sp + 4) as usize;
                         let b_len = bus.read_word(sp + 2) as usize;
                         let a = bus.read_bytes(a_ptr, a_len);
                         let b = bus.read_bytes(b_ptr, b_len);
-                        let result: i16 = match a.cmp(&b) {
-                            std::cmp::Ordering::Less => -1,
-                            std::cmp::Ordering::Equal => 0,
-                            std::cmp::Ordering::Greater => 1,
-                        };
+                        let result = crate::text_utils::evaluate_mag_string(&a, &b);
                         bus.write_word(sp + 14, result as u16);
                         cpu.write_reg(Register::A7, sp + 14);
                         cpu.write_reg(Register::D0, result as u16 as u32);
@@ -13370,22 +13367,14 @@ impl super::TrapDispatcher {
                     //                        Integer;
                     // IM:I I-487, I-507. Same stack as IUMagString.
                     // Returns 0 (case-insensitive equal) or 1 (not).
-                    0x000C => {
+                    crate::text_utils::PACK6_IU_MAG_ID_STRING_SELECTOR => {
                         let a_ptr = bus.read_long(sp + 10);
                         let b_ptr = bus.read_long(sp + 6);
                         let a_len = bus.read_word(sp + 4) as usize;
                         let b_len = bus.read_word(sp + 2) as usize;
-                        let a: Vec<u8> = bus
-                            .read_bytes(a_ptr, a_len)
-                            .iter()
-                            .map(|c| c.to_ascii_lowercase())
-                            .collect();
-                        let b: Vec<u8> = bus
-                            .read_bytes(b_ptr, b_len)
-                            .iter()
-                            .map(|c| c.to_ascii_lowercase())
-                            .collect();
-                        let result: u16 = if a == b { 0 } else { 1 };
+                        let a = bus.read_bytes(a_ptr, a_len);
+                        let b = bus.read_bytes(b_ptr, b_len);
+                        let result = crate::text_utils::evaluate_mag_id_string(&a, &b);
                         bus.write_word(sp + 14, result);
                         cpu.write_reg(Register::A7, sp + 14);
                         cpu.write_reg(Register::D0, result as u32);
@@ -13398,7 +13387,7 @@ impl super::TrapDispatcher {
                     // IM:I I-487, I-505. Stack: sel(2) +
                     // intlParam(4) + result(4) + form(2) +
                     // dateTime(4) = 16.
-                    0x000E => {
+                    crate::text_utils::PACK6_IU_DATE_P_STRING_SELECTOR => {
                         let intl_handle = bus.read_long(sp + 2);
                         let result_ptr = bus.read_long(sp + 6);
                         let form = bus.read_word(sp + 10) as i16;
@@ -13427,7 +13416,7 @@ impl super::TrapDispatcher {
                     // IM:I I-487, I-505. Stack: sel(2) +
                     // intlParam(4) + result(4) + wantSec(2) +
                     // dateTime(4) = 16.
-                    0x0010 => {
+                    crate::text_utils::PACK6_IU_TIME_P_STRING_SELECTOR => {
                         let intl_handle = bus.read_long(sp + 2);
                         let result_ptr = bus.read_long(sp + 6);
                         let want_seconds = bus.read_word(sp + 10) != 0;
@@ -13451,7 +13440,7 @@ impl super::TrapDispatcher {
                     //                         intlParam: Handle);
                     // IM:VI 14-135. Stack: sel(2) + intlParam(4) +
                     // result(4) + longFlag(2) + dateTime ptr(4) = 16.
-                    0x0014 => {
+                    crate::text_utils::PACK6_IU_L_DATE_STRING_SELECTOR => {
                         let intl_handle = bus.read_long(sp + 2);
                         let result_ptr = bus.read_long(sp + 6);
                         let form = bus.read_word(sp + 10) as i16;
@@ -13485,7 +13474,7 @@ impl super::TrapDispatcher {
                     //                         intlParam: Handle);
                     // IM:VI 14-135. Stack: sel(2) + intlParam(4) +
                     // result(4) + wantSec(2) + dateTime ptr(4) = 16.
-                    0x0016 => {
+                    crate::text_utils::PACK6_IU_L_TIME_STRING_SELECTOR => {
                         let intl_handle = bus.read_long(sp + 2);
                         let result_ptr = bus.read_long(sp + 6);
                         let want_seconds = bus.read_word(sp + 10) != 0;
@@ -13510,7 +13499,7 @@ impl super::TrapDispatcher {
                     // PROCEDURE IUClearCache;
                     // IM:VI 14-76. Stack: sel(2) only. No-op (HLE
                     // has no IUtil cache).
-                    0x0018 => {
+                    crate::text_utils::PACK6_IU_CLEAR_CACHE_SELECTOR => {
                         cpu.write_reg(Register::A7, sp + 2);
                         cpu.write_reg(Register::D0, 0);
                         Ok(())
@@ -13523,18 +13512,14 @@ impl super::TrapDispatcher {
                     // bLen(2) + aLen(2) + bPtr(4) + aPtr(4) +
                     // result(2) = 20. Pop 18, leave result at new
                     // SP+0. itl2Handle ignored (HLE has no itl2).
-                    0x001A => {
+                    crate::text_utils::PACK6_IU_MAG_P_STRING_SELECTOR => {
                         let a_ptr = bus.read_long(sp + 14);
                         let b_ptr = bus.read_long(sp + 10);
                         let a_len = bus.read_word(sp + 8) as usize;
                         let b_len = bus.read_word(sp + 6) as usize;
                         let a = bus.read_bytes(a_ptr, a_len);
                         let b = bus.read_bytes(b_ptr, b_len);
-                        let result: i16 = match a.cmp(&b) {
-                            std::cmp::Ordering::Less => -1,
-                            std::cmp::Ordering::Equal => 0,
-                            std::cmp::Ordering::Greater => 1,
-                        };
+                        let result = crate::text_utils::evaluate_mag_string(&a, &b);
                         bus.write_word(sp + 18, result as u16);
                         cpu.write_reg(Register::A7, sp + 18);
                         cpu.write_reg(Register::D0, result as u16 as u32);
@@ -13545,22 +13530,14 @@ impl super::TrapDispatcher {
                     //                         itl2Handle: Handle):
                     //                         Integer;
                     // IM:VI 14-135. Same stack as IUMagPString.
-                    0x001C => {
+                    crate::text_utils::PACK6_IU_MAG_ID_P_STRING_SELECTOR => {
                         let a_ptr = bus.read_long(sp + 14);
                         let b_ptr = bus.read_long(sp + 10);
                         let a_len = bus.read_word(sp + 8) as usize;
                         let b_len = bus.read_word(sp + 6) as usize;
-                        let a: Vec<u8> = bus
-                            .read_bytes(a_ptr, a_len)
-                            .iter()
-                            .map(|c| c.to_ascii_lowercase())
-                            .collect();
-                        let b: Vec<u8> = bus
-                            .read_bytes(b_ptr, b_len)
-                            .iter()
-                            .map(|c| c.to_ascii_lowercase())
-                            .collect();
-                        let result: u16 = if a == b { 0 } else { 1 };
+                        let a = bus.read_bytes(a_ptr, a_len);
+                        let b = bus.read_bytes(b_ptr, b_len);
+                        let result = crate::text_utils::evaluate_mag_id_string(&a, &b);
                         bus.write_word(sp + 18, result);
                         cpu.write_reg(Register::A7, sp + 18);
                         cpu.write_reg(Register::D0, result as u32);
@@ -13571,14 +13548,10 @@ impl super::TrapDispatcher {
                     // IM:VI 14-135. Stack: sel(2) + script2(2) +
                     // script1(2) + result(2) = 8. Pop 6, leave
                     // result at new SP+0.
-                    0x001E => {
+                    crate::text_utils::PACK6_IU_SCRIPT_ORDER_SELECTOR => {
                         let script1 = bus.read_word(sp + 4) as i16;
                         let script2 = bus.read_word(sp + 2) as i16;
-                        let result: i16 = match script1.cmp(&script2) {
-                            std::cmp::Ordering::Less => -1,
-                            std::cmp::Ordering::Equal => 0,
-                            std::cmp::Ordering::Greater => 1,
-                        };
+                        let result = crate::text_utils::evaluate_script_order(script1, script2);
                         bus.write_word(sp + 6, result as u16);
                         cpu.write_reg(Register::A7, sp + 6);
                         cpu.write_reg(Register::D0, result as u16 as u32);
@@ -13587,14 +13560,10 @@ impl super::TrapDispatcher {
                     // FUNCTION IULangOrder(language1, language2:
                     //                      LangCode): Integer;
                     // IM:VI 14-135. Same stack as IUScriptOrder.
-                    0x0020 => {
+                    crate::text_utils::PACK6_IU_LANG_ORDER_SELECTOR => {
                         let lang1 = bus.read_word(sp + 4) as i16;
                         let lang2 = bus.read_word(sp + 2) as i16;
-                        let result: i16 = match lang1.cmp(&lang2) {
-                            std::cmp::Ordering::Less => -1,
-                            std::cmp::Ordering::Equal => 0,
-                            std::cmp::Ordering::Greater => 1,
-                        };
+                        let result = crate::text_utils::evaluate_lang_order(lang1, lang2);
                         bus.write_word(sp + 6, result as u16);
                         cpu.write_reg(Register::A7, sp + 6);
                         cpu.write_reg(Register::D0, result as u16 as u32);
@@ -13611,18 +13580,20 @@ impl super::TrapDispatcher {
                     // + aLen(2) + bPtr(4) + aPtr(4) + result(2) =
                     // 24. Pop 22, leave result at new SP+0. All
                     // script/lang args ignored in single-script HLE.
-                    0x0022 => {
+                    crate::text_utils::PACK6_IU_TEXT_ORDER_SELECTOR => {
                         let a_ptr = bus.read_long(sp + 18);
                         let b_ptr = bus.read_long(sp + 14);
                         let a_len = bus.read_word(sp + 12) as usize;
                         let b_len = bus.read_word(sp + 10) as usize;
+                        let a_script = bus.read_word(sp + 8) as i16;
+                        let b_script = bus.read_word(sp + 6) as i16;
+                        let a_lang = bus.read_word(sp + 4) as i16;
+                        let b_lang = bus.read_word(sp + 2) as i16;
                         let a = bus.read_bytes(a_ptr, a_len);
                         let b = bus.read_bytes(b_ptr, b_len);
-                        let result: i16 = match a.cmp(&b) {
-                            std::cmp::Ordering::Less => -1,
-                            std::cmp::Ordering::Equal => 0,
-                            std::cmp::Ordering::Greater => 1,
-                        };
+                        let result = crate::text_utils::evaluate_text_order(
+                            &a, &b, a_script, b_script, a_lang, b_lang,
+                        );
                         bus.write_word(sp + 22, result as u16);
                         cpu.write_reg(Register::A7, sp + 22);
                         cpu.write_reg(Register::D0, result as u16 as u32);
@@ -13640,7 +13611,7 @@ impl super::TrapDispatcher {
                     // caller's defensive (handle == NIL) check
                     // sends them down the "table not available"
                     // path.
-                    0x0024 => {
+                    crate::text_utils::PACK6_IU_GET_INTL_TABLE_SELECTOR => {
                         let length_ptr = bus.read_long(sp + 2);
                         let offset_ptr = bus.read_long(sp + 6);
                         let handle_ptr = bus.read_long(sp + 10);

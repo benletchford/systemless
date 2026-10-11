@@ -807,6 +807,78 @@ fn import_bindings_classify_text_and_conversion_imports() {
             crate::loader::ppc::PpcSystemCompatibilityOperation::Transliterate,
         )
     );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "CompareString"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            crate::loader::ppc::PpcSystemCompatibilityOperation::CompareString,
+        )
+    );
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "CompareString"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            crate::loader::ppc::PpcSystemCompatibilityOperation::CompareString,
+        )
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "IdenticalString"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            crate::loader::ppc::PpcSystemCompatibilityOperation::IdenticalString,
+        )
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "CompareText"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            crate::loader::ppc::PpcSystemCompatibilityOperation::CompareText,
+        )
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "IdenticalText"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            crate::loader::ppc::PpcSystemCompatibilityOperation::IdenticalText,
+        )
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "IUMagString"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            crate::loader::ppc::PpcSystemCompatibilityOperation::CompareText,
+        )
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "IUMagIDString"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            crate::loader::ppc::PpcSystemCompatibilityOperation::IdenticalText,
+        )
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "ScriptOrder"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            crate::loader::ppc::PpcSystemCompatibilityOperation::IuScriptOrder,
+        )
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "LanguageOrder"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            crate::loader::ppc::PpcSystemCompatibilityOperation::IuLangOrder,
+        )
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "TextOrder"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            crate::loader::ppc::PpcSystemCompatibilityOperation::IuTextOrder,
+        )
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "IUMetric"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            crate::loader::ppc::PpcSystemCompatibilityOperation::IuMetric,
+        )
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "IUClearCache"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            crate::loader::ppc::PpcSystemCompatibilityOperation::IuClearCache,
+        )
+    );
 }
 
 #[test]
