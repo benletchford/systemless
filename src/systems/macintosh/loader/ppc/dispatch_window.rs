@@ -4895,6 +4895,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                 if ppc_move_window_coordinates(
                     memory,
                     gworlds,
+                    window_list,
                     window,
                     new_content.1,
                     new_content.0,
