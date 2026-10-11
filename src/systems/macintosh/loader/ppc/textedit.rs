@@ -2419,7 +2419,7 @@ pub(super) fn ppc_te_draw(
         }
     }
     // Text (1993), p. 2-88: retain evidence only after actual drawing.
-    let drawing = crate::text_edit::TextEditDrawing::capture(port, view, |addr| memory.read_u8(addr));
+    let drawing = crate::text_edit::TextEditDrawing::capture_editor(te_handle, port, view, |addr| memory.read_u8(addr));
     memory.presentation().record_text_edit_drawing(te_handle, drawing);
 
 }

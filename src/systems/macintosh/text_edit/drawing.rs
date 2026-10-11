@@ -10,6 +10,7 @@ pub(crate) struct TextEditDrawing {
     bounds: (i16, i16, i16, i16),
     view: (i16, i16, i16, i16),
     pixels: Vec<u8>,
+    editor_recipe: Option<Box<super::TextEditSnapshot>>,
     pub(crate) painted_regions: Vec<(i16, i16, i16, i16)>,
     pub(crate) solid_caret: Option<((i16, i16, i16, i16), u16, u16)>,
 }
@@ -56,6 +57,7 @@ impl TextEditDrawing {
 
     pub(crate) fn same_pixels(&self, other: &Self) -> bool {
         self.same_surface(other) && self.pixels == other.pixels
+            && self.editor_recipe == other.editor_recipe
     }
 
     /// Keep every unchanged pixel of a completed native draw. Application
@@ -105,6 +107,22 @@ impl TextEditDrawing {
             }
         }
         output
+    }
+
+    /// Bind completed editor ink to the canonical guest contents and layout.
+    /// Lists use `capture` directly because their cells have separate ownership.
+    pub(crate) fn capture_editor(
+        handle: u32,
+        port: u32,
+        view: (i16, i16, i16, i16),
+        mut read: impl FnMut(u32) -> Option<u8>,
+    ) -> Option<Self> {
+        let recipe = super::snapshot_guest_records(&[(handle, 0)], &mut read)
+            .records.into_iter().next()?;
+        if recipe.owner_port != port || recipe.view_rect != view { return None; }
+        let mut drawing = Self::capture(port, view, read)?;
+        drawing.editor_recipe = Some(Box::new(recipe));
+        Some(drawing)
     }
 
     /// Text (1993), pp. 2-16, 2-88: allocation does not paint a view.
@@ -234,6 +252,7 @@ impl TextEditDrawing {
             bounds,
             view,
             pixels,
+            editor_recipe: None,
             painted_regions,
             solid_caret: None,
         })
@@ -382,6 +401,38 @@ mod tests {
         mem[182..184].copy_from_slice(&0u16.to_be_bytes());
         slot.record_text_edit_drawing(42, capture(&mem));
         assert!(!slot.text_edit_drawing_intact(42, capture(&mem), 256));
+    }
+
+    #[test]
+    fn editor_mutation_requires_fresh_ink_even_when_pixels_match() {
+        for depth in [1, 8, 16] {
+            let mut mem = memory(depth);
+            mem.resize(0x900, 0);
+            for (at, value) in [(0x500, 0x600u32), (0x63e, 0x510),
+                (0x510, 0x800), (0x652, 16)] {
+                mem[at..at + 4].copy_from_slice(&value.to_be_bytes());
+            }
+            for (at, value) in [(0x608, 0u16), (0x60a, 1), (0x60c, 2),
+                (0x60e, 7), (0x63c, 3), (0x65e, 1), (0x662, 3)] {
+                mem[at..at + 2].copy_from_slice(&value.to_be_bytes());
+            }
+            mem[0x800..0x803].copy_from_slice(b"abc");
+            let capture = |mem: &[u8]| TextEditDrawing::capture_editor(
+                0x500, 16, (0, 1, 2, 7), |a| mem.get(a as usize).copied());
+            let slot = crate::memory::presentation::PresentationSlot::default();
+            slot.record_text_edit_drawing(0x500, capture(&mem));
+            assert!(slot.text_edit_drawing_intact(0x500, capture(&mem), 256));
+            for address in [0x800, 0x650, 0x64c, 0x63a, 0x64a, 0x620, 0x662] {
+                let previous = mem[address];
+                mem[address] ^= 1;
+                assert!(!slot.text_edit_drawing_intact(0x500, capture(&mem), 256),
+                    "raw editor mutation at {address:x}, depth {depth}");
+                mem[address] = previous;
+            }
+            mem[0x800] = b'z';
+            slot.record_text_edit_drawing(0x500, capture(&mem));
+            assert!(slot.text_edit_drawing_intact(0x500, capture(&mem), 256));
+        }
     }
 
     #[test]
