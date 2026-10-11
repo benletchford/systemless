@@ -78,6 +78,8 @@ the 68K standard-dialog redraw clears newly exposed content while retaining
 application-painted custom dialog content. DialogSelect key input now repaints
 the guest-owned edit field immediately on both CPUs; the replays assert a new
 glyph before any window switch, alongside the semantic text snapshot checks.
+The PowerPC key redraw is restricted to the edited DITL item, with a test that
+guest drawing over a different item survives.
 
 The dependency order is menus, frames, dialogs, controls, lists/TextEdit, then
 Standard File. The first end-to-end gate is one standard modal dialog on each

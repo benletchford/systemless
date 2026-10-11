@@ -1867,7 +1867,9 @@ fn ppc_dispatch_dialog_compatibility(
                     PpcImportAction::Return(1)
                 }
                 crate::dialog_manager::DialogSelectAction::KeyStroke {
-                    character, ..
+                    edit_item,
+                    character,
+                    ..
                 } => {
                     let te_handle = memory
                         .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
@@ -1891,9 +1893,11 @@ fn ppc_dispatch_dialog_compatibility(
                     }
                     // DialogSelect delegates key input to TextEdit, whose
                     // TEKey operation redraws the changed field immediately.
+                    // Limit this redraw to the active edit item so guest-owned
+                    // picture, control, and user-item pixels are untouched.
                     // Macintosh Toolbox Essentials (1992), pp. 6-140--6-141;
                     // Text (1993), pp. 2-81--2-82.
-                    let _ = ppc_draw_dialog(
+                    let _ = ppc_draw_dialog_selected(
                         memory,
                         handles,
                         controls,
@@ -1902,6 +1906,7 @@ fn ppc_dispatch_dialog_compatibility(
                         vfs_resources,
                         current_resource_refnum,
                         dialog,
+                        Some(edit_item),
                     );
                     PpcImportAction::Return(1)
                 }
@@ -4501,6 +4506,30 @@ pub(super) fn ppc_draw_dialog(
     current_resource_refnum: i16,
     dialog: u32,
 ) -> bool {
+    ppc_draw_dialog_selected(
+        memory,
+        handles,
+        controls,
+        gworlds,
+        screen_clut,
+        vfs_resources,
+        current_resource_refnum,
+        dialog,
+        None,
+    )
+}
+
+pub(super) fn ppc_draw_dialog_selected(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    controls: &[PpcControlRecord],
+    gworlds: &[PpcGWorldRecord],
+    screen_clut: &[[u16; 3]; 256],
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    dialog: u32,
+    only_item: Option<i16>,
+) -> bool {
     let Some(front) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) else {
         return false;
     };
@@ -4519,6 +4548,9 @@ pub(super) fn ppc_draw_dialog(
         .read_u16_be(dialog.wrapping_add(DIALOG_DEFAULT_ITEM_OFFSET))
         .unwrap_or(1) as usize;
     for (index, item) in items.iter().enumerate() {
+        if only_item.is_some_and(|number| number != (index + 1) as i16) {
+            continue;
+        }
         // Imaging With QuickDraw (1994), pp. 2-20--2-21: drawing is clipped
         // to the port's visible region. Some applications deliberately keep
         // inactive DITL items beyond the DialogRecord's portRect; the native
@@ -4680,7 +4712,7 @@ pub(super) fn ppc_draw_dialog(
     // controls owned by the dialog as a final pass so SetControlValue calls
     // made before the dialog is positioned cannot leave them missing or at
     // stale local coordinates.
-    for record in controls {
+    for record in controls.iter().filter(|_| only_item.is_none()) {
         if !(1008..=1023).contains(&(record.proc_id & 0x0fff)) {
             continue;
         }
