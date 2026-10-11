@@ -1869,6 +1869,7 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
         ("Dequeue", PpcSystemCompatibilityOperation::Dequeue),
         ("Enqueue", PpcSystemCompatibilityOperation::Enqueue),
         ("FindNextComponent", PpcSystemCompatibilityOperation::FindNextComponent),
+        ("Font2Script", PpcSystemCompatibilityOperation::Font2Script),
         ("GetNextProcess", PpcSystemCompatibilityOperation::GetNextProcess),
         ("GetEvQHdr", PpcSystemCompatibilityOperation::GetEvQHdr),
         ("GetScript", PpcSystemCompatibilityOperation::GetScript),
@@ -1901,6 +1902,7 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
         ("NMRemove", PpcSystemCompatibilityOperation::NmRemove),
         ("ObscureCursor", PpcSystemCompatibilityOperation::ObscureCursor),
         ("OpenDefaultComponent", PpcSystemCompatibilityOperation::OpenDefaultComponent),
+        ("ReplaceText", PpcSystemCompatibilityOperation::ReplaceText),
         ("ResetAlertStage", PpcSystemCompatibilityOperation::ResetAlertStage),
         ("SetFrontProcess", PpcSystemCompatibilityOperation::SetFrontProcess),
         ("StyledLineBreak", PpcSystemCompatibilityOperation::StyledLineBreak),
@@ -2398,3 +2400,64 @@ fn ppc_styled_line_break_overflow_when_entire_run_fits() {
     assert_eq!(loaded.memory.read_u32_be(offset_ptr), Some(5));
     assert_eq!(loaded.memory.read_u32_be(width_ptr), Some(10 << 16));
 }
+
+#[test]
+fn ppc_replace_text_compatibility_replaces_and_grows_handle() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"ReplaceText")).unwrap();
+    let base_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        b"A^0B^0",
+    );
+    let sub_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        b"LONG",
+    );
+    let key_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(key_ptr, vec![0; 16]);
+    assert!(ppc_write_pstring_bytes(&mut loaded.memory, key_ptr, b"^0"));
+
+    loaded.cpu.gpr[3] = base_handle;
+    loaded.cpu.gpr[4] = sub_handle;
+    loaded.cpu.gpr[5] = key_ptr;
+
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::ReplaceText,
+        ),
+    );
+
+    assert_eq!(loaded.cpu.gpr[3], 2);
+    let handles = loaded.handles();
+    let bytes = ppc_handle_bytes(&mut loaded.memory, &handles, base_handle).unwrap();
+    assert_eq!(bytes, b"ALONGBLONG");
+}
+
+#[test]
+fn ppc_font2script_compatibility_maps_script_ranges() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"Font2Script")).unwrap();
+    loaded.cpu.gpr[3] = 0x4000; // Japanese
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::Font2Script,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 1);
+
+    loaded.cpu.gpr[3] = 0; // Roman
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::Font2Script,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+

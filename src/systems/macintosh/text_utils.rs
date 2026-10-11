@@ -966,7 +966,224 @@ pub fn evaluate_string_to_num(bytes: &[u8]) -> i32 {
     value.wrapping_mul(sign) as i32
 }
 
+/// VisibleLength ($84080028) selector.
+pub const VISIBLE_LENGTH_SELECTOR: u32 = 0x8408_0028;
+
+/// ReplaceText ($820CFFDC) selector.
+pub const REPLACE_TEXT_SELECTOR: u32 = 0x820C_FFDC;
+
+/// Font2Script selector (6).
+pub const FONT2SCRIPT_SELECTOR: i32 = 6;
+
+/// CharByte selector (16).
+pub const CHAR_BYTE_SELECTOR: i32 = 16;
+
+/// CharType selector (18).
+pub const CHAR_TYPE_SELECTOR: i32 = 18;
+
+/// Classic nilHandleErr error code (-109).
+pub const NIL_HANDLE_ERR: i16 = -109;
+
+/// Classic memWZErr error code (-111).
+pub const MEM_WZ_ERR: i16 = -111;
+
+/// Classic memFullErr error code (-108).
+pub const MEM_FULL_ERR: i16 = -108;
+
+/// Single-byte character indicator for CharByte (`smSingleByte = 0`).
+pub const SM_SINGLE_BYTE: i16 = 0;
+
+/// First byte (lead byte) of a multibyte character for CharByte (`smFirstByte = 1`).
+pub const SM_FIRST_BYTE: i16 = 1;
+
+/// Last byte (trailing byte) of a multibyte character for CharByte (`smLastByte = -1`).
+pub const SM_LAST_BYTE: i16 = -1;
+
+/// Middle byte of a 3+ byte character for CharByte (`smMiddleByte = 2`).
+pub const SM_MIDDLE_BYTE: i16 = 2;
+
+/// Roman script code (`smRoman = 0`).
+pub const SM_ROMAN: u8 = 0;
+
+/// Japanese script code (`smJapanese = 1`).
+pub const SM_JAPANESE: u8 = 1;
+
+/// Traditional Chinese script code (`smTradChinese = 2`).
+pub const SM_TRAD_CHINESE: u8 = 2;
+
+/// Korean script code (`smKorean = 3`).
+pub const SM_KOREAN: u8 = 3;
+
+/// Simplified Chinese script code (`smSimpChinese = 25`).
+pub const SM_SIMP_CHINESE: u8 = 25;
+
+/// Maps a font family ID to its corresponding Macintosh script system code.
+///
+/// Font families in the range 0x4000..=0xBFFF encode script system codes per
+/// `(((font - 0x4000) / 0x0200) + 1)`. All other fonts default to Roman (`0`).
+///
+/// References:
+/// - Inside Macintosh: Text (1993), p. 6-77 (`Font2Script`).
+#[inline]
+pub fn font_id_to_script(font_id: i16) -> u8 {
+    let font = font_id as u16;
+    if (0x4000..=0xBFFF).contains(&font) {
+        (((font - 0x4000) / 0x0200) + 1) as u8
+    } else {
+        0
+    }
+}
+
+/// Returns true if the script system uses multibyte character encodings.
+#[inline]
+pub fn script_is_multibyte(script: u8) -> bool {
+    matches!(
+        script,
+        SM_JAPANESE | SM_TRAD_CHINESE | SM_KOREAN | SM_SIMP_CHINESE
+    )
+}
+
+/// Returns true if `byte` is the lead byte of a multibyte character for `script`.
+#[inline]
+pub fn script_is_lead_byte(script: u8, byte: u8) -> bool {
+    match script {
+        SM_JAPANESE => (0x81..=0x9F).contains(&byte) || (0xE0..=0xFC).contains(&byte),
+        SM_TRAD_CHINESE | SM_KOREAN | SM_SIMP_CHINESE => (0xA1..=0xFE).contains(&byte),
+        _ => false,
+    }
+}
+
+/// Returns the byte length of the character starting at `offset` in `text` for `script`.
+pub fn script_character_len(script: u8, text: &[u8], offset: usize) -> usize {
+    let Some(&byte) = text.get(offset) else {
+        return 0;
+    };
+    if script_is_lead_byte(script, byte) && offset + 1 < text.len() {
+        2
+    } else {
+        1
+    }
+}
+
+/// Returns true if all characters in `text` are complete (no dangling lead byte at end).
+pub fn script_is_complete_text(script: u8, text: &[u8]) -> bool {
+    let mut offset = 0;
+    while offset < text.len() {
+        if script_is_lead_byte(script, text[offset]) {
+            if offset + 1 == text.len() {
+                return false;
+            }
+            offset += 2;
+        } else {
+            offset += 1;
+        }
+    }
+    true
+}
+
+/// Analyzes the byte at `offset` within `text` for `script` and returns its character byte position.
+///
+/// Returns:
+/// - `SM_FIRST_BYTE` (1) if `offset` points to a multibyte character lead byte.
+/// - `SM_LAST_BYTE` (-1) if `offset` points to a multibyte character trailing byte.
+/// - `SM_SINGLE_BYTE` (0) if `offset` points to a single-byte character, if `script` is single-byte,
+///   or if `offset` is out of range.
+///
+/// References:
+/// - Inside Macintosh Volume V (1986), p. V-306 (`CharByte`).
+/// - Inside Macintosh: Text (1993), pp. 6-78 to 6-79.
+pub fn evaluate_char_byte(text: &[u8], offset: usize, script: u8) -> i16 {
+    if !script_is_multibyte(script) || offset >= text.len() {
+        return SM_SINGLE_BYTE;
+    }
+    let mut pos = 0;
+    while pos < text.len() {
+        if script_is_lead_byte(script, text[pos]) && pos + 1 < text.len() {
+            if pos == offset {
+                return SM_FIRST_BYTE;
+            }
+            if pos + 1 == offset {
+                return SM_LAST_BYTE;
+            }
+            pos += 2;
+        } else {
+            if pos == offset {
+                return SM_SINGLE_BYTE;
+            }
+            pos += 1;
+        }
+    }
+    SM_SINGLE_BYTE
+}
+
+/// Canonical architecture-neutral evaluation of the classic Macintosh `VisibleLength` function.
+///
+/// Returns the length of Roman, left-to-right text excluding trailing spaces (`0x20`) and tabs (`0x09`).
+///
+/// References:
+/// - Inside Macintosh Volume VI (1991), pp. 14-130 to 14-132
+/// - Inside Macintosh: Text (1993), pp. 3-36 to 3-38, 3-82
+#[inline]
+pub fn evaluate_visible_length(bytes: &[u8]) -> usize {
+    let mut visible = bytes.len();
+    while visible > 0 && matches!(bytes[visible - 1], b' ' | b'\t') {
+        visible -= 1;
+    }
+    visible
+}
+
+/// Canonical architecture-neutral evaluation of the classic Macintosh `ReplaceText` function.
+///
+/// Searches `base` for occurrences of `key` and replaces each occurrence with `substitution`,
+/// respecting multibyte character boundaries for `script`.
+///
+/// Returns:
+/// - `(substitutions_count, Some(replaced_bytes))` if one or more substitutions occurred.
+/// - `(0, None)` if no substitutions occurred, `base` is empty, or `key` is empty or invalid.
+///
+/// References:
+/// - Inside Macintosh: Text (1993), pp. 5-74 to 5-75 and Table D-3.
+pub fn evaluate_replace_text(
+    base: &[u8],
+    substitution: &[u8],
+    key: &[u8],
+    script: u8,
+) -> (i16, Option<Vec<u8>>) {
+    if base.is_empty() || key.is_empty() {
+        return (0, None);
+    }
+    if !script_is_complete_text(script, key) {
+        return (0, None);
+    }
+
+    let mut offset = 0;
+    let mut substitutions = 0i16;
+    let mut replaced = Vec::with_capacity(base.len());
+
+    while offset < base.len() {
+        let candidate_end = offset.saturating_add(key.len());
+        let matches_key = candidate_end <= base.len() && base[offset..candidate_end] == *key;
+        if matches_key {
+            replaced.extend_from_slice(substitution);
+            substitutions = substitutions.saturating_add(1);
+            offset = candidate_end;
+        } else {
+            let char_len = script_character_len(script, base, offset);
+            let next_offset = offset.saturating_add(char_len).min(base.len());
+            replaced.extend_from_slice(&base[offset..next_offset]);
+            offset = next_offset;
+        }
+    }
+
+    if substitutions == 0 {
+        (0, None)
+    } else {
+        (substitutions, Some(replaced))
+    }
+}
+
 #[cfg(test)]
+
 mod tests {
     use super::*;
 
@@ -1585,5 +1802,89 @@ mod tests {
         assert_eq!(eval.output_offset, 1);
         assert_eq!(eval.remaining_width, 0);
     }
-}
 
+    #[test]
+    fn test_visible_length_matrix() {
+        assert_eq!(evaluate_visible_length(b"hello   \t  "), 5);
+        assert_eq!(evaluate_visible_length(b"   \t"), 0);
+        assert_eq!(evaluate_visible_length(b""), 0);
+        assert_eq!(evaluate_visible_length(b"abc def"), 7);
+        assert_eq!(evaluate_visible_length(b"hello\tworld\t "), 11);
+        assert_eq!(evaluate_visible_length(b"no whitespace"), 13);
+    }
+
+    #[test]
+    fn test_font_id_to_script() {
+        assert_eq!(font_id_to_script(0), SM_ROMAN);
+        assert_eq!(font_id_to_script(1), SM_ROMAN);
+        assert_eq!(font_id_to_script(0x3FFF), SM_ROMAN);
+        assert_eq!(font_id_to_script(0x4000), SM_JAPANESE);
+        assert_eq!(font_id_to_script(0x4200), SM_TRAD_CHINESE);
+        assert_eq!(font_id_to_script(0x4400), SM_KOREAN);
+        assert_eq!(font_id_to_script(0x7000), 25); // SM_SIMP_CHINESE
+        assert_eq!(font_id_to_script(-1), SM_ROMAN);
+        assert_eq!(font_id_to_script(0x7FFF), 32);
+    }
+
+    #[test]
+    fn test_char_byte_matrix() {
+        // Roman script: always single byte
+        let text_roman = b"Hello, World!";
+        for i in 0..text_roman.len() {
+            assert_eq!(evaluate_char_byte(text_roman, i, SM_ROMAN), SM_SINGLE_BYTE);
+        }
+
+        // Japanese script: Shift-JIS lead/trailing bytes
+        // 0x81 0x40 is Japanese fullwidth space; b'A' is ASCII
+        let text_jp = &[0x81, 0x40, b'A', 0x82, 0x60];
+        assert_eq!(evaluate_char_byte(text_jp, 0, SM_JAPANESE), SM_FIRST_BYTE);
+        assert_eq!(evaluate_char_byte(text_jp, 1, SM_JAPANESE), SM_LAST_BYTE);
+        assert_eq!(evaluate_char_byte(text_jp, 2, SM_JAPANESE), SM_SINGLE_BYTE);
+        assert_eq!(evaluate_char_byte(text_jp, 3, SM_JAPANESE), SM_FIRST_BYTE);
+        assert_eq!(evaluate_char_byte(text_jp, 4, SM_JAPANESE), SM_LAST_BYTE);
+        // Out of bounds
+        assert_eq!(evaluate_char_byte(text_jp, 5, SM_JAPANESE), SM_SINGLE_BYTE);
+    }
+
+    #[test]
+    fn test_replace_text_matrix() {
+        // Multiple non-overlapping replacements and handle growth
+        let (count, result) = evaluate_replace_text(b"A^0B^0", b"LONG", b"^0", SM_ROMAN);
+        assert_eq!(count, 2);
+        assert_eq!(result.as_deref(), Some(&b"ALONGBLONG"[..]));
+
+        // Shrinking text
+        let (count, result) = evaluate_replace_text(b"aaaa", b"a", b"aa", SM_ROMAN);
+        assert_eq!(count, 2);
+        assert_eq!(result.as_deref(), Some(&b"aa"[..]));
+
+        // No matches
+        let (count, result) = evaluate_replace_text(b"unchanged", b"rep", b"missing", SM_ROMAN);
+        assert_eq!(count, 0);
+        assert_eq!(result, None);
+
+        // Empty substitution: shrinks to empty
+        let (count, result) = evaluate_replace_text(b"aaaa", b"", b"aa", SM_ROMAN);
+        assert_eq!(count, 2);
+        assert_eq!(result.as_deref(), Some(&b""[..]));
+
+        // Multibyte Japanese character protection: lead byte must not match trail byte
+        // 0x81 0x40 followed by standalone 0x40. Key is 0x40. Only standalone 0x40 matches.
+        let (count, result) =
+            evaluate_replace_text(&[0x81, 0x40, 0x40], b"X", &[0x40], SM_JAPANESE);
+        assert_eq!(count, 1);
+        assert_eq!(result.as_deref(), Some(&[0x81, 0x40, b'X'][..]));
+
+        // Empty inputs
+        assert_eq!(evaluate_replace_text(b"", b"X", b"a", SM_ROMAN), (0, None));
+        assert_eq!(
+            evaluate_replace_text(b"base", b"X", b"", SM_ROMAN),
+            (0, None)
+        );
+
+        // Dangling / incomplete multibyte key
+        let (count, result) = evaluate_replace_text(&[0x81, 0x40], b"X", &[0x81], SM_JAPANESE);
+        assert_eq!(count, 0);
+        assert_eq!(result, None);
+    }
+}

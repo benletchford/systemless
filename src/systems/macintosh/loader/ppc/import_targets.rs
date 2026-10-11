@@ -5762,6 +5762,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "FindNextComponent") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::FindNextComponent,
         ),
+        ("InterfaceLib", "Font2Script") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::Font2Script,
+        ),
         ("InterfaceLib", "GetNextProcess") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::GetNextProcess,
         ),
@@ -5860,6 +5863,9 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         ("InterfaceLib", "OpenDefaultComponent") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::OpenDefaultComponent,
+        ),
+        ("InterfaceLib", "ReplaceText") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::ReplaceText,
         ),
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
