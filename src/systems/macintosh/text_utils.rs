@@ -837,6 +837,88 @@ pub fn evaluate_iu_equal_string(str_a: &[u8], str_b: &[u8]) -> bool {
         .eq(str_b.iter().map(|&byte| mac_roman_to_upper(byte, true)))
 }
 
+/// Compares two text buffers byte by byte according to their ASCII magnitude.
+///
+/// Returns `-1` if `a < b`, `0` if `a == b`, and `1` if `a > b`.
+/// Inside Macintosh Volume I, p. I-506.
+pub fn evaluate_mag_string(a: &[u8], b: &[u8]) -> i16 {
+    match a.cmp(b) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }
+}
+
+/// Compares two text buffers ignoring case differences according to their ASCII magnitude.
+///
+/// Returns `0` if equal, and `1` if not equal.
+/// Inside Macintosh Volume I, p. I-506.
+pub fn evaluate_mag_id_string(a: &[u8], b: &[u8]) -> u16 {
+    if a.len() != b.len() {
+        return 1;
+    }
+    if a.iter()
+        .map(|&c| c.to_ascii_lowercase())
+        .eq(b.iter().map(|&c| c.to_ascii_lowercase()))
+    {
+        0
+    } else {
+        1
+    }
+}
+
+/// Determines the order of two script systems.
+///
+/// Returns `-1` if `script1 < script2`, `0` if `script1 == script2`, and `1` if `script1 > script2`.
+/// Inside Macintosh Volume VI, p. 14-135; Inside Macintosh: Text, p. 5-85.
+pub fn evaluate_script_order(script1: i16, script2: i16) -> i16 {
+    match script1.cmp(&script2) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }
+}
+
+/// Determines the order of two languages.
+///
+/// Returns `-1` if `lang1 < lang2`, `0` if `lang1 == lang2`, and `1` if `lang1 > lang2`.
+/// Inside Macintosh Volume VI, p. 14-135; Inside Macintosh: Text, p. 5-85.
+pub fn evaluate_lang_order(lang1: i16, lang2: i16) -> i16 {
+    match lang1.cmp(&lang2) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }
+}
+
+/// Determines the sorting order of two text segments with optional script and language codes.
+///
+/// Compares script codes first, then language codes, and finally compares byte content.
+/// Inside Macintosh Volume VI, p. 14-135; Inside Macintosh: Text, p. 5-85.
+pub fn evaluate_text_order(
+    a: &[u8],
+    b: &[u8],
+    a_script: i16,
+    b_script: i16,
+    a_lang: i16,
+    b_lang: i16,
+) -> i16 {
+    if a_script != b_script {
+        evaluate_script_order(a_script, b_script)
+    } else if a_lang != b_lang {
+        evaluate_lang_order(a_lang, b_lang)
+    } else {
+        evaluate_mag_string(a, b)
+    }
+}
+
+/// Returns whether the metric system is selected for the system script.
+///
+/// Inside Macintosh Volume I, p. I-505. Defaults to false (U.S. standard measurement).
+pub fn evaluate_iu_metric() -> bool {
+    false
+}
+
 /// UpperString / UprString ($A054) trap word.
 pub const UPR_STRING_TRAP: u16 = 0xA054;
 
@@ -909,6 +991,33 @@ pub fn evaluate_upper_string(bytes: &mut [u8], diac_sensitive: bool) {
         *b = mac_roman_to_upper(*b, strip_diacritics);
     }
 }
+
+/// International Utilities Package (Pack6) trap word ($A9ED).
+pub const PACK6_TRAP: u16 = 0xA9ED;
+
+/// Toolbox trap offset for Pack6 ($A9ED & 0x03FF = 0x01ED).
+pub const PACK6_TRAP_OFFSET: u16 = 0x01ED;
+
+/// Pack6 selectors for International and Text Utilities routines
+/// (Inside Macintosh Volume I, p. I-487; Volume VI, p. 14-135; Inside Macintosh: Text, p. 5-113).
+pub const PACK6_IU_DATE_STRING_SELECTOR: u16 = 0x0000;
+pub const PACK6_IU_TIME_STRING_SELECTOR: u16 = 0x0002;
+pub const PACK6_IU_METRIC_SELECTOR: u16 = 0x0004;
+pub const PACK6_IU_GET_INTL_SELECTOR: u16 = 0x0006;
+pub const PACK6_IU_SET_INTL_SELECTOR: u16 = 0x0008;
+pub const PACK6_IU_MAG_STRING_SELECTOR: u16 = 0x000A;
+pub const PACK6_IU_MAG_ID_STRING_SELECTOR: u16 = 0x000C;
+pub const PACK6_IU_DATE_P_STRING_SELECTOR: u16 = 0x000E;
+pub const PACK6_IU_TIME_P_STRING_SELECTOR: u16 = 0x0010;
+pub const PACK6_IU_L_DATE_STRING_SELECTOR: u16 = 0x0014;
+pub const PACK6_IU_L_TIME_STRING_SELECTOR: u16 = 0x0016;
+pub const PACK6_IU_CLEAR_CACHE_SELECTOR: u16 = 0x0018;
+pub const PACK6_IU_MAG_P_STRING_SELECTOR: u16 = 0x001A; // CompareText
+pub const PACK6_IU_MAG_ID_P_STRING_SELECTOR: u16 = 0x001C; // IdenticalText
+pub const PACK6_IU_SCRIPT_ORDER_SELECTOR: u16 = 0x001E;
+pub const PACK6_IU_LANG_ORDER_SELECTOR: u16 = 0x0020;
+pub const PACK6_IU_TEXT_ORDER_SELECTOR: u16 = 0x0022;
+pub const PACK6_IU_GET_INTL_TABLE_SELECTOR: u16 = 0x0024;
 
 /// Binary-Decimal Conversion Package (Pack7) trap word ($A9EE).
 pub const PACK7_TRAP: u16 = 0xA9EE;
@@ -2819,5 +2928,64 @@ mod tests {
         let (ascii, err) = evaluate_transliterate(text, SM_TRANS_ASCII, SM_MASK_ALL);
         assert_eq!(err, 0);
         assert_eq!(ascii, b"Hello World");
+    }
+
+    #[test]
+    fn test_mag_string_and_mag_id_string() {
+        assert_eq!(evaluate_mag_string(b"apple", b"banana"), -1);
+        assert_eq!(evaluate_mag_string(b"apple", b"apple"), 0);
+        assert_eq!(evaluate_mag_string(b"banana", b"apple"), 1);
+
+        assert_eq!(evaluate_mag_id_string(b"Apple", b"apple"), 0);
+        assert_eq!(evaluate_mag_id_string(b"APPLE", b"apple"), 0);
+        assert_eq!(evaluate_mag_id_string(b"Apple", b"banana"), 1);
+        assert_eq!(evaluate_mag_id_string(b"short", b"longer"), 1);
+    }
+
+    #[test]
+    fn test_script_and_lang_order() {
+        assert_eq!(evaluate_script_order(0, 1), -1);
+        assert_eq!(evaluate_script_order(1, 1), 0);
+        assert_eq!(evaluate_script_order(2, 1), 1);
+
+        assert_eq!(evaluate_lang_order(0, 1), -1);
+        assert_eq!(evaluate_lang_order(1, 1), 0);
+        assert_eq!(evaluate_lang_order(2, 1), 1);
+    }
+
+    #[test]
+    fn test_text_order() {
+        // Different scripts
+        assert_eq!(evaluate_text_order(b"abc", b"xyz", 0, 1, 0, 0), -1);
+        assert_eq!(evaluate_text_order(b"xyz", b"abc", 2, 1, 0, 0), 1);
+
+        // Same script, different languages
+        assert_eq!(evaluate_text_order(b"abc", b"xyz", 0, 0, 0, 1), -1);
+        assert_eq!(evaluate_text_order(b"xyz", b"abc", 0, 0, 2, 1), 1);
+
+        // Same script, same language -> compares content
+        assert_eq!(evaluate_text_order(b"apple", b"banana", 0, 0, 0, 0), -1);
+        assert_eq!(evaluate_text_order(b"apple", b"apple", 0, 0, 0, 0), 0);
+        assert_eq!(evaluate_text_order(b"banana", b"apple", 0, 0, 0, 0), 1);
+    }
+
+    #[test]
+    fn test_iu_metric() {
+        assert!(!evaluate_iu_metric());
+    }
+
+    #[test]
+    fn test_pack6_constants() {
+        assert_eq!(PACK6_TRAP, 0xA9ED);
+        assert_eq!(PACK6_TRAP_OFFSET, 0x01ED);
+        assert_eq!(PACK6_IU_METRIC_SELECTOR, 0x0004);
+        assert_eq!(PACK6_IU_MAG_STRING_SELECTOR, 0x000A);
+        assert_eq!(PACK6_IU_MAG_ID_STRING_SELECTOR, 0x000C);
+        assert_eq!(PACK6_IU_CLEAR_CACHE_SELECTOR, 0x0018);
+        assert_eq!(PACK6_IU_MAG_P_STRING_SELECTOR, 0x001A);
+        assert_eq!(PACK6_IU_MAG_ID_P_STRING_SELECTOR, 0x001C);
+        assert_eq!(PACK6_IU_SCRIPT_ORDER_SELECTOR, 0x001E);
+        assert_eq!(PACK6_IU_LANG_ORDER_SELECTOR, 0x0020);
+        assert_eq!(PACK6_IU_TEXT_ORDER_SELECTOR, 0x0022);
     }
 }

@@ -14106,6 +14106,152 @@ fn iumagidstring_case_insensitive_mismatch_returns_one_and_pops_14_bytes() {
     assert_eq!(cpu.read_reg(Register::D0), 1);
 }
 
+#[test]
+fn pack6_iumetric_returns_false_and_pops_2_bytes() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = TEST_SP;
+    bus.write_word(sp, 0x0004); // IUMetric selector
+    bus.write_word(sp + 2, 0xFFFF); // result slot
+
+    let result = disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus);
+    assert!(result.is_some());
+    assert!(result.unwrap().is_ok());
+
+    assert_eq!(bus.read_word(sp + 2), 0);
+    assert_eq!(cpu.read_reg(Register::A7), sp + 2);
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+}
+
+#[test]
+fn pack6_iumagstring_evaluates_byte_magnitude_and_pops_14_bytes() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = TEST_SP;
+    let a_ptr = 0x330400u32;
+    let b_ptr = 0x330500u32;
+    bus.write_bytes(a_ptr, b"apple");
+    bus.write_bytes(b_ptr, b"banana");
+    bus.write_word(sp, 0x000A); // IUMagString selector
+    bus.write_word(sp + 2, 6); // bLen
+    bus.write_word(sp + 4, 5); // aLen
+    bus.write_long(sp + 6, b_ptr);
+    bus.write_long(sp + 10, a_ptr);
+    bus.write_word(sp + 14, 0x1234); // result slot
+
+    let result = disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus);
+    assert!(result.is_some());
+    assert!(result.unwrap().is_ok());
+
+    assert_eq!(bus.read_word(sp + 14) as i16, -1);
+    assert_eq!(cpu.read_reg(Register::A7), sp + 14);
+    assert_eq!(cpu.read_reg(Register::D0) as u16 as i16, -1);
+}
+
+#[test]
+fn pack6_comparetext_and_identicaltext_evaluate_string_differences() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = TEST_SP;
+    let a_ptr = 0x330600u32;
+    let b_ptr = 0x330700u32;
+    bus.write_bytes(a_ptr, b"Hello");
+    bus.write_bytes(b_ptr, b"hello");
+
+    // CompareText (0x001A): "Hello" < "hello" in ASCII -> -1
+    bus.write_word(sp, 0x001A);
+    bus.write_long(sp + 2, 0); // itl2Handle
+    bus.write_word(sp + 6, 5); // bLen
+    bus.write_word(sp + 8, 5); // aLen
+    bus.write_long(sp + 10, b_ptr);
+    bus.write_long(sp + 14, a_ptr);
+    bus.write_word(sp + 18, 0xBEEF);
+
+    let result = disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus);
+    assert!(result.is_some());
+    assert!(result.unwrap().is_ok());
+
+    assert_eq!(bus.read_word(sp + 18) as i16, -1);
+    assert_eq!(cpu.read_reg(Register::A7), sp + 18);
+    assert_eq!(cpu.read_reg(Register::D0) as u16 as i16, -1);
+
+    // IdenticalText (0x001C): case-insensitive equal -> 0
+    cpu.write_reg(Register::A7, sp);
+    bus.write_word(sp, 0x001C);
+    bus.write_long(sp + 2, 0);
+    bus.write_word(sp + 6, 5);
+    bus.write_word(sp + 8, 5);
+    bus.write_long(sp + 10, b_ptr);
+    bus.write_long(sp + 14, a_ptr);
+    bus.write_word(sp + 18, 0xBEEF);
+
+    let result = disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus);
+    assert!(result.is_some());
+    assert!(result.unwrap().is_ok());
+
+    assert_eq!(bus.read_word(sp + 18), 0);
+    assert_eq!(cpu.read_reg(Register::A7), sp + 18);
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+}
+
+#[test]
+fn pack6_scriptorder_langorder_and_textorder_evaluate_ordering() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = TEST_SP;
+
+    // ScriptOrder (0x001E): script1 = 0, script2 = 1 -> -1
+    bus.write_word(sp, 0x001E);
+    bus.write_word(sp + 2, 1); // script2
+    bus.write_word(sp + 4, 0); // script1
+    bus.write_word(sp + 6, 0xBEEF);
+
+    let result = disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus);
+    assert!(result.is_some());
+    assert!(result.unwrap().is_ok());
+
+    assert_eq!(bus.read_word(sp + 6) as i16, -1);
+    assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+    assert_eq!(cpu.read_reg(Register::D0) as u16 as i16, -1);
+
+    // LanguageOrder (0x0020): lang1 = 2, lang2 = 1 -> 1
+    cpu.write_reg(Register::A7, sp);
+    bus.write_word(sp, 0x0020);
+    bus.write_word(sp + 2, 1); // lang2
+    bus.write_word(sp + 4, 2); // lang1
+    bus.write_word(sp + 6, 0xBEEF);
+
+    let result = disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus);
+    assert!(result.is_some());
+    assert!(result.unwrap().is_ok());
+
+    assert_eq!(bus.read_word(sp + 6), 1);
+    assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+    assert_eq!(cpu.read_reg(Register::D0), 1);
+
+    // TextOrder (0x0022): same script, same lang, equal content -> 0
+    let a_ptr = 0x330800u32;
+    let b_ptr = 0x330900u32;
+    bus.write_bytes(a_ptr, b"test");
+    bus.write_bytes(b_ptr, b"test");
+
+    cpu.write_reg(Register::A7, sp);
+    bus.write_word(sp, 0x0022);
+    bus.write_word(sp + 2, 0); // bLang
+    bus.write_word(sp + 4, 0); // aLang
+    bus.write_word(sp + 6, 0); // bScript
+    bus.write_word(sp + 8, 0); // aScript
+    bus.write_word(sp + 10, 4); // bLen
+    bus.write_word(sp + 12, 4); // aLen
+    bus.write_long(sp + 14, b_ptr);
+    bus.write_long(sp + 18, a_ptr);
+    bus.write_word(sp + 22, 0xBEEF);
+
+    let result = disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus);
+    assert!(result.is_some());
+    assert!(result.unwrap().is_ok());
+
+    assert_eq!(bus.read_word(sp + 22), 0);
+    assert_eq!(cpu.read_reg(Register::A7), sp + 22);
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+}
+
 // Pack12 / Color Picker ($A82E)
 // Inside Macintosh Volume VI (1991), pp. 19-10 to 19-13.
 #[test]

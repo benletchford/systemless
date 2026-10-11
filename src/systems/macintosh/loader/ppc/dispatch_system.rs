@@ -9,6 +9,8 @@ pub enum PpcSystemCompatibilityOperation {
     Char2Pixel,
     CharByte,
     CharType,
+    CompareString,
+    CompareText,
     DiBadMount,
     DiFormat,
     DiLoad,
@@ -23,6 +25,15 @@ pub enum PpcSystemCompatibilityOperation {
     FindScriptRun,
     FindWord,
     FindWordBreaks,
+    IdenticalString,
+    IdenticalText,
+    IuClearCache,
+    IuLangOrder,
+    IuMagIdString,
+    IuMagString,
+    IuMetric,
+    IuScriptOrder,
+    IuTextOrder,
     Font2Script,
     FontScript,
     GetNextProcess,
@@ -471,14 +482,16 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        PpcSystemCompatibilityOperation::IuCompString => {
+        PpcSystemCompatibilityOperation::CompareString
+        | PpcSystemCompatibilityOperation::IuCompString => {
             let lhs = ppc_read_pstring_bytes(memory, cpu.gpr[3]).unwrap_or_default();
             let rhs = ppc_read_pstring_bytes(memory, cpu.gpr[4]).unwrap_or_default();
             let ordering = crate::text_utils::evaluate_iu_comp_string(&lhs, &rhs);
             PpcImportAction::Return(ppc_i16_result(ordering))
         }
-        PpcSystemCompatibilityOperation::IuEqualString => {
-            // IUEqualString compares Pascal strings using primary ordering:
+        PpcSystemCompatibilityOperation::IdenticalString
+        | PpcSystemCompatibilityOperation::IuEqualString => {
+            // IUEqualString / IdenticalString compares Pascal strings using primary ordering:
             // case and diacritic differences do not matter, and it returns
             // zero for equality. Inside Macintosh I (1985), p. I-506.
             // FUNCTION IUEqualString(aStr,bStr: Str255): INTEGER;
@@ -486,6 +499,83 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             let rhs = ppc_read_pstring_bytes(memory, cpu.gpr[4]).unwrap_or_default();
             let equal = crate::text_utils::evaluate_iu_equal_string(&lhs, &rhs);
             PpcImportAction::Return(u32::from(!equal))
+        }
+        PpcSystemCompatibilityOperation::CompareText
+        | PpcSystemCompatibilityOperation::IuMagString => {
+            let a_ptr = cpu.gpr[3];
+            let b_ptr = cpu.gpr[4];
+            let a_len = (cpu.gpr[5] as i16).max(0) as usize;
+            let b_len = (cpu.gpr[6] as i16).max(0) as usize;
+            let a = if a_ptr != 0 && a_len > 0 {
+                ppc_memory_read_bytes(memory, a_ptr, a_len as u32).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let b = if b_ptr != 0 && b_len > 0 {
+                ppc_memory_read_bytes(memory, b_ptr, b_len as u32).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let result = crate::text_utils::evaluate_mag_string(&a, &b);
+            PpcImportAction::Return(ppc_i16_result(result))
+        }
+        PpcSystemCompatibilityOperation::IdenticalText
+        | PpcSystemCompatibilityOperation::IuMagIdString => {
+            let a_ptr = cpu.gpr[3];
+            let b_ptr = cpu.gpr[4];
+            let a_len = (cpu.gpr[5] as i16).max(0) as usize;
+            let b_len = (cpu.gpr[6] as i16).max(0) as usize;
+            let a = if a_ptr != 0 && a_len > 0 {
+                ppc_memory_read_bytes(memory, a_ptr, a_len as u32).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let b = if b_ptr != 0 && b_len > 0 {
+                ppc_memory_read_bytes(memory, b_ptr, b_len as u32).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let result = crate::text_utils::evaluate_mag_id_string(&a, &b);
+            PpcImportAction::Return(result as u32)
+        }
+        PpcSystemCompatibilityOperation::IuClearCache => PpcImportAction::ReturnPreserve,
+        PpcSystemCompatibilityOperation::IuMetric => {
+            PpcImportAction::Return(u32::from(crate::text_utils::evaluate_iu_metric()))
+        }
+        PpcSystemCompatibilityOperation::IuScriptOrder => {
+            let script1 = cpu.gpr[3] as i16;
+            let script2 = cpu.gpr[4] as i16;
+            let result = crate::text_utils::evaluate_script_order(script1, script2);
+            PpcImportAction::Return(ppc_i16_result(result))
+        }
+        PpcSystemCompatibilityOperation::IuLangOrder => {
+            let lang1 = cpu.gpr[3] as i16;
+            let lang2 = cpu.gpr[4] as i16;
+            let result = crate::text_utils::evaluate_lang_order(lang1, lang2);
+            PpcImportAction::Return(ppc_i16_result(result))
+        }
+        PpcSystemCompatibilityOperation::IuTextOrder => {
+            let a_ptr = cpu.gpr[3];
+            let b_ptr = cpu.gpr[4];
+            let a_len = (cpu.gpr[5] as i16).max(0) as usize;
+            let b_len = (cpu.gpr[6] as i16).max(0) as usize;
+            let a_script = cpu.gpr[7] as i16;
+            let b_script = cpu.gpr[8] as i16;
+            let a_lang = cpu.gpr[9] as i16;
+            let b_lang = cpu.gpr[10] as i16;
+            let a = if a_ptr != 0 && a_len > 0 {
+                ppc_memory_read_bytes(memory, a_ptr, a_len as u32).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let b = if b_ptr != 0 && b_len > 0 {
+                ppc_memory_read_bytes(memory, b_ptr, b_len as u32).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let result =
+                crate::text_utils::evaluate_text_order(&a, &b, a_script, b_script, a_lang, b_lang);
+            PpcImportAction::Return(ppc_i16_result(result))
         }
         PpcSystemCompatibilityOperation::TruncText => {
             let width = cpu.gpr[3] as u16 as i16;
