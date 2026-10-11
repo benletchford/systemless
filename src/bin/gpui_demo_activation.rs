@@ -16,6 +16,9 @@ pub enum FileAction {
     Desktop,
     Replace,
     CancelReplacement,
+    NewFolder,
+    CreateFolder,
+    CancelNewFolder,
 }
 
 impl ControlActivation {
@@ -35,7 +38,13 @@ impl ControlActivation {
         }
         // Standard File owns the modal loop and reply; semantic actions are clicks.
         // Inside Macintosh: Files (1992), pp. 3-3--3-13.
-        let rect = if panel.confirming_replace {
+        let rect = if let Some(folder) = &panel.new_folder {
+            match action {
+                FileAction::CreateFolder if !folder.name.is_empty() => folder.layout.create,
+                FileAction::CancelNewFolder => folder.layout.cancel,
+                _ => return None,
+            }
+        } else if panel.confirming_replace {
             let layout = systemless::runner::StandardFileReplacementLayout::new(panel.bounds);
             match action {
                 FileAction::Replace => layout.replace,
@@ -65,6 +74,7 @@ impl ControlActivation {
                         FileAction::Accept => layout.save,
                         FileAction::Cancel => layout.cancel,
                         FileAction::Desktop => layout.desktop,
+                        FileAction::NewFolder => layout.new_folder,
                         _ => return None,
                     }
                 }

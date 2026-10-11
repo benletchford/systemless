@@ -63,6 +63,7 @@ pub(super) struct PpcStandardFileFilteringState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PpcStandardFilePutTrackingState {
+    pub(super) new_folder: Option<crate::standard_file_ui::StandardFileNewFolderState>,
     pub(super) confirming_replace: bool,
     pub(super) generation: u64,
     pub(super) standard_entry_point: bool,
@@ -84,6 +85,9 @@ pub(super) struct PpcStandardFilePutTrackingState {
 }
 
 pub(super) struct PpcStandardFileDispatchContext<'a> {
+    pub(super) next_vfs_dir_id: &'a mut u32,
+    pub(super) heap_limit: u32,
+    pub(super) handles: &'a mut Vec<PpcHandleRecord>,
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,
     pub(super) memory: &'a mut PpcSectionMem,
@@ -106,6 +110,9 @@ pub(super) fn dispatch_standard_file_import(
     context: PpcStandardFileDispatchContext<'_>,
 ) -> Option<PpcImportAction> {
     let PpcStandardFileDispatchContext {
+        next_vfs_dir_id,
+        heap_limit,
+        handles,
         binding,
         cpu,
         memory,
@@ -142,6 +149,9 @@ pub(super) fn dispatch_standard_file_import(
             working_directories,
             next_working_directory_ref_num,
             event_queue,
+            next_vfs_dir_id,
+            heap_limit,
+            handles,
         )),
         PpcImportDispatcherTarget::StandardFileCompatibility(operation) => {
             Some(ppc_dispatch_standard_file(
@@ -161,6 +171,9 @@ pub(super) fn dispatch_standard_file_import(
                 working_directories,
                 next_working_directory_ref_num,
                 event_queue,
+            next_vfs_dir_id,
+            heap_limit,
+            handles,
             ))
         }
         _ => None,
@@ -189,6 +202,62 @@ pub(super) const PPC_STANDARD_FILE_PUT_DIRECTORY_LABEL_RECT: (i16, i16, i16, i16
 pub(super) const PPC_STANDARD_FILE_PUT_LIST_RECT: (i16, i16, i16, i16) = (39, 18, 167, 314);
 pub(super) const PPC_STANDARD_FILE_PUT_SCROLL_RECT: (i16, i16, i16, i16) = (39, 314, 167, 330);
 pub(super) const PPC_STANDARD_FILE_PUT_DESKTOP_RECT: (i16, i16, i16, i16) = (239, 24, 261, 104);
+
+pub(super) const PPC_STANDARD_FILE_PUT_NEW_FOLDER_RECT: (i16, i16, i16, i16) = (239, 110, 261, 160);
+
+/// Validate the destination before New Folder changes the catalog.
+/// Files (1992), FSpDirCreate and PBSetVInfo: duplicate names and locked
+/// volumes must fail without creating a directory or consuming its ID.
+fn ppc_standard_file_new_folder_error(
+    directories: &[PpcVfsDirectory],
+    files: &[PpcVfsFileRecord],
+    resources: &[PpcVfsResourceFileRecord],
+    volumes: &[PpcVfsVolumeRecord],
+    parent: u32,
+    name: &[u8],
+) -> Option<i16> {
+    let parent_path = ppc_directory_path_for_id(directories, parent)?;
+    let mut ancestor = parent;
+    for _ in 0..=directories.len() {
+        if let Some(volume) = volumes.iter().find(|volume| volume.root_dir_id == ancestor) {
+            if volume.attributes & 0x80 != 0 {
+                return Some(-44);
+            }
+            if volume.attributes & 0x8000 != 0 {
+                return Some(-46);
+            }
+            break;
+        }
+        let Some(directory) = directories
+            .iter()
+            .find(|directory| directory.dir_id == ancestor)
+        else {
+            break;
+        };
+        if directory.parent_dir_id == ancestor {
+            break;
+        }
+        ancestor = directory.parent_dir_id;
+    }
+    let child = crate::trap::dispatch::TrapDispatcher::encode_hfs_component_for_vfs(
+        &decode_mac_roman(name),
+    );
+    let path = ppc_join_vfs_path(parent_path, &child);
+    if directories
+        .iter()
+        .any(|directory| directory.path.eq_ignore_ascii_case(&path))
+        || files
+            .iter()
+            .any(|file| file.path.eq_ignore_ascii_case(&path))
+        || resources
+            .iter()
+            .any(|file| file.path.eq_ignore_ascii_case(&path))
+    {
+        Some(PPC_DUP_FN_ERR)
+    } else {
+        None
+    }
+}
 
 fn ppc_standard_file_reply_ptr(mode: PpcStandardFileMode, cpu: &PpcCpu) -> u32 {
     match mode {
@@ -251,7 +320,7 @@ fn ppc_standard_file_get_entries(
         .filter(|directory| directory.parent_dir_id == dir_id)
     {
         entries.push(PpcStandardFileEntry {
-            name: encode_mac_roman_lossy(ppc_vfs_basename(&directory.path))
+            name: encode_mac_roman_lossy(&crate::trap::dispatch::TrapDispatcher::hfs_name_from_vfs_component(ppc_vfs_basename(&directory.path)))
                 .into_iter()
                 .take(63)
                 .collect(),
@@ -330,7 +399,7 @@ fn ppc_standard_file_directory_name(
     ppc_directory_path_for_id(vfs_directories, dir_id)
         .map(ppc_vfs_basename)
         .filter(|name| !name.is_empty())
-        .map(encode_mac_roman_lossy)
+        .map(|name| encode_mac_roman_lossy(&crate::trap::dispatch::TrapDispatcher::hfs_name_from_vfs_component(name)))
         .unwrap_or_else(|| crate::trap::dispatch::BOOT_VOLUME_NAME.as_bytes().to_vec())
 }
 
@@ -948,7 +1017,7 @@ fn ppc_standard_file_draw_put_dialog(
     );
     let _ = ppc_fill_front_rect(memory, front, name, PPC_RGB_WHITE);
     let _ = ppc_frame_front_rect(memory, front, name, PPC_RGB_BLACK, 1);
-    let selected = !tracking.list_has_focus && tracking.sel_start < tracking.sel_end;
+    let selected = !tracking.list_has_focus && !tracking.confirming_replace && tracking.new_folder.is_none() && tracking.sel_start < tracking.sel_end;
     let themed = ppc_ui_theme(gworlds) != UiThemeId::ClassicSystem7;
     if selected && !themed {
         let _ = ppc_fill_front_rect(
@@ -1034,6 +1103,40 @@ fn ppc_standard_file_draw_put_dialog(
         true,
         true,
     );
+    ppc_standard_file_draw_button(memory, front, gworlds, bounds, PPC_STANDARD_FILE_PUT_NEW_FOLDER_RECT, b"New", true, false);
+    if let Some(folder) = &tracking.new_folder {
+        let layout = crate::standard_file_ui::StandardFileNewFolderLayout::new(bounds);
+        if !ppc_draw_themed_dialog_frame(memory, gworlds, layout.bounds, layout.bounds, 2) {
+            let _ = ppc_fill_front_rect(memory, front, layout.bounds, PPC_RGB_WHITE);
+            let _ = ppc_frame_front_rect(memory, front, layout.bounds, PPC_RGB_BLACK, 2);
+        }
+        let prompt = match folder.error {
+            Some(-48) => "Name already exists",
+            Some(-44 | -46) => "Disk is locked",
+            Some(-37) => "Invalid folder name",
+            Some(_) => "Could not create folder",
+            None => "Name of new folder:",
+        };
+        ppc_draw_dialog_text(memory, gworlds, layout.prompt, prompt.as_bytes(), PPC_RGB_BLACK);
+        let _ = ppc_fill_front_rect(memory, front, layout.name, PPC_RGB_WHITE);
+        let _ = ppc_frame_front_rect(memory, front, layout.name, PPC_RGB_BLACK, 1);
+        let text_rect = (layout.name.0 + 2, layout.name.1 + 2, layout.name.2 - 1, layout.name.3 - 2);
+        ppc_draw_dialog_text(memory, gworlds, text_rect, folder.edit.text(), PPC_RGB_BLACK);
+        // Text (1993), pp. 2-36–2-37: selection offsets count text bytes.
+        let selection = folder.edit.selection();
+        if !selection.is_empty() {
+            let measure = |bytes: &[u8]| ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes);
+            let left = (text_rect.1 + measure(&folder.edit.text()[..selection.start])).min(text_rect.3);
+            let right = (text_rect.1 + measure(&folder.edit.text()[..selection.end])).min(text_rect.3);
+            let highlight = (text_rect.0, left, text_rect.2, right);
+            if !ppc_draw_themed_selection(memory, gworlds, PPC_MAIN_GWORLD, highlight) && left < right {
+                let _ = ppc_fill_front_rect(memory, front, highlight, PPC_RGB_BLACK);
+                ppc_draw_dialog_text(memory, gworlds, highlight, folder.edit.selected_text(), PPC_RGB_WHITE);
+            }
+        }
+        ppc_standard_file_draw_button(memory, front, gworlds, (0,0,0,0), layout.cancel, b"Cancel", true, false);
+        ppc_standard_file_draw_button(memory, front, gworlds, (0,0,0,0), layout.create, b"Create", !folder.edit.text().is_empty(), true);
+    }
     if tracking.confirming_replace {
         let layout = crate::standard_file_ui::StandardFileReplacementLayout::new(bounds);
         if !ppc_draw_themed_dialog_frame(memory, gworlds, layout.bounds, layout.bounds, 2) {
@@ -1701,6 +1804,7 @@ fn ppc_standard_file_put_start(
     );
     startup.next_standard_file_generation = startup.next_standard_file_generation.saturating_add(1);
     let tracking = PpcStandardFilePutTrackingState {
+        new_folder: None,
         confirming_replace: false,
         generation: startup.next_standard_file_generation,
         standard_entry_point: operation == PpcStandardFileOperation::StandardPutFile,
@@ -1749,6 +1853,9 @@ fn ppc_dispatch_standard_file(
     working_directories: &mut HashMap<i16, ProcessWorkingDirectory>,
     next_working_directory_ref_num: &mut i16,
     event_queue: &mut EventQueue,
+    next_vfs_dir_id: &mut u32,
+    heap_limit: u32,
+    handles: &mut Vec<PpcHandleRecord>,
 ) -> PpcImportAction {
     let mode = operation.mode();
     let requested_origin = operation.requested_origin(cpu);
@@ -1795,6 +1902,58 @@ fn ppc_dispatch_standard_file(
                     .iter()
                     .position(|event| matches!(event.what, 1 | 3 | 5))
                     .and_then(|index| event_queue.remove(index));
+                if let Some(mut folder) = tracking.new_folder.take() {
+                    use crate::standard_file_ui::{StandardFileNewFolderAction, StandardFileNewFolderLayout};
+                    let mut dismiss = false;
+                    if let Some(event) = event {
+                        let layout = StandardFileNewFolderLayout::new(tracking.bounds);
+                        let mut scrap = ppc_te_scrap_bytes(memory);
+                        let original = scrap.clone();
+                        let action = folder.event(&layout, event.what, event.message, event.modifiers, (event.where_v, event.where_h), &mut scrap);
+                        if scrap != original {
+                            let mut allocator = PpcProcessAllocatorView { memory_manager: process_memory_manager };
+                            ppc_te_set_scrap_bytes(Some(&mut allocator), memory, heap_cursor, heap_limit, last_mem_error, handles, &scrap);
+                        }
+                        dismiss = action == Some(StandardFileNewFolderAction::Cancel);
+                        if action == Some(StandardFileNewFolderAction::Create) {
+                            let mut created = 0;
+                            let result = if let Some(error) = ppc_standard_file_new_folder_error(vfs_directories, vfs_files, vfs_resource_files, vfs_volumes, tracking.dir_id, folder.edit.text()) {
+                                error
+                            } else {
+                                ppc_create_vfs_directory(vfs_directories, next_vfs_dir_id, tracking.dir_id, &decode_mac_roman(folder.edit.text()), |id| { created = id; true })
+                            };
+                            if result == PPC_NO_ERR {
+                                ppc_standard_file_put_enter_directory(&mut tracking, created, vfs_directories, vfs_files, vfs_resource_files);
+                                dismiss = true;
+                            } else {
+                                folder.error = Some(result);
+                            }
+                        }
+                    }
+                    if dismiss {
+                        tracking.list_has_focus = false;
+                        tracking.sel_start = 0;
+                        tracking.sel_end = tracking.name.len();
+                        startup.next_standard_file_generation = startup.next_standard_file_generation.saturating_add(1);
+                        tracking.generation = startup.next_standard_file_generation;
+                    } else {
+                        tracking.new_folder = Some(folder);
+                    }
+                    ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+                    startup.standard_file_put_tracking = Some(tracking);
+                    return PpcImportAction::Yield(u64::MAX);
+                }
+                if event.as_ref().is_some_and(|event| {
+                    (matches!(event.what, 3 | 5) && event.modifiers & 0x100 != 0 && (event.message as u8).eq_ignore_ascii_case(&b'n'))
+                        || (event.what == 1 && ppc_standard_file_point_in_rect((event.where_v - tracking.bounds.0, event.where_h - tracking.bounds.1), PPC_STANDARD_FILE_PUT_NEW_FOLDER_RECT))
+                }) && !tracking.confirming_replace {
+                    tracking.new_folder = Some(Default::default());
+                    startup.next_standard_file_generation = startup.next_standard_file_generation.saturating_add(1);
+                    tracking.generation = startup.next_standard_file_generation;
+                    ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+                    startup.standard_file_put_tracking = Some(tracking);
+                    return PpcImportAction::Yield(u64::MAX);
+                }
                 if tracking.confirming_replace {
                     let layout = crate::standard_file_ui::StandardFileReplacementLayout::new(tracking.bounds);
                     if let Some(event) = event {
@@ -2045,5 +2204,105 @@ fn ppc_dispatch_standard_file(
                 )
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod directory_name_tests {
+    use super::*;
+
+    #[test]
+    fn standard_file_new_folder_rejects_files_and_locked_ancestor_volumes() {
+        let directories = initial_ppc_vfs_directories();
+        let path = "System Folder/Preferences/Audio\u{f02f}Video".to_string();
+        let file = PpcVfsFileRecord {
+            path: path.clone(),
+            data: Vec::new().into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        };
+        let resource = PpcVfsResourceFileRecord {
+            path,
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            resource_len: 0,
+            raw_data: None,
+            map_attrs: 0,
+            dirty: false,
+        };
+        assert_eq!(
+            ppc_standard_file_new_folder_error(
+                &directories,
+                &[file],
+                &[],
+                &[],
+                PPC_PREFERENCES_DIR_ID,
+                b"audio/video"
+            ),
+            Some(-48)
+        );
+        assert_eq!(
+            ppc_standard_file_new_folder_error(
+                &directories,
+                &[],
+                &[resource],
+                &[],
+                PPC_PREFERENCES_DIR_ID,
+                b"audio/video"
+            ),
+            Some(-48)
+        );
+        let mut volume = PpcVfsVolumeRecord {
+            ref_num: PPC_BOOT_VOLUME_REF_NUM,
+            name: "Disk".into(),
+            root_dir_id: PPC_ROOT_DIR_ID,
+            attributes: 0,
+            file_count: 0,
+            allocation_block_count: 0,
+            allocation_block_size: 0,
+            clump_size: 0,
+            free_blocks: 0,
+            bitmap_start: 0,
+            allocation_pointer: 0,
+            allocation_start: 0,
+            next_catalog_id: 0,
+            created_date: 0,
+            modified_date: 0,
+        };
+        for (attributes, expected) in [(0x80, Some(-44)), (0x8000, Some(-46)), (0, None)] {
+            volume.attributes = attributes;
+            assert_eq!(
+                ppc_standard_file_new_folder_error(
+                    &directories,
+                    &[],
+                    &[],
+                    &[volume.clone()],
+                    PPC_PREFERENCES_DIR_ID,
+                    b"New Folder"
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn standard_file_directory_literal_slash_round_trips() {
+        let mut directories = initial_ppc_vfs_directories();
+        let mut next_id = PPC_FIRST_DYNAMIC_DIR_ID;
+        let mut created_id = 0;
+        assert_eq!(ppc_create_vfs_directory(
+            &mut directories,
+            &mut next_id,
+            PPC_PREFERENCES_DIR_ID,
+            "Audio/Video",
+            |id| { created_id = id; true },
+        ), PPC_NO_ERR);
+        let entries = ppc_standard_file_get_entries(&directories, &[], &[], PPC_PREFERENCES_DIR_ID, None);
+        let entry = entries.iter().find(|entry| entry.dir_id == created_id).unwrap();
+        assert_eq!(entry.name, b"Audio/Video");
+        assert_eq!(ppc_standard_file_directory_name(&directories, created_id), b"Audio/Video");
     }
 }

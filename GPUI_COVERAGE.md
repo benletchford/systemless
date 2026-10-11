@@ -71,7 +71,7 @@ unfinished GPUI components.
 | Mouse wheel and trackpad scrolling | GPUI wheel events accumulate fractional pixel/line deltas and target an unambiguous standard scrollbar in the active window. The worker revalidates lifetime, visibility, clipping and limits before posting ordinary arrow clicks; guest execution separates press, release and pointer restoration. Consecutive requests coalesce with a bounded step count. Loaded monochrome 68K, colour 68K and PPC tests verify guest-owned value changes; a live-worker test exercises both CPUs. | Qualify vertical document scrolling, real trackpads, rapid direction changes, focus-loss cancellation, nested modal controls, list/Standard File internal scrolling, callback timing under load and audible/frame latency. The shared session API still has no general wheel event; custom and ambiguous targets are not translated. | Standard scrollbar wheel path; broader qualification open |
 | Lists | `FixtureRunner::list_manager_snapshot` exposes guest ListHandle, lifetime generation, owner port, local and global view rectangles, LDEF ID, decoded standard cell text, logical cells, selection, visible cell range, drawing/active state, and guest scrollbar visibility bytes. A deterministic showcase test on monochrome 68K, colour 68K, and PowerPC confirms that switching pages hides but retains the same list identity, then restores it. Standard LDEF 0 cells are presented as themed GPUI rows clipped to the owning window and front-window bounds; pointer input still follows guest coordinates. Custom LDEFs and overlapping custom window definitions keep guest pixels. Four offscreen captures cover initial and selected rows on both CPUs. | Add keyboard and accessibility actions, broader list definitions and scroll/selection qualification, and composed captures with complex visible regions and overlapping windows. | Standard list demo |
 | TextEdit and editable fields | `FixtureRunner::text_edit_snapshot` reads canonical guest TERecs with stable TEHandle/generation, owner port, local/global view and destination bounds, text bytes, selection, activation, alignment, font fields, guest line starts and height, and private scrap. The showcase checks owner-port geometry, guest-owned typing, Reset selection through `TESetSelect`, and selected-text replacement through `TEKey` on monochrome 68K, colour 68K, and PowerPC. A deterministic 68K guest sequence and BasiliskII both end with a 195-byte, five-line record and selection `[1,1]`; the PowerPC guest sequence reaches the same state. GPUI ASCII keys and arrows enter the existing guest event route; a host event test verifies the translated press/release pair. Dialog items carry edit selection; standard single-line DITL fields use a read-only GPUI presentation. Drawing evidence is independent of optional sharp-text rendering, includes the guest clip/visible regions, and compares against the actual presented framebuffer. Allocated but unpainted records and records overwritten by another page remain hidden. Ordinary unstyled left-aligned document TextEdit uses a clipped GPUI overlay with guest line breaks, scroll origin, selection, and caret. Styled, justified, and custom-overlapping cases retain guest pixels. Seven offscreen captures cover initial, selected, and edited states across 68K and PowerPC. | Qualify font metrics, multiline editing, caret blink, focus and composition state; test guest wrapping, scrolling, selections across lines, Mac Roman input, modifier and clipboard behavior, and keyboard/accessibility actions. | Standard TextEdit slice |
-| Standard File panels | The 68K `_Pack3` and PowerPC import paths retain their own modal Open/Save state outside Window Manager records. `FixtureRunner::standard_file_snapshot` normalizes live mode, reply-record identity, per-invocation generation, panel bounds, directory contents, selection, save-name/prompt and keyboard-focus state, and the guest's standard Open/Save item geometry. The opt-in demo overlays modern standard Open and Save panels with GPUI elements on both CPUs; legacy and custom calls retain guest pixels. PowerPC Save lists VFS entries and supports folder selection with Return or a guest-timed double-click, Desktop and parent-directory navigation, guest-owned filename editing, and destination-aware replies. A three-mode showcase test checks Open, cancellation, Save, guest-owned filename editing, and a second cancellation. The PowerPC Save list follows the standard display-list and filename-focus behavior described in Inside Macintosh: Files (1992), pp. 3-5--3-6. | Complete Save New Folder on both CPUs, plus directory popup and keyboard behavior; qualify the replacement-confirmation follow-up below; qualify callback timing, entry icons, true scroll state, nested modality, caret blink and composition, and accessibility actions on both panels. | Standard Open/Save demo |
+| Standard File panels | The 68K `_Pack3` and PowerPC import paths retain their own modal Open/Save state outside Window Manager records. `FixtureRunner::standard_file_snapshot` normalizes live mode, reply-record identity, per-invocation generation, panel bounds, directory contents, selection, save-name/prompt and keyboard-focus state, and the guest's standard Open/Save item geometry. The opt-in demo overlays modern standard Open and Save panels with GPUI elements on both CPUs; legacy and custom calls retain guest pixels. PowerPC Save lists VFS entries and supports folder selection with Return or a guest-timed double-click, Desktop and parent-directory navigation, guest-owned filename editing, and destination-aware replies. A three-mode showcase test checks Open, cancellation, Save, guest-owned filename editing, and a second cancellation. The PowerPC Save list follows the standard display-list and filename-focus behavior described in Inside Macintosh: Files (1992), pp. 3-5--3-6. | New Folder now has shared guest state, GPUI rendering and semantic creation/cancel/duplicate-retry coverage on all three CPU modes, with reviewed initial composed captures. Finish native error alerts, pointer text editing, read-only UI states and durable persistence; complete directory popup and keyboard behavior, callback timing, entry icons, true scroll state, nested modality, caret blink/composition and native accessibility. Replacement uses the oracle-verified Cancel default; broader file-content replacement remains unqualified. | Standard Open/Save demo |
 | Cursors and notifications | Cursor bitmap, mask, hotspot, visibility, and hide/show level are guest state presented by the desktop host. Classic notification records and callbacks are tracked; equivalent PowerPC install and visible-notice coverage is unproven. The draw-path inventory separates these boundaries. | Qualify resource-backed versus application-built cursors, notification imagery, sound, acknowledgment, callback timing, and PowerPC installation before GPUI presentation. | State extraction needed |
 | QuickDraw and custom definitions | Framebuffer remains the presentation source. | Mask only verified standard system pixels; keep unknown WDEF, CDEF, MDEF, user items, and application drawing unchanged. | Required fallback |
 
@@ -1477,3 +1477,175 @@ The corrected 12-scenario guest regression passes (35.02s), as do all eight Save
 library tests (0.71s). Fresh composed captures on monochrome 68K, colour 68K and
 PPC show Cancel as the default, matching the native observation. Broader layout,
 callback timing, accessibility and full file-workflow qualification remain open.
+
+### Native New Folder workflow baseline
+
+The `tests/toolbox-showcase/oracle/standard-file-new-folder.json` replay now
+captures New Folder on Mac OS 8.1 in BasiliskII and SheepShaver. All 34 recorded
+capture-file hashes and both recorded scenario hashes were verified. Reviewed
+checkpoints on both CPUs establish these implementation requirements:
+
+- New opens a subsidiary dialog labelled "Name of new folder:" with the entire
+  initial name "untitled folder" selected. Create is the default button; Cancel
+  is secondary. The parent Save filename loses its visible selection while the
+  subsidiary dialog is active.
+- Escape returns to Save without changing its directory or filename and restores
+  full selection of the original filename, "Untitled".
+- Typing "gpui folder" replaces the selected initial name. Return creates the
+  directory and navigates Save into it, with an empty contents list and the
+  unchanged Save filename fully selected again.
+- A subsequent Escape dismisses Save and the showcase reports "Modern Save:
+  cancelled" on both native CPUs.
+
+Inside Macintosh: Files (1992), pp. 3-6–3-7, documents the subsidiary dialog and
+Command-N keyboard equivalent. The observed default name, default button and
+selection restoration above come from the native captures. The replay uses a
+live guest clock on BasiliskII and 60.15 Hz wall-clock pacing on SheepShaver;
+audio is disabled. These captures establish a behavioral baseline, not a passing
+Systemless implementation. New Folder remains unimplemented; duplicate/invalid
+names, read-only destinations, persistence after cancellation, keyboard
+equivalents, and custom callbacks still require qualification.
+
+PPC `DirCreate` and `FSpDirCreate` now share a directory-creation operation that
+can also serve retained Standard File tracking. Existing name normalization,
+duplicate-directory replies, parent lookup and allocation behavior are preserved.
+All five focused directory-creation tests pass, including a regression through
+both imported APIs that verifies an invalid reply pointer leaves no directory or
+consumed ID and a valid retry succeeds. This extraction does not implement the
+New Folder dialog or qualify filename validation, file/directory collisions or
+read-only volume errors.
+
+The shared New Folder edit state now uses the existing byte-based TextEdit
+buffer. Two focused unit tests pass for native initial selection, Create/Cancel
+keys, Mac Roman insertion, caret/backspace, clipboard selection replacement and
+the 31-byte HFS name limit. This state is not yet connected to either retained
+panel event loop, process scrap or GPUI rendering, so these are component tests
+only. A slash remains a legal name character at this layer; filesystem path
+normalization must not turn it into unintended directory traversal when creation
+is connected. Pointer selection, Shift-selection and native clipboard parity
+also remain unqualified.
+
+The 68K FSpDirCreate handler now delegates to a reusable child-directory
+operation, preserving its empty-name, missing-parent, read-only and duplicate
+file/resource-fork checks. Both existing FSpDirCreate tests pass after extraction.
+Together with the PPC extraction, this prepares the guest filesystem operations
+for retained New Folder tracking; it does not close the remaining workflow.
+
+Inspection confirmed that 68K already encodes literal slashes in HFS name
+components. PPC directory creation now reuses that encoding rather than treating
+the slash as a VFS separator. Standard File directory rows and the current-folder
+label decode it back to the guest name. Five literal-slash regressions pass,
+including both PPC creation imports and a creation-to-Standard-File-label round
+trip for `Audio/Video`. This closes that specific creation/display mismatch;
+other PPC File Manager lookup, rename and deletion paths still need qualification
+for encoded names. New Folder event-loop and GPUI integration remain open.
+
+New Folder now has shared guest-coordinate layout and modal event interpretation.
+The child lies within the existing retained parent's saved region; pointer Create
+and keyboard Create both reject an empty name, Cancel remains available, and
+mouse-up/background clicks do not accept the dialog. All three New Folder
+component tests pass, including translated geometry and pointer/key agreement.
+Neither backend invokes this state yet; native placement, pointer text selection,
+guest reply/persistence effects and composed rendering remain unqualified.
+
+The 68K retained Save loop now opens New Folder through New or Command-N,
+routes child keys through the shared state and process TextEdit scrap, and uses
+the extracted File Manager operation to create the directory. Success navigates
+into it; cancellation returns to Save; both restore the filename selection and
+advance the modal generation. The nine focused StandardPutFile tests pass,
+including a new monochrome/colour 68K sequence that cancels the child, reopens it,
+types a name, creates the directory, and cancels Save while verifying that the
+directory remains and sfGood stays false. This establishes retained VFS state,
+not persistence across process restart.
+
+While this child is open, the 68K presentation snapshot temporarily declines the
+GPUI Save overlay so the guest-rendered child stays visible. This is an interim
+implementation, not a completed GPUI component or custom-definition fallback.
+PPC tracking, GPUI child rendering, composed visual review, text-pointer selection
+and native error-alert presentation remain open. Creation errors currently keep
+the child open with a short descriptive message.
+
+PPC now also retains New Folder, opens it from New/Command-N, processes its
+shared edit state and TextEdit scrap, creates the directory and restores Save
+focus/selection with a new modal generation. All ten focused StandardPutFile
+tests pass, including the PPC cancel/reopen/create/cancel sequence. The PPC
+reply remains caller-owned while the dialog runs; the regression checks its
+sentinel before completion and sfGood=false after cancellation. Both CPU paths
+currently show the child through the guest renderer, declining the GPUI Save
+overlay during this transition. GPUI child rendering and visual qualification
+remain open, as do PPC read-only volume and file-versus-directory collision
+handling, error alerts, pointer selection and durable persistence.
+
+PPC New Folder now checks directory/data-fork/resource-fork name collisions and
+the ancestor volume's hardware/software lock bits before the creation operation.
+Six New Folder tests pass, including both CPU workflows and a focused destination
+check covering encoded slash names, case-insensitive collisions and both lock
+bits. These checks are wired into the retained child; native error-alert visuals,
+disabled-button behavior and full guest-driven failure/retry qualification remain
+open. This does not establish equivalent validation for every PPC File Manager
+creation entry point.
+
+Both CPU snapshots now expose New Folder's live name, byte selection, error and
+shared geometry. The GPUI Save panel includes New, and the subsidiary GPUI dialog
+renders that state with Create/Cancel controls. Semantic actions validate the
+current reply identity and generation and use guest clicks; parent actions are
+rejected while the child is active. Save's accessibility subtree is hidden and
+its buttons lose focus handles during the child. The interim guest-renderer-only
+presentation described above is removed.
+
+The focused GPUI file-panel interaction test passes with the child present: it
+checks the Dialog role, background button focus suppression and one correctly
+positioned guest press/release pair for Create, without a duplicate semantic
+request. This is a synthetic presentation test, not composed visual review or
+end-to-end semantic creation qualification. Those checks, native accessibility,
+pointer editing and error-alert parity remain open.
+
+The `--capture-standard-file-new-folder-composed` route now opens Save in the
+showcase, invokes New through the identity-checked semantic action and captures
+the shared live compositor. Fresh captures were reviewed for monochrome 68K,
+colour 68K and PPC. All show the full initial folder-name selection, Create as
+default, a readable child panel, and no parent filename caret. The route asserts
+the guest child snapshot before capture and retains the paired guest frame.
+Parent Save geometry still differs across CPUs. The monochrome fixture also
+shows a black region in its application content; this remains a visual issue to
+investigate rather than evidence of complete presentation parity. Creation,
+cancel/error captures and end-to-end semantic-action qualification remain open.
+
+The paired monochrome guest frame confirms that the black region already exists
+before GPUI composition. It also exposes a guest-renderer selection defect: the
+parent Save name remains highlighted while the child name lacks its selection.
+The GPUI snapshot renders the intended selection correctly, but the ordinary
+renderer must be corrected as part of the shared-behavior requirement.
+
+The ordinary 68K renderer now receives the child's byte selection, and both
+backends suppress parent filename highlighting during subsidiary dialogs. PPC
+draws the selected child range using system-font byte widths and the applicable
+selection theme. Six focused New Folder tests passed before the PPC paint change;
+the GPUI capture build passes afterward. Fresh PPC and monochrome 68K guest
+frames were visually reviewed and show child selection with no parent selection.
+Highlight extent still differs between the two ordinary renderers (68K fills
+the field while PPC measures the selected text), and the monochrome application's
+black content region remains. These are still qualification gaps.
+
+An end-to-end semantic New Folder regression now passes on monochrome 68K,
+colour 68K and PPC (7.76s). It boots the showcase, opens Save, invokes New via
+the activation bridge, cancels and reopens the child, types a folder name,
+invokes Create, and cancels Save. It verifies directory navigation, preserved
+Save name and restored focus, pointer restoration, rejection of parent actions
+under the child, and rejection of stale parent/child generations. This closes
+the basic semantic creation/cancellation sequence; error/retry, native
+accessibility dispatch, pointer text editing and restart persistence remain open.
+
+The semantic workflow now also exercises duplicate file and duplicate directory
+names on all three modes. Each failure keeps New Folder open with dupFNErr,
+preserves the parent directory/list/Save filename, and permits deletion of the
+failed name followed by a successful retry. Empty-name semantic Create is
+rejected. All six CPU/collision scenarios pass. This verifies the current
+failure-and-retry state transitions, not native subsidiary error-alert parity.
+
+The complete opt-in GPUI interaction suite passes after the New Folder changes:
+73 tests, zero failures, 211.05 seconds. This includes the existing popup,
+menu, window, control, TextEdit and file-panel regressions as well as the new
+semantic workflow. It is regression evidence for the exercised paths; it does
+not close the remaining visual, accessibility, persistence or real-application
+performance requirements.

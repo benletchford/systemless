@@ -2639,7 +2639,7 @@ impl super::TrapDispatcher {
         bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, end);
     }
 
-    fn te_set_scrap_bytes(bus: &mut MacMemoryBus, selected: &[u8]) {
+    pub(super) fn te_set_scrap_bytes(bus: &mut MacMemoryBus, selected: &[u8]) {
         use crate::memory::globals::addr;
 
         let mut scrap_handle = bus.read_long(addr::TE_SCRP_HANDLE);
