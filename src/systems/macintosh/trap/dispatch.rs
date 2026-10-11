@@ -741,7 +741,7 @@ pub struct DialogTrackingState {
     pub popup_draws: Vec<DialogPopupDraw>,
     /// Active popup-menu control tracking inside ModalDialog.
     pub active_popup: Option<DialogPopupTrackingState>,
-    /// Active push-button tracking inside ModalDialog.
+    /// Active push-button, checkbox or radio-button tracking inside ModalDialog.
     pub active_button: Option<DialogButtonTrackingState>,
     /// Active plain userItem tracking inside ModalDialog.
     pub active_user_item: Option<DialogUserItemTrackingState>,
@@ -818,7 +818,7 @@ pub struct DialogPopupTrackingState {
     pub dropdown_rect: (i16, i16, i16, i16),
 }
 
-/// Push-button tracking owned by an active ModalDialog loop.
+/// Standard button/control tracking owned by an active ModalDialog loop.
 pub struct DialogButtonTrackingState {
     /// The initiating event retained so a delayed release cannot consume an
     /// unrelated queued mouse-down if the dialog is disposed while tracking.

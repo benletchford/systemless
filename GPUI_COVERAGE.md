@@ -467,3 +467,19 @@ open, on monochrome 68K, colour 68K and PPC. The library dialog suite passed
 633 tests; after correcting PPC highlight storage to the documented control
 part code, the focused StandardAlert test also verifies `inButton` (10) while
 held and completes the release normally. The final seven GPUI dialog tests pass.
+
+Held-checkbox qualification found another CPU mismatch: classic ModalDialog
+returned the checkbox hit on mouseDown, allowing the application to toggle
+its value before release. Classic checkbox/radio items now use retained
+standard-control tracking, update the ControlRecord highlight without changing
+the value, and return the item only after an inside release. An outside release
+clears the highlight and leaves the dialog and value unchanged. Push-button
+flash handling remains separate from checkbox/radio completion.
+The preferences regression now checks unchanged value and exposed tracking
+state while held, cancellation outside, and one successful toggle on an inside
+release on monochrome 68K, colour 68K and PPC. All seven GPUI dialog tests pass.
+GPUI checkbox/radio pressed presentation remains open: the Kit's `selected`
+property means checked value and must not be used as a transient press flag.
+Dedicated radio-button interaction and capture qualification also remain open.
+All 633 library dialog tests pass after this tracking change, including the
+existing push-button provider feedback test.
