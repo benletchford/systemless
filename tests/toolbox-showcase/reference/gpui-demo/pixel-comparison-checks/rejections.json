@@ -1,0 +1,10 @@
+[
+  {
+    "kind": "guest",
+    "outcome": "updated-hash image mutation rejected after provenance passed"
+  },
+  {
+    "kind": "rendered",
+    "outcome": "updated-hash image mutation rejected after provenance passed"
+  }
+]
