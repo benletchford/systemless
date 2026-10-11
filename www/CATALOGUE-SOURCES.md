@@ -1408,6 +1408,31 @@ before/after title pixel checks pass; captures inspected. Actual managed archive
 response is untouched, HTTP 200, original 333,691 bytes and SHA-256 match.
 Cross-origin isolation and 800x600 canvas are verified.
 [Browser approval](https://github.com/benletchford/systemless/issues/4594#issuecomment-6109539488).
-Launch approved in PR #4609; final CI/merge, human release and public replay are
-pending. Ship movement, combat, saving and audio remain unverified. No live-game
+Catalogue #4609 is merged at `77ad8e87b1700e640980df7072b43978da1d4958`
+after all final checks passed. Human release and public replay remain pending. Ship movement, combat, saving and audio remain unverified. No live-game
 increment until public replay.
+
+
+### NetHack 3.4.3 browser approval and merged catalogue
+
+[Catalogue #4608](https://github.com/benletchford/systemless/pull/4608) is merged
+at `84b9dd6e7213646fedcd4b0c54114d3a1a992d4c`, with all exact-head checks passing
+on `60bad784b17c52024c7617f70dd526db03a43f24`. Normal asset promotion preserves
+the original publisher archive and actual content-only dungeon screenshot.
+Independent hosted download and untouched Chrome managed response match
+1,083,366 bytes and SHA-256
+`37b103f7468539c92bcf86521df91a656618a3d9c3359a0e91c979323d08efd1`.
+
+Optimized isolated Chrome preview from `92afd9bf`, locally launch-enabled,
+verifies an actual worker and 800x600 canvas. Ordinary Player typing, Play,
+Space and Return reach the original dungeon. Numpad4 moves west and produces
+the original dog-displacement message. Eight measured before/after pixel checks
+pass; captures inspected. The original corresponding upstream source download
+is exposed in the browser; original port differences and notices remain inside
+the complete game archive.
+[Browser approval](https://github.com/benletchford/systemless/issues/4568#issuecomment-6109519179).
+
+This is one qualified catalogue entry for the PPC 3.4.3 edition; the older
+3.3.1/68K failures remain unresolved. Full dungeon progression, combat, saves
+and audio remain unverified. Human release and exact public-route replay remain
+pending before any qualified-live increment. No release action was taken.
