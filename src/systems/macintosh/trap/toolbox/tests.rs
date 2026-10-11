@@ -17074,6 +17074,53 @@
     }
 
     #[test]
+    fn scriptutil_visible_length_preserves_roman_text_and_long_result_abi() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let text_ptr = 0x363000;
+        for (text, length, expected) in [
+            (&b"  Caf\x8e  \t"[..], 9i32, 6u32),
+            (&b"\t  "[..], 3, 0),
+            (&b"A B"[..], 3, 3),
+            (&b"A\r"[..], 2, 2),
+            (&b"A"[..], 0, 0),
+            (&b"A"[..], -1, 0),
+        ] {
+            bus.write_bytes(text_ptr, text);
+            bus.write_long(sp, 0x8408_0028);
+            bus.write_long(sp + 4, length as u32);
+            bus.write_long(sp + 8, text_ptr);
+            bus.write_long(sp + 12, 0xDEAD_BEEF);
+            bus.write_long(sp + 16, 0xA5A5_5A5A);
+            cpu.write_reg(Register::A7, sp);
+            cpu.write_reg(Register::D0, 0x1234_5678);
+            cpu.write_reg(Register::A0, 0x3456_789A);
+            assert!(disp
+                .dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus)
+                .expect("ScriptUtil arm")
+                .is_ok());
+            assert_eq!(bus.read_long(sp + 12), expected);
+            assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+            assert_eq!(bus.read_long(sp + 16), 0xA5A5_5A5A);
+            assert_eq!(cpu.read_reg(Register::D0), 0x1234_5678);
+            assert_eq!(cpu.read_reg(Register::A0), 0x3456_789A);
+            assert_eq!(bus.read_bytes(text_ptr, text.len()), text);
+        }
+        // A LONGINT length/result must not truncate to a 16-bit count.
+        bus.write_bytes(text_ptr, &vec![b'A'; 70_000]);
+        bus.write_long(sp, 0x8408_0028);
+        bus.write_long(sp + 4, 70_000);
+        bus.write_long(sp + 8, text_ptr);
+        cpu.write_reg(Register::A7, sp);
+        assert!(disp
+            .dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus)
+            .expect("ScriptUtil arm")
+            .is_ok());
+        assert_eq!(bus.read_long(sp + 12), 70_000);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+    }
+
+    #[test]
     fn script_util_generated_routes_preserve_exact_stack_long_values() {
         assert_eq!(super::SCRIPT_UTIL_OPERATION_ROUTES.len(), 21);
         assert!(super::SCRIPT_UTIL_OPERATION_ROUTES
