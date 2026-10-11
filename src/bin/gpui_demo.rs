@@ -1968,6 +1968,7 @@ mod desktop {
                     })
                     .expect("StandardGetFile should retain its modal panel state");
                 assert_eq!(opened.kind, StandardFileKind::Get);
+                assert!(opened.standard_entry_point);
                 assert_ne!(opened.guest_id, 0);
                 assert_ne!(opened.generation, 0);
                 assert!(opened.bounds.2 > opened.bounds.0 && opened.bounds.3 > opened.bounds.1);
@@ -2003,9 +2004,10 @@ mod desktop {
                     })
                     .expect("StandardPutFile should retain its modal panel state");
                 assert_eq!(saving.kind, StandardFileKind::Put);
+                assert!(saving.standard_entry_point);
                 assert!(saving.generation > opened.generation);
                 if powerpc {
-                    assert!(saving.entries.is_none(), "native Save entries are not extracted yet");
+                    assert!(saving.entries.is_none(), "PowerPC Save has no guest list yet");
                 } else {
                     assert!(saving.entries.as_ref().is_some_and(|entries| !entries.is_empty()));
                 }

@@ -239,6 +239,7 @@ impl PpcToolboxStartupState {
                 guest_id: tracking.call.reply,
                 generation: tracking.generation,
                 kind: StandardFileKind::Get,
+                standard_entry_point: tracking.standard_entry_point,
                 bounds: tracking.bounds,
                 directory_id: tracking.current_dir_id,
                 entries: Some(
@@ -265,6 +266,7 @@ impl PpcToolboxStartupState {
             guest_id: tracking.call.reply,
             generation: tracking.generation,
             kind: StandardFileKind::Put,
+            standard_entry_point: tracking.standard_entry_point,
             bounds: tracking.bounds,
             directory_id: tracking.dir_id,
             entries: None,

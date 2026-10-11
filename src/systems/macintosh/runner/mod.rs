@@ -3220,6 +3220,7 @@ impl FixtureRunner {
                 guest_id: tracking.reply_ptr,
                 generation: tracking.generation,
                 kind: StandardFileKind::Get,
+                standard_entry_point: tracking.standard_entry_point,
                 bounds: tracking.bounds,
                 directory_id: tracking.current_dir_id,
                 entries: Some(
@@ -3246,6 +3247,7 @@ impl FixtureRunner {
             guest_id: tracking.reply_ptr,
             generation: tracking.generation,
             kind: StandardFileKind::Put,
+            standard_entry_point: tracking.standard_entry_point,
             bounds: tracking.bounds,
             directory_id: tracking.current_dir_id,
             entries: Some(
