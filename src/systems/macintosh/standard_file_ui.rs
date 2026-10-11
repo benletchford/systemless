@@ -98,6 +98,10 @@ pub struct StandardFileSnapshot {
     /// `None` for Open panels; Save reports where guest keyboard input goes.
     pub name_has_focus: Option<bool>,
     pub directory_label: Option<String>,
+    /// Directory statText font family, raw size and QuickDraw face.
+    pub directory_font: (i16, i16, u8),
+    /// Horizontal inset, first baseline and line spacing within its rectangle.
+    pub directory_text_layout: (i16, i16, i16),
     pub get_layout: Option<StandardFileGetLayout>,
     pub put_layout: Option<StandardFilePutLayout>,
 }
