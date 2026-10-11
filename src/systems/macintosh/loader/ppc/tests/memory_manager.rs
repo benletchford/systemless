@@ -5236,3 +5236,23 @@ fn temp_top_mem_returns_machine_boundary_without_mutating_allocator_state() {
         );
     }
 }
+
+#[test]
+fn hle_import_runner_lm_get_mem_err_reads_signed_error_without_clearing_it() {
+    for library in ["InterfaceLib", "CarbonLib"] {
+        assert_eq!(dispatcher_target_for_import(library, "LMGetMemErr"),
+            PpcImportDispatcherTarget::MemError);
+    }
+    assert_eq!(dispatcher_target_for_import("OtherLibrary", "LMGetMemErr"),
+        PpcImportDispatcherTarget::Unsupported);
+    for error in [0i16, PPC_MEM_FULL_ERR, i16::MIN] {
+        let pef = synthetic_pef_with_import(b"LMGetMemErr");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.set_last_mem_error(error);
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], error as i32 as u32);
+        assert_eq!(loaded.last_mem_error(), error);
+    }
+}

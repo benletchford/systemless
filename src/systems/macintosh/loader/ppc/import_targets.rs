@@ -2674,7 +2674,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "MaxMem") => PpcImportDispatcherTarget::MaxMem,
         ("InterfaceLib", "TempMaxMem") => PpcImportDispatcherTarget::TempMaxMem,
         ("InterfaceLib", "TempTopMem") => PpcImportDispatcherTarget::TempTopMem,
-        ("InterfaceLib", "MemError") => PpcImportDispatcherTarget::MemError,
+        ("InterfaceLib", "MemError" | "LMGetMemErr") => PpcImportDispatcherTarget::MemError,
         ("InterfaceLib", "CurResFile" | "LMGetCurMap") => PpcImportDispatcherTarget::CurResFile,
         ("InterfaceLib", "UseResFile") => PpcImportDispatcherTarget::UseResFile,
         ("InterfaceLib", "CloseResFile") => PpcImportDispatcherTarget::CloseResFile,
