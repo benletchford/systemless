@@ -1792,3 +1792,92 @@ fn apple_event_records_use_process_owned_semantic_handles() {
         Some(handle)
     );
 }
+#[test]
+fn native_ppc_call_object_accessor_runs_seven_argument_68k_pascal_callback() {
+    let pef = synthetic_pef_with_library_import(b"ObjectSupportLib", b"AECallObjectAccessor");
+    let mut native = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x3800;
+    let container = scratch;
+    let selection = scratch + 0x10;
+    let token = scratch + 0x20;
+    let observed = scratch + 0x30;
+    native.memory.add_region(scratch, vec![0; 0x40]);
+    let container_type = u32::from_be_bytes(*b"list");
+    let selection_type = u32::from_be_bytes(*b"TEXT");
+    native
+        .memory
+        .write_u32_be(container, container_type)
+        .unwrap();
+    native
+        .memory
+        .write_u32_be(container + 4, 0x76543210)
+        .unwrap();
+    native
+        .memory
+        .write_u32_be(selection, selection_type)
+        .unwrap();
+    native
+        .memory
+        .write_u32_be(selection + 4, 0x12345678)
+        .unwrap();
+    let descriptor = PPC_HEAP_BASE + 0x1000;
+    // Pascal: seven long arguments, OSErr result at 32(SP).
+    // Arguments are reversed on the stack: refcon at 4, output at 8,
+    // selection at 12, container at 24, desired class at 28.
+    install_test_m68k_callback(
+        &mut native,
+        descriptor,
+        PPC_CODE_BASE + 0x5000,
+        0x000fffe0,
+        0,
+        &[
+            0x206f,
+            0x0018, // MOVEA.L 24(SP),A0: container pointer
+            0x23d0,
+            (observed >> 16) as u16,
+            observed as u16, // MOVE.L (A0),observed
+            0x206f,
+            0x000c, // MOVEA.L 12(SP),A0: selection pointer
+            0x226f,
+            0x0008, // MOVEA.L 8(SP),A1: output pointer
+            0x2010, // MOVE.L (A0),D0
+            0x2280, // MOVE.L D0,(A1)
+            0x2028,
+            0x0004, // MOVE.L 4(A0),D0
+            0x2340,
+            0x0004, // MOVE.L D0,4(A1)
+            0x302f,
+            0x0006, // MOVE.W low word of refcon,D0
+            0x3f40,
+            0x0020, // MOVE.W D0,32(SP): OSErr result
+            0x4e74,
+            0x001c, // RTD #28
+        ],
+    );
+    native.apple_events.object_support_initialized = true;
+    let desired = u32::from_be_bytes(*b"docu");
+    native.apple_events.object_accessors.insert(
+        (false, desired, container_type),
+        dispatch_apple_events::PpcObjectAccessor {
+            pointer: descriptor,
+            refcon: 0x1234,
+        },
+    );
+    native.cpu.gpr[3..=8].copy_from_slice(&[
+        desired,
+        container,
+        u32::from_be_bytes(*b"cwin"),
+        u32::from_be_bytes(*b"name"),
+        selection,
+        token,
+    ]);
+    run_test_import(
+        &mut native,
+        PpcImportDispatcherTarget::ObjectSupportCallAccessor,
+    );
+    assert_eq!(native.cpu.gpr[3], 0x1234);
+    assert_eq!(native.memory.read_u32_be(observed), Some(container_type));
+    assert_eq!(native.memory.read_u32_be(token), Some(selection_type));
+    assert_eq!(native.memory.read_u32_be(token + 4), Some(0x12345678));
+    assert!(native.guest_calls().is_empty());
+}
