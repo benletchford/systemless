@@ -2900,6 +2900,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::WaitMouseUp
         | PpcImportDispatcherTarget::GetKeys
         | PpcImportDispatcherTarget::GetMouse
+        | PpcImportDispatcherTarget::GetCurrentKeyModifiers
         | PpcImportDispatcherTarget::GetGlobalMouse => {
             unreachable!("event imports return through dispatch_event_import")
         }
