@@ -125,7 +125,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 80 | 268 | Rogue | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
 | 81 | 269 | MacSokoban | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
 | 82 | 270 | Sokoban | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 83 | 271 | MacBrickout | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 83 | 271 | MacBrickout | 3.1 CODE / 4.1 native PPC; both unqualified | U | [Original package, independent parity and runtime evidence](CATALOGUE-SOURCES.md#macbrickout-41-original-package-and-current-startup) |
 | 84 | 272 | Pac the Man | Verify 68K/PPC | F | [Archive index](https://www.vintageapplemac.com/software/games/p/); [Garden](https://macintoshgarden.org/games/pac-the-man) |
 | 85 | 273 | PacMac Deluxe | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
 | 86 | 274 | MacSnake | PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
@@ -148,7 +148,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 103 | 291 | MacTaipei | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
 | 104 | 292 | Pegged | 68K verified; native PPC absent | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
 | 105 | 293 | Powerball | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
-| 106 | 294 | Brickles Plus | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 106 | 294 | Brickles Plus | Original 3.0: 68K only | U | [Original package and bounded probes; hosting grant unresolved](CATALOGUE-SOURCES.md#brickles-plus-30-original-package-and-bounded-probes) |
 | 107 | 295 | Brick Attack | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
 | 108 | 296 | Bubbles | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
 | 109 | 297 | Airburst | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/a/) |

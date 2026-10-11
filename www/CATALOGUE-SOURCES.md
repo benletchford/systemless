@@ -1654,3 +1654,80 @@ captures inspected. Launch approval is submitted through the ordinary catalogue
 PR, merged at `1463e21ee247d07ac223ba205df3fb50b5a25585` after all final checks
 passed. Human release and independent public replay remain pending. Full levels,
 jumping, saving and audio are unverified. No qualified-live increase.
+
+
+## MacBrickout 4.1 original package and current startup
+
+Primary target 83; [intake #4470](https://github.com/benletchford/systemless/issues/4470).
+Fresh inspection on 12 October 2026 identifies the unchanged
+[4.1 archive](https://www.vintageapplemac.com/files/games/MacBrickout%204.1.sit):
+2,236,189 bytes, SHA-256
+`4eb9de6206f205da11a8852e5a8a38b4433d635a5835dd769ad8021067ad3508`.
+Independent `unar -forks fork` extraction and production loading agree on all
+109 files, all 218 data/resource forks and each file's Finder type, creator and
+flags, with no missing paths or mismatches. Packed size is 5,830,997 bytes.
+
+The original main data fork is `Joy!peffpwpc`; its resource fork is 1,402,458
+bytes, contains one `pwpc` cfrg member and no CODE resources. Selecting 68K still
+loads PPC and is not a second architecture success. The separate 3.1 package
+has CODE resources and a recorded illegal-opcode failure in the intake; that
+older failure has not been replayed against this new runtime. Both versions
+represent one distinct game. Original TEXT 128 retains the demo/shareware
+registration terms. No affirmative public-hosting grant has been established;
+all package content remains unhosted.
+
+Exact selector `MacBrickout 4.1/MacBrickout 4.1`, explicit PPC/depth 8, native
+`0f24e29c473c5ed912fa7cca50be45e38698ae11` halts at frontend 35 / guest 34,
+PC zero, LR `010112E4`, before capture. Original call `010112E0` enters stub
+`01046BBC`, TOC slot `0030`, optional import 12,
+`DSpContext_GetDirtyRectGridUnits`. The original also imports the grid setter.
+[Dirty-grid fix #4634](https://github.com/benletchford/systemless/pull/4634)
+merged as `816f96046924b6bd3709d1231351f1987f55a68f`, after 69 focused tests
+and all nine final ordinary CI checks passed. Fresh immutable native
+`a611f6959ff693fa6cc79e3070f033fc5c7f676c` advances through the old halt,
+then fails at frontend 45 / guest 44, PC zero, LR `01011330`, SP `07F6FE70`.
+Original call `0101132C` enters `01046BEC`, TOC slot `0048`, optional import 18,
+`DSpContext_GetMonitorFrequency`. Zero exhausted frames and zero assertions
+are not startup/gameplay qualification.
+[Defect #4636](https://github.com/benletchford/systemless/issues/4636) and
+[draft #4637](https://github.com/benletchford/systemless/pull/4637) track the
+next API fix; its tests and original replay are pending. A broad instruction
+trace changed the execution path and was stopped; it is excluded from gameplay
+evidence. Rights, native gameplay, browser approval and public delivery remain
+held. Only a human may trigger a release.
+
+## Brickles Plus 3.0 original package and bounded probes
+
+Primary target 106; [intake #4635](https://github.com/benletchford/systemless/issues/4635).
+The unchanged [3.0 archive](https://www.vintageapplemac.com/files/games/Brickles%20Plus%203.0.sit)
+is 40,038 bytes, SHA-256
+`d0ec69adf03ded191801f45992757398a742a208cf6beb49cc0824166bcbaca0`.
+Independent extraction and production loading match the single application's
+two forks and Finder type, creator and flags. Its data fork is empty; resource
+fork is 71,685 bytes, SHA-256
+`bac67e164d7d3955ae52064d2cb434298a3aaa62c8247c7d9898802efdda79ab`.
+Five CODE resources and no cfrg establish that this original is 68K-only.
+Original TEXT 5011 identifies Ken Winograd and suggests a ten-dollar donation;
+it does not provide an explicit public-hosting grant. The
+[author's site](https://www.winograd.com/aboutkenwinograd.shtml) corroborates
+authorship, without establishing permission to mirror this historical package.
+
+Native `0f24e29c473c5ed912fa7cca50be45e38698ae11`, selector `Brickles Plus 3.0`,
+68K/depth 8, completes bounded startup at frontend 1,080 / guest 1,680 with zero
+exhaustion/assertions. Inspected captures show the brick field, score zero,
+five lives and the original click-to-begin instruction. Exploratory click and
+pointer-movement probes at depth 8 and depth 1 complete at frontend 616 /
+guest 1,216, also with zero exhaustion/assertions; no visible paddle or ball is
+established. Original TEXT 5008 specifically instructs choosing a New Game item
+before clicking. A follow-up using the inspected File menu's New Game - 1 Paddle
+item and then ordinary click/movement completes at frontend 641 / guest 1,219,
+with zero exhaustion/assertions; its inspected captures likewise show no visible
+paddle or ball. The omission in the first probe therefore does not explain those
+captures, but no drawing root cause or gameplay qualification is claimed.
+
+All archives, extraction receipts, scripts and captures remain outside Git.
+Distribution permission, bounded visible paddle/ball control and brick
+collisions, content-only screenshot, managed-archive browser qualification,
+promotion, launch approval and independently verified public delivery remain
+pending. These inspections change neither catalogue entry count nor qualified
+live count.
