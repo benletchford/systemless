@@ -1485,3 +1485,39 @@ pixel checks pass with the pointer outside the canvas. Captures inspected.
 screenshot are promoted; launch is approved. Human release and public replay
 remain pending. Broader dungeon progression, combat, saving and audio remain
 unverified. No qualified-live increment or agent release action.
+
+
+## MacCheckers 1.0 — primary slot 779
+
+[Intake #4618](https://github.com/benletchford/systemless/issues/4618).
+The [publisher’s classic software page](https://www.dejal.com/classic/ancient/)
+links the original B&W edition and a separate colour edition. The inspected B&W
+[publisher HQX](https://www.dejal.com/download/classic/mac-checkers.hqx) is
+26,454 bytes, SHA-256
+`0486d463119b9fc1eaf1f9001ccccde6a4f18af99aa686725d30a8e2b9d3af9a`.
+It is byte-identical to the
+[original-format preservation copy](https://www.gryphel.com/d/sw/games/checkers/c/mac-checkers.hqx).
+MD5 `c8d377e9cdda46bd4ab0f7e6a865394e` matches the
+[published preservation receipt](https://www.gryphel.com/c/sw/games/checkers/index.html);
+its signature was not independently verified. The archive is Compact Pro inside
+BinHex; the repackaged HFS ZIP is not used.
+
+Independent unar yields MacCheckers 1.0 and six Sample Games. All seven files,
+fourteen forks and supported Finder type/creator/flags exactly match production
+packing (35,917 bytes). The application is resource-only, with three CODE
+resources and no cfrg or PPC slice. The colour edition has not been inspected and
+would not be a second distinct game.
+
+Rights remain held. The publisher labels the download freeware, but its
+[legal page](https://www.dejal.com/legal/) reserves rights. Inspected original
+notices contain author credits and no affirmative redistribution grant. Freeware
+availability does not establish permission for Systemless to mirror this archive.
+No catalogue entry, hosted assets, launch approval or author contact follows from
+this intake.
+
+On native source `fbd12e1e33941e1da82b9ceb61ed28966571ed81`, selector MacCheckers
+1.0, explicit 68K/depth 8, the unchanged original reaches Black/White selection.
+Ordinary Black selection reaches Black to move status and the checkerboard shell,
+but no pieces appear in the inspected capture. No legal move or computer reply is
+qualified. Saves, browser, promotion and public replay remain unverified.
+[Original comparison and startup evidence](https://github.com/benletchford/systemless/issues/4618#issuecomment-6109947535).
