@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "systemless_version": "0.83.0",
+  "archive": "tests/toolbox-showcase/toolbox-showcase.sit",
+  "script": "tests/play/toolbox-showcase.json",
+  "reference_directory": null,
+  "mac_time_secs": 3871497600,
+  "architecture": "ppc",
+  "status": "passed",
+  "error": null,
+  "failed_action": null,
+  "frontend_ticks": 35,
+  "guest_tick": 14,
+  "budget_exhausted_frames": 0,
+  "assertions": 2,
+  "checkpoints": [
+    {
+      "name": "graphics",
+      "frontend_ticks": 11,
+      "guest_tick": 11,
+      "differing_pixels": null
+    },
+    {
+      "name": "controls",
+      "frontend_ticks": 35,
+      "guest_tick": 14,
+      "differing_pixels": null
+    }
+  ]
+}

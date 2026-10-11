@@ -1,0 +1,713 @@
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+   Compiling libc v0.2.186
+   Compiling typeid v1.0.3
+   Compiling erased-serde v0.4.10
+   Compiling serde_core v1.0.228
+   Compiling cfg-if v1.0.4
+   Compiling bitflags v2.13.2
+   Compiling libm v0.2.16
+   Compiling smallvec v1.15.1
+   Compiling autocfg v1.5.0
+   Compiling memchr v2.8.0
+   Compiling foldhash v0.2.0
+   Compiling pin-project-lite v0.2.17
+   Compiling syn v2.0.117
+   Compiling syn v3.0.6
+   Compiling crossbeam-utils v0.8.21
+   Compiling aho-corasick v1.1.4
+   Compiling regex-syntax v0.8.10
+   Compiling objc2-encode v4.1.0
+   Compiling serde v1.0.228
+   Compiling hashbrown v0.16.1
+   Compiling simd-adler32 v0.3.8
+   Compiling serde_fmt v1.1.0
+   Compiling num-traits v0.2.19
+   Compiling zmij v1.0.21
+   Compiling value-bag-serde1 v1.14.1
+   Compiling value-bag v1.14.1
+   Compiling regex-automata v0.4.18
+   Compiling futures-core v0.3.34
+   Compiling core-foundation-sys v0.8.7
+   Compiling stable_deref_trait v1.2.1
+   Compiling log v0.4.29
+   Compiling futures-io v0.3.34
+   Compiling objc2 v0.6.4
+   Compiling equivalent v1.0.2
+   Compiling anyhow v1.0.102
+   Compiling indexmap v2.13.0
+   Compiling adler2 v2.0.1
+   Compiling winnow v0.7.15
+   Compiling synstructure v0.14.0
+   Compiling miniz_oxide v0.8.9
+   Compiling crc32fast v1.5.0
+   Compiling heck v0.5.0
+   Compiling parking v2.2.1
+   Compiling glob v0.3.3
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.3
+   Compiling objc2-core-foundation v0.3.2
+   Compiling serde_derive v1.0.228
+   Compiling bytemuck_derive v1.10.2
+   Compiling either v1.15.0
+   Compiling fastrand v2.3.0
+   Compiling scopeguard v1.2.0
+   Compiling zlib-rs v0.6.7
+   Compiling lock_api v0.4.14
+   Compiling zerovec-derive v0.11.6
+   Compiling arrayvec v0.7.6
+   Compiling version_check v0.9.5
+   Compiling slab v0.4.12
+   Compiling getrandom v0.4.2
+   Compiling zerofrom v0.1.8
+   Compiling siphasher v1.0.3
+   Compiling bytemuck v1.25.0
+   Compiling clang-sys v1.8.1
+   Compiling displaydoc v0.2.7
+   Compiling regex v1.12.3
+   Compiling yoke v0.8.3
+   Compiling prettyplease v0.2.37
+   Compiling rustc-hash v2.1.1
+   Compiling parking_lot_core v0.9.12
+   Compiling zerovec v0.11.8
+   Compiling core-foundation v0.10.1
+   Compiling minimal-lexical v0.2.1
+   Compiling zerocopy v0.8.40
+   Compiling serde_json v1.0.149
+   Compiling bitflags v1.3.2
+   Compiling shlex v1.3.0
+   Compiling nom v7.1.3
+   Compiling futures-lite v2.6.1
+   Compiling zerocopy-derive v0.8.40
+   Compiling concurrent-queue v2.5.0
+   Compiling libloading v0.8.9
+   Compiling semver v1.0.27
+   Compiling itoa v1.0.17
+   Compiling flate2 v1.1.9
+   Compiling bindgen v0.72.1
+   Compiling rustc_version v0.4.1
+   Compiling cexpr v0.6.0
+   Compiling tinystr v0.8.4
+   Compiling parking_lot v0.12.5
+   Compiling itertools v0.13.0
+   Compiling toml_parser v1.0.9+spec-1.1.0
+   Compiling event-listener v5.4.2
+   Compiling block2 v0.6.2
+   Compiling toml_datetime v1.0.0+spec-1.1.0
+   Compiling litemap v0.8.3
+   Compiling futures-sink v0.3.34
+   Compiling writeable v0.6.4
+   Compiling event-listener-strategy v0.5.4
+   Compiling potential_utf v0.1.6
+   Compiling core-graphics-types v0.2.0
+   Compiling zerotrie v0.2.5
+   Compiling icu_locale_core v2.3.0
+   Compiling foreign-types-macros v0.2.3
+   Compiling crossbeam-epoch v0.9.18
+   Compiling foreign-types-shared v0.3.1
+   Compiling icu_properties_data v2.3.0
+   Compiling icu_normalizer_data v2.3.0
+   Compiling utf8_iter v1.0.4
+   Compiling rayon-core v1.13.0
+   Compiling paste v1.0.15
+   Compiling icu_collections v2.3.0
+   Compiling foreign-types v0.5.0
+   Compiling icu_provider v2.3.1
+   Compiling crossbeam-deque v0.8.6
+   Compiling futures-channel v0.3.34
+   Compiling objc2-foundation v0.3.2
+   Compiling slotmap v1.1.1
+   Compiling futures-macro v0.3.34
+   Compiling euclid v0.22.14
+   Compiling bstr v1.13.1
+   Compiling async-task v4.7.1
+   Compiling getrandom v0.3.4
+   Compiling same-file v1.0.6
+   Compiling once_cell v1.21.3
+   Compiling futures-task v0.3.34
+   Compiling futures-util v0.3.34
+   Compiling tracing-core v0.1.36
+   Compiling walkdir v2.5.0
+   Compiling globset v0.4.20
+   Compiling toml_datetime v0.6.11
+   Compiling serde_spanned v0.6.9
+   Compiling iana-time-zone v0.1.65
+   Compiling fdeflate v0.3.7
+   Compiling core_maths v0.1.1
+   Compiling malloc_buf v0.0.6
+   Compiling byteorder v1.5.0
+   Compiling float-cmp v0.9.0
+   Compiling toml_write v0.1.2
+   Compiling rand_core v0.6.4
+   Compiling lazy_static v1.5.1
+   Compiling block v0.1.6
+   Compiling cranelift-srcgen v0.132.0
+   Compiling rand v0.8.8
+   Compiling cranelift-assembler-x64-meta v0.132.0
+   Compiling toml_edit v0.22.27
+   Compiling strict-num v0.1.1
+   Compiling objc v0.2.7
+   Compiling futures-executor v0.3.34
+   Compiling ttf-parser v0.25.1
+   Compiling chrono v0.4.45
+   Compiling icu_normalizer v2.3.0
+   Compiling icu_properties v2.3.0
+   Compiling lyon_geom v1.0.19
+   Compiling async-channel v2.5.0
+   Compiling phf_shared v0.11.3
+   Compiling pathfinder_simd v0.5.6
+   Compiling gpui-pre-util v0.3.8
+   Compiling pulp v0.22.3
+   Compiling polycool v0.4.0
+   Compiling serde_spanned v1.1.1
+   Compiling hashbrown v0.17.1
+   Compiling percent-encoding v2.3.2
+   Compiling sha1_smol v1.0.1
+   Compiling ref-cast v1.0.27
+   Compiling wasmtime-internal-core v45.0.0
+   Compiling unicode-segmentation v1.12.0
+   Compiling toml_writer v1.1.2+spec-1.1.0
+   Compiling quick-error v2.0.1
+   Compiling libbz2-rs-sys v0.2.5
+   Compiling object v0.37.3
+   Compiling find-msvc-tools v0.1.9
+   Compiling thiserror v2.0.18
+   Compiling rustversion v1.0.22
+   Compiling arrayref v0.3.9
+   Compiling weezl v0.1.12
+   Compiling tiny-skia-path v0.11.4
+   Compiling bzip2 v0.6.1
+   Compiling convert_case v0.10.0
+   Compiling cc v1.2.56
+   Compiling toml v1.0.6+spec-1.1.0
+   Compiling uuid v1.26.1
+   Compiling form_urlencoded v1.2.2
+   Compiling kurbo v0.13.1
+   Compiling gpui-pre-collections v0.3.8
+   Compiling phf_generator v0.11.3
+   Compiling lyon_path v1.0.19
+   Compiling idna_adapter v1.2.2
+   Compiling rand_core v0.9.5
+   Compiling toml v0.8.23
+   Compiling futures v0.3.34
+   Compiling sharded-slab v0.1.7
+   Compiling rayon v1.11.0
+   Compiling half v2.7.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling tracing-log v0.2.0
+   Compiling core-graphics v0.24.0
+   Compiling toml_edit v0.25.4+spec-1.1.0
+   Compiling num-complex v0.4.6
+   Compiling objc2-core-video v0.3.2
+   Compiling enumn v0.1.14
+   Compiling thiserror-impl v2.0.18
+   Compiling pin-project-internal v1.1.11
+   Compiling tracing-attributes v0.1.31
+   Compiling ref-cast-impl v1.0.27
+   Compiling serde_derive_internals v0.30.0
+   Compiling memmap2 v0.9.10
+   Compiling errno v0.3.14
+   Compiling thread_local v1.1.10
+   Compiling typenum v1.20.1
+   Compiling pulp-wasm-simd-flag v0.1.1
+   Compiling tinyvec v1.13.3
+   Compiling zune-core v0.4.12
+   Compiling leak v0.1.2
+   Compiling unicode-xid v0.2.6
+   Compiling reborrow v0.5.5
+   Compiling thiserror v1.0.69
+   Compiling byteorder-lite v0.1.0
+   Compiling gpui-pre-ztracing v0.3.8
+   Compiling unicode-properties v0.1.4
+   Compiling rustix v1.1.4
+   Compiling bytes v1.11.1
+   Compiling nu-ansi-term v0.50.3
+   Compiling heapless v0.9.3
+   Compiling option-ext v0.2.0
+   Compiling compression-core v0.4.33
+   Compiling color_quant v1.1.0
+   Compiling gimli v0.32.3
+   Compiling unicode-ccc v0.4.0
+   Compiling unicode-script v0.5.8
+   Compiling zune-core v0.5.3
+   Compiling unicode-bidi-mirroring v0.4.0
+   Compiling fontdb v0.23.0
+   Compiling rustybuzz v0.20.1
+   Compiling http v1.5.0
+   Compiling zune-jpeg v0.5.15
+   Compiling gif v0.14.2
+   Compiling hybrid-array v0.4.15
+   Compiling compression-codecs v0.4.45
+   Compiling tracing-subscriber v0.3.23
+   Compiling dirs-sys v0.4.1
+   Compiling image-webp v0.2.4
+   Compiling zune-jpeg v0.4.21
+   Compiling derive_more-impl v2.1.1
+   Compiling addr2line v0.25.1
+   Compiling tracing v0.1.44
+   Compiling leaky-cow v0.1.1
+   Compiling pin-project v1.1.11
+   Compiling schemars_derive v1.2.2
+   Compiling accesskit v0.24.1
+   Compiling proc-macro-crate v3.5.0
+   Compiling rand_chacha v0.9.0
+   Compiling svgtypes v0.16.1
+   Compiling idna v1.1.0
+   Compiling gpui-pre-zlog v0.3.8
+   Compiling embed-resource v3.0.12
+   Compiling hash32 v0.3.1
+   Compiling png v0.17.16
+   Compiling spin v0.9.9
+   Compiling thiserror-impl v1.0.69
+   Compiling simplecss v0.2.2
+   Compiling zune-inflate v0.2.54
+   Compiling roxmltree v0.21.1
+   Compiling cgl v0.3.2
+   Compiling float_next_after v1.0.0
+   Compiling bit_field v0.10.3
+   Compiling imagesize v0.14.0
+   Compiling cranelift-isle v0.132.0
+   Compiling base64 v0.22.1
+   Compiling fax v0.2.7
+   Compiling dyn-clone v1.0.20
+   Compiling unicode-bidi v0.3.18
+   Compiling pxfm v0.1.28
+   Compiling lebe v0.5.3
+   Compiling ryu v1.0.23
+   Compiling gpui-pre-ztracing-macro v0.3.8
+   Compiling data-url v0.3.2
+   Compiling zed-font-kit v0.14.1-zed
+   Compiling unicode-vo v0.1.0
+   Compiling allocator-api2 v0.2.21
+   Compiling pico-args v0.5.0
+   Compiling rustc-demangle v0.1.28
+   Compiling xmlwriter v0.1.0
+   Compiling new_debug_unreachable v1.0.6
+   Compiling bumpalo v3.20.2
+   Compiling usvg v0.46.0
+   Compiling exr v1.74.2
+   Compiling serde_urlencoded v0.7.1
+   Compiling tiff v0.10.3
+   Compiling backtrace v0.3.76
+   Compiling schemars v1.2.2
+   Compiling lyon_tessellation v1.0.22
+   Compiling io-surface v0.16.1
+   Compiling tiny-skia v0.11.4
+   Compiling moxcms v0.7.11
+   Compiling flume v0.12.0
+   Compiling gpui-pre v0.3.8
+   Compiling derive_more v2.1.1
+   Compiling url v2.5.8
+   Compiling pathfinder_geometry v0.5.1
+   Compiling gpui-pre-perf v0.3.8
+   Compiling rand v0.9.5
+   Compiling dirs v5.0.1
+   Compiling http-body v1.1.0
+   Compiling async-compression v0.4.50
+   Compiling core-text v21.0.0
+   Compiling lyon_algorithms v1.0.21
+   Compiling phf_codegen v0.11.3
+   Compiling string_cache_codegen v0.5.4
+   Compiling metal v0.33.0
+   Compiling core-graphics2 v0.5.2
+   Compiling png v0.18.1
+   Compiling rgb v0.8.53
+   Compiling qoi v0.4.1
+   Compiling profiling-procmacros v1.0.18
+   Compiling gpui-pre-derive-refineable v0.3.8
+   Compiling strum_macros v0.28.0
+   Compiling smol_str v0.3.6
+   Compiling crossbeam-queue v0.3.14
+   Compiling async-io v2.6.0
+   Compiling link-section v0.19.3
+   Compiling mac v0.1.1
+   Compiling atomic v0.5.3
+   Compiling fixedbitset v0.5.7
+   Compiling static_assertions v1.1.0
+   Compiling web-time v1.1.0
+   Compiling cranelift-codegen-shared v0.132.0
+   Compiling float-ord v0.3.2
+   Compiling objc-sys v0.3.5
+   Compiling svg_fmt v0.4.5
+   Compiling linktime-proc-macro v0.2.3
+   Compiling pollster v0.2.5
+   Compiling etagere v0.2.15
+   Compiling postage v0.5.0
+   Compiling futures-concurrency v7.7.1
+   Compiling cranelift-codegen-meta v0.132.0
+   Compiling ctor v1.0.13
+   Compiling strum v0.28.0
+   Compiling core-video v0.5.2
+   Compiling gpui-pre-scheduler v0.3.8
+   Compiling futf v0.1.5
+   Compiling image v0.25.9
+   Compiling gpui-pre-shared-string v0.3.8
+   Compiling gpui-pre-refineable v0.3.8
+   Compiling profiling v1.0.18
+   Compiling polling v3.11.0
+   Compiling resvg v0.46.0
+   Compiling markup5ever v0.12.1
+   Compiling lyon v1.0.19
+   Compiling gpui-pre-http-client v0.3.8
+   Compiling gpui-pre-util-macros v0.3.8
+   Compiling ignore v0.4.33
+   Compiling gpui-pre-sum-tree v0.3.8
+   Compiling cranelift-bitset v0.132.0
+   Compiling gpui-pre-macros v0.3.8
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling taffy v0.13.0
+   Compiling cranelift-assembler-x64 v0.132.0
+   Compiling itertools v0.14.0
+   Compiling spin v0.10.1
+   Compiling num_cpus v1.17.0
+   Compiling unicase v2.9.0
+   Compiling waker-fn v1.2.0
+   Compiling pollster v0.4.0
+   Compiling target-lexicon v0.13.5
+   Compiling const-oid v0.10.2
+   Compiling raw-window-handle v0.6.2
+   Compiling inventory v0.3.24
+   Compiling seahash v4.1.0
+   Compiling atomic-waker v1.1.2
+   Compiling cbindgen v0.28.0
+   Compiling utf-8 v0.7.6
+   Compiling precomputed-hash v0.1.1
+   Compiling string_cache v0.8.9
+   Compiling tendril v0.4.3
+   Compiling tempfile v3.27.0
+   Compiling piper v0.2.5
+   Compiling digest v0.11.3
+   Compiling globwalk v0.8.1
+   Compiling dirs-sys v0.5.0
+   Compiling mime_guess v2.0.5
+   Compiling cranelift-codegen v0.132.0
+   Compiling cranelift-entity v0.132.0
+   Compiling phf v0.11.3
+   Compiling objc2-quartz-core v0.3.2
+   Compiling objc2-core-graphics v0.3.2
+   Compiling cpufeatures v0.3.1
+   Compiling encoding_rs v0.8.35
+   Compiling arraydeque v0.5.1
+   Compiling arbitrary v1.4.2
+   Compiling heck v0.4.1
+   Compiling anstyle v1.0.14
+   Compiling fnv v1.0.7
+   Compiling unicode-width v0.2.2
+   Compiling granit-parser v1.3.0
+   Compiling encoding_rs_io v0.1.8
+   Compiling annotate-snippets v0.12.16
+   Compiling gimli v0.33.0
+   Compiling cranelift-control v0.132.0
+   Compiling sha2 v0.11.0
+   Compiling objc2 v0.5.2
+   Compiling cranelift-bforest v0.132.0
+   Compiling dirs v6.0.0
+   Compiling blocking v1.7.0
+   Compiling regalloc2 v0.15.1
+   Compiling arc-swap v1.9.2
+   Compiling objc2-core-data v0.3.2
+   Compiling objc2-cloud-kit v0.3.2
+   Compiling objc2-core-image v0.3.2
+   Compiling signal-hook-registry v1.4.8
+   Compiling async-lock v3.4.2
+   Compiling objc2-core-text v0.3.2
+   Compiling html5ever v0.27.0
+   Compiling nohash-hasher v0.2.0
+   Compiling mime v0.3.17
+   Compiling base64 v0.23.1
+   Compiling serde-saphyr v1.3.0
+   Compiling triomphe v0.1.16
+   Compiling objc2-app-kit v0.3.2
+   Compiling async-signal v0.2.14
+   Compiling gpui-pre-apple v0.3.8
+   Compiling shellexpand v3.1.2
+   Compiling objc2-foundation v0.2.2
+   Compiling rust-embed-utils v8.12.0
+   Compiling dispatch2 v0.3.1
+   Compiling itertools v0.11.0
+   Compiling base62 v2.2.6
+   Compiling normpath v1.5.2
+   Compiling gpui-kit-assets v0.7.1
+   Compiling utf8parse v0.2.2
+   Compiling anstyle-parse v1.0.0
+   Compiling rust-i18n-support v4.2.4
+   Compiling rust-embed-impl v8.12.0
+   Compiling objc2-app-kit v0.2.2
+   Compiling async-process v2.5.0
+   Compiling async-fs v2.2.0
+   Compiling async-net v2.0.0
+   Compiling xml5ever v0.18.1
+   Compiling rust-i18n v4.2.4
+   Compiling accesskit_consumer v0.38.0
+   Compiling objc2-core-location v0.3.2
+   Compiling objc2-core-media v0.3.2
+   Compiling coreaudio-sys v0.2.17
+   Compiling cocoa-foundation v0.2.1
+   Compiling async-executor v1.14.0
+   Compiling fluent-uri v0.1.4
+   Compiling serde_repr v0.1.21
+   Compiling mach2 v0.5.0
+   Compiling mach2 v0.4.3
+   Compiling str_indices v0.4.4
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling unicode-id v0.3.7
+   Compiling colorchoice v1.0.4
+   Compiling anstyle-query v1.1.5
+   Compiling markdown v1.0.0
+   Compiling anstream v1.0.0
+   Compiling ropey v2.0.0-beta.1
+   Compiling lsp-types v0.97.0
+   Compiling cocoa v0.26.1
+   Compiling smol v2.0.2
+   Compiling accesskit_macos v0.26.3
+   Compiling objc2-screen-capture-kit v0.3.2
+   Compiling objc2-user-notifications v0.3.2
+   Compiling markup5ever_rcdom v0.3.0
+   Compiling rust-embed v8.12.0
+   Compiling rust-i18n-macro v4.2.4
+   Compiling enum-iterator-derive v1.5.0
+   Compiling fsevent-sys v4.1.0
+   Compiling notify-types v2.1.0
+   Compiling instant v0.1.13
+   Compiling unicode-linebreak v0.1.5
+   Compiling gpui-component v0.7.1
+   Compiling clap_lex v1.0.0
+   Compiling strsim v0.11.1
+   Compiling rustc_apfloat v0.2.3+llvm-462a31f5a5ab
+   Compiling clap_builder v4.6.7
+   Compiling notify v8.2.0
+   Compiling enum-iterator v2.3.0
+   Compiling region v3.0.2
+   Compiling wasmtime-internal-jit-icache-coherence v45.0.0
+   Compiling gpui-component-macros v0.7.1
+   Compiling font-types v0.12.4
+   Compiling clap_derive v4.6.7
+   Compiling memmap2 v0.2.3
+   Compiling cpal v0.15.3
+   Compiling read-fonts v0.40.1
+   Compiling coreaudio-rs v0.11.3
+   Compiling clap v4.6.7
+   Compiling zopfli v0.8.3
+   Compiling md5 v0.7.0
+   Compiling dasp_sample v0.11.0
+   Compiling typed-path v0.12.3
+   Compiling stuffit v0.3.0
+   Compiling zip v8.6.0
+   Compiling ppc v0.7.1
+   Compiling hfsplus v0.2.4
+   Compiling zeno v0.3.3
+   Compiling cranelift-native v0.132.0
+   Compiling cranelift-module v0.132.0
+   Compiling cranelift-frontend v0.132.0
+   Compiling cranelift-jit v0.132.0
+   Compiling m68k v0.14.3
+   Compiling skrifa v0.43.2
+   Compiling gpui-pre-macos v0.3.8
+   Compiling gpui-base v0.7.1
+   Compiling gpui-pre-platform v0.3.8
+   Compiling gpui-kit v0.7.1
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+warning: method `instrument` is never used
+   --> src/systems/macintosh/sound.rs:609:19
+    |
+403 | impl SndChannel {
+    | --------------- method in this implementation
+...
+609 |     pub(crate) fn instrument(&self) -> Option<&SampledInstrument> {
+    |                   ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `dispatch_toolbox` is never used
+    --> src/systems/macintosh/trap/toolbox.rs:6210:19
+     |
+1169 | impl super::TrapDispatcher {
+     | -------------------------- method in this implementation
+...
+6210 |     pub(crate) fn dispatch_toolbox<C: CpuOps>(
+     |                   ^^^^^^^^^^^^^^^^
+
+warning: `systemless` (lib) generated 2 warnings
+warning: field `debug_socket` is never read
+  --> src/bin/gpui_demo.rs:12:9
+   |
+ 3 | pub(crate) struct LaunchOptions {
+   |                   ------------- field in this struct
+...
+12 |     pub debug_socket: Option<std::path::PathBuf>,
+   |         ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `main` is never used
+  --> src/bin/gpui_demo.rs:22:4
+   |
+22 | fn main() {
+   |    ^^^^
+
+warning: associated items `smooth_raster_support`, `classic_textedit_run`, and `ppc_styled_run` are never used
+    --> src/bin/gpui_demo_text.rs:1052:12
+     |
+1051 | impl ClassicLine {
+     | ---------------- associated items in this implementation
+1052 |     pub fn smooth_raster_support(&self) -> [bool; 8] {
+     |            ^^^^^^^^^^^^^^^^^^^^^
+...
+1110 |     pub fn classic_textedit_run(
+     |            ^^^^^^^^^^^^^^^^^^^^
+...
+1172 |     pub fn ppc_styled_run(
+     |            ^^^^^^^^^^^^^^
+
+warning: field `geometry` is never read
+    --> src/bin/gpui_demo_text.rs:1435:9
+     |
+1434 | pub(crate) struct StyledTextEditLine {
+     |                   ------------------ field in this struct
+1435 |     pub geometry: systemless::runner::TextEditLineGeometry,
+     |         ^^^^^^^^
+     |
+     = note: `StyledTextEditLine` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: fields `bytes` and `measured_positions` are never read
+    --> src/bin/gpui_demo_text.rs:1443:9
+     |
+1442 | pub(crate) struct StyledTextEditRun {
+     |                   ----------------- fields in this struct
+1443 |     pub bytes: std::ops::Range<usize>,
+     |         ^^^^^
+1444 |     pub left: i16,
+1445 |     pub measured_positions: Vec<i16>,
+     |         ^^^^^^^^^^^^^^^^^^
+     |
+     = note: `StyledTextEditRun` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: associated function `qualify` is never used
+    --> src/bin/gpui_demo_text.rs:1533:12
+     |
+1471 | impl ClassicListCellPaintPlan {
+     | ----------------------------- associated function in this implementation
+...
+1533 |     pub fn qualify(
+     |            ^^^^^^^
+
+warning: method `smooth_raster_support` is never used
+    --> src/bin/gpui_demo_text.rs:1706:12
+     |
+1703 | impl StyledTextEditPaintPlan {
+     | ---------------------------- method in this implementation
+...
+1706 |     pub fn smooth_raster_support(&self) -> [bool; 8] {
+     |            ^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `pixels_with_selection`, `pixels_with_solid_caret`, and `pixels` are never used
+    --> src/bin/gpui_demo_text.rs:1823:12
+     |
+1789 | impl StyledTextEditLine {
+     | ----------------------- methods in this implementation
+...
+1823 |     pub fn pixels_with_selection(
+     |            ^^^^^^^^^^^^^^^^^^^^^
+...
+1849 |     pub fn pixels_with_solid_caret(
+     |            ^^^^^^^^^^^^^^^^^^^^^^^
+...
+1868 |     pub fn pixels(&self) -> Option<std::collections::BTreeMap<(i16, i16), [u8; 3]>> {
+     |            ^^^^^^
+
+warning: function `classic_styled_text_edit_ink` is never used
+    --> src/bin/gpui_demo_text.rs:1886:15
+     |
+1886 | pub(crate) fn classic_styled_text_edit_ink(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_selection` is never used
+    --> src/bin/gpui_demo_text.rs:1892:15
+     |
+1892 | pub(crate) fn classic_styled_text_edit_selection(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_solid_caret` is never used
+    --> src/bin/gpui_demo_text.rs:1901:15
+     |
+1901 | pub(crate) fn classic_styled_text_edit_solid_caret(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_pixels` is never used
+    --> src/bin/gpui_demo_text.rs:1919:4
+     |
+1919 | fn classic_styled_text_pixels(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_pixels_with_background` is never used
+    --> src/bin/gpui_demo_text.rs:1926:4
+     |
+1926 | fn classic_styled_text_pixels_with_background(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `smooth_halo_mask` is never used
+    --> src/bin/gpui_demo_text.rs:2303:4
+     |
+2303 | fn smooth_halo_mask(
+     |    ^^^^^^^^^^^^^^^^
+
+warning: associated items `reset_preferences` and `root` are never used
+   --> src/bin/desktop/desktop_save_store.rs:98:12
+    |
+ 79 | impl DesktopSaveStore {
+    | --------------------- associated items in this implementation
+...
+ 98 |     pub fn reset_preferences(game_path: &Path) -> io::Result<usize> {
+    |            ^^^^^^^^^^^^^^^^^
+...
+110 |     pub fn root(&self) -> &Path {
+    |            ^^^^
+
+warning: function `matching_child_dirs` is never used
+   --> src/bin/desktop/desktop_save_store.rs:465:4
+    |
+465 | fn matching_child_dirs(dir: &Path, lower_name: &str) -> io::Result<Vec<PathBuf>> {
+    |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `standard_dbox_dialog` is never used
+    --> src/bin/gpui_demo.rs:1328:8
+     |
+1328 |     fn standard_dbox_dialog<'a>(
+     |        ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `main` is never used
+    --> src/bin/gpui_demo.rs:5397:19
+     |
+5397 |     pub(super) fn main() {
+     |                   ^^^^
+
+warning: constant `SAVE_SCAN_FRAME_INTERVAL` is never used
+  --> src/bin/desktop/desktop_save_store.rs:10:7
+   |
+10 | const SAVE_SCAN_FRAME_INTERVAL: u8 = 30;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `save_scan_frame` is never read
+  --> src/bin/desktop/desktop_save_store.rs:23:5
+   |
+16 | pub struct DesktopSaveStore {
+   |            ---------------- field in this struct
+...
+23 |     save_scan_frame: u8,
+   |     ^^^^^^^^^^^^^^^
+   |
+   = note: `DesktopSaveStore` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: method `sync_save_files` is never used
+   --> src/bin/desktop/desktop_save_store.rs:168:12
+    |
+ 79 | impl DesktopSaveStore {
+    | --------------------- method in this implementation
+...
+168 |     pub fn sync_save_files(&mut self, runner: &mut FixtureRunner) {
+    |            ^^^^^^^^^^^^^^^
+
+warning: `systemless` (bin "systemless") generated 21 warnings
+    Finished `release` profile [optimized] target(s) in 13m 46s
