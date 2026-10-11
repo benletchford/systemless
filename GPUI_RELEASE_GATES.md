@@ -210,3 +210,13 @@ zero failed and one ignored in 8401.92s. Its parent began at `e0d709d8`, while
 later targeted builds replaced the executable used by `current_exe` children.
 This is mixed-checkpoint regression evidence, not final-candidate qualification.
 A pinned packaged candidate still requires a clean, reproducible full run.
+
+### Notification acknowledgment focus (2026-10-11)
+
+Notification OK restores the guest root focus before dispatching the exact
+owned acknowledgment, for both pointer and accessibility Click handlers.
+The shared GPUI test deliberately displaces focus before clicking OK, verifies
+restoration, and checks that pointer and keyboard inputs do not leak into the
+guest while the alert remains owned (one test passed, 0.11s). This does not
+qualify native accessibility delivery, physical focus or automatic notification
+acquisition, which remains disconnected from frontend polling.
