@@ -780,7 +780,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn popup_control_font(&self, bus: &MacMemoryBus, ctrl_ptr: u32) -> crate::menu_model::GuestMenuFont {
+    pub(super) fn popup_control_font(&self, bus: &MacMemoryBus, ctrl_ptr: u32) -> crate::menu_model::GuestMenuFont {
         let proc_id = self.control_manager.proc_id(ctrl_ptr);
         let owner = bus.read_long(ctrl_ptr + 4);
         // popupUseWFont applies to the active menu as well as its title.
@@ -1732,6 +1732,7 @@ impl super::TrapDispatcher {
             proc_id if Self::is_popup_menu_proc_id(proc_id) => {
                 // popupMenuProc — draw the CNTL-backed popup button using
                 // the selected MENU resource item.
+                let font = self.popup_control_font(bus, ctrl_ptr);
                 let menu_id = self.popup_control_menu_id(bus, ctrl_ptr, min);
                 let selected = value.max(1) as usize;
                 let item_title = self.popup_menu_item_title(bus, menu_id, selected);
@@ -1746,7 +1747,7 @@ impl super::TrapDispatcher {
                     title_width,
                     proc_id,
                 );
-                self.draw_popup_control_label(
+                self.draw_popup_control_label_with_font(
                     bus,
                     abs_top,
                     abs_left,
@@ -1754,13 +1755,14 @@ impl super::TrapDispatcher {
                     draw_left,
                     &title,
                     hilite != 255,
+                    font,
                 );
                 // HIG 1992 p. 87 describes the closed pop-up menu as the
                 // rectangle/triangle control; MTE 1992 p. 6-98 says
                 // HiliteControl dims inactive pop-up menus. Keep part-code
                 // and menu tracking behavior unchanged while routing that
                 // semantic state to non-classic theme chrome.
-                self.draw_popup_control_with_state(
+                self.draw_popup_control_with_font(
                     bus,
                     draw_top,
                     draw_left,
@@ -1769,6 +1771,7 @@ impl super::TrapDispatcher {
                     &item_title.unwrap_or_default(),
                     hilite != 255,
                     hilite == 1,
+                    font,
                 );
             }
             _ => {
