@@ -9,6 +9,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -27,6 +28,24 @@ compatibility:
       match independent extraction. Title-dialog remnants remain outside the playfield.
       Floor-counter progression, ordinary browser/public gameplay, saved scores, long
       runs and audio remain unverified. Browser launch remains disabled pending approval.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4480
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: 3d26d9541dc82fff1304876ca0e02dd974f1ddcf
+    architecture: 68k
+    environment: >-
+      Ordinary Chrome preview v0.96.0, actual 68K worker/WebGL, 800-by-600/8-bit
+      display, 25 MHz, maximum two ticks per paint and crossOriginIsolated true.
+      Return dismisses the unchanged shareware notice and an ordinary mouse click
+      starts New Game. Space fills the power meter while held and releasing it
+      jumps. A longer charge lands on a raised moving platform in successive
+      captures; another jump scrolls the tower upward. Only localhost archive
+      delivery uses the integrity-checked unchanged original byte fixture; the
+      managed download independently matches the original hash and size. No guest
+      state or archive bytes are patched. Title-dialog remnants reproduce outside
+      the playfield. Floor-counter advancement, public replay, saved scores,
+      long runs and audio remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4480
 runtime:
@@ -95,6 +114,7 @@ downloaded directly from its author, including Read Me First and Register.
 The original US$10 registration reminder is retained. This version is 68K-only.
 
 Bounded native testing verifies charging, jumping and reaching a raised
-platform. Some title-dialog pixels remain outside the tower. Browser launch
-is pending testing and approval. Long runs, saved scores and audio remain
-unverified.
+platform. Ordinary browser testing also verifies charging, jumping, landing
+on a raised moving platform and upward scrolling. Some title-dialog pixels
+remain outside the tower. Public replay, long runs, saved scores and audio
+remain unverified.
