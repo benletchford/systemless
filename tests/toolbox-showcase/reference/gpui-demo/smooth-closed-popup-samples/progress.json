@@ -1,0 +1,98 @@
+{
+  "source_commit": "c89b3391956463889c5df5d99f9b7ff2c95e4b5e",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "841cb2aba583197648fba4e066e6ec110cb9a79fcbd45c64028b64d443d46dff",
+    "src/bin/gpui_demo_text.rs": "1bac0f1e90cc727579bb1162ec8de90559724e9ca4696bb9b1a46053b0e1f437",
+    "src/systems/macintosh/quickdraw/text.rs": "297b951af8b3260b0652ecfa5ee723e9160d4c3182fd9190f5a0a23a45122cf7",
+    "src/systems/macintosh/quickdraw/fonts/outline.rs": "2f57a2783f586f4279984bda73b3e189d1ac399ec96e8bc21927c0124a787e7b"
+  },
+  "binary_sha256": "0daf5a24e29eeea8fd48548d9eea164cb583bce561d2f954737242fe05512fc4",
+  "fixture_sha256": "17e3cd4dd1a2510627b55487db166773759319f93454bb9141ad8a80bc40d4b8",
+  "scope": "Four closed-control appearance samples only; no full CPU/scale/state or raster parity qualification",
+  "cases": [
+    {
+      "rendered": "ppc16-selected.png",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-popup-controls-selected",
+        "/tmp/systemless-smooth-closed-popup-c89b3391/ppc16-selected.png",
+        "--capture-scale",
+        "0.75",
+        "--prefer-powerpc"
+      ],
+      "scale": 0.75,
+      "sha256": "c083ba1d57fedfaecd006f8e5707d1d330e6a95af0c1cbae87ffd090bd67d622",
+      "guest_sha256": "591b8993e236fb4563f98165e0f85a8e259755bf4590e0f9ec8ccf5d1f8cde71",
+      "capture_sha256": "9245213009396c22b11d952f18e8d955eed611bd8a5a49e33b79264db850033d",
+      "original_png_sha256": {
+        "sha256": "9f1b3af36c88bbb596afab3f6541c34ca2ec9fba44c87d41859029a2da8ced2e",
+        "guest_sha256": "747ccc109b15d520828ba2cef5b053fab09a3637377c2270d13fe40f69577097"
+      }
+    },
+    {
+      "rendered": "ppc16-disabled.png",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-popup-controls-disabled",
+        "/tmp/systemless-smooth-closed-popup-c89b3391/ppc16-disabled.png",
+        "--capture-scale",
+        "0.75",
+        "--prefer-powerpc"
+      ],
+      "scale": 0.75,
+      "sha256": "c083ba1d57fedfaecd006f8e5707d1d330e6a95af0c1cbae87ffd090bd67d622",
+      "guest_sha256": "591b8993e236fb4563f98165e0f85a8e259755bf4590e0f9ec8ccf5d1f8cde71",
+      "capture_sha256": "7d8a7e345307d8a6f14ebedf10612485b519ba14014c70d5815a51366f8e2f2f",
+      "original_png_sha256": {
+        "sha256": "9f1b3af36c88bbb596afab3f6541c34ca2ec9fba44c87d41859029a2da8ced2e",
+        "guest_sha256": "747ccc109b15d520828ba2cef5b053fab09a3637377c2270d13fe40f69577097"
+      }
+    },
+    {
+      "rendered": "colour-selected.png",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-popup-controls-selected",
+        "/tmp/systemless-smooth-closed-popup-c89b3391/colour-selected.png",
+        "--capture-scale",
+        "1",
+        "--screen-depth",
+        "8"
+      ],
+      "scale": 1,
+      "sha256": "02aa7b3aa810daab4d96f21bfbe6c8066b6ba4d73fc7e217654987cdefcd2a32",
+      "guest_sha256": "7bb4eb77470f825f2e60bb4f7ade19b36e26ca1b812e4143c27318c8e3de61b8",
+      "capture_sha256": "2a700f47010e2d9d6a13740aa67708431ac164365a63518aeedfaec3bb7374be",
+      "original_png_sha256": {
+        "sha256": "5254f9de75ab58eb3983a57627ee09412ccd0aeaa0e99e186e499d68a4fa6798",
+        "guest_sha256": "c9f090aeb75ba2e8300f62d6e52a0a76f3a0342709b6f9af8a9bb56bc62633d9"
+      }
+    },
+    {
+      "rendered": "mono-selected.png",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-popup-controls-selected",
+        "/tmp/systemless-smooth-closed-popup-c89b3391/mono-selected.png",
+        "--capture-scale",
+        "2",
+        "--screen-depth",
+        "1"
+      ],
+      "scale": 2,
+      "sha256": "97b1af9c54f9c1cdae572c86c839bb6d057991e21e86526b1634dfe9b898e505",
+      "guest_sha256": "2d6b691c9c2df834820b3187b5d00bcb49f97e3bd8a421665a991936c2d7cb3b",
+      "capture_sha256": "b29d85932d04d0afa46f683947ae0c8347c97d5863217156c100e549bc80d6d1",
+      "original_png_sha256": {
+        "sha256": "09781d7fad3906ea8b7019e3d7ca5937ccd3167f5f8be417edc16df4cc35483a",
+        "guest_sha256": "9c04b8ffbba1c2bda24d6c459efe64a86619902d0b8068a3bb3976f637afef5e"
+      }
+    }
+  ],
+  "complete": true,
+  "archive": "PNG compression only; decoded RGBA unchanged"
+}
