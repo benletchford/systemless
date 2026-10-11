@@ -92,8 +92,8 @@ impl ProcessListRecord {
     }
 }
 
-/// Retained standard list-scrollbar arrow tracking. LClick owns the call until
-/// release; each arrow action scrolls one cell without changing selection.
+/// Retained standard list-scrollbar arrow and page tracking. LClick owns the
+/// call until release and scrolls without changing selection.
 /// More Macintosh Toolbox (1993), pp. 4-84--4-85.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ListScrollbarTracking {
@@ -106,16 +106,17 @@ pub(crate) struct ListScrollbarTracking {
     pub classic: bool,
     pub frame: (u32, u32),
     pub bounds: (i16, i16, i16, i16),
-    pub direction: i16,
+    pub part: u8,
     pub last_tick: u32,
 }
 
 impl ListScrollbarTracking {
-    pub(crate) fn arrow(
+    pub(crate) fn part(
         bounds: (i16, i16, i16, i16),
         point: (i16, i16),
         vertical: bool,
-    ) -> Option<i16> {
+        limits: (i16, i16, i16),
+    ) -> Option<u8> {
         let (top, left, bottom, right) = bounds;
         if point.0 < top || point.0 >= bottom || point.1 < left || point.1 >= right {
             return None;
@@ -125,29 +126,79 @@ impl ListScrollbarTracking {
         } else {
             (left, right, point.1)
         };
-        // Standard scrollbars reserve sixteen pixels for each arrow.
-        // Macintosh Toolbox Essentials (1992), pp. 5-10--5-12.
-        if i32::from(end) - i32::from(start) < 48 {
+        let (start, end, axis) = (i32::from(start), i32::from(end), i32::from(axis));
+        let (value, minimum, maximum) = limits;
+        if end - start < 48 || minimum >= maximum {
             return None;
         }
-        if i32::from(axis) < i32::from(start) + 16 {
-            Some(-1)
-        } else if i32::from(axis) >= i32::from(end) - 16 {
-            Some(1)
+        // Standard CDEF arrows and scroll boxes occupy sixteen pixels.
+        // Macintosh Toolbox Essentials (1992), pp. 5-10--5-12, 5-57--5-61.
+        if axis < start + 16 {
+            return Some(20);
+        }
+        if axis >= end - 16 {
+            return Some(21);
+        }
+        let range = i32::from(maximum) - i32::from(minimum);
+        let value = i32::from(value.clamp(minimum, maximum)) - i32::from(minimum);
+        let thumb =
+            start + 16 + (i64::from(value) * i64::from(end - start - 48) / i64::from(range)) as i32;
+        if axis < thumb {
+            Some(22)
+        } else if axis >= thumb + 16 {
+            Some(23)
         } else {
             None
         }
     }
 
-    pub(crate) fn step(&mut self, point: (i16, i16), tick: u32) -> Option<i16> {
-        if Self::arrow(self.bounds, point, self.vertical) != Some(self.direction)
+    pub(crate) fn hit(&self, point: (i16, i16), record: &ProcessListRecord) -> bool {
+        Self::part(
+            self.bounds,
+            point,
+            self.vertical,
+            record.scrollbar_limits(self.vertical),
+        ) == Some(self.part)
+    }
+
+    pub(crate) fn step(
+        &mut self,
+        point: (i16, i16),
+        tick: u32,
+        record: &ProcessListRecord,
+    ) -> Option<i16> {
+        if !self.hit(point, record)
             || tick.wrapping_sub(self.last_tick)
                 < super::control_manager::SCROLLBAR_ACTION_REPEAT_TICKS
         {
             return None;
         }
         self.last_tick = tick;
-        Some(self.direction)
+        let units = if self.part >= 22 {
+            // Page by visible capacity less one cell, keeping the overlap even
+            // when the final page has fewer cells. MTE, pp. 5-57--5-61;
+            // More Macintosh Toolbox, pp. 4-21--4-22, 4-84--4-85.
+            let (pixels, cell) = if self.vertical {
+                (
+                    i32::from(record.view_rect.2) - i32::from(record.view_rect.0),
+                    record.cell_size.0,
+                )
+            } else {
+                (
+                    i32::from(record.view_rect.3) - i32::from(record.view_rect.1),
+                    record.cell_size.1,
+                )
+            };
+            ((pixels.max(0) + i32::from(cell.max(1)) - 1) / i32::from(cell.max(1)) - 1)
+                .clamp(1, i32::from(i16::MAX)) as i16
+        } else {
+            1
+        };
+        Some(if matches!(self.part, 20 | 22) {
+            -units
+        } else {
+            units
+        })
     }
 }
 
@@ -240,23 +291,94 @@ mod tests {
             classic: true,
             frame: (4, 0),
             bounds: (10, 20, 110, 36),
-            direction: 1,
+            part: 21,
             last_tick: u32::MAX - 2,
         };
-        assert_eq!(tracking.step((102, 28), 0), Some(1));
-        assert_eq!(tracking.step((102, 28), 1), None);
-        assert_eq!(tracking.step((102, 28), 3), Some(1));
-        assert_eq!(tracking.step((102, 40), 6), None);
-        assert_eq!(tracking.step((18, 28), 6), None);
-        assert_eq!(tracking.step((102, 28), 6), Some(1));
+        let record = ProcessListRecord {
+            handle: 1,
+            generation: 1,
+            definition_id: 0,
+            cells_handle: 0,
+            view_rect: (0, 0, 100, 100),
+            data_bounds: (0, 0, 20, 20),
+            cell_size: (10, 10),
+            visible: (0, 0, 10, 10),
+            port: 0,
+            draw_enabled: true,
+            active: true,
+            cells: HashMap::new(),
+            selected: BTreeSet::new(),
+            last_click: (0, 0),
+            last_click_tick: 0,
+        };
+        assert_eq!(tracking.step((102, 28), 0, &record), Some(1));
+        assert_eq!(tracking.step((102, 28), 1, &record), None);
+        assert_eq!(tracking.step((102, 28), 3, &record), Some(1));
+        assert_eq!(tracking.step((102, 40), 6, &record), None);
+        assert_eq!(tracking.step((18, 28), 6, &record), None);
+        assert_eq!(tracking.step((102, 28), 6, &record), Some(1));
         assert_eq!(
-            ListScrollbarTracking::arrow((20, 10, 36, 110), (28, 102), false),
-            Some(1)
+            ListScrollbarTracking::part((20, 10, 36, 110), (28, 102), false, (0, 0, 10)),
+            Some(21)
         );
         let mut manager = ProcessListManagerState::default();
         manager.scroll_tracking = Some(tracking);
         manager.remove_record(1);
         assert!(manager.scroll_tracking.is_none());
+    }
+
+    #[test]
+    fn list_page_tracks_current_thumb_and_keeps_one_cell_overlap() {
+        let mut record = ProcessListRecord {
+            handle: 1,
+            generation: 1,
+            definition_id: 0,
+            cells_handle: 0,
+            view_rect: (0, 0, 100, 100),
+            data_bounds: (0, 0, 20, 20),
+            cell_size: (10, 10),
+            visible: (0, 0, 10, 10),
+            port: 0,
+            draw_enabled: true,
+            active: true,
+            cells: HashMap::new(),
+            selected: BTreeSet::new(),
+            last_click: (0, 0),
+            last_click_tick: 0,
+        };
+        record.view_rect = (0, 0, 114, 450);
+        record.cell_size = (18, 450);
+        record.data_bounds = (0, 0, 12, 1);
+        record.set_visible_origin(0, 0);
+        let mut tracking = ListScrollbarTracking {
+            list: 1,
+            generation: 1,
+            control: 2,
+            pointer: 3,
+            control_generation: 1,
+            vertical: true,
+            classic: true,
+            frame: (4, 0),
+            bounds: (128, 514, 242, 530),
+            part: 23,
+            last_tick: 0,
+        };
+        assert_eq!(tracking.step((208, 522), 3, &record), Some(6));
+        record.set_visible_origin(6, 0);
+        assert_eq!(tracking.step((208, 522), 6, &record), None);
+        tracking.part = 22;
+        assert_eq!(tracking.step((160, 522), 6, &record), Some(-6));
+        record.set_visible_origin(0, 0);
+        assert_eq!(tracking.step((160, 522), 9, &record), None);
+        assert_eq!(
+            ListScrollbarTracking::part(
+                (i16::MIN, 0, i16::MAX, 16),
+                (0, 8),
+                true,
+                (i16::MAX, i16::MIN, i16::MAX)
+            ),
+            Some(22)
+        );
     }
 
     #[test]

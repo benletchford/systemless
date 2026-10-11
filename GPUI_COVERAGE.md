@@ -220,5 +220,21 @@ states and preserves empty selection. Exact native equivalence is not yet
 established: the short native press moves two rows versus one in Systemless,
 and the native scrollbar thumb position differs in the captured replay.
 Timed guest-state probes are still needed to explain those differences.
-Page clicks, thumb tracking, custom definitions and click-loop callbacks
-remain unfinished. More Macintosh Toolbox (1993), pp. 4-84--4-85.
+Thumb tracking, custom definitions and click-loop callbacks remain unfinished.
+Page-click progress and its remaining native qualification are described below. More Macintosh Toolbox (1993), pp. 4-84--4-85.
+
+Standard List Manager page clicks now use the same retained tracking state as
+arrow clicks on both CPUs. The shared hit test distinguishes the two page
+regions from the thumb, checks the current thumb position before repeating,
+and pages by visible capacity less one cell. Resizing and a clipped final row
+are included in that calculation. A loaded monochrome 68K, colour 68K and PPC
+regression resizes the list, pages up/down/up, checks the retained call and
+preserves selection. A shared test covers page overlap, thumb crossing and
+wide signed coordinate/value ranges without arithmetic overflow.
+
+The native compact-list replay reaches row six on page-down, matching the HLE
+result. Its thumb remains near the top, so the same intended page-up coordinate
+is still below the native thumb and does not scroll back. This remains an
+unresolved native-state/rendering discrepancy, not evidence of complete page
+tracking equivalence. The page-click implementation does not close thumb,
+custom-CDEF/LDEF or click-loop qualification.
