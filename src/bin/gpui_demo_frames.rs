@@ -481,8 +481,8 @@ pub fn list_pieces(
     pieces
 }
 
-/// Restyle standard document edges only after the guest draws its grow icon;
-/// the WDEF alone does not reserve content pixels for scrollbars or a size box.
+/// Restyle only the grow-icon background and separator pixels after the guest
+/// draws them; the WDEF alone does not reserve content pixels for scrollbars.
 /// Macintosh Toolbox Essentials (1992), pp. 4-4--4-5, 4-12, 4-111--4-112.
 pub fn gutter_pieces(windows: &[WindowFrameSnapshot], viewport: Rect) -> Vec<GutterPiece> {
     let mut result = Vec::new();
@@ -508,17 +508,19 @@ pub fn gutter_pieces(windows: &[WindowFrameSnapshot], viewport: Rect) -> Vec<Gut
                 (
                     GutterKind::Vertical,
                     Rect {
+                        top: content.top,
                         left: right,
-                        bottom,
-                        ..content
+                        bottom: content.bottom,
+                        right: right + 1,
                     },
                 ),
                 (
                     GutterKind::Horizontal,
                     Rect {
                         top: bottom,
-                        right,
-                        ..content
+                        left: content.left - 1,
+                        bottom: bottom + 1,
+                        right: content.right + 2,
                     },
                 ),
                 (
@@ -526,7 +528,8 @@ pub fn gutter_pieces(windows: &[WindowFrameSnapshot], viewport: Rect) -> Vec<Gut
                     Rect {
                         top: bottom,
                         left: right,
-                        ..content
+                        bottom: content.bottom,
+                        right: content.right,
                     },
                 ),
             ] {
@@ -917,6 +920,21 @@ mod tests {
         windows[0].grow_icon_drawn = true;
         windows[1].grow_icon_drawn = true;
         let pieces = gutter_pieces(&windows, Rect::from((0, 0, 180, 180)));
+        assert!(pieces.iter().all(|piece| match piece.kind {
+            GutterKind::Vertical => piece.source.width() == 1,
+            GutterKind::Horizontal => piece.source.height() == 1,
+            GutterKind::GrowBox => piece.source.width() == 15 && piece.source.height() == 15,
+        }));
+        assert!(pieces.iter().any(|piece| {
+            piece.window == 0
+                && piece.kind == GutterKind::Vertical
+                && piece.source == Rect::from((60, 105, 120, 106))
+        }));
+        assert!(pieces.iter().any(|piece| {
+            piece.window == 0
+                && piece.kind == GutterKind::Horizontal
+                && piece.source == Rect::from((105, 59, 106, 122))
+        }));
         assert!(pieces
             .iter()
             .any(|piece| { piece.window == 0 && piece.kind == GutterKind::GrowBox }));
