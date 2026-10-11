@@ -59,6 +59,16 @@ pub(super) fn dispatch_gworld_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::GetPortBitMapForCopyBits => {
+            // Quickdraw.h: color ports return the embedded PixMapHandle/fields,
+            // not its dereferenced PixMap. CopyBits accepts this portBits alias.
+            let bits = (cpu.gpr[3] != 0)
+                .then(|| cpu.gpr[3].checked_add(2))
+                .flatten()
+                .filter(|bits| ppc_memory_read_bytes(memory, *bits, 14).is_some())
+                .unwrap_or(0);
+            Some(PpcImportAction::Return(bits))
+        }
         PpcImportDispatcherTarget::GetPortBounds => {
             // Quickdraw.h: GetPortBounds(CGrafPtr, Rect *) copies the local
             // portRect and returns the caller's Rect pointer.

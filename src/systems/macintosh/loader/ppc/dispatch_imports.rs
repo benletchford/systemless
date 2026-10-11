@@ -1978,6 +1978,7 @@ pub(crate) fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::GetPort
         | PpcImportDispatcherTarget::GetPortBounds
+        | PpcImportDispatcherTarget::GetPortBitMapForCopyBits
         | PpcImportDispatcherTarget::SetPort
         | PpcImportDispatcherTarget::GetWindowPort
         | PpcImportDispatcherTarget::SetPortWindowPort
