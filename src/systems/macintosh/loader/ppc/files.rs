@@ -4562,16 +4562,31 @@ pub(super) fn ppc_h_create(
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &mut ProcessVfsFileRecords,
     default_dir_id: u32,
+    working_directories: &HashMap<i16, ProcessWorkingDirectory>,
 ) -> i16 {
     // Inside Macintosh: Files (1992), 2-169: HCreate identifies the parent
     // with a volume reference and directory ID, then supplies creator/type.
+    // A registered working-directory reference may identify the volume.
+    // Its directory applies only when the caller leaves dirID at zero,
+    // matching HOpen's existing hierarchical reference resolution.
+    let vref = cpu.gpr[3] as u16 as i16;
+    let dir_id = cpu.gpr[4];
+    let (volume_ref_num, effective_dir_id) = working_directories
+        .get(&vref)
+        .map(|record| {
+            (
+                record.volume_ref_num,
+                if dir_id == 0 { record.dir_id } else { dir_id },
+            )
+        })
+        .unwrap_or((vref, dir_id));
     ppc_create_data_fork_by_name(
         memory,
         vfs_directories,
         vfs_files,
         default_dir_id,
-        cpu.gpr[3] as u16 as i16,
-        cpu.gpr[4],
+        volume_ref_num,
+        effective_dir_id,
         cpu.gpr[5],
         cpu.gpr[6],
         cpu.gpr[7],
