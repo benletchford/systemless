@@ -77,9 +77,13 @@ Both flags together cancel their spacing adjustments. The original outline
 coverage and its bounds remain unchanged. Supported basic label and TextEdit
 styles, plus non-underlined TextEdit halos, use this spacing policy.
 
-Underline/halo combinations, ratio-scaled strikes and bitmap-only sources still
-need faithful smooth support. Their existing fallback remains part of the GPUI
-frontend. Condensed/extended support has native recipe and smooth-mask tests,
+Underline/halo combinations now combine CPU-specific guest strokes with the
+original outline before smear/exclusion. Classic preserves per-character
+descender gaps and its Everything-style row restrictions; PPC includes the
+run-wide ribbon in each glyph effect buffer. Binary-recipe and smooth-mask
+tests pass; composed appearance and interaction remain unqualified.
+Ratio-scaled strikes and bitmap-only sources still need faithful smooth
+support. Their existing fallback remains part of the GPUI frontend. Condensed/extended support has native recipe and smooth-mask tests,
 guest-driven editing checks, and selected two-line composed captures across
 four CPU/display modes at four scales. Native-pixel field crops from all32
 cases were directly reviewed; this scope excludes the field's right edge and

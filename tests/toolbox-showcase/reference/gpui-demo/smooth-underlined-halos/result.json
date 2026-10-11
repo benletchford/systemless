@@ -1,0 +1,15 @@
+{
+  "source_base": "513c8c2011476ae444508093a152d57e3f6c4c93",
+  "source_sha256": {
+    "src/systems/macintosh/quickdraw/text.rs": "13d48af835cb1f3a45162c877caf0e98439a355d672d4a88b861cacfa1be6ab3",
+    "src/bin/gpui_demo_text.rs": "911b5548145eba7e9d4aaf9bf23f81e8249a3d0bd95abb09001eea5e78ae41d8",
+    "src/bin/gpui_demo.rs": "dbb6d868beb3c9f1961d03cb7c3f9be82e08efaea7636c763456b8ea5bec43eb",
+    "Cargo.lock": "d39c8347abf84d2272d4942db42b7ade3fb9ebefacc7395b41673b9dd1060a5f",
+    "Cargo.toml": "c14164d33b3c4215b590291023170d7b3a9d3539f4c236518cdc649831ed0855"
+  },
+  "binary": "target/ci-test/examples/gpui_menu_demo-957ebf4d71285d8e",
+  "binary_sha256": "d0b0f8aad6c49264f4b4b8cf1820ea6679f0682e59fe39f6625411fb0efd27fa",
+  "tests_passed": 23,
+  "runtime_seconds": 2.13,
+  "scope": "Production frontend text unit tests. New underlined-halo test covers font3/size12, all underlined halo faces0..127, four MacRoman bytes, both CPU recipes, exact native binary silhouettes and original-source antialiased mask resolution at rasters1..8. Existing spacing regression checks native paint advances, retained insertion positions and source identity, including PPC run ribbon extent changes. No composed appearance, physical host interaction, independent Macintosh font oracle or performance claim."
+}
