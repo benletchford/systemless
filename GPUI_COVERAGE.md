@@ -5630,3 +5630,39 @@ with fresh-process guest readback. Evidence: `reference/gpui-demo/atomic-save-sn
 This addresses the audited mixed-generation process-interruption risk. Sudden
 power loss, tree creation/deletion durability, disk failure injection and full
 storage barriers remain unqualified. No overall production gate closes here.
+
+### Notification missing-path audit (2026-10-11)
+
+PPC notification coverage is now contradicted by source: no NMInstall import
+binding exists, and NMRemove uses ReturnPreserve rather than queue/error
+semantics. Classic installation has a dispatcher-local queue and callbacks; no
+GPUI notification presenter is established. `GPUI_DRAW_PATHS.md` records exact
+paths and required lifecycle cases. This is an implementation gap, not just a
+missing capture, and remains open across the presentation/CPU qualification.
+
+### Shared Notification Manager queue checkpoint (2026-10-11)
+
+PPC NMInstall/NMRemove now implement record validation, queue links, duplicate
+installation, error returns and response callbacks. Classic and PPC adapters
+attach to one process-owned request queue. Native PPC and Mixed Mode 68k
+responses execute through existing guest call machinery. Alert/sound requests
+remain queued without prematurely executing responses or automatic removal.
+Eleven targeted tests pass (0.08s; build58.66s), including cross-CPU install/remove.
+Evidence is under `reference/gpui-demo/notification-queue` with source hashes.
+Visible alert delivery, menu/icon notices, sound completion, acknowledgment and
+post-delivery callbacks remain unfinished; this is not GPUI notification
+qualification and closes no production gate.
+
+Notification queues now clear when replacing the guest application, including
+native initialization. Old guest record addresses cannot authorize later
+responses in the new address space. The shared classic/native regression
+installs a request and verifies both adapters observe launch clearing; all11
+notification tests pass again (0.11s). The test covers queue state, not visible
+notice teardown. Log and source hashes are archived alongside the queue tests.
+
+Pending delivery now also includes nmMark and nmIcon, preventing completion
+before menu/icon presentation exists. All11 notification tests pass (0.18s;
+build3m44s), covering each delivery field on both CPU paths. Native response,
+Mixed Mode response, shared queue clearing and link/error checks also pass.
+The current log and hashes are under `notification-queue/all-delivery-*`.
+Visible delivery and completion remain required; no release gate closes.

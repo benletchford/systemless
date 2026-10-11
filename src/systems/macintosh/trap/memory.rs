@@ -763,7 +763,13 @@ impl super::TrapDispatcher {
         } else {
             0
         };
-        let nm_resp = if nm_rec != 0 {
+        // Responses wait for alert acknowledgement and sound completion.
+        let pending_delivery = nm_rec != 0
+            && (bus.read_word(nm_rec + notification_manager::NM_MARK_OFFSET) != 0
+                || bus.read_long(nm_rec + notification_manager::NM_ICON_OFFSET) != 0
+                || bus.read_long(nm_rec + notification_manager::NM_SOUND_OFFSET) != 0
+                || bus.read_long(nm_rec + notification_manager::NM_STR_OFFSET) != 0);
+        let nm_resp = if nm_rec != 0 && !pending_delivery {
             bus.read_long(nm_rec + notification_manager::NM_RESP_OFFSET)
         } else {
             0
