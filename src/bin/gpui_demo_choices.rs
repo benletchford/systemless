@@ -111,19 +111,33 @@ fn choice_content(
                 } else {
                     theme.radius.min(px(4. * scale))
                 })
-                .child(
-                    svg()
-                        .absolute()
-                        .left(px(scale))
-                        .top(px(scale))
-                        .size(px(10. * scale))
-                        .text_color(if enabled {
-                            theme.primary_foreground
-                        } else {
-                            theme.primary_foreground.opacity(0.5)
-                        })
-                        .when(checked, |mark| mark.path(IconName::Check.path())),
-                ),
+                .when(checked, |indicator| {
+                    let foreground = if enabled {
+                        theme.primary_foreground
+                    } else {
+                        theme.primary_foreground.opacity(0.5)
+                    };
+                    // Radio selection uses a dot; the guest owns group exclusivity.
+                    // Macintosh Toolbox Essentials (1992), "Radio Buttons", p. 5-6.
+                    if circular {
+                        indicator.flex().items_center().justify_center().child(
+                            div()
+                                .size(px(6. * scale))
+                                .rounded_full()
+                                .bg(foreground),
+                        )
+                    } else {
+                        indicator.child(
+                            svg()
+                                .absolute()
+                                .left(px(scale))
+                                .top(px(scale))
+                                .size(px(10. * scale))
+                                .text_color(foreground)
+                                .path(IconName::Check.path()),
+                        )
+                    }
+                }),
         )
         .child(
             div()

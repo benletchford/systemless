@@ -444,6 +444,53 @@ pub fn control_pieces(
     result
 }
 
+/// Resolve semantic activation to an exposed guest hit point, never a cached
+/// host coordinate. The caller must also reject active tracking/modal input.
+/// FindControl and TrackControl retain guest ownership of the action and value
+/// (Macintosh Toolbox Essentials, pp. 5-55--5-59).
+pub fn control_activation_point(
+    id: u32,
+    generation: u64,
+    controls: &[ControlSnapshot],
+    menus: &GuestMenuSnapshot,
+    windows: &[WindowFrameSnapshot],
+    viewport: Rect,
+) -> Option<(i16, i16)> {
+    let control = controls.iter().find(|control| {
+        control.guest_id == id && control.generation == generation
+    })?;
+    if !control.enabled || control.hilite != 0 || !matches!(control.proc_id, 0 | 1 | 2) {
+        return None;
+    }
+    let owner = windows.iter().find(|frame| frame.guest_id == control.owner_id)?;
+    if !owner.window.active {
+        return None;
+    }
+    control_pieces(controls, menus, windows, viewport)
+        .into_iter()
+        .filter(|piece| controls[piece.control].guest_id == id)
+        .find_map(|piece| {
+            let mut regions = vec![piece.clip];
+            // Overlapping controls can make FindControl select another handle.
+            // Use only unambiguous pixels, even for two standard controls.
+            for other in controls.iter().filter(|other| {
+                other.guest_id != id && other.owner_id == control.owner_id
+                    && other.owner_visible && other.visible
+            }) {
+                regions = regions.into_iter()
+                    .flat_map(|region| region.subtract(Rect::from(other.bounds)))
+                    .collect();
+            }
+            let region = regions.into_iter().max_by_key(|region| {
+                i64::from(region.right - region.left) * i64::from(region.bottom - region.top)
+            })?;
+            Some((
+                i16::try_from((region.top + region.bottom) / 2).ok()?,
+                i16::try_from((region.left + region.right) / 2).ok()?,
+            ))
+        })
+}
+
 /// Replace only a visible standard text LDEF in a known rectangular window.
 /// A custom definition or overlapping custom control retains guest pixels.
 /// More Macintosh Toolbox (1993), pp. 4-3--4-7, 4-70--4-76.
@@ -800,6 +847,37 @@ mod tests {
         assert_eq!(popup_control_label(&popup, &menus), Some("Scout Kit"));
         menus.menus[0].items[0].separator = true;
         assert_eq!(popup_control_label(&popup, &menus), None);
+    }
+
+    #[test]
+    fn semantic_control_activation_revalidates_identity_visibility_and_ownership() {
+        let mut windows = vec![window((20, 0, 160, 180), true, 0)];
+        let mut controls = vec![control(1, 1, (40, 20, 60, 120))];
+        let menus = GuestMenuSnapshot::default();
+        let viewport = Rect::from((0, 0, 160, 180));
+        let resolve = |controls: &[ControlSnapshot], windows: &[WindowFrameSnapshot]| {
+            super::control_activation_point(10, 1, controls, &menus, windows, viewport)
+        };
+        assert_eq!(resolve(&controls, &windows), Some((50, 70)));
+        controls[0].generation = 2;
+        assert_eq!(resolve(&controls, &windows), None);
+        controls[0].generation = 1;
+        controls[0].enabled = false;
+        assert_eq!(resolve(&controls, &windows), None);
+        controls[0].enabled = true;
+        windows[0].window.active = false;
+        assert_eq!(resolve(&controls, &windows), None);
+        windows[0].window.active = true;
+        windows[0].visible_content_rects = Some(vec![(40, 20, 60, 40)]);
+        assert_eq!(resolve(&controls, &windows), Some((50, 30)));
+        let mut overlap = control(1, 0, (40, 20, 60, 40));
+        overlap.guest_id = 11;
+        controls.push(overlap);
+        assert_eq!(resolve(&controls, &windows), None);
+        controls[1].visible = false;
+        assert_eq!(resolve(&controls, &windows), Some((50, 30)));
+        controls[0].proc_id = 99;
+        assert_eq!(resolve(&controls, &windows), None);
     }
 
     #[test]
