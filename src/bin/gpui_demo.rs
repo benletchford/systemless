@@ -34,6 +34,10 @@ fn main() {
 mod cpu_frame;
 
 #[cfg(target_os = "macos")]
+#[path = "gpui_demo_cursor.rs"]
+mod cursor;
+
+#[cfg(target_os = "macos")]
 #[path = "gpui_demo_text.rs"]
 mod text;
 
@@ -357,6 +361,9 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_application: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_guest_cursor: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true, requires = "capture_application")]
         capture_application_key: Option<u8>,
@@ -906,6 +913,10 @@ mod desktop {
         styled_text_plans: Vec<Option<super::text::StyledTextEditPaintPlan>>,
         standard_file: Option<StandardFileSnapshot>,
         cursor: Option<systemless::runner::CursorSnapshot>,
+        cursor_inside: bool,
+        cursor_host_position: Option<(f32, f32)>,
+        cursor_unsupported: Option<super::cursor::UnsupportedCursor>,
+        host_cursor: super::cursor::HostCursorVisibility,
         text_pointer_map: std::rc::Rc<std::cell::RefCell<Option<super::text::TextPointerMap>>>,
         text_pointer_capture: Option<(u32, u64)>,
         image: Option<Arc<RenderImage>>,
@@ -1111,6 +1122,10 @@ mod desktop {
                 styled_text_plans: Vec::new(),
                 standard_file: None,
                 cursor: None,
+                cursor_inside: false,
+                cursor_host_position: None,
+                cursor_unsupported: None,
+                host_cursor: Default::default(),
                 image: None,
                 prepared_buttons: None,
                 logo: Arc::new(Image::from_bytes(
@@ -1347,6 +1362,7 @@ mod desktop {
                     if this.host_active.replace(active) != Some(active) {
                         this.host_generation = this.host_generation.wrapping_add(1);
                         if !active {
+                            this.host_cursor.set_hidden(false);
                             this.release_host_input();
                             this.host_clipboard.suspend(this.host_generation, Self::read_host_clipboard(cx));
                         } else {
@@ -2926,6 +2942,25 @@ mod desktop {
                 }
                 screen = screen.child(super::popup::popup(popup, scene_scale, cx));
             }
+            let resolution = self.cursor.as_ref().map(super::cursor::CursorPaint::resolve);
+            let unsupported = resolution.as_ref().and_then(|result| result.as_ref().err()).cloned();
+            if self.cursor_unsupported != unsupported {
+                if let Some(reason) = &unsupported { eprintln!("[GPUI] Guest cursor paint unsupported: {reason:?}"); }
+                self.cursor_unsupported = unsupported;
+            }
+            let cursor_plan = resolution.and_then(Result::ok);
+            let pointer_in_scene = self.cursor_host_position.is_some_and(|(x, y)| {
+                x >= self.display_origin.0 && y >= self.display_origin.1
+                    && x < self.display_origin.0 + self.display_size.0
+                    && y < self.display_origin.1 + self.display_size.1
+            });
+            let cursor_owned = self.cursor_inside && pointer_in_scene && self.host_active != Some(false)
+                && self.open_menus.is_empty() && self.composition.preedit.is_none() && cursor_plan.is_some();
+            self.host_cursor.set_hidden(cursor_owned && !cx.is_test());
+            let cursor_element = if cursor_owned {
+                cursor_plan.and_then(|plan| plan.element(self.cursor.as_ref().unwrap().position,
+                    self.display_origin, scene_scale, (self.width, self.height)))
+            } else { None };
             let menu_hovered = (self.menu_hovered || !self.open_menus.is_empty())
                 && !self.menu_presented;
             div()
@@ -2936,7 +2971,17 @@ mod desktop {
                 .bg(rgb(0x000000))
                 .text_color(cx.theme().foreground)
                 .track_focus(&self.focus)
+                .on_mouse_exit(cx.listener(|this, _, _, cx| {
+                    this.cursor_inside = false; this.cursor_host_position = None;
+                    this.host_cursor.set_hidden(false); cx.notify();
+                }))
                 .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                    this.cursor_host_position = Some((f32::from(event.position.x), f32::from(event.position.y)));
+                    let x = f32::from(event.position.x) - this.display_origin.0;
+                    let y = f32::from(event.position.y) - this.display_origin.1;
+                    let inside = x >= 0. && y >= 0. && x < this.width as f32 * this.display_scale
+                        && y < this.height as f32 * this.display_scale;
+                    if this.cursor_inside != inside { this.cursor_inside = inside; cx.notify(); }
                     let hover = !this.menu_presented
                         && !this.guest_menu_fallback()
                         && this.menus.menus.iter().any(|menu| menu.visible_in_menu_bar)
@@ -3036,6 +3081,7 @@ mod desktop {
                         bar.top(px(self.display_origin.1)).left(px(self.display_origin.0))
                     }))
                 })
+                .children(cursor_element)
                 .when(self.image.is_none(), |root| {
                     root.child(
                         div()
@@ -5468,7 +5514,8 @@ mod desktop {
             demo.windows = update.windows; demo.dialogs = update.dialogs; demo.controls = update.controls;
             demo.lists = update.lists; demo.list_text_plans = update.list_text_plans;
             demo.text_edits = update.text_edits; demo.styled_text_plans = update.styled_text_plans;
-            demo.standard_file = update.standard_file; demo.status = update.status; demo.host_active = Some(true);
+            demo.standard_file = update.standard_file; demo.cursor = update.cursor;
+            demo.status = update.status; demo.host_active = Some(true);
             demo.image = Some(Arc::new(RenderImage::new(vec![image::Frame::new(
                 image::RgbaImage::from_raw(width, height, gpui_pixels(update.frame.unwrap().2)).unwrap())])));
             cx.notify();
@@ -5492,7 +5539,77 @@ mod desktop {
         eprintln!("PASS application-shared-compositor capture={}", output.display());
     }
 
+    #[cfg(feature = "gpui-demo-test")]
+    fn capture_guest_cursor(args: &Args, output: &std::path::Path) {
+        use gpui_kit::{platform, HeadlessAppContext};
+        let scale = args.capture_scale.unwrap_or(1.);
+        let mut session = MacintoshSession::new(true, if args.prefer_powerpc { None } else { args.screen_depth });
+        session.runner_mut().set_prefer_powerpc_executables(args.prefer_powerpc);
+        if args.prefer_powerpc { session.runner_mut().set_powerpc_screen_depth(args.screen_depth.unwrap_or(16)).unwrap(); }
+        let app = session.load_path(&args.game).unwrap(); session.initialize(&app);
+        for _ in 0..300 {
+            session.runner_mut().run_steps(100_000, None);
+            if session.runner_mut().guest_menu_snapshot().menus.iter().any(|menu| menu.id == 129) { break; }
+        }
+        session.deliver_input(MacintoshInput::MouseMove { vertical: 80, horizontal: 120 });
+        let cursor = session.runner().cursor_snapshot();
+        let plan = super::cursor::CursorPaint::resolve(&cursor).expect("fixture arrow must be paintable");
+        assert!(cursor.visible && !plan.pixels.is_empty());
+        let frame = session.video_frame().unwrap(); let (width, height) = (frame.width, frame.height);
+        let actual_depth = session.runner().presented_screen_depth();
+        let menus = session.runner_mut().guest_menu_snapshot();
+        let windows = session.runner_mut().window_frame_snapshot();
+        let mut visual = HeadlessAppContext::with_platform(platform::current_platform(true).text_system(),
+            Arc::new(gpui_kit::assets::Assets), platform::current_headless_renderer);
+        visual.update(gpui_kit::init);
+        let (sender, _receiver) = mpsc::channel(); let mut view = None;
+        let window = visual.open_window(size(px(width as f32 * scale), px(height as f32 * scale)), |_, cx| {
+            let entity = cx.new(|cx| Demo::new(sender, Default::default(), cx)); view = Some(entity.clone()); entity
+        }).unwrap(); let view = view.unwrap();
+        visual.update(|cx| view.update(cx, |demo, cx| {
+            demo.width = width; demo.height = height; demo.menus = menus; demo.windows = windows;
+            demo.menu_presented = session.runner().guest_menu_bar_presented();
+            demo.menu_height = session.runner().bus().read_word(MBAR_HEIGHT);
+            demo.cursor = Some(cursor.clone()); demo.host_active = Some(true);
+            demo.image = Some(Arc::new(RenderImage::new(vec![image::Frame::new(
+                image::RgbaImage::from_raw(width, height, gpui_pixels(frame.pixels)).unwrap())]))); cx.notify();
+        }));
+        visual.run_until_parked();
+        let baseline = visual.capture_screenshot(window.into()).unwrap();
+        let (scene_scale, origin) = visual.update(|cx| view.update(cx, |demo, _| (demo.display_scale, demo.display_origin)));
+        visual.update(|cx| view.update(cx, |demo, cx| {
+            demo.host_active = Some(true); demo.cursor_inside = true;
+            demo.cursor_host_position = Some((origin.0 + 120. * scene_scale, origin.1 + 80. * scene_scale)); cx.notify();
+        })); visual.run_until_parked();
+        let active = visual.capture_screenshot(window.into()).unwrap();
+        assert!(active != baseline, "guest arrow must change shared compositor pixels"); active.save(output).unwrap();
+        for state in ["hidden", "inactive", "outside"] {
+            visual.update(|cx| view.update(cx, |demo, cx| {
+                demo.cursor.as_mut().unwrap().visible = state != "hidden";
+                demo.host_active = Some(state != "inactive"); demo.cursor_inside = state != "outside"; cx.notify();
+            })); visual.run_until_parked();
+            let image = visual.capture_screenshot(window.into()).unwrap();
+            assert!(image == baseline, "{state} cursor must restore exact background pixels");
+            image.save(output.with_extension(format!("{state}.png"))).unwrap();
+        }
+        visual.update(|cx| view.update(cx, |demo, cx| {
+            demo.host_active = Some(true); demo.cursor_inside = true;
+            demo.cursor.as_mut().unwrap().position = (0, 0); cx.notify();
+        })); visual.run_until_parked();
+        let clipped = visual.capture_screenshot(window.into()).unwrap();
+        assert!(clipped != baseline, "clipped cursor must retain visible pixels");
+        clipped.save(output.with_extension("clipped.png")).unwrap();
+        std::fs::write(output.with_extension("capture.json"), serde_json::to_vec_pretty(&serde_json::json!({
+            "compositor": "shared Demo renderer", "powerpc": args.prefer_powerpc, "actual_depth": actual_depth,
+            "scene_scale": scene_scale, "scene_origin": origin, "cursor_hotspot": plan.hotspot,
+            "scope": "Actual guest arrow snapshot, simulated frontend pointer/focus/hide states. Exact hidden/inactive/outside restoration. Not physical host hide, inversion or warp qualification."
+        })).unwrap()).unwrap();
+        eprintln!("PASS cursor-shared-compositor depth={actual_depth:?} powerpc={} scale={scene_scale}", args.prefer_powerpc);
+    }
+
     fn run(args: Args) {
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_guest_cursor.as_ref() { capture_guest_cursor(&args, output); return; }
         #[cfg(feature = "gpui-demo-test")]
         if args.capture_application.is_some() {
             capture_application(args);
@@ -6701,6 +6818,7 @@ mod desktop {
                         capture_windows: None,
                         capture_composition_surface: None,
                         capture_application: None,
+                        capture_guest_cursor: None,
                         capture_application_key: None,
                         capture_application_character: 0,
                         capture_application_updates: 120,
