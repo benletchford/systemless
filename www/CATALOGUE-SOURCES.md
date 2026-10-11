@@ -1806,11 +1806,16 @@ measurement only. A fresh bounded two-round scenario passes 16 measured pixel/au
 checks across 530 frontend / 1,102 guest ticks with no exhaustion. Ordinary matching
 input reproduces the first 5, then the next sequence 5 and 7, advancing score 0→1→3.
 Captures were inspected before assertions were added. This is bounded native gameplay,
-not independent audio fidelity or exhaustive difficulty qualification. [Repair #4654](https://github.com/benletchford/systemless/pull/4654)
+not independent audio fidelity or exhaustive difficulty qualification. [Repair #4657](https://github.com/benletchford/systemless/pull/4657)
 awaits updated full CI after correcting legacy null-channel and Boolean fixtures;
 production runtime code remains identical to the replayed binary.
 
 A disabled catalogue intake now records the exact publisher archive and a content-only
-score-3 gameplay screenshot. Browser qualification, asset promotion, launch approval,
-human release and independent public replay remain pending. The archive is still
-unhosted at preparation and there is no qualified live-count increment.
+score-3 gameplay screenshot. [Intake #4656](https://github.com/benletchford/systemless/pull/4656) promoted the
+unchanged archive and content-only screenshot to immutable Systemless assets.
+Production validation passes all 213 proposed entries. A fresh hosted archive
+fetch is 73,613 bytes with the original SHA-256 and byte-identical to the publisher
+file. Screenshot SHA-256 is `9f126808b4d5b80c37741d72ee20bfd06d335491b5d8d0f3c68174062c6561ac`
+(6,040 bytes). Repair CI, browser qualification, launch approval, human release
+and independent public replay remain pending; there is no qualified live-count
+increment.

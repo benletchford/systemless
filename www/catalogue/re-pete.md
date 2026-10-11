@@ -19,7 +19,7 @@ compatibility:
     environment: >-
       Unchanged publisher Classic 2.2 archive; explicit 68K, depth 8, complete
       original executable and embedded documentation. Native build includes the sound
-      sequence/draining repair in PR 4654, which must land before launch. Ordinary Start Game
+      sequence/draining repair in PR 4657, which must land before launch. Ordinary Start Game
       displays the first button-5 flash across eight frontend captures. A measured note
       interval yields 2761 non-silent PCM samples. Matching input advances score 0 to
       1; the next displayed sequence is 5 then 7, and ordinary matching clicks advance
@@ -30,7 +30,7 @@ compatibility:
       or independent audio fidelity. Browser qualification, promotion and launch
       approval remain pending.
     status: playable
-    evidence: https://github.com/benletchford/systemless/pull/4654
+    evidence: https://github.com/benletchford/systemless/pull/4657
 runtime:
   executable_path: Re-Pete 2.2/Re-Pete
   screen_depth: 8
@@ -76,7 +76,7 @@ artifacts:
     content_only: true
     sources:
     - https://www.tex-edit.com/index.html
-    - https://github.com/benletchford/systemless/pull/4654
+    - https://github.com/benletchford/systemless/pull/4657
     license: Publisher conditional unchanged-package redistribution permission
     rights_holder: Tom Bender / Trans-Tex Software
     permission: Original game content accompanying the complete permitted package.
