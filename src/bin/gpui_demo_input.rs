@@ -198,7 +198,7 @@ pub(crate) struct Preedit {
 #[derive(Default)]
 pub(crate) struct GuestComposition {
     owner: Option<TextInputOwner>,
-    pending_commits: Vec<(TextInputOwner, Vec<u8>)>,
+    pending_commits: Vec<(TextInputOwner, Vec<u8>, Option<TextInputOwner>)>,
     pub preedit: Option<Preedit>,
 }
 
@@ -219,7 +219,8 @@ impl GuestComposition {
                 // A frame can show the old snapshot or a partially consumed
                 // commit. Retain the host's future caret instead of restarting
                 // the next commit at that stale guest selection.
-                if self.pending_commits.iter().any(|(base, bytes)| {
+                if self.pending_commits.iter().any(|(base, bytes, prior)| {
+                    if prior.as_ref() == Some(actual) { return true; }
                     if actual == base { return true; }
                     if actual.identity != base.identity || actual.target != base.target { return false; }
                     let retained = base.text.len() - base.selection.len();
@@ -240,7 +241,7 @@ impl GuestComposition {
     /// A rejected request invalidates dependent predicted ranges. Ignore delayed
     /// rejections from an older field or an already acknowledged request.
     pub fn reject(&mut self, rejected: &TextInputOwner) {
-        if self.pending_commits.iter().any(|(base, _)| base == rejected) {
+        if self.pending_commits.iter().any(|(base, _, prior)| base == rejected || prior.as_ref() == Some(rejected)) {
             self.pending_commits.clear();
             self.owner = None;
             self.preedit = None;
@@ -340,6 +341,29 @@ impl GuestComposition {
         Some((prefix + text + &suffix, start))
     }
 
+    /// Pin both the original selection and an explicit document replacement.
+    /// Old frames remain valid while the guest consumes the selection request.
+    pub fn commit_range(&mut self, range: std::ops::Range<usize>, text: &str)
+        -> Option<(TextInputOwner, TextInputOwner, Vec<u8>)> {
+        let expected = self.owner.as_ref()?.clone();
+        if self.preedit.is_some() || !matches!(expected.target, TextInputTarget::Document { .. })
+            || range.start > range.end || range.end > expected.text.len() || range.end > i16::MAX as usize {
+            return None;
+        }
+        let mut selected = expected.clone(); selected.selection = range;
+        self.owner = Some(selected.clone());
+        let pending = self.pending_commits.len();
+        let Some((request, bytes)) = self.commit(text) else {
+            self.owner = Some(expected); return None;
+        };
+        if self.pending_commits.len() == pending {
+            self.pending_commits.push((request.clone(), bytes.clone(), Some(expected.clone())));
+        } else {
+            self.pending_commits.last_mut()?.2 = Some(expected.clone());
+        }
+        Some((expected, request, bytes))
+    }
+
     /// Return a pinned request for the guest event path. Reject the entire
     /// commit on unrepresentable Unicode; never synthesize replacement glyphs.
     pub fn commit(&mut self, text: &str) -> Option<(TextInputOwner, Vec<u8>)> {
@@ -355,7 +379,7 @@ impl GuestComposition {
         predicted.text.splice(owner.selection.clone(), bytes.iter().copied());
         let caret = owner.selection.start + bytes.len();
         predicted.selection = caret..caret;
-        self.pending_commits.push((owner.clone(), bytes.clone()));
+        self.pending_commits.push((owner.clone(), bytes.clone(), None));
         self.owner = Some(predicted);
         Some((owner, bytes))
     }
@@ -400,6 +424,23 @@ mod composition_tests {
         for range in [2..3, 3..5, 0..6, 5..4] {
             assert!(state.geometry_ranges(range).is_none());
         }
+    }
+
+    #[test]
+    fn explicit_replacement_pins_prior_selection_until_guest_acknowledges() {
+        let mut state = GuestComposition::default(); state.synchronize(Some(owner()));
+        assert!(state.commit_range(0..1, "😀").is_none());
+        assert_eq!(state.owner(), Some(&owner()));
+        let (expected, request, bytes) = state.commit_range(0..1, "Z").unwrap();
+        assert_eq!(expected, owner()); assert_eq!(request.selection, 0..1); assert_eq!(bytes, b"Z");
+        let future = state.owner().unwrap().clone(); assert_eq!(future.text, [b'Z', 0x8e, b'b']);
+        state.synchronize(Some(expected.clone())); assert_eq!(state.owner(), Some(&future));
+        state.synchronize(Some(request.clone())); assert_eq!(state.owner(), Some(&future));
+        state.reject(&expected); assert!(state.owner().is_none());
+        state.synchronize(Some(owner()));
+        state.commit_range(0..1, "Z").unwrap();
+        let future = state.owner().unwrap().clone(); state.synchronize(Some(future.clone()));
+        state.reject(&owner()); assert_eq!(state.owner(), Some(&future));
     }
 
     #[test]

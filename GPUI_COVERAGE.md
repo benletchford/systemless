@@ -4755,3 +4755,18 @@ The regression passes (4.35s), archived in
 `tests/toolbox-showcase/reference/gpui-demo/frontend-text-selection`. This
 qualifies the guest operation, not native text-service replacement wiring;
 dialog/Standard File request paths, composed and physical input remain open.
+
+
+### Explicit document replacement through the GPUI input handler
+
+Without an active Unicode stage, an explicit document range now emits one
+pinned replacement request. The production worker validates the prior field,
+uses shared TESetSelect, then sends ordinary guest character events. Pending
+composition state recognizes both the original and requested selections until
+acknowledgment; stale rejection invalidates dependent predictions. Seven state
+tests, four-mode worker and platform-handler tests, and two broader dialog/file
+composition regressions pass. Replacement preserves surrounding styles and
+places the guest caret after inserted text. Evidence is archived in
+`tests/toolbox-showcase/reference/gpui-demo/explicit-document-replacement`.
+Active-stage crossing/outside replacement, explicit modal/file replacement,
+composed visual and physical IME qualification remain unfinished.
