@@ -9,6 +9,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Strategy
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -26,6 +27,22 @@ compatibility:
       the ZIP checksum receipt against the production pack. Full matches, save/load,
       audio, HyperCard documentation rendering and browser launch qualification remain
       unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4584
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: e30e20a2d7824c9318566beb6e317f31e4ecf512
+    architecture: 68k
+    environment: >-
+      Optimized Chrome preview from the promoted revision with its local launch
+      switch enabled. Controlled local frontend responses under the production
+      origin; actual Systemless managed archive fetch untouched, HTTP 200,
+      original SHA-256 and 45947-byte body verified. Isolated 800x600 worker/WebGL,
+      25 MHz and maximum two ticks per paint. Ordinary Time menu selects 1 Second;
+      a legal White placement flips a Black disc and the computer replies with
+      another disc flip. Eight measured before/after pixel checks pass; captures
+      inspected. Complete matches, saving, audio, HyperCard documentation rendering
+      and post-release public replay remain unverified. Browser launch approved.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4584
 runtime:
@@ -90,5 +107,5 @@ This original release is free software under GNU GPL version 2. Its unchanged
 ZIP includes the original C source, licence and documentation with the game.
 The documentation is a HyperCard stack; a HyperCard player is not bundled.
 
-Native placement, flipping and a computer reply are verified. Browser play and
-complete matches remain unverified.
+Native and browser placement, flipping and a computer reply are verified.
+Complete matches, saving and audio remain unverified.
