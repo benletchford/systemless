@@ -132,7 +132,11 @@ pub(super) fn dispatch_toolbox_import(
             // QuickDraw's randSeed lives 126 bytes before thePort, not at
             // the unrelated low-memory RandSeed global (Inside Macintosh I-195).
             let seed_addr = init_graf_global_ptr.checked_sub(126).unwrap_or(PPC_RAND_SEED_ADDR);
-            Some(PpcImportAction::Return(u32::from(ppc_random_at(memory, seed_addr))))
+            // IM:I I-194: Random returns a signed INTEGER. Preserve its sign
+            // in r3 so native callers can take its magnitude before division.
+            Some(PpcImportAction::Return(ppc_i16_result(
+                ppc_random_at(memory, seed_addr) as i16,
+            )))
         }
         PpcImportDispatcherTarget::BitAnd => Some(PpcImportAction::Return(cpu.gpr[3] & cpu.gpr[4])),
         PpcImportDispatcherTarget::BitOr => Some(PpcImportAction::Return(cpu.gpr[3] | cpu.gpr[4])),

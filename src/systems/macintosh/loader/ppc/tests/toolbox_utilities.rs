@@ -358,7 +358,7 @@ fn hle_import_runner_handles_random() {
         loaded.memory.read_u32_be(PPC_RAND_SEED_ADDR),
         Some(207482415)
     );
-    assert_eq!(loaded.cpu.gpr[3], u32::from(207482415u32 as u16));
+    assert_eq!(loaded.cpu.gpr[3], 0xffff_ee2f);
 
     loaded.cpu.pc = loaded.entry_pc;
     loaded.cpu.lr = PPC_HALT_PC;
@@ -366,7 +366,7 @@ fn hle_import_runner_handles_random() {
 
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
-    assert_ne!(loaded.cpu.gpr[3], u32::from(207482415u32 as u16));
+    assert_ne!(loaded.cpu.gpr[3], 0xffff_ee2f);
 
     loaded
         .memory
@@ -379,6 +379,35 @@ fn hle_import_runner_handles_random() {
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
+fn toolbox_random_signed_magnitude_keeps_card_indexes_in_bounds() {
+    let pef = synthetic_pef_with_import(b"Random");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded
+        .memory
+        .write_u32_be(PPC_RAND_SEED_ADDR, 12345)
+        .unwrap();
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    // The original caller checks extsh(r3), then negates the full register.
+    // Seed 12345 produces the signed result -4561; zero-extension instead
+    // makes negation produce -60975 and a negative signed remainder.
+    let result = loaded.cpu.gpr[3];
+    assert_eq!(result as i32, -4561);
+    let magnitude = if (result as i16) < 0 {
+        (result as i32).wrapping_neg()
+    } else {
+        result as i32
+    };
+    assert_eq!(magnitude % 52, 37);
+    assert!((0..52).contains(&(magnitude % 52)));
+    assert_eq!(
+        loaded.memory.read_u32_be(PPC_RAND_SEED_ADDR),
+        Some(207482415)
+    );
 }
 
 #[test]
@@ -397,7 +426,7 @@ fn toolbox_random_uses_quickdraw_globals_seed_after_init_graf() {
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(loaded.memory.read_u32_be(quickdraw_seed), Some(207482415));
     assert_eq!(loaded.memory.read_u32_be(PPC_RAND_SEED_ADDR), Some(99));
-    assert_eq!(loaded.cpu.gpr[3], u32::from(207482415u32 as u16));
+    assert_eq!(loaded.cpu.gpr[3], 0xffff_ee2f);
 }
 
 #[test]
@@ -1094,7 +1123,7 @@ fn qd_random_seed_weak_setter_updates_live_globals_and_random_sequence() {
             run_test_import(&mut loaded, setter.clone());
             run_test_import(&mut loaded, PpcImportDispatcherTarget::Random);
             assert_eq!(loaded.memory.read_u32_be(globals - 126), Some(207482415));
-            assert_eq!(loaded.cpu.gpr[3], u32::from(207482415u32 as u16));
+            assert_eq!(loaded.cpu.gpr[3], 0xffff_ee2f);
             assert_eq!(loaded.memory.read_u32_be(PPC_RAND_SEED_ADDR), Some(99));
         }
     }
