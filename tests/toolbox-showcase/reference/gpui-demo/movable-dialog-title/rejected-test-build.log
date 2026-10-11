@@ -1,0 +1,19 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+error[E0609]: no field `close_box` on type `StandardWindowChrome`
+    --> src/systems/macintosh/window_manager.rs:4735:24
+     |
+4735 |         assert!(chrome.close_box.is_none() && chrome.zoom_box.is_none());
+     |                        ^^^^^^^^^ unknown field
+     |
+     = note: available fields are: `background`, `ink`, `stripe_ink`, `zoom_ink`, `title_h` ... and 2 others
+
+error[E0609]: no field `zoom_box` on type `StandardWindowChrome`
+    --> src/systems/macintosh/window_manager.rs:4735:54
+     |
+4735 |         assert!(chrome.close_box.is_none() && chrome.zoom_box.is_none());
+     |                                                      ^^^^^^^^ unknown field
+     |
+     = note: available fields are: `background`, `ink`, `stripe_ink`, `zoom_ink`, `title_h` ... and 2 others
+
+For more information about this error, try `rustc --explain E0609`.
+error: could not compile `systemless` (lib test) due to 2 previous errors

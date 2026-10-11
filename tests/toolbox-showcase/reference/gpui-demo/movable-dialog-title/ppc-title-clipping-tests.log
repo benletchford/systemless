@@ -1,0 +1,9 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.79s
+     Running unittests src/lib.rs (target/debug/deps/systemless-257ba83b63f6679f)
+
+running 2 tests
+test systems::macintosh::loader::ppc::tests::window_manager::movable_dialog_window_title_descender_stays_inside_wdef_clip ... ok
+test systems::macintosh::loader::ppc::tests::window_manager::standard_window_title_descender_stays_inside_wdef_clip ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 6715 filtered out; finished in 0.11s
+
