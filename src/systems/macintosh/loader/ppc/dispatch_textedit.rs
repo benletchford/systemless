@@ -596,34 +596,7 @@ pub(super) fn dispatch_textedit_import(
             // Text (1993), p. 2-51: TEIdle only blinks an insertion-point
             // caret in an active record. Keep its public timing/state fields
             // coherent even though the framebuffer redraw stays deterministic.
-            if let Some(te_ptr) = ppc_te_record_ptr(memory, cpu.gpr[3]) {
-                let active = memory
-                    .read_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET)
-                    .unwrap_or(0)
-                    != 0;
-                let start = memory
-                    .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
-                    .unwrap_or(0);
-                let end = memory
-                    .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
-                    .unwrap_or(0);
-                let previous = memory
-                    .read_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET)
-                    .unwrap_or(0);
-                let caret_time = memory
-                    .read_u32_be(crate::memory::globals::addr::CARET_TIME)
-                    .unwrap_or(PPC_DEFAULT_CARET_TIME_TICKS);
-                if active && start == end && tick_count.wrapping_sub(previous) >= caret_time {
-                    let caret = memory
-                        .read_u16_be(te_ptr + PPC_TE_CARET_STATE_OFFSET)
-                        .unwrap_or(0);
-                    let _ = memory.write_u16_be(
-                        te_ptr + PPC_TE_CARET_STATE_OFFSET,
-                        if caret == 0 { 1 } else { 0 },
-                    );
-                    let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, tick_count);
-                }
-            }
+            ppc_te_idle(memory, cpu.gpr[3], tick_count);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::TEUpdate => {

@@ -12206,11 +12206,8 @@ impl super::TrapDispatcher {
                         return Some(Ok(()));
                     }
 
-                    // Fast path — when nothing can produce an item hit or visible
-                    // update on this step (no filter proc, no flash animation, no
-                    // pending event, no queued events), return Ok without running
-                    // any of the re-fire body. Any of these flags being non-default
-                    // routes through the full handler below.
+                    // With no filter, tracking, animation or event, only the active
+                    // editor needs idle service before retaining the modal call.
                     if tracking.filter_proc == 0
                         && tracking.flash_remaining == 0
                         && tracking.active_button.is_none()
@@ -12218,6 +12215,20 @@ impl super::TrapDispatcher {
                         && tracking.active_user_item.is_none()
                         && self.event_queue.is_empty()
                     {
+                        let dialog_ptr = tracking.dialog_ptr;
+                        let bounds = tracking.bounds;
+                        let handle = bus.read_long(dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+                        let ptr = Self::te_record_ptr(bus, handle);
+                        let phase = (ptr != 0).then(|| bus.read_word(ptr + Self::TE_CARET_STATE_OFFSET));
+                        // Service the active editor while ModalDialog owns the event loop.
+                        // Toolbox Essentials (1992), pp. 6-79--6-85; Text (1993), p. 2-84.
+                        self.textedit_idle(cpu, bus, handle);
+                        if phase.is_some_and(|phase| phase != bus.read_word(ptr + Self::TE_CARET_STATE_OFFSET)) {
+                            let pixels = self.save_dialog_pixels(bus, bounds);
+                            if let Some(tracking) = self.dialog_tracking.as_mut() {
+                                tracking.rendered_pixels = pixels;
+                            }
+                        }
                         return Some(Ok(()));
                     }
                     // Re-fire: dialog tracking is active

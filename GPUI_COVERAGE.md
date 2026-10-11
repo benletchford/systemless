@@ -342,3 +342,14 @@ Seven focused dialog tests pass; the preferences interaction test additionally
 checks phase availability on monochrome 68K, colour 68K and PPC. This validates
 the snapshot connection, not full visual blink timing: composed visible/hidden
 pairs, focus transitions and Standard File caret behaviour remain open.
+
+The stronger modal-dialog blink regression exposed a stationary caret after
+65 explicit guest ticks. The no-filter, empty-event ModalDialog wait now services
+the active editor on both CPUs. Classic captures updated dialog pixels after
+a phase change so later saved-pixel restoration retains that change; PPC uses
+the same idle helper as TEIdle and redraws the editor only when its phase changes.
+PPC text painting also now honors the stored phase. The three-mode preferences
+regression observes a phase change with unchanged text and selection, then
+continues its existing editing and checkbox interaction checks. Filter-driven
+idle, callback ordering, composed blink pairs and saved-pixel visual review
+remain unqualified; this is not full dialog readiness.

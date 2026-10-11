@@ -5977,6 +5977,16 @@ mod desktop {
                 assert_eq!(dialog.edit_field, Some(7));
                 assert_eq!(dialog.items[6].selection, Some((0, 0)));
                 assert!(dialog.items[6].caret_visible.is_some(), "active dialog TERec must expose its blink phase");
+                let initial_phase = dialog.items[6].caret_visible;
+                assert!((0..65).any(|_| {
+                    session.runner_mut().force_advance_guest_tick();
+                    session.runner_mut().run_steps(1_000, None);
+                    let current = session.runner_mut().dialog_snapshot().into_iter()
+                        .find(|current| current.guest_id == dialog.guest_id).unwrap();
+                    assert_eq!(current.items[6].selection, Some((0, 0)));
+                    assert_eq!(current.items[6].text, dialog.items[6].text);
+                    current.items[6].caret_visible != initial_phase
+                }), "dialog caret did not blink: PPC={powerpc}, depth={depth:?}");
                 session.deliver_input(MacintoshInput::KeyDown {
                     mac_key: 0x07,
                     character: b'X',
