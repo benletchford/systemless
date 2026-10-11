@@ -17,16 +17,33 @@ use super::{
 };
 use crate::process_context::SharedClassicHeapAllocator;
 
-const LEGACY_SOUND_BUFFER_WORDS: u32 = 370;
-const LEGACY_SOUND_BUFFER_BYTES: u32 = LEGACY_SOUND_BUFFER_WORDS * 2;
+pub(crate) const LEGACY_SOUND_BUFFER_WORDS: u32 = 370;
+pub(crate) const LEGACY_SOUND_BUFFER_BYTES: u32 = LEGACY_SOUND_BUFFER_WORDS * 2;
+/// The alternate sound buffer sits $5C00 below the main one (Inside
+/// Macintosh III-21: $1A100 and $1FD00 on a 128K Macintosh).
+pub(crate) const LEGACY_SOUND_ALTERNATE_OFFSET: u32 = 0x5C00;
+/// VIA data register A (`vBufA`, 512*15) holds the volume bits and the
+/// main-buffer select bit. Register B (`vBufB`, offset 0) holds the sound
+/// enable bit. Inside Macintosh III-21--III-22; the equates are on
+/// III-43--III-44.
+pub(crate) const LEGACY_SOUND_PORT_A_OFFSET: u32 = 0x1E00;
+/// Full speaker volume (0..7). SdVolume and the VIA volume bits start equal,
+/// as the ROM's Sound Driver writes both from one level.
+pub(crate) const LEGACY_SPEAKER_VOLUME: u8 = 7;
+/// The sixteen RAM-backed VIA registers ($200 stride up to vBufA) fit in the
+/// gap between the alternate buffer at the slab floor and the main buffer.
+const LEGACY_SOUND_REGISTERS_OFFSET: u32 = 0x0400;
+const LEGACY_SOUND_RESERVE_BYTES: u32 = 0x6000;
 const SYNTHETIC_RESERVE_BYTES: u32 = 64 * 1024;
 /// Smallest top-of-RAM display reservation. The historical 512 KB window holds
-/// the default 800x600 8-bit framebuffer (816 * 600 = 489,600 bytes) plus the
-/// legacy sound buffer that sits just past it.
+/// the default 800x600 8-bit framebuffer (816 * 600 = 489,600 bytes) plus room
+/// for a 370-word sound buffer. The sound device lives in the synthetic slab;
+/// that room holds the fallback SoundBase sink when the slab cannot host it.
 const MIN_DISPLAY_RESERVE_BYTES: u32 = 0x80000;
 
-/// Bytes reserved at the top of RAM for the main framebuffer and the legacy
-/// sound buffer that follows it. Derived from the active machine profile so a
+/// Bytes reserved at the top of RAM for the main framebuffer and the fallback
+/// SoundBase sink. The stack and sound device are below this reservation.
+/// Derived from the machine profile so a
 /// screen larger than the 800x600 default still fits inside the reservation
 /// instead of running past the end of RAM.
 pub(crate) fn display_reservation_bytes() -> u32 {
@@ -37,6 +54,159 @@ pub(crate) fn display_reservation_bytes() -> u32 {
         .saturating_add(LEGACY_SOUND_BUFFER_BYTES)
         .next_multiple_of(0x10000)
         .max(MIN_DISPLAY_RESERVE_BYTES)
+}
+
+/// The order of the guest's first stores into one legacy sound buffer since
+/// the buffer was last captured, one entry per 370-word frame position.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SoundOrder {
+    /// Distinct words whose high (sample) byte was stored.
+    pub(crate) count: u16,
+    /// The first word stored.
+    pub(crate) first: u16,
+    /// Every new word followed the previous one, wrapping after the last.
+    pub(crate) ascending: bool,
+}
+
+/// Arming state reported by [`MacMemoryBus::watch_legacy_sound`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WatchChange {
+    /// The watch started now, so the current frame's stores were not seen.
+    Armed,
+    /// The watch was already observing this device layout.
+    Unchanged,
+    /// The buffers are not at the device's own layout, or protected code
+    /// below the device's code floor would widen the attention span.
+    Refused,
+}
+
+/// First-write record for one 370-word sound buffer. Repeated stores to a
+/// word are ignored, so a store re-entering the bus as smaller stores is
+/// noted once. Once every word has been written, a repeated store starts a
+/// new pass and keeps the completed one, so a buffer rewritten before it is
+/// captured (an inactive page, or a clear followed by a fill) reports its
+/// newest complete pass. Interior mutability lets the store check take
+/// `&self`, so the rarely taken note cannot make the compiler reload bus
+/// state on the hot path of every store.
+#[derive(Clone)]
+struct BufferOrder {
+    base: u32,
+    written: std::cell::Cell<[u64; 6]>,
+    order: std::cell::Cell<SoundOrder>,
+    next: std::cell::Cell<u16>,
+    complete: std::cell::Cell<Option<SoundOrder>>,
+}
+
+impl BufferOrder {
+    fn new(base: u32) -> Self {
+        Self {
+            base,
+            written: std::cell::Cell::new([0; 6]),
+            order: std::cell::Cell::new(SoundOrder {
+                ascending: true,
+                ..SoundOrder::default()
+            }),
+            next: std::cell::Cell::new(0),
+            complete: std::cell::Cell::new(None),
+        }
+    }
+
+    fn note_word(&self, index: u16) {
+        let (word, bit) = (usize::from(index / 64), 1u64 << (index % 64));
+        let mut written = self.written.get();
+        if written[word] & bit != 0 {
+            let order = self.order.get();
+            if usize::from(order.count) != LEGACY_SOUND_BUFFER_WORDS as usize {
+                return;
+            }
+            self.complete.set(Some(order));
+            self.order.set(SoundOrder {
+                ascending: true,
+                ..SoundOrder::default()
+            });
+            written = [0; 6];
+        }
+        written[word] |= bit;
+        self.written.set(written);
+        let mut order = self.order.get();
+        if order.count == 0 {
+            order.first = index;
+        } else if index != self.next.get() {
+            order.ascending = false;
+        }
+        order.count += 1;
+        self.order.set(order);
+        self.next
+            .set((index + 1) % LEGACY_SOUND_BUFFER_WORDS as u16);
+    }
+
+    /// Note the sample bytes that `[address, address + len)` stores, in
+    /// ascending address order. Returns whether the range lies wholly inside
+    /// this buffer. Low bytes control the disk motor and are not samples.
+    fn note(&self, address: u32, len: u32) -> bool {
+        let start = u64::from(address);
+        let end = start + u64::from(len);
+        let base = u64::from(self.base);
+        let limit = base + u64::from(LEGACY_SOUND_BUFFER_BYTES);
+        let mut even = start.max(base);
+        even += (even - base) & 1;
+        while even < end.min(limit) {
+            self.note_word(((even - base) / 2) as u16);
+            even += 2;
+        }
+        start >= base && end <= limit
+    }
+
+    fn overlaps(&self, address: u32, len: u32) -> bool {
+        u64::from(address) < u64::from(self.base) + u64::from(LEGACY_SOUND_BUFFER_BYTES)
+            && u64::from(self.base) < u64::from(address) + u64::from(len)
+    }
+
+    /// The newest complete pass if the current one is incomplete, otherwise
+    /// the current record; then start a new record.
+    fn take(&self) -> SoundOrder {
+        let current = self.order.get();
+        let order = match self.complete.take() {
+            Some(complete) if usize::from(current.count) != LEGACY_SOUND_BUFFER_WORDS as usize => {
+                complete
+            }
+            _ => current,
+        };
+        self.written.set([0; 6]);
+        self.order.set(SoundOrder {
+            ascending: true,
+            ..SoundOrder::default()
+        });
+        self.next.set(0);
+        order
+    }
+}
+
+/// Observes guest stores into both legacy sound buffers while the
+/// compatibility device is enabled, so capture can play each frame in the
+/// order a ring-writing driver produced it rather than buffer-index order.
+#[derive(Clone)]
+struct LegacySoundWatch {
+    main: BufferOrder,
+    alternate: BufferOrder,
+}
+
+impl LegacySoundWatch {
+    /// Half-open range covering both buffers; the alternate buffer is lower.
+    fn span(&self) -> (u32, u32) {
+        (
+            self.alternate.base,
+            self.main.base + LEGACY_SOUND_BUFFER_BYTES,
+        )
+    }
+
+    fn note(&self, address: u32, len: u32) -> bool {
+        self.main.note(address, len) | self.alternate.note(address, len)
+    }
+
+    fn overlaps(&self, address: u32, len: u32) -> bool {
+        self.main.overlaps(address, len) || self.alternate.overlaps(address, len)
+    }
 }
 
 /// Base address of the main framebuffer: the top of RAM, below the display
@@ -744,6 +914,14 @@ pub struct MacMemoryBus {
     /// the overwhelmingly common case reject in two comparisons instead of
     /// scanning the list.
     readonly_code_span: Option<(u32, u32)>,
+    /// `readonly_code_span` widened to the watched legacy sound buffers while
+    /// that watch is armed. Every scalar store compares against this box, so
+    /// arming adds no work to stores outside it. Both regions are in the
+    /// synthetic slab, so the box stays clear of the heap, stack and screen.
+    store_attention_span: Option<(u32, u32)>,
+    /// Store-order watch over the legacy sound buffers; see
+    /// [`MacMemoryBus::watch_legacy_sound`].
+    legacy_sound_watch: Option<Box<LegacySoundWatch>>,
     /// Original byte values for a short, explicitly requested execution
     /// probe. While present, fast-memory and bulk-write paths are disabled so
     /// every guest and HLE write passes through `write_byte`. Comparing the
@@ -1467,6 +1645,80 @@ impl MacMemoryBus {
         }
     }
 
+    /// RAM-backed compatibility registers for direct SoundBase clients. This
+    /// implements only the old sound enable/buffer/volume controls, not a VIA
+    /// or the ASC hardware of the reference Quadra profile. Keep both 370-word
+    /// buffers (main - $5C00 is alternate) out of framebuffer, heap and stack.
+    pub(crate) fn legacy_sound_register_base(&self) -> Option<u32> {
+        // The lower part of the existing synthetic reservation is writable
+        // device storage. It must be reachable in both addressing modes:
+        // either wholly below 16 MB or covered by the slab's 24-bit alias.
+        // Otherwise a 24-bit client's VIA writes would land in application
+        // RAM, so the device stays absent.
+        let end = self.synthetic_floor.checked_add(SYNTHETIC_RESERVE_BYTES)?;
+        let alias_start = self.synthetic_floor & 0x00FF_FFFF;
+        let reachable_24_bit = end <= 0x0100_0000
+            || (alias_start >= 0x0080_0000 && alias_start + SYNTHETIC_RESERVE_BYTES <= 0x0100_0000);
+        (self.synthetic_floor >= 0x1000 && end <= self.ram_size && reachable_24_bit)
+            .then_some(self.synthetic_floor + LEGACY_SOUND_REGISTERS_OFFSET)
+    }
+
+    /// Port A of the published compatibility VIA, when the guest-visible
+    /// VBase still names it and its address is not remapped by the current
+    /// addressing mode.
+    pub(crate) fn legacy_sound_port_a(&self) -> Option<u32> {
+        use super::globals::addr;
+        let registers = self.legacy_sound_register_base()?;
+        (self.translate_guest_address(registers) == registers
+            && self.translate_guest_address(self.read_long(addr::VIA_BASE)) == registers)
+            .then_some(registers + LEGACY_SOUND_PORT_A_OFFSET)
+    }
+
+    fn synthetic_code_floor(&self) -> u32 {
+        self.synthetic_floor
+            + if self.legacy_sound_register_base().is_some() {
+                LEGACY_SOUND_RESERVE_BYTES
+            } else {
+                0
+            }
+    }
+
+    pub(crate) fn reset_legacy_sound_device(&mut self) {
+        use super::globals::addr;
+        self.unwatch_legacy_sound();
+        if let Some(registers) = self.legacy_sound_register_base() {
+            let alternate = registers - LEGACY_SOUND_REGISTERS_OFFSET;
+            let main = alternate + LEGACY_SOUND_ALTERNATE_OFFSET;
+            self.write_long(addr::SOUND_BASE, main);
+            self.write_long(addr::VIA_BASE, registers);
+            self.init_legacy_sound_buffer(main);
+            self.init_legacy_sound_buffer(alternate);
+            for register in 0..16 {
+                self.write_byte(registers + register * 0x200, 0);
+            }
+            // PB7 set disables sound. PA3 selects the main buffer, and PA0..2
+            // hold the speaker volume.
+            self.write_byte(registers, 0x80);
+            self.write_byte(
+                registers + LEGACY_SOUND_PORT_A_OFFSET,
+                0x08 | LEGACY_SPEAKER_VOLUME,
+            );
+        } else {
+            // Tiny test buses, and slabs a 24-bit client could not reach,
+            // cannot hold the device. Retain a safe sink for buffer clears
+            // without treating address zero as an enable port.
+            let profile = crate::machine_profile::reference_machine_profile();
+            let main = Self::legacy_sound_base_address(
+                self.ram_size as usize,
+                main_framebuffer_base(self.ram_size as usize),
+                profile.screen_row_bytes() * u32::from(profile.screen_height),
+            );
+            self.write_long(addr::SOUND_BASE, main);
+            self.write_long(addr::VIA_BASE, 0);
+            self.init_legacy_sound_buffer(main);
+        }
+    }
+
     /// `BlockMove` fast path. Copies `count` bytes from `src` to
     /// `dst`, handling overlap correctly. When both ranges are fully
     /// inside RAM and no watchpoint is armed, uses `slice::copy_within`
@@ -1536,6 +1788,7 @@ impl MacMemoryBus {
             if !fast {
                 self.record_write_probe_range(dst, count);
             }
+            self.note_bulk_store(dst, count);
             let ram_size_usize = self.ram_size as usize;
             if let Some(ram) = self.ram.slice_at_mut(0, ram_size_usize) {
                 let src_range = (src as usize)..(src as usize + count_usize);
@@ -1578,6 +1831,8 @@ impl MacMemoryBus {
             trap_gateways: crate::trap::gateways::TrapSystemGateways::default(),
             readonly_code_ranges: Vec::new(),
             readonly_code_span: None,
+            store_attention_span: None,
+            legacy_sound_watch: None,
             write_probe_original: None,
             access_watch: None,
             presentation: Default::default(),
@@ -1603,7 +1858,7 @@ impl MacMemoryBus {
         // Set up ScrnBase at $0824 to point to screen memory.
         // Geometry comes from the active machine profile (800x600 8bpp by
         // default). The framebuffer is placed at the top of RAM, below a
-        // reservation sized to hold it plus the legacy sound buffer.
+        // reservation sized to hold it plus historical display padding.
         let screen_base = main_framebuffer_base(ram_size);
         let profile = crate::machine_profile::reference_machine_profile();
         let screen_width: u16 = profile.screen_width;
@@ -1614,23 +1869,11 @@ impl MacMemoryBus {
         bus.write_long(0x0824, screen_base);
         bus.write_word(super::globals::addr::SCREEN_ROW, screen_row_bytes);
 
-        // SoundBase ($0266) - pointer to the 370-word main sound buffer
-        // used by the original free-form synthesizer. Keep it in the
-        // display/sound hardware reservation just past the active 800x600
-        // framebuffer: still outside the heap, but below Systemless's
-        // top-of-RAM stack window. Direct Sound Driver clients such as
-        // Crystal Quest clear this buffer themselves via
-        // `MOVEA.L (SoundBase).W,A0`; if NIL, those writes land in low
-        // memory and corrupt Ticks ($016A). Inside Macintosh Volume III,
-        // III-21 and III-425; Volume IV, IV-247.
+        // Direct Sound Driver clients clear SoundBase themselves; NIL would
+        // send those writes into low memory and corrupt Ticks. Reserve the
+        // alternate buffer too. Inside Macintosh III-21; IV-247.
         use super::globals::addr;
-        let sound_base = Self::legacy_sound_base_address(
-            ram_size,
-            screen_base,
-            screen_row_bytes as u32 * screen_height as u32,
-        );
-        bus.write_long(addr::SOUND_BASE, sound_base);
-        bus.init_legacy_sound_buffer(sound_base);
+        bus.reset_legacy_sound_device();
 
         // screenBits BitMap structure at $083C (14 bytes)
         // BitMap: baseAddr(4) + rowBytes(2) + bounds(8) = 14 bytes
@@ -1679,6 +1922,8 @@ impl MacMemoryBus {
             trap_gateways: crate::trap::gateways::TrapSystemGateways::default(),
             readonly_code_ranges: Vec::new(),
             readonly_code_span: None,
+            store_attention_span: None,
+            legacy_sound_watch: None,
             write_probe_original: None,
             access_watch: None,
             presentation: Default::default(),
@@ -2341,7 +2586,7 @@ impl MacMemoryBus {
     pub(crate) fn synthetic_code_allocation_start(&self, size: u32) -> Option<u32> {
         let aligned = Self::allocation_bucket_size(size);
         let start = self.synthetic_ptr.checked_sub(aligned)?;
-        (start >= self.synthetic_floor
+        (start >= self.synthetic_code_floor()
             && self.translate_guest_address(start) == start
             && self.route(start, aligned as usize) == GuestMemoryRoute::Flat
             && self.is_guest_address_writable(start, aligned as usize))
@@ -2357,10 +2602,10 @@ impl MacMemoryBus {
         let Some(ptr) = self.synthetic_ptr.checked_sub(aligned) else {
             return 0;
         };
-        if ptr < self.synthetic_floor {
+        if ptr < self.synthetic_code_floor() {
             eprintln!(
                 "[ALLOC] Out of synthetic memory: requesting {} bytes, floor at ${:08X}, synthetic at ${:08X}",
-                size, self.synthetic_floor, self.synthetic_ptr
+                size, self.synthetic_code_floor(), self.synthetic_ptr
             );
             return 0;
         }
@@ -2381,6 +2626,144 @@ impl MacMemoryBus {
                 Some((lo, hi)) => (lo.min(address), hi.max(end)),
                 None => (address, end),
             });
+            self.recompute_store_attention_span();
+        }
+    }
+
+    fn recompute_store_attention_span(&mut self) {
+        let watched = self
+            .legacy_sound_watch
+            .as_deref()
+            .map(LegacySoundWatch::span);
+        self.store_attention_span = match (self.readonly_code_span, watched) {
+            (Some((lo, hi)), Some((watch_lo, watch_hi))) => {
+                Some((lo.min(watch_lo), hi.max(watch_hi)))
+            }
+            (span, None) | (None, span) => span,
+        };
+    }
+
+    /// Protection test for one scalar guest store, which also notes stores
+    /// into armed legacy sound buffers. Outside the attention span this is
+    /// the same two comparisons as `readonly_code_overlaps`; like it, this
+    /// borrows the bus immutably so the hot path keeps bus state in registers.
+    #[inline]
+    fn store_blocked(&self, address: u32, len: u32) -> bool {
+        let Some((span_start, span_end)) = self.store_attention_span else {
+            return false;
+        };
+        let end = (address as u64).saturating_add(len as u64);
+        if end <= span_start as u64 || address as u64 >= span_end as u64 {
+            return false;
+        }
+        self.attend_store(address, len)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn attend_store(&self, address: u32, len: u32) -> bool {
+        if let Some(watch) = self.legacy_sound_watch.as_deref() {
+            // Arming keeps protected code above the buffers.
+            if watch.note(address, len) {
+                return false;
+            }
+        }
+        let end = (address as u64).saturating_add(len as u64);
+        protected_ranges_overlap(&self.readonly_code_ranges, address as u64, end)
+    }
+
+    /// Note a bulk store into armed legacy sound buffers: one `Option` test
+    /// per operation. `address` is an already translated RAM address.
+    #[inline(always)]
+    fn note_bulk_store(&self, address: u32, len: u32) {
+        if self.legacy_sound_watch.is_some() {
+            self.note_bulk_store_slow(address, len);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn note_bulk_store_slow(&self, address: u32, len: u32) {
+        if let Some(watch) = self.legacy_sound_watch.as_deref() {
+            watch.note(address, len);
+        }
+    }
+
+    /// Start observing guest stores into the compatibility device's two
+    /// sound buffers. Only the device's own layout is observed: the buffers
+    /// sit in the slab below all protected code, so the widened attention
+    /// span never reaches the heap, stack or screen. Refusal disarms.
+    pub(crate) fn watch_legacy_sound(&mut self) -> WatchChange {
+        use super::globals::addr;
+        let main = self.read_long(addr::SOUND_BASE);
+        let expected = self.legacy_sound_register_base().map(|registers| {
+            registers - LEGACY_SOUND_REGISTERS_OFFSET + LEGACY_SOUND_ALTERNATE_OFFSET
+        });
+        let code_floor = self.synthetic_code_floor();
+        if expected != Some(main)
+            || self
+                .readonly_code_span
+                .is_some_and(|(lo, _)| lo < code_floor)
+        {
+            self.unwatch_legacy_sound();
+            return WatchChange::Refused;
+        }
+        if self.legacy_sound_watch.is_some() {
+            return WatchChange::Unchanged;
+        }
+        self.legacy_sound_watch = Some(Box::new(LegacySoundWatch {
+            main: BufferOrder::new(main),
+            alternate: BufferOrder::new(main - LEGACY_SOUND_ALTERNATE_OFFSET),
+        }));
+        self.recompute_store_attention_span();
+        self.set_legacy_sound_filter_pages(2);
+        WatchChange::Armed
+    }
+
+    pub(crate) fn unwatch_legacy_sound(&mut self) {
+        if self.legacy_sound_watch.is_some() {
+            self.set_legacy_sound_filter_pages(1);
+            self.legacy_sound_watch = None;
+            self.recompute_store_attention_span();
+        }
+    }
+
+    /// The order of stores into one buffer since its last capture, then
+    /// start a new record. `None` while unarmed.
+    pub(crate) fn take_legacy_sound_order(&mut self, alternate: bool) -> Option<SoundOrder> {
+        let watch = self.legacy_sound_watch.as_deref()?;
+        Some(if alternate {
+            watch.alternate.take()
+        } else {
+            watch.main.take()
+        })
+    }
+
+    /// Mark the JIT store-filter pages holding the watched buffers observed
+    /// (2) when arming, or unknown (1) so they are re-learned when disarming.
+    /// Arming happens between batches, which reread these bytes per store.
+    fn set_legacy_sound_filter_pages(&mut self, value: u8) {
+        let Some((start, end)) = self
+            .legacy_sound_watch
+            .as_deref()
+            .map(LegacySoundWatch::span)
+        else {
+            return;
+        };
+        let Some(filter) = self.store_filter.as_deref_mut() else {
+            return;
+        };
+        let last = filter.len() - 1;
+        for page in (start >> STORE_FILTER_PAGE_SHIFT)..=((end - 1) >> STORE_FILTER_PAGE_SHIFT) {
+            let main_or_alternate = self.legacy_sound_watch.as_deref().is_some_and(|watch| {
+                watch.overlaps(
+                    page << STORE_FILTER_PAGE_SHIFT,
+                    1 << STORE_FILTER_PAGE_SHIFT,
+                )
+            });
+            if main_or_alternate && (page as usize) + 1 < last {
+                filter[1 + page as usize] = value;
+            }
         }
     }
 
@@ -2590,6 +2973,7 @@ impl MacMemoryBus {
         let changed = !self
             .untraced_ram_slice(address, data.len())
             .is_some_and(|previous| previous == data);
+        self.note_bulk_store(translated, data.len() as u32);
         self.ram.write_bytes_in_bounds(translated as usize, data);
         if changed {
             if let Some(mut p) = self.presentation.as_mut() {
@@ -2621,6 +3005,7 @@ impl MacMemoryBus {
         {
             return false;
         }
+        self.note_bulk_store(translated, data.len() as u32);
         self.ram.write_bytes_in_bounds(translated as usize, data);
         if let Some(mut p) = self.presentation.as_mut() {
             p.sync_screen_row_over_text(translated, data);
@@ -2717,7 +3102,13 @@ impl MacMemoryBus {
         f: impl FnOnce(&super::presentation::PresentationSlot, &mut dyn FnMut(u32, &[u8])) -> R,
     ) -> R {
         let ram = &mut self.ram;
-        let mut store = |address: u32, data: &[u8]| ram.write_bytes_in_bounds(address as usize, data);
+        let watch = self.legacy_sound_watch.as_deref();
+        let mut store = |address: u32, data: &[u8]| {
+            if let Some(watch) = watch {
+                watch.note(address, data.len() as u32);
+            }
+            ram.write_bytes_in_bounds(address as usize, data)
+        };
         f(&self.presentation, &mut store)
     }
 
@@ -2777,6 +3168,7 @@ impl MacMemoryBus {
         {
             return false;
         }
+        self.note_bulk_store(dst, len);
         if fast {
             self.ram
                 .copy_bytes_in_bounds(src as usize, dst as usize, len as usize);
@@ -2858,6 +3250,7 @@ impl MacMemoryBus {
         {
             return false;
         }
+        self.note_bulk_store(dst, len);
         if fast {
             self.ram
                 .copy_mapped_bytes_in_bounds(src as usize, dst as usize, len as usize, map);
@@ -2929,13 +3322,14 @@ impl MacMemoryBus {
         })
     }
 
-    /// Return the complete system-owned synthetic reservation. CPU adapters
-    /// may expose this as read-only code while retaining visibility of stubs
-    /// allocated later in the process lifetime.
+    /// Return the code part of the synthetic reservation. CPU adapters expose
+    /// this as read-only; the sound-device prefix must stay shared writable.
+    /// Allocation exclusion still covers the complete 64 KiB reservation.
     pub(crate) fn shared_synthetic_reservation(&mut self) -> Option<(u32, SharedRamRegion)> {
         let (base, len) = self.synthetic_reservation_range()?;
-        self.shared_ram_region(base, len)
-            .map(|region| (base, region))
+        let code_base = self.synthetic_code_floor();
+        self.shared_ram_region(code_base, base + len - code_base)
+            .map(|region| (code_base, region))
     }
 
     /// Return the runner-owned synthetic reservation without creating a
@@ -3281,8 +3675,9 @@ impl MacMemoryBus {
     /// Classify the page holding `address` if it is still unknown. Proven
     /// plain means a direct store anywhere in the page is exactly what this
     /// bus's own `write_*` would do: RAM, flat route, no protected code, no
-    /// sparse mapping, and nothing presentation could observe (screen or an
-    /// offscreen page bit). Anything else is recorded as observed.
+    /// sparse mapping, no watched legacy sound buffer, and nothing
+    /// presentation could observe (screen or an offscreen page bit).
+    /// Anything else is recorded as observed.
     #[inline]
     fn learn_store_page(&mut self, address: u32) {
         let page = address >> STORE_FILTER_PAGE_SHIFT;
@@ -3305,6 +3700,10 @@ impl MacMemoryBus {
             && self.foreign_address_space.is_none()
             && self.route(start, size as usize) == GuestMemoryRoute::Flat
             && !self.readonly_code_overlaps(start, size)
+            && !self
+                .legacy_sound_watch
+                .as_deref()
+                .is_some_and(|watch| watch.overlaps(start, size))
             && !self.foreign_ordinary_sparse_overlaps(start, size as usize)
             && self
                 .presentation
@@ -3339,9 +3738,11 @@ impl MacMemoryBus {
             || mem_write_trace_active()
             || watchpoint_armed()
             || self.write_probe_original.is_some()
+            || self.legacy_sound_watch.is_some()
         {
             // An access watch is armed only while a write probe is, so this
-            // window is already withdrawn for it.
+            // window is already withdrawn for it. Direct stores would bypass
+            // the legacy sound buffers' store-order watch.
             return None;
         }
         let ptr = match &mut self.ram {
@@ -3527,7 +3928,7 @@ impl MemoryBus for MacMemoryBus {
             | GuestMemoryRoute::Unmapped
             | GuestMemoryRoute::Mixed => {}
         }
-        if self.readonly_code_overlaps(address, 1) {
+        if self.store_blocked(address, 1) {
             return;
         }
         if let Some(mut p) = self.presentation.as_mut() {
@@ -3609,7 +4010,7 @@ impl MemoryBus for MacMemoryBus {
         // Only a complete Flat route reaches here. It has already proved
         // contiguous translation and local-RAM bounds; retain the protection
         // check without routing the same range a second time.
-        if self.readonly_code_overlaps(foreign_address, 2) {
+        if self.store_blocked(foreign_address, 2) {
             return;
         }
         maybe_log_mem_write(address, 2, value as u32);
@@ -3649,7 +4050,7 @@ impl MemoryBus for MacMemoryBus {
         // Only a complete Flat route reaches here. It has already proved
         // contiguous translation and local-RAM bounds; retain the protection
         // check without routing the same range a second time.
-        if self.readonly_code_overlaps(foreign_address, 4) {
+        if self.store_blocked(foreign_address, 4) {
             return;
         }
         maybe_log_mem_write(address, 4, value);
@@ -3747,6 +4148,9 @@ impl MemoryBus for MacMemoryBus {
         if self.readonly_code_overlaps(protected_address, data.len() as u32) {
             return;
         }
+        if let Some(translated) = translated {
+            self.note_bulk_store(translated, data.len() as u32);
+        }
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
@@ -3789,6 +4193,9 @@ impl MemoryBus for MacMemoryBus {
         let protected_address = translated.unwrap_or(address);
         if self.readonly_code_overlaps(protected_address, len) {
             return;
+        }
+        if let Some(translated) = translated {
+            self.note_bulk_store(translated, len);
         }
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
@@ -3856,6 +4263,11 @@ impl MemoryBus for MacMemoryBus {
                 if end <= u64::from(self.ram_size)
                     && !self.readonly_code_overlaps(start, span as u32)
                 {
+                    if self.legacy_sound_watch.is_some() {
+                        for i in 0..count {
+                            self.note_bulk_store(start + i * stride, 1);
+                        }
+                    }
                     if let Some(slice) = self.ram.slice_at_mut(start as usize, span as usize) {
                         let stride = stride as usize;
                         for i in 0..count as usize {
@@ -3883,6 +4295,9 @@ impl MemoryBus for MacMemoryBus {
         let protected_address = translated.unwrap_or(address);
         if self.readonly_code_overlaps(protected_address, len) {
             return;
+        }
+        if let Some(translated) = translated {
+            self.note_bulk_store(translated, len);
         }
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
@@ -4678,8 +5093,12 @@ mod tests {
             "guest allocations must stop at the reservation"
         );
 
-        let whole_reservation = bus.alloc_synthetic(SYNTHETIC_RESERVE_BYTES);
-        assert_eq!(whole_reservation, application_limit);
+        let code_bytes = SYNTHETIC_RESERVE_BYTES - LEGACY_SOUND_RESERVE_BYTES;
+        let whole_reservation = bus.alloc_synthetic(code_bytes);
+        assert_eq!(
+            whole_reservation,
+            application_limit + LEGACY_SOUND_RESERVE_BYTES
+        );
         assert_eq!(
             bus.alloc_synthetic(4),
             0,
@@ -4796,16 +5215,43 @@ mod tests {
 
     #[test]
     fn new_initializes_legacy_sound_base_buffer() {
+        use crate::memory::globals::addr;
         let bus = MacMemoryBus::new(4 * 1024 * 1024);
-        let sound_base = bus.read_long(crate::memory::globals::addr::SOUND_BASE);
+        let (floor, len) = bus.synthetic_reservation_range().unwrap();
+        let sound_base = bus.read_long(addr::SOUND_BASE);
 
+        let alternate = sound_base - LEGACY_SOUND_ALTERNATE_OFFSET;
+        assert_eq!(alternate, floor);
+        assert_eq!(alternate, bus.application_memory_limit());
+        let registers = bus.read_long(addr::VIA_BASE);
+        assert_eq!(Some(registers), bus.legacy_sound_register_base());
+        let code_floor = bus.synthetic_code_floor();
+        assert_eq!(code_floor, floor + LEGACY_SOUND_RESERVE_BYTES);
+        assert!(sound_base + LEGACY_SOUND_BUFFER_BYTES <= code_floor);
+        assert!(code_floor < floor + len);
+        // All sixteen VIA registers are device storage, clear of both
+        // buffers and of synthetic code.
+        for register in 0..16 {
+            let address = registers + register * 0x200;
+            assert!(
+                address >= alternate + LEGACY_SOUND_BUFFER_BYTES && address < sound_base,
+                "{address:#x}"
+            );
+        }
+        assert_eq!(bus.read_byte(registers), 0x80, "sound starts disabled");
         assert_eq!(
-            sound_base, 0x003F_7880,
-            "SoundBase should sit just past the active framebuffer in the reserved hardware-buffer area"
+            bus.read_byte(registers + LEGACY_SOUND_PORT_A_OFFSET),
+            0x08 | LEGACY_SPEAKER_VOLUME,
+            "main buffer at full volume"
         );
-        assert!(
-            sound_base + LEGACY_SOUND_BUFFER_BYTES <= bus.ram_size(),
-            "the full 370-word sound buffer must be inside RAM"
+        assert_eq!(
+            bus.legacy_sound_port_a(),
+            Some(registers + LEGACY_SOUND_PORT_A_OFFSET)
+        );
+        assert_eq!(bus.read_byte(alternate), 128);
+        assert_eq!(
+            bus.read_byte(alternate + LEGACY_SOUND_BUFFER_BYTES - 2),
+            128
         );
         assert_eq!(
             bus.read_byte(sound_base),
@@ -4827,6 +5273,112 @@ mod tests {
             0,
             "last legacy sound low byte"
         );
+    }
+
+    #[test]
+    fn legacy_sound_watch_observes_only_buffer_pages() {
+        use crate::memory::globals::addr;
+        let mut bus = MacMemoryBus::new(4 * 1024 * 1024);
+        let (floor, len) = bus.synthetic_reservation_range().unwrap();
+        let main = bus.read_long(addr::SOUND_BASE);
+        let alternate = main - LEGACY_SOUND_ALTERNATE_OFFSET;
+        let page = |bus: &MacMemoryBus, address: u32| {
+            bus.store_filter_byte(1 + (address >> STORE_FILTER_PAGE_SHIFT) as usize)
+                .unwrap()
+        };
+        assert!(!bus.store_filter_for_batch().is_null());
+        assert!(bus.fast_mem_window().is_some());
+        bus.write_long(0x2_0000, 1);
+        assert_eq!(page(&bus, 0x2_0000), 0);
+
+        assert_eq!(bus.watch_legacy_sound(), WatchChange::Armed);
+        assert_eq!(bus.watch_legacy_sound(), WatchChange::Unchanged);
+        assert_eq!(page(&bus, main), 2);
+        assert_eq!(page(&bus, alternate), 2);
+        assert_eq!(page(&bus, 0x2_0000), 0, "other proofs are untouched");
+        for unwatched in [floor + 0x1000, floor + 0x3000, floor + 0x4000] {
+            assert_ne!(page(&bus, unwatched), 2, "{unwatched:#x}");
+        }
+        assert!(bus.fast_mem_window().is_none());
+        let (lo, hi) = bus.store_attention_span.unwrap();
+        assert!(lo >= floor && hi <= floor + len);
+
+        bus.write_long(0x2_0000, 2); // outside the buffers
+        bus.write_word(main + 4, 0x1234);
+        bus.write_byte(main + 7, 1); // a disk-speed byte, not a sample
+        assert_eq!(
+            bus.take_legacy_sound_order(false),
+            Some(SoundOrder {
+                count: 1,
+                first: 2,
+                ascending: true,
+            })
+        );
+        assert_eq!(bus.take_legacy_sound_order(true).unwrap().count, 0);
+        // An unaligned long store notes each sample byte it covers.
+        bus.write_long(main + 13, 0xAABB_CCDD);
+        assert_eq!(
+            bus.take_legacy_sound_order(false),
+            Some(SoundOrder {
+                count: 2,
+                first: 7,
+                ascending: true,
+            })
+        );
+
+        bus.unwatch_legacy_sound();
+        assert_eq!(page(&bus, main), 1, "re-learned after disarming");
+        assert!(bus.fast_mem_window().is_some());
+        assert_eq!(bus.store_attention_span, bus.readonly_code_span);
+        bus.write_byte(main, 1);
+        assert_eq!(page(&bus, main), 0);
+        assert_eq!(bus.take_legacy_sound_order(false), None);
+    }
+
+    #[test]
+    fn protected_code_stays_read_only_while_the_watch_is_armed() {
+        use crate::memory::globals::addr;
+        let mut bus = MacMemoryBus::new(4 * 1024 * 1024);
+        let main = bus.read_long(addr::SOUND_BASE);
+        let code = bus.synthetic_code_floor() + 0x100;
+        bus.write_long(code, 0x1122_3344);
+        bus.protect_readonly_code(code, 4);
+        assert_eq!(bus.watch_legacy_sound(), WatchChange::Armed);
+        bus.write_byte(code + 1, 0);
+        bus.write_word(code, 0);
+        bus.write_long(code, 0);
+        assert_eq!(bus.read_long(code), 0x1122_3344);
+        // A store straddling the main buffer's end is noted for the one
+        // sample it covers and is not blocked.
+        let end = main + LEGACY_SOUND_BUFFER_BYTES;
+        bus.write_long(end - 2, 0x5566_7788);
+        assert_eq!(bus.read_long(end - 2), 0x5566_7788);
+        assert_eq!(
+            bus.take_legacy_sound_order(false),
+            Some(SoundOrder {
+                count: 1,
+                first: 369,
+                ascending: true,
+            })
+        );
+    }
+
+    #[test]
+    fn legacy_sound_watch_refuses_layouts_it_cannot_bound() {
+        use crate::memory::globals::addr;
+        let mut bus = MacMemoryBus::new(4 * 1024 * 1024);
+        let main = bus.read_long(addr::SOUND_BASE);
+        assert_eq!(bus.watch_legacy_sound(), WatchChange::Armed);
+        // A guest-moved SoundBase is captured but not observed.
+        bus.write_long(addr::SOUND_BASE, 0x2_0000);
+        assert_eq!(bus.watch_legacy_sound(), WatchChange::Refused);
+        assert!(bus.legacy_sound_watch.is_none());
+        bus.write_long(addr::SOUND_BASE, main);
+        // Protected code below the device's code floor would let the
+        // widened span cover it.
+        bus.protect_readonly_code(main + LEGACY_SOUND_BUFFER_BYTES + 0x10, 4);
+        assert_eq!(bus.watch_legacy_sound(), WatchChange::Refused);
+        assert!(bus.legacy_sound_watch.is_none());
     }
 
     #[test]

@@ -176,10 +176,28 @@ fn native_system_code_survives_large_process_ram_attachment() {
     native.cpu.pc = ENTRY;
     native.cpu.lr = native.halt_pc;
     let mut runner = FixtureRunner::new(64 * 1024 * 1024, FixtureRunnerConfig::default());
-    let (reservation_base, _) = runner.bus.synthetic_reservation_range().unwrap();
+    let (reservation_base, reservation_len) = runner.bus.synthetic_reservation_range().unwrap();
+    let (code_base, _) = runner.bus.shared_synthetic_reservation().unwrap();
     runner.set_launch_state(17, 1, 0);
     runner.init_app(&LoadedApp::from_ppc(native));
     let native = runner.native.application_mut().unwrap();
+    let via = native
+        .memory
+        .read_u32_be(crate::memory::globals::addr::VIA_BASE)
+        .unwrap();
+    let main = native
+        .memory
+        .read_u32_be(crate::memory::globals::addr::SOUND_BASE)
+        .unwrap();
+    assert_eq!(native.memory.read_u8(via), Some(0x80));
+    assert_eq!(
+        native
+            .memory
+            .read_u8(crate::memory::globals::addr::SD_VOLUME),
+        Some(crate::memory::bus::LEGACY_SPEAKER_VOLUME)
+    );
+    assert_eq!(native.memory.read_u8(main), Some(0x80));
+    assert_eq!(native.memory.read_u8(main - 0x5c00), Some(0x80));
     for (base, word) in pools.into_iter().zip(words) {
         assert_eq!(native.memory.read_u32_be(base), Some(word));
         assert!(native
@@ -191,8 +209,22 @@ fn native_system_code_survives_large_process_ram_attachment() {
     assert!(native
         .memory
         .shared_view()
-        .is_shared_readonly_range(reservation_base, 1));
-    assert_eq!(native.memory.write_u8(reservation_base, 0xff), None);
+        .is_shared_readonly_range(code_base, 1));
+    assert_eq!(native.memory.write_u8(code_base, 0xff), None);
+    // The writable sound-device prefix is not a read-only mapping, so only
+    // the whole-slab exclusion keeps the native allocator out of it.
+    assert!(reservation_base < code_base);
+    assert_eq!(
+        native
+            .memory
+            .readonly_allocation_overlap_end(reservation_base, code_base - reservation_base),
+        Some(reservation_base + reservation_len)
+    );
+    assert_eq!(native.memory.write_u8(reservation_base, 0x91), Some(()));
+    assert_eq!(runner.bus.read_byte(reservation_base), 0x91);
+    runner.bus.write_byte(reservation_base + 2, 0x92);
+    let native = runner.native.application_mut().unwrap();
+    assert_eq!(native.memory.read_u8(reservation_base + 2), Some(0x92));
     let (steps, running) = runner.run_steps(64, None);
     assert!(steps >= 6);
     assert!(!running);

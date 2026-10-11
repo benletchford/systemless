@@ -753,6 +753,9 @@ pub struct SoundManager {
     /// setting, distinct from channel `volumeCmd` gain and current
     /// output-port volume.
     default_output_volume: u32,
+    /// SetSoundVol(0) mutes the compatibility speaker. This is separate from
+    /// VIA PA=0, which selects the hardware's minimum (nonzero) gain.
+    pub(crate) legacy_speaker_muted: bool,
     next_internal_channel_ptr: u32,
 }
 
@@ -779,12 +782,14 @@ impl SoundManager {
             debug_file_play_count: 0,
             sys_beep_volume: FULL_STEREO_VOLUME,
             default_output_volume: FULL_STEREO_VOLUME,
+            legacy_speaker_muted: false,
             next_internal_channel_ptr: INTERNAL_CHANNEL_PTR_START,
         }
     }
 
     pub(crate) fn is_pristine(&self) -> bool {
-        self.channels.is_empty()
+        !self.legacy_speaker_muted
+            && self.channels.is_empty()
             && self.double_buffer_playbacks.is_empty()
             && self.pending_process_doublebacks.is_empty()
             && self.pending_callbacks.is_empty()

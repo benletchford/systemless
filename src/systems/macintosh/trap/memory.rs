@@ -2385,6 +2385,42 @@ impl super::TrapDispatcher {
             // requests return controlErr (IM:Devices 1994, pp. 1-35--1-36, 1-77).
             (false, 0x04) => {
                 let pb = cpu.read_reg(Register::A0);
+                // Apple's OSTraps.a SetSoundVol glue issues Control(-4, 2)
+                // with its INTEGER level directly in csParam (PB+28).
+                // Handle the Sound Driver before interpreting video csCodes.
+                if pb != 0 && bus.read_word(pb + 24) as i16 == -4 {
+                    use crate::memory::globals::addr;
+                    let result = match bus.read_word(pb + 26) {
+                        2 => {
+                            // Only the low three bits of SdVolume hold the
+                            // level. Inside Macintosh Volume II, II-233.
+                            let level = bus.read_word(pb + 28).min(7) as u8;
+                            let sd_volume = bus.read_byte(addr::SD_VOLUME);
+                            bus.write_byte(addr::SD_VOLUME, (sd_volume & !7) | level);
+                            self.sound_manager
+                                .with_mut(|manager| manager.legacy_speaker_muted = level == 0);
+                            // Same reachability rule as the device's capture path.
+                            if let Some(port_a) = bus.legacy_sound_port_a() {
+                                bus.write_byte(port_a, (bus.read_byte(port_a) & !7) | level);
+                            }
+                            NO_ERR
+                        }
+                        3 => {
+                            // Immediate amplitude change for a square-wave
+                            // Write, reflected in SoundLevel (Inside
+                            // Macintosh Volume II, II-233--II-234). The HLE
+                            // renders a square wave when it is written, so a
+                            // tone already playing keeps its amplitude.
+                            let amplitude = bus.read_word(pb + 28).min(255) as u8;
+                            bus.write_byte(addr::SOUND_LEVEL, amplitude);
+                            NO_ERR
+                        }
+                        _ => CONTROL_ERR,
+                    };
+                    bus.write_word(pb + 16, result as u16);
+                    cpu.write_reg(Register::D0, result as i32 as u32);
+                    return Some(Ok(()));
+                }
                 let mut control_result = NO_ERR;
                 if pb != 0 {
                     let cs_code = bus.read_word(pb + 26) as i16;

@@ -140,8 +140,8 @@ pub(super) fn dispatch_sound_import(
         PpcImportDispatcherTarget::SetSoundVol => {
             // SetSoundVol updates the actual speaker level without changing
             // the user's saved Control Panel preference.
-            let level = (cpu.gpr[3] as u8).min(7);
-            let _ = memory.write_u8(crate::memory::globals::addr::SD_VOLUME, level);
+            let level = (cpu.gpr[3] as u16).min(7) as u8;
+            set_legacy_sound_volume(memory, sound, level);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetDefaultOutputVolume => {
@@ -258,5 +258,33 @@ pub(super) fn dispatch_sound_import(
             Some(ppc_dispatch_sound_input_compatibility(operation, cpu, memory))
         }
         _ => None,
+    }
+}
+
+/// Shared by SetSoundVol and the older Sound Driver Control wrapper.
+pub(super) fn set_legacy_sound_volume(
+    memory: &mut PpcSectionMem,
+    sound: &mut PpcSoundState,
+    level: u8,
+) {
+    // Only the low three bits of SdVolume hold the level (II-233).
+    let sd_volume = memory
+        .read_u8(crate::memory::globals::addr::SD_VOLUME)
+        .unwrap_or(0);
+    let _ = memory.write_u8(
+        crate::memory::globals::addr::SD_VOLUME,
+        (sd_volume & !7) | level,
+    );
+    sound
+        .manager
+        .with_mut(|manager| manager.legacy_speaker_muted = level == 0);
+    if let Some(port_a) = memory
+        .read_u32_be(crate::memory::globals::addr::VIA_BASE)
+        .filter(|&base| base >= 0x1000)
+        .and_then(|base| base.checked_add(crate::memory::bus::LEGACY_SOUND_PORT_A_OFFSET))
+    {
+        if let Some(value) = memory.read_u8(port_a) {
+            let _ = memory.write_u8(port_a, (value & !7) | level);
+        }
     }
 }

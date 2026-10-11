@@ -61,6 +61,9 @@ pub mod addr {
     /// Inside Macintosh: Devices (1994), pp. 1-8--1-9; Universal Interfaces
     /// 3.4 LowMem.h lines 4304--4324.
     pub const UNIT_NTRY_CNT: u32 = 0x01D2;
+    /// VIA: the VIA's base address (`vBase`), for code that addresses the
+    /// VIA registers through this global. Inside Macintosh III-39.
+    pub const VIA_BASE: u32 = 0x01D4;
     pub const TIME: u32 = 0x020C; // Current date/time in seconds since 1904-01-01 (long)
     /// KbdType: physical keyboard type (byte), distinct from the Gestalt enum.
     /// Universal Interfaces 3.4.1, Events.h: LMGetKbdType reads UInt8 at $021E.
@@ -90,24 +93,25 @@ pub mod addr {
     pub const ROM85: u32 = 0x028E; // Version number of ROM (word) - Inside Macintosh V, V-578
 
     /// SdVolume: current speaker volume (1 byte, low-order three bits).
-    /// Inside Macintosh Volume III, III-425 lists `SdVolume` at $0260 and
-    /// describes it as the current speaker volume, with values 0..7.
+    /// Inside Macintosh Volume II, II-232, and Volume III, III-166, describe
+    /// it as the current speaker volume, 0..7; III-230 lists it at $0260.
     ///
     /// Marathon 1's sound module reads this byte at CODE 5 +`$0003F2`
-    /// (`MOVE.B (mem $260).W, (A0)`) and uses it as a "Sound Driver alive"
-    /// sentinel — if zero, M1 short-circuits its entire audio submission
-    /// path. Systemless's HLE bypasses the legacy Sound Driver layer, so this
-    /// byte must be initialized non-zero at boot to satisfy classic clients.
+    /// (`MOVE.B (mem $260).W, (A0)`) and short-circuits its entire audio
+    /// submission path when it is zero, so it must stay nonzero at boot. The
+    /// HLE Sound Driver Write path scales its output by this level, the
+    /// SetSoundVol paths write it, and it boots equal to the compatibility
+    /// VIA's volume (`LEGACY_SPEAKER_VOLUME`).
     pub const SD_VOLUME: u32 = 0x0260;
 
     /// SoundBase: pointer to the free-form synthesizer's main sound buffer.
-    /// Inside Macintosh Volume III, III-425; Volume IV, IV-247 documents
+    /// Inside Macintosh Volume III, III-21; Volume IV, IV-247 documents
     /// that programs should use this low-memory global rather than fixed
     /// hardware-dependent sound-buffer addresses.
     pub const SOUND_BASE: u32 = 0x0266;
 
     /// SoundLevel: amplitude in the Sound Driver's 740-byte buffer (1 byte).
-    /// Inside Macintosh Volume III, III-425.
+    /// Inside Macintosh Volume II, II-234; Volume III, III-166.
     pub const SOUND_LEVEL: u32 = 0x027F;
 
     // Menu Manager globals
@@ -474,7 +478,7 @@ mod tests {
         // constant. Marathon 1's CODE 5 +$0003F2 reads the byte here
         // as a "Sound Driver alive" sentinel; with zero, M1 short-
         // circuits its entire audio submission path. Inside Macintosh
-        // Volume III, III-425.
+        // Volume III, III-230.
         assert_eq!(
             addr::SD_VOLUME,
             0x0260,

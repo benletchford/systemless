@@ -140,6 +140,159 @@ fn host_audio_backend_receives_silence_while_sound_manager_idle() {
 }
 
 #[test]
+fn legacy_sound_reaches_host_and_browser_outputs_at_guest_frame_boundaries() {
+    use crate::memory::globals::addr;
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let (audio_backend, stereo_samples) = CapturingAudioBackend::new();
+    runner.set_audio(Box::new(audio_backend));
+    let sound_base = runner.bus.read_long(addr::SOUND_BASE);
+    let via = runner.bus.read_long(addr::VIA_BASE);
+    runner.bus.write_byte(via, 0);
+    runner
+        .bus
+        .write_byte(via + crate::memory::bus::LEGACY_SOUND_PORT_A_OFFSET, 15);
+    for offset in (0..740).step_by(2) {
+        runner.bus.write_word(sound_base + offset, 0xA5FF);
+    }
+    runner.force_advance_guest_tick();
+    // Replacing the RAM contents after capture must not alter the queued frame.
+    for offset in (0..740).step_by(2) {
+        runner.bus.write_byte(sound_base + offset, 0x55);
+    }
+    runner.mix_audio(32);
+    assert_eq!(runner.drain_audio(), vec![0xA5; 32]);
+    assert_eq!(*stereo_samples.borrow(), vec![0xA5; 64]);
+
+    // Disabling sound stops capture, but the frame already queued is guest
+    // time that has passed, so it still plays out.
+    runner.bus.write_byte(via, 0x80);
+    runner.force_advance_guest_tick();
+    runner.mix_audio(400);
+    let drained = runner.drain_audio();
+    assert_eq!(drained.len(), 400);
+    assert!(drained[..300].iter().all(|&sample| sample == 0xA5));
+    assert!(drained[340..].iter().all(|&sample| sample == 0x80));
+    runner.mix_audio(32);
+    assert!(runner.drain_audio().is_empty());
+    let stereo = stereo_samples.borrow();
+    assert!(stereo[stereo.len() - 64..]
+        .iter()
+        .all(|&sample| sample == 128));
+}
+
+#[test]
+fn legacy_sound_api_mute_silences_the_device_stream() {
+    use crate::memory::globals::addr;
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let sound_base = runner.bus.read_long(addr::SOUND_BASE);
+    let via = runner.bus.read_long(addr::VIA_BASE);
+    runner.bus.write_byte(via, 0);
+    for offset in (0..740).step_by(2) {
+        runner.bus.write_word(sound_base + offset, 0xA5FF);
+    }
+    runner
+        .dispatcher
+        .sound_manager
+        .with_mut(|manager| manager.legacy_speaker_muted = true);
+    runner.force_advance_guest_tick();
+    runner.mix_audio(32);
+    assert_eq!(runner.drain_audio(), vec![0x80; 32]);
+    assert_eq!(
+        runner.bus.read_byte(via),
+        0,
+        "the device itself stays enabled"
+    );
+}
+
+const RING_PC: u32 = 0x0002_0000;
+const RING_SP: u32 = 0x007F_FFC0;
+const RING_TASK: u32 = 0x0020_2000;
+const RING_CALLBACK: u32 = 0x0004_1000;
+const RING_COUNTER: u32 = 0x0020_3000;
+
+/// Run a VBL task that enables the legacy sound device and fills SoundBase
+/// as a ring: 338 samples from word 32, then 32 from word 0, continuing one
+/// incrementing sample stream. Returns the device's queued source samples.
+fn run_ring_driver(instructions_per_tick: u32, presented: bool, retraces: usize) -> Vec<u8> {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.set_instructions_per_tick(instructions_per_tick);
+    if presented {
+        // Presented sessions withdraw direct fast memory, so compiled code
+        // stores through the tracked window and its store filter.
+        runner.prepare_text_presentation();
+    }
+    runner.bus.write_word(RING_PC, 0x5287); // ADDQ.L #1,D7
+    runner.bus.write_word(RING_PC + 2, 0x60FC); // BRA.S RING_PC
+    runner.m68k.cpu.write_reg(crate::cpu::Register::PC, RING_PC);
+    runner.m68k.cpu.write_reg(crate::cpu::Register::A7, RING_SP);
+    runner.m68k.cpu.core.set_sr_noint_nosp(0x2000);
+    #[rustfmt::skip]
+    let words = [
+        0x317C, 0x0001, 0x000A, // MOVE.W #1,10(A0)       re-arm
+        0x2278, 0x01D4, // MOVEA.L $1D4.W,A1            VBase
+        0x0891, 0x0007, // BCLR #7,(A1)                 enable sound
+        0x45F9, (RING_COUNTER >> 16) as u16, RING_COUNTER as u16, // LEA counter,A2
+        0x1012, // MOVE.B (A2),D0
+        0x2278, 0x0266, // MOVEA.L $266.W,A1            SoundBase
+        0xD2FC, 0x0040, // ADDA.W #$40,A1               word 32
+        0x323C, 337, // MOVE.W #337,D1
+        0x1280, 0x5489, 0x5200, 0x51C9, 0xFFF8, // MOVE.B D0,(A1); ADDQ.L #2,A1; ADDQ.B #1,D0; DBRA
+        0x2278, 0x0266, // MOVEA.L $266.W,A1            word 0
+        0x721F, // MOVEQ #31,D1
+        0x1280, 0x5489, 0x5200, 0x51C9, 0xFFF8,
+        0x1480, // MOVE.B D0,(A2)
+        0x4E75, // RTS
+    ];
+    for (offset, word) in words.into_iter().enumerate() {
+        runner
+            .bus
+            .write_word(RING_CALLBACK + offset as u32 * 2, word);
+    }
+    runner.bus.write_word(RING_TASK + 4, 1);
+    runner.bus.write_long(RING_TASK + 6, RING_CALLBACK);
+    runner.bus.write_word(RING_TASK + 10, 1);
+    runner
+        .dispatcher
+        .vbl_tasks
+        .push(crate::trap::dispatch::VblTask {
+            task_ptr: RING_TASK,
+            architecture: crate::callback_manager::CallbackTaskArchitecture::M68k,
+            slot: None,
+            pending: false,
+        });
+    for _ in 0..retraces {
+        runner.advance_guest_tick();
+        let tick = runner.guest_tick();
+        let (_, running) = runner.run_steps(4000, Some(tick));
+        assert!(running);
+        assert!(runner.active_interrupt_callback.is_none());
+    }
+    assert_eq!(runner.legacy_sound.rotation(), [32, 0]);
+    runner.legacy_sound.queued()
+}
+
+#[test]
+fn vbl_ring_driver_streams_continuously() {
+    // Long enough for the fill loops to be compiled where a JIT exists.
+    for instructions_per_tick in [1_000, 415_600] {
+        let queued = run_ring_driver(instructions_per_tick, false, 400);
+        assert_eq!(queued.len(), 370 * 8, "{instructions_per_tick}");
+        for (i, pair) in queued.windows(2).enumerate() {
+            assert_eq!(
+                pair[1],
+                pair[0].wrapping_add(1),
+                "sample {i} at {instructions_per_tick} instructions per tick"
+            );
+        }
+        assert_eq!(
+            run_ring_driver(instructions_per_tick, true, 400),
+            queued,
+            "presented and unpresented store paths agree"
+        );
+    }
+}
+
+#[test]
 fn host_audio_backend_receives_low_rate_sample_hold_output() {
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
     let (audio_backend, stereo_samples) = CapturingAudioBackend::new();

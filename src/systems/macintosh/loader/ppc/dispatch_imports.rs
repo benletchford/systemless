@@ -1186,6 +1186,7 @@ pub(crate) fn dispatch_supported_import(
             screen_clut,
             display_gamma,
             toolbox_startup,
+            sound,
         })
     {
         return Some(action);

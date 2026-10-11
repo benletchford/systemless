@@ -10,6 +10,7 @@ pub(super) struct PpcDeviceDispatchContext<'a> {
     pub(super) screen_clut: &'a mut [[u16; 3]; 256],
     pub(super) display_gamma: &'a SharedProcessDisplayGamma,
     pub(super) toolbox_startup: &'a mut PpcToolboxStartupState,
+    pub(super) sound: &'a mut PpcSoundState,
 }
 
 pub(super) fn dispatch_device_import(
@@ -23,6 +24,7 @@ pub(super) fn dispatch_device_import(
         screen_clut,
         display_gamma,
         toolbox_startup,
+        sound,
     } = context;
 
     match binding.dispatcher_target {
@@ -101,6 +103,10 @@ pub(super) fn dispatch_device_import(
             Some(PpcImportAction::Return(ppc_i16_result(PPC_OPEN_ERR)))
         }
         PpcImportDispatcherTarget::Control => {
+            if cpu.gpr[3] as u16 as i16 == -4 {
+                let result = legacy_sound_control(memory, sound, cpu.gpr[4] as u16, cpu.gpr[5]);
+                return Some(PpcImportAction::Return(ppc_i16_result(result)));
+            }
             Some(PpcImportAction::Return(ppc_i16_result(ppc_control(
                 cpu,
                 memory,
@@ -111,6 +117,18 @@ pub(super) fn dispatch_device_import(
             ))))
         }
         PpcImportDispatcherTarget::PBControl => {
+            let pb = cpu.gpr[3];
+            if pb.checked_add(24).and_then(|p| memory.read_u16_be(p)) == Some((-4i16) as u16) {
+                let result = pb
+                    .checked_add(28)
+                    .and_then(|param| {
+                        let code = memory.read_u16_be(pb + 26)?;
+                        Some(legacy_sound_control(memory, sound, code, param))
+                    })
+                    .unwrap_or(PPC_PARAM_ERR);
+                let _ = memory.write_u16_be(pb + 16, result as u16);
+                return Some(PpcImportAction::Return(ppc_i16_result(result)));
+            }
             Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_control(
                 cpu,
                 memory,
@@ -125,4 +143,28 @@ pub(super) fn dispatch_device_import(
         ))),
         _ => None,
     }
+}
+
+fn legacy_sound_control(
+    memory: &mut PpcSectionMem,
+    sound: &mut PpcSoundState,
+    code: u16,
+    param: u32,
+) -> i16 {
+    if !matches!(code, 2 | 3) {
+        return -17; // controlErr
+    }
+    let Some(value) = memory.read_u16_be(param) else {
+        return PPC_PARAM_ERR;
+    };
+    if code == 3 {
+        // Square-wave amplitude, reflected in SoundLevel; see the 68k path.
+        let _ = memory.write_u8(
+            crate::memory::globals::addr::SOUND_LEVEL,
+            value.min(255) as u8,
+        );
+    } else {
+        super::dispatch_sound::set_legacy_sound_volume(memory, sound, value.min(7) as u8);
+    }
+    PPC_NO_ERR
 }
