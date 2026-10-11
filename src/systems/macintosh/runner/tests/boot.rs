@@ -660,3 +660,32 @@ fn init_app_seeds_callable_swap_font_low_memory_vector() {
         "JSwapFont should return a non-NIL FMOutPtr through the Pascal result slot"
     );
 }
+
+#[test]
+fn classic_launch_and_relaunch_seed_the_read_only_rom_version_pointer() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let app = LoadedApp {
+        ppc: None,
+        code0_header: Code0Header {
+            above_a5: 0,
+            below_a5: 0x2000,
+            jump_table_size: 0,
+            jump_table_offset: 0,
+        },
+        a5_base: 0x0040_0000,
+        jump_table: Vec::new(),
+        segment_bases: HashMap::new(),
+        loaded_image_end: 0,
+        initial_sp: 0x007F_FFC0,
+        size_resource: None,
+    };
+    for _ in 0..2 {
+        runner.bus.write_long(addr::ROM_BASE, 0);
+        runner.init_app(&app);
+        let rom_base = runner.bus.read_long(addr::ROM_BASE);
+        assert_eq!(rom_base, crate::machine_profile::CLASSIC_ROM_BASE);
+        assert_eq!(runner.bus.read_word(rom_base + 8), 0x067C);
+        // The original legacy helper returns the ROM version from the low byte.
+        assert!(runner.bus.read_word(rom_base + 8) & 0xFF >= 0x75);
+    }
+}

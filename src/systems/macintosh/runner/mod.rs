@@ -4059,6 +4059,7 @@ impl FixtureRunner {
         self.bus.write_long(addr::CUR_STACK_BASE, app_globals_start);
         self.bus.write_long(addr::CURRENT_A5, app.a5_base);
         self.bus.write_word(addr::ROM85, 0x0000);
+        self.bus.write_long(addr::ROM_BASE, crate::machine_profile::CLASSIC_ROM_BASE);
         // Lo3Bytes is a constant, including when MMU32Bit is true. Legacy
         // code uses it directly to remove flag bits from tagged pointers.
         // Inside Macintosh Volume I (1985), p. I-85; Volume III, p. III-228.
@@ -12866,6 +12867,7 @@ fn load_app_generic<M: MemoryBus>(
     bus.write_long(0x0904, a5_base); // CurrentA5
     bus.write_word(0x0934, header.jump_table_offset as u16); // CurJTOffset - Inside Macintosh Volume II, II-62
     bus.write_word(0x028E, 0x0000); // ROM85
+    bus.write_long(crate::memory::globals::addr::ROM_BASE, crate::machine_profile::CLASSIC_ROM_BASE);
 
     // Write RTS stubs at low-memory jump vectors that some runtimes
     // (Think C, CodeWarrior) call directly instead of via A-line traps.

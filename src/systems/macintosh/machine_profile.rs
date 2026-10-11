@@ -325,3 +325,10 @@ mod tests {
         );
     }
 }
+
+
+// Basilisk II rom_patches.h identifies 0x067C as the 32-bit-clean Macintosh
+// ROM family. Its rom_patches.cpp reads that word at ROM base + 8. Expose
+// compatibility metadata for our 32-bit reference profile, without firmware.
+pub(crate) const CLASSIC_ROM_BASE: u32 = 0x4080_0000;
+pub(crate) const CLASSIC_ROM_VERSION: u16 = 0x067C;

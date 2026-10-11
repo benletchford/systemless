@@ -87,6 +87,8 @@ pub mod addr {
     /// `DefltStack` at `$0322`; Volume II, II-17, describes it as the default
     /// stack size used when an application is launched.
     pub const DEFLT_STACK: u32 = 0x0322;
+    /// ROMBase: pointer to the classic ROM header (Inside Macintosh low memory).
+    pub const ROM_BASE: u32 = 0x02AE;
     pub const ROM85: u32 = 0x028E; // Version number of ROM (word) - Inside Macintosh V, V-578
 
     /// SdVolume: current speaker volume (1 byte, low-order three bits).
