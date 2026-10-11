@@ -317,3 +317,55 @@ fn classic_control_label(
     )
     .size_full()
 }
+
+/// Standard File prompt layout uses the same word/hard-break algorithm as
+/// guest dialog drawing. Parent bounds own the clip, never host text shaping.
+pub(crate) fn classic_file_prompt(
+    text: &str,
+    scale: f32,
+    foreground: gpui_kit::Hsla,
+) -> impl gpui_kit::IntoElement {
+    use gpui_kit::{prelude::*, *};
+    let bytes = text
+        .chars()
+        .map(systemless::systems::macintosh::mac_roman::encode_mac_roman_char)
+        .collect::<Option<Vec<_>>>()
+        .expect("Standard File prompts are Mac Roman text");
+    let advances = ClassicLine::plain(&bytes, 0, 12).positions;
+    canvas(
+        move |bounds, _, _| {
+            let width = (f32::from(bounds.size.width) / scale)
+                .round()
+                .clamp(1., i16::MAX as f32) as i16;
+            let lines =
+                systemless::quickdraw::text::wrap_classic_text(&bytes, width, |index, _| {
+                    (advances[index + 1] - advances[index]) as i16
+                })
+                .into_iter()
+                .map(|line| ClassicLine::plain(&bytes[line.start..line.visible_end], 0, 12))
+                .collect::<Vec<_>>();
+            (bounds, lines)
+        },
+        move |_, (bounds, lines), window, _| {
+            for (index, line) in lines.iter().enumerate() {
+                let baseline = 12 + index as i32 * 16;
+                if baseline as f32 * scale >= f32::from(bounds.size.height) {
+                    break;
+                }
+                for &(x, y, width) in &line.ink {
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(
+                                bounds.left() + px(x as f32 * scale),
+                                bounds.top() + px((baseline + y) as f32 * scale),
+                            ),
+                            size(px(width as f32 * scale), px(scale)),
+                        ),
+                        foreground,
+                    ));
+                }
+            }
+        },
+    )
+    .size_full()
+}

@@ -265,11 +265,12 @@ pub fn get_underline_thickness(_font_id: i16, _size: i16) -> i16 {
 /// `start..visible_end` is the part drawn on screen; `next` is the guest-text
 /// offset at which the following line begins. This keeps hard line endings and
 /// wrap whitespace in the logical text while excluding them from rasterization.
+#[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct WrappedTextLine {
-    pub(crate) start: usize,
-    pub(crate) visible_end: usize,
-    pub(crate) next: usize,
+pub struct WrappedTextLine {
+    pub start: usize,
+    pub visible_end: usize,
+    pub next: usize,
 }
 
 /// Break Classic Mac text into display lines using caller-supplied glyph widths.
@@ -282,7 +283,8 @@ pub(crate) struct WrappedTextLine {
 /// Inside Macintosh: Text (1993), pp. 2-88--2-89 and 5-24--5-27: TextEdit
 /// prefers word-boundary breaks, uses glyph widths when laying out a line, and
 /// treats trailing whitespace as non-visible.
-pub(crate) fn wrap_classic_text<F>(
+#[doc(hidden)]
+pub fn wrap_classic_text<F>(
     text: &[u8],
     max_width: i16,
     mut byte_advance: F,
