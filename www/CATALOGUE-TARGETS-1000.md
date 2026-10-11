@@ -156,7 +156,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 111 | 299 | 3-D Ultra Pinball: The Lost Continent | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/3d-ultra-pinball-the-lost-continent) |
 | 112 | 300 | 3-D Ultra Pinball: Thrillride | PPC era; verify | D | [Demo index](https://classicmacdemos.com/3d-ultra-pinball-thrillride) |
 | 113 | 301 | Pro Pinball: Big Race USA | PPC era; verify | D | [Demo index](https://classicmacdemos.com/pro-pinball-big-race-usa) |
-| 114 | 302 | Crystal Caliburn | 68K lead | D | [Demo index](https://classicmacdemos.com/crystal-caliburn); [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 114 | 302 | Crystal Caliburn | Original 1.02 demo: 68K only | D | [Exact original demo; twelve plunger checks, broader hosting held](CATALOGUE-SOURCES.md#crystal-caliburn-102-interactive-demo--primary-114-original-intake); [#4677](https://github.com/benletchford/systemless/issues/4677) |
 | 115 | 303 | Tristan | 68K lead | D | [Demo index](https://classicmacdemos.com/tristan) |
 | 116 | 304 | Royal Flush | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
 | 117 | 305 | F/A-18 Korea | PPC lead | D | [Demo index](https://classicmacdemos.com/fa-18-korea) |
