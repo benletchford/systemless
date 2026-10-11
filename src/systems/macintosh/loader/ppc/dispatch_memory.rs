@@ -766,6 +766,16 @@ pub(super) fn dispatch_memory_import(
             }
             Some(PpcImportAction::Return(free))
         }
+        PpcImportDispatcherTarget::TempTopMem => {
+            // Inside Macintosh VI (1991), p. 28-37: top of addressable RAM,
+            // not the free temporary-memory size or application heap limit.
+            // The runner projects the machine's RAM boundary into MemTop.
+            let top = memory
+                .read_u32_be(crate::memory::globals::addr::MEM_TOP)
+                .filter(|top| *top != 0)
+                .unwrap_or(toolbox_startup.physical_ram_size);
+            Some(PpcImportAction::Return(top))
+        }
         PpcImportDispatcherTarget::TempMaxMem => {
             // Temporary storage uses the process-native handle allocator.
             // Its query includes master-pointer overhead and leaves state intact.
