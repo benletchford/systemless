@@ -1986,6 +1986,43 @@ fn iu_comp_string_uses_primary_mac_roman_ordering() {
 }
 
 #[test]
+fn upper_string_respects_diac_sensitivity_and_mac_roman_casing() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"UpperString")).unwrap();
+    let str_addr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(str_addr, vec![0; 64]);
+
+    // Test diacSens = false (gpr[4] = 0): strips marks -> "CAFE"
+    write_ppc_pstring(&mut loaded.memory, str_addr, b"caf\x8e");
+    loaded.cpu.gpr[3] = str_addr;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::UpperString,
+        ),
+    );
+    assert_eq!(
+        ppc_read_pstring_bytes(&mut loaded.memory, str_addr),
+        Some(b"CAFE".to_vec())
+    );
+
+    // Test diacSens = true (gpr[4] = 1): preserves marks -> "CAF\x83" ('É')
+    write_ppc_pstring(&mut loaded.memory, str_addr, b"caf\x8e");
+    loaded.cpu.gpr[3] = str_addr;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::UpperString,
+        ),
+    );
+    assert_eq!(
+        ppc_read_pstring_bytes(&mut loaded.memory, str_addr),
+        Some(b"CAF\x83".to_vec())
+    );
+}
+
+#[test]
 fn ppc_nminstall_and_nmremove_validate_record() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NMInstall")).unwrap();
     let nm_rec = PPC_DATA_BASE + 0x1000;

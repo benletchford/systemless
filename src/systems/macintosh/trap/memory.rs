@@ -2881,17 +2881,15 @@ impl super::TrapDispatcher {
             // Inside Macintosh: Text (1993), pp. 5-64--5-65.
             (false, 0x54) => {
                 let ptr = cpu.read_reg(Register::A0);
-                let len = cpu.read_reg(Register::D0) & 0xFFFF;
+                let len = (cpu.read_reg(Register::D0) & 0xFFFF) as usize;
                 let strip_marks = match raw_trap_route(self.current_trap_word).os_routine_variant {
                     OsRoutineVariant::UpperStringPreserveMarks => false,
                     OsRoutineVariant::UpperStringStripMarks => true,
                     _ => unreachable!("UprString trap word must have a classified variant"),
                 };
-                for i in 0..len {
-                    let ch = bus.read_byte(ptr + i);
-                    let upper = mac_roman_to_upper(ch, strip_marks);
-                    bus.write_byte(ptr + i, upper);
-                }
+                let mut bytes = bus.read_bytes(ptr, len);
+                crate::text_utils::evaluate_upper_string(&mut bytes, !strip_marks);
+                bus.write_bytes(ptr, &bytes);
                 Ok(())
             }
 
@@ -2934,19 +2932,25 @@ impl super::TrapDispatcher {
             // resNotFound) per IM:VI 14-62 to 14-63.
             (false, 0x56) => {
                 let ptr = cpu.read_reg(Register::A0);
-                let len = cpu.read_reg(Register::D0) & 0xFFFF;
+                let len = (cpu.read_reg(Register::D0) & 0xFFFF) as usize;
                 let variant = raw_trap_route(self.current_trap_word).os_routine_variant;
-                for i in 0..len {
-                    let ch = bus.read_byte(ptr + i);
-                    let result = match variant {
-                        OsRoutineVariant::LowerText => mac_roman_to_lower(ch),
-                        OsRoutineVariant::StripText => mac_roman_strip_diacriticals(ch),
-                        OsRoutineVariant::UpperText => mac_roman_to_upper(ch, false),
-                        OsRoutineVariant::StripUpperText => mac_roman_to_upper(ch, true),
-                        _ => ch,
-                    };
-                    bus.write_byte(ptr + i, result);
-                }
+                let op = match variant {
+                    OsRoutineVariant::LowerText => crate::text_utils::TextTransformOperation::Lower,
+                    OsRoutineVariant::StripText => {
+                        crate::text_utils::TextTransformOperation::StripDiacritics
+                    }
+                    OsRoutineVariant::UpperText => crate::text_utils::TextTransformOperation::Upper,
+                    OsRoutineVariant::StripUpperText => {
+                        crate::text_utils::TextTransformOperation::StripUpper
+                    }
+                    _ => {
+                        cpu.write_reg(Register::D0, 0);
+                        return Some(Ok(()));
+                    }
+                };
+                let mut bytes = bus.read_bytes(ptr, len);
+                crate::text_utils::evaluate_transform_text(&mut bytes, op);
+                bus.write_bytes(ptr, &bytes);
                 cpu.write_reg(Register::D0, 0); // noErr
                 Ok(())
             }
@@ -4599,9 +4603,7 @@ impl super::TrapDispatcher {
     }
 }
 
-pub(crate) use crate::text_utils::{
-    mac_roman_strip_diacriticals, mac_roman_to_lower, mac_roman_to_upper,
-};
+pub(crate) use crate::text_utils::mac_roman_to_upper;
 
 #[cfg(test)]
 mod tests;

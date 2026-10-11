@@ -280,12 +280,12 @@ pub(crate) fn ppc_dispatch_system_compatibility(
         // Inside Macintosh Volume I, I-168.
         PpcSystemCompatibilityOperation::ObscureCursor => PpcImportAction::ReturnPreserve,
         PpcSystemCompatibilityOperation::UpperString => {
-            if let Some(bytes) = ppc_read_pstring_bytes(memory, cpu.gpr[3]) {
-                let upper = bytes
-                    .into_iter()
-                    .map(|byte| byte.to_ascii_uppercase())
-                    .collect::<Vec<_>>();
-                let _ = ppc_write_pstring_bytes(memory, cpu.gpr[3], &upper);
+            // PROCEDURE UpperString(VAR theString: Str255; diacSens: Boolean);
+            // Inside Macintosh: Text (1993), pp. 5-64--5-65.
+            if let Some(mut bytes) = ppc_read_pstring_bytes(memory, cpu.gpr[3]) {
+                let diac_sensitive = cpu.gpr[4] != 0;
+                crate::text_utils::evaluate_upper_string(&mut bytes, diac_sensitive);
+                let _ = ppc_write_pstring_bytes(memory, cpu.gpr[3], &bytes);
             }
             PpcImportAction::ReturnPreserve
         }
