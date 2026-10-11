@@ -320,3 +320,23 @@ fn hle_import_runner_reports_resource_autoload_state() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], 1);
 }
+
+#[test]
+fn hle_import_runner_lm_get_cur_map_reads_shared_signed_reference_without_error_changes() {
+    assert_eq!(dispatcher_target_for_import("InterfaceLib", "LMGetCurMap"),
+        PpcImportDispatcherTarget::CurResFile);
+    assert_eq!(dispatcher_target_for_import("CarbonLib", "LMGetCurMap"),
+        PpcImportDispatcherTarget::Unsupported);
+    for reference in [7i16, -1, i16::MIN] {
+        let pef = synthetic_pef_with_import(b"LMGetCurMap");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.set_current_resource_refnum(reference);
+        loaded.set_test_resource_error(-192);
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], reference as i32 as u32);
+        assert_eq!(*loaded.process_file_system.current_resource_file, reference);
+        assert_eq!(loaded.test_resource_error(), -192);
+    }
+}
