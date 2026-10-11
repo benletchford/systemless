@@ -1,0 +1,70 @@
+{
+  "pairs": [
+    {
+      "mode": "mono",
+      "scale": 0.75
+    },
+    {
+      "mode": "mono",
+      "scale": 1
+    },
+    {
+      "mode": "mono",
+      "scale": 1.5
+    },
+    {
+      "mode": "mono",
+      "scale": 2
+    },
+    {
+      "mode": "colour",
+      "scale": 0.75
+    },
+    {
+      "mode": "colour",
+      "scale": 1
+    },
+    {
+      "mode": "colour",
+      "scale": 1.5
+    },
+    {
+      "mode": "colour",
+      "scale": 2
+    },
+    {
+      "mode": "ppc8",
+      "scale": 0.75
+    },
+    {
+      "mode": "ppc8",
+      "scale": 1
+    },
+    {
+      "mode": "ppc8",
+      "scale": 1.5
+    },
+    {
+      "mode": "ppc8",
+      "scale": 2
+    },
+    {
+      "mode": "ppc16",
+      "scale": 0.75
+    },
+    {
+      "mode": "ppc16",
+      "scale": 1
+    },
+    {
+      "mode": "ppc16",
+      "scale": 1.5
+    },
+    {
+      "mode": "ppc16",
+      "scale": 2
+    }
+  ],
+  "partial": false,
+  "scope": "Exact RGBA equality of guest and shared-compositor selected/resumed field crops. Does not establish original font appearance, host activation or performance."
+}
