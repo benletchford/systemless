@@ -5115,7 +5115,7 @@ fn ppc_modal_dialog(
     };
     *current_gworld = dialog;
     *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
-    let event = match event {
+    let mut event = match event {
         // The filter has seen this event and declined it.
         Some(event) => event,
         None => {
@@ -5137,6 +5137,37 @@ fn ppc_modal_dialog(
             event
         }
     };
+    // HIG (1992), p. 205; Toolbox Essentials (1992), pp. 6-79--6-80:
+    // standard dialog buttons track a press until release, and releasing
+    // outside the original item cancels it. Retain the original mouseDown
+    // while this synchronous import owns tracking.
+    if let Some(mouse_down) = event.as_ref().filter(|event| event.what == 1) {
+        if let Some(hit) = ppc_dialog_item_at_global_point(
+            memory, controls, &items, bounds, mouse_down.where_v, mouse_down.where_h,
+        ) {
+            if items.get(usize::from(hit).saturating_sub(1)).is_some_and(|item| {
+                matches!(item.kind(), crate::dialog_manager::DialogItemKind::Button
+                    | crate::dialog_manager::DialogItemKind::Checkbox
+                    | crate::dialog_manager::DialogItemKind::RadioButton)
+            }) {
+                let release_index = event_queue.iter().position(|event| event.what == 2);
+                if release_index.is_none() && input.mouse_button {
+                    event_queue.push_front(event.take().unwrap());
+                    return Done(PpcImportAction::Yield(u64::MAX));
+                }
+                let release = release_index.and_then(|index| event_queue.remove(index));
+                let (vertical, horizontal) = release.as_ref()
+                    .map(|event| (event.where_v, event.where_h))
+                    .unwrap_or((input.mouse_v, input.mouse_h));
+                let released_item = ppc_dialog_item_at_global_point(
+                    memory, controls, &items, bounds, vertical, horizontal,
+                );
+                if released_item != Some(hit) {
+                    event = None;
+                }
+            }
+        }
+    }
     // ModalDialog owns idle processing while it retains the caller.
     // Toolbox Essentials (1992), pp. 6-79--6-85; Text (1993), p. 2-84.
     if event.is_none() && filter_proc == 0 {

@@ -6187,6 +6187,33 @@ mod desktop {
                         current.guest_id == dialog.guest_id && current.edit_field == Some(9)
                     })
                 }));
+                // HIG (1992), p. 205: a held button tracks the pointer;
+                // releasing outside cancels the action.
+                let cancel = dialog.items.iter().find(|item| item.kind == DialogItemKind::Button && item.text == "Cancel").unwrap();
+                let point = ((cancel.bounds.0 + cancel.bounds.2) / 2,
+                    (cancel.bounds.1 + cancel.bounds.3) / 2);
+                session.deliver_input(MacintoshInput::MouseDown { vertical: point.0, horizontal: point.1 });
+                settle(&mut session);
+                assert!(session.runner_mut().dialog_snapshot().iter().any(|current| {
+                    current.guest_id == dialog.guest_id && current.generation == dialog.generation && current.visible
+                }), "modal Cancel fired before release: PPC={powerpc}, depth={depth:?}");
+                let outside = (cancel.bounds.0 - 10, cancel.bounds.1 - 10);
+                session.deliver_input(MacintoshInput::MouseMove { vertical: outside.0, horizontal: outside.1 });
+                settle(&mut session);
+                session.deliver_input(MacintoshInput::MouseUp { vertical: outside.0, horizontal: outside.1 });
+                settle(&mut session);
+                assert!(session.runner_mut().dialog_snapshot().iter().any(|current| {
+                    current.guest_id == dialog.guest_id && current.generation == dialog.generation && current.visible
+                }), "modal Cancel ignored outside release: PPC={powerpc}, depth={depth:?}");
+                session.deliver_input(MacintoshInput::MouseDown { vertical: point.0, horizontal: point.1 });
+                settle(&mut session);
+                session.deliver_input(MacintoshInput::MouseUp { vertical: point.0, horizontal: point.1 });
+                assert!((0..100).any(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    !session.runner_mut().dialog_snapshot().iter().any(|current| {
+                        current.guest_id == dialog.guest_id && current.generation == dialog.generation && current.visible
+                    })
+                }), "modal Cancel failed after inside release: PPC={powerpc}, depth={depth:?}");
             }
         }
 
