@@ -88,6 +88,22 @@ overlapped compilation and has late worker intervals, so this is behavioral
 qualification, not a controlled smoothness result or native presentation FPS.
 Physical interaction, device audio continuity and restart persistence remain open.
 
+Elapsed audio pacing (2026-10-12): mixing 367 frames on every 16 ms worker
+cycle overproduced the 22,050 Hz source stream; slower cycles underproduced it.
+The worker now converts elapsed host time to samples with fractional carry,
+priming one nominal interval. Catch-up is bounded to 100 ms with excess elapsed
+time discarded rather than queued as stale debt after suspension. Mixing remains
+in slices of at most 367 frames and shares the existing 10,000-instruction sound
+callback reserve and CPU deadline. Two rate/stall regressions pass, including
+exact one-minute totals at 16/20/33 ms cadences. All 148 ordinary desktop/headless
+tests pass (2.71s); cross-CPU notification workflows with captured backend audio
+pass (4.78s); three rapid document/modal/Standard File text regressions pass
+(18.42s). Reviewed original EV reaches flight through both GPUI dialog buttons
+and delivers all 14 actions with zero readiness delay at 2,800 publications
+(47.65s). No compiler launched by this task overlapped that capture. Its final
+120 production intervals average 17.21 ms, p95 30.69 ms, maximum 32.84 ms: late
+frames remain, and this is not device-audio continuity or native smoothness proof.
+
 Application captures release the shared worker update lock before scene rendering
 and scripted input, matching live polling. The previous if-let temporary retained
 the lock through Metal submission and could delay publication; those observation

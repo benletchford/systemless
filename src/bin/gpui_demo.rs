@@ -89,6 +89,10 @@ mod choices;
 mod activation;
 
 #[cfg(target_os = "macos")]
+#[path = "gpui_demo_audio_clock.rs"]
+mod audio_clock;
+
+#[cfg(target_os = "macos")]
 #[path = "gpui_demo_notification.rs"]
 mod notification;
 
@@ -647,6 +651,7 @@ mod desktop {
             let mut initial_tick = session.runner().guest_tick();
             let mut previous = epoch;
             let mut worker_cadence = super::cadence::Cadence::new(epoch, Duration::from_millis(16));
+            let mut audio_clock = super::audio_clock::AudioClock::new(epoch);
             let mut queued = std::collections::VecDeque::new();
             let mut text_commit_wait: Option<Instant> = None;
             let mut text_commit_rejection: Option<(u64, super::input::TextInputOwner)> = None;
@@ -979,12 +984,21 @@ mod desktop {
                 }
                 timing.checkpoint();
                 session.runner_mut().advance_notification_system_sounds();
-                session.runner_mut().mix_gui_audio_slice(367);
-                session.runner_mut().advance_notification_system_sounds();
-                if session.runner().has_pending_sound_work()
-                    && Instant::now() < cpu_deadline
-                {
-                    session.runner_mut().run_gui_pending_sound_work(10_000);
+                let mut audio_samples = audio_clock.samples(start);
+                let mut sound_budget = 10_000;
+                while audio_samples > 0 {
+                    // Keep refill boundaries short even after a late cycle,
+                    // retaining the existing per-cycle callback reserve.
+                    let chunk = audio_samples.min(367);
+                    session.runner_mut().mix_gui_audio_slice(chunk);
+                    audio_samples -= chunk;
+                    session.runner_mut().advance_notification_system_sounds();
+                    if sound_budget > 0 && session.runner().has_pending_sound_work()
+                        && Instant::now() < cpu_deadline
+                    {
+                        let (steps, _) = session.runner_mut().run_gui_pending_sound_work(sound_budget);
+                        sound_budget = sound_budget.saturating_sub(steps);
+                    }
                 }
                 session.runner_mut().finish_gui_frame();
                 clipboard.observe(&session);
