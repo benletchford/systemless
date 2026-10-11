@@ -484,6 +484,7 @@ mod desktop {
     struct PreparedButtonImage {
         source: Arc<RenderImage>,
         clips: Vec<super::frames::Rect>,
+        control_backdrops: Vec<(super::frames::Rect, super::frames::Rect, Arc<[u8]>)>,
         background: [u8; 4],
         image: Arc<RenderImage>,
     }
@@ -1684,6 +1685,9 @@ mod desktop {
                 if let Some(popup) = self.guest_popup.as_ref() {
                     clips.extend(super::popup::owned_rects(popup.bounds));
                 }
+                let control_backdrops = super::frames::control_pieces(&self.controls, &self.menus, &self.windows, viewport)
+                    .into_iter().filter_map(|piece| self.controls[piece.control].background.as_ref()
+                        .map(|pixels| (piece.source, piece.clip, pixels.clone()))).collect::<Vec<_>>();
                 let color = cx.theme().background.to_rgb();
                 let background = [color.b, color.g, color.r, color.a].map(|channel| (channel * 255.).round() as u8);
                 let image = if clips.is_empty() {
@@ -1692,16 +1696,19 @@ mod desktop {
                 } else {
                     let current = self.prepared_buttons.as_ref().is_some_and(|prepared| {
                         Arc::ptr_eq(&prepared.source, &source) && prepared.clips == clips
-                            && prepared.background == background
+                            && prepared.background == background && prepared.control_backdrops == control_backdrops
                     });
                     if !current {
                         let mut pixels = source.as_bytes(0).expect("guest frame pixels").to_vec();
                         // Remove only pixels already owned by opaque GPUI button overlays
                         // before linear texture filtering can blend them beyond their edges.
                         super::frames::fill_texture_clips(&mut pixels, self.width, self.height, &clips, background);
+                        for (source, clip, backdrop) in &control_backdrops {
+                            super::frames::restore_texture_backdrop(&mut pixels, self.width, self.height, *source, *clip, backdrop);
+                        }
                         let buffer = image::RgbaImage::from_raw(self.width, self.height, pixels).unwrap();
                         let prepared = PreparedButtonImage {
-                            source, clips, background,
+                            source, clips, background, control_backdrops,
                             image: Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])),
                         };
                         if let Some(old) = self.prepared_buttons.replace(prepared) { cx.drop_image(old.image, None); }
@@ -2119,7 +2126,7 @@ mod desktop {
                         .top(guest_px((source.top - clip.top) as f32))
                         .w(guest_px(source.width() as f32))
                         .h(guest_px(source.height() as f32))
-                        .bg(cx.theme().background);
+                        .when(control.background.is_none(), |overlay| overlay.bg(cx.theme().background));
                     match control.proc_id {
                         proc_id if (1008..=1023).contains(&proc_id) => {
                             let Some(selected) = super::frames::popup_control_label(control, &self.menus) else {
@@ -16022,6 +16029,7 @@ mod desktop {
                         popup_box_bounds: None,
                         popup_font: None,
                         font_style: None,
+                        background: Some(vec![255; 11520].into()),
                     }];
                     demo.width = 800;
                     demo.height = 600;
@@ -16568,6 +16576,7 @@ mod desktop {
                         popup_box_bounds: None,
                         popup_font: None,
                         font_style: None,
+                        background: Some(vec![255; 11520].into()),
                     }];
                     demo.width = 800;
                     demo.height = 600;
@@ -16709,6 +16718,7 @@ mod desktop {
                         popup_box_bounds: None,
                         popup_font: None,
                         font_style: None,
+                        background: Some(vec![255; 11520].into()),
                     }];
                     demo.width = 800;
                     demo.height = 600;

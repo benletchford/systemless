@@ -397,6 +397,7 @@ fn hle_import_runner_creates_and_links_a_classic_control_record() {
             popup_title_width: None,
             active: true,
             font_style: None,
+            paint: crate::control_manager::paint::ControlPaintSlot::default(),
             is_root: false,
             parent: 0,
             sub_controls: Vec::new(),

@@ -1,0 +1,9 @@
+{
+  "src/systems/macintosh/control_manager/paint.rs": "0803ee56b1e3329ebd8a82b9a44d40cefe62f65dbce747e0f1378cf3901c019a",
+  "src/systems/macintosh/trap/control.rs": "04865d1933d730f6c195c9f705af66c12189640e282e233825f59c7100ff8c28",
+  "src/systems/macintosh/runner/mod.rs": "7a73baf8f3f5b6d4b82ea5215862a62d5dcd788a560268be932105cada29c195",
+  "src/bin/gpui_demo.rs": "74a6e8d9694eebeae2dbbff3fc4648fbb863bb30f2b22437646977bbaa6e1102",
+  "src/bin/gpui_demo_frames.rs": "facc80214b36ec6875fabe389ff9c402a7a941902600c2c7f7dee8c9ff93ccfc",
+  "target/debug/examples/gpui-menu-demo": "d45e2f71f5c5d8be6a01469b2018e2461afd7a5d593740dedf8e8c09c1880258",
+  "tests/toolbox-showcase/build/toolbox-showcase.sit": "97440125530b880fbb962bfcd36ff5943406a0cc34669ce1e711a2cbbcd8a76a"
+}

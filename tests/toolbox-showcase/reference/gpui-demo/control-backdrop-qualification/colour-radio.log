@@ -1,0 +1,28 @@
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1D0 bkLim=$0044A1D0 zcbFree=2400656 (2.3MB)
+[INIT] Set MainDevice=$00226B78, TheGDevice=$00226B78 (ptr=$00226B44)
+[INIT] GDevice chain: $8A4→$00226B78→$00226B44 gdPMap→$00226B40→$00226B0C
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FADDA randSeed_addr=$003FAD5C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=816 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$00226BD4 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$002274D0 bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$002274D0 pixmap=$002059EC bounds=(50,40,420,600) goAway=true
+guest control font: id=2260320 proc=1 style=None
+guest control font: id=2260648 proc=1 style=None
+guest control font: id=2260976 proc=16 style=None
+guest control font: id=2261304 proc=2 style=Some(ControlFontStyle { flags: 7, font: 3, size: 18, style: 1, mode: 0, justification: 0, foreground: [0, 0, 0], background: [0, 0, 0] })
+guest control font: id=2261632 proc=2 style=Some(ControlFontStyle { flags: 7, font: 3, size: 18, style: 1, mode: 0, justification: 0, foreground: [0, 0, 0], background: [0, 0, 0] })
+guest control font: id=2261960 proc=2 style=Some(ControlFontStyle { flags: 7, font: 3, size: 18, style: 1, mode: 0, justification: 0, foreground: [0, 0, 0], background: [0, 0, 0] })
+guest control font: id=2262288 proc=2 style=None
+guest control font: id=2262616 proc=2 style=None
+guest control font: id=2262944 proc=2 style=None
+guest control font: id=2263272 proc=0 style=None
+guest control font: id=2263600 proc=0 style=None
+guest control font: id=2263928 proc=0 style=None
+saved guest frame to /tmp/gpui-control-backdrop-captures/colour-radio.guest.png
+saved composed GPUI capture to /tmp/gpui-control-backdrop-captures/colour-radio.png

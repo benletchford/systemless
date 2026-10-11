@@ -100,6 +100,17 @@ fn appearance_control_font_overrides_change_classic_ink_and_restore_default() {
                 }));
             clear_1bpp_screen(&mut bus, base, rows, 342);
             disp.draw_control(&mut cpu, &mut bus, pointer);
+            let (generation, paint) = disp.control_manager.with_ref(|manager| {
+                let record = manager.iter().find(|record| record.pointer == pointer).unwrap();
+                (record.generation, record.paint.clone())
+            });
+            let (origin_top, origin_left, _, _) = TrapDispatcher::dialog_screen_bounds(&bus, window);
+            let global = (bounds.0 + origin_top, bounds.1 + origin_left,
+                bounds.2 + origin_top, bounds.3 + origin_left);
+            let (identity, painted) = disp.capture_standard_control_pixels(&bus, window, generation, global).unwrap();
+            let backdrop = paint.backdrop(identity, &painted).expect("completed guest draw must retain its backdrop");
+            assert!(backdrop.iter().all(|byte| *byte == 255),
+                "control draw must retain the original white background without bitmap ink");
             captures.push((0..rows * 342).map(|offset| bus.read_byte(base + offset))
                 .collect::<Vec<_>>());
             assert_eq!((bus.read_word(pointer + 8) as i16, bus.read_word(pointer + 10) as i16,
