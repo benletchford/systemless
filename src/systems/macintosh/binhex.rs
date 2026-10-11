@@ -245,10 +245,13 @@ fn is_binhex_return(byte: u8) -> bool {
 }
 
 #[cfg(test)]
+pub(crate) use tests::make_binhex as make_test_binhex;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    fn make_binhex(
+    pub(crate) fn make_binhex(
         name: &str,
         file_type: [u8; 4],
         creator: [u8; 4],
