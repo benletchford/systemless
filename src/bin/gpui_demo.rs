@@ -93,6 +93,9 @@ mod desktop {
         capture_popup_controls: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_popup_controls_selected: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_standard_file_save: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -1892,10 +1895,37 @@ mod desktop {
         TextEditSelected,
         TextEditEdited,
         PopupControls,
+        PopupControlsSelected,
         StandardFileSave,
         StandardFileSaveComposed,
         StandardFileOpenComposed,
         StandardFileSaveEditedComposed,
+    }
+
+    #[cfg(feature = "gpui-demo-test")]
+    fn select_showcase_resource_popup_long(session: &mut MacintoshSession) {
+        let runner = session.runner_mut();
+        let (window_top, window_left, _, _) = runner.window_bounds();
+        let (vertical, horizontal) = (window_top + 112, window_left + 280);
+        runner.set_mouse_position(vertical, horizontal);
+        runner.push_mouse_down(vertical, horizontal);
+        for _ in 0..20 {
+            runner.run_steps(50_000, None);
+        }
+        runner.set_mouse_position(window_top + 146, horizontal);
+        for _ in 0..20 {
+            runner.run_steps(50_000, None);
+        }
+        runner.push_mouse_up(window_top + 146, horizontal);
+        assert!(
+            (0..300).any(|_| {
+                runner.run_steps(50_000, None);
+                runner.control_snapshot().iter().any(|control| {
+                    control.visible && control.popup_menu_id == Some(143) && control.value == 4
+                })
+            }),
+            "guest should select the popup's long item"
+        );
     }
 
     #[cfg(feature = "gpui-demo-test")]
@@ -1920,7 +1950,10 @@ mod desktop {
             capture,
             CaptureCase::TextEdit | CaptureCase::TextEditSelected | CaptureCase::TextEditEdited
         );
-        let popup_page = matches!(capture, CaptureCase::PopupControls);
+        let popup_page = matches!(
+            capture,
+            CaptureCase::PopupControls | CaptureCase::PopupControlsSelected
+        );
         let standard_file_save = matches!(
             capture,
             CaptureCase::StandardFileSave
@@ -2205,6 +2238,20 @@ mod desktop {
                 .list_manager_snapshot()
                 .iter()
                 .any(|list| list.guest_id == list_id && list.selected.contains(&(7, 0))));
+        }
+        if matches!(capture, CaptureCase::PopupControlsSelected) {
+            select_showcase_resource_popup_long(&mut session);
+            let controls = session.runner_mut().control_snapshot();
+            let menus = session.runner_mut().guest_menu_snapshot();
+            let control = controls
+                .iter()
+                .find(|control| control.visible && control.popup_menu_id == Some(143))
+                .expect("resource-backed popup should remain visible");
+            assert_eq!(control.value, 4);
+            assert_eq!(
+                super::frames::popup_control_label(control, &menus),
+                Some("Long-range Expedition Loadout")
+            );
         }
         let mut held_drag = None;
         if controls_dragged || controls_held {
@@ -2512,6 +2559,17 @@ mod desktop {
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_popup_controls_selected.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::PopupControlsSelected,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_standard_file_save.as_ref() {
             capture_fixture_screen(
                 &args.game,
@@ -2656,6 +2714,7 @@ mod desktop {
                         capture_text_edit_selected: None,
                         capture_text_edit_edited: None,
                         capture_popup_controls: None,
+                        capture_popup_controls_selected: None,
                         capture_standard_file_save: None,
                         capture_standard_file_save_composed: None,
                         capture_standard_file_open_composed: None,
@@ -3011,6 +3070,21 @@ mod desktop {
                     assert_eq!(
                         super::super::frames::popup_control_label(control, &menus),
                         Some(menu.items[0].text.as_str()),
+                    );
+                }
+                #[cfg(feature = "gpui-demo-test")]
+                {
+                    super::select_showcase_resource_popup_long(&mut session);
+                    let selected = session.runner_mut().control_snapshot();
+                    let menus = session.runner_mut().guest_menu_snapshot();
+                    let control = selected
+                        .iter()
+                        .find(|control| control.visible && control.popup_menu_id == Some(143))
+                        .expect("selected resource popup should remain visible");
+                    assert_eq!(control.value, 4);
+                    assert_eq!(
+                        super::super::frames::popup_control_label(control, &menus),
+                        Some("Long-range Expedition Loadout"),
                     );
                 }
             }

@@ -97,8 +97,15 @@ programmatic standard popups. `--capture-popup-controls` saves the composed
 closed state, reviewed on [68K](tests/toolbox-showcase/reference/gpui-demo/18-popup-68k.png)
 and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/18-popup-ppc.png).
 The guest owns popup selection, disabled items, menu tracking, and return values;
-the open dropdown retains its guest pixels. Dynamic selection, host keyboard
-operation, and composed open-state captures still need qualification.
+the open dropdown retains its guest pixels. Host keyboard operation, disabled
+item cancellation, and composed open-state captures still need qualification
+through the GPUI frontend.
+`--capture-popup-controls-selected` makes a guest pointer selection of the
+long resource-menu item and captures the repainted GPUI closed control on
+[68K](tests/toolbox-showcase/reference/gpui-demo/18-popup-selected-68k.png)
+and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/18-popup-selected-ppc.png).
+The focused test also checks the selected ControlRecord value and live menu
+label on monochrome 68K, colour 68K, and PowerPC.
 
 The dialog overlay is limited to standard `dBoxProc` windows with button,
 static-text, checkbox, radio, and edit-text items. Editable fields retain
