@@ -1254,3 +1254,36 @@ unselected radio states across enabled, disabled and re-enabled transitions.
 All seven `themed_` interaction regressions pass, including dialog pointer
 forwarding, window dragging, lists and standard file actions. These tests do
 not qualify native screen-reader dispatch or complete keyboard navigation.
+
+
+### Button input follow-up
+
+Document and dialog buttons use a shared Systemless presentation built on Kit's
+base Button. Semantic focus is available only for enabled controls in active
+owners. Pointer events remain available in every state so the guest can activate
+windows and apply its own disabled-control rules. Kit's styled Button disabled
+property could not provide that separation: an initial regression exposed its
+pointer suppression, and that approach was removed.
+
+Keyboard click callbacks and explicit accessibility Click actions queue the
+existing identity-validated guest activation commands. Document pressed state
+follows the guest's inButton highlight; dialog pressed and default state follow
+the live dialog snapshot. The shared accessibility wrapper supplies disabled
+state while preserving button semantics. Full keyboard traversal, native
+screen-reader dispatch and broader visual qualification remain open.
+
+Document and dialog interaction tests cover inactive owners, disabled controls,
+and reactivation, requiring exactly one guest press and release and no duplicate
+semantic command for each pointer click.
+
+
+The button follow-up passes eight themed interaction tests and the production
+GPUI example check. Fresh composed modal-dialog and document-controls captures
+were reviewed in monochrome 68K, colour 68K and PPC at the default capture scale:
+button labels fit and default/non-default presentation remains distinct. This
+is six initial-state captures, not qualification of all scales, themes or held
+states. The monochrome modal capture contains a black guest background region
+behind the dialog. The paired raw guest framebuffer contains the same black
+region, so it is not introduced by GPUI button composition. Guest drawing and
+native monochrome equivalence still need investigation before claiming complete
+visual readiness.

@@ -1540,17 +1540,29 @@ mod desktop {
                         }
                         0 => {
                             overlay = overlay.child(
-                                Button::new(format!(
-                                    "guest-control-button-{}-{}",
-                                    control.guest_id, control.generation
-                                ))
-                                    .label(control.title.clone())
-                                    .small()
-                                    .compact()
-                                    .tab_stop(false)
-                                    .disabled(!control.enabled)
+                                super::a11y::AccessibleComponent::new(super::choices::guest_button(
+                                    format!("guest-control-button-{}-{}", control.guest_id, control.generation),
+                                    control.title.clone(), control.enabled, semantic_enabled,
+                                    semantic_enabled && control.hilite == 10, false, scene_scale, cx,
+                                )
                                     .w_full()
-                                    .h_full(),
+                                    .h_full()
+                                    .on_click({
+                                        let sender = self.commands.clone();
+                                        let (id, generation) = (control.guest_id, control.generation);
+                                        move |event, _, _| {
+                                            if matches!(event, ClickEvent::Keyboard(_)) {
+                                                let _ = sender.send(Command::ActivateControl(id, generation));
+                                            }
+                                        }
+                                    })
+                                    .when(semantic_enabled, |button| {
+                                        let sender = self.commands.clone();
+                                        let (id, generation) = (control.guest_id, control.generation);
+                                        button.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
+                                            let _ = sender.send(Command::ActivateControl(id, generation));
+                                        })
+                                    }), !semantic_enabled),
                             );
                         }
                         1 => {
@@ -1751,19 +1763,12 @@ mod desktop {
                         .bg(cx.theme().background);
                     overlay = match item.kind {
                         DialogItemKind::Button => overlay.child(
-                            Button::new(format!(
-                                "guest-dialog-button-{}-{}-{}",
-                                dialog.guest_id, dialog.generation, item.number
-                            ))
-                            // HIG (1992), p. 205: distinguish the guest's default
-                            // action visually; Return still follows guest event handling.
-                            .when(dialog.active && item.enabled && dialog.default_item == Some(item.number), |button| button.primary())
-                            .selected(dialog.active && item.enabled && item.pressed)
-                            .label(item.text.clone())
-                            .small()
-                            .compact()
-                            .tab_stop(false)
-                            .disabled(!item.enabled)
+                            super::a11y::AccessibleComponent::new(super::choices::guest_button(
+                                format!("guest-dialog-button-{}-{}-{}", dialog.guest_id, dialog.generation, item.number),
+                                item.text.clone(), item.enabled, dialog.active,
+                                dialog.active && item.enabled && item.pressed,
+                                dialog.active && item.enabled && dialog.default_item == Some(item.number), scene_scale, cx,
+                            )
                             .absolute()
                             .left(guest_px((item_rect.left - source.left) as f32))
                             .top(guest_px((item_rect.top - source.top) as f32))
@@ -1778,7 +1783,15 @@ mod desktop {
                                         let _ = sender.send(Command::ActivateDialog(id, generation, number, identity));
                                     }
                                 }
-                            }),
+                            })
+                            .when(item.enabled && dialog.active, |button| {
+                                let sender = self.commands.clone();
+                                let (id, generation, number) = (dialog.guest_id, dialog.generation, item.number);
+                                let identity = item.control_identity;
+                                button.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
+                                    let _ = sender.send(Command::ActivateDialog(id, generation, number, identity));
+                                })
+                            }), !item.enabled || !dialog.active),
                         ),
                         DialogItemKind::StaticText => overlay
                             .text_size(guest_px(13.))
@@ -8128,6 +8141,29 @@ mod desktop {
                     .count(),
                 1
             );
+            for (active, enabled) in [(false, true), (true, false), (true, true)] {
+                cx.update_window(window.into(), |_, window, cx| {
+                    view.update(cx, |demo, cx| {
+                        demo.windows[0].window.active = active;
+                        demo.dialogs[0].active = active;
+                        demo.dialogs[0].items[0].enabled = enabled;
+                        cx.notify();
+                    });
+                    window.render_frame(cx);
+                    assert_eq!(window.find("guest-dialog-button-7-1-1").focused(), (active && enabled).then_some(false));
+                    window.click("guest-dialog-button-7-1-1", cx);
+                }).unwrap();
+                let commands: Vec<_> = receiver.try_iter().collect();
+                assert!(!commands.iter().any(|command| matches!(command,
+                    super::Command::ActivateControl(..) | super::Command::ActivateDialog(..))));
+                for down in [true, false] {
+                    assert_eq!(commands.iter().filter(|command| match command {
+                        super::Command::Input(MacintoshInput::MouseDown { .. }) => down,
+                        super::Command::Input(MacintoshInput::MouseUp { .. }) => !down,
+                        _ => false,
+                    }).count(), 1, "guest must receive exactly one press/release in every state");
+                }
+            }
         }
 
         #[cfg(feature = "gpui-demo-test")]
@@ -8536,6 +8572,131 @@ mod desktop {
                     horizontal: 316
                 }
             )));
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn themed_document_button_forwards_one_guest_press_and_release(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            use gpui_kit::{test::TestWindowExt, AppContext, Bounds, WindowBounds, WindowOptions};
+            use systemless::runner::{ControlSnapshot, WindowFrameSnapshot, WindowSnapshot};
+
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            cx.update(gpui_kit::init);
+            let (window, view) = cx.update(|cx| {
+                gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                            None,
+                            gpui_kit::size(gpui_kit::px(900.), gpui_kit::px(740.)),
+                            cx,
+                        ))),
+                        ..Default::default()
+                    },
+                    cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(sender, updates, cx)),
+                )
+                .unwrap()
+            });
+            cx.update(|cx| {
+                view.update(cx, |demo, cx| {
+                    let bounds = (50, 40, 420, 600);
+                    demo.windows = vec![WindowFrameSnapshot {
+                        guest_id: 7,
+                        generation: 1,
+                        window: WindowSnapshot {
+                            title: "Controls".into(),
+                            bounds,
+                            structure_bounds: Some((31, 39, 422, 602)),
+                            visible_region: None,
+                            update_region: None,
+                            visible: true,
+                            active: true,
+                        },
+                        definition_id: Some(0),
+                        rectangular_regions: true,
+                        visible_content_rects: Some(vec![bounds]),
+                        close_box: false,
+                        grow_icon_drawn: false,
+                    }];
+                    demo.controls = vec![ControlSnapshot {
+                        guest_id: 22,
+                        generation: 1,
+                        owner_id: 7,
+                        proc_id: 0,
+                        local_bounds: (100, 100, 124, 220),
+                        bounds: (150, 140, 174, 260),
+                        owner_visible: true,
+                        visible: true,
+                        enabled: true,
+                        hilite: 0,
+                        value: 0,
+                        minimum: 0,
+                        maximum: 1,
+                        title: "Button".into(),
+                        popup_menu_id: None,
+                        popup_title_width: None,
+                        popup_font: None,
+                    }];
+                    demo.width = 800;
+                    demo.height = 600;
+                    demo.image = Some(std::sync::Arc::new(gpui_kit::RenderImage::new(vec![
+                        image::Frame::new(image::RgbaImage::new(800, 600)),
+                    ])));
+
+                    cx.notify();
+                });
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.click("guest-control-button-22-1", cx);
+            })
+            .unwrap();
+            let inputs: Vec<_> = receiver
+                .try_iter()
+                .filter_map(|command| match command {
+                    super::Command::Input(input) => Some(input),
+                    super::Command::ActivateControl(..) | super::Command::ActivateDialog(..) => panic!("pointer click duplicated as semantic activation"),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                inputs
+                    .iter()
+                    .filter(|input| matches!(input, MacintoshInput::MouseDown { .. }))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                inputs
+                    .iter()
+                    .filter(|input| matches!(input, MacintoshInput::MouseUp { .. }))
+                    .count(),
+                1
+            );
+            for (active, enabled) in [(false, true), (true, false), (true, true)] {
+                cx.update_window(window.into(), |_, window, cx| {
+                    view.update(cx, |demo, cx| {
+                        demo.windows[0].window.active = active;
+                        demo.controls[0].enabled = enabled;
+                        cx.notify();
+                    });
+                    window.render_frame(cx);
+                    assert_eq!(window.find("guest-control-button-22-1").focused(), (active && enabled).then_some(false));
+                    window.click("guest-control-button-22-1", cx);
+                }).unwrap();
+                let commands: Vec<_> = receiver.try_iter().collect();
+                assert!(!commands.iter().any(|command| matches!(command,
+                    super::Command::ActivateControl(..) | super::Command::ActivateDialog(..))));
+                for down in [true, false] {
+                    assert_eq!(commands.iter().filter(|command| match command {
+                        super::Command::Input(MacintoshInput::MouseDown { .. }) => down,
+                        super::Command::Input(MacintoshInput::MouseUp { .. }) => !down,
+                        _ => false,
+                    }).count(), 1, "guest must receive exactly one press/release in every state");
+                }
+            }
         }
 
         #[cfg(feature = "gpui-demo-test")]
