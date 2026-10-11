@@ -2151,6 +2151,7 @@ fn track_control_popup_menu_samples_final_release_point() {
     bus.write_word(ctrl_ptr + 20, 900); // popupMenuProc stores MENU id in min
     bus.write_word(ctrl_ptr + 22, 0);
     disp.control_manager.set_proc_id(ctrl_ptr, 1009);
+    disp.control_manager.set_popup_title_width(ctrl_ptr, 52);
     bus.write_long(ctrl_ptr + 32, u32::MAX);
     disp.menus.push(Menu {
         id: 900,
@@ -2205,9 +2206,14 @@ fn track_control_popup_menu_samples_final_release_point() {
     let (dropdown_top, dropdown_left, dropdown_bottom, _) = dropdown_rect;
     assert_eq!(
         (dropdown_top, dropdown_left, dropdown_bottom),
-        (10, 20, 42),
+        (10, 72, 42),
         "popup tracking should align selected item 1 with the control box, \
              not open below the control bottom"
+    );
+    assert_eq!(
+        dropdown_rect.3 - dropdown_left,
+        disp.standard_menu_width(&bus, &disp.menus[0].items),
+        "fixed closed control width must not enlarge the open menu"
     );
     assert_eq!(bus.read_word(sp + 12), 0xBEEF);
 

@@ -2343,6 +2343,10 @@ mod desktop {
         }
         let opened = runner.guest_popup_snapshot().expect("open standard popup geometry");
         assert_eq!(opened.menu.id, 143);
+        assert_eq!(
+            opened.bounds.1, window_left + 190 + 60,
+            "popup must open at the selection box after its title"
+        );
         assert_eq!(opened.row_heights.len(), opened.menu.items.len());
         assert!(opened.row_heights.iter().all(|height| *height > 0));
         assert!(opened.bounds.0 <= vertical && vertical < opened.bounds.2);
