@@ -3766,7 +3766,7 @@ impl super::TrapDispatcher {
 
         let base = bus.read_bytes(base_ptr, base_size as usize);
         let substitution = bus.read_bytes(substitution_ptr, substitution_size as usize);
-        let script = self.scriptutil_font_script();
+        let script = crate::text_utils::font_id_to_script(self.tx_font as i16);
         let (substitutions, new_data) = crate::text_utils::evaluate_replace_text(
             &base,
             &substitution,
