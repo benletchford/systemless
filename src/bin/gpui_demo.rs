@@ -299,6 +299,15 @@ mod desktop {
         capture_styled_text_edit_ink: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_plain_text_edit_ink: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, default_value_t = 1, requires = "capture_plain_text_edit_ink")]
+        capture_plain_text_edit_face: u8,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, requires = "capture_plain_text_edit_ink")]
+        capture_plain_text_edit_inactive: bool,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_styled_text_edit_multiline: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -1506,7 +1515,11 @@ mod desktop {
             // the guest's own byte lookup, tracking and selection authoritative.
             let viewport = super::frames::Rect::from((0, 0,
                 self.height.min(i16::MAX as u32) as i16, self.width.min(i16::MAX as u32) as i16));
-            for piece in super::frames::text_edit_pieces(&self.text_edits, &self.dialogs, &self.controls, &self.windows, viewport) {
+            let mut pieces = super::frames::text_edit_pieces(&self.text_edits, &self.dialogs, &self.controls, &self.windows, viewport);
+            pieces.extend(super::frames::styled_text_edit_candidates(&self.text_edits, &self.dialogs,
+                &self.controls, &self.windows, viewport).into_iter().filter(|piece|
+                    self.styled_text_plans.get(piece.record).is_some_and(Option::is_some)));
+            for piece in pieces {
                 let record = &self.text_edits[piece.record];
                 let inside = i32::from(point.0) >= piece.clip.top && i32::from(point.0) < piece.clip.bottom
                     && i32::from(point.1) >= piece.clip.left && i32::from(point.1) < piece.clip.right;
@@ -6074,7 +6087,7 @@ mod desktop {
         records: &[TextEditSnapshot], native: &[u8], width: u32, height: u32,
     ) -> Vec<Option<super::text::StyledTextEditPaintPlan>> {
         records.iter().map(|record| {
-            if !record.styled { return None; }
+            if !record.styled && record.face == 0 { return None; }
             let background = systemless::runner::TextEditInkSnapshot {
                 pixel: if record.paint.as_ref()?.depth == 16 { 0x7fff } else { 0 },
                 rgb: [255, 255, 255], inverted_rgb: [0, 0, 0],
@@ -6096,14 +6109,16 @@ mod desktop {
             let paint = record.paint.as_ref()?.solid_caret.as_ref()?;
             let (owner, _) = record.caret_line()?;
             let width = paint.0.3.checked_sub(paint.0.1)?;
-            return (owner == index && record.guest_styled_caret_rect(index, width)?? == paint.0)
+            return (owner == index && record.guest_caret_rect(index, width)?? == paint.0)
                 .then(|| paint.clone());
         }
-        let rect = record.guest_styled_caret_rect(index, 1)??;
+        let rect = record.guest_caret_rect(index, 1)??;
         let (owner, offset) = record.caret_line()?;
         if owner != index { return None; }
         let insertion = record.line_starts.as_ref()?.get(index)?.checked_add(offset)?;
-        let run = record.style_runs.as_ref()?.iter().rposition(|run| run.start <= insertion)?;
+        let run = if record.styled {
+            record.style_runs.as_ref()?.iter().rposition(|run| run.start <= insertion)?
+        } else { 0 };
         Some((rect, record.paint.as_ref()?.style_ink.get(run)?.clone()))
     }
 
@@ -6456,6 +6471,101 @@ mod desktop {
         visual.capture_screenshot(window.into()).unwrap().save(output).unwrap();
         std::fs::write(output.with_extension("json"), serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
         eprintln!("saved GPUI styled ink capture to {}", output.display());
+    }
+
+    #[cfg(feature = "gpui-demo-test")]
+    fn capture_plain_text_edit_ink(game: &std::path::Path, output: &std::path::Path,
+        powerpc: bool, depth: Option<u16>, scale: f32, face: u8, inactive: bool) {
+        fn settle(session: &mut MacintoshSession) {
+            let start = session.runner().guest_tick();
+            for _ in 0..100 {
+                session.runner_mut().run_steps(10_000, None);
+                if session.runner().guest_tick().wrapping_sub(start) >= 2 { return; }
+            }
+        }
+        fn wait_for_menu(session: &mut MacintoshSession, id: i16, number: i16, checked: bool) {
+            assert!((0..300).any(|_| {
+                session.runner_mut().run_steps(100_000, None);
+                session.runner_mut().guest_menu_snapshot().menus.iter().any(|menu|
+                    menu.id == id && menu.items.iter().any(|item| item.number == number && item.checked == checked))
+            }), "guest menu readiness must be established");
+        }
+        assert!(face != 0 && face < 128);
+        assert!(scale.is_finite() && scale > 0.);
+        let mut session = MacintoshSession::new(true, if powerpc { Some(8) } else { depth });
+        session.runner_mut().set_prefer_powerpc_executables(powerpc);
+        if powerpc { session.runner_mut().set_powerpc_screen_depth(depth.unwrap_or(16)).unwrap(); }
+        let app = session.load_path(game).unwrap(); session.initialize(&app);
+        wait_for_menu(&mut session, 129, 1, true);
+        assert!(session.runner_mut().select_guest_menu_item(129, 7));
+        wait_for_menu(&mut session, 129, 7, true); settle(&mut session);
+        let original = session.runner_mut().text_edit_snapshot().records.into_iter()
+            .find(|record| !record.styled && record.drawing_intact).unwrap();
+        assert!(session.runner_mut().set_plain_text_edit_face_for_test(&original, face));
+        let reset = session.runner_mut().control_snapshot().into_iter()
+            .find(|control| control.visible && control.title == "Reset").unwrap();
+        let mut tracking = Some(super::activation::ControlActivation::begin(&mut session,
+            reset.guest_id, reset.generation).unwrap());
+        for _ in 0..20 {
+            settle(&mut session);
+            tracking = tracking.take().and_then(|activation| activation.advance(&mut session));
+            if tracking.is_none() { break; }
+        }
+        assert!(tracking.is_none()); settle(&mut session);
+        if inactive { session.request_foreground(false); }
+        let record = (0..300).find_map(|_| {
+            session.runner_mut().run_steps(10_000, None);
+            let settled = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
+            session.runner_mut().text_edit_snapshot().records.into_iter().find(|record|
+                settled && record.guest_id == original.guest_id && record.face == face
+                    && record.drawing_intact && (!inactive || !record.active))
+        }).expect("plain face paint must settle through guest update/suspend paths");
+        let mut frame = session.video_frame().unwrap();
+        let mut plans = qualify_styled_text_fields(std::slice::from_ref(&record),
+            &frame.pixels, frame.width, frame.height);
+        let plan = plans.remove(0).expect("whole native field recipe before replacement");
+        let evidence = serde_json::json!({ "case": "plain-face", "powerpc": powerpc,
+            "depth": session.runner().presented_screen_depth(), "face": record.face,
+            "font": record.font, "size": record.size, "scale": scale, "inactive": inactive,
+            "active": record.active, "selection": record.selection, "caret_visible": record.caret_visible,
+            "view": record.global_view_rect, "line_starts": record.line_starts,
+            "smooth_support": plan.smooth_raster_support(), "compositor": "shared Demo renderer",
+            "scope": "Actual plain TERec style, guest Reset/update/suspend, whole-field pixel qualification and shared offscreen compositor. No native Macintosh font oracle or physical host interaction." });
+        image::save_buffer(output.with_extension("guest.png"), &frame.pixels, frame.width,
+            frame.height, image::ColorType::Rgba8).unwrap();
+        let view = record.global_view_rect.unwrap();
+        for y in view.0..view.2 { for x in view.1..view.3 {
+            let at = ((y as u32 * frame.width + x as u32) * 4) as usize;
+            frame.pixels[at..at + 4].copy_from_slice(&[255; 4]);
+        } }
+        let windows = session.runner_mut().window_frame_snapshot();
+        let controls = session.runner_mut().control_snapshot();
+        let dialogs = session.runner_mut().dialog_snapshot();
+        assert!(!super::frames::styled_text_edit_candidates(std::slice::from_ref(&record),
+            &dialogs, &controls, &windows, super::frames::Rect::from((0, 0, frame.height as i16,
+                frame.width as i16))).is_empty());
+        let mut visual = HeadlessAppContext::with_platform(platform::current_platform(true).text_system(),
+            Arc::new(gpui_kit::assets::Assets), platform::current_headless_renderer);
+        visual.update(gpui_kit::init);
+        let (sender, _receiver) = mpsc::channel();
+        let window = visual.open_window(size(px(frame.width as f32 * scale), px(frame.height as f32 * scale)), |_, cx| {
+            cx.new(|cx| {
+                let mut demo = Demo::new(sender, Default::default(), cx);
+                demo.width = frame.width; demo.height = frame.height;
+                demo.menu_presented = session.runner().guest_menu_bar_presented();
+                demo.menu_height = session.runner().bus().read_word(MBAR_HEIGHT);
+                demo.menus = session.runner_mut().guest_menu_snapshot();
+                demo.windows = windows; demo.controls = controls; demo.dialogs = dialogs;
+                demo.text_edits = vec![record]; demo.styled_text_plans = vec![Some(plan)];
+                demo.image = Some(Arc::new(RenderImage::new(vec![image::Frame::new(
+                    image::RgbaImage::from_raw(frame.width, frame.height, gpui_pixels(frame.pixels)).unwrap())])));
+                demo
+            })
+        }).unwrap();
+        visual.run_until_parked();
+        visual.capture_screenshot(window.into()).unwrap().save(output).unwrap();
+        std::fs::write(output.with_extension("json"), serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+        eprintln!("saved GPUI plain face capture to {}", output.display());
     }
 
         #[cfg(feature = "gpui-demo-test")]
@@ -7560,6 +7670,13 @@ mod desktop {
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_plain_text_edit_ink.as_ref() {
+            capture_plain_text_edit_ink(&args.game, output, args.prefer_powerpc, args.screen_depth,
+                args.capture_scale.unwrap_or(1.), args.capture_plain_text_edit_face,
+                args.capture_plain_text_edit_inactive);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_ink.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
                 args.screen_depth, args.capture_scale.unwrap_or(1.), false, None, &[], "visible", false, false, &args.capture_styled_spacing, &args.capture_styled_halo, false);
@@ -8380,6 +8497,9 @@ mod desktop {
                         capture_text_alignment: None,
                         capture_text_aligned_inactive: false,
                         capture_styled_text_edit_ink: None,
+                        capture_plain_text_edit_ink: None,
+                        capture_plain_text_edit_face: 1,
+                        capture_plain_text_edit_inactive: false,
                         capture_styled_text_edit_multiline: None,
                         capture_styled_scroll: false,
                         capture_styled_navigation: false,
@@ -10718,6 +10838,61 @@ mod desktop {
                     "guest read/close must preserve restored forks and metadata");
             }
             eprintln!("PASS process-save phase={phase} powerpc={powerpc} depth={depth} pid={}", std::process::id());
+        }
+
+        #[test]
+        fn plain_face_text_edit_plans_match_guest_paint_across_cpu_modes() {
+            for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 7));
+                wait_for_menu(&mut session, 129, 7, true);
+                settle(&mut session);
+                for face in [1, 2, 4, 8, 16, 32, 64, 31] {
+                    let original = session.runner_mut().text_edit_snapshot().records.into_iter()
+                        .find(|record| !record.styled && record.drawing_intact).unwrap();
+                    assert!(session.runner_mut().set_plain_text_edit_face_for_test(&original, face));
+                    // Preparation changes the ABI record. Real guest Reset calls
+                    // TESetText/TESetSelect and redraws through TEUpdate.
+                    let reset = session.runner_mut().control_snapshot().into_iter()
+                        .find(|control| control.visible && control.title == "Reset").unwrap();
+                    let mut tracking = Some(super::super::activation::ControlActivation::begin(
+                        &mut session, reset.guest_id, reset.generation).unwrap());
+                    for _ in 0..20 {
+                        settle(&mut session);
+                        tracking = tracking.take().and_then(|activation| activation.advance(&mut session));
+                        if tracking.is_none() { break; }
+                    }
+                    assert!(tracking.is_none());
+                    settle(&mut session);
+                    let records = session.runner_mut().text_edit_snapshot().records;
+                    let index = records.iter().position(|record| record.guest_id == original.guest_id).unwrap();
+                    let record = &records[index];
+                    assert!(!record.styled); assert_eq!(record.face, face); assert!(record.drawing_intact);
+                    let frame = session.video_frame().unwrap();
+                    let plans = super::qualify_styled_text_fields(&records, &frame.pixels, frame.width, frame.height);
+                    let plan = plans[index].as_ref().unwrap_or_else(|| panic!(
+                        "plain face recipe must match actual guest paint: PPC={powerpc}, depth={depth}, face={face}, record={record:?}"));
+                    for scale in [0.75, 1., 1.5, 2.] {
+                        assert!(super::super::text::classic_styled_text_edit_field(plan.clone(), scale, (0., 0.)).is_some());
+                    }
+                    let windows = session.runner_mut().window_frame_snapshot();
+                    let candidates = super::super::frames::styled_text_edit_candidates(&records, &[], &[], &windows,
+                        super::super::frames::Rect::from((0, 0, frame.height as i16, frame.width as i16)));
+                    assert!(candidates.iter().any(|piece| piece.record == index));
+                    let mut changed = frame.pixels.clone();
+                    let view = record.global_view_rect.unwrap();
+                    let at = ((view.0 as u32 * frame.width + view.1 as u32) * 4) as usize;
+                    changed[at] ^= 1;
+                    assert!(super::qualify_styled_text_fields(&records, &changed, frame.width, frame.height)[index].is_none());
+                    eprintln!("PASS plain-face-plan powerpc={powerpc} depth={depth} face={face}");
+                }
+            }
         }
 
         #[test]

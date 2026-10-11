@@ -350,7 +350,7 @@ fn text_edit_pieces_for_kind(
             // coverage composition; retain their guest pixels until supported.
             if !matches!(record.text_mode, 0 | 1)
                 || !record.drawing_intact || record.owner_port != frame.guest_id
-                || record.styled != styled
+                || (record.styled || record.face != 0) != styled
                 || (!styled && (record.face != 0 || !matches!(record.justification, -1 | 0 | 1) || record.line_height <= 0
                     // Plain scaled substitutes retain their existing qualification guard.
                     || systemless::quickdraw::fonts::get_font_face_or_default(record.font, record.size).size

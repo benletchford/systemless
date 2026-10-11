@@ -866,11 +866,26 @@ impl TextEditSnapshot {
         Some(width)
     }
 
+    /// Drawing geometry shared by plain and multi-style TextEdit records.
+    pub fn guest_line_geometry(&self, index: usize) -> Option<TextEditLineGeometry> {
+        if self.styled { return self.guest_styled_line_geometry(index).map(|(geometry, _)| geometry); }
+        let starts = self.line_starts.as_ref()?;
+        let start = *starts.get(index)?;
+        let mut end = *starts.get(index + 1)?;
+        self.text.get(start..end)?;
+        while end > start && matches!(self.text[end - 1], b' ' | b'\r' | b'\n') { end -= 1; }
+        self.line_geometry(index, self.guest_plain_range_width(start..end)?)
+    }
+
+    fn guest_range_width(&self, range: Range<usize>) -> Option<i16> {
+        if self.styled { self.guest_styled_range_width(range) } else { self.guest_plain_range_width(range) }
+    }
+
     /// Active classic selection geometry, port-local and clipped to viewRect.
     /// Some(None) means no visible selection; None means unsupported/invalid
     /// geometry. Theme painting and inactive outline highlighting are separate.
-    pub fn guest_styled_selection_rect(&self, index: usize) -> Option<Option<(i16, i16, i16, i16)>> {
-        let (geometry, _) = self.guest_styled_line_geometry(index)?;
+    pub fn guest_selection_rect(&self, index: usize) -> Option<Option<(i16, i16, i16, i16)>> {
+        let geometry = self.guest_line_geometry(index)?;
         if !self.active || self.selection.0 == self.selection.1 { return Some(None); }
         let starts = self.line_starts.as_ref()?;
         let line_start = *starts.get(index)?;
@@ -881,8 +896,8 @@ impl TextEditSnapshot {
         let start = self.selection.0.min(self.selection.1).max(line_start);
         let end = self.selection.0.max(self.selection.1).min(line_end);
         if start >= end { return Some(None); }
-        let left_width = self.guest_styled_range_width(line_start..start)?;
-        let right_width = self.guest_styled_range_width(line_start..end)?;
+        let left_width = self.guest_range_width(line_start..start)?;
+        let right_width = self.guest_range_width(line_start..end)?;
         let (mut left, right, top) = match self.line_layout_policy {
             TextEditLineLayoutPolicy::CumulativeGuestMetrics =>
                 (geometry.left.checked_add(left_width)?, geometry.left.checked_add(right_width)?, geometry.top),
@@ -906,14 +921,14 @@ impl TextEditSnapshot {
     /// Visible caret geometry for the guest-owned line and blink phase.
     /// Classic uses its theme caret width; PPC's native painter uses one pixel.
     /// Ink/pen patterns and any guest pixels outside viewRect remain separate.
-    pub fn guest_styled_caret_rect(
+    pub fn guest_caret_rect(
         &self, index: usize, classic_width: i16,
     ) -> Option<Option<(i16, i16, i16, i16)>> {
-        let (geometry, _) = self.guest_styled_line_geometry(index)?;
+        let geometry = self.guest_line_geometry(index)?;
         let Some((owner, offset)) = self.caret_line() else { return Some(None); };
         if owner != index { return Some(None); }
         let start = *self.line_starts.as_ref()?.get(index)?;
-        let width = self.guest_styled_range_width(start..start.checked_add(offset)?)?;
+        let width = self.guest_range_width(start..start.checked_add(offset)?)?;
         let mut left = geometry.left.checked_add(width)?;
         if offset > 0 { left = left.saturating_sub(1); }
         let caret_width = match self.line_layout_policy {
@@ -924,6 +939,17 @@ impl TextEditSnapshot {
             geometry.top.saturating_add(geometry.height).min(self.view_rect.2),
             left.saturating_add(caret_width).min(self.view_rect.3));
         Some((rect.0 < rect.2 && rect.1 < rect.3).then_some(rect))
+    }
+
+    pub fn guest_styled_selection_rect(&self, index: usize) -> Option<Option<(i16, i16, i16, i16)>> {
+        if !self.styled { return None; }
+        self.guest_selection_rect(index)
+    }
+
+    pub fn guest_styled_caret_rect(&self, index: usize, classic_width: i16)
+        -> Option<Option<(i16, i16, i16, i16)>> {
+        if !self.styled { return None; }
+        self.guest_caret_rect(index, classic_width)
     }
 
     fn metrics_for_line(&self, index: usize) -> Option<(i16, i16)> {

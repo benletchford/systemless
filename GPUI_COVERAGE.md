@@ -1,5 +1,36 @@
 # GPUI Kit system-interface coverage
 
+### Qualified GPUI painting for plain TextEdit font faces (2026-10-12)
+
+Plain TERec fields with a nonzero face now enter the same whole-field paint-plan
+path as multi-style fields. Their truthful plain-record identity is retained;
+font/face/size, actual retained foreground, native range positions, line metrics,
+selection and caret geometry drive the recipe. Only an exact match against all
+native field pixels permits replacement. App-modified pixels and unsupported
+paint decline ownership. Pointer origin correction includes qualified plain-face
+pieces and still forwards operations through guest event/Toolbox paths.
+
+The final real Showcase regression passes all32 recipes: faces1/2/4/8/16/32/64/31
+across mono68k, colour68k, PPC8 and PPC16 (30.56s). Preparation writes the public
+TERec face through a test-only helper; the guest Reset control then calls its
+existing TESetText/TESetSelect/update paths. Each qualified plan constructs a
+GPUI field at four scales, has a visibility candidate, and rejects a changed
+native pixel. Construction is not composed-image qualification. Existing styled
+native-pixel recipes pass (2.13s), plain text-service geometry/editing passes
+(41.08s), active multiline interaction passes (46.91s), and all44 shared TextEdit
+plus435 classic dialog tests pass (3.59s/1.27s).
+
+A main-thread capture hook uses the shared Demo renderer for plain-face fields.
+The executable builds (12.00s), but the first composed capture exits1 during
+native renderer initialization with a hiservices connection error. The existing
+styled capture independently fails at the same step. Both save only guest PNGs;
+no composed PNG or result JSON exists. The plain guest image was inspected and
+shows the changed bold field and selection; it is not a GPUI visual result.
+Visual matrices, inactive/caret/editing face matrices, background/source/transfer
+recipes, font references and native gameplay qualification remain unfinished.
+No broad gate closes. Tests use a functional root-opt0 CI profile.
+The locked/offline default desktop check passes (37.06s).
+
 ### Plain TextEdit geometry and actual draw-pen agreement (2026-10-12)
 
 Shared plain-field widths now read canonical font, size and face and preserve

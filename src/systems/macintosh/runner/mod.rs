@@ -3627,6 +3627,25 @@ impl FixtureRunner {
     /// The expected record pins the owner and prior editing state; modal fields
     /// must enter their separate DialogSelect/Standard File paths.
     #[doc(hidden)]
+    /// Prepare a plain-field style fixture; redraw must still use guest Toolbox paths.
+    #[cfg(any(feature = "test-support", feature = "gpui-demo-test"))]
+    pub fn set_plain_text_edit_face_for_test(&mut self, expected: &TextEditSnapshot, face: u8) -> bool {
+        if !self.text_edit_snapshot().records.iter().any(|record| !record.styled
+            && (record.guest_id, record.generation, record.owner_port)
+                == (expected.guest_id, expected.generation, expected.owner_port)) { return false; }
+        // Inside Macintosh: Text, TERec.txFace, byte offset0x4C.
+        if let Some(app) = self.native.application_mut() {
+            let Some(pointer) = app.memory.read_u32_be(expected.guest_id) else { return false; };
+            let Some(address) = pointer.checked_add(0x4c) else { return false; };
+            app.memory.write_u8(address, face).is_some()
+        } else {
+            let pointer = self.bus.read_long(expected.guest_id);
+            if pointer == 0 || !self.bus.is_guest_address_mapped(pointer, 0x4d) { return false; }
+            self.bus.write_byte(pointer + 0x4c, face);
+            true
+        }
+    }
+
     pub fn select_text_edit_range(&mut self, expected: &TextEditSnapshot, range: std::ops::Range<usize>) -> bool {
         if range.start > range.end || range.end > expected.text.len() || range.end > i16::MAX as usize
             || self.is_ui_tracking_active() || self.standard_file_snapshot().is_some()

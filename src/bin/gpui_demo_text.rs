@@ -1800,7 +1800,7 @@ impl StyledTextEditPaintPlan {
         let mut ops = Vec::new();
         let mut selections = Vec::new();
         for index in 0..record.line_count {
-            let (geometry, _) = record.guest_styled_line_geometry(index)?;
+            let geometry = record.guest_line_geometry(index)?;
             if record.line_layout_policy == TextEditLineLayoutPolicy::CumulativeGuestMetrics
                 && (geometry.top.saturating_add(geometry.height) <= view.0 || geometry.top >= view.2) { continue; }
             let line = StyledTextEditLine::from_guest(record, index)?;
@@ -1853,7 +1853,7 @@ impl StyledTextEditPaintPlan {
 impl StyledTextEditLine {
     pub fn from_guest(record: &systemless::runner::TextEditSnapshot, index: usize) -> Option<Self> {
         use systemless::runner::TextEditLineLayoutPolicy;
-        if !record.styled { return None; }
+        if !record.styled { return Self::from_plain_guest(record, index); }
         let paint = record.paint.as_ref()?;
         if !paint.supports_zero_spacing_src_or() { return None; }
         let styles = record.style_runs.as_ref()?;
@@ -1880,6 +1880,34 @@ impl StyledTextEditLine {
         }
         let baseline = geometry.top.saturating_add(geometry.ascent);
         Some(Self { geometry, baseline, selection: record.guest_styled_selection_rect(index)?, runs })
+    }
+
+    fn from_plain_guest(record: &systemless::runner::TextEditSnapshot, index: usize) -> Option<Self> {
+        use systemless::runner::TextEditLineLayoutPolicy;
+        let paint = record.paint.as_ref()?;
+        if !paint.supports_zero_spacing_src_or() || paint.style_ink.len() != 1 { return None; }
+        let geometry = record.guest_line_geometry(index)?;
+        let starts = record.line_starts.as_ref()?;
+        let start = *starts.get(index)?;
+        let mut end = *starts.get(index + 1)?;
+        record.text.get(start..end)?;
+        while end > start && matches!(record.text[end - 1], b' ' | b'\r' | b'\n') { end -= 1; }
+        let positions = record.guest_plain_insertion_positions(start..end)?;
+        let measured_positions = positions.iter().map(|offset| geometry.left.saturating_add(*offset)).collect();
+        let positions = positions.into_iter().map(i32::from).collect();
+        let size = if record.size == 0 { 12 } else { record.size.max(1) };
+        let bytes = start..end;
+        let text = record.text.get(bytes.clone())?;
+        let glyphs = match record.line_layout_policy {
+            TextEditLineLayoutPolicy::CumulativeGuestMetrics =>
+                ClassicLine::classic_textedit_run(text, record.font, size, record.face, positions)?,
+            TextEditLineLayoutPolicy::PpcRunMetrics =>
+                ClassicLine::ppc_styled_run(text, record.font, size, record.face, positions)?,
+        };
+        Some(Self { baseline: geometry.top.saturating_add(geometry.ascent),
+            selection: record.guest_selection_rect(index)?,
+            runs: vec![StyledTextEditRun { bytes, left: geometry.left, measured_positions,
+                glyphs, ink: paint.style_ink[0].clone() }], geometry })
     }
 
     /// Apply classic pixel inversion after ordered run ink. Background ink
