@@ -1689,9 +1689,15 @@ then fails at frontend 45 / guest 44, PC zero, LR `01011330`, SP `07F6FE70`.
 Original call `0101132C` enters `01046BEC`, TOC slot `0048`, optional import 18,
 `DSpContext_GetMonitorFrequency`. Zero exhausted frames and zero assertions
 are not startup/gameplay qualification.
-[Defect #4636](https://github.com/benletchford/systemless/issues/4636) and
-[draft #4637](https://github.com/benletchford/systemless/pull/4637) track the
-next API fix; its tests and original replay are pending. A broad instruction
+[Monitor fix #4637](https://github.com/benletchford/systemless/pull/4637) and
+[handle-growth fix #4642](https://github.com/benletchford/systemless/pull/4642)
+are merged, each with all nine CI/CLA checks passing. The monitor regression
+suite passed 71 tests. Fresh clean combined native `2ad262dc` contains the
+reviewed monitor query and in-place handle-growth fix; the original PPC 4.1
+replay reaches frontend 348 / guest 347 with zero exhausted frames. Its inspected
+failure capture displays the original title screen, then the guest halts at PC
+zero / LR `010119DC`, SP `07F6FB50`. This is progress beyond the earlier 45-tick
+boundary, not gameplay qualification or a numerical speedup measurement. A broad instruction
 trace changed the execution path and was stopped; it is excluded from gameplay
 evidence. Rights, native gameplay, browser approval and public delivery remain
 held. Only a human may trigger a release.
@@ -1750,3 +1756,52 @@ cannot qualify, replace it with a distinct rights-qualified reserve and retain
 this identity finding. No new archive is hosted, no live count changes, and the
 812 intake slots and 1,000-distinct-game objective remain unchanged. This finding
 does not independently qualify the baseline entry's rights or runtime claims.
+
+
+## Re-Pete 2.2 original package and sequence playback
+
+Primary target 613; [intake #4647](https://github.com/benletchford/systemless/issues/4647).
+The [publisher](https://www.tex-edit.com/index.html#Re-Pete) links Classic 2.2,
+separately from its OS X edition. Its About Our Freeware section explicitly
+permits distribution with documentation intact and programs unchanged, while
+excluding beta reposts. This release archive qualifies under that conditional
+grant; a freeware label alone would not suffice. The complete resource fork,
+including embedded instructions, remains intact.
+
+The [publisher archive](https://www.tex-edit.com/software/re-pete2.2.sit.hqx) and
+[Gryphel preservation copy](https://www.gryphel.com/d/sw/games/repete/c/re-pete2.2.sit.hqx)
+are byte-identical: 73,613 bytes, SHA-256
+`8de6839796c93ba71a2a9f800a3e2d002f780f8e84356b717ef8c6e4e415add9`.
+MD5 `0868ad780f4c7b40c7b32b8f4711f7d8` matches the preservation receipt; its
+signature has not been independently verified. Independent `unar` extraction
+and production packing match the single application's two forks and Finder
+type, creator and flags. The data fork is empty; the resource fork is 71,628
+bytes. CODE 0/1/3 are present; there is no cfrg or native PPC executable. The
+intact production pack is 71,675 bytes. This edition is **68K only**; the OS X
+edition is not another classic game or architecture qualification.
+
+Selector `Re-Pete 2.2/Re-Pete`, explicit 68K/depth 8, immutable native
+`81788cd9974cb1de44b8d6c9c24bf2e36b7d4fd1`: ordinary Start Game and button 5
+input produce Score 0→1 in a repeated run with eight measured pixel assertions,
+336 frontend / 912 guest ticks and zero exhausted frames. A matching button 8
+probe remains at Score 0. These checks do not establish complete memory-game
+playability.
+
+A longer no-input diagnostic captures every frame for 300 ticks after menu
+selection: 424 total frontend / 1,002 guest ticks, zero exhausted frames. Control
+and sound traces show the first button-5 sequence highlight and clear both occur
+inside frontend tick 249. The original calls square-wave `freqDurationCmd` 40,
+duration 250 half-milliseconds, MIDI note 68; the adapter logs it as unhandled.
+The original then passes a false Boolean using `CLR.B -(SP)` to
+SndDisposeChannel. Its unused padding byte is 106, which the current word read
+mistakes for true; disposal also unconditionally releases the channel instead
+of draining it. The first 100-frame diagnostic ended before the highlight and
+must not be interpreted as proof that the original never called HiliteControl.
+[Compatibility defect #4649](https://github.com/benletchford/systemless/issues/4649)
+tracks note playback, Boolean decoding and scheduler-based draining disposal.
+The local repair is under test; no successful repaired-game outcome is claimed.
+
+Visible/audible sequence playback, further matching/error interactions, browser
+qualification, asset promotion, launch approval, human release and independent
+public replay remain pending. The archive is unhosted and there is no qualified
+live-count increment.

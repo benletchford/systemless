@@ -670,7 +670,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 610 | 798 | OTChess | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
 | 611 | 799 | Par Pyramid | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
 | 612 | 800 | Querkz | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
-| 613 | 801 | Re-Pete | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
+| 613 | 801 | Re-Pete | 2.2 CODE: 68K only; sequence/audio repair pending | P | [Publisher grant, exact original and runtime evidence](CATALOGUE-SOURCES.md#re-pete-22-original-package-and-sequence-playback) |
 | 614 | 802 | Sword Dream II 3D | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
 | 615 | 803 | Tanks of Terror | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
 | 616 | 804 | Ultris | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/u/) |
