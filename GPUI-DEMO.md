@@ -107,6 +107,15 @@ the guest promotes and activates its owner window. Use
 `--capture-windows-activated` to review the composed front-window change on
 [68K](tests/toolbox-showcase/reference/gpui-demo/22-windows-activated-68k.png)
 and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/22-windows-activated-ppc.png).
+`--capture-windows-grown` checks the guest's 25×25 growth and records the
+resized frame on [68K](tests/toolbox-showcase/reference/gpui-demo/23-windows-grown-68k.png)
+and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/23-windows-grown-ppc.png).
+`--capture-windows-promoted` closes the inspector, leaving the auxiliary window
+frontmost on [68K](tests/toolbox-showcase/reference/gpui-demo/24-windows-promoted-68k.png)
+and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/24-windows-promoted-ppc.png).
+`--capture-windows-main-promoted` closes both modeless windows and shows the
+main frame on [68K](tests/toolbox-showcase/reference/gpui-demo/25-windows-main-promoted-68k.png)
+and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/25-windows-main-promoted-ppc.png).
 The capture sends guest input directly; off-pane drag capture remains to be
 qualified in composed images. The GPUI interaction test also drags the newly
 activated title bar beyond the guest pane inside the host window, checks one
