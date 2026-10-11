@@ -5536,3 +5536,15 @@ PPC document and movable-title clipping both pass separately. Evidence and
 explicit limits are under `reference/gpui-demo/movable-dialog-title`.
 Composed images, scales, physical drag/input and independent native fidelity for
 this variant remain unqualified; all release gates remain open.
+
+### Movable title shared compositor checkpoint (2026-10-11)
+
+At production source 285cc101, four active movable-dialog captures through the
+actual guest and shared Demo succeed and were visually reviewed: mono68k/0.75,
+colour68k/1, PPC8/2 and actual PPC16/1.5. Smooth title and dialog text preserve
+guest placement, while application headings/custom drawing remain native.
+The isolated fixture changes only DLOG131 procID4 to5 before ordinary guest
+Toolbox creation. Manifests, paired guest/composed images, source/binary hashes
+and fixture patch provenance are in `reference/gpui-demo/movable-dialog-title-compositor`.
+Suspended states, guest drag/lifecycle, physical input and independent Macintosh
+fidelity for this variant remain open.
