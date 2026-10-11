@@ -242,6 +242,10 @@ mod desktop {
             value_parser = ["normal", "condensed", "extended", "both"])]
         capture_styled_spacing: String,
         #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, default_value = "normal",
+            value_parser = ["normal", "underlined-outline", "underlined-shadow", "underlined-both", "everything"])]
+        capture_styled_halo: String,
+        #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_styled_text_edit_selected: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
@@ -4419,7 +4423,7 @@ mod desktop {
     #[cfg(feature = "gpui-demo-test")]
     fn capture_styled_text_edit_ink(
         game: &std::path::Path, output: &std::path::Path,
-        prefer_powerpc: bool, depth: Option<u16>, scale: f32, selected: bool, caret_offset: Option<usize>, activation: &[bool], caret_state: &str, multiline: bool, spacing_style: &str,
+        prefer_powerpc: bool, depth: Option<u16>, scale: f32, selected: bool, caret_offset: Option<usize>, activation: &[bool], caret_state: &str, multiline: bool, spacing_style: &str, halo_style: &str,
     ) {
         use gpui_kit::{platform, HeadlessAppContext};
         let caret = caret_offset.is_some();
@@ -4465,6 +4469,41 @@ mod desktop {
                     settled && next.guest_id == before.guest_id && next.drawing_intact
                         && next.style_runs.as_ref() == Some(&expected))
             }).expect("guest Toolbox finishes spacing style change and repaint");
+            assert_eq!((record.generation, record.owner_port, record.selection, record.active),
+                (before.generation, before.owner_port, before.selection, before.active));
+            assert_eq!(record.text, before.text);
+            assert_eq!((record.dest_rect, record.view_rect), (before.dest_rect, before.view_rect));
+        }
+        let (halo_mask, halo_bits, character, mac_key) = match halo_style {
+            "normal" => (0, 0, 0, 0),
+            "underlined-outline" => (28, 12, b'o', 0x1f),
+            "underlined-shadow" => (28, 20, b's', 0x01),
+            "underlined-both" => (28, 28, b'h', 0x04),
+            "everything" => (31, 31, b'a', 0x00),
+            _ => panic!("unknown halo capture style"),
+        };
+        if halo_mask != 0 {
+            let before = record.clone();
+            let mut expected = before.style_runs.clone().unwrap();
+            for run in &mut expected { run.face = (run.face & !halo_mask) | halo_bits; }
+            session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x3a, character: 0 });
+            session.deliver_input(MacintoshInput::KeyDown { mac_key, character });
+            session.deliver_input(MacintoshInput::KeyUp { mac_key, character });
+            session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x3a, character: 0 });
+            record = (0..300).find_map(|_| {
+                session.runner_mut().run_steps(10_000, None);
+                let settled = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
+                session.runner_mut().text_edit_snapshot().records.into_iter().find(|next| {
+                    let mut styles = next.style_runs.clone().unwrap_or_default();
+                    if styles.len() != expected.len() { return false; }
+                    // Face effects may change guest line metrics. Preserve all
+                    // font/style intent while retaining newly measured metrics.
+                    for (style, original) in styles.iter_mut().zip(&expected) {
+                        style.line_height = original.line_height; style.ascent = original.ascent;
+                    }
+                    settled && next.guest_id == before.guest_id && next.drawing_intact && styles == expected
+                })
+            }).expect("guest Toolbox finishes underlined halo style change and repaint");
             assert_eq!((record.generation, record.owner_port, record.selection, record.active),
                 (before.generation, before.owner_port, before.selection, before.active));
             assert_eq!(record.text, before.text);
@@ -4581,6 +4620,7 @@ mod desktop {
             "caret_state": if caret { caret_state } else { "not-requested" },
             "insertion_offset": caret_offset, "multiline": multiline, "selection": record.selection,
             "spacing_style": spacing_style,
+            "halo_style": halo_style,
             "compositor": "shared Demo renderer",
             "active": record.active, "caret_visible": record.caret_visible,
             "drawing_intact": record.drawing_intact, "generation": record.generation,
@@ -5041,37 +5081,37 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_multiline.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[], "visible", true, &args.capture_styled_spacing);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[], "visible", true, &args.capture_styled_spacing, &args.capture_styled_halo);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_selected_suspended.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[false], "visible", false, &args.capture_styled_spacing);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[false], "visible", false, &args.capture_styled_spacing, &args.capture_styled_halo);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_selected_resumed.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[false, true], "visible", false, &args.capture_styled_spacing);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[false, true], "visible", false, &args.capture_styled_spacing, &args.capture_styled_halo);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_selected.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[], "visible", false, &args.capture_styled_spacing);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, None, &[], "visible", false, &args.capture_styled_spacing, &args.capture_styled_halo);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_caret.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), false, Some(args.capture_styled_caret_offset), &[], &args.capture_styled_caret_state, false, &args.capture_styled_spacing);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), false, Some(args.capture_styled_caret_offset), &[], &args.capture_styled_caret_state, false, &args.capture_styled_spacing, &args.capture_styled_halo);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_ink.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.), false, None, &[], "visible", false, &args.capture_styled_spacing);
+                args.screen_depth, args.capture_scale.unwrap_or(1.), false, None, &[], "visible", false, &args.capture_styled_spacing, &args.capture_styled_halo);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -5779,6 +5819,7 @@ mod desktop {
                         capture_styled_caret_offset: 26,
                         capture_styled_caret_state: "visible".into(),
                         capture_styled_spacing: "normal".into(),
+                        capture_styled_halo: "normal".into(),
                         capture_styled_text_edit_selected: None,
                         capture_styled_text_edit_selected_suspended: None,
                         capture_styled_text_edit_selected_resumed: None,

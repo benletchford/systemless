@@ -725,3 +725,12 @@ pixel allowance), plus exact hidden-caret equality on suspend. Run
 `check-gpui-styled-state-visibility.py DIRECTORY --report REPORT` to verify five
 updated-hash pixel corruptions are rejected even when restoration equality
 passes. These checks qualify state visibility, not antialiased font appearance.
+
+On Styled Text & Fonts, Option-O/S/H apply underline plus outline/shadow/both
+through guest TEGetStyle/TESetStyle, preserving unmasked face bits, font, size,
+colour, text and selection. Option-A requests all five basic effects. For
+manual shared-compositor probes, use `--capture-styled-halo` with
+`underlined-outline`, `underlined-shadow`, `underlined-both` or `everything`.
+The default `normal` performs no halo mutation. Guest line metrics may change
+with effects and are retained from the new snapshot. The styled matrix driver
+does not yet expose this option; full halo matrices remain unfinished.
