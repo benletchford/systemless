@@ -73,6 +73,72 @@ pub(crate) fn create_test_cwindow(
 }
 
 #[test]
+fn standard_window_title_descender_stays_inside_wdef_clip() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewCWindow")).unwrap();
+    loaded.set_ui_theme(UiThemeId::SystemlessDefault);
+    let scratch = PPC_DATA_BASE + 0x1400;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let bounds = (250, 330, 495, 575);
+    let window = create_test_cwindow(&mut loaded, scratch, bounds, 8, true, u32::MAX);
+    write_ppc_pstring(&mut loaded.memory, scratch + 16, b"p");
+    loaded.cpu.gpr[3] = window;
+    loaded.cpu.gpr[4] = scratch + 16;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowTitle),
+    );
+    loaded
+        .memory
+        .write_u8(window + PPC_CWINDOW_HILITED_OFFSET, 0)
+        .unwrap();
+    ppc_draw_standard_window_frame(&mut loaded.memory, &loaded.gworlds, window, 800, 600, true);
+    let front =
+        ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+            .unwrap();
+    let metrics = get_font_metrics(0, 12);
+    let width = ppc_text_bytes_advance_for_font(b"p", 0, 12);
+    let chrome = crate::window_manager::standard_window_chrome(
+        bounds,
+        20,
+        width,
+        metrics.ascent,
+        metrics.descent,
+        true,
+        false,
+        true,
+        true,
+        true,
+    );
+    let palette = ppc_ui_theme(&loaded.gworlds).provider().palette();
+    let background = ppc_physical_screen_color_pixel(
+        front,
+        ppc_theme_rgb(palette.frame_light),
+        &loaded.screen_clut,
+    )
+    .unwrap();
+    for x in chrome.title_h..chrome.title_h + width {
+        assert_eq!(
+            ppc_quickdraw_read_pixel(
+                &mut loaded.memory,
+                front,
+                (i32::from(x), i32::from(chrome.title_clip.2))
+            ),
+            Some(background),
+            "title ink escaped below the shared WDEF clip at x={x}"
+        );
+    }
+    assert!(
+        (chrome.title_clip.0..chrome.title_clip.2).any(|y| {
+            (chrome.title_h..chrome.title_h + width).any(|x| {
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, (i32::from(x), i32::from(y)))
+                    != Some(background)
+            })
+        }),
+        "clipping must leave the title visible"
+    );
+}
+
+#[test]
 fn window_visibility_recalculation_keeps_set_origin_coordinates() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SizeWindow")).unwrap();
     let scratch = PPC_DATA_BASE + 0x1400;

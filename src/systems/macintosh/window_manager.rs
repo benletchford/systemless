@@ -75,6 +75,46 @@ pub struct WindowFrameSnapshot {
 }
 
 impl WindowFrameSnapshot {
+    /// Standard WDEF title geometry shared with both guest drawing adapters.
+    /// Unknown definitions retain guest pixels rather than assuming this font.
+    pub fn title_layout(&self, menu_bar_height: i16) -> Option<WindowTitleLayout> {
+        let definition = self.presentation_definition_id()?;
+        if !matches!(definition, 0 | 4 | 8 | 12 | 16) {
+            return None;
+        }
+        if crate::quickdraw::fonts::get_font_face_or_default(0, 12).size != 12 {
+            return None;
+        }
+        let content = self.window.bounds;
+        let metrics = crate::quickdraw::text::get_font_metrics(0, 12);
+        let width = self.window.title.chars().fold(0i16, |width, ch| {
+            width.saturating_add(
+                crate::quickdraw::text::get_unicode_glyph(0, 12, ch)
+                    .map_or(6, |(glyph, _)| i16::from(glyph.advance)),
+            )
+        });
+        let chrome = standard_window_chrome(
+            content,
+            menu_bar_height,
+            width,
+            metrics.ascent,
+            metrics.descent,
+            !self.window.title.is_empty(),
+            self.window.active,
+            matches!(definition, 0 | 4 | 8 | 12),
+            self.close_box,
+            matches!(definition, 8 | 12),
+        );
+        Some(WindowTitleLayout {
+            horizontal: chrome.title_h,
+            baseline: chrome.title_baseline,
+            clip: chrome.title_clip,
+            width,
+            ascent: metrics.ascent,
+            descent: metrics.descent,
+        })
+    }
+
     /// Presentation can use bounding-box clips only for rectangular regions.
     pub fn presentation_definition_id(&self) -> Option<i16> {
         if self.rectangular_regions && self.visible_content_rects.is_some() {
@@ -83,6 +123,17 @@ impl WindowFrameSnapshot {
             None
         }
     }
+}
+
+/// Standard system-font title placement in global guest coordinates.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WindowTitleLayout {
+    pub horizontal: i16,
+    pub baseline: i16,
+    pub clip: WindowRect,
+    pub width: i16,
+    pub ascent: i16,
+    pub descent: i16,
 }
 
 const WINDOW_VISIBLE_OFFSET: u32 = WINDOW_VISIBLE_FLAG_OFFSET;

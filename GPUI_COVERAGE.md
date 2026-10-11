@@ -53,6 +53,22 @@ strikes requiring rescaling, styled and justified records still retain guest
 pixels pending faithful support. Other system surfaces still need migration
 from modern host shaping to this shared font policy.
 
+Standard window titles now use the shared Font Manager system strike (font 0,
+12 points), WDEF horizontal origin, baseline and title clip. GPUI paints its
+border separately so layout does not inset the glyphs. The PPC guest WDEF draw
+now honors the same title clip; paired images exposed a previously unclipped
+descender below it. Unknown definitions and substituted strikes retain guest
+pixels. Host ellipsis and theme-font shaping no longer replace these titles.
+The all-mode menu/window lifecycle regression and GPUI title-drag regression
+pass. The focused PPC descender-clip regression also passes (0.13s), checking
+that title ink stays visible inside the clip and cannot escape below it.
+Paired active/inactive stacked-window captures across the three modes
+are recorded in
+[`text-classic-window-titles-review.json`](tests/toolbox-showcase/reference/gpui-demo/text-classic-window-titles-review.json).
+The reviewed colour 68k/PPC guest glyph and composed-title regions are identical
+after clipping. This does not qualify all WDEFs, scales, physical host input,
+accessibility or live performance.
+
 The actual guest geometry/typing regression passes in all three modes (36.57s),
 including a click at a shared-strike insertion boundary. The GPUI platform event
 regression passes first/second-line clicks at 0.75x, 1x, 1.5x and 2x scene scales

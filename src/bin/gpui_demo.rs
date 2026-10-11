@@ -1415,6 +1415,12 @@ mod desktop {
                         .h(guest_px(source.height() as f32))
                         .bg(cx.theme().border);
                     if piece.title {
+                        let Some(title) = frame.title_layout(self.menu_height as i16) else { continue; };
+                        let Some(bytes) = frame.window.title.chars()
+                            .map(systemless::systems::macintosh::mac_roman::encode_mac_roman_char)
+                            .collect::<Option<Vec<_>>>() else { continue; };
+                        let glyphs = super::text::ClassicLine::plain(&bytes, 0, 12);
+                        let title_clip = super::frames::Rect::from(title.clip);
                         let foreground = if frame.window.active {
                             cx.theme().foreground
                         } else {
@@ -1426,20 +1432,26 @@ mod desktop {
                             } else {
                                 cx.theme().background
                             })
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .text_color(foreground)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(guest_px(12.))
-                            .child(
-                                div()
-                                    .px(guest_px(26.))
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .child(frame.window.title.clone()),
-                            );
+                            // Paint the border without insetting the containing
+                            // block: WDEF title coordinates start at the outer edge.
+                            .child(div().absolute().top_0().left_0().size_full()
+                                .border_1().border_color(cx.theme().border))
+                            .child(div()
+                                .absolute()
+                                .left(guest_px((title_clip.left - source.left) as f32))
+                                .top(guest_px((title_clip.top - source.top) as f32))
+                                .w(guest_px(title_clip.width() as f32))
+                                .h(guest_px(title_clip.height() as f32))
+                                .overflow_hidden()
+                                .child(div()
+                                    .absolute()
+                                    .left(guest_px((i32::from(title.horizontal) - title_clip.left) as f32))
+                                    .top(guest_px((i32::from(title.baseline - title.ascent) - title_clip.top) as f32))
+                                    .w(guest_px(f32::from(title.width.max(1))))
+                                    .h(guest_px(f32::from(title.ascent + title.descent)))
+                                    .child(super::text::classic_line(glyphs, title.ascent,
+                                        title.ascent + title.descent, (0, 0), false,
+                                        scene_scale, foreground, cx.theme().selection))));
                         // Keep controls over the standard WDEF hit cells. Input still
                         // reaches FindWindow/TrackGoAway/DragWindow in the guest.
                         // Inside Macintosh I, I-287--I-289.
@@ -5187,6 +5199,18 @@ mod desktop {
             }));
             assert_eq!(before[0].definition_id, Some(8));
             assert!(before[0].close_box && before[0].window.active);
+            let title = before[0].title_layout(20).expect("recognized WDEF title");
+            let bytes = before[0].window.title.chars()
+                .map(systemless::systems::macintosh::mac_roman::encode_mac_roman_char)
+                .collect::<Option<Vec<_>>>().unwrap();
+            let glyphs = super::super::text::ClassicLine::plain(&bytes, 0, 12);
+            assert_eq!(i32::from(title.width), *glyphs.positions.last().unwrap());
+            assert!(title.baseline > title.clip.0 && title.baseline < title.clip.2);
+            let mut inactive = before[0].clone();
+            inactive.window.active = false;
+            assert_eq!(inactive.title_layout(20), Some(title), "activation must not move glyphs");
+            inactive.definition_id = Some(128);
+            assert_eq!(inactive.title_layout(20), None, "custom WDEF owns its text");
             let (top, left, bottom, right) = before[0].window.bounds;
             let from = (top - 9, (left + right) / 2);
             session.deliver_input(MacintoshInput::MouseDown {
