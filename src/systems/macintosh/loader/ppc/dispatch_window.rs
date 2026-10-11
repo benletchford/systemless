@@ -4766,14 +4766,18 @@ pub(super) fn ppc_dispatch_legacy_window(
                     new_content.0,
                 )
                 .is_none()
-                    || ppc_size_window_dimensions(
-                        memory,
-                        gworlds,
-                        window,
-                        (i32::from(new_content.3) - i32::from(new_content.1)) as u32,
-                        (i32::from(new_content.2) - i32::from(new_content.0)) as u32,
-                    )
-                    .is_none()
+                    || ((i32::from(new_content.3) - i32::from(new_content.1)
+                        != i32::from(content.3) - i32::from(content.1)
+                        || i32::from(new_content.2) - i32::from(new_content.0)
+                            != i32::from(content.2) - i32::from(content.0))
+                        && ppc_size_window_dimensions(
+                            memory,
+                            gworlds,
+                            window,
+                            (i32::from(new_content.3) - i32::from(new_content.1)) as u32,
+                            (i32::from(new_content.2) - i32::from(new_content.0)) as u32,
+                        )
+                        .is_none())
                 {
                     return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
                 }
