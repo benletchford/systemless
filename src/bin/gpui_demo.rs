@@ -20,6 +20,10 @@ mod frames;
 mod metrics;
 
 #[cfg(target_os = "macos")]
+#[path = "desktop/desktop_save_store.rs"]
+mod desktop_save_store;
+
+#[cfg(target_os = "macos")]
 mod desktop {
     //! Opt-in GPUI Kit presentation experiment for live guest menus.
 
@@ -52,7 +56,7 @@ mod desktop {
     include!("gpui_demo_menu.rs");
 
     #[derive(Parser)]
-    #[command(about = "Experimental GPUI Kit guest menu runner (no persistent saves)")]
+    #[command(about = "Experimental GPUI Kit guest menu runner")]
     struct Args {
         game: PathBuf,
         #[arg(long)]
@@ -194,6 +198,7 @@ mod desktop {
     enum Command {
         Menu(i16, i16, u32, u64),
         Input(MacintoshInput),
+        Shutdown,
     }
 
     #[derive(Default)]
@@ -240,6 +245,7 @@ mod desktop {
         args: Args,
         commands: mpsc::Receiver<Command>,
         updates: Arc<Mutex<Option<Update>>>,
+        host_services: bool,
     ) {
         let result = std::panic::catch_unwind(|| {
             let mut session = MacintoshSession::new(true, args.screen_depth);
@@ -247,13 +253,24 @@ mod desktop {
                 .runner_mut()
                 .set_prefer_powerpc_executables(args.prefer_powerpc);
             let app = session.load_path(&args.game)?;
+            let mut save_store = host_services.then(|| {
+                let mut store = crate::desktop_save_store::DesktopSaveStore::for_loaded_archive(
+                    &args.game, session.runner_mut(),
+                );
+                for file in store.load_saved_files() {
+                    session.runner_mut().import_vfs_file(&file);
+                }
+                store
+            });
             session.initialize(&app);
             // Keep the device and its stream on the guest worker, matching
             // the ordinary desktop runner's stereo delivery and lifetime.
-            if let Some(audio) = systemless::systems::macintosh::audio::CpalAudioBackend::new() {
-                session.runner_mut().set_audio(Box::new(audio));
-            } else {
-                eprintln!("[GPUI] Could not initialize audio output");
+            if host_services {
+                if let Some(audio) = systemless::systems::macintosh::audio::CpalAudioBackend::new() {
+                    session.runner_mut().set_audio(Box::new(audio));
+                } else {
+                    eprintln!("[GPUI] Could not initialize audio output");
+                }
             }
             let instructions_per_tick = configure_realtime_execution(&mut session);
             let architecture = if session.status().powerpc_application {
@@ -289,7 +306,12 @@ mod desktop {
                             }
                         }
                         Err(mpsc::TryRecvError::Empty) => break,
-                        Err(mpsc::TryRecvError::Disconnected) => return Ok::<(), String>(()),
+                        Ok(Command::Shutdown) | Err(mpsc::TryRecvError::Disconnected) => {
+                            if let Some(store) = save_store.as_mut() {
+                                store.sync_save_files_now(session.runner_mut());
+                            }
+                            return Ok::<(), String>(());
+                        }
                     }
                 }
                 session
@@ -336,6 +358,9 @@ mod desktop {
                 }
                 session.runner_mut().finish_gui_frame();
                 session.drain_audio();
+                if let Some(store) = save_store.as_mut() {
+                    store.sync_save_files(session.runner_mut());
+                }
                 let menus = session.runner_mut().guest_menu_snapshot();
                 let menu_presented = session.runner().guest_menu_bar_presented();
                 let menu_height = session.runner().bus().read_word(MBAR_HEIGHT);
@@ -368,6 +393,9 @@ mod desktop {
                     ),
                 });
                 if !running {
+                    if let Some(store) = save_store.as_mut() {
+                        store.sync_save_files_now(session.runner_mut());
+                    }
                     return Ok(());
                 }
                 std::thread::sleep(Duration::from_millis(16).saturating_sub(start.elapsed()));
@@ -3448,11 +3476,21 @@ mod desktop {
         let (commands, receiver) = mpsc::channel();
         let updates = Arc::new(Mutex::new(None));
         let worker_updates = updates.clone();
-        std::thread::spawn(move || run_guest(args, receiver, worker_updates));
+        let mut worker = Some(std::thread::spawn(move || run_guest(args, receiver, worker_updates, true)));
+        let shutdown_commands = commands.clone();
         gpui_kit::application()
             .with_assets(gpui_kit::assets::Assets)
             .run(move |cx| {
                 gpui_kit::init(cx);
+                cx.on_app_quit(move |_| {
+                    let _ = shutdown_commands.send(Command::Shutdown);
+                    if let Some(worker) = worker.take() {
+                        if worker.join().is_err() {
+                            eprintln!("[GPUI] Guest worker failed during shutdown");
+                        }
+                    }
+                    async {}
+                }).detach();
                 cx.on_window_closed(|cx, _| {
                     if cx.windows().is_empty() {
                         cx.quit();
@@ -3914,6 +3952,7 @@ mod desktop {
                     },
                     rx,
                     worker_updates,
+                    false,
                 )
             });
             wait(&updates, |u| u.menus.menus.iter().any(|m| m.id == 129));
@@ -3960,6 +3999,7 @@ mod desktop {
             .unwrap();
             let update = wait(&updates, |u| u.windows.len() == 2);
             assert_eq!(update.windows[0].window.title, "Auxiliary Window");
+            tx.send(Command::Shutdown).unwrap();
             drop(tx);
             worker.join().unwrap();
         }

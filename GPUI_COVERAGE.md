@@ -154,3 +154,13 @@ macOS output callback consumes queued silent stereo frames and that stopping
 clears the queue. Both GPUI and ordinary desktop builds pass. These checks do
 not establish audible fidelity, sustained game playback, or latency under UI
 load; those remain qualification requirements.
+
+Interactive GPUI now reuses the ordinary desktop save store and its archive-based
+save location. Saved files are imported before initialization; periodic scans
+and final flushes cover guest exit, command-channel disconnect, and explicit
+host shutdown. The app quit hook stops and joins the worker before returning.
+Host services remain disabled in guest-worker tests and headless captures.
+All 52 existing GPUI/save-store tests pass, plus a temporary-directory roundtrip
+covering loaded monochrome 68K, colour 68K and PowerPC sessions, both forks and
+metadata. Real-game save/relaunch, write-failure recovery, and abnormal process
+termination remain unqualified.

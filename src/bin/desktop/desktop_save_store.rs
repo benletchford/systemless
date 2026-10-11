@@ -557,6 +557,40 @@ mod tests {
     }
 
     #[test]
+    fn saves_restore_into_loaded_68k_and_powerpc_sessions() {
+        use systemless::systems::macintosh::{game, session::MacintoshSession};
+        let archive = include_bytes!("../../../tests/toolbox-showcase/toolbox-showcase.sit");
+        for (powerpc, depth) in [(false, 1), (false, 8), (true, 8)] {
+            let temp = tempfile::tempdir().unwrap();
+            let game_path = temp.path().join("Showcase.sit");
+            let mut session = MacintoshSession::new(true, Some(depth));
+            session.runner_mut().set_prefer_powerpc_executables(powerpc);
+            let app = session.load_bytes(archive).unwrap();
+            session.initialize(&app);
+            assert_eq!(session.runner().is_powerpc_app(), powerpc);
+            let mut store = DesktopSaveStore::for_loaded_archive(&game_path, session.runner_mut());
+            let saved = snapshot("Toolbox Showcase/Pilots/Persistence Probe");
+            session.runner_mut().import_vfs_file(&saved);
+            store.sync_save_files_now(session.runner_mut());
+            drop(session);
+
+            let mut restored = game::new_runner_with_screen_depth(depth);
+            restored.set_prefer_powerpc_executables(powerpc);
+            let app = game::load_game(&mut restored, archive).unwrap();
+            let mut store = DesktopSaveStore::for_loaded_archive(&game_path, &mut restored);
+            let files = store.load_saved_files();
+            assert_eq!(files, vec![saved.clone()]);
+            for file in files {
+                restored.import_vfs_file(&file);
+            }
+            game::init_game(&mut restored, &app);
+            assert_eq!(restored.is_powerpc_app(), powerpc);
+            store.sync_save_files_now(&mut restored);
+            assert_eq!(store.load_saved_files(), vec![saved]);
+        }
+    }
+
+    #[test]
     fn reset_preferences_removes_only_system_folder_preferences() {
         let base = std::env::temp_dir().join(format!(
             "systemless-reset-prefs-{}",

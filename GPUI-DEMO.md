@@ -233,8 +233,9 @@ Backspace; this is not a full game-input frontend. Interactive runs attach the
 existing native stereo audio backend on the guest worker. Capture paths remain
 headless. Device initialization failure is reported and execution continues
 without output. Audible continuity and real-game performance still require
-qualification. Saves are not persisted, and host-native window integration is
-not included.
+qualification. Interactive runs use the ordinary desktop save store, restoring
+saves before guest initialization and flushing changes periodically and on
+shutdown. Host-native window integration is not included.
 The prototype has not been ported to the browser. GPUI dependencies are optional
 and compile only with `gpui-demo`, but add a substantial first-build cost.
 
