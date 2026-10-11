@@ -1,0 +1,51 @@
+diff --git a/src/bin/gpui_demo.rs b/src/bin/gpui_demo.rs
+index 33c0d55b..60502a76 100644
+--- a/src/bin/gpui_demo.rs
++++ b/src/bin/gpui_demo.rs
+@@ -7617,9 +7617,31 @@ mod desktop {
+                 let background = systemless::runner::TextEditInkSnapshot {
+                     pixel: if depth == 16 { 0x7fff } else { 0 }, rgb: [255; 3], inverted_rgb: [0; 3],
+                 };
+-                assert!(super::super::text::StyledTextEditPaintPlan::qualify(
++                let plan = super::super::text::StyledTextEditPaintPlan::qualify(
+                     &selected, &background, None, &frame.pixels, frame.width, frame.height,
+-                ).is_some(), "CPU-native line/selection order: PPC={powerpc}, depth={depth}");
++                ).expect("CPU-native multiline selection paint order");
++                assert!(plan.smooth_raster_support().into_iter().all(|supported| supported),
++                    "mixed multiline selection must resolve original-font outlines: PPC={powerpc}, depth={depth}");
++                // The guest owns replacement, style inheritance and reflow.
++                // Verify that a selected smooth field remains editable rather
++                // than qualifying only a static multiline screenshot.
++                for (character, expected) in [(b'X', b"X".as_slice()), (8, b"".as_slice())] {
++                    session.deliver_input(MacintoshInput::KeyDown { mac_key: if character == 8 { 0x33 } else { 7 }, character });
++                    session.deliver_input(MacintoshInput::KeyUp { mac_key: if character == 8 { 0x33 } else { 7 }, character });
++                    let edited = (0..300).find_map(|_| {
++                        session.runner_mut().run_steps(10_000, None);
++                        let settled = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
++                        session.runner_mut().text_edit_snapshot().records.into_iter().find(|next|
++                            settled && next.guest_id == selected.guest_id && next.active && next.drawing_intact
++                                && next.text == expected && next.selection == (expected.len(), expected.len()))
++                    }).expect("guest replacement/deletion must reflow the selected multiline field");
++                    let frame = session.video_frame().unwrap();
++                    let plans = super::qualify_styled_text_fields(std::slice::from_ref(&edited),
++                        &frame.pixels, frame.width, frame.height);
++                    let plan = plans[0].as_ref().expect("edited field must retain native paint qualification");
++                    assert!(plan.smooth_raster_support().into_iter().all(|supported| supported),
++                        "edited field must retain smooth resolution: PPC={powerpc}, depth={depth}, character={character}");
++                }
+             }
+         }
+ 
+@@ -8838,6 +8860,12 @@ mod desktop {
+                             let frame = session.video_frame().unwrap();
+                             let plans = super::qualify_styled_text_fields(&current_records, &frame.pixels, frame.width, frame.height);
+                             if phase == 0 { assert!(plans.iter().any(Option::is_some), "styled paint must qualify before pointer interaction: PPC={powerpc}, depth={depth:?}, override={ppc_depth:?}, scale={scale}, offset={offset}, active={}, intact={}", record.active, record.drawing_intact); }
++                            let owned_plan = current_records.iter().zip(&plans)
++                                .find(|(next, _)| next.guest_id == record.guest_id)
++                                .and_then(|(_, plan)| plan.as_ref())
++                                .expect("the interacted styled field must retain native paint qualification");
++                            assert!(owned_plan.smooth_raster_support().into_iter().all(|supported| supported),
++                                "pointer interaction requires resolved original-font outlines at every supported raster: PPC={powerpc}, depth={depth:?}, override={ppc_depth:?}, scale={scale}, offset={pointer_offset}, phase={phase}");
+                             cx.update_window(window.into(), |_, window, cx| {
+                                 view.update(cx, |demo, cx| {
+                                     demo.width = 800;
