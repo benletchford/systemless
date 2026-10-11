@@ -169,3 +169,24 @@ run passes20.99s; evidence is under `reference/gpui-demo/replacement-process-res
 This covers explicit production-store flush; actual worker shutdown/periodic
 flush for replacement, crash durability and physical desktop close remain open.
 All eight production gates remain open.
+
+### Save-store crash audit (2026-10-11)
+
+`DesktopSaveStore::persist_save_file` currently writes data fork, resource fork
+and metadata directly and sequentially into the existing directory. An
+interruption between writes can leave a mixed-generation save; successful
+orderly exit/restart tests do not establish crash durability. Atomic snapshot
+publication and interruption/recovery verification remain required before
+claiming this durability scope complete. This is a source audit, not a
+reproduced crash test or a claim of observed user data loss.
+
+### Worker replacement Save at orderly exit (2026-10-11)
+
+The actual production worker now passes replacement Save followed by Shutdown,
+channel disconnect and guest File > Quit in all four CPU/depth modes (12 cases,
+82.86s). No test flush is called on the replacement worker. Persisted new data
+and unchanged nonempty resource fork survive a separate reader process and
+actual guest Open/read/close with exact fork/metadata comparison. Evidence is
+under `reference/gpui-demo/worker-replacement-shutdown`. This does not isolate
+periodic/final flush timing or establish physical close/crash durability; the
+sequential-write audit remains open. All eight release gates remain open.

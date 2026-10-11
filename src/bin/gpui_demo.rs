@@ -9064,6 +9064,114 @@ mod desktop {
         }
 
         #[test]
+        fn production_worker_shutdown_persists_replacement_save() {
+            use clap::Parser;
+            use super::{Args, Command, Update};
+            use std::sync::{mpsc, Arc, Mutex};
+            use super::super::activation::FileAction;
+            use std::time::{Duration, Instant};
+            struct Worker(Option<mpsc::Sender<Command>>, Option<std::thread::JoinHandle<()>>);
+            impl Drop for Worker {
+                fn drop(&mut self) {
+                    if let Some(sender) = self.0.take() { let _ = sender.send(Command::Shutdown); }
+                    if let Some(handle) = self.1.take() { let _ = handle.join(); }
+                }
+            }
+            fn wait(stage: &str, updates: &Mutex<Option<Update>>, ready: impl Fn(&Update) -> bool) -> Update {
+                let start = Instant::now();
+                loop {
+                    if let Some(update) = updates.lock().unwrap().take() {
+                        if ready(&update) { return update; }
+                        assert!(!update.status.contains("unexpectedly"), "{stage}: {}", update.status);
+                    }
+                    assert!(start.elapsed() < Duration::from_secs(20), "worker timeout: {stage}");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            for ((powerpc, depth), exit) in [(false, 1u16), (false, 8), (true, 8), (true, 16)]
+                .into_iter().flat_map(|mode| [0u8, 1, 2].map(move |exit| (mode, exit))) {
+                let temp = tempfile::tempdir().unwrap();
+                let archive = temp.path().join("Showcase.sit");
+                std::fs::copy(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit"), &archive).unwrap();
+                let seed = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "desktop::tests::standard_file_save_survives_separate_process_and_guest_read", "--nocapture"])
+                    .env("SYSTEMLESS_GPUI_SAVE_PROCESS_PHASE", "write")
+                    .env("SYSTEMLESS_GPUI_SAVE_PROCESS_ROOT", temp.path())
+                    .env("SYSTEMLESS_GPUI_SAVE_PROCESS_CPU", if powerpc { "ppc" } else { "68k" })
+                    .env("SYSTEMLESS_GPUI_SAVE_PROCESS_DEPTH", depth.to_string()).output().unwrap();
+                assert!(seed.status.success(), "seed Save: {}", String::from_utf8_lossy(&seed.stderr));
+                let mut setup = MacintoshSession::new(true, Some(8));
+                setup.load_path(&archive).unwrap();
+                let mut store = super::super::desktop_save_store::DesktopSaveStore::for_loaded_archive(&archive, setup.runner_mut());
+                for mut file in store.load_saved_files() {
+                    if file.path.rsplit('/').next() == Some("Restarté") {
+                        file.data_fork = b"old worker replacement contents".to_vec();
+                        file.resource_fork = vec![0, 128, 255, 82, 83, 82, 67];
+                    }
+                    setup.runner_mut().import_vfs_file(&file);
+                }
+                store.sync_save_files_now(setup.runner_mut());
+                let mut argv = vec!["gpui-menu-demo".to_string(), archive.to_string_lossy().into_owned()];
+                if powerpc { argv.push("--prefer-powerpc".into()); }
+                if depth != 16 { argv.extend(["--screen-depth".into(), depth.to_string()]); }
+                let args = Args::try_parse_from(argv).unwrap();
+                let (sender, receiver) = mpsc::channel();
+                let updates = Arc::new(Mutex::new(None)); let output = updates.clone();
+                let mut worker = Worker(Some(sender), Some(std::thread::spawn(move || super::run_guest(args, receiver, output, true))));
+                let send = |command| worker.0.as_ref().unwrap().send(command).unwrap();
+                let initial = wait("menus", &updates, |update| update.menus.menus.iter().any(|menu| menu.id == 129));
+                let menu = initial.menus.menus.iter().find(|menu| menu.id == 129).unwrap();
+                send(Command::Menu(129, 12, menu.guest_id, menu.generation));
+                wait("file page", &updates, |update| update.menus.menus.iter().any(|menu| menu.id == 129
+                    && menu.items.iter().any(|item| item.number == 12 && item.checked)));
+                for input in [MacintoshInput::MouseDown { vertical: 266, horizontal: 400 },
+                    MacintoshInput::MouseUp { vertical: 266, horizontal: 400 }] { send(Command::Input(input)); }
+                let panel = wait("Save", &updates, |update| update.standard_file.is_some()).standard_file.unwrap();
+                let owner = super::super::input::standard_file_text_owner(&panel).unwrap();
+                send(Command::CommitText(super::super::input::TextInputOwner { identity: owner.identity,
+                    target: super::super::input::TextInputTarget::StandardFile { new_folder: false },
+                    text: owner.text, selection: owner.selection }, b"Restart\x8e".to_vec()));
+                let panel = wait("replacement name", &updates, |update| update.standard_file.as_ref()
+                    .is_some_and(|panel| panel.name.as_deref() == Some("Restarté"))).standard_file.unwrap();
+                send(Command::ActivateFile(panel.guest_id, panel.generation, FileAction::Accept));
+                let confirmation = wait("replacement confirmation", &updates, |update| update.standard_file.as_ref()
+                    .is_some_and(|panel| panel.confirming_replace)).standard_file.unwrap();
+                send(Command::ActivateFile(confirmation.guest_id, confirmation.generation, FileAction::Replace));
+                wait("replacement returned", &updates, |update| update.standard_file.is_none());
+                if exit == 0 { send(Command::Shutdown); }
+                if exit == 2 {
+                    let resumed = wait("before Quit", &updates, |update| update.standard_file.is_none()
+                        && update.menus.menus.iter().any(|menu| menu.id == 131));
+                    let menu = resumed.menus.menus.iter().find(|menu| menu.id == 131).unwrap();
+                    send(Command::Menu(131, 4, menu.guest_id, menu.generation));
+                    wait("guest Quit", &updates, |update| update.status.ends_with("Guest stopped"));
+                }
+                drop(worker.0.take());
+                worker.1.take().unwrap().join().unwrap();
+                let file = store.load_saved_files().into_iter()
+                    .find(|file| file.path.rsplit('/').next() == Some("Restarté")).unwrap();
+                assert_eq!(file.data_fork, b"Systemless Standard File round trip\n");
+                assert_eq!(file.resource_fork, vec![0, 128, 255, 82, 83, 82, 67]);
+                std::fs::write(temp.path().join("expected.json"), serde_json::to_vec_pretty(&serde_json::json!({
+                    "writer_pid": std::process::id(), "snapshot": {
+                        "path": file.path, "data_fork": file.data_fork, "resource_fork": file.resource_fork,
+                        "file_type": file.file_type, "creator": file.creator, "finder_flags": file.finder_flags,
+                        "created_date": file.created_date, "modified_date": file.modified_date }})).unwrap()).unwrap();
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "desktop::tests::standard_file_save_survives_separate_process_and_guest_read", "--nocapture"])
+                    .env("SYSTEMLESS_GPUI_SAVE_PROCESS_PHASE", "read")
+                    .env("SYSTEMLESS_GPUI_SAVE_PROCESS_ROOT", temp.path())
+                    .env("SYSTEMLESS_GPUI_SAVE_PROCESS_CPU", if powerpc { "ppc" } else { "68k" })
+                    .env("SYSTEMLESS_GPUI_SAVE_PROCESS_DEPTH", depth.to_string()).output().unwrap();
+                eprint!("{}", String::from_utf8_lossy(&output.stderr));
+                print!("{}", String::from_utf8_lossy(&output.stdout));
+                assert!(output.status.success(), "worker shutdown persistence: PPC={powerpc} depth={depth} exit={exit}");
+                eprintln!("PASS production-worker-replacement-shutdown powerpc={powerpc} depth={depth} exit={exit}");
+            }
+        }
+
+        #[test]
         #[ignore = "reader subprocess of the New Folder guest workflow"]
         fn new_folder_restart_reader() {
             let save_path = PathBuf::from(std::env::var_os("SYSTEMLESS_GPUI_FOLDER_ROOT").unwrap());

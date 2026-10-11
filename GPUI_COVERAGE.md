@@ -5607,3 +5607,14 @@ run passes20.99s; evidence is under `reference/gpui-demo/replacement-process-res
 This covers explicit production-store flush; actual worker shutdown/periodic
 flush for replacement, crash durability and physical desktop close remain open.
 All eight production gates remain open.
+
+### Worker replacement Save at orderly exit (2026-10-11)
+
+The actual production worker now passes replacement Save followed by Shutdown,
+channel disconnect and guest File > Quit in all four CPU/depth modes (12 cases,
+82.86s). No test flush is called on the replacement worker. Persisted new data
+and unchanged nonempty resource fork survive a separate reader process and
+actual guest Open/read/close with exact fork/metadata comparison. Evidence is
+under `reference/gpui-demo/worker-replacement-shutdown`. This does not isolate
+periodic/final flush timing or establish physical close/crash durability; the
+sequential-write audit remains open. All eight release gates remain open.
