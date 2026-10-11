@@ -3242,3 +3242,58 @@ remains blank. An explicit title paint-layer experiment built successfully
 was removed. No rendering fix is established. Remaining investigation should
 isolate the title in a minimal shared-compositor scene and inspect primitive
 ordering/rendering without changing guest font metrics or hit coordinates.
+
+### Title-only compositor isolation
+
+A capture-only switch removes controls/dialogs/lists/TextEdit overlays while
+retaining the same guest frame and standard window compositor. Its PPC 0.75
+composition still omits the title, excluding later control/text overlays as
+necessary triggers. The build passes (10.29 s). A red marker inside that canvas
+and the title appeared together in one diagnostic capture (build 5.92 s), but
+an opaque white canvas-background experiment still omitted the title in its
+first repeat (build 13.51 s). Neither experiment establishes a fix; marker
+painting was removed.
+
+A test-only `SYSTEMLESS_GPUI_TITLE_PATH` branch batches the same guest glyph
+ink runs as one GPUI fill path, with unchanged advance/baseline geometry. Its
+build passes (18.82 s), and the first capture is running. It is diagnostic only:
+path antialiasing/device snapping would need fidelity validation before any
+production adoption. The normal draw path remains unchanged.
+
+The first path diagnostic capture completed and visibly preserves the title
+at PPC 0.75 (`/tmp/gpui-popup-title-path.png`), with unchanged guest title layout.
+Three repeat captures are running to check consistency. This does not qualify
+the path backend or establish the quad backend's root cause.
+
+All three unsnapped-path PPC 0.75 repeats display the title, but pixel review
+finds five grey/white levels versus the existing bitmap's two. Device-edge
+snapping using GPUI's nearest-pixel, half-toward-zero rule removes this
+antialiasing difference: the snapped PPC 0.75 title region (398,49)-(558,71)
+is pixel-identical to the previously working monochrome quad title, including
+719 grey ink pixels and 2801 white pixels. This checks internal bitmap raster
+preservation, not native Macintosh font parity.
+
+The shared title geometry now uses snapped GPUI paths as a candidate fix;
+TextEdit's selection/caret path retains its existing drawing. Removed the
+title-only capture switch and test-only path selector. The candidate capture
+build passes (7.11 s). A fresh twelve-capture suspended matrix, production
+binary check and GPUI title-drag interaction regression are running. Broader
+active/inactive title validation and performance remain pending.
+
+The production `systemless` binary check passes (10.31 s); the GPUI title-drag
+regression passes (0.06 s). The first three fresh monochrome captures (0.75,
+1.0,1.5) are reviewed and their title region is pixel-identical to the earlier
+working quad captures at each corresponding scale. The remaining matrix and
+full title/backend qualification are still pending.
+
+The fresh suspended matrix is complete: all twelve compositions are reviewed,
+and each title region is pixel-identical to the corresponding original working
+monochrome bitmap capture. Source, binary, fixture and artifact hashes were
+independently checked before lossless archival as `popup-snapped-title-*` and
+`popup-snapped-title-review.json`. The earlier failed `popup-suspended-*`
+evidence is retained. This supports the snapped-path fix for this standard
+fixture title across three CPU/display modes and four scales, without changing
+font metrics, guest event routing or application-drawn text. It does not prove
+native font parity or explain the underlying GPUI quad failure. A matching
+active twelve-capture matrix is running; general title resources, native host
+interaction and performance qualification remain open.

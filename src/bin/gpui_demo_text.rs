@@ -412,17 +412,46 @@ pub(crate) fn classic_line(
                     selection_color,
                 ));
             }
-            for &(x, y, width) in &line.ink {
-                window.paint_quad(fill(
-                    Bounds::new(
-                        point(
-                            origin.x + px(geometry.ink_x(x) as f32 * scale),
-                            origin.y + px((y + i32::from(ascent)) as f32 * scale),
+            // Keep guest bitmap titles in one GPUI path. Small quad batches
+            // can disappear in fractional-scale composed frames; device-edge
+            // snapping below preserves their original bitmap rasterization.
+            if matches!(geometry, ClassicLineGeometry::Title) {
+                let mut path = PathBuilder::fill();
+                let device_scale = window.scale_factor();
+                // Match GPUI quad snapping: nearest device pixel, half ties
+                // toward zero. Keep classic bitmap edges off subpixel paths.
+                let snap = |value: Pixels| {
+                    let device = f32::from(value) * device_scale;
+                    px((device.abs() - 0.5).ceil().copysign(device) / device_scale)
+                };
+                for &(x, y, width) in &line.ink {
+                    let raw_left = origin.x + px(geometry.ink_x(x) as f32 * scale);
+                    let raw_top = origin.y + px((y + i32::from(ascent)) as f32 * scale);
+                    let left = snap(raw_left);
+                    let top = snap(raw_top);
+                    let right = snap(raw_left + px(width as f32 * scale));
+                    let bottom = snap(raw_top + px(scale));
+                    if right <= left || bottom <= top { continue; }
+                    path.move_to(point(left, top));
+                    path.line_to(point(right, top));
+                    path.line_to(point(right, bottom));
+                    path.line_to(point(left, bottom));
+                    path.close();
+                }
+                window.paint_path(path.build().expect("guest title ink rectangles"), foreground);
+            } else {
+                for &(x, y, width) in &line.ink {
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(
+                                origin.x + px(geometry.ink_x(x) as f32 * scale),
+                                origin.y + px((y + i32::from(ascent)) as f32 * scale),
+                            ),
+                            size(px(width as f32 * scale), px(scale)),
                         ),
-                        size(px(width as f32 * scale), px(scale)),
-                    ),
-                    foreground,
-                ));
+                        foreground,
+                    ));
+                }
             }
             if let Some(offset) = caret {
                 window.paint_quad(fill(
