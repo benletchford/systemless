@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check smooth selected-list capture provenance and geometry, not raster parity.
+"""Check smooth list state capture provenance and geometry, not raster parity.
 
 Retained guest pixels can conceal missing replacement paint. A passing result
 requires visual review and does not qualify font fidelity or release readiness.
@@ -65,7 +65,9 @@ def verify_case(directory, case):
     if state_name == 'resized':
         assert state['view_rect'] == [78, 24, 192, 474]
     regions = evidence['owned_regions']
-    assert regions and {tuple(cell) for _, cell, _ in regions} == {(row, 0) for row in range(state['visible'][0], state['visible'][2])}
+    assert regions and {tuple(cell) for _, cell, _ in regions} == {tuple(cell['cell']) for cell in state['cells']
+        if state['visible'][0] <= cell['cell'][0] < state['visible'][2]
+        and state['visible'][1] <= cell['cell'][1] < state['visible'][3]}
     for owner, cell, (top, left, bottom, right) in regions:
         assert owner == 0 and 0 <= top < bottom <= guest[1] and 0 <= left < right <= guest[0]
     return case['mode'], case['scale'], state_name
