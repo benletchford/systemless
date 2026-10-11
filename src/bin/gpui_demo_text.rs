@@ -25,6 +25,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn file_name_abbreviation_preserves_guest_character_boundary() {
+        assert_eq!(file_row_name("é£πAB", Some(3)), "é£π...");
+        assert_eq!(file_row_name("é£π", Some(3)), "é£π");
+        assert_eq!(file_row_name("é£πAB", None), "é£πAB");
+    }
+
+    #[test]
     fn unicode_labels_resolve_guest_mac_roman_and_symbol_glyphs() {
         let bytes = b"A\x8e\xa3\xb9\xa9";
         let text = systemless::systems::macintosh::mac_roman::decode_mac_roman(bytes);
@@ -438,4 +445,15 @@ pub(crate) fn classic_file_row(
         },
     )
     .size_full()
+}
+
+/// Preserve the guest painter's display abbreviation without changing the
+/// canonical filename used by guest selection and file operations.
+pub(crate) fn file_row_name(name: &str, limit: Option<usize>) -> String {
+    match limit {
+        Some(limit) if name.chars().count() > limit => {
+            format!("{}...", name.chars().take(limit).collect::<String>())
+        }
+        _ => name.to_owned(),
+    }
 }

@@ -2257,8 +2257,8 @@ mod desktop {
                                         cx.theme().background
                                     })
                                     .child(super::text::classic_file_row(&if entry.is_directory {
-                                        format!("{} {}", entry.name, panel.directory_marker)
-                                    } else { entry.name.clone() }, panel.list_text_origin, scene_scale,
+                                        format!("{} {}", super::text::file_row_name(&entry.name, panel.list_name_limit), panel.directory_marker)
+                                    } else { super::text::file_row_name(&entry.name, panel.list_name_limit) }, panel.list_text_origin, scene_scale,
                                     cx.theme().foreground)),
                             );
                         }
@@ -2442,8 +2442,8 @@ mod desktop {
                                         cx.theme().background
                                     })
                                     .child(super::text::classic_file_row(&if entry.is_directory {
-                                        format!("{} {}", entry.name, panel.directory_marker)
-                                    } else { entry.name.clone() }, panel.list_text_origin, scene_scale,
+                                        format!("{} {}", super::text::file_row_name(&entry.name, panel.list_name_limit), panel.directory_marker)
+                                    } else { super::text::file_row_name(&entry.name, panel.list_name_limit) }, panel.list_text_origin, scene_scale,
                                     cx.theme().foreground)),
                             );
                         }
@@ -6088,6 +6088,9 @@ mod desktop {
                     })
                     .expect("StandardGetFile should retain its modal panel state");
                 assert_eq!(opened.kind, StandardFileKind::Get);
+                assert_eq!(opened.list_name_limit, if powerpc { None } else { Some(36) });
+                assert_eq!(opened.list_text_origin, if powerpc { (3, 13) } else { (4, 11) });
+                assert_eq!(opened.directory_marker, if powerpc { ">" } else { "▸" });
                 assert!(opened.standard_entry_point);
                 assert_ne!(opened.guest_id, 0);
                 assert_ne!(opened.generation, 0);
@@ -10012,6 +10015,7 @@ mod desktop {
                         kind: StandardFileKind::Get,
                 list_text_origin: (4, 11),
                 directory_marker: "▸",
+                list_name_limit: Some(36),
                         confirming_replace: false,
                         new_folder: None,
                         standard_entry_point: true,
@@ -10099,6 +10103,7 @@ mod desktop {
                         kind: StandardFileKind::Put,
                 list_text_origin: (4, 11),
                 directory_marker: "▸",
+                list_name_limit: Some(36),
                         confirming_replace: false,
                         new_folder: None,
                         standard_entry_point: true,
