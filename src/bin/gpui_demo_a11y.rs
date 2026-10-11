@@ -33,6 +33,7 @@ pub struct AccessibleState<E> {
     inner: E,
     disabled: bool,
     hidden: bool,
+    modal: bool,
     text: Option<(String, bool)>,
     selection: Option<std::ops::Range<usize>>,
     lines: Option<Vec<(usize, String)>>,
@@ -45,13 +46,19 @@ pub struct AccessibleState<E> {
 
 impl<E: Element> AccessibleState<E> {
     pub fn new(inner: E, disabled: bool) -> Self {
-        Self { inner, disabled, hidden: false, text: None, selection: None, lines: None, line_geometry: Vec::new(), line_ids: None, run_id: None, positions: None, painted_positions: None }
+        Self { inner, disabled, hidden: false, modal: false, text: None, selection: None, lines: None, line_geometry: Vec::new(), line_ids: None, run_id: None, positions: None, painted_positions: None }
     }
 
     /// Keep the element painted while excluding its modal-background subtree
     /// from assistive navigation. Keyboard focus must be disabled separately.
     pub fn hidden(mut self, hidden: bool) -> Self {
         self.hidden = hidden;
+        self
+    }
+
+    /// Supply modal semantics where Kit's standard setters lack support.
+    pub fn modal(mut self, modal: bool) -> Self {
+        self.modal = modal;
         self
     }
 
@@ -146,6 +153,7 @@ impl<E: Element> Element for AccessibleState<E> {
         if let Some((value, _)) = &self.text { node.set_value(value.clone()); }
         if self.disabled { node.set_disabled(); }
         if self.hidden { node.set_hidden(); }
+        if self.modal { node.set_modal(); }
     }
     fn a11y_synthetic_children(
         &mut self, prepaint: &mut Self::PrepaintState, builder: &mut A11ySubtreeBuilder,
@@ -334,6 +342,19 @@ mod tests {
             assert_eq!(node.is_disabled(), disabled);
         }
     }
+    #[test]
+    fn modal_state_preserves_alert_identity_role_and_label() {
+        let alert = div().id("notice").role(Role::AlertDialog).aria_label("Notification");
+        let wrapped = AccessibleState::new(alert, false).modal(true);
+        assert_eq!(Element::id(&wrapped), Some("notice".into()));
+        let mut node = accesskit::Node::new(wrapped.a11y_role().unwrap());
+        wrapped.write_a11y_info(&mut node);
+        assert_eq!(node.role(), Role::AlertDialog);
+        assert_eq!(node.label(), Some("Notification"));
+        assert!(node.is_modal());
+        assert!(!node.is_hidden() && !node.is_disabled());
+    }
+
     #[test]
     fn hidden_modal_background_preserves_node_identity_and_label() {
         for hidden in [false, true, false] {

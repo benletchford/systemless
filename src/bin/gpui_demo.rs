@@ -3276,6 +3276,8 @@ mod desktop {
                 };
                 let sender = self.commands.clone();
                 let expected = plan.notice.clone();
+                let accessibility_sender = self.commands.clone();
+                let accessibility_notice = plan.notice.clone();
                 let overlay = div().id("guest-notification-alert").test_support()
                     .role(gpui_kit::Role::AlertDialog).aria_label("Notification")
                     .absolute().top(guest_px(plan.bounds.top as f32))
@@ -3291,8 +3293,10 @@ mod desktop {
                         true, true, false, true, scene_scale, cx).w_full().h_full()
                         .on_click(move |_, _, _| {
                             let _ = sender.send(Command::DismissNotificationAlert(expected.clone()));
+                        }).on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
+                            let _ = accessibility_sender.send(Command::DismissNotificationAlert(accessibility_notice.clone()));
                         })));
-                screen = screen.child(overlay);
+                screen = screen.child(super::a11y::AccessibleState::new(overlay, false).modal(true));
             }
             let mut bar = Some(bar);
             if let Some(popup) = self.guest_popup.as_ref() {
@@ -3318,7 +3322,8 @@ mod desktop {
                     && y < self.display_origin.1 + self.display_size.1
             });
             let cursor_owned = self.cursor_inside && pointer_in_scene && self.host_active != Some(false)
-                && self.open_menus.is_empty() && self.composition.preedit.is_none() && cursor_plan.is_some();
+                && self.notification_alert.is_none() && self.open_menus.is_empty()
+                && self.composition.preedit.is_none() && cursor_plan.is_some();
             self.host_cursor.set_hidden(cursor_owned && !cx.is_test());
             let cursor_element = if cursor_owned {
                 let guest = self.cursor.as_ref().unwrap().position;
@@ -3451,7 +3456,8 @@ mod desktop {
                 }).absolute().size_full())
                 .child(super::metrics::SceneMetrics::new(screen, window.rem_size() * scene_scale))
                 .children(self.composition_surface(cx))
-                .when(!guest_menu_fallback && self.guest_popup.is_none() && (self.menu_presented || menu_hovered), |root| {
+                .when(self.notification_alert.is_none() && !guest_menu_fallback
+                    && self.guest_popup.is_none() && (self.menu_presented || menu_hovered), |root| {
                     root.child(bar.unwrap().absolute().top_0().left_0().when(self.menu_presented, |bar| {
                         bar.top(px(self.display_origin.1)).left(px(self.display_origin.0))
                     }))

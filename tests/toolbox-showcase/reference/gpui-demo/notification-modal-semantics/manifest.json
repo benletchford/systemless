@@ -1,0 +1,7 @@
+{
+  "source_hashes": {
+    "src/bin/gpui_demo.rs": "67de63e4b782a1a8d131a1a1041783b32ce3cdc5905e976bef3b0a64c03c3823",
+    "src/bin/gpui_demo_a11y.rs": "dd55a0a1ecd39442436abd4b8928e04939dc5147c68cfba9aa3b2444a35d23b2"
+  },
+  "scope": "Modal accesskit node metadata and existing injected-alert pointer/keyboard regression; explicit a11y Click routing, menu-overlay suppression and host cursor ownership are source/compile evidence. Native action delivery, background navigation, focus loop and composed/physical qualification remain open."
+}
