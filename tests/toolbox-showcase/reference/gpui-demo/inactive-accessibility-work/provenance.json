@@ -1,0 +1,7 @@
+{
+  "sources": {
+    "src/bin/gpui_demo.rs": "cd8bfd18e086da665a38d47ca0296718d47d500545ed27aaf6cbc48e87619ac4",
+    "src/bin/gpui_demo_a11y.rs": "2ac47126ec0045a36ee4e1fb353a0e1939dc82e9acdaff6c79592800feb68456"
+  },
+  "scope": "Skip multiline run/geometry construction when GPUI accessibility inactive; active-boundary and inactive construction test; production compile; no measured performance or native activation qualification"
+}

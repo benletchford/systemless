@@ -62,7 +62,8 @@ impl<E: Element> AccessibleState<E> {
         self
     }
 
-    pub fn guest_text_lines(mut self, bytes: &[u8], starts: &[usize], selection: std::ops::Range<usize>) -> Self {
+    pub fn guest_text_lines(mut self, bytes: &[u8], starts: &[usize], selection: std::ops::Range<usize>, active: bool) -> Self {
+        if !active { return self; }
         if starts.first() == Some(&0) && starts.last() == Some(&bytes.len())
             && starts.windows(2).all(|pair| pair[0] <= pair[1] && pair[1] <= bytes.len())
             && selection.start <= selection.end && selection.end <= bytes.len() {
@@ -274,9 +275,11 @@ mod tests {
 
     #[test]
     fn multiline_guest_offsets_keep_wrap_and_break_boundaries() {
-        let empty = AccessibleState::new(div().id("empty"), false).guest_text_lines(&[], &[0], 0..0);
+        let inactive = AccessibleState::new(div().id("inactive"), false).guest_text_lines(b"A\r", &[0, 2], 0..0, false);
+        assert!(inactive.lines.is_none()); assert!(inactive.selection.is_none());
+        let empty = AccessibleState::new(div().id("empty"), false).guest_text_lines(&[], &[0], 0..0, true);
         assert_eq!(empty.lines.unwrap(), vec![(0, String::new())]);
-        let terminated = AccessibleState::new(div().id("terminated"), false).guest_text_lines(b"A\r", &[0, 2], 2..2);
+        let terminated = AccessibleState::new(div().id("terminated"), false).guest_text_lines(b"A\r", &[0, 2], 2..2, true);
         assert_eq!(terminated.lines.unwrap(), vec![(0, "A\n".into()), (2, String::new())]);
 
         let lines = [(0, 3, accesskit::NodeId(1)), (3, 2, accesskit::NodeId(2))];

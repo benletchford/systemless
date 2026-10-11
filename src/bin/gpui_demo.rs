@@ -2026,8 +2026,10 @@ mod desktop {
                             }), false,
                     ).text_value(systemless::systems::macintosh::mac_roman::decode_mac_roman(&record.text), record.line_count > 1)
                         .guest_line_ids(accessible_line_ids)
-                        .guest_line_geometry(composition::accessible_line_geometry(record, clip, scene_scale))
-                        .guest_text_lines(&record.text, record.line_starts.as_deref().unwrap_or(&[]), record.selection.0..record.selection.1));
+                        .guest_line_geometry(if window.is_a11y_active() {
+                            composition::accessible_line_geometry(record, clip, scene_scale)
+                        } else { Vec::new() })
+                        .guest_text_lines(&record.text, record.line_starts.as_deref().unwrap_or(&[]), record.selection.0..record.selection.1, window.is_a11y_active()));
                 }
                 // Styled fields use the owning CPU's strikes and paint order.
                 // Visibility establishes the standard owner; exact native pixels
@@ -2077,8 +2079,10 @@ mod desktop {
                             }), false,
                     ).text_value(systemless::systems::macintosh::mac_roman::decode_mac_roman(&record.text), record.line_count > 1)
                         .guest_line_ids(accessible_line_ids)
-                        .guest_line_geometry(composition::accessible_line_geometry(record, clip, scene_scale))
-                        .guest_text_lines(&record.text, record.line_starts.as_deref().unwrap_or(&[]), record.selection.0..record.selection.1));
+                        .guest_line_geometry(if window.is_a11y_active() {
+                            composition::accessible_line_geometry(record, clip, scene_scale)
+                        } else { Vec::new() })
+                        .guest_text_lines(&record.text, record.line_starts.as_deref().unwrap_or(&[]), record.selection.0..record.selection.1, window.is_a11y_active()));
                 }
                 // CDEF-owned standard controls can use Kit components while their
                 // ControlRecord state and tracking remain guest-owned.
