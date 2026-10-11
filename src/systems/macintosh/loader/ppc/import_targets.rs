@@ -125,6 +125,7 @@ pub enum PpcImportDispatcherTarget {
     GetDiskFragment,
     InitCursor,
     GetQDGlobalsArrow,
+    GetQDGlobalsScreenBits,
     HideCursor,
     ShowCursor,
     ShieldCursor,
@@ -2731,6 +2732,8 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetDiskFragment") => PpcImportDispatcherTarget::GetDiskFragment,
         ("InterfaceLib", "InitCursor") => PpcImportDispatcherTarget::InitCursor,
         ("InterfaceLib", "GetQDGlobalsArrow") => PpcImportDispatcherTarget::GetQDGlobalsArrow,
+        ("InterfaceLib" | "CarbonLib", "GetQDGlobalsScreenBits" | "getqdglobalsscreenbits") =>
+            PpcImportDispatcherTarget::GetQDGlobalsScreenBits,
         ("InterfaceLib", "HideCursor") => PpcImportDispatcherTarget::HideCursor,
         ("InterfaceLib", "ShowCursor") => PpcImportDispatcherTarget::ShowCursor,
         ("InterfaceLib", "ShieldCursor") => PpcImportDispatcherTarget::ShieldCursor,

@@ -5728,3 +5728,73 @@ fn fill_round_rect_records_pattern_and_curved_region_without_painting() {
         Some(17)
     );
 }
+
+#[test]
+fn qd_global_screen_bits_copies_live_bitmap_and_guards_complete_destination() {
+    for library in ["InterfaceLib", "CarbonLib"] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+            library.as_bytes(),
+            b"GetQDGlobalsScreenBits",
+        ))
+        .unwrap();
+        let target = dispatcher_target_for_import(library, "GetQDGlobalsScreenBits");
+        assert_eq!(target, PpcImportDispatcherTarget::GetQDGlobalsScreenBits);
+        assert_eq!(
+            dispatcher_target_for_import(library, "getqdglobalsscreenbits"),
+            target
+        );
+        let destination = PPC_DATA_BASE + 0x2400;
+        loaded.memory.add_region(destination - 1, vec![0xA5; 16]);
+        let front = loaded
+            .gworlds
+            .iter_mut()
+            .find(|g| g.port == PPC_MAIN_GWORLD)
+            .unwrap();
+        front.width = 320;
+        front.height = 240;
+        front.row_bytes = 640;
+        loaded.cpu.gpr[3] = destination;
+        run_test_import(&mut loaded, target.clone());
+        assert_eq!(loaded.cpu.gpr[3], destination);
+        assert_eq!(
+            loaded.memory.read_u32_be(destination),
+            Some(PPC_MAIN_SCREEN_BASE)
+        );
+        assert_eq!(loaded.memory.read_u16_be(destination + 4), Some(640));
+        assert_eq!(
+            ppc_read_rect(&mut loaded.memory, destination + 6),
+            Some((0, 0, 240, 320))
+        );
+        assert_eq!(loaded.memory.read_u8(destination - 1), Some(0xA5));
+        assert_eq!(loaded.memory.read_u8(destination + 14), Some(0xA5));
+        let globals = PPC_DATA_BASE + 0x2800;
+        loaded.memory.add_region(globals - 126, vec![0; 130]);
+        loaded.cpu.gpr[3] = globals;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::InitGraf);
+        let source = globals - 122;
+        // The initialized global record, including signed bounds, is authoritative.
+        loaded.memory.write_u32_be(source, 0x00123456).unwrap();
+        loaded.memory.write_u16_be(source + 4, 512).unwrap();
+        ppc_write_rect(&mut loaded.memory, source + 6, -12, -24, 188, 276).unwrap();
+        let original = ppc_memory_read_bytes(&mut loaded.memory, source, 14).unwrap();
+        loaded.cpu.gpr[3] = destination;
+        run_test_import(&mut loaded, target.clone());
+        assert_eq!(loaded.cpu.gpr[3], destination);
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, destination, 14),
+            Some(original)
+        );
+        let short = 0x70000000;
+        loaded.memory.add_region(short, vec![0x5A; 13]);
+        assert_eq!(loaded.memory.read_u8(short + 13), None);
+        for invalid in [0, short, u32::MAX - 6] {
+            loaded.cpu.gpr[3] = invalid;
+            run_test_import(&mut loaded, target.clone());
+            assert_eq!(loaded.cpu.gpr[3], 0);
+        }
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, short, 13),
+            Some(vec![0x5A; 13])
+        );
+    }
+}

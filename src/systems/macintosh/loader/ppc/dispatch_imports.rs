@@ -1751,6 +1751,7 @@ pub(crate) fn dispatch_supported_import(
             unreachable!("resource imports return through dispatch_resource_import")
         }
         PpcImportDispatcherTarget::InitGraf
+        | PpcImportDispatcherTarget::GetQDGlobalsScreenBits
         | PpcImportDispatcherTarget::GetForeColor
         | PpcImportDispatcherTarget::GetBackColor
         | PpcImportDispatcherTarget::GetGray
