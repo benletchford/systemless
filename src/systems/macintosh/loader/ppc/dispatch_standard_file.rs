@@ -618,6 +618,7 @@ fn ppc_standard_file_write_filter_pb(
     memory: &mut PpcSectionMem,
     filter_pb: u32,
     entry: &PpcStandardFileEntry,
+    volume_ref: i16,
 ) -> bool {
     if !ppc_memory_can_write_bytes(memory, filter_pb, PPC_STANDARD_FILE_FILTER_PB_SIZE) {
         return false;
@@ -628,7 +629,7 @@ fn ppc_standard_file_write_filter_pb(
     ppc_write_pstring_bytes(memory, name_ptr, &entry.name)
         && memory.write_u32_be(filter_pb + 18, name_ptr).is_some()
         && memory
-            .write_u16_be(filter_pb + 22, PPC_BOOT_VOLUME_REF_NUM as u16)
+            .write_u16_be(filter_pb + 22, volume_ref as u16)
             .is_some()
         && memory.write_u16_be(filter_pb + 28, 0).is_some()
         && memory
@@ -661,7 +662,7 @@ fn ppc_standard_file_filter_next_action(
         state.next_entry = state.next_entry.saturating_add(1);
     }
     let entry = state.tracking.entries.get(state.next_entry)?;
-    if !ppc_standard_file_write_filter_pb(memory, state.filter_pb, entry) {
+    if !ppc_standard_file_write_filter_pb(memory, state.filter_pb, entry, state.tracking.volume.ref_num) {
         return None;
     }
     let arguments = if filter.callback_with_data {

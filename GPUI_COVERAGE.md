@@ -24,6 +24,10 @@ capture run is archived in `styled-text-single-line-shared`, pinned to f565b695.
 All 192 fixture raster/state cases pass; this earlier bitmap evidence does not
 qualify the newer smooth typography or production readiness.
 
+### PPC mounted-volume custom filter
+
+Custom Open callbacks now receive the tracked mounted-volume reference in ioVRefNum. The compiled PPC callback regression passes (0.50s), recording boot then -42 across guest popup navigation while retaining modal ownership. All five custom_get_file regressions pass (0.71s). Evidence: `reference/gpui-demo/mounted-filter`. This is callback/event-loop evidence; physical GPUI input, full custom variants, mounted legacy acceptance and cross-CPU callback equivalence remain open. No broad release gate closes.
+
 ### Mounted-file Open reply identity
 
 Both CPU paths now preserve the mounted-volume reference through candidate creation and final Open replies. The expanded actual-guest modern Open/read regression passes four CPU/depth modes (8.22s), verifying volume -42, parent directory42000, exact file bytes and successful guest read/close. All seven selector library tests pass (7.41s). Evidence and failed diagnostics: `reference/gpui-demo/mounted-file-reply`. This is session/debug evidence; legacy mounted-file acceptance, custom filter callbacks, Save navigation, physical GPUI input and broader production qualification remain open. No broad gate closes.

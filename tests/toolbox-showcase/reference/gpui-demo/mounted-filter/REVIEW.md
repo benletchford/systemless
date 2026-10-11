@@ -1,0 +1,5 @@
+# PPC mounted-volume custom filter
+
+The PPC catalog parameter block now receives the tracked volume reference at ioVRefNum (+22), rather than a hard-coded boot reference. A synthetic PEF application executes a compiled PPC callback that records this field and includes candidates. Guest selector input highlights Archive and accepts it across separate guest yields. The callback records boot initially and -42 after navigation; the mounted TEXT candidate remains and the modal reply is untouched. The targeted test passes0.50s; all five custom_get_file regressions pass0.71s, including creator filtering, exclusions, callback data and classic cancellation. A failed first attempt batched two events into one yielded slice; its log is retained, and the corrected test explicitly asserts Archive highlight before acceptance.
+
+This establishes compiled PPC callback/event-loop behavior. It does not qualify physical GPUI input, native appearance, all custom dialog/filter variants, mounted legacy acceptance or cross-CPU callback equivalence. All broad production gates remain open.

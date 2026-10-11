@@ -2619,6 +2619,69 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn custom_get_file_filter_receives_mounted_volume_after_popup_switch() {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CustomGetFile")).unwrap();
+        let callback = PPC_DATA_BASE + 0x2000;
+        let reply = PPC_DATA_BASE + 0x2100;
+        let observed = PPC_DATA_BASE + 0x2200;
+        loaded.memory.add_region(callback, vec![0; 24]);
+        loaded.memory.add_region(reply, vec![0xaa; 88]);
+        loaded.memory.add_region(observed, vec![0; 2]);
+        // Guest callback records ioVRefNum and includes every candidate.
+        for (offset, instruction) in [
+            0x3c80_0000 | (observed >> 16), // lis r4, address high
+            0x6084_0000 | (observed & 0xffff), // ori r4, r4, address low
+            0xa8a3_0016, // lha r5, ioVRefNum(r3)
+            0xb0a4_0000, // sth r5, 0(r4)
+            0x3860_0000, // li r3, false
+            0x4e80_0020, // blr
+        ].into_iter().enumerate() {
+            loaded.memory.write_u32_be(callback + offset as u32 * 4, instruction).unwrap();
+        }
+        loaded.seed_vfs_volumes(vec![PpcVfsVolumeRecord {
+            ref_num: -42, name: "Archive".into(), root_dir_id: 42000, attributes: 0x8080,
+            file_count: 1, allocation_block_count: 100, allocation_block_size: 2048,
+            clump_size: 2048, free_blocks: 0, bitmap_start: 0, allocation_pointer: 0,
+            allocation_start: 0, next_catalog_id: 42001, created_date: 0, modified_date: 0,
+        }]);
+        loaded.vfs_directories.push(PpcVfsDirectory {
+            dir_id: 42000, parent_dir_id: 1, path: "Archive".into(), creator: 0,
+            file_type: 0, finder_flags: 0, dirty: false,
+        });
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: "Archive/Mounted.txt".into(), data: b"mounted".to_vec().into(), creator: 0,
+            file_type: u32::from_be_bytes(*b"TEXT"), finder_flags: 0, dirty: false,
+        });
+        loaded.cpu.gpr[3] = callback;
+        loaded.cpu.gpr[4] = u32::MAX;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = reply;
+        loaded.run_with_hle_imports(1024);
+        assert_eq!(loaded.memory.read_u16_be(observed), Some(PPC_BOOT_VOLUME_REF_NUM as u16));
+        let bounds = loaded.toolbox_startup.standard_file_get_tracking.as_ref().unwrap().bounds;
+        let event = |what, message, where_v, where_h| PpcQueuedEvent {
+            what, message, when: 0, where_v, where_h, modifiers: 0,
+        };
+        loaded.set_event_queue([event(1, 0, bounds.0 + PPC_STANDARD_FILE_GET_VOLUME_RECT.0 + 5,
+            bounds.1 + PPC_STANDARD_FILE_GET_VOLUME_RECT.1 + 5)]);
+        loaded.run_with_hle_imports(128);
+        assert!(loaded.toolbox_startup.standard_file_get_tracking.as_ref().unwrap().volume_popup.is_some());
+        loaded.set_event_queue([event(3, 0x77 << 8, 0, 0)]);
+        loaded.run_with_hle_imports(128);
+        let popup = loaded.toolbox_startup.standard_file_get_tracking.as_ref().unwrap().volume_popup.as_ref().unwrap();
+        assert_eq!(popup.choices[popup.highlighted.unwrap()].ref_num, -42);
+        loaded.set_event_queue([event(3, (0x24 << 8) | 13, 0, 0)]);
+        loaded.run_with_hle_imports(2048);
+        let tracking = loaded.toolbox_startup.standard_file_get_tracking.as_ref().unwrap();
+        assert_eq!(tracking.current_dir_id, 42000);
+        assert_eq!(tracking.volume.ref_num, -42);
+        assert_eq!(tracking.entries.len(), 1);
+        assert_eq!(tracking.entries[0].name, b"Mounted.txt");
+        assert_eq!(loaded.memory.read_u16_be(observed), Some((-42i16) as u16));
+        assert_eq!(loaded.memory.read_u8(reply), Some(0xaa), "filter callback must retain the modal caller");
+    }
+
+    #[test]
     fn hle_import_runner_custom_get_file_excludes_true_filter_results_and_resumes_caller() {
         let pef = synthetic_pef_with_import(b"CustomGetFile");
         let mut loaded = load_pef_application(&pef).unwrap();
