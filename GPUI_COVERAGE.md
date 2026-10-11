@@ -5548,3 +5548,15 @@ Toolbox creation. Manifests, paired guest/composed images, source/binary hashes
 and fixture patch provenance are in `reference/gpui-demo/movable-dialog-title-compositor`.
 Suspended states, guest drag/lifecycle, physical input and independent Macintosh
 fidelity for this variant remain open.
+
+### Movable title guest suspend checkpoint (2026-10-11)
+
+The test-only modeless capture helper now accepts guest suspension and records
+actual dialog/title state. Eight reviewed shared Demo active/suspended captures
+pass across mono68k/0.75, colour68k/1, PPC8/2 and PPC16/1.5 using the separate
+movable-dialog fixture. Guest suspend preserves identity, title position/clip,
+bounds, text, values and selection, while muted title/button appearance and
+PPC caret removal are visible. Final build/test compilation pass (6.06s/7.02s).
+Evidence is under `reference/gpui-demo/movable-dialog-states`. Guest drag,
+reactivation/lifecycle, broader scales, physical observer integration and
+independent font fidelity remain open; all production gates remain open.
