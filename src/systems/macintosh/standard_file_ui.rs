@@ -82,6 +82,8 @@ pub struct StandardFileSnapshot {
     pub list_name_limit: Option<usize>,
     /// Guest Open volume text and origin relative to its popup rectangle.
     pub volume_text: Option<(String, (i16, i16))>,
+    /// Current guest-painted rightmost 19 columns of the Open selector.
+    pub volume_indicator_rgba: Option<std::sync::Arc<[u8]>>,
     pub confirming_replace: bool,
     pub new_folder: Option<StandardFileNewFolderSnapshot>,
     /// True only for the modern standard entry points. This alone does not
@@ -856,5 +858,26 @@ mod save_caret_tests {
         caret.reset(90);
         assert!(!caret.idle(119, 30, true));
         assert!(caret.idle(120, 30, true));
+    }
+}
+
+/// Retain selector chrome from the same frame as its presentation snapshot.
+/// The current standard labels leave these columns for the guest indicator.
+impl StandardFileSnapshot {
+    pub fn retain_volume_indicator(&mut self, rgba: &[u8], width: u32, height: u32) {
+        let panel = self;
+        panel.volume_indicator_rgba = None;
+        let Some(layout) = &panel.get_layout else { return; };
+        let (top, left, bottom, right) = layout.volume;
+        let crop_left = right.saturating_sub(19).max(left);
+        if right - crop_left != 19 || top < 0 || crop_left < 0 || bottom <= top
+            || i32::from(right) > width as i32 || i32::from(bottom) > height as i32
+            || rgba.len() != width as usize * height as usize * 4 { return; }
+        let mut pixels = Vec::with_capacity(19 * (bottom - top) as usize * 4);
+        for y in top..bottom {
+            let start = (y as usize * width as usize + crop_left as usize) * 4;
+            pixels.extend_from_slice(&rgba[start..start + 19 * 4]);
+        }
+        panel.volume_indicator_rgba = Some(pixels.into());
     }
 }

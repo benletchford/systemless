@@ -106,3 +106,10 @@ font symbol, preserve label bounds and paint order, and retain guest event
 routing. The selector drawing alone does not establish volume-selection
 tracking: that behavior needs a separate source and interaction audit. This is
 an identified release gap, not an accepted fallback or completed control.
+
+The missing-indicator presentation gap above is superseded by the current
+`standard-file-volume-indicator` implementation/evidence: same-frame guest
+chrome is retained in the shared worker and capture path, with exact cross-mode
+pixel checks and two reviewed compositions. Classic `standard_file_get_mouse_action`
+and PPC `ppc_standard_file_get_service` do not dispatch a selector click, so
+volume switching remains a guest Toolbox implementation gap.

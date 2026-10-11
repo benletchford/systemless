@@ -269,6 +269,7 @@ impl PpcToolboxStartupState {
                 list_text_origin: (3, 13),
                 directory_marker: ">",
                 list_name_limit: None,
+                volume_indicator_rgba: None,
                 volume_text: Some(("Maci...".into(), (0, 12))),
                 confirming_replace: false,
                         new_folder: None,
@@ -332,6 +333,7 @@ impl PpcToolboxStartupState {
                 list_text_origin: (3, 13),
                 directory_marker: ">",
                 list_name_limit: None,
+                volume_indicator_rgba: None,
                 volume_text: None,
             confirming_replace: tracking.confirming_replace,
             new_folder: tracking.new_folder.as_ref().map(|folder| folder.snapshot(tracking.bounds, 2, |bytes| {

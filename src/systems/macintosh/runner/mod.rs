@@ -3711,6 +3711,7 @@ impl FixtureRunner {
                 list_text_origin: (4, 11),
                 directory_marker: "▸",
                 list_name_limit: Some(36),
+                volume_indicator_rgba: None,
                 volume_text: Some((
                     TrapDispatcher::popup_control_display_title(
                         crate::trap::dispatch::BOOT_VOLUME_NAME,
@@ -3765,6 +3766,7 @@ impl FixtureRunner {
                 list_text_origin: (4, 11),
                 directory_marker: "▸",
                 list_name_limit: Some(36),
+                volume_indicator_rgba: None,
                 volume_text: None,
             confirming_replace: tracking.confirming_replace,
             new_folder: tracking.new_folder.as_ref().map(|folder| folder.snapshot(tracking.bounds, 1, |bytes| {
