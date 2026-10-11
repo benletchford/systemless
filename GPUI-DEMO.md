@@ -91,6 +91,16 @@ WDEFs retain guest rendering. Occlusion by a custom nonrectangular window uses
 its bounding box conservatively, leaving original pixels in that area. Standard
 fullscreen takeover suppresses the frame overlays. Window movement keeps the
 guest's original drag outline rather than introducing live GPUI window movement.
+Use `--capture-windows` and `--capture-windows-moved` for headless composed
+captures of the showcase's three overlapping windows before and after a guest
+title-bar drag. The capture checks that the front window retains its identity
+and moves by the requested guest-coordinate delta. Reviewed captures are
+[68K initial](tests/toolbox-showcase/reference/gpui-demo/21-windows-68k.png),
+[68K moved](tests/toolbox-showcase/reference/gpui-demo/21-windows-moved-68k.png),
+[PowerPC initial](tests/toolbox-showcase/reference/gpui-demo/21-windows-ppc.png),
+and [PowerPC moved](tests/toolbox-showcase/reference/gpui-demo/21-windows-moved-ppc.png).
+The scripted drag enters the guest directly; host pointer drag routing remains
+to be qualified.
 The gutter overlays are presentation only: scrollbar tracks do not invent a
 thumb or scroll state, and input in those areas still reaches the guest. Real
 standard scrollbar controls in document windows now show a guest-value thumb;
