@@ -24,6 +24,19 @@ capture run is archived in `styled-text-single-line-shared`, pinned to f565b695.
 All 192 fixture raster/state cases pass; this earlier bitmap evidence does not
 qualify the newer smooth typography or production readiness.
 
+### Standard File selector scale matrix
+
+All 16 shared Demo Open-panel captures complete across mono68k, colour68k,
+PPC8/PPC16 and scene scales0.75/1/1.5/2. Actual depth and scene scale are asserted
+for every case, and source/executable hashes still match after completion. Every
+panel crop was directly reviewed at original pixel resolution: system labels
+remain smooth and contained, and the guest selector indicator remains beside
+its label. One full mono scale0.75 scene was also reviewed. Evidence is under
+`standard-file-selector-scale-matrix`; crop bounds and review scope are recorded.
+This establishes this fixture state’s composed appearance, not inactive-state
+coverage, independent Macintosh font fidelity, physical input or volume switching.
+It supersedes the pending-matrix status below; production gates remain open.
+
 ### Standard File selector atomic fallback
 
 The Open panel now requires its complete retained indicator region before GPUI

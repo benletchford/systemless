@@ -1,0 +1,90 @@
+{
+  "scope": "Direct visual review log; no matrix completion or native oracle claim",
+  "reviewed": [
+    {
+      "image": "mono-0.75.png",
+      "viewer_resize": null,
+      "findings": "Smooth system labels remain contained; retained selector indicator visible beside label; guest-owned application text remains pixel-based."
+    },
+    {
+      "image": "mono-0.75.panel.png",
+      "viewer_resize": null,
+      "findings": "System labels smooth and contained; guest selector indicator visible beside label at recorded scene scale. Fixture state only."
+    },
+    {
+      "image": "mono-1.panel.png",
+      "viewer_resize": null,
+      "findings": "System labels smooth and contained; guest selector indicator visible beside label at recorded scene scale. Fixture state only."
+    },
+    {
+      "image": "mono-1.5.panel.png",
+      "viewer_resize": null,
+      "findings": "System labels smooth and contained; guest selector indicator visible beside label at recorded scene scale. Fixture state only."
+    },
+    {
+      "image": "mono-2.panel.png",
+      "viewer_resize": null,
+      "findings": "System labels smooth and contained; guest selector indicator visible beside label at recorded scene scale. Fixture state only."
+    },
+    {
+      "image": "colour-0.75.panel.png",
+      "viewer_resize": null,
+      "findings": "System labels smooth and contained; guest selector indicator visible beside label at recorded scene scale. Fixture state only."
+    },
+    {
+      "image": "colour-1.panel.png",
+      "viewer_resize": null,
+      "findings": "System labels smooth and contained; guest selector indicator visible beside label at recorded scene scale. Fixture state only."
+    },
+    {
+      "image": "colour-1.5.panel.png",
+      "viewer_resize": null,
+      "findings": "System labels smooth and contained; guest selector indicator visible beside label at recorded scene scale. Fixture state only."
+    },
+    {
+      "image": "colour-2.panel.png",
+      "viewer_resize": null,
+      "findings": "System labels smooth and contained; guest selector indicator visible beside label at recorded scene scale. Fixture state only."
+    },
+    {
+      "image": "ppc8-0.75.panel.png",
+      "viewer_resize": null,
+      "findings": "System labels smooth and contained; guest selector indicator visible beside label at recorded scene scale. Fixture state only."
+    },
+    {
+      "image": "ppc8-1.panel.png",
+      "viewer_resize": null,
+      "findings": "System labels smooth and contained; guest selector indicator visible beside label at recorded scene scale. Fixture state only."
+    },
+    {
+      "image": "ppc8-1.5.panel.png",
+      "viewer_resize": null,
+      "findings": "System labels smooth and contained; guest selector indicator visible beside label at recorded scene scale. Fixture state only."
+    },
+    {
+      "image": "ppc8-2.panel.png",
+      "viewer_resize": null,
+      "findings": "System labels smooth and contained; guest selector indicator visible beside label at recorded scene scale. Fixture state only."
+    },
+    {
+      "image": "ppc16-0.75.panel.png",
+      "viewer_resize": null,
+      "findings": "System labels smooth and contained; guest selector indicator visible beside label at recorded scene scale. Fixture state only."
+    },
+    {
+      "image": "ppc16-1.panel.png",
+      "viewer_resize": null,
+      "findings": "System labels smooth and contained; guest selector indicator visible beside label at recorded scene scale. Fixture state only."
+    },
+    {
+      "image": "ppc16-1.5.panel.png",
+      "viewer_resize": null,
+      "findings": "System labels smooth and contained; guest selector indicator visible beside label at recorded scene scale. Fixture state only."
+    },
+    {
+      "image": "ppc16-2.panel.png",
+      "viewer_resize": null,
+      "findings": "System labels smooth and contained; guest selector indicator visible beside label at recorded scene scale. Fixture state only."
+    }
+  ]
+}
