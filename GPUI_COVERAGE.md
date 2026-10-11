@@ -4907,3 +4907,14 @@ final text, caret and sibling fields. Four-mode GPUI platform checks pass
 text. Evidence is archived in `reference/gpui-demo/disjoint-dialog-replacement`.
 Save/New Folder disjoint workflows, physical input and visual/native
 qualification remain open. No broad production gate is closed.
+
+
+### Disjoint Standard File composition qualification
+
+Save/New Folder disjoint worker checks pass across all four CPU/depth modes
+(33.14s), including final text/caret, unchanged parent state, cancellation back
+to Save and resumed typing. Eight GPUI editor/mode checks pass (29.97s),
+verifying separate ordered requests and exact intermediate text. Evidence is
+archived in `reference/gpui-demo/disjoint-file-replacement`. Physical IME,
+composed visual/native fidelity, broader lifecycle and release qualification
+remain open. No broad production gate is closed.

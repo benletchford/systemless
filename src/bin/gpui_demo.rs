@@ -10048,6 +10048,22 @@ mod desktop {
                     .is_some_and(|(_, owner)| owner == &replacement_owner));
                 assert_eq!(rejected.standard_file.unwrap().name, actual.name);
                 eprintln!("PASS worker-save-explicit-replacement powerpc={powerpc} depth={actual_depth}");
+                let current = super::super::input::standard_file_text_owner(&actual).unwrap();
+                let pinned = super::super::input::TextInputOwner { identity: current.identity,
+                    target: super::super::input::TextInputTarget::StandardFile { new_folder: false },
+                    text: current.text.clone(), selection: current.selection.clone() };
+                let mut stage = super::super::input::GuestComposition::default();
+                stage.synchronize(Some(pinned)); assert!(stage.mark("é", 1..1));
+                let (first, (intermediate, request, bytes)) = stage.commit_disjoint_range(3..4, "K").unwrap();
+                let mut disjoint_text = current.text; disjoint_text.splice(current.selection, [0x8e]); disjoint_text.splice(3..4, [b'K']);
+                let disjoint_name = systemless::systems::macintosh::mac_roman::decode_mac_roman(&disjoint_text);
+                worker.0.send(Command::CommitText(first.0, first.1)).unwrap();
+                worker.0.send(Command::ReplaceText(intermediate, request.selection, bytes, None)).unwrap();
+                let actual = wait("Save disjoint staged replacement", &updates, |update| update.standard_file.as_ref().is_some_and(|panel|
+                    panel.name.as_deref() == Some(disjoint_name.as_str()) && panel.name_selection == Some((4, 4)))).standard_file.unwrap();
+                eprintln!("PASS worker-file-disjoint-replacement powerpc={powerpc} depth={actual_depth} new_folder=false");
+                expected = disjoint_text;
+
 
                 eprintln!("PASS worker-standard-file-rapid-composition-and-rejection powerpc={powerpc} depth={actual_depth}");
                 worker.0.send(Command::ActivateFile(actual.guest_id, actual.generation,
@@ -10103,6 +10119,22 @@ mod desktop {
                     .is_some_and(|(_, owner)| owner == &replacement_owner));
                 assert_eq!(rejected.standard_file.unwrap().new_folder.unwrap().name, replacement);
                 eprintln!("PASS worker-new-folder-explicit-replacement powerpc={powerpc} depth={actual_depth}");
+                let current = super::super::input::standard_file_text_owner(&edited).unwrap();
+                let pinned = super::super::input::TextInputOwner { identity: current.identity,
+                    target: super::super::input::TextInputTarget::StandardFile { new_folder: true },
+                    text: current.text.clone(), selection: current.selection.clone() };
+                let mut stage = super::super::input::GuestComposition::default();
+                stage.synchronize(Some(pinned)); assert!(stage.mark("é", 1..1));
+                let (first, (intermediate, request, bytes)) = stage.commit_disjoint_range(3..4, "K").unwrap();
+                let mut disjoint_text = current.text; disjoint_text.splice(current.selection, [0x8e]); disjoint_text.splice(3..4, [b'K']);
+                let disjoint_name = systemless::systems::macintosh::mac_roman::decode_mac_roman(&disjoint_text);
+                worker.0.send(Command::CommitText(first.0, first.1)).unwrap();
+                worker.0.send(Command::ReplaceText(intermediate, request.selection, bytes, None)).unwrap();
+                let edited = wait("New Folder disjoint staged replacement", &updates, |update| update.standard_file.as_ref().is_some_and(|panel|
+                    panel.new_folder.as_ref().is_some_and(|folder| folder.name == disjoint_name && folder.selection == (4, 4)))).standard_file.unwrap();
+                eprintln!("PASS worker-file-disjoint-replacement powerpc={powerpc} depth={actual_depth} new_folder=true");
+                assert_eq!(edited.name, actual.name); assert_eq!(edited.entries, actual.entries);
+
 
                 worker.0.send(Command::ActivateFile(edited.guest_id, edited.generation,
                     super::super::activation::FileAction::CancelNewFolder)).unwrap();
@@ -12707,6 +12739,20 @@ mod desktop {
                     view.update(cx, |demo, _| { demo.composition.reject(owner); });
                 }).unwrap();
                 eprintln!("PASS file-platform-explicit-replacement powerpc={powerpc} depth={depth} new_folder={new_folder}");
+                cx.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                    demo.synchronize_composition(window, cx);
+                    demo.replace_and_mark_text_in_range(None, "é", Some(1..1), window, cx);
+                    demo.replace_text_in_range(Some(0..1), "K", window, cx);
+                })).unwrap();
+                let requests: Vec<_> = receiver.try_iter().collect(); assert_eq!(requests.len(), 2);
+                let super::Command::CommitText(first, stage) = &requests[0] else { panic!("filename stage must enter guest first"); };
+                let super::Command::ReplaceText(second, range, replacement, caret) = &requests[1] else { panic!("filename disjoint edit must remain separate"); };
+                assert_eq!(first.identity, actual.identity); assert_eq!(stage, &[0x8e]);
+                assert_eq!(*range, 0..1); assert_eq!(replacement, b"K"); assert_eq!(*caret, None);
+                let mut intermediate = first.text.clone(); intermediate.splice(first.selection.clone(), stage.iter().copied());
+                assert_eq!(second.text, intermediate); assert_eq!(second.identity, first.identity);
+                eprintln!("PASS file-platform-disjoint-requests powerpc={powerpc} depth={depth} new_folder={new_folder}");
+
 
                 // A modal transition must cancel pending marked text and replace ownership.
                 cx.update_window(window.into(), |_, window, cx| {
