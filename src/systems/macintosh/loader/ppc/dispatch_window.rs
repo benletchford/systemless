@@ -529,14 +529,15 @@ pub(super) fn dispatch_window_import(
                         ppc_invalidate_window_local_rect(memory, window, port_rect);
                     }
                     // Macintosh Toolbox Essentials (1992), Window Manager,
-                    // PaintOne: newly exposed content uses its window color table.
+                    // PaintOne: newly exposed content uses its window color table,
+                    // or the default white background when there is no WCTab.
                     let content_color = ppc_window_color_table_handle(memory, window)
-                        .and_then(|handle| ppc_window_content_color(memory, handle));
-                    if let (Some(rect), Some(color)) = (
-                        ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET)),
-                        content_color,
-                    ) {
-                        let _ = ppc_paint_window_background_bounds(memory, gworlds, window, rect, color);
+                        .and_then(|handle| ppc_window_content_color(memory, handle))
+                        .unwrap_or(PPC_RGB_WHITE);
+                    if let Some(rect) =
+                        ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET))
+                    {
+                        let _ = ppc_paint_window_background_bounds(memory, gworlds, window, rect, content_color);
                     }
                     if ppc_front_visible_process_window(memory, window_list) != Some(window) {
                         ppc_draw_existing_window_frame(
