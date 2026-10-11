@@ -24,6 +24,19 @@ capture run is archived in `styled-text-single-line-shared`, pinned to f565b695.
 All 192 fixture raster/state cases pass; this earlier bitmap evidence does not
 qualify the newer smooth typography or production readiness.
 
+### Standard File current composed typography
+
+Four current shared Demo captures of Open/Save were directly reviewed: mono68k
+at scene scale1 and explicit PPC16 at scale1.5. System labels are visibly smooth;
+application-owned headings retain guest drawing. PPC images were displayed at
+1824x1368 from 2400x1800; mono images were viewed at their 1600x1200 size. The
+mono Open guest source was also reviewed and exposes a concrete parity gap:
+the GPUI volume-selector overlay omits the guest dropdown indicator. That
+selector requires faithful presentation and interaction qualification before
+this panel can be considered complete. Evidence and source/executable hashes
+are under `reference/gpui-demo/standard-file-current-typography`. This is selected
+visual evidence, not native font fidelity or complete state/CPU qualification.
+
 ### Standard File explicit display-depth coverage
 
 The modal snapshot regression now explicitly initializes and asserts mono68k,
