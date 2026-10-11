@@ -138,6 +138,34 @@ fn create_native_snapshot_window(title: &[u8]) -> (FixtureRunner, u32) {
     (runner, window)
 }
 
+#[test]
+fn nonrectangular_window_regions_keep_guest_presentation_on_both_cpus() {
+    for (mut runner, window) in [
+        create_classic_snapshot_window(b"Classic"),
+        create_native_snapshot_window(b"PowerPC"),
+    ] {
+        let frame = runner.window_frame_snapshot().remove(0);
+        assert!(frame.rectangular_regions);
+        assert!(frame.presentation_definition_id().is_some());
+        let definition_id = frame.definition_id;
+
+        for offset in [
+            crate::window_manager::WINDOW_STRUCTURE_RGN_OFFSET,
+            crate::window_manager::WINDOW_CONTENT_RGN_OFFSET,
+        ] {
+            let handle = runner.bus.read_long(window + offset);
+            let region = runner.bus.read_long(handle);
+            runner.bus.write_word(region, 12);
+            let frame = runner.window_frame_snapshot().remove(0);
+            assert_eq!(frame.definition_id, definition_id);
+            assert!(!frame.rectangular_regions);
+            assert_eq!(frame.presentation_definition_id(), None);
+            runner.bus.write_word(region, 10);
+        }
+        assert!(runner.window_frame_snapshot()[0].rectangular_regions);
+    }
+}
+
 // Retain the two divergent expressions from the deleted native projector so
 // the integration test proves the common projection changes their result.
 // This is source-model evidence; it is not presented as a captured old run.

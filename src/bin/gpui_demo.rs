@@ -604,7 +604,7 @@ mod desktop {
                 && windows.iter().any(|frame| {
                     frame.guest_id == dialog.guest_id
                         && frame.generation == dialog.generation
-                        && frame.definition_id == Some(1)
+                        && frame.presentation_definition_id() == Some(1)
                 })
                 && !dialog.items.is_empty()
                 && dialog.items.iter().all(|item| match item.kind {
@@ -842,7 +842,10 @@ mod desktop {
                         // Inside Macintosh I, I-287--I-289.
                         if frame.close_box
                             && frame.window.active
-                            && matches!(frame.definition_id, Some(0 | 4 | 8 | 12 | 16))
+                            && matches!(
+                                frame.presentation_definition_id(),
+                                Some(0 | 4 | 8 | 12 | 16)
+                            )
                         {
                             let (v, h) = self.mouse_position;
                             let close_pressed = self.mouse_down
@@ -864,7 +867,9 @@ mod desktop {
                                     .child("×"),
                             );
                         }
-                        if frame.window.active && matches!(frame.definition_id, Some(8 | 12)) {
+                        if frame.window.active
+                            && matches!(frame.presentation_definition_id(), Some(8 | 12))
+                        {
                             strip = strip.child(
                                 div()
                                     .absolute()
@@ -3372,6 +3377,7 @@ mod desktop {
                             active: true,
                         },
                         definition_id: Some(0),
+                        rectangular_regions: true,
                         close_box: true,
                         grow_icon_drawn: false,
                     },
@@ -3388,6 +3394,7 @@ mod desktop {
                             active: false,
                         },
                         definition_id: Some(4),
+                        rectangular_regions: true,
                         close_box: false,
                         grow_icon_drawn: false,
                     },
@@ -3582,6 +3589,7 @@ mod desktop {
                         active: true,
                     },
                     definition_id: Some(0),
+                    rectangular_regions: true,
                     close_box: true,
                     grow_icon_drawn: false,
                 }];
@@ -5901,6 +5909,7 @@ mod desktop {
                             active: true,
                         },
                         definition_id: Some(8),
+                        rectangular_regions: true,
                         close_box: true,
                         grow_icon_drawn: false,
                     }];
@@ -6179,6 +6188,7 @@ mod desktop {
                             active: true,
                         },
                         definition_id: Some(1),
+                        rectangular_regions: true,
                         close_box: false,
                         grow_icon_drawn: false,
                     }];
@@ -6279,6 +6289,7 @@ mod desktop {
                             active: true,
                         },
                         definition_id: Some(1),
+                        rectangular_regions: true,
                         close_box: false,
                         grow_icon_drawn: false,
                     }];
@@ -6570,6 +6581,7 @@ mod desktop {
                             active: true,
                         },
                         definition_id: Some(0),
+                        rectangular_regions: true,
                         close_box: false,
                         grow_icon_drawn: false,
                     }];
@@ -6674,6 +6686,7 @@ mod desktop {
                             active: true,
                         },
                         definition_id: Some(0),
+                        rectangular_regions: true,
                         close_box: false,
                         grow_icon_drawn: false,
                     }];

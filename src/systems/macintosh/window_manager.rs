@@ -64,9 +64,22 @@ pub struct WindowFrameSnapshot {
     pub window: WindowSnapshot,
     /// Unknown or application-defined WDEFs must retain guest presentation.
     pub definition_id: Option<i16>,
+    /// False when the guest's structure or content region is nonrectangular.
+    pub rectangular_regions: bool,
     pub close_box: bool,
     /// The guest drew the standard grow icon at these current content bounds.
     pub grow_icon_drawn: bool,
+}
+
+impl WindowFrameSnapshot {
+    /// Presentation can use bounding-box clips only for rectangular regions.
+    pub fn presentation_definition_id(&self) -> Option<i16> {
+        if self.rectangular_regions {
+            self.definition_id
+        } else {
+            None
+        }
+    }
 }
 
 const WINDOW_VISIBLE_OFFSET: u32 = WINDOW_VISIBLE_FLAG_OFFSET;
@@ -108,6 +121,26 @@ fn snapshot_region_bounds(
     }
     let bounds = snapshot_read_rect(read_byte, region.wrapping_add(2));
     (bounds.2 > bounds.0 && bounds.3 > bounds.1).then_some(bounds)
+}
+
+/// A region's bounding box describes its full shape only when rgnSize is 10.
+/// Complex regions can have holes or disconnected areas, so a rectangular
+/// presentation overlay must leave those windows to the guest framebuffer.
+/// Inside Macintosh: Imaging With QuickDraw (1994), Chapter 2, "Regions".
+pub(crate) fn snapshot_window_regions_rectangular(
+    window: u32,
+    mut read_byte: impl FnMut(u32) -> u8,
+) -> bool {
+    [WINDOW_STRUCTURE_RGN_OFFSET, WINDOW_CONTENT_RGN_OFFSET]
+        .into_iter()
+        .all(|offset| {
+            let handle = snapshot_read_long(&mut read_byte, window.wrapping_add(offset));
+            if handle == 0 {
+                return false;
+            }
+            let region = snapshot_read_long(&mut read_byte, handle);
+            region != 0 && snapshot_read_word(&mut read_byte, region) == 10
+        })
 }
 
 pub(crate) fn snapshot_port_bounds_origin(
