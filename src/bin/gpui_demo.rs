@@ -1082,6 +1082,9 @@ mod desktop {
                         .into_iter().filter(|piece| self.controls[piece.control].proc_id == 0)
                         .map(|piece| piece.clip));
                 }
+                if let Some(popup) = self.guest_popup.as_ref() {
+                    clips.extend(super::popup::owned_rects(popup.bounds));
+                }
                 let color = cx.theme().background.to_rgb();
                 let background = [color.b, color.g, color.r, color.a].map(|channel| (channel * 255.).round() as u8);
                 let image = if clips.is_empty() {

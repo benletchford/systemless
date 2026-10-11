@@ -645,3 +645,19 @@ chains retain guest rendering; icon-bearing snapshots and styled classic rows
 are conservatively excluded. Styled PPC rows still need explicit presentation
 metadata. These standard-component gaps must be completed, not reclassified as
 permanent custom-definition fallback.
+
+Popup border qualification now covers the full standard-MDEF ownership area:
+the pane plus its two one-pixel shadow strips, preserving the unpainted corner
+pixels. These regions are masked in the source texture before filtering, and
+GPUI draws its border above the rows so selection backgrounds cannot erase it.
+Classic popup-control chrome now uses the PopUp shadow plan rather than the
+hierarchical-menu plan, eliminating a stray top-right pixel. Fresh reviewed
+monochrome 68K, colour 68K and PPC captures show the black edge remnants removed.
+The geometry regression and both existing popup tests pass (three tests), and
+the opt-in example builds.
+
+The broader library menu run passed 431 tests and failed
+`hle_import_runner_builds_and_draws_mbar_resources`: at the MenuList +4 assertion,
+the result is 0 rather than 1000. An isolated rerun with the classic renderer
+change removed reproduces the identical failure. This pre-existing readiness
+failure remains unresolved; the menu suite is not recorded as fully passing.
