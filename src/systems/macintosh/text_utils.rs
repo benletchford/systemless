@@ -203,6 +203,187 @@ pub fn evaluate_munger(
     }
 }
 
+/// ScriptUtil selector for TruncString (`$8208FFE0`).
+pub const TRUNC_STRING_SELECTOR: u32 = 0x8208_FFE0;
+
+/// ScriptUtil selector for TruncText (`$820CFFDE`).
+pub const TRUNC_TEXT_SELECTOR: u32 = 0x820C_FFDE;
+
+/// Truncation location: end of string (`smTruncEnd = 0`).
+pub const TRUNC_END: u16 = 0;
+
+/// Truncation location: middle of string (`smTruncMiddle = 0x4000`).
+pub const TRUNC_MIDDLE: u16 = 0x4000;
+
+/// Truncation result: no truncation required (`smNotTruncated = 0`).
+pub const TRUNC_NOT_TRUNCATED: i16 = 0;
+
+/// Truncation result: string was truncated (`smTruncated = 1`).
+pub const TRUNC_TRUNCATED: i16 = 1;
+
+/// Truncation result: truncation error (`smTruncErr = -1`).
+pub const TRUNC_ERR: i16 = -1;
+
+/// Single-byte ellipsis in Macintosh Roman character set (`$C9`, `…`).
+pub const MAC_ROMAN_ELLIPSIS: u8 = 0xC9;
+
+/// Truncation location specifying where the ellipsis should be inserted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TruncWhere {
+    /// Truncate at the end of the string (`smTruncEnd = 0`).
+    End,
+    /// Truncate in the middle of the string (`smTruncMiddle = 0x4000`).
+    Middle,
+}
+
+impl TruncWhere {
+    /// Parses a classic Macintosh `truncWhere` code.
+    pub fn from_code(code: u16) -> Option<Self> {
+        match code {
+            0 => Some(Self::End),
+            0x4000 => Some(Self::Middle),
+            _ => None,
+        }
+    }
+
+    /// Converts to the classic Macintosh `truncWhere` code.
+    pub fn to_code(self) -> u16 {
+        match self {
+            Self::End => TRUNC_END,
+            Self::Middle => TRUNC_MIDDLE,
+        }
+    }
+}
+
+/// Result of evaluating a `TruncText` or `TruncString` operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TruncEvaluation {
+    /// Result code: `TRUNC_NOT_TRUNCATED` (0), `TRUNC_TRUNCATED` (1), or `TRUNC_ERR` (-1).
+    pub result: i16,
+    /// New truncated byte vector if truncation occurred, or `None` if unchanged or error.
+    pub new_text: Option<Vec<u8>>,
+}
+
+impl TruncEvaluation {
+    /// Returns true if the string was truncated.
+    #[inline]
+    pub fn is_truncated(&self) -> bool {
+        self.result == TRUNC_TRUNCATED
+    }
+
+    /// Returns true if the operation completed successfully without error.
+    #[inline]
+    pub fn is_success(&self) -> bool {
+        self.result >= 0
+    }
+}
+
+/// Standard monospace 6-pixel glyph advance measuring fallback.
+#[inline]
+pub fn default_char_width_measure(bytes: &[u8]) -> i16 {
+    (bytes.len() as i16).saturating_mul(6)
+}
+
+/// Evaluates text truncation (`TruncText`).
+///
+/// References:
+/// - Inside Macintosh: Text (1993), Chapter 5 "Text Utilities", pp. 5-77..5-78
+///
+/// Parameters:
+/// - `text`: Byte slice of the text to evaluate.
+/// - `width`: Maximum allowable pixel width (or measured units).
+/// - `trunc_where`: Truncation location code (`0` for end, `0x4000` for middle).
+/// - `ellipsis`: Character byte to use for the ellipsis (e.g. `MAC_ROMAN_ELLIPSIS = 0xC9`).
+/// - `measure`: Closure that returns the measured width of a byte slice.
+pub fn evaluate_trunc_text(
+    text: &[u8],
+    width: i16,
+    trunc_where: u16,
+    ellipsis: u8,
+    mut measure: impl FnMut(&[u8]) -> i16,
+) -> TruncEvaluation {
+    let Some(where_) = TruncWhere::from_code(trunc_where) else {
+        return TruncEvaluation {
+            result: TRUNC_ERR,
+            new_text: None,
+        };
+    };
+
+    if width < 0 {
+        return TruncEvaluation {
+            result: TRUNC_ERR,
+            new_text: None,
+        };
+    }
+
+    if measure(text) <= width {
+        return TruncEvaluation {
+            result: TRUNC_NOT_TRUNCATED,
+            new_text: None,
+        };
+    }
+
+    if measure(&[ellipsis]) > width {
+        return TruncEvaluation {
+            result: TRUNC_ERR,
+            new_text: None,
+        };
+    }
+
+    for retained in (0..text.len()).rev() {
+        let left = match where_ {
+            TruncWhere::Middle => retained.div_ceil(2),
+            TruncWhere::End => retained,
+        };
+        let right = retained - left;
+
+        let mut candidate = Vec::with_capacity(retained + 1);
+        candidate.extend_from_slice(&text[..left]);
+        candidate.push(ellipsis);
+        candidate.extend_from_slice(&text[text.len() - right..]);
+
+        if measure(&candidate) <= width {
+            return TruncEvaluation {
+                result: TRUNC_TRUNCATED,
+                new_text: Some(candidate),
+            };
+        }
+    }
+
+    TruncEvaluation {
+        result: TRUNC_ERR,
+        new_text: None,
+    }
+}
+
+/// Evaluates Pascal string truncation (`TruncString`).
+///
+/// References:
+/// - Inside Macintosh: Text (1993), Chapter 5 "Text Utilities", pp. 5-77..5-78
+///
+/// Parameters:
+/// - `string_bytes`: Byte slice of the Pascal string content (excluding length byte).
+/// - `width`: Maximum allowable pixel width.
+/// - `trunc_where`: Truncation location code (`0` for end, `0x4000` for middle).
+/// - `ellipsis`: Character byte to use for the ellipsis (e.g. `MAC_ROMAN_ELLIPSIS = 0xC9`).
+/// - `measure`: Closure that returns the measured width of a byte slice.
+pub fn evaluate_trunc_string(
+    string_bytes: &[u8],
+    width: i16,
+    trunc_where: u16,
+    ellipsis: u8,
+    measure: impl FnMut(&[u8]) -> i16,
+) -> TruncEvaluation {
+    let clamped_len = string_bytes.len().min(255);
+    evaluate_trunc_text(
+        &string_bytes[..clamped_len],
+        width,
+        trunc_where,
+        ellipsis,
+        measure,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,5 +577,129 @@ mod tests {
         assert_eq!(XMUNGER_TRAP_OFFSET, 0x0019);
         assert_eq!(0xA800 | MUNGER_TRAP_OFFSET, MUNGER_TRAP);
         assert_eq!(0xA800 | XMUNGER_TRAP_OFFSET, XMUNGER_TRAP);
+    }
+
+    #[test]
+    fn test_trunc_constants() {
+        assert_eq!(TRUNC_STRING_SELECTOR, 0x8208_FFE0);
+        assert_eq!(TRUNC_TEXT_SELECTOR, 0x820C_FFDE);
+        assert_eq!(TRUNC_END, 0);
+        assert_eq!(TRUNC_MIDDLE, 0x4000);
+        assert_eq!(TRUNC_NOT_TRUNCATED, 0);
+        assert_eq!(TRUNC_TRUNCATED, 1);
+        assert_eq!(TRUNC_ERR, -1);
+        assert_eq!(MAC_ROMAN_ELLIPSIS, 0xC9);
+    }
+
+    #[test]
+    fn test_trunc_where_conversions() {
+        assert_eq!(TruncWhere::from_code(0), Some(TruncWhere::End));
+        assert_eq!(TruncWhere::from_code(0x4000), Some(TruncWhere::Middle));
+        assert_eq!(TruncWhere::from_code(1), None);
+        assert_eq!(TruncWhere::End.to_code(), 0);
+        assert_eq!(TruncWhere::Middle.to_code(), 0x4000);
+    }
+
+    #[test]
+    fn test_evaluate_trunc_text_fits_untruncated() {
+        let text = b"Hello";
+        let eval = evaluate_trunc_text(
+            text,
+            40,
+            TRUNC_END,
+            MAC_ROMAN_ELLIPSIS,
+            default_char_width_measure,
+        );
+        assert_eq!(eval.result, TRUNC_NOT_TRUNCATED);
+        assert_eq!(eval.new_text, None);
+        assert!(!eval.is_truncated());
+        assert!(eval.is_success());
+    }
+
+    #[test]
+    fn test_evaluate_trunc_text_truncates_end() {
+        let text = b"Hello World";
+        let eval = evaluate_trunc_text(
+            text,
+            36,
+            TRUNC_END,
+            MAC_ROMAN_ELLIPSIS,
+            default_char_width_measure,
+        );
+        assert_eq!(eval.result, TRUNC_TRUNCATED);
+        assert!(eval.is_truncated());
+        assert!(eval.is_success());
+        let expected = [b'H', b'e', b'l', b'l', b'o', MAC_ROMAN_ELLIPSIS];
+        assert_eq!(eval.new_text.as_deref(), Some(&expected[..]));
+    }
+
+    #[test]
+    fn test_evaluate_trunc_text_truncates_middle() {
+        let text = b"Hello World";
+        let eval = evaluate_trunc_text(
+            text,
+            36,
+            TRUNC_MIDDLE,
+            MAC_ROMAN_ELLIPSIS,
+            default_char_width_measure,
+        );
+        assert_eq!(eval.result, TRUNC_TRUNCATED);
+        assert!(eval.is_truncated());
+        let expected = [b'H', b'e', b'l', MAC_ROMAN_ELLIPSIS, b'l', b'd'];
+        assert_eq!(eval.new_text.as_deref(), Some(&expected[..]));
+    }
+
+    #[test]
+    fn test_evaluate_trunc_text_too_narrow_returns_err() {
+        let text = b"Hello";
+        let eval = evaluate_trunc_text(
+            text,
+            4,
+            TRUNC_END,
+            MAC_ROMAN_ELLIPSIS,
+            default_char_width_measure,
+        );
+        assert_eq!(eval.result, TRUNC_ERR);
+        assert_eq!(eval.new_text, None);
+        assert!(!eval.is_success());
+
+        let eval_neg = evaluate_trunc_text(
+            text,
+            -1,
+            TRUNC_END,
+            MAC_ROMAN_ELLIPSIS,
+            default_char_width_measure,
+        );
+        assert_eq!(eval_neg.result, TRUNC_ERR);
+    }
+
+    #[test]
+    fn test_evaluate_trunc_text_invalid_where_code() {
+        let text = b"Hello World";
+        let eval = evaluate_trunc_text(
+            text,
+            36,
+            0x1234,
+            MAC_ROMAN_ELLIPSIS,
+            default_char_width_measure,
+        );
+        assert_eq!(eval.result, TRUNC_ERR);
+        assert_eq!(eval.new_text, None);
+    }
+
+    #[test]
+    fn test_evaluate_trunc_string_truncates_pascal_content() {
+        let pstring = b"Application Name";
+        let eval = evaluate_trunc_string(
+            pstring,
+            48,
+            TRUNC_END,
+            MAC_ROMAN_ELLIPSIS,
+            default_char_width_measure,
+        );
+        assert_eq!(eval.result, TRUNC_TRUNCATED);
+        let text = eval.new_text.unwrap();
+        assert_eq!(text.len(), 8);
+        assert_eq!(text.last(), Some(&MAC_ROMAN_ELLIPSIS));
     }
 }

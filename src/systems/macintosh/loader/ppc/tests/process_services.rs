@@ -2133,3 +2133,34 @@ fn ppc_date_string_imports_use_abi_handle_and_preserve_registers_and_output_boun
     assert_eq!(loaded.memory.read_u8(small_result), Some(0x5A));
     assert_eq!(loaded.memory.read_u8(small_result + 1), Some(0x5A));
 }
+
+#[test]
+fn ppc_trunc_text_truncates_and_updates_length() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TruncText")).unwrap();
+    let text = PPC_DATA_BASE + 0x1000;
+    let length_ptr = PPC_DATA_BASE + 0x1020;
+    loaded.memory.add_region(text, vec![0; 64]);
+    loaded.memory.add_region(length_ptr, vec![0; 4]);
+
+    loaded.memory.write_bytes(text, b"Hello World").unwrap();
+    loaded.memory.write_u16_be(length_ptr, 11).unwrap();
+
+    loaded.cpu.gpr[3] = 36;
+    loaded.cpu.gpr[4] = text;
+    loaded.cpu.gpr[5] = length_ptr;
+    loaded.cpu.gpr[6] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::TruncText,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i32 as i16, 1);
+    assert_eq!(loaded.memory.read_u16_be(length_ptr), Some(6));
+    let mut truncated = vec![0u8; 6];
+    for i in 0..6 {
+        truncated[i] = loaded.memory.read_u8(text + i as u32).unwrap();
+    }
+    assert_eq!(truncated, [b'H', b'e', b'l', b'l', b'o', 0xC9]);
+}
+
