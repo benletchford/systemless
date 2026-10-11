@@ -5429,6 +5429,9 @@ mod desktop {
             "requested_scale": capture_scale,
             "items": menu.items.iter().map(|item| serde_json::json!({
                 "text": item.text, "style": item.style,
+                "smooth_raster_support": super::text::ClassicLine::styled(
+                    &item.text.chars().map(|ch| systemless::systems::macintosh::mac_roman::encode_mac_roman_char(ch).unwrap_or(b'?')).collect::<Vec<_>>(),
+                    0, 12, item.style).smooth_raster_support(),
             })).collect::<Vec<_>>(),
         });
         let trigger = format!("guest-menu-{}-{}", menu.guest_id, menu.generation);
