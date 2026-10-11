@@ -1,5 +1,19 @@
 # GPUI production release gates
 
+### Disjoint marked-text composed evidence (2026-10-11)
+
+The existing shared composition capture now stages two separate candidates
+through GPUI's text-input interface on actual styled guest TextEdit. Eight
+active captures pass across mono68k, colour68k, PPC8 and PPC16 at scales0.75
+and1. Both displayed anchor queries match virtual text indices, candidate
+surfaces remain separate, guest records remain unchanged, and cancellation
+restores exact baseline pixels. All eight images were reviewed. The example
+build passes (24.37s). Source/executable/fixture and artifact hashes are in
+`tests/toolbox-showcase/reference/gpui-demo/disjoint-composition/review.json`.
+Modal/file candidates, other scales/states and physical IME remain open; this
+selected evidence does not close the broader input or typography gates.
+
+
 ### Styled label overlap correction (2026-10-11)
 
 Overlapping equal-coverage glyph spans used the default even-odd polygon fill,

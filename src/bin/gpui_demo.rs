@@ -6416,6 +6416,48 @@ mod desktop {
                 baseline.save(output.join(format!("{powerpc}-{depth}-baseline.png"))).unwrap();
                 eprintln!("PASS composition-surface-restoration powerpc={powerpc} depth={depth} case={label}");
                 }
+                visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                    use gpui_kit::EntityInputHandler;
+                    demo.synchronize_composition(window, cx);
+                    let owner = demo.composition.owner().unwrap().clone();
+                    assert!(owner.selection.end + 5 <= owner.text.len());
+                    demo.replace_and_mark_text_in_range(None, "éééééééééééé", Some(12..12), window, cx);
+                    let document = demo.composition.virtual_document().unwrap();
+                    let start = document.virtual_index(owner.selection.end + 4).unwrap();
+                    demo.replace_and_mark_text_in_range(Some(start..start + 1), "ZZ", Some(2..2), window, cx);
+                    assert_eq!(demo.composition.retained_spans().len(), 1);
+                    cx.notify();
+                })).unwrap();
+                visual.run_until_parked();
+                let disjoint = visual.capture_screenshot(window.into()).unwrap();
+                assert_ne!(baseline, disjoint);
+                let geometry = visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                    use gpui_kit::EntityInputHandler;
+                    let owner = &demo.composition.retained_spans()[0].0;
+                    let retained = demo.composition.virtual_document().unwrap().marked_range(&owner.selection).unwrap();
+                    let active = demo.composition.active_virtual_range().unwrap();
+                    let a = demo.bounds_for_range(active.start..active.start, Bounds::default(), window, cx).unwrap();
+                    let b = demo.bounds_for_range(retained.start + 8..retained.start + 8, Bounds::default(), window, cx).unwrap();
+                    assert!(a.bottom() <= b.top() || b.bottom() <= a.top(), "separate candidates must not obscure one another");
+                    for (bounds, index) in [(a, active.start), (b, retained.start + 8)] {
+                        assert_eq!(demo.character_index_for_point(point(bounds.origin.x, bounds.origin.y + px(1.)), window, cx), Some(index));
+                    }
+                    assert_eq!(demo.text_edits, records);
+                    assert!((demo.display_scale - requested_scale).abs() < 0.0001);
+                    serde_json::json!({ "runtime_powerpc": powerpc, "actual_depth": actual_depth,
+                        "case": "disjoint", "scale": demo.display_scale, "origin": demo.display_origin,
+                        "active_range": active, "retained_range": retained,
+                        "active_caret": [f32::from(a.origin.x), f32::from(a.origin.y), f32::from(a.size.width), f32::from(a.size.height)],
+                        "retained_anchor": [f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height)],
+                        "point_queries_match": true, "guest_state_unchanged": true,
+                        "compositor": "shared Demo renderer" })
+                })).unwrap();
+                disjoint.save(output.join(format!("{powerpc}-{depth}-disjoint-marked.png"))).unwrap();
+                std::fs::write(output.join(format!("{powerpc}-{depth}-disjoint.json")), serde_json::to_vec_pretty(&geometry).unwrap()).unwrap();
+                visual.update(|cx| view.update(cx, |demo, cx| { demo.composition.cancel(); cx.notify(); }));
+                visual.run_until_parked();
+                assert_eq!(baseline, visual.capture_screenshot(window.into()).unwrap(), "disjoint cancellation must restore exact pixels");
+                eprintln!("PASS composition-surface-restoration powerpc={powerpc} depth={depth} case=disjoint");
             }
         }
 

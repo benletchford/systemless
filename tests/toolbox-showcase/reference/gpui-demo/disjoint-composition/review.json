@@ -1,0 +1,339 @@
+{
+  "source_base": "8f7735b1605191a823d84751997df88dbbecb57d",
+  "frontend_source_sha256": "f9568572085c81a2044be5c0920bdc4f1d2520170d2ec713924914ad7b4f016c",
+  "executable_sha256": "e3f68e68f0dc36a33a54a96e8fe8fdb400b45393859d5fefd6553e08ffb78a4a",
+  "fixture_sha256": "7e9259cf65889bd1097a34439278ef4ecc1e69ec6272009488b169adeb72bb59",
+  "command": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit --capture-composition-surface <output-directory> --capture-scale <1 or 0.75>",
+  "build": "cargo build --locked --example gpui-menu-demo --features gpui-demo-test",
+  "build_result": "passed, 24.37s",
+  "cases": [
+    {
+      "metadata": {
+        "runtime_powerpc": false,
+        "actual_depth": 1,
+        "case": "disjoint",
+        "scale": 1.0,
+        "origin": [
+          0.0,
+          0.0
+        ],
+        "active_range": {
+          "start": 17,
+          "end": 19
+        },
+        "retained_range": {
+          "start": 1,
+          "end": 13
+        },
+        "active_caret": [
+          103.0,
+          149.0,
+          1.0,
+          20.0
+        ],
+        "retained_anchor": [
+          149.78125,
+          181.0,
+          1.0,
+          20.0
+        ],
+        "point_queries_match": true,
+        "guest_state_unchanged": true,
+        "compositor": "shared Demo renderer"
+      },
+      "metadata_sha256": "a45e136ed5f00fefd482100bf4b403538a9245a26ced8768ef2be23522b1d2be",
+      "marked_png_sha256": "39a3f93d67841e11014a700532af69fc07217eac6dbf6f6241a326d057dd8929",
+      "baseline_png_sha256": "c2ae351171d72cc35f03d0119b429ac254da6f818af72fd9a21794ae4fb2df38",
+      "log_sha256": "0b8ed9ca0ef085065cf43bb9b233484c5b93b5793bc6e9965264435d6a750f29"
+    },
+    {
+      "metadata": {
+        "runtime_powerpc": false,
+        "actual_depth": 8,
+        "case": "disjoint",
+        "scale": 1.0,
+        "origin": [
+          0.0,
+          0.0
+        ],
+        "active_range": {
+          "start": 17,
+          "end": 19
+        },
+        "retained_range": {
+          "start": 1,
+          "end": 13
+        },
+        "active_caret": [
+          103.0,
+          149.0,
+          1.0,
+          20.0
+        ],
+        "retained_anchor": [
+          149.78125,
+          181.0,
+          1.0,
+          20.0
+        ],
+        "point_queries_match": true,
+        "guest_state_unchanged": true,
+        "compositor": "shared Demo renderer"
+      },
+      "metadata_sha256": "cfe9035e6cc98778283a61d039dcc800c3df5ec6de29649685ec5c93fba443a1",
+      "marked_png_sha256": "7f818df6f37c283992f0a44d360a5d38ec5a10d5580dbb1dd33b5b9fd7b5f162",
+      "baseline_png_sha256": "77436b22bf2d5921a67e01cc279f8757398584c0eaadc866ec6ccd984c29a4cf",
+      "log_sha256": "0b8ed9ca0ef085065cf43bb9b233484c5b93b5793bc6e9965264435d6a750f29"
+    },
+    {
+      "metadata": {
+        "runtime_powerpc": true,
+        "actual_depth": 8,
+        "case": "disjoint",
+        "scale": 1.0,
+        "origin": [
+          0.0,
+          0.0
+        ],
+        "active_range": {
+          "start": 17,
+          "end": 19
+        },
+        "retained_range": {
+          "start": 1,
+          "end": 13
+        },
+        "active_caret": [
+          103.0,
+          149.0,
+          1.0,
+          20.0
+        ],
+        "retained_anchor": [
+          149.78125,
+          181.0,
+          1.0,
+          20.0
+        ],
+        "point_queries_match": true,
+        "guest_state_unchanged": true,
+        "compositor": "shared Demo renderer"
+      },
+      "metadata_sha256": "c188d84bc16f4f39f179e9e47c74c96a564e3b9938644896a33bb3d0cd8b84e8",
+      "marked_png_sha256": "c02dd27defb9aed713d5c09fd5089bb1a18bd522d24854a205f5d47d5ccc37d3",
+      "baseline_png_sha256": "da0f05969391561c2584014e9d40195bc4311ef4743f4a600d125028a17b2c94",
+      "log_sha256": "0b8ed9ca0ef085065cf43bb9b233484c5b93b5793bc6e9965264435d6a750f29"
+    },
+    {
+      "metadata": {
+        "runtime_powerpc": true,
+        "actual_depth": 16,
+        "case": "disjoint",
+        "scale": 1.0,
+        "origin": [
+          0.0,
+          0.0
+        ],
+        "active_range": {
+          "start": 17,
+          "end": 19
+        },
+        "retained_range": {
+          "start": 1,
+          "end": 13
+        },
+        "active_caret": [
+          103.0,
+          149.0,
+          1.0,
+          20.0
+        ],
+        "retained_anchor": [
+          149.78125,
+          181.0,
+          1.0,
+          20.0
+        ],
+        "point_queries_match": true,
+        "guest_state_unchanged": true,
+        "compositor": "shared Demo renderer"
+      },
+      "metadata_sha256": "548abd6a1571e317416bf43d9102a467f5e6d496378f06d35b7f709cafdff465",
+      "marked_png_sha256": "81caa1131cb04da304ceda4661c8db50228ef1694765f954ecc6e3b1e9eb1320",
+      "baseline_png_sha256": "96497252a31d07b24a770473dcb6804e2df8448b5f3356f290d41e6d20c862bf",
+      "log_sha256": "0b8ed9ca0ef085065cf43bb9b233484c5b93b5793bc6e9965264435d6a750f29"
+    },
+    {
+      "metadata": {
+        "runtime_powerpc": false,
+        "actual_depth": 1,
+        "case": "disjoint",
+        "scale": 0.75,
+        "origin": [
+          0.0,
+          0.0
+        ],
+        "active_range": {
+          "start": 17,
+          "end": 19
+        },
+        "retained_range": {
+          "start": 1,
+          "end": 13
+        },
+        "active_caret": [
+          78.5,
+          113.0,
+          1.0,
+          20.0
+        ],
+        "retained_anchor": [
+          129.28125,
+          145.0,
+          1.0,
+          20.0
+        ],
+        "point_queries_match": true,
+        "guest_state_unchanged": true,
+        "compositor": "shared Demo renderer"
+      },
+      "metadata_sha256": "efdec45c7e9e8cba7aa5bd841ebe2890a27889fb5afb038ae9dd1b62ffc2c1f5",
+      "marked_png_sha256": "2748b7c26756ca00c93092fc049062726f03b2d02ace31d0dc61a8f5fbecc323",
+      "baseline_png_sha256": "e06f8e4699b5a66dfee78ad2c58ef0d131a7bcd54d5ad0662d28ea6c20445b46",
+      "log_sha256": "0b8ed9ca0ef085065cf43bb9b233484c5b93b5793bc6e9965264435d6a750f29"
+    },
+    {
+      "metadata": {
+        "runtime_powerpc": false,
+        "actual_depth": 8,
+        "case": "disjoint",
+        "scale": 0.75,
+        "origin": [
+          0.0,
+          0.0
+        ],
+        "active_range": {
+          "start": 17,
+          "end": 19
+        },
+        "retained_range": {
+          "start": 1,
+          "end": 13
+        },
+        "active_caret": [
+          78.5,
+          113.0,
+          1.0,
+          20.0
+        ],
+        "retained_anchor": [
+          129.28125,
+          145.0,
+          1.0,
+          20.0
+        ],
+        "point_queries_match": true,
+        "guest_state_unchanged": true,
+        "compositor": "shared Demo renderer"
+      },
+      "metadata_sha256": "302a0e5e663a4444cc60922b8ad28fc307fc55c308a9c1b994aff10cfd5591bb",
+      "marked_png_sha256": "88f82a8bc72b2b73d451d7d82ff75a1fac5d9306a0e02f1fdb54c9059d2e3ec1",
+      "baseline_png_sha256": "e3ba64bcd9cee56dad27e9064f3cb52abd9fd4a683c64e3a226096559f6d9a4c",
+      "log_sha256": "0b8ed9ca0ef085065cf43bb9b233484c5b93b5793bc6e9965264435d6a750f29"
+    },
+    {
+      "metadata": {
+        "runtime_powerpc": true,
+        "actual_depth": 8,
+        "case": "disjoint",
+        "scale": 0.75,
+        "origin": [
+          0.0,
+          0.0
+        ],
+        "active_range": {
+          "start": 17,
+          "end": 19
+        },
+        "retained_range": {
+          "start": 1,
+          "end": 13
+        },
+        "active_caret": [
+          78.5,
+          113.0,
+          1.0,
+          20.0
+        ],
+        "retained_anchor": [
+          129.28125,
+          145.0,
+          1.0,
+          20.0
+        ],
+        "point_queries_match": true,
+        "guest_state_unchanged": true,
+        "compositor": "shared Demo renderer"
+      },
+      "metadata_sha256": "5d67d9dae7ef6e759593cc19002bc29f8b848cf7aa52e6cd1cc4bd87fc3d5564",
+      "marked_png_sha256": "4275a2461b922375d658afee913199588eb34b5093b2b2870fe70b3d1adb0ff7",
+      "baseline_png_sha256": "9580f9e6ece9c1679bf3c4ddbf3ba93ac3c9aa338a9f68fd896b04bc83d56a92",
+      "log_sha256": "0b8ed9ca0ef085065cf43bb9b233484c5b93b5793bc6e9965264435d6a750f29"
+    },
+    {
+      "metadata": {
+        "runtime_powerpc": true,
+        "actual_depth": 16,
+        "case": "disjoint",
+        "scale": 0.75,
+        "origin": [
+          0.0,
+          0.0
+        ],
+        "active_range": {
+          "start": 17,
+          "end": 19
+        },
+        "retained_range": {
+          "start": 1,
+          "end": 13
+        },
+        "active_caret": [
+          78.5,
+          113.0,
+          1.0,
+          20.0
+        ],
+        "retained_anchor": [
+          129.28125,
+          145.0,
+          1.0,
+          20.0
+        ],
+        "point_queries_match": true,
+        "guest_state_unchanged": true,
+        "compositor": "shared Demo renderer"
+      },
+      "metadata_sha256": "692977b4e54b19af2747eb10eb49110c126c7ad86e8d55b5c3b2f4924776a9db",
+      "marked_png_sha256": "31cc6d509b7388405711a9c49e606aa2c5d21baa7cfb84423c2c4988af8dafdf",
+      "baseline_png_sha256": "28fa81f1383e8d55c56a345978630e893ddd2caae7f1c0925d7388da416a32aa",
+      "log_sha256": "0b8ed9ca0ef085065cf43bb9b233484c5b93b5793bc6e9965264435d6a750f29"
+    }
+  ],
+  "visual_review": "All eight full composed images inspected. Active and retained candidates occupy distinct visible rows; active caret and retained underline are visible. Guest custom-drawn text retains guest rendering.",
+  "assertions": [
+    "GPUI EntityInputHandler creates both candidates",
+    "Candidate surfaces do not overlap",
+    "Displayed anchor point queries match both virtual ranges",
+    "Guest TextEdit records unchanged",
+    "Cancellation restores exact baseline pixels"
+  ],
+  "limits": [
+    "Active styled document only",
+    "Scales 0.75 and 1 only",
+    "Modal and Standard File composed candidates remain unqualified",
+    "Physical IME and native accessibility remain unqualified",
+    "No independent original Macintosh font oracle"
+  ],
+  "local_artifacts": "target/gpui-qualification/disjoint-composition"
+}
