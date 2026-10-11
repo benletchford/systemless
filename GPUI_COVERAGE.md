@@ -30,7 +30,9 @@ retains one `PopupMenu` entity while open and rebuilds it only after dismissal.
 Systemless now owns an equivalent retained entity through GPUI Kit's `Popover`
 and calls `PopupMenu::rebuild` when the guest snapshot changes. This preserves
 the popup entity, focus, parent menu, and layer priority while replacing its
-items. `PopupMenu::rebuild` clears its selected row and exposes no public
+items. Rebuilds now compare the open menu and its reachable submenus, so
+changes to unrelated guest menus leave its current selection alone.
+`PopupMenu::rebuild` still clears its selected row and exposes no public
 selection setter, so preserving hover and keyboard selection during live
 updates remains open. The interaction test also verifies that removing the guest menu unmounts
 the open popup; replacement with a reused MenuHandle still needs qualification. Selections still pass through
