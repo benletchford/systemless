@@ -745,6 +745,63 @@ impl TextEditSnapshot {
         Some(visible)
     }
 
+    /// Plain TERec advances follow the owning CPU, including its recorded face.
+    /// PPC rounds the complete range; classic preserves draw_char's scaled pen policy.
+    /// These widths describe guest geometry and do not grant paint ownership.
+    pub fn guest_plain_range_width(&self, range: Range<usize>) -> Option<i16> {
+        self.walk_plain_advances(range, |_| {})
+    }
+
+    /// Every relative byte boundary in one pass, with whole-prefix PPC rounding.
+    pub fn guest_plain_insertion_positions(&self, range: Range<usize>) -> Option<Vec<i16>> {
+        let count = self.text.get(range.clone())?.len();
+        let mut positions = Vec::with_capacity(count.checked_add(1)?);
+        self.walk_plain_advances(range, |width| positions.push(width))?;
+        Some(positions)
+    }
+
+    fn walk_plain_advances(&self, range: Range<usize>, mut visit: impl FnMut(i16)) -> Option<i16> {
+        use crate::quickdraw::{fonts, text};
+        if self.styled { return None; }
+        let bytes = self.text.get(range)?;
+        let size = if self.size == 0 { 12 } else { self.size.max(1) };
+        let style = text::QuickDrawTextStyle::from_bits(self.face);
+        visit(0);
+        match self.line_layout_policy {
+            TextEditLineLayoutPolicy::CumulativeGuestMetrics => {
+                let (_, scale) = fonts::get_font_face_scaled(self.font, size);
+                let mut width = 0i16;
+                for &byte in bytes {
+                    let glyph = if style.italic() {
+                        text::get_glyph_italic(self.font, size, byte as char)
+                            .or_else(|| text::get_glyph(self.font, size, byte as char))
+                    } else { text::get_glyph(self.font, size, byte as char) };
+                    let advance = if let Some((glyph, _)) = glyph {
+                        i32::from(glyph.advance).checked_mul(i32::from(scale))?
+                            .checked_add(style.advance_extra())?
+                    } else { (6 + style.advance_extra()).checked_mul(i32::from(scale))? };
+                    width = width.checked_add(i16::try_from(advance).ok()?)?;
+                    visit(width);
+                }
+                Some(width)
+            }
+            TextEditLineLayoutPolicy::PpcRunMetrics => {
+                let (strike, numerator, denominator) = fonts::get_font_face_scale_ratio(self.font, size);
+                let mut advance = 0i32;
+                let mut width = 0i16;
+                for &byte in bytes {
+                    let base = text::get_glyph(self.font, strike.size, byte as char)
+                        .map_or(6, |(glyph, _)| i32::from(glyph.advance));
+                    advance = advance.saturating_add(style.glyph_advance(base));
+                    let scaled = advance.saturating_mul(numerator).saturating_add(denominator / 2) / denominator;
+                    width = scaled.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+                    visit(width);
+                }
+                Some(width)
+            }
+        }
+    }
+
     /// Visible styled insertion positions measured exactly as the guest's
     /// TextEdit layout and TEClick paths. Painting may additionally depend on
     /// port spacing and style synthesis; these positions do not grant ownership.

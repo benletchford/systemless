@@ -2888,8 +2888,14 @@ impl super::TrapDispatcher {
         let (_face, scale) = get_font_face_scaled(font, size);
         let extra = crate::quickdraw::text::QuickDrawTextStyle::from_bits(face as u8).advance_extra() as i16;
         let ch = byte as char;
-        if let Some((glyph, _)) = crate::quickdraw::text::get_glyph(font, size, ch) {
-            (glyph.advance as i16 + extra) * scale
+        let glyph = if face & 2 != 0 {
+            crate::quickdraw::text::get_glyph_italic(font, size, ch)
+                .or_else(|| crate::quickdraw::text::get_glyph(font, size, ch))
+        } else { crate::quickdraw::text::get_glyph(font, size, ch) };
+        if let Some((glyph, _)) = glyph {
+            // draw_char adds a present glyph's style advance after scaling;
+            // its missing-glyph fallback scales the complete default advance.
+            glyph.advance as i16 * scale + extra
         } else {
             (6 + extra) * scale
         }

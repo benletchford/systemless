@@ -6,8 +6,7 @@ use std::ops::Range;
 
 pub(super) fn text_range_width(record: &systemless::runner::TextEditSnapshot, range: Range<usize>) -> Option<i16> {
     if record.styled { return record.guest_styled_range_width(range); }
-    let line = super::super::text::ClassicLine::plain(record.text.get(range)?, record.font, record.size);
-    i16::try_from(*line.positions.last()?).ok()
+    record.guest_plain_range_width(range)
 }
 
 pub(super) fn text_line_geometry(record: &systemless::runner::TextEditSnapshot, index: usize)
@@ -29,9 +28,9 @@ pub(super) fn aligned_plain_guest_point(record: &systemless::runner::TextEditSna
         let geometry = text_line_geometry(record, index)?;
         let top = dy + i32::from(geometry.top);
         if i32::from(point.0) < top || i32::from(point.0) >= top + i32::from(geometry.height) { continue; }
-        let bytes = record.text.get(span[0]..span[1])?.iter().copied()
-            .filter(|byte| !matches!(byte, b'\r' | b'\n')).collect::<Vec<_>>();
-        let width = *super::super::text::ClassicLine::plain(&bytes, record.font, record.size).positions.last()?;
+        let mut end = span[1];
+        while end > span[0] && matches!(record.text.get(end - 1), Some(b'\r' | b'\n')) { end -= 1; }
+        let width = i32::from(record.guest_plain_range_width(span[0]..end)?);
         let classic = record.line_layout_policy == systemless::runner::TextEditLineLayoutPolicy::CumulativeGuestMetrics;
         let remaining = i32::from(record.dest_rect.3) - i32::from(record.dest_rect.1) - width - i32::from(classic);
         let guest_left = i32::from(record.dest_rect.1) + if record.justification == 1 { remaining / 2 } else { remaining };
@@ -52,13 +51,23 @@ pub(super) fn accessible_line_geometry(record: &systemless::runner::TextEditSnap
         let geometry = text_line_geometry(record, index)?;
         let bytes = record.text.get(span[0]..span[1])?;
         let visible = bytes.iter().rposition(|byte| !matches!(byte, b' ' | b'\r' | b'\n')).map_or(0, |index| index + 1);
-        let mut pens = vec![0i32];
-        for (offset, _) in bytes.iter().enumerate() {
-            let previous = *pens.last()?;
-            let width = if record.clips_line_offsets_to_visible_text && offset >= visible { 0 } else {
-                i32::from(text_range_width(record, span[0] + offset..span[0] + offset + 1)?)
-            };
-            pens.push(previous.checked_add(width)?);
+        let mut pens = if record.styled {
+            let mut pens = vec![0i32];
+            for (offset, _) in bytes.iter().enumerate() {
+                let previous = *pens.last()?;
+                let width = if record.clips_line_offsets_to_visible_text && offset >= visible { 0 } else {
+                    i32::from(text_range_width(record, span[0] + offset..span[0] + offset + 1)?)
+                };
+                pens.push(previous.checked_add(width)?);
+            }
+            pens
+        } else {
+            record.guest_plain_insertion_positions(span[0]..span[1])?
+                .into_iter().map(i32::from).collect()
+        };
+        if !record.styled && record.clips_line_offsets_to_visible_text {
+            let end = *pens.get(visible)?;
+            pens.iter_mut().skip(visible + 1).for_each(|position| *position = end);
         }
         let x = dx + i32::from(geometry.left); let y = dy + i32::from(geometry.top);
         let left = x.max(clip.left); let right = (x + pens.last()?.max(&1)).min(clip.right);

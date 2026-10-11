@@ -17591,6 +17591,42 @@
     }
 
     #[test]
+    fn plain_textedit_shared_widths_match_guest_points_across_faces_and_sizes() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let text = b"Hello WORLD 123 \x8e";
+        let handle = make_te_with_text(&mut disp, &mut bus, text);
+        let ptr = bus.read_long(handle);
+        bus.write_word(ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6, 20000);
+        for font in [0, 3, 4] {
+            for size in [0, 9, 10, 14, 17, 20, 24, 192] {
+                for face in [0u8, 1, 2, 4, 8, 16, 32, 64, 31] {
+                    bus.write_word(ptr + TrapDispatcher::TE_TX_FONT_OFFSET, font as u16);
+                    bus.write_word(ptr + TrapDispatcher::TE_TX_SIZE_OFFSET, size as u16);
+                    bus.write_byte(ptr + TrapDispatcher::TE_TX_FACE_OFFSET, face);
+                    disp.te_recalculate_layout(&mut bus, handle);
+                    let record = crate::text_edit::snapshot_guest_records(&[(handle, 1)],
+                        &mut |address| Some(bus.read_byte(address))).records.remove(0);
+                    let positions = record.guest_plain_insertion_positions(0..text.len()).unwrap();
+                    let origin = disp.te_char_to_point(&bus, handle, 0).1;
+                    disp.tx_font = font;
+                    disp.tx_size = if size == 0 { 12 } else { size };
+                    disp.tx_face = i16::from(face);
+                    disp.pn_loc = (48, 0);
+                    for offset in 0..=text.len() {
+                        if offset != 0 { disp.draw_char(&mut cpu, &mut bus, text[offset - 1] as char); }
+                        let point = disp.te_char_to_point(&bus, handle, offset).1;
+                        assert_eq!(record.guest_plain_range_width(0..offset), Some(point - origin),
+                            "font {font}, size {size}, face {face}, offset {offset}");
+                        assert_eq!(positions[offset], point - origin);
+                        assert_eq!(point - origin, disp.pn_loc.1,
+                            "paint pen mismatch: font {font}, size {size}, face {face}, offset {offset}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn plain_textedit_layout_and_points_use_record_face_without_changing_caller_style() {
         let (mut disp, _cpu, mut bus) = setup();
         let text = b"HELLO WORLD HELLO WORLD";

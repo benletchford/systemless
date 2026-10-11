@@ -1,5 +1,39 @@
 # GPUI Kit system-interface coverage
 
+### Plain TextEdit geometry and actual draw-pen agreement (2026-10-12)
+
+Shared plain-field widths now read canonical font, size and face and preserve
+CPU-specific range rounding. PPC measures the complete range before rounding;
+classic known glyphs apply style extras after integer scaling and use captured
+italic advances where drawing does. Missing glyphs retain the native scaled
+fallback. GPUI text-service alignment and accessibility positions use these
+widths; prefix positions no longer accumulate separately rounded PPC bytes.
+Plain accessibility positions are generated in one pass rather than remeasuring
+every prefix; the styled path retains its existing incremental measurement.
+
+The initial measurement comparison passed both CPUs through24-point samples,
+which use exact raster strikes. The stronger draw-pen check at192 points then
+failed: Chicago bold's first character measured140 pixels while drawing advanced
+139. Classic measurement now follows actual drawing rather than multiplying the
+present-glyph style extra by the strike scale. Drawing itself is retained.
+
+The final one-pass native point/shared width tests pass (2 tests,1.12s), covering
+three font families, eight sizes, nine faces and every prefix of ASCII/Mac Roman
+text on both CPU paths; the classic case also compares the actual draw pen.
+All435 classic dialog tests pass (1.50s), as do44 related shared TextEdit checks
+(3.91s). These are functional-profile runtime comparisons, not an independent
+Macintosh font oracle or production performance measurements.
+The final one-pass implementation passes the real plain text-service alignment/
+editing check in four CPU/display modes and three justifications (21.47s).
+Active multiline interaction passes four modes/four scales (17.87s), and rapid
+composed commits plus accessible document selection/line geometry pass the same
+four modes/scales (14.15s). These shared GPUI checks do not prove physical input
+or native accessibility actions. Field paint eligibility remains unchanged.
+Nonzero plain-face GPUI painting, complete style/transfer/source recipes,
+physical interaction, original font references and live EV qualification remain
+unfinished. No broad gate closes. The fresh locked/offline default desktop
+check passes (24.59s).
+
 ### Retained classic plain TextEdit foreground ink (2026-10-12)
 
 Classic TextEdit now observes the actual glyph foreground resolved by its existing

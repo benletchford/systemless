@@ -1629,3 +1629,44 @@ fn plain_textedit_uses_record_face_for_paint_layout_and_hit_testing() {
         assert_ne!(plain_pixels, bold_pixels, "canonical bold must change painted glyphs");
     }
 }
+
+#[test]
+fn plain_textedit_shared_widths_match_guest_points_across_faces_and_sizes() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TENew")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 128]);
+    ppc_write_rect(&mut loaded.memory, scratch, 0, 0, 200, 20000).unwrap();
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = scratch;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TENew);
+    let handle = loaded.cpu.gpr[3];
+    let text = b"Hello WORLD 123 \x8e";
+    loaded.memory.write_bytes(scratch + 16, text).unwrap();
+    loaded.cpu.gpr[3] = scratch + 16;
+    loaded.cpu.gpr[4] = text.len() as u32;
+    loaded.cpu.gpr[5] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetText);
+    let ptr = ppc_te_record_ptr(&mut loaded.memory, handle).unwrap();
+    for font in [0, 3, 4] {
+        for size in [0, 9, 10, 14, 17, 20, 24, 192] {
+            for face in [0u8, 1, 2, 4, 8, 16, 32, 64, 31] {
+                loaded.memory.write_u16_be(ptr + PPC_TE_TX_FONT_OFFSET, font as u16).unwrap();
+                loaded.memory.write_u16_be(ptr + PPC_TE_TX_SIZE_OFFSET, size as u16).unwrap();
+                loaded.memory.write_u8(ptr + PPC_TE_TX_FACE_OFFSET, face).unwrap();
+                loaded.cpu.gpr[3] = handle;
+                run_test_import(&mut loaded, PpcImportDispatcherTarget::TECalText);
+                let mut record = crate::text_edit::snapshot_guest_records(&[(handle, 1)],
+                    &mut |address| loaded.memory.read_u8(address)).records.remove(0);
+                record.line_layout_policy = crate::text_edit::TextEditLineLayoutPolicy::PpcRunMetrics;
+                let positions = record.guest_plain_insertion_positions(0..text.len()).unwrap();
+                let origin = ppc_te_get_point(&mut loaded.memory, test_handles!(loaded), handle, 0) as u16 as i16;
+                for offset in 0..=text.len() {
+                    let point = ppc_te_get_point(&mut loaded.memory, test_handles!(loaded), handle, offset as u16) as u16 as i16;
+                    assert_eq!(record.guest_plain_range_width(0..offset), Some(point - origin),
+                        "font {font}, size {size}, face {face}, offset {offset}");
+                    assert_eq!(positions[offset], point - origin);
+                }
+            }
+        }
+    }
+}
