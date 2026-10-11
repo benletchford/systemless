@@ -38,10 +38,8 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://www.vintageapplemac.com/files/games/Arashi%201.1.sit
-    expected_sha256: 40947ddd897d260cfa5ac16ad31494111cdb2707d81337b081e52e5fd2643ad6
-    expected_size: 284885
+    type: incoming
+    path: catalogue/incoming/arashi/original.sit
   provenance:
     redistribution: permitted
     original: true
