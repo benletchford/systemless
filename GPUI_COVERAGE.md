@@ -2094,5 +2094,9 @@ respect event masks and priority, and remain separate from GetOSEvent and
 FlushEvents. Matching WaitNextEvent regressions cover all four combinations
 of acceptSuspendResume and doesActivateOnFGSwitch, including the subsequent
 yield that commits suspension and the absence of duplicate notifications.
-These are runtime boundary checks; the host-focus bridge, background scheduling,
+The GPUI window-activation observer now sends foreground requests through the
+session to this shared state. Its platform test verifies one suspend request
+for repeated deactivation, held-input cleanup, and one resume request on
+reactivation. Input/widget focus loss alone must not request a process switch.
+These are runtime boundary and platform-adapter checks; background scheduling,
 clipboard conversion and the native lifecycle qualification above remain open.

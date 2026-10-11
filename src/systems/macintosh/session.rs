@@ -111,6 +111,15 @@ impl MacintoshSession {
         }
     }
 
+    /// Request a foreground change without bypassing the guest Event Manager.
+    /// The request takes effect at an eligible scheduling call, respecting
+    /// modality and the application's SIZE suspend/resume policy.
+    pub fn request_foreground(&mut self, foreground: bool) {
+        self.runner.dispatcher().event_queue.with_mut(|queue| {
+            queue.activation.request(foreground);
+        });
+    }
+
     /// Composite host presentation and return an owned RGBA8 frame.
     pub fn video_frame(&mut self) -> Option<VideoFrame> {
         self.runner.composite_frame();

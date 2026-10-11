@@ -290,6 +290,7 @@ mod desktop {
     }
 
     enum Command {
+        Foreground(bool),
         Menu(i16, i16, u32, u64),
         Input(MacintoshInput),
         Wheel(super::scroll::WheelRequest),
@@ -457,6 +458,9 @@ mod desktop {
                                 activation = super::activation::ControlActivation::begin_file(&mut session, id, generation, action);
                             }
                         }
+                        Ok(Command::Foreground(active)) => {
+                            session.request_foreground(active);
+                        }
                         Ok(Command::Input(input)) => {
                             match input {
                                 MacintoshInput::MouseDown { .. } => pointer_down = true,
@@ -614,6 +618,8 @@ mod desktop {
         popup_tracking: Option<(u32, u64)>,
         keyboard: super::input::KeyboardState,
         wheel: super::scroll::WheelAccumulator,
+        _window_activation: Option<Subscription>,
+        host_active: Option<bool>,
         _focus_out: Option<Subscription>,
         _focus_lost: Option<Subscription>,
         _poll: Task<()>,
@@ -709,6 +715,8 @@ mod desktop {
                 popup_tracking: None,
                 keyboard: super::input::KeyboardState::default(),
                 wheel: super::scroll::WheelAccumulator::default(),
+                _window_activation: None,
+                host_active: None,
                 _focus_out: None,
                 _focus_lost: None,
                 _poll: poll,
@@ -900,6 +908,22 @@ mod desktop {
 
     impl Render for Demo {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            if self._window_activation.is_none() {
+                self.host_active = Some(window.is_window_active());
+                if !window.is_window_active() {
+                    let _ = self.commands.send(Command::Foreground(false));
+                }
+                self._window_activation = Some(cx.observe_window_activation(window, |this, window, cx| {
+                    let active = window.is_window_active();
+                    if this.host_active.replace(active) != Some(active) {
+                        if !active {
+                            this.release_host_input();
+                        }
+                        let _ = this.commands.send(Command::Foreground(active));
+                        cx.notify();
+                    }
+                }));
+            }
             if self._focus_out.is_none() {
                 self._focus_out = Some(cx.on_focus_out(&self.focus, window, |this, _, _, cx| {
                     this.release_host_input();
@@ -6798,6 +6822,9 @@ mod desktop {
             });
             cx.update_window(window.into(), |_, window, cx| {
                 window.render_frame(cx);
+                for command in receiver.try_iter() {
+                    assert!(matches!(command, super::Command::Foreground(false)), "only initial window activation may precede menu input");
+                }
                 window.click("guest-menu-4096-1", cx);
                 window.within("guest-popup-menu").press("down", cx);
                 window.within("guest-popup-menu").press("down", cx);
@@ -6943,6 +6970,9 @@ mod desktop {
             });
             cx.update_window(window.into(), |_, window, cx| {
                 window.render_frame(cx);
+                for command in receiver.try_iter() {
+                    assert!(matches!(command, super::Command::Foreground(false)), "only initial window activation may precede menu input");
+                }
                 window.click("guest-menu-4096-1", cx);
                 window.render_frame(cx);
                 assert_eq!(window.find("guest-popup-item-129-1").expanded(), Some(false));
@@ -8960,7 +8990,13 @@ mod desktop {
             receiver.try_iter().for_each(drop);
             visual.deactivate_window();
             visual.deactivate_window();
-            let inputs: Vec<_> = receiver.try_iter().filter_map(|command| match command {
+            let commands: Vec<_> = receiver.try_iter().collect();
+            let foreground: Vec<_> = commands.iter().filter_map(|command| match command {
+                super::Command::Foreground(active) => Some(*active),
+                _ => None,
+            }).collect();
+            assert_eq!(foreground, vec![false]);
+            let inputs: Vec<_> = commands.into_iter().filter_map(|command| match command {
                 super::Command::Input(input) => Some(input),
                 _ => None,
             }).collect();
@@ -8969,6 +9005,13 @@ mod desktop {
                 MacintoshInput::KeyUp { mac_key: 0x00, character: b'a' },
             ]));
             assert!(!view.read_with(cx, |demo, _| demo.mouse_down));
+            cx.update_window(window.into(), |_, window, _| window.activate_window()).unwrap();
+            visual.run_until_parked();
+            let foreground: Vec<_> = receiver.try_iter().filter_map(|command| match command {
+                super::Command::Foreground(active) => Some(active),
+                _ => None,
+            }).collect();
+            assert_eq!(foreground, vec![true]);
         }
 
         #[cfg(feature = "gpui-demo-test")]
@@ -8997,6 +9040,7 @@ mod desktop {
                 .try_iter()
                 .filter_map(|command| match command {
                     super::Command::Input(input) => Some(input),
+                    super::Command::Foreground(_) => panic!("input focus loss must not switch the application"),
                     _ => None,
                 })
                 .collect();
