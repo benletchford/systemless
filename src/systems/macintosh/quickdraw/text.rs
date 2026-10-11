@@ -627,3 +627,168 @@ pub(crate) fn styled_glyph_pixels(
     };
     ink
 }
+
+/// PPC source-strike mask, including its run underline/outline interaction.
+/// Pixel coordinates precede the CPU's rational scaling and port spacing.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn visit_ppc_styled_glyph_source_ink(
+    text_font: i16, text_size: i16, metrics: &FontMetrics,
+    glyph: &Glyph, data: &[u8], synthetic_italic: bool,
+    style: QuickDrawTextStyle, source_advance: i32, line_advance: i32,
+    mut emit: impl FnMut(i32, i32),
+) {
+    let mut base_pixels = std::collections::HashSet::new();
+    for row in 0..glyph.height as usize {
+        for col in 0..glyph.width as usize {
+            let index = glyph.data_offset + row * glyph.width as usize + col;
+            if index >= data.len() || data[index] < 128 {
+                continue;
+            }
+            let source_y = i32::from(glyph.origin_y) + row as i32;
+            let slant = synthetic_italic.then(|| {
+                crate::quickdraw::fonts::style::get_italic_slant(
+                    text_font,
+                    text_size,
+                    &metrics,
+                    0,
+                    i16::try_from(source_y).unwrap_or(0),
+                )
+            });
+            let source_x = source_advance
+                + i32::from(glyph.origin_x)
+                + col as i32
+                + i32::from(slant.unwrap_or(0));
+            base_pixels.insert((source_x, source_y));
+            if style.bold() {
+                base_pixels.insert((source_x + 1, source_y));
+            }
+        }
+    }
+
+    if style.underline() && style.smear_max().is_some() && line_advance > 0 {
+        let underline_offset: i32 = if style.shadow() { -1 } else { 0 };
+        let synthetic_italic = style.italic()
+            && get_glyph_italic(text_font, text_size, 'A').is_none();
+        let underline_left = if synthetic_italic {
+            crate::quickdraw::fonts::style::get_italic_underline_extend_left(
+                text_font,
+                text_size,
+                style.bold(),
+                false,
+            )
+        } else {
+            0
+        };
+        let underline_right = if synthetic_italic {
+            crate::quickdraw::fonts::style::get_italic_end_extend(text_font, text_size, &metrics)
+        } else {
+            0
+        };
+        let final_effect_advance = style.glyph_advance(0);
+        for source_x in underline_offset.saturating_sub(i32::from(underline_left))
+            ..line_advance
+                .saturating_sub(final_effect_advance)
+                .saturating_add(underline_offset)
+                .saturating_add(i32::from(underline_right))
+        {
+            base_pixels.insert((source_x, 1));
+        }
+    }
+
+    if let Some(smear_max) = style.smear_max() {
+        let min_x = base_pixels
+            .iter()
+            .map(|(x, _)| *x)
+            .min()
+            .unwrap_or(source_advance)
+            - 1;
+        let max_x = base_pixels
+            .iter()
+            .map(|(x, _)| *x)
+            .max()
+            .unwrap_or(source_advance)
+            + smear_max;
+        let min_y = base_pixels.iter().map(|(_, y)| *y).min().unwrap_or(0) - 1;
+        let max_y = base_pixels.iter().map(|(_, y)| *y).max().unwrap_or(0) + smear_max;
+        for source_y in min_y..=max_y {
+            for source_x in min_x..=max_x {
+                if base_pixels.contains(&(source_x, source_y)) {
+                    continue;
+                }
+                let smeared = (-1..=smear_max).any(|dy| {
+                    (-1..=smear_max)
+                        .any(|dx| base_pixels.contains(&(source_x - dx, source_y - dy)))
+                });
+                if smeared {
+                    emit(source_x, source_y);
+                }
+            }
+        }
+    } else {
+        for (source_x, source_y) in base_pixels.iter().copied() {
+            emit(source_x, source_y);
+        }
+    }
+}
+
+/// Device-independent PPC font pixel footprint, preserving floor rounding on
+/// negative bearings and at least one destination pixel when shrinking.
+#[doc(hidden)]
+pub fn ppc_font_source_pixel_bounds(
+    x: i32, y: i32, numerator: i32, denominator: i32,
+) -> Option<(i32, i32, i32, i32)> {
+    if numerator <= 0 || denominator <= 0 { return None; }
+    let floor = |value: i32| -> Option<i32> {
+        // Retain native PPC's saturating product before floor division.
+        let scaled = value.saturating_mul(numerator);
+        Some(if scaled >= 0 { scaled / denominator } else {
+            -(scaled.checked_neg()?.saturating_add(denominator - 1) / denominator)
+        })
+    };
+    let (left, top) = (floor(x)?, floor(y)?);
+    Some((left, top, floor(x.checked_add(1)?)?.max(left.checked_add(1)?),
+        floor(y.checked_add(1)?)?.max(top.checked_add(1)?)))
+}
+
+/// PPC run ink for zero CharExtra, in guest pixel coordinates relative to the
+/// run's pen baseline. Uses guest Font Manager ratios and the native PPC mask;
+/// callers retain palette, text-mode, clipping and ownership policy.
+#[doc(hidden)]
+pub fn ppc_styled_run_ink(font: i16, size: i16, face_bits: u8, bytes: &[u8])
+    -> (i16, Vec<(i32, i32)>)
+{
+    let style = QuickDrawTextStyle::from_bits(face_bits);
+    let (face, numerator, denominator) = crate::quickdraw::fonts::get_font_face_scale_ratio(font, size);
+    let metrics = get_font_metrics(font, face.size);
+    let measured = bytes.iter().fold(0i32, |pen, byte| {
+        pen.saturating_add(style.glyph_advance(get_glyph(font, face.size, *byte as char)
+            .map_or(6, |(glyph, _)| i32::from(glyph.advance))))
+    });
+    let mut pixels = std::collections::BTreeSet::new();
+    let mut emit = |x, y| {
+        if let Some((left, top, right, bottom)) = ppc_font_source_pixel_bounds(x, y, numerator, denominator) {
+            for y in top..bottom { for x in left..right { pixels.insert((x, y)); } }
+        }
+    };
+    let mut pen = 0i32;
+    for &byte in bytes {
+        let (hit, synthetic) = if style.italic() {
+            get_glyph_italic(font, face.size, byte as char).map(|hit| (Some(hit), false))
+                .unwrap_or_else(|| (get_glyph(font, face.size, byte as char), true))
+        } else { (get_glyph(font, face.size, byte as char), false) };
+        if let Some((glyph, data)) = hit {
+            visit_ppc_styled_glyph_source_ink(font, face.size, &metrics, glyph, data,
+                synthetic, style, pen, measured, &mut emit);
+            pen = pen.saturating_add(if style.is_plain() { i32::from(glyph.advance) }
+                else { style.glyph_advance(i32::from(glyph.advance)) });
+        } else { pen = pen.saturating_add(6); }
+    }
+    if style.underline() && style.smear_max().is_none() && pen > 0 {
+        for y in 1..=i32::from(get_underline_thickness(font, face.size).max(1)) {
+            for x in 0..pen { emit(x, y); }
+        }
+    }
+    let advance = measured.saturating_mul(numerator).saturating_add(denominator / 2) / denominator;
+    (advance.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+        pixels.into_iter().collect())
+}

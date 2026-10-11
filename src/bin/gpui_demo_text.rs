@@ -84,6 +84,28 @@ mod tests {
     }
 
     #[test]
+    fn ppc_run_preserves_guest_insertion_positions_and_binary_ink() {
+        use std::collections::BTreeSet;
+        let bytes = b"A i\x8e";
+        // Deliberately differ from glyph-mask extents: caret ownership comes
+        // from guest TextEdit measurement, not from painting or host shaping.
+        let positions = vec![0, 3, 5, 9, 17];
+        for size in [9, 10, 12, 14, 24] {
+            for face in 0..128 {
+                let line = ClassicLine::ppc_styled_run(bytes, 3, size, face, positions.clone()).unwrap();
+                assert_eq!(line.positions, positions);
+                let painted: BTreeSet<_> = line.ink.iter().flat_map(|&(x, y, width)| {
+                    (x..x + width).map(move |px| (px, y))
+                }).collect();
+                let (_, expected) = systemless::quickdraw::text::ppc_styled_run_ink(3, size, face, bytes);
+                assert_eq!(painted, expected.into_iter().collect());
+            }
+        }
+        assert!(ClassicLine::ppc_styled_run(bytes, 3, 12, 0, vec![0, 1]).is_none());
+        assert!(ClassicLine::ppc_styled_run(bytes, 3, 12, 0, vec![1, 2, 3, 4, 5]).is_none());
+    }
+
+    #[test]
     fn file_name_abbreviation_preserves_guest_character_boundary() {
         assert_eq!(file_row_name("é£πAB", Some(3)), "é£π...");
         assert_eq!(file_row_name("é£π", Some(3)), "é£π");
@@ -291,6 +313,31 @@ impl ClassicLine {
             }
         }
         result
+    }
+
+    /// PPC styled run ink with insertion positions supplied by guest TextEdit
+    /// measurement. Glyph paint ratios and insertion widths are distinct guest
+    /// policies; preserve both rather than measuring these masks on the host.
+    /// This recipe requires zero CharExtra; port policy stays with the caller.
+    pub fn ppc_styled_run(
+        bytes: &[u8], font: i16, point_size: i16, face: u8, positions: Vec<i32>,
+    ) -> Option<Self> {
+        if positions.len() != bytes.len() + 1 || positions.first() != Some(&0) {
+            return None;
+        }
+        let (_, mut pixels) = systemless::quickdraw::text::ppc_styled_run_ink(font, point_size, face, bytes);
+        pixels.sort_unstable_by_key(|&(x, y)| (y, x));
+        let mut result = Self { positions, ink: Vec::new() };
+        for (x, y) in pixels {
+            if let Some(last) = result.ink.last_mut() {
+                if last.1 == y && last.0 + last.2 == x {
+                    last.2 += 1;
+                    continue;
+                }
+            }
+            result.ink.push((x, y, 1));
+        }
+        Some(result)
     }
 
     /// HLE labels may include guest-drawn symbols outside Mac Roman, such as
