@@ -1,0 +1,11 @@
+{
+  "source_hashes": {
+    "src/bin/gpui_demo.rs": "d9633063af0abc3da7ef71c8b6b9458d490fd262177d9e5c633c6ae9d3692510"
+  },
+  "scope": "Injected-notice shared GPUI test window: pointer click and root keyboard acknowledgment, ordinary key exclusion, no guest input queued. No actual worker acquisition/response, physical input, native accessibility, capture or CPU matrix qualification.",
+  "result": {
+    "passed": 1,
+    "failed": 0,
+    "seconds": 0.1
+  }
+}

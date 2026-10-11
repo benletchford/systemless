@@ -5862,3 +5862,19 @@ the acknowledgment button remains disabled pending modal input integration,
 and no reviewed composed image, CPU/scale interaction or native icon/frame
 reference qualification is claimed. Ordered delivery stages and complete
 Notification Manager behavior remain open; no production gate closes.
+
+### Notification alert acknowledgment input (2026-10-11)
+
+Owned alerts now enable the existing GPUI OK button and send the exact displayed
+snapshot through DismissNotificationAlert; Return at the focused root uses the
+same path. Pointer down/up/move, wheel and ordinary keys are excluded while the
+alert owns foreground. The worker also rejects background input, text and
+semantic control commands during ownership. The shared GPUI test-window
+regression passes (0.10s): OK and Return queue exact acknowledgment and the
+tested pointer/key sequences queue no guest input. An initial mouse-move leak
+was reproduced and corrected; a later test-only scoped-focus error was corrected
+to target the actual focused root. Logs: `reference/gpui-demo/notification-alert-input`.
+This uses an injected notice and does not qualify real worker acquisition,
+response execution, physical input, native accessibility or reviewed captures.
+Automatic acquisition remains disabled. Broader CPU/scale/modal lifecycle and
+complete ordered delivery remain open; no production gate closes.

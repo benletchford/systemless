@@ -663,6 +663,13 @@ mod desktop {
                 }
                 while wheel.is_none() && activation.is_none() {
                     match queued.pop_front().ok_or(mpsc::TryRecvError::Empty) {
+                        Ok(command) if session.runner_mut().notification_alert_snapshot().is_some()
+                            && !matches!(&command, Command::DismissNotificationAlert(..)
+                                | Command::Foreground(..) | Command::ImportClipboard(..)
+                                | Command::Shutdown | Command::CancelWheel) => {
+                            // System alert ownership excludes background input,
+                            // including semantic/accessibility and text-service requests.
+                        }
                         Ok(Command::CancelWheel) => {}
                         Ok(Command::Menu(menu, item, guest_id, generation)) => {
                             if session
@@ -1660,6 +1667,7 @@ mod desktop {
                     screen.ml(px(self.display_origin.0)).mt(px(self.display_origin.1))
                 })
                 .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, _| {
+                    if this.notification_alert.is_some() { return; }
                     if event.touch_phase == TouchPhase::Cancelled {
                         this.wheel.reset();
                         let _ = this.commands.send(Command::CancelWheel);
@@ -1698,6 +1706,7 @@ mod desktop {
                     }
                 }))
                 .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                    if this.notification_alert.is_some() { return; }
                     let (vertical, horizontal) = this.text_pointer(event.position, false);
                     this.mouse_position = (vertical, horizontal);
                     if this.scrollbar_drag.is_some() {
@@ -1713,6 +1722,7 @@ mod desktop {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                        if this.notification_alert.is_some() { cx.stop_propagation(); return; }
                         this.mouse_down = true;
                         this.focus.focus(window, cx);
                         let (vertical, horizontal) = this.text_pointer(event.position, true);
@@ -1731,6 +1741,7 @@ mod desktop {
                 .on_mouse_up(
                     MouseButton::Left,
                     cx.listener(|this, event: &MouseUpEvent, _, cx| {
+                        if this.notification_alert.is_some() { cx.stop_propagation(); return; }
                         this.mouse_down = false;
                         this.scrollbar_drag = None;
                         this.popup_tracking = None;
@@ -3238,6 +3249,8 @@ mod desktop {
                         .left(guest_px((rect.left - plan.bounds.left) as f32))
                         .w(guest_px(rect.width() as f32)).h(guest_px(rect.height() as f32))
                 };
+                let sender = self.commands.clone();
+                let expected = plan.notice.clone();
                 let overlay = div().id("guest-notification-alert").test_support()
                     .role(gpui_kit::Role::AlertDialog).aria_label("Notification")
                     .absolute().top(guest_px(plan.bounds.top as f32))
@@ -3250,7 +3263,10 @@ mod desktop {
                             cx.theme().foreground)))
                     .child(at(plan.button).child(super::choices::guest_button(
                         "guest-notification-ok".into(), "OK".into(),
-                        false, true, false, true, scene_scale, cx).w_full().h_full()));
+                        true, true, false, true, scene_scale, cx).w_full().h_full()
+                        .on_click(move |_, _, _| {
+                            let _ = sender.send(Command::DismissNotificationAlert(expected.clone()));
+                        })));
                 screen = screen.child(overlay);
             }
             let mut bar = Some(bar);
@@ -3300,6 +3316,7 @@ mod desktop {
                     this.host_cursor.set_hidden(false); cx.notify();
                 }))
                 .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                    if this.notification_alert.is_some() { return; }
                     this.cursor_host_position = Some((f32::from(event.position.x), f32::from(event.position.y)));
                     let x = f32::from(event.position.x) - this.display_origin.0;
                     let y = f32::from(event.position.y) - this.display_origin.1;
@@ -3337,6 +3354,12 @@ mod desktop {
                     }
                 }))
                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                    if let Some(notice) = &this.notification_alert {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "return") {
+                            let _ = this.commands.send(Command::DismissNotificationAlert(notice.clone()));
+                        }
+                        cx.stop_propagation(); return;
+                    }
                     this.sync_caps_lock(window.capslock().on);
                     this.sync_host_modifiers(event.keystroke.modifiers);
                     if event.keystroke.modifiers.platform {
@@ -3377,6 +3400,7 @@ mod desktop {
                     }
                 }))
                 .on_key_up(cx.listener(|this, event: &KeyUpEvent, _, _| {
+                    if this.notification_alert.is_some() { return; }
                     if let Some(mac_key) = guest_virtual_key(&event.keystroke.key.to_ascii_lowercase()) {
                         let (mac_key, _) = this.map_arrow(mac_key, 0);
                         this.release_host_key(mac_key);
@@ -16280,6 +16304,53 @@ mod desktop {
                     assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), "new host copy");
                 });
             });
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn notification_alert_pointer_and_keyboard_do_not_leak_guest_input(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::{AppContext, test::TestWindowExt};
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let notice = systemless::runner::NotificationSnapshot {
+                guest_id: 1, instance_id: 2, response_started: false,
+                mark: 0, icon_handle: 0, sound_handle: 0,
+                text: Some(b"Notification Caf\x8e".to_vec()), response: 0, ref_con: 0,
+            };
+            cx.update(gpui_kit::init);
+            let (window, view) = cx.update(|cx| {
+                gpui_kit::open_window(Default::default(), cx, |_, cx| {
+                    cx.new(|cx| super::Demo::new(sender, updates, cx))
+                }).unwrap()
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                view.update(cx, |demo, cx| {
+                    demo.width = 512; demo.height = 342;
+                    demo.notification_alert = Some(notice.clone());
+                    demo.focus.focus(window, cx);
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                window.click("guest-notification-ok", cx);
+            }).unwrap();
+            let commands = receiver.try_iter().collect::<Vec<_>>();
+            assert!(commands.iter().any(|command| matches!(command,
+                super::Command::DismissNotificationAlert(expected) if expected == &notice)));
+            assert!(!commands.iter().any(|command| matches!(command, super::Command::Input(..))),
+                "guest inputs: {:?}", commands.iter().filter_map(|command| match command {
+                    super::Command::Input(input) => Some(format!("{input:?}")), _ => None,
+                }).collect::<Vec<_>>());
+            cx.update_window(window.into(), |_, window, cx| {
+                window.press("a", cx);
+                window.press("enter", cx);
+            }).unwrap();
+            let commands = receiver.try_iter().collect::<Vec<_>>();
+            assert!(commands.iter().any(|command| matches!(command,
+                super::Command::DismissNotificationAlert(expected) if expected == &notice)));
+            assert!(!commands.iter().any(|command| matches!(command, super::Command::Input(..))),
+                "guest inputs: {:?}", commands.iter().filter_map(|command| match command {
+                    super::Command::Input(input) => Some(format!("{input:?}")), _ => None,
+                }).collect::<Vec<_>>());
         }
 
         #[cfg(feature = "gpui-demo-test")]
