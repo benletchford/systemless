@@ -378,6 +378,50 @@ impl super::TrapDispatcher {
         bus.write_word(chan_ptr + 34, 0); // qTail
     }
 
+    fn sound_channel_has_pending_work(&self, chan_ptr: u32) -> bool {
+        self.sound_manager
+            .find_channel(chan_ptr)
+            .is_some_and(|channel| {
+                sound_channel_busy(channel)
+                    || self.sound_manager.channel_has_queued_commands(chan_ptr) == Some(true)
+            })
+            || self
+                .sound_manager
+                .pending_callbacks
+                .iter()
+                .any(|pending| pending.chan_ptr == chan_ptr)
+            || self
+                .sound_manager
+                .pending_sound_callbacks
+                .iter()
+                .any(|pending| match pending {
+                    sound::PendingSoundCallback::Command { chan_ptr: ptr, .. }
+                    | sound::PendingSoundCallback::FileCompletion { chan_ptr: ptr, .. } => {
+                        *ptr == chan_ptr
+                    }
+                })
+    }
+
+    /// Foreground execution remains suspended while audio and callback work
+    /// drains. The runner services this only outside an interrupt callback.
+    pub(crate) fn service_pending_sound_disposal<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+    ) -> bool {
+        let Some((chan_ptr, sp)) = self.pending_sound_disposal else {
+            return false;
+        };
+        if self.sound_channel_has_pending_work(chan_ptr) {
+            return true;
+        }
+        self.pending_sound_disposal = None;
+        self.release_sound_channel(bus, chan_ptr);
+        bus.write_word(sp + 6, 0);
+        cpu.write_reg(Register::A7, sp + 6);
+        false
+    }
+
     fn release_sound_channel(&mut self, bus: &mut MacMemoryBus, chan_ptr: u32) {
         if self.legacy_sound_driver_channel == Some(chan_ptr) {
             self.legacy_sound_driver_channel = None;
@@ -1036,6 +1080,17 @@ impl super::TrapDispatcher {
                     self.sound_manager.remove_channel(guest_ptr);
                     let mut chan = SndChannel::new(guest_ptr, allocated);
                     chan.callback_addr = user_routine;
+                    if synth == SQUARE_WAVE_SYNTH_ID {
+                        // A looping square wave at MIDI A4 (440 Hz). The
+                        // canonical note engine applies pitch and duration.
+                        chan.install_instrument(sound::SampledInstrument {
+                            samples: (0..64).map(|i| if i < 32 { 255 } else { 0 }).collect(),
+                            sample_rate_fixed: (440 * 64) << 16,
+                            base_note: 69,
+                            loop_start: 0,
+                            loop_end: 64,
+                        });
+                    }
                     self.sound_manager.add_channel(chan);
                     if trace_sound_enabled() {
                         // Log caller PC + surrounding bytes for back-referencing
@@ -1078,10 +1133,21 @@ impl super::TrapDispatcher {
             // SndDisposeChannel ($A801): Removes channel from SoundManager
             (true, 0x001) => {
                 let sp = cpu.read_reg(Register::A7);
-                let quiet_now = bus.read_word(sp) as i16;
+                let quiet_now = bus.read_byte(sp) != 0;
                 let chan_ptr = bus.read_long(sp + 2);
 
-                self.release_sound_channel(bus, chan_ptr);
+                if self.sound_manager.find_channel(chan_ptr).is_none() {
+                    bus.write_word(sp + 6, (-205i16) as u16);
+                    cpu.write_reg(Register::A7, sp + 6);
+                    return Some(Ok(()));
+                }
+                if !quiet_now && self.sound_channel_has_pending_work(chan_ptr) {
+                    self.pending_sound_disposal = Some((chan_ptr, sp));
+                } else {
+                    self.release_sound_channel(bus, chan_ptr);
+                    bus.write_word(sp + 6, 0);
+                    cpu.write_reg(Register::A7, sp + 6);
+                }
                 if trace_sound_enabled() {
                     eprintln!(
                         "[SOUND] SndDisposeChannel chan=${:08X} quietNow={}",
@@ -1089,8 +1155,6 @@ impl super::TrapDispatcher {
                     );
                 }
 
-                bus.write_word(sp + 6, 0); // noErr
-                cpu.write_reg(Register::A7, sp + 6);
                 Ok(())
             }
 
@@ -1483,6 +1547,10 @@ impl super::TrapDispatcher {
 
     /// Execute a sound command on a channel, handling bufferCmd to load samples.
     fn execute_sound_command(&mut self, bus: &mut MacMemoryBus, chan_ptr: u32, cmd: SndCommand) {
+        if matches!(cmd.cmd, sound::cmd::FREQ | sound::cmd::FREQ_DURATION) {
+            self.sound_manager.execute_immediate_command(chan_ptr, cmd);
+            return;
+        }
         self.sound_manager.record_command(cmd.cmd);
         match cmd.cmd {
             sound::cmd::NULL => {}
