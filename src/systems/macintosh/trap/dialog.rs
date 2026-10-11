@@ -3099,6 +3099,8 @@ impl super::TrapDispatcher {
         let old_font = self.tx_font;
         let old_face = self.tx_face;
         let old_size = self.tx_size;
+        let old_mode = self.tx_mode;
+        let old_port_text = [68, 70, 72, 74].map(|offset| bus.read_word(te_port + offset));
         let old_fg = self.fg_color;
         let old_loc = self.pn_loc;
         let previous_port = *self.current_port;
@@ -3260,6 +3262,7 @@ impl super::TrapDispatcher {
         self.tx_font = font;
         self.tx_face = face;
         self.tx_size = size;
+        self.tx_mode = bus.read_word(te_ptr + Self::TE_TX_MODE_OFFSET) as i16;
         self.fg_color = color;
 
         let clip_top = view_rect.0;
@@ -3508,6 +3511,18 @@ impl super::TrapDispatcher {
         self.tx_font = old_font;
         self.tx_face = old_face;
         self.tx_size = old_size;
+        self.tx_mode = old_mode;
+        // Glyph drawing synchronizes temporary text attributes into the guest
+        // port and retained state. Restore both before returning to the caller.
+        for (offset, value) in [68, 70, 72, 74].into_iter().zip(old_port_text) {
+            bus.write_word(te_port + offset, value);
+        }
+        if let Some(state) = self.port_draw_states.get_mut(&te_port) {
+            state.tx_font = old_port_text[0] as i16;
+            state.tx_face = old_port_text[1] as i16;
+            state.tx_mode = old_port_text[2] as i16;
+            state.tx_size = old_port_text[3] as i16;
+        }
         self.fg_color = old_fg;
         self.pn_loc = old_loc;
         if let Some(pixel) = old_port_fg_pixel {

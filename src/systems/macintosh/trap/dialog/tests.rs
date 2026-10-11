@@ -18200,6 +18200,40 @@
     }
 
     #[test]
+    fn textedit_uses_record_transfer_mode_and_restores_port_text_attributes() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.set_screen_mode_for_test(bus.read_long(0x0824), 64, 512, 342, 1);
+        let handle = make_te_with_text(&mut disp, &mut bus, b"Transfer");
+        let ptr = bus.read_long(handle);
+        let port = bus.read_long(ptr + TrapDispatcher::TE_IN_PORT_OFFSET);
+        let original_text = [3u16, 1, 1, 12];
+        for (offset, value) in [68, 70, 72, 74].into_iter().zip(original_text) {
+            bus.write_word(port + offset, value);
+        }
+        disp.tx_font = 3;
+        disp.tx_face = 1;
+        disp.tx_mode = 1;
+        disp.tx_size = 12;
+        bus.write_word(ptr + TrapDispatcher::TE_TX_MODE_OFFSET, 2);
+        bus.write_word(ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 0);
+        let (base, stride, _, _, _) = disp.screen_mode;
+        for offset in 0..stride * 60 { bus.write_byte(base + offset, 0); }
+        let pixels = |bus: &MacMemoryBus| (0..stride * 60)
+            .map(|offset| bus.read_byte(base + offset)).collect::<Vec<_>>();
+        let original = pixels(&bus);
+        disp.draw_te_contents(&mut cpu, &mut bus, handle, false);
+        assert_ne!(pixels(&bus), original, "first XOR draw must leave visible ink");
+        assert_eq!((disp.tx_font, disp.tx_face, disp.tx_mode, disp.tx_size), (3, 1, 1, 12));
+        assert_eq!([68, 70, 72, 74].map(|offset| bus.read_word(port + offset)), original_text);
+        disp.draw_te_contents(&mut cpu, &mut bus, handle, false);
+        assert_eq!(pixels(&bus), original, "second XOR draw must restore the destination");
+        assert_eq!((disp.tx_font, disp.tx_face, disp.tx_mode, disp.tx_size), (3, 1, 1, 12));
+        assert_eq!([68, 70, 72, 74].map(|offset| bus.read_word(port + offset)), original_text);
+        let retained = disp.port_draw_states.get(&port).unwrap();
+        assert_eq!((retained.tx_font, retained.tx_face, retained.tx_mode, retained.tx_size), (3, 1, 1, 12));
+    }
+
+    #[test]
     fn textedit_partial_glyphs_preserve_view_and_complex_caller_clip() {
         for theme in [UiThemeId::ClassicSystem7, UiThemeId::SystemlessDefault] {
             let (mut disp, mut cpu, mut bus) = setup_with_port();

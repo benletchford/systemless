@@ -6677,3 +6677,24 @@ This is functional-profile snapshot/eligibility evidence, not new transfer-mode
 visual or native-oracle qualification. Simple Dialog Manager item paint paths
 and complete destination-aware smooth-mode support remain open. No broad gate
 closes, and earlier game/capture evidence remains pinned to its source revision.
+
+### Classic TextEdit port text restoration (2026-10-12)
+
+Classic `draw_te_contents` now applies canonical TERec.txMode while drawing.
+Glyph drawing synchronizes temporary font, face, mode and size into the guest
+port and retained port state; those attributes are restored afterward, as is
+the caller's cached drawing mode. The first XOR regression failed because the
+mode leaked into guest port memory. The implementation now restores all four
+text attributes together. The XOR/restoration check passes (0.02 seconds),
+as do all 430 dialog regressions (0.33 seconds) and 41 related TextEdit checks
+(3.90 seconds), on the corrected functional-profile binary.
+
+The transfer-mode mutation ownership check passes across 1/8/16-bit surfaces
+using the preceding test binary (0.03 seconds). It proves that identical pixels
+do not preserve ownership after canonical txMode changes. The corrected
+wrapped-field compositor/interaction check passes mono68k, colour68k, PPC8 and
+PPC16 at scales0.75/1/1.5/2 (17.45 seconds). Source, binary and log hashes are in
+`target/gpui-qualification/text-mode/port-attributes-review.json`.
+Smooth destination-aware modes and native appearance remain unqualified. No
+production gate closes; native gameplay performance and broader qualification
+remain required.

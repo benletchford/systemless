@@ -438,7 +438,9 @@ mod tests {
             let slot = crate::memory::presentation::PresentationSlot::default();
             slot.record_text_edit_drawing(0x500, capture(&mem));
             assert!(slot.text_edit_drawing_intact(0x500, capture(&mem), 256));
-            for address in [0x800, 0x650, 0x64c, 0x63a, 0x64a, 0x620, 0x662] {
+            // txMode changes invalidate ownership even before the guest
+            // repaints; identical framebuffer bytes are insufficient.
+            for address in [0x800, 0x650, 0x64c, 0x64f, 0x63a, 0x64a, 0x620, 0x662] {
                 let previous = mem[address];
                 mem[address] ^= 1;
                 assert!(!slot.text_edit_drawing_intact(0x500, capture(&mem), 256),
