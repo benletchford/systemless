@@ -8934,6 +8934,45 @@ mod desktop {
 
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
+        fn host_window_deactivation_releases_held_input(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::{AppContext, test::TestWindowExt};
+
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            cx.update(gpui_kit::init);
+            let (window, view) = cx.update(|cx| {
+                gpui_kit::open_window(Default::default(), cx, |_, cx| {
+                    cx.new(|cx| super::Demo::new(sender, updates, cx))
+                }).unwrap()
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.activate_window();
+                view.update(cx, |demo, cx| demo.focus.focus(window, cx));
+                window.render_frame(cx);
+            }).unwrap();
+            let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+            visual.run_until_parked();
+            view.update(cx, |demo, _| {
+                demo.mouse_down = true;
+                demo.mouse_position = (92, 137);
+                demo.press_host_key(0x00, b'a');
+            });
+            receiver.try_iter().for_each(drop);
+            visual.deactivate_window();
+            visual.deactivate_window();
+            let inputs: Vec<_> = receiver.try_iter().filter_map(|command| match command {
+                super::Command::Input(input) => Some(input),
+                _ => None,
+            }).collect();
+            assert!(matches!(inputs.as_slice(), [
+                MacintoshInput::MouseUp { vertical: 92, horizontal: 137 },
+                MacintoshInput::KeyUp { mac_key: 0x00, character: b'a' },
+            ]));
+            assert!(!view.read_with(cx, |demo, _| demo.mouse_down));
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
         fn focus_loss_releases_guest_button_once(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::AppContext;
 

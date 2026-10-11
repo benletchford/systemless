@@ -1949,6 +1949,18 @@ deactivation, inactive text selection, stopped caret blinking, or resume
 behaviour. Widget focus moving into a GPUI menu must also be distinguished
 from the host application actually moving into the background.
 
+The platform-window deactivation regression activates a GPUI test window,
+holds a guest key and mouse button, then deactivates the window through the
+GPUI test platform. It verifies one mouse-up and one key-up even after repeated
+deactivation. It passes using the existing focus callbacks, without a separate
+window-activation observer. This qualifies input cleanup only, not Macintosh
+suspend/resume; a future lifecycle bridge must observe actual window activation
+rather than interpreting every widget focus change as a foreground switch. Shared SIZE-policy
+queries also have a passing regression for all four combinations of accepting
+suspend/resume and owning activation: the ownership bit alone must not suppress
+Window Manager activation events. These queries are not yet connected to host
+transition scheduling.
+
 The existing Window Manager adapters already own activation delivery through
 `CurActivate`/`CurDeactive` and coalesced activation records. A new host bridge
 must use those lifecycle paths, rather than directly modifying TERec.active
@@ -1997,6 +2009,14 @@ extractions at full, 75% and 50% volume are byte-identical to all three retained
 intervals confirm continued playback after Flush, silence after Quiet without
 normal completion, later normal completion, and disposal. The audio manifest
 now records the new PCM hashes, extraction offsets and cancelled lengths.
+The remaining native batch completed all 20 requested runs and all 380 file
+hashes were verified. Reviewed Standard File checkpoints on both CPUs confirm
+default replacement cancellation with filename reselection, creation entering
+the new directory, duplicate-name errors, pointer selection replacement, and
+held rightward selection scrolling. The final replacement fixture still reports
+its documented FSpCreate error on an existing file; this does not establish
+replacement-content persistence. Intermediate and remaining scrolling/error
+recovery checkpoints still require review before claiming full replay qualification.
 Eight reviewed native modeless activation checkpoints are retained in
 `oracle/modeless-text-activation-capture.json`. Other affected native provenance
 still needs refreshing before the rebuilt fixture can be treated as fully qualified.

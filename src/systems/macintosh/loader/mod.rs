@@ -23,6 +23,14 @@ pub struct ApplicationSizeResource {
 }
 
 impl ApplicationSizeResource {
+    // Processes (1994), ProcessInfoRec processMode; Toolbox Essentials
+    // (1992), pp. 2-115–2-119: these bits retain their SIZE positions.
+    pub const ACCEPT_SUSPEND_RESUME: u16 = 0x4000;
+    pub const CAN_BACKGROUND: u16 = 0x1000;
+    pub const DOES_ACTIVATE_ON_FOREGROUND_SWITCH: u16 = 0x0800;
+    pub const ONLY_BACKGROUND: u16 = 0x0400;
+    pub const GET_FRONT_CLICKS: u16 = 0x0200;
+
     /// `isHighLevelEventAware` is bit 6 of the 16-bit `'SIZE'` flags field.
     /// Macintosh Toolbox Essentials 1992, pp. 2-30 to 2-32.
     pub const HIGH_LEVEL_EVENT_AWARE: u16 = 0x0040;
@@ -48,6 +56,35 @@ impl ApplicationSizeResource {
 
     pub fn is_high_level_event_aware(self) -> bool {
         self.flags & Self::HIGH_LEVEL_EVENT_AWARE != 0
+    }
+
+    pub fn accepts_suspend_resume(self) -> bool {
+        self.flags & Self::ACCEPT_SUSPEND_RESUME != 0
+    }
+
+    /// Whether a foreground switch requires separate Window Manager events.
+    /// Toolbox Essentials (1992), p. 2-61: an application owns activation
+    /// only when it accepts suspend/resume and declares that responsibility.
+    pub fn needs_foreground_activation_events(self) -> bool {
+        !self.accepts_suspend_resume()
+            || self.flags & Self::DOES_ACTIVATE_ON_FOREGROUND_SWITCH == 0
+    }
+
+    /// Permission for background null-event processing, not permission to
+    /// receive updates or high-level events (Toolbox Essentials, Event
+    /// Manager, "Null Events").
+    pub fn can_process_background_null_events(self) -> bool {
+        self.flags & Self::CAN_BACKGROUND != 0
+    }
+
+    pub fn is_background_only(self) -> bool {
+        self.flags & Self::ONLY_BACKGROUND != 0
+    }
+
+    /// This controls clicks in the application's front window; activation
+    /// clicks in its other windows are still delivered (pp. 2-117–2-118).
+    pub fn receives_front_window_activation_click(self) -> bool {
+        self.flags & Self::GET_FRONT_CLICKS != 0
     }
 }
 
@@ -443,6 +480,33 @@ mod tests {
             ..size
         };
         assert!(aware.is_high_level_event_aware());
+    }
+
+    #[test]
+    fn size_foreground_policy_requires_both_activation_ownership_bits() {
+        // In particular, an ownership bit without suspend/resume support
+        // cannot suppress the only activation notification the guest receives.
+        for (flags, accepts, needs_activation) in [
+            (0, false, true),
+            (0x4000, true, true),
+            (0x0800, false, true),
+            (0x4800, true, false),
+        ] {
+            let mut bytes = [0; 10];
+            bytes[..2].copy_from_slice(&(flags as u16).to_be_bytes());
+            let size = ApplicationSizeResource::parse(&bytes).unwrap();
+            assert_eq!(size.accepts_suspend_resume(), accepts);
+            assert_eq!(size.needs_foreground_activation_events(), needs_activation);
+        }
+        let size = ApplicationSizeResource {
+            flags: 0x1600,
+            preferred_size: 0,
+            minimum_size: 0,
+        };
+        assert!(size.can_process_background_null_events());
+        assert!(size.is_background_only());
+        assert!(size.receives_front_window_activation_click());
+        assert!(!size.accepts_suspend_resume());
     }
 
     #[test]
