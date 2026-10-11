@@ -547,9 +547,31 @@ held-checkbox capture is pixel-identical to the prior reviewed colour 68K
 capture after extracting the shared presentation module.
 
 This verifies the document-radio state transition at the existing light-theme
-capture scale, not complete scene readiness. The preferences captures expose
-white overlay rectangles against guest-drawn grey panels and the previously
-unqualified monochrome black panel backgrounds; these remain composition and
-guest-drawing qualification gaps. Dialog-radio fixtures, already-selected held
+capture scale, not complete scene readiness. The preferences captures show
+white overlay rectangles against guest-drawn grey panels. Their native provenance
+was unresolved at that review; the follow-up oracle check below resolves it.
+The monochrome black panel interiors already have native evidence recorded above;
+they are not a newly discovered GPUI defect. Dialog-radio fixtures, already-selected held
 radios, disabled/inactive states, other scales/themes, and accessibility actions
 still require qualification.
+
+A fresh colour 68K native-oracle comparison resolves the preferences backplate
+question. The same deterministic sequence ran through the existing headless
+Systemless runner and BasiliskII with Mac OS 8.1: start the showcase, open Pages,
+choose Game Preferences, settle, move the pointer away, and capture. Both runs
+completed. The native capture has white rectangles behind checkbox and radio
+labels within the guest-painted grey panels, matching the GPUI composition's
+backplate treatment. The ordinary HLE framebuffer instead leaves grey behind
+those labels. Removing GPUI's white backplates would therefore move this case
+away from the native reference. This is a background-provenance finding, not
+whole-image equivalence: native font weight, window chrome and scrollbar position
+differ and are not qualified by this comparison.
+
+For reproduction, use the existing play/oracle runners with an 8-bit 68K script:
+run 180 ticks; mouse-down on Pages at (v=10,h=64); run 8 ticks; move to the fifth
+item at (v=91,h=150); run 15 ticks; release there; run 120 ticks; move to
+(v=550,h=760); capture. Compare with the opt-in frontend's `--capture-radio-outside`
+preferences scene, considering only the control backplates. The earlier
+monochrome oracle evidence and focused one-bit PaintRect regression remain the
+authority for black custom panel interiors. Neither appearance should be replaced
+by guessed colours sampled from neighbouring pixels.
