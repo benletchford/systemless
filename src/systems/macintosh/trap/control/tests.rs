@@ -4305,7 +4305,8 @@ fn track_control_global_live_button_point_preserves_release_cancellation() {
 #[test]
 fn setctlvalue_preserves_updated_checkbox_in_visible_dialog_snapshot() {
     let (mut disp, mut cpu, mut bus) = setup_with_port();
-    let window = *disp.current_port;
+    let window = 0x181000;
+    disp.set_current_port_state(&mut bus, &mut cpu, window, None);
     let base = bus.read_long(window + 2);
     let row_bytes = u32::from(bus.read_word(window + 6));
     disp.set_screen_mode_for_test(base, row_bytes, 512, 342, 1);
@@ -4327,13 +4328,17 @@ fn setctlvalue_preserves_updated_checkbox_in_visible_dialog_snapshot() {
             pixels: before.clone().into(),
         },
     );
-    let sp = 0x300000;
+    let sp = 0x2F0000;
     cpu.write_reg(Register::A7, sp);
     bus.write_word(sp, 1);
     bus.write_long(sp + 2, handle);
     disp.dispatch_control(true, 0x163, &mut cpu, &mut bus)
         .unwrap()
         .unwrap();
+    assert!(
+        !before.is_empty(),
+        "fixture must capture real framebuffer pixels"
+    );
     let expected = disp.save_dialog_pixels(&bus, bounds);
     assert_ne!(
         before, expected,
