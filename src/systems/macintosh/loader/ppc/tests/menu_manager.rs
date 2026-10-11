@@ -505,6 +505,7 @@ fn native_insert_menu_preserves_regular_and_hierarchical_partitions() {
     assert_eq!(snapshot.menus.len(), 2);
     assert!(!snapshot.menus[0].hierarchical);
     assert!(snapshot.menus[0].visible_in_menu_bar);
+    assert!(snapshot.menus[0].standard_definition);
     assert!(snapshot.menus[1].hierarchical);
     assert!(!snapshot.menus[1].visible_in_menu_bar);
     assert_eq!(
@@ -639,6 +640,45 @@ fn native_insert_menu_preserves_regular_and_hierarchical_partitions() {
         Some(before_duplicate),
         "reinserting a current menu must be a no-op"
     );
+
+    // A resource-backed standard MDEF is still host-presentable even when
+    // its bytes are not the synthetic standard shim. A custom ID retains
+    // guest rendering. Macintosh Toolbox Essentials (1992), pp. 3-3, 3-87.
+    const MDEF_HANDLE: u32 = 0x00a0_0000;
+    const MDEF_PROC: u32 = MDEF_HANDLE + 0x20;
+    loaded.memory.add_region(MDEF_HANDLE, vec![0; 0x80]);
+    loaded.memory.write_u32_be(MDEF_HANDLE, MDEF_PROC).unwrap();
+    let regular_ptr = loaded.memory.read_u32_be(regular).unwrap();
+    loaded
+        .memory
+        .write_u32_be(regular_ptr + 6, MDEF_HANDLE)
+        .unwrap();
+    let mut resource = PpcVfsResourceRecord {
+        ref_num: 1,
+        path: String::new(),
+        res_type: u32::from_be_bytes(*b"MDEF"),
+        res_id: 0,
+        name: Vec::new(),
+        data: Vec::new(),
+        raw_data: None,
+        raw_attrs: None,
+        attrs: 0,
+        handle: MDEF_HANDLE,
+    };
+    let standard = ppc_guest_menu_snapshot_with_resources(
+        &mut loaded.memory,
+        menu_list_handle,
+        std::slice::from_ref(&resource),
+    );
+    assert!(standard.menus[0].standard_definition);
+    resource.res_id = 256;
+    let custom = ppc_guest_menu_snapshot_with_resources(
+        &mut loaded.memory,
+        menu_list_handle,
+        std::slice::from_ref(&resource),
+    );
+    assert!(!custom.menus[0].standard_definition);
+    assert!(custom.requires_guest_menu_rendering());
 }
 
 #[test]
