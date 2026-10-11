@@ -2662,7 +2662,10 @@ mod desktop {
                         .w(guest_px(bounds.width() as f32)).h(guest_px(bounds.height() as f32))
                         .bg(cx.theme().background).border_2().border_color(cx.theme().border)
                         .text_color(cx.theme().foreground).text_size(guest_px(13.))
-                        .child(at(layout.message).overflow_hidden().child(format!("Replace existing \"{}\"?", panel.name.as_deref().unwrap_or(""))));
+                        .child(at(layout.message).overflow_hidden().child(super::text::classic_file_prompt(
+                            &format!("Replace existing \"{}\"?", panel.name.as_deref().unwrap_or("")),
+                            scene_scale, cx.theme().foreground,
+                        )));
                     for (rect, label, action) in [
                         (layout.cancel, "Cancel", super::activation::FileAction::CancelReplacement),
                         (layout.replace, "Replace", super::activation::FileAction::Replace),
