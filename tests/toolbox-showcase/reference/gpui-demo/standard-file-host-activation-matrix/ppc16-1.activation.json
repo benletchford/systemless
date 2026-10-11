@@ -1,0 +1,12 @@
+{
+  "actual_depth": 16,
+  "powerpc": true,
+  "scene_scale": 1.0,
+  "host_states": [
+    true,
+    false,
+    true
+  ],
+  "exact_composed_restoration": true,
+  "scope": "Shared Demo host-state presentation only; guest modal state retained. No physical observer or guest suspend/resume qualification."
+}

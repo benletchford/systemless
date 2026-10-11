@@ -24,6 +24,20 @@ capture run is archived in `styled-text-single-line-shared`, pinned to f565b695.
 All 192 fixture raster/state cases pass; this earlier bitmap evidence does not
 qualify the newer smooth typography or production readiness.
 
+### Standard File host-activity matrix
+
+The shared Demo Open-panel run completes16 scenarios across four CPU/depth modes
+and scales0.75/1/1.5/2, with48 active/inactive/reactivated state images. All16
+full-scene restoration pairs are exact, and each active image is pixel-identical
+to the previously reviewed selector-scale matrix. Source/executable hashes match
+after completion. One inactive full mono0.75 scene and four inactive panel crops
+(one per mode, covering all four scales) were directly reviewed without resizing.
+All inactive images retain the same modal appearance: this helper changes host
+activity/input gates while preserving guest modal state. Evidence is under
+`standard-file-host-activation-matrix`. It supersedes the pending-matrix status
+below, but does not establish physical host observation, native accessibility
+delivery, guest suspend/resume or independent native font fidelity.
+
 ### Standard File runtime inactive dispatch guards
 
 Open/Save, New Folder and replacement button keyboard/accessibility callbacks

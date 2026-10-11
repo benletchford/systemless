@@ -1,0 +1,160 @@
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1D8 bkLim=$0044A1D8 zcbFree=2400664 (2.3MB)
+[INIT] Set MainDevice=$002264CC, TheGDevice=$002264CC (ptr=$00226498)
+[INIT] GDevice chain: $8A4→$002264CC→$00226498 gdPMap→$00226494→$00226460
+[INIT]   PixMap: rowBytes=$8070 bounds=(0,0,600,800) pixelSize=1
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAD9E randSeed_addr=$003FAD20
+[INITGRAF] screenBits: base=$07F80000 rowBytes=112 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$00226528 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00226E24 bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00226E24 pixmap=$00205B30 bounds=(50,40,420,600) goAway=true
+saved guest frame to /tmp/gpui-file-activation-matrix/mono-0.75.guest.png
+saved composed GPUI capture to /tmp/gpui-file-activation-matrix/mono-0.75.png
+Completed mono-0.75
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1D8 bkLim=$0044A1D8 zcbFree=2400664 (2.3MB)
+[INIT] Set MainDevice=$002264CC, TheGDevice=$002264CC (ptr=$00226498)
+[INIT] GDevice chain: $8A4→$002264CC→$00226498 gdPMap→$00226494→$00226460
+[INIT]   PixMap: rowBytes=$8070 bounds=(0,0,600,800) pixelSize=1
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAD9E randSeed_addr=$003FAD20
+[INITGRAF] screenBits: base=$07F80000 rowBytes=112 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$00226528 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00226E24 bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00226E24 pixmap=$00205B30 bounds=(50,40,420,600) goAway=true
+saved guest frame to /tmp/gpui-file-activation-matrix/mono-1.guest.png
+saved composed GPUI capture to /tmp/gpui-file-activation-matrix/mono-1.png
+Completed mono-1
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1D8 bkLim=$0044A1D8 zcbFree=2400664 (2.3MB)
+[INIT] Set MainDevice=$002264CC, TheGDevice=$002264CC (ptr=$00226498)
+[INIT] GDevice chain: $8A4→$002264CC→$00226498 gdPMap→$00226494→$00226460
+[INIT]   PixMap: rowBytes=$8070 bounds=(0,0,600,800) pixelSize=1
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAD9E randSeed_addr=$003FAD20
+[INITGRAF] screenBits: base=$07F80000 rowBytes=112 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$00226528 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00226E24 bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00226E24 pixmap=$00205B30 bounds=(50,40,420,600) goAway=true
+saved guest frame to /tmp/gpui-file-activation-matrix/mono-1.5.guest.png
+saved composed GPUI capture to /tmp/gpui-file-activation-matrix/mono-1.5.png
+Completed mono-1.5
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1D8 bkLim=$0044A1D8 zcbFree=2400664 (2.3MB)
+[INIT] Set MainDevice=$002264CC, TheGDevice=$002264CC (ptr=$00226498)
+[INIT] GDevice chain: $8A4→$002264CC→$00226498 gdPMap→$00226494→$00226460
+[INIT]   PixMap: rowBytes=$8070 bounds=(0,0,600,800) pixelSize=1
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAD9E randSeed_addr=$003FAD20
+[INITGRAF] screenBits: base=$07F80000 rowBytes=112 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$00226528 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00226E24 bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00226E24 pixmap=$00205B30 bounds=(50,40,420,600) goAway=true
+saved guest frame to /tmp/gpui-file-activation-matrix/mono-2.guest.png
+saved composed GPUI capture to /tmp/gpui-file-activation-matrix/mono-2.png
+Completed mono-2
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1D8 bkLim=$0044A1D8 zcbFree=2400664 (2.3MB)
+[INIT] Set MainDevice=$00226CBC, TheGDevice=$00226CBC (ptr=$00226C88)
+[INIT] GDevice chain: $8A4→$00226CBC→$00226C88 gdPMap→$00226C84→$00226C50
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAD9E randSeed_addr=$003FAD20
+[INITGRAF] screenBits: base=$07F80000 rowBytes=816 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$00226D18 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00227614 bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00227614 pixmap=$00205B30 bounds=(50,40,420,600) goAway=true
+saved guest frame to /tmp/gpui-file-activation-matrix/colour-0.75.guest.png
+saved composed GPUI capture to /tmp/gpui-file-activation-matrix/colour-0.75.png
+Completed colour-0.75
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1D8 bkLim=$0044A1D8 zcbFree=2400664 (2.3MB)
+[INIT] Set MainDevice=$00226CBC, TheGDevice=$00226CBC (ptr=$00226C88)
+[INIT] GDevice chain: $8A4→$00226CBC→$00226C88 gdPMap→$00226C84→$00226C50
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAD9E randSeed_addr=$003FAD20
+[INITGRAF] screenBits: base=$07F80000 rowBytes=816 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$00226D18 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00227614 bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00227614 pixmap=$00205B30 bounds=(50,40,420,600) goAway=true
+saved guest frame to /tmp/gpui-file-activation-matrix/colour-1.guest.png
+saved composed GPUI capture to /tmp/gpui-file-activation-matrix/colour-1.png
+Completed colour-1
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1D8 bkLim=$0044A1D8 zcbFree=2400664 (2.3MB)
+[INIT] Set MainDevice=$00226CBC, TheGDevice=$00226CBC (ptr=$00226C88)
+[INIT] GDevice chain: $8A4→$00226CBC→$00226C88 gdPMap→$00226C84→$00226C50
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAD9E randSeed_addr=$003FAD20
+[INITGRAF] screenBits: base=$07F80000 rowBytes=816 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$00226D18 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00227614 bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00227614 pixmap=$00205B30 bounds=(50,40,420,600) goAway=true
+saved guest frame to /tmp/gpui-file-activation-matrix/colour-1.5.guest.png
+saved composed GPUI capture to /tmp/gpui-file-activation-matrix/colour-1.5.png
+Completed colour-1.5
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1D8 bkLim=$0044A1D8 zcbFree=2400664 (2.3MB)
+[INIT] Set MainDevice=$00226CBC, TheGDevice=$00226CBC (ptr=$00226C88)
+[INIT] GDevice chain: $8A4→$00226CBC→$00226C88 gdPMap→$00226C84→$00226C50
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAD9E randSeed_addr=$003FAD20
+[INITGRAF] screenBits: base=$07F80000 rowBytes=816 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$00226D18 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00227614 bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00227614 pixmap=$00205B30 bounds=(50,40,420,600) goAway=true
+saved guest frame to /tmp/gpui-file-activation-matrix/colour-2.guest.png
+saved composed GPUI capture to /tmp/gpui-file-activation-matrix/colour-2.png
+Completed colour-2
+saved guest frame to /tmp/gpui-file-activation-matrix/ppc8-0.75.guest.png
+saved composed GPUI capture to /tmp/gpui-file-activation-matrix/ppc8-0.75.png
+Completed ppc8-0.75
+saved guest frame to /tmp/gpui-file-activation-matrix/ppc8-1.guest.png
+saved composed GPUI capture to /tmp/gpui-file-activation-matrix/ppc8-1.png
+Completed ppc8-1
+saved guest frame to /tmp/gpui-file-activation-matrix/ppc8-1.5.guest.png
+saved composed GPUI capture to /tmp/gpui-file-activation-matrix/ppc8-1.5.png
+Completed ppc8-1.5
+saved guest frame to /tmp/gpui-file-activation-matrix/ppc8-2.guest.png
+saved composed GPUI capture to /tmp/gpui-file-activation-matrix/ppc8-2.png
+Completed ppc8-2
+saved guest frame to /tmp/gpui-file-activation-matrix/ppc16-0.75.guest.png
+saved composed GPUI capture to /tmp/gpui-file-activation-matrix/ppc16-0.75.png
+Completed ppc16-0.75
+saved guest frame to /tmp/gpui-file-activation-matrix/ppc16-1.guest.png
+saved composed GPUI capture to /tmp/gpui-file-activation-matrix/ppc16-1.png
+Completed ppc16-1
+saved guest frame to /tmp/gpui-file-activation-matrix/ppc16-1.5.guest.png
+saved composed GPUI capture to /tmp/gpui-file-activation-matrix/ppc16-1.5.png
+Completed ppc16-1.5
+saved guest frame to /tmp/gpui-file-activation-matrix/ppc16-2.guest.png
+saved composed GPUI capture to /tmp/gpui-file-activation-matrix/ppc16-2.png
+Completed ppc16-2
