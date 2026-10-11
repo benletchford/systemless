@@ -842,6 +842,7 @@ pub(crate) fn dispatch_supported_import(
             handles,
             aliases,
             vfs_resources,
+            menu_generations,
             toolbox_startup,
         })
     {
