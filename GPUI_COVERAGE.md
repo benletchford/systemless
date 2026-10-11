@@ -1,5 +1,23 @@
 # GPUI Kit system-interface coverage
 
+### Styled label overlap correction (2026-10-11)
+
+Overlapping equal-coverage glyph spans used the default even-odd polygon fill,
+which cancels shared ink. Non-zero fill now retains the union of their consistent
+winding; disjoint direct triangles, glyph positions, advances and clipping keep
+their existing paths. An independent geometry probe reproduces cancellation;
+the regression verifies union area 150 for overlapping ten-by-ten spans.
+All 31 text-helper tests pass (87.58s), and the default desktop check passes
+(58.02s). Preserved pre-fix and corrected shared-compositor styled menus show the
+same 458-pixel stroke correction in mono68k/0.75, colour68k/1, PPC8/1.5 and
+PPC16/2. All four menu metadata pairs match; original-resolution crops were
+reviewed. Evidence: `tests/toolbox-showcase/reference/gpui-demo/label-overlap/review.json`.
+These selected active pairs do not qualify all scales/states, native Macintosh
+font fidelity or physical interaction. The pinned 204-test run remains evidence
+for its original `5a19bc91` executable, not this later correction. No broad release
+gate closes.
+
+
 ### Source-outline monochrome stroke correction (2026-10-11)
 
 Small source-outline glyphs previously lost strokes when antialiased masks were

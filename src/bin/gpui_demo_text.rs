@@ -31,6 +31,32 @@ impl TextPointerMap {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn overlapping_label_spans_retain_the_union_of_guest_ink() {
+        use gpui_kit::{point, px};
+        let mut path = super::label_coverage_path();
+        // Two ten-by-ten spans overlap by five columns: their union has
+        // area 150. An even-odd fill incorrectly removes the shared area.
+        for left in [0., 5.] {
+            path.move_to(point(px(left), px(0.)));
+            path.line_to(point(px(left + 10.), px(0.)));
+            path.line_to(point(px(left + 10.), px(10.)));
+            path.line_to(point(px(left), px(10.)));
+            path.close();
+        }
+        let path = path.build().unwrap();
+        let area: f32 = path.vertices.chunks_exact(3).map(|triangle| {
+            let a = triangle[0].xy_position;
+            let b = triangle[1].xy_position;
+            let c = triangle[2].xy_position;
+            let (ax, ay) = (f32::from(a.x), f32::from(a.y));
+            let (bx, by) = (f32::from(b.x), f32::from(b.y));
+            let (cx, cy) = (f32::from(c.x), f32::from(c.y));
+            ((bx - ax) * (cy - ay) - (by - ay) * (cx - ax)).abs() / 2.
+        }).sum();
+        assert_eq!(area, 150., "overlap must retain ink rather than cancel it");
+    }
+
+    #[test]
     fn smooth_label_sources_preserve_guest_advances_and_have_fractional_coverage() {
         for (font, size) in [(0, 12), (1, 9), (3, 12)] {
             // Guest bytes include accented letters and symbols whose Unicode
@@ -2454,6 +2480,15 @@ fn smooth_bold_mask(
     Some(glyph)
 }
 
+// All coverage rectangles use the same winding. Non-zero fill retains their
+// union; the default even-odd fill would erase shared glyph strokes.
+fn label_coverage_path() -> gpui_kit::PathBuilder {
+    use gpui_kit::{FillOptions, FillRule, PathBuilder, PathStyle};
+    PathBuilder::fill().with_style(PathStyle::Fill(
+        FillOptions::default().with_fill_rule(FillRule::NonZero),
+    ))
+}
+
 /// Outline coverage changes ink only; guest advances and baseline remain authoritative.
 fn paint_smooth_label(
     line: &ClassicLine, left: gpui_kit::Pixels, baseline: gpui_kit::Pixels,
@@ -2469,8 +2504,8 @@ fn paint_smooth_label(
     let raster = (scale * window.scale_factor()).ceil().max(1.) as u32;
     let Some(glyphs) = resolve_smooth_run(line, raster) else { return false; };
     let unit = scale / raster as f32;
-    // The general fill uses even-odd coverage for overlapping glyph spans.
-    // Solid triangles are equivalent only when glyph ink boxes are disjoint.
+    // Disjoint glyph boxes can use direct triangles. Overlapping boxes need
+    // a union fill so equal-coverage strokes cannot cancel each other.
     let overlapping = glyphs.iter().enumerate().any(|(index, (pen, glyph))| {
         let left = i64::from(*pen) * i64::from(raster) + i64::from(glyph.left);
         let right = left + i64::from(glyph.width);
@@ -2499,7 +2534,7 @@ fn paint_smooth_label(
                 let x1 = x0 + px((x - start) as f32 * unit);
                 let y1 = y0 + px(unit);
                 if overlapping {
-                    let path = overlapping_paths.entry(alpha).or_insert_with(PathBuilder::fill);
+                    let path = overlapping_paths.entry(alpha).or_insert_with(label_coverage_path);
                     path.move_to(point(x0, y0)); path.line_to(point(x1, y0));
                     path.line_to(point(x1, y1)); path.line_to(point(x0, y1)); path.close();
                     continue;

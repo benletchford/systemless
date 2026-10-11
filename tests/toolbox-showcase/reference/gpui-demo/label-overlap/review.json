@@ -1,0 +1,209 @@
+{
+  "changed_pixels": 458,
+  "bbox": [
+    270,
+    196,
+    658,
+    249
+  ],
+  "metadata_equal": true,
+  "scope": "Selected active mono68k/0.75, colour68k/1, PPC8/1.5 and PPC16/2 styled menus. No full scale/state matrix, native font oracle, physical interaction or production release claim.",
+  "diagnosis": "Default even-odd fill cancels shared coverage rectangles; non-zero fill retains the union of same-winding spans",
+  "regression": "overlapping_label_spans_retain_the_union_of_guest_ink passed; independent area 150 for two overlapping ten-by-ten spans",
+  "review": "Before/after original-resolution crops inspected. Styled row strokes change without captured menu metadata changes.",
+  "after_executable_sha256": "56ae13ce61db52616aad1ffb1310971efface8567994631f1b9701360e1caf04",
+  "source_sha256": "f3537bf4dd5c95e7de3691661f31cd1f2769b31f58dbce7ff464a66636560559",
+  "artifacts_sha256": {
+    "after-mono68k-detail.png": "c054ce6ad378b547666869c9013faa76b1d9a349b9a11462a3dc08863d40e677",
+    "before-ppc16.png": "8bb87ac5c1d11ee0bf8c097a1e259ef319277f7937bfe90f0b75cb9503463abd",
+    "after-ppc8.log": "20f31324fdea46c7bec4b9d8fe82108a27b3b6b659937ea020a3e9b3ee2e4f3e",
+    "after-ppc16-detail.png": "c054ce6ad378b547666869c9013faa76b1d9a349b9a11462a3dc08863d40e677",
+    "matrix-comparison.json": "547cd535d3e79c419ea9bfdabb987059f302c5e82c8efce38d8a9ad7c0853d97",
+    "after-colour.json": "61788f3ad9537d1713dc36f2066eeded879427c37bd7d7392a52f7f32493b60f",
+    "before-ppc8-detail.png": "cd26bce1456bb24eef7ea3b113317f2551c3bc1614f5570f1ea10b772a4bed7f",
+    "before-mono68k.png": "542ecfc703ee6f0b2357e91b9837e32b28897e41f577ea2eb6b10d2cd742621b",
+    "before-mono68k-detail.png": "cd26bce1456bb24eef7ea3b113317f2551c3bc1614f5570f1ea10b772a4bed7f",
+    "after-ppc8.json": "56a665ee989737144d0aa815a3d3dccb82d42216be8f31c9ed5b94810abc7e18",
+    "before-mono68k.json": "ab05624f22ae7385e4441621b180efce53ac0c8c25d90ed5a5aec5efb9ea086b",
+    "after-mono68k.log": "a5a19ebeb293efb7005cc1bdc3aee644f08380919799b22ebb08469a6d76fbaf",
+    "after-mono68k.json": "ab05624f22ae7385e4441621b180efce53ac0c8c25d90ed5a5aec5efb9ea086b",
+    "before-provenance.json": "3b4a4fe33f7463674ae10ceb07908d1819e0606228bc534c1c2f1c3e7aa957e4",
+    "after-ppc16.log": "fd982747afd4164803fed146d496a940d639240a9a6667e1aeee9ac2ac1c4125",
+    "before-ppc8.png": "5b7d19de504838efaf5645b41e7fdbe8d039d627f0b358581f9fba4283d1ed6c",
+    "before-colour.png": "e6aeba734de1b7370c3c7450ed3ada308cc5e94a79579950049b03553f633e5e",
+    "matrix-runs.json": "e46de0f07e1e6eba9dd597148ae5be72366dc315ec8445c87adc8459630f6e92",
+    "after-colour.png": "af2a11577c3f440f8d442a176663ba41c22cd2869058d69791c329fa851d23bc",
+    "comparison.json": "d68c5e72e2329a6502fe48175a816358ab2110941d92048f44a549b48497cd01",
+    "before-colour.json": "61788f3ad9537d1713dc36f2066eeded879427c37bd7d7392a52f7f32493b60f",
+    "after-mono68k.png": "137f5b829afe338d480959c96af931efb5ebbbeb1ad5f0a891a3844f42118125",
+    "before-ppc8.json": "56a665ee989737144d0aa815a3d3dccb82d42216be8f31c9ed5b94810abc7e18",
+    "after-ppc16.png": "de8dede5c32890e9eb2389d00bb8012d6a2ff9dba2753a545e7782ef63a15533",
+    "before-ppc8.log": "fb598f5e9a4ed9e8f07f878a0020af894291223405b540105ca09305bf2ce0d2",
+    "before-colour.log": "98ca69989e2c821860e5921f94303d2b27505ff7675841609fde943b6cee2564",
+    "after-colour.log": "e5c1ee5ec3493a55ca4130fa334a4658dc2054edeee9b90946ee27683a7316d8",
+    "before-ppc16.json": "ebd3233f9cb555a47147b7ba12c3e1daac23c13793bf1ba6460f53be240e547d",
+    "after-ppc16.json": "ebd3233f9cb555a47147b7ba12c3e1daac23c13793bf1ba6460f53be240e547d",
+    "before-detail.png": "dd89345bedc938635b23e143f55432d66f2a815ebdcd3fe1c5c1cd9d280b4787",
+    "after-detail.png": "715edf34a24a09de7808c512af8fa0265cbe21e0dcf7d8a8eb2fcb06fa8e8b85",
+    "after-ppc8-detail.png": "c054ce6ad378b547666869c9013faa76b1d9a349b9a11462a3dc08863d40e677",
+    "before-ppc16.log": "846c89e1f393f5060d0ff663b6ad6cadfbf707f442b27ac0037703520dffdfaf",
+    "after-ppc8.png": "24f5ff5e565803f5be5ebfddd41b90fc4f4a79628c0c0f8582ade0f2e96df65e",
+    "before-mono68k.log": "70e4deb8b33d73d7ab4545c5853ac6d3a4ee6c7bd461ccb6484c3b8d3a2c6e64",
+    "before-ppc16-detail.png": "cd26bce1456bb24eef7ea3b113317f2551c3bc1614f5570f1ea10b772a4bed7f"
+  },
+  "matrix": [
+    {
+      "mode": "mono68k",
+      "changed_pixels": 458,
+      "bbox": [
+        226,
+        186,
+        614,
+        239
+      ],
+      "metadata_equal": true
+    },
+    {
+      "mode": "ppc8",
+      "changed_pixels": 458,
+      "bbox": [
+        346,
+        216,
+        734,
+        269
+      ],
+      "metadata_equal": true
+    },
+    {
+      "mode": "ppc16",
+      "changed_pixels": 458,
+      "bbox": [
+        414,
+        236,
+        802,
+        289
+      ],
+      "metadata_equal": true
+    }
+  ],
+  "matrix_runs": [
+    {
+      "name": "mono68k",
+      "phase": "before",
+      "command": [
+        "target/gpui-qualification/label-overlap/before-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-standard-menu",
+        "target/gpui-qualification/label-overlap/before-mono68k.png",
+        "--capture-standard-menu-id",
+        "129",
+        "--capture-standard-menu-styled",
+        "--capture-scale",
+        "0.75"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "mono68k",
+      "phase": "after",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-standard-menu",
+        "target/gpui-qualification/label-overlap/after-mono68k.png",
+        "--capture-standard-menu-id",
+        "129",
+        "--capture-standard-menu-styled",
+        "--capture-scale",
+        "0.75"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "ppc8",
+      "phase": "before",
+      "command": [
+        "target/gpui-qualification/label-overlap/before-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-standard-menu",
+        "target/gpui-qualification/label-overlap/before-ppc8.png",
+        "--capture-standard-menu-id",
+        "129",
+        "--capture-standard-menu-styled",
+        "--capture-scale",
+        "1.5",
+        "--prefer-powerpc"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "ppc8",
+      "phase": "after",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-standard-menu",
+        "target/gpui-qualification/label-overlap/after-ppc8.png",
+        "--capture-standard-menu-id",
+        "129",
+        "--capture-standard-menu-styled",
+        "--capture-scale",
+        "1.5",
+        "--prefer-powerpc"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "ppc16",
+      "phase": "before",
+      "command": [
+        "target/gpui-qualification/label-overlap/before-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "16",
+        "--capture-standard-menu",
+        "target/gpui-qualification/label-overlap/before-ppc16.png",
+        "--capture-standard-menu-id",
+        "129",
+        "--capture-standard-menu-styled",
+        "--capture-scale",
+        "2",
+        "--prefer-powerpc"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "ppc16",
+      "phase": "after",
+      "command": [
+        "target/debug/examples/gpui-menu-demo",
+        "tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "16",
+        "--capture-standard-menu",
+        "target/gpui-qualification/label-overlap/after-ppc16.png",
+        "--capture-standard-menu-id",
+        "129",
+        "--capture-standard-menu-styled",
+        "--capture-scale",
+        "2",
+        "--prefer-powerpc"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "text_helper_suite": "31 passed, 0 failed, 87.58s",
+  "default_desktop_check": "passed, 58.02s",
+  "crop_pixel_equality": {
+    "ppc8": true,
+    "ppc16": true
+  }
+}
