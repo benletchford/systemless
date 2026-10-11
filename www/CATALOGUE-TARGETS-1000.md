@@ -875,6 +875,8 @@ Each number is an intake slot. The apparent catalogue total in the second column
 
 Use these when an intake slot fails identity, architecture, rights or runtime qualification. These are also research leads, not cleared replacements.
 
+On 2026-10-11, reserve R62 was corrected from WadTyper for Doom to NetHack 3.3.1. The [original Garden description](https://macintoshgarden.org/games/wadtyper-doom) identifies WadTyper as an icon/file-type helper rather than a distinct game. The official NetHack fat distribution and corresponding source are checksum-verified with an affirmative bundled grant (`G`); runtime/hosting qualification is still pending. This corrects one reserve and does not consume a primary intake slot or increase the live count.
+
 | Reserve | Target | Architecture evidence / lead | Rights route | Discovery source |
 | ---: | --- | --- | :---: | --- |
 | R1 | BeamWars | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
@@ -938,7 +940,7 @@ Use these when an intake slot fails identity, architecture, rights or runtime qu
 | R59 | Roboids II | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
 | R60 | Secret Agent Joe | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
 | R61 | The Sixth Ring | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| R62 | WadTyper for Doom | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/wadtyper-doom) |
+| R62 | NetHack 3.3.1 | Original game: 68K CODE and PPC PEF/cfrg; runtime qualification pending | G | [Official fat binary and permission](https://www.nethack.org/v331/ports/download-mac.html); [intake evidence](CATALOGUE-SOURCES.md#nethack-331--reserve-r62) |
 | R63 | AntiQuadra | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
 | R64 | Bedlam 2 | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
 | R65 | Catch the Bunny III | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |

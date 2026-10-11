@@ -76,7 +76,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 34 | Descent 3 | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 35 | Carmageddon | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 36 | Shadow Warrior | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 37 | Heretic | [Episode-one original grant found; Mac port scope pending](CATALOGUE-SOURCES.md#heretic-092--target-225) | Exact 0.9.2 receipt; 103 original files; production parity pending | N/A: 68K wrapper is installer, not game | [PPC title reached; incorrect colours; gameplay unverified](https://github.com/benletchford/systemless/issues/4563) | Pending | Pending | Pending |
+| 37 | Heretic | [Episode-one original grant found; Mac port scope pending](CATALOGUE-SOURCES.md#heretic-092--target-225) | Exact 0.9.2 receipt; 103 original files; production parity pending | N/A: 68K wrapper is installer, not game | [PPC scene/movement/pickup/fire; twelve assertions; startup palette issue remains](https://github.com/benletchford/systemless/issues/4563#issuecomment-6107484161) | Pending | Pending | Pending |
 | 38 | Dark Castle | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 39 | Trinity | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 40 | Railroad Tycoon II | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
@@ -856,3 +856,6 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 ## Reserve policy
 
 Keep a rejected candidate and its evidence in this ledger; record the reserve ID, replacement title and date in that slot. Do not silently renumber or delete blockers. Track catalogue consolidation separately because it changes the baseline. The 100 reserve candidates remain in the target list until selected.
+
+
+Reserve R62 corrected on 2026-10-11: WadTyper for Doom is an icon/file-type helper, so it cannot contribute a distinct game. NetHack 3.3.1 replaces that reserve lead with checksum-verified original publisher binary/source, affirmative NetHack General Public License and both actual game slices. [Source/runtime evidence](CATALOGUE-SOURCES.md#nethack-331--reserve-r62), [intake #4568](https://github.com/benletchford/systemless/issues/4568). 68K halts at an illegal instruction; PPC reaches character creation then an original -50 alert on Play. Rights evidence is advanced, gameplay/production parity/browser/hosting/launch/release/public replay remain pending. Primary slots and live count unchanged.
