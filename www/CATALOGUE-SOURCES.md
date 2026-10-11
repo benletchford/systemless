@@ -1816,6 +1816,23 @@ unchanged archive and content-only screenshot to immutable Systemless assets.
 Production validation passes all 213 proposed entries. A fresh hosted archive
 fetch is 73,613 bytes with the original SHA-256 and byte-identical to the publisher
 file. Screenshot SHA-256 is `9f126808b4d5b80c37741d72ee20bfd06d335491b5d8d0f3c68174062c6561ac`
-(6,040 bytes). Repair CI, browser qualification, launch approval, human release
+(6,040 bytes). Bounded browser preview is verified below. Repair CI, launch approval, human release
 and independent public replay remain pending; there is no qualified live-count
 increment.
+
+
+Browser preview `052693c3` combines the promoted entry with the rebased sound
+repair and uses a local-only launch override. Actual Chrome 151.0.7922.174 loads
+an untouched hosted archive request: HTTP 200, 73,613 bytes, SHA-256 matching the
+publisher original; browser Network.getResponseBody verifies these actual bytes.
+Only frontend files are substituted at the production origin. WebGL, runtime
+worker, cross-origin isolation, 800×600 canvas and default 25 MHz are verified.
+A separate diagnostic captures the first button-5 highlight golden, then cleared.
+Ordinary retained-menu drag and held matching clicks complete two rounds and
+advance score 0→1→3. All 12 measured score-pixel checks pass in a fresh replay;
+captures inspected, pacing probe passes and there are no console errors. The
+initial localhost fetch does not qualify (production-origin CORS is required),
+quick-click input never started the game, and a server-reset attempt ended before
+assertions; those attempts are excluded. Difficulty coverage and browser audio
+fidelity remain unverified. Runtime integration/CI, launch approval, human release
+and independent public replay remain pending. No qualified-live increment yet.
