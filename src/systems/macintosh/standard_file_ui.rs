@@ -22,6 +22,36 @@ pub struct StandardFileEntrySnapshot {
 
 #[doc(hidden)]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StandardFilePutLayout {
+    pub directory_label: (i16, i16, i16, i16),
+    pub list: (i16, i16, i16, i16),
+    pub scroll: (i16, i16, i16, i16),
+    pub prompt: (i16, i16, i16, i16),
+    pub name: (i16, i16, i16, i16),
+    pub desktop: (i16, i16, i16, i16),
+    pub cancel: (i16, i16, i16, i16),
+    pub save: (i16, i16, i16, i16),
+    pub row_height: i16,
+    pub first_visible: usize,
+    pub visible_rows: usize,
+}
+
+impl StandardFilePutLayout {
+    pub(crate) fn global_rect(
+        bounds: (i16, i16, i16, i16),
+        rect: (i16, i16, i16, i16),
+    ) -> (i16, i16, i16, i16) {
+        (
+            bounds.0.saturating_add(rect.0),
+            bounds.1.saturating_add(rect.1),
+            bounds.0.saturating_add(rect.2),
+            bounds.1.saturating_add(rect.3),
+        )
+    }
+}
+
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StandardFileSnapshot {
     /// Address of the caller's reply record; pair with generation.
     pub guest_id: u32,
@@ -41,4 +71,6 @@ pub struct StandardFileSnapshot {
     pub name_selection: Option<(usize, usize)>,
     /// `None` for Open panels; Save reports where guest keyboard input goes.
     pub name_has_focus: Option<bool>,
+    pub directory_label: Option<String>,
+    pub put_layout: Option<StandardFilePutLayout>,
 }

@@ -53,6 +53,9 @@ zoom hit region; resizing still uses the guest's original lower-right hit region
   draws its arrows and thumb from the guest value and range.
 - Standard LDEF 0 lists use themed GPUI rows with guest-owned text, selection,
   and pointer events; custom list definitions retain their guest pixels.
+- Modern standard Save panels use a themed GPUI panel, list, filename field,
+  and buttons positioned over the guest's live item rectangles. The guest owns
+  directory contents, filename editing, focus, clicks, and the returned reply.
 - GPUI-drawn standard title bars, frame edges, close and zoom glyphs, with
   active/inactive colours and close-button press feedback.
 - The Systemless logo in the menu bar, and GPUI-drawn document gutters and
@@ -96,6 +99,12 @@ ASCII keys and arrows to the guest, preserving the guest TERec's text and
 selection changes. Mac Roman non-ASCII input, composition, and host modifier
 state need separate qualification before themed editable fields can replace
 those pixels.
+
+The Save overlay is limited to the modern standard entry point on both CPUs.
+Legacy and custom panels retain guest pixels. The filename field currently
+shows whole-field selection and focus; partial selection, caret rendering,
+replacement confirmation, New Folder, and full keyboard navigation need more
+work before this can replace the ordinary frontend.
 
 The framebuffer is shown at 1:1 with no automatic scaling. Enlarge the window
 if necessary. Keyboard forwarding covers Return, Escape, Space, Tab and
@@ -160,15 +169,18 @@ before and after a guest selection: [68K initial](tests/toolbox-showcase/referen
 [PowerPC initial](tests/toolbox-showcase/reference/gpui-demo/15-lists-ppc.png), and
 [PowerPC selected](tests/toolbox-showcase/reference/gpui-demo/15-lists-selected-ppc.png).
 
-For the retained Standard File Save panel, capture its guest framebuffer without
-native graphics services:
+For the Standard File Save panel, capture either its guest framebuffer or the
+composed GPUI surface:
 
 ```sh
 cargo run --no-default-features --features gpui-demo-test --example gpui-menu-demo -- tests/toolbox-showcase/toolbox-showcase.sit --prefer-powerpc --capture-standard-file-save /tmp/systemless-save-ppc.png
+cargo run --no-default-features --features gpui-demo-test --example gpui-menu-demo -- tests/toolbox-showcase/toolbox-showcase.sit --prefer-powerpc --capture-standard-file-save-composed /tmp/systemless-save-ppc-composed.png
 ```
 
-This checks the PowerPC guest panel's list and window layout. It is not a
-composed GPUI capture; Standard File remains guest-rendered while its behavior
-and presentation boundary are qualified. The reviewed guest captures are
+The first command checks guest pixels without native graphics services; the
+second uses the Metal headless renderer to include the themed overlay. The
+reviewed guest captures are
 [68K Save](tests/toolbox-showcase/reference/gpui-demo/17-standard-file-save-68k-guest.png)
 and [PowerPC Save](tests/toolbox-showcase/reference/gpui-demo/17-standard-file-save-ppc-guest.png).
+The composed captures are [68K Save](tests/toolbox-showcase/reference/gpui-demo/17-standard-file-save-68k.png)
+and [PowerPC Save](tests/toolbox-showcase/reference/gpui-demo/17-standard-file-save-ppc.png).

@@ -2852,6 +2852,31 @@ impl super::TrapDispatcher {
         selected.saturating_sub(Self::standard_file_put_visible_rows().saturating_sub(1))
     }
 
+    pub(crate) fn standard_file_put_layout(
+        &self,
+        tracking: &StandardFilePutTrackingState,
+    ) -> (crate::standard_file_ui::StandardFilePutLayout, String) {
+        use crate::standard_file_ui::StandardFilePutLayout;
+        let global = |rect| StandardFilePutLayout::global_rect(tracking.bounds, rect);
+        let label = self.standard_file_put_directory_location(tracking.current_dir_id).2;
+        (
+            StandardFilePutLayout {
+                directory_label: global(STANDARD_FILE_PUT_VOLUME_LABEL_RECT),
+                list: global(STANDARD_FILE_PUT_LIST_RECT),
+                scroll: global(STANDARD_FILE_PUT_SCROLL_RECT),
+                prompt: global(STANDARD_FILE_PROMPT_RECT),
+                name: global(STANDARD_FILE_NAME_RECT),
+                desktop: global(STANDARD_FILE_PUT_DESKTOP_RECT),
+                cancel: global(STANDARD_FILE_CANCEL_RECT),
+                save: global(STANDARD_FILE_SAVE_RECT),
+                row_height: STANDARD_FILE_GET_ROW_HEIGHT,
+                first_visible: Self::standard_file_put_first_visible_index(tracking),
+                visible_rows: Self::standard_file_put_visible_rows(),
+            },
+            label,
+        )
+    }
+
     fn draw_standard_file_put_list(
         &self,
         bus: &mut MacMemoryBus,
