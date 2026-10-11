@@ -1,0 +1,34 @@
+{
+  "base": "ce7e6c62b3759d32fb25529f1806423a46c2950c",
+  "results": {
+    "composition": "6 passed, 2.29s",
+    "ppc8": "shared native compositor PASS, scale 1; marked screenshot visually reviewed",
+    "ppc16": "shared native compositor PASS, scale 1.5; marked screenshot visually reviewed"
+  },
+  "checks": [
+    "actual guest wrapped field clicked at canonical offset 20",
+    "Unicode preedit paints separate host surface",
+    "painted range bounds and character index agree",
+    "surrogate pair splits rejected",
+    "changed guest scroll geometry invalidates painted cache",
+    "cancellation restores exact baseline RGBA"
+  ],
+  "limits": "Physical IME, actual guest scrolling, wrapped worker rapid commit sequence and full CPU/platform qualification remain open. Host preedit uses host typography separately; committed text retains original-font outlines and guest metrics.",
+  "sha256": {
+    "dialog-wrapped-marked-build.log": "58f4d4ff73c7f55bcc93971b54873245d8571ed6bc451305c6a0373e3d94baa0",
+    "dialog-wrapped-marked-ppc16.png": "bb673b1762ff28c3e60ac9a43c181e6ef2f172f5075ee910c4c74a8e0ea28628",
+    "dialog-wrapped-marked-ppc8.log": "e7305c9a5e7d71da51b6e78cfcaf9442d8a8b8ee6c779499857dba3d59ae864c",
+    "dialog-wrapped-marked-ppc8.capture.json": "80ad02b2aac43183f66703fb244c8a0fb6ebe6040e6c248bf7ecbed2d0b0dc57",
+    "dialog-wrapped-final-composition.log": "1c99e81d4aa56d2cc2e9dabe3b5877789b1854075c07b892de2e16eef681400e",
+    "source.patch": "14b768cafef1e6f0387393154b7774837bba6d277246b228efe9653aa2a5bbe9",
+    "dialog-wrapped-marked-ppc8.guest.png": "c12cbf520225d97cf38bc94ace18df1c1fe8571350ab84c733aab0ea1f080f08",
+    "dialog-wrapped-marked-ppc16.capture.json": "20e11d2cb0ba9231434f3f6798c733f66a8da84a357624bdf9169bb010778b29",
+    "dialog-wrapped-marked-ppc8.marked.png": "f2dc02a85fc3394ba87ca3d3ae4f8f46de4f6ab4e841b6f712463f34a74e1fea",
+    "dialog-wrapped-marked-ppc8.json": "70d62e046bac205fce45346fe7651ea5eff4f6cd67899a5628966a75ce3ef965",
+    "dialog-wrapped-marked-ppc16.json": "4ae88ce9ada818deacae6288f855b4f15b75fc7b403f8788e46a36b4b4cdcb63",
+    "dialog-wrapped-marked-ppc16.guest.png": "36d9d0a1ce97326e13adb9c0511b29f05f686876a3f1e308d0a4c29ed7f1e957",
+    "dialog-wrapped-marked-ppc16.log": "469fbd887fba30947ce0a373489ebcfc5a9dffca1b2f6bf7c29bdf1ea29ace52",
+    "dialog-wrapped-marked-ppc16.marked.png": "ba64784757f1fae70b769c4d8eede651d7c0d42cac66ca4b75b8b82028789e5d",
+    "dialog-wrapped-marked-ppc8.png": "6cc6334914094fbceeea5c9a35b92b84d4b79fddd911e4e1cf1861cf5bb11234"
+  }
+}

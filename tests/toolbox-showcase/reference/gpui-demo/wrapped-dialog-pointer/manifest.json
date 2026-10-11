@@ -1,0 +1,9 @@
+{
+  "base": "ce7e6c62b3759d32fb25529f1806423a46c2950c",
+  "test": "active_multiline_dialog_uses_guest_textedit_candidates",
+  "result": "PASS, 2.11s",
+  "scope": "Actual PPC8/PPC16 guest TEClick at first visible wrapped-line byte offsets 3, 10 and 20 using the shared original-font advance/line geometry; text, lifetime and drawing eligibility retained. Existing classic direct-field and PPC caret-outside-field assertions retained.",
+  "limits": "Guest coordinates only; not physical GPUI pointer transforms, multiline scrolling, host composition, or native oracle.",
+  "log_sha256": "2e555a83428fbc84984e4ac5875d1e3e184ef5c19d5705d7a1af46c36ca9f35f",
+  "patch_sha256": "5f49aee6bd577198602fcd322c21a2abd3623580599f4ffab41b4e4a6db8e94b"
+}

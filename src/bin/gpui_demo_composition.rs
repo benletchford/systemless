@@ -49,6 +49,7 @@ struct MarkedRow { start: usize, positions: Vec<(usize, f32)>, origin: (f32, f32
 enum PaintedSource {
     Document(systemless::runner::TextEditSnapshot),
     Dialog(systemless::runner::DialogSnapshot),
+    DialogRecord(systemless::runner::DialogSnapshot, systemless::runner::TextEditSnapshot),
     StandardFile(systemless::runner::StandardFileSnapshot),
 }
 
@@ -74,7 +75,7 @@ impl Demo {
                     target: super::super::input::TextInputTarget::StandardFile { new_folder: owner.new_folder },
                     text: owner.text, selection: owner.selection })
         } else if eligible && self.dialogs.iter().any(|dialog| dialog.visible && dialog.active) {
-            super::super::input::dialog_text_owner(&self.dialogs, &self.windows).map(|owner|
+            super::super::input::dialog_text_owner_with_records(&self.dialogs, &self.windows, &self.text_edits, &self.controls).map(|owner|
                 super::super::input::TextInputOwner { identity: owner.identity,
                     target: super::super::input::TextInputTarget::Dialog { item: owner.item, content_revision: owner.content_revision },
                     text: owner.text, selection: owner.selection })
@@ -133,13 +134,81 @@ impl Demo {
         let super::super::input::TextInputTarget::Dialog { item, content_revision } = owner.target else { return None; };
         let dialog = self.dialogs.iter().find(|dialog| (dialog.guest_id, dialog.generation) == owner.identity
             && dialog.content_revision == content_revision && dialog.visible && dialog.active && dialog.edit_field == Some(item))?;
-        let field = dialog.items.iter().find(|field| field.number == item && field.enabled && field.visible && field.edit_text_layout.is_some())?;
+        let field = dialog.items.iter().find(|field| field.number == item && field.enabled && field.visible)?;
         if field.text != systemless::systems::macintosh::mac_roman::decode_mac_roman(&owner.text) { return None; }
         Some((dialog, field))
     }
 
+    fn dialog_record(&self, owner: &super::super::input::TextInputOwner)
+        -> Option<&systemless::runner::TextEditSnapshot> {
+        let (dialog, field) = self.dialog_field(owner)?;
+        if field.edit_text_layout.is_some() { return None; }
+        let viewport = super::super::frames::Rect { top: 0, left: 0,
+            bottom: self.height as i32, right: self.width as i32 };
+        let pieces = super::super::frames::text_edit_pieces(&self.text_edits, &self.dialogs,
+            &self.controls, &self.windows, viewport);
+        pieces.iter().map(|piece| &self.text_edits[piece.record]).find(|record|
+            record.owner_port == dialog.guest_id && record.text == owner.text
+                && record.global_view_rect == Some(field.bounds))
+    }
+
+    fn record_bounds(&self, record: &systemless::runner::TextEditSnapshot, range: Range<usize>) -> Option<Bounds<Pixels>> {
+        if range.start > range.end || range.end > record.text.len()
+            || !self.display_scale.is_finite() || self.display_scale <= 0. { return None; }
+        let starts = record.line_starts.as_ref()?;
+        let index = starts.partition_point(|start| *start <= range.start).saturating_sub(1).min(starts.len().checked_sub(2)?);
+        let geometry = text_line_geometry(record, index)?;
+        let start = starts[index];
+        let end = range.end.min(starts[index + 1]);
+        let x = i32::from(geometry.left) + i32::from(text_range_width(record, start..range.start)?);
+        let right = if range.is_empty() { x + 1 } else {
+            i32::from(geometry.left) + i32::from(text_range_width(record, start..end)?)
+        };
+        let dest = record.global_dest_rect?;
+        let view = record.global_view_rect?;
+        let dx = i32::from(dest.1) - i32::from(record.dest_rect.1);
+        let dy = i32::from(dest.0) - i32::from(record.dest_rect.0);
+        let left = (dx + x).max(i32::from(view.1));
+        let right = (dx + right).min(i32::from(view.3));
+        let top = (dy + i32::from(geometry.top)).max(i32::from(view.0));
+        let bottom = (dy + i32::from(geometry.top) + i32::from(geometry.height)).min(i32::from(view.2));
+        if left >= right || top >= bottom { return None; }
+        Some(Bounds::new(point(px(self.display_origin.0 + left as f32 * self.display_scale),
+            px(self.display_origin.1 + top as f32 * self.display_scale)),
+            size(px((right - left) as f32 * self.display_scale), px((bottom - top) as f32 * self.display_scale))))
+    }
+
+    fn record_index_for_point(&self, record: &systemless::runner::TextEditSnapshot, point: Point<Pixels>) -> Option<usize> {
+        if !self.display_scale.is_finite() || self.display_scale <= 0. { return None; }
+        let x = (f32::from(point.x) - self.display_origin.0) / self.display_scale;
+        let y = (f32::from(point.y) - self.display_origin.1) / self.display_scale;
+        let view = record.global_view_rect?;
+        if !x.is_finite() || !y.is_finite() || x < f32::from(view.1) || x >= f32::from(view.3)
+            || y < f32::from(view.0) || y >= f32::from(view.2) { return None; }
+        let dest = record.global_dest_rect?;
+        let local_x = x - f32::from(dest.1) + f32::from(record.dest_rect.1);
+        let local_y = y - f32::from(dest.0) + f32::from(record.dest_rect.0);
+        let starts = record.line_starts.as_ref()?;
+        for index in 0..record.line_count {
+            let geometry = text_line_geometry(record, index)?;
+            if local_y < f32::from(geometry.top) || local_y >= f32::from(geometry.top) + f32::from(geometry.height) { continue; }
+            let start = *starts.get(index)?;
+            let end = *starts.get(index + 1)?;
+            let mut left = i32::from(geometry.left);
+            for offset in start..end {
+                if matches!(record.text.get(offset), Some(b'\r' | b'\n')) { return Some(offset); }
+                let right = left + i32::from(text_range_width(record, offset..offset + 1)?);
+                if local_x < (left + right) as f32 / 2. { return Some(offset); }
+                left = right;
+            }
+            return Some(end);
+        }
+        None
+    }
+
     fn dialog_bounds(&self, range: Range<usize>) -> Option<Bounds<Pixels>> {
         let owner = self.composition.owner()?;
+        if let Some(record) = self.dialog_record(owner) { return self.record_bounds(record, range); }
         let (_, field) = self.dialog_field(owner)?;
         if range.start > range.end || range.end > owner.text.len() || !self.display_scale.is_finite() || self.display_scale <= 0. { return None; }
         let layout = field.edit_text_layout.as_ref()?;
@@ -159,6 +228,7 @@ impl Demo {
 
     fn dialog_index_for_point(&self, point: Point<Pixels>) -> Option<usize> {
         let owner = self.composition.owner()?;
+        if let Some(record) = self.dialog_record(owner) { return self.record_index_for_point(record, point); }
         let (_, field) = self.dialog_field(owner)?;
         if !self.display_scale.is_finite() || self.display_scale <= 0. { return None; }
         let x = (f32::from(point.x) - self.display_origin.0) / self.display_scale;
@@ -185,12 +255,25 @@ impl Demo {
                 PaintedSource::StandardFile(self.standard_file.as_ref()?.clone()))
         } else if matches!(owner.target, super::super::input::TextInputTarget::Dialog { .. }) {
             let (dialog, field) = self.dialog_field(owner)?;
+            if let Some(record) = self.dialog_record(owner) {
+                let starts = record.line_starts.as_ref()?;
+                let index = starts.partition_point(|start| *start <= owner.selection.start).saturating_sub(1)
+                    .min(starts.len().checked_sub(2)?);
+                let geometry = text_line_geometry(record, index)?;
+                let dest = record.global_dest_rect?;
+                let view = record.global_view_rect?;
+                let x = i32::from(dest.1) - i32::from(record.dest_rect.1) + i32::from(geometry.left)
+                    + i32::from(text_range_width(record, starts[index]..owner.selection.start)?);
+                let y = i32::from(dest.0) - i32::from(record.dest_rect.0) + i32::from(geometry.top);
+                (x, y, geometry.height, view, PaintedSource::DialogRecord(dialog.clone(), record.clone()))
+            } else {
             let layout = field.edit_text_layout.as_ref()?;
             if layout.wrap { return None; }
             let line = super::super::text::ClassicLine::unicode(&field.text, layout.font.0, layout.font.1);
             let pen = *line.positions.get(owner.selection.start)?;
             (i32::from(field.bounds.1) + 1 + pen, i32::from(field.bounds.0), layout.line_height,
                 field.bounds, PaintedSource::Dialog(dialog.clone()))
+            }
         } else {
         let record = self.text_edits.iter().find(|record| (record.guest_id, record.generation) == owner.identity)?;
         if record.text != owner.text { return None; }
@@ -284,6 +367,8 @@ impl Demo {
             && match &painted.record {
                 PaintedSource::Document(expected) => self.text_edits.iter().any(|record| record == expected),
                 PaintedSource::Dialog(expected) => self.dialogs.iter().any(|dialog| dialog == expected),
+                PaintedSource::DialogRecord(expected, record) => self.dialogs.iter().any(|dialog| dialog == expected)
+                    && self.text_edits.iter().any(|actual| actual == record),
                 PaintedSource::StandardFile(expected) => self.standard_file.as_ref() == Some(expected),
             }).then_some(painted)
     }
@@ -394,27 +479,7 @@ impl EntityInputHandler for Demo {
         if self.composition.preedit.is_some() || record.text != owner.text
             || range.start > range.end || range.end > owner.text.len()
             || !self.display_scale.is_finite() || self.display_scale <= 0. { return None; }
-        let starts = record.line_starts.as_ref()?;
-        let index = starts.partition_point(|start| *start <= range.start).saturating_sub(1).min(starts.len().checked_sub(2)?);
-        let geometry = text_line_geometry(record, index)?;
-        let start = starts[index];
-        let end = range.end.min(starts[index + 1]);
-        let x = i32::from(geometry.left) + i32::from(text_range_width(record, start..range.start)?);
-        let right = if range.is_empty() { x + 1 } else {
-            i32::from(geometry.left) + i32::from(text_range_width(record, start..end)?)
-        };
-        let dest = record.global_dest_rect?;
-        let view = record.global_view_rect?;
-        let dx = i32::from(dest.1) - i32::from(record.dest_rect.1);
-        let dy = i32::from(dest.0) - i32::from(record.dest_rect.0);
-        let left = (dx + x).max(i32::from(view.1));
-        let right = (dx + right).min(i32::from(view.3));
-        let top = (dy + i32::from(geometry.top)).max(i32::from(view.0));
-        let bottom = (dy + i32::from(geometry.top) + i32::from(geometry.height)).min(i32::from(view.2));
-        if left >= right || top >= bottom { return None; }
-        Some(Bounds::new(point(px(self.display_origin.0 + left as f32 * self.display_scale),
-            px(self.display_origin.1 + top as f32 * self.display_scale)),
-            size(px((right - left) as f32 * self.display_scale), px((bottom - top) as f32 * self.display_scale))))
+        self.record_bounds(record, range)
     }
     fn character_index_for_point(&mut self, point: Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
         if self.composition.preedit.is_some() { return self.marked_index_for_point(point); }
@@ -424,30 +489,7 @@ impl EntityInputHandler for Demo {
         let record = self.text_edits.iter().find(|record| (record.guest_id, record.generation) == owner.identity)?;
         if self.composition.preedit.is_some() || record.text != owner.text
             || !self.display_scale.is_finite() || self.display_scale <= 0. { return None; }
-        let x = (f32::from(point.x) - self.display_origin.0) / self.display_scale;
-        let y = (f32::from(point.y) - self.display_origin.1) / self.display_scale;
-        let view = record.global_view_rect?;
-        if !x.is_finite() || !y.is_finite() || x < f32::from(view.1) || x >= f32::from(view.3)
-            || y < f32::from(view.0) || y >= f32::from(view.2) { return None; }
-        let dest = record.global_dest_rect?;
-        let local_x = x - f32::from(dest.1) + f32::from(record.dest_rect.1);
-        let local_y = y - f32::from(dest.0) + f32::from(record.dest_rect.0);
-        let starts = record.line_starts.as_ref()?;
-        for index in 0..record.line_count {
-            let geometry = text_line_geometry(record, index)?;
-            if local_y < f32::from(geometry.top) || local_y >= f32::from(geometry.top) + f32::from(geometry.height) { continue; }
-            let start = *starts.get(index)?;
-            let end = *starts.get(index + 1)?;
-            let mut left = i32::from(geometry.left);
-            for offset in start..end {
-                if matches!(record.text.get(offset), Some(b'\r' | b'\n')) { return Some(offset); }
-                let right = left + i32::from(text_range_width(record, offset..offset + 1)?);
-                if local_x < (left + right) as f32 / 2. { return Some(offset); }
-                left = right;
-            }
-            return Some(end);
-        }
-        None
+        self.record_index_for_point(record, point)
     }
     fn text_length_utf16(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
         self.composition_text().map(|text| text.encode_utf16().count())
