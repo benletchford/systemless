@@ -1750,6 +1750,34 @@ impl Presentation {
         }
     }
 
+    /// Calls `mismatch` with the offset of each byte in `[address, address +
+    /// len)` for which `matches_detail(byte, None)` is false, in address
+    /// order. Screen bytes are tested a row run at a time, so a row with no
+    /// text cells costs one check rather than a call per byte.
+    fn for_each_plain_mismatch(&self, address: u32, len: usize, mut mismatch: impl FnMut(usize)) {
+        let mut offset = 0;
+        while offset < len {
+            let byte = address + offset as u32;
+            let Some((x, y)) = self.position(byte) else {
+                if !self.offscreen.matches(byte, None) {
+                    mismatch(offset);
+                }
+                offset += 1;
+                continue;
+            };
+            let run = ((self.width - x) as usize).min(len - offset);
+            if self.text_row_counts[y as usize] != 0 {
+                let start = (y * self.width + x) as usize;
+                for (i, &text) in self.text_cells[start..start + run].iter().enumerate() {
+                    if text {
+                        mismatch(offset + i);
+                    }
+                }
+            }
+            offset += run;
+        }
+    }
+
     /// Whether the screen cell at `(x, y)` still carries exactly `cell`.
     ///
     /// The retained half of [`Presentation::matches_detail`], for a caller that
@@ -3093,20 +3121,29 @@ impl MacMemoryBus {
                 return;
             }
             let changes = {
-                let mut source_cells = p.offscreen.range(source, source_end).into_iter().peekable();
+                // Most bytes carry no source detail: test each run between
+                // the source's detail cells in one pass.
                 let mut changes = Vec::new();
-                for (i, &value) in bytes.iter().enumerate() {
-                    let address = source + i as u32;
-                    let detail = if source_cells.peek().is_some_and(|(key, _)| *key == address) {
-                        source_cells.next().map(|(_, cell)| cell)
-                    } else {
-                        None
-                    };
-                    let destination = destination + i as u32;
-                    if !p.matches_detail(destination, detail.as_ref()) {
-                        changes.push((destination, value, detail));
+                let mut next = 0;
+                for (key, cell) in p.offscreen.range(source, source_end) {
+                    let at = (key - source) as usize;
+                    if at < next || at >= bytes.len() {
+                        continue;
                     }
+                    p.for_each_plain_mismatch(destination + next as u32, at - next, |i| {
+                        let i = next + i;
+                        changes.push((destination + i as u32, bytes[i], None));
+                    });
+                    let address = destination + at as u32;
+                    if !p.matches_detail(address, Some(&cell)) {
+                        changes.push((address, bytes[at], Some(cell)));
+                    }
+                    next = at + 1;
                 }
+                p.for_each_plain_mismatch(destination + next as u32, bytes.len() - next, |i| {
+                    let i = next + i;
+                    changes.push((destination + i as u32, bytes[i], None));
+                });
                 changes
             };
             for (address, value, detail) in changes {
@@ -6054,6 +6091,60 @@ mod tests {
         let epoch = bus.presentation_epoch();
         bus.sync_presented_bytes(0x1000, 0x8000, &same_bytes);
         assert_eq!(bus.presentation_epoch(), epoch);
+    }
+
+    #[test]
+    fn plain_mismatch_scan_matches_the_per_byte_test() {
+        // Rows of 12 bytes with 8 visible, so ranges cross row padding.
+        let mut bus = MacMemoryBus::new(1024 * 1024);
+        let palette = std::array::from_fn(|i| [i as u8; 3]);
+        bus.fill_bytes(0x1000, 48, 255);
+        bus.enable_outline_presentation((0x1000, 12, 8, 4, 8), palette, 2);
+        for address in [0x1001, 0x1002, 0x1007, 0x100c, 0x1015, 0x1024, 0x8003] {
+            paint_detail(&mut bus, address);
+        }
+        let p = bus.presentation.as_ref().unwrap();
+        let (mut screen, mut offscreen) = (0, 0);
+        for (start, len) in [
+            (0x0ff8u32, 0x40usize),
+            (0x1000, 8),
+            (0x1005, 20),
+            (0x1009, 3),
+            (0x1030, 4),
+            (0x8000, 8),
+        ] {
+            let expected: Vec<usize> = (0..len)
+                .filter(|&i| !p.matches_detail(start + i as u32, None))
+                .collect();
+            let mut found = Vec::new();
+            p.for_each_plain_mismatch(start, len, |i| found.push(i));
+            assert_eq!(found, expected, "{start:#x}+{len}");
+            for i in expected {
+                match p.position(start + i as u32) {
+                    Some(_) => screen += 1,
+                    None => offscreen += 1,
+                }
+            }
+        }
+        assert!(
+            screen > 0 && offscreen > 0,
+            "{screen} screen, {offscreen} offscreen"
+        );
+    }
+
+    #[test]
+    fn framebuffer_sync_clears_coverage_before_and_after_a_source_detail_cell() {
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x1001);
+        paint_detail(&mut bus, 0x1006);
+        paint_detail(&mut bus, 0x8004);
+        let source_detail = bus.presentation.as_ref().unwrap().detail(0x8004).unwrap();
+        let bytes = bus.read_bytes(0x1000, 8);
+        bus.sync_presented_bytes(0x1000, 0x8000, &bytes);
+        let p = bus.presentation.as_ref().unwrap();
+        assert!(p.detail(0x1001).is_none(), "stale text before the source cell");
+        assert_eq!(p.detail(0x1004), Some(source_detail));
+        assert!(p.detail(0x1006).is_none(), "stale text after the source cell");
     }
 
     #[test]
