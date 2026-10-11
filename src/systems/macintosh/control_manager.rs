@@ -44,6 +44,9 @@ pub(crate) fn live_control_tracking_start_point(
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Shared cadence for standard scrollbar action procedures, in guest ticks.
+pub(crate) const SCROLLBAR_ACTION_REPEAT_TICKS: u32 = 3;
+
 static NEXT_CONTROL_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn new_control_generation() -> u64 {

@@ -7,7 +7,9 @@ static NEXT_LIST_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn new_list_generation() -> u64 {
     NEXT_LIST_GENERATION
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| next.checked_add(1))
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+            next.checked_add(1)
+        })
         .expect("list lifetime generation exhausted")
 }
 
@@ -90,10 +92,70 @@ impl ProcessListRecord {
     }
 }
 
+/// Retained standard list-scrollbar arrow tracking. LClick owns the call until
+/// release; each arrow action scrolls one cell without changing selection.
+/// More Macintosh Toolbox (1993), pp. 4-84--4-85.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ListScrollbarTracking {
+    pub list: u32,
+    pub generation: u64,
+    pub control: u32,
+    pub pointer: u32,
+    pub control_generation: u64,
+    pub vertical: bool,
+    pub classic: bool,
+    pub frame: (u32, u32),
+    pub bounds: (i16, i16, i16, i16),
+    pub direction: i16,
+    pub last_tick: u32,
+}
+
+impl ListScrollbarTracking {
+    pub(crate) fn arrow(
+        bounds: (i16, i16, i16, i16),
+        point: (i16, i16),
+        vertical: bool,
+    ) -> Option<i16> {
+        let (top, left, bottom, right) = bounds;
+        if point.0 < top || point.0 >= bottom || point.1 < left || point.1 >= right {
+            return None;
+        }
+        let (start, end, axis) = if vertical {
+            (top, bottom, point.0)
+        } else {
+            (left, right, point.1)
+        };
+        // Standard scrollbars reserve sixteen pixels for each arrow.
+        // Macintosh Toolbox Essentials (1992), pp. 5-10--5-12.
+        if i32::from(end) - i32::from(start) < 48 {
+            return None;
+        }
+        if i32::from(axis) < i32::from(start) + 16 {
+            Some(-1)
+        } else if i32::from(axis) >= i32::from(end) - 16 {
+            Some(1)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn step(&mut self, point: (i16, i16), tick: u32) -> Option<i16> {
+        if Self::arrow(self.bounds, point, self.vertical) != Some(self.direction)
+            || tick.wrapping_sub(self.last_tick)
+                < super::control_manager::SCROLLBAR_ACTION_REPEAT_TICKS
+        {
+            return None;
+        }
+        self.last_tick = tick;
+        Some(self.direction)
+    }
+}
+
 /// Process-owned List Manager state keyed by guest `ListHandle`.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProcessListManagerState {
     records: HashMap<u32, ProcessListRecord>,
+    pub(crate) scroll_tracking: Option<ListScrollbarTracking>,
 }
 
 impl ProcessListManagerState {
@@ -106,6 +168,13 @@ impl ProcessListManagerState {
     }
 
     pub(crate) fn remove_record(&mut self, handle: u32) -> Option<ProcessListRecord> {
+        if self
+            .scroll_tracking
+            .as_ref()
+            .is_some_and(|tracking| tracking.list == handle)
+        {
+            self.scroll_tracking = None;
+        }
         self.records.remove(&handle)
     }
 
@@ -151,12 +220,44 @@ impl ProcessListManagerState {
     #[allow(dead_code)]
     pub(crate) fn clear(&mut self) {
         self.records.clear();
+        self.scroll_tracking = None;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retained_list_arrow_uses_ticks_and_exposed_hit_region() {
+        let mut tracking = ListScrollbarTracking {
+            list: 1,
+            generation: 1,
+            control: 2,
+            pointer: 3,
+            control_generation: 1,
+            vertical: true,
+            classic: true,
+            frame: (4, 0),
+            bounds: (10, 20, 110, 36),
+            direction: 1,
+            last_tick: u32::MAX - 2,
+        };
+        assert_eq!(tracking.step((102, 28), 0), Some(1));
+        assert_eq!(tracking.step((102, 28), 1), None);
+        assert_eq!(tracking.step((102, 28), 3), Some(1));
+        assert_eq!(tracking.step((102, 40), 6), None);
+        assert_eq!(tracking.step((18, 28), 6), None);
+        assert_eq!(tracking.step((102, 28), 6), Some(1));
+        assert_eq!(
+            ListScrollbarTracking::arrow((20, 10, 36, 110), (28, 102), false),
+            Some(1)
+        );
+        let mut manager = ProcessListManagerState::default();
+        manager.scroll_tracking = Some(tracking);
+        manager.remove_record(1);
+        assert!(manager.scroll_tracking.is_none());
+    }
 
     #[test]
     fn clipped_cells_can_scroll_fully_into_view_and_back() {

@@ -3954,7 +3954,26 @@ mod desktop {
                 },
                 origin: (368, 300), steps: 1,
             })).unwrap();
-            wait(&updates, |u| u.controls.iter().any(|c| c.guest_id == bar.guest_id && c.value > 0));
+            let changed = wait(&updates, |u| u.controls.iter().any(|c| c.guest_id == bar.guest_id && c.value > 0));
+            let menu = changed.menus.menus.iter().find(|m| m.id == 129).unwrap();
+            tx.send(Command::Menu(129, 9, menu.guest_id, menu.generation)).unwrap();
+            let list = wait(&updates, |u| u.lists.iter().any(|list| list.active && list.draw_enabled));
+            let bar = list.controls.iter().find(|c| c.visible && c.proc_id == 16
+                && c.bounds.2 - c.bounds.0 > c.bounds.3 - c.bounds.1).unwrap();
+            tx.send(Command::Wheel(super::super::scroll::WheelRequest {
+                target: super::super::scroll::ScrollTarget {
+                    id: bar.guest_id, generation: bar.generation, vertical: true,
+                }, origin: (150, 100), steps: 1,
+            })).unwrap();
+            wait(&updates, |u| u.lists.iter().any(|list| list.active && list.visible.0 > 0));
+            let held_point = (bar.bounds.2 - 8, bar.bounds.1 + 8);
+            tx.send(Command::Input(MacintoshInput::MouseDown {
+                vertical: held_point.0, horizontal: held_point.1,
+            })).unwrap();
+            wait(&updates, |u| u.lists.iter().any(|list| list.active && list.visible.0 == 4));
+            tx.send(Command::Input(MacintoshInput::MouseUp {
+                vertical: held_point.0, horizontal: held_point.1,
+            })).unwrap();
             tx.send(Command::Input(MacintoshInput::KeyDown {
                 mac_key: 0x37,
                 character: 0,
@@ -4300,6 +4319,43 @@ mod desktop {
                 assert!(session.runner_mut().select_guest_menu_item(129, 1));
                 wait_for_menu(&mut session, 129, 1, true);
                 assert!(arrow(&mut session, request).is_none(), "hidden control");
+                assert!(session.runner_mut().select_guest_menu_item(129, 9));
+                wait_for_menu(&mut session, 129, 9, true);
+                let initial = session.runner_mut().list_manager_snapshot().remove(0);
+                let bounds = initial.global_view_rect.unwrap();
+                let origin = (bounds.0 + 20, bounds.1 + 20);
+                let controls = session.runner_mut().control_snapshot();
+                let menus = session.runner_mut().guest_menu_snapshot();
+                let windows = session.runner_mut().window_frame_snapshot();
+                let target = super::super::scroll::target(&controls, &menus, &windows, viewport,
+                    origin, true).expect("list vertical scrollbar must be a standard control");
+                let request = WheelRequest { target, origin, steps: 1 };
+                let click = WheelClick::begin(&mut session, request).unwrap();
+                settle(&mut session);
+                let click = click.advance(&mut session).unwrap();
+                settle(&mut session);
+                assert!(click.advance(&mut session).is_none());
+                let scrolled = session.runner_mut().list_manager_snapshot().remove(0);
+                assert!(scrolled.visible.0 > initial.visible.0, "vertical wheel did not scroll list: powerpc={powerpc}");
+                assert_eq!(scrolled.selected, initial.selected);
+                assert_eq!(scrolled.generation, initial.generation);
+                let down = super::super::scroll::arrow(&mut session, request).unwrap();
+                session.deliver_input(MacintoshInput::MouseDown { vertical: down.0, horizontal: down.1 });
+                settle(&mut session);
+                assert!(session.runner().is_ui_tracking_active(), "LClick returned before release: {powerpc}");
+                session.deliver_input(MacintoshInput::MouseMove { vertical: 550, horizontal: 760 });
+                let outside = session.runner_mut().list_manager_snapshot()[0].visible;
+                for _ in 0..4 { settle(&mut session); }
+                assert_eq!(session.runner_mut().list_manager_snapshot()[0].visible, outside,
+                    "arrow must not repeat outside its hit region");
+                session.deliver_input(MacintoshInput::MouseMove { vertical: down.0, horizontal: down.1 });
+                for _ in 0..12 { settle(&mut session); }
+                let held = session.runner_mut().list_manager_snapshot().remove(0);
+                assert_eq!(held.visible.0, 4, "held arrow must reach final full page: {powerpc}");
+                assert_eq!(held.selected, initial.selected);
+                session.deliver_input(MacintoshInput::MouseUp { vertical: down.0, horizontal: down.1 });
+                settle(&mut session);
+                assert!(!session.runner().is_ui_tracking_active(), "LClick did not return after release: {powerpc}");
             }
         }
 

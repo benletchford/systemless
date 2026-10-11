@@ -37,6 +37,8 @@ pub(super) struct PpcListDispatchContext<'a> {
     pub(super) vfs_resources: &'a [PpcVfsResourceRecord],
     pub(super) current_resource_refnum: i16,
     pub(super) tick_count: u32,
+    pub(super) cycles_per_tick: u32,
+    pub(super) input: &'a PpcInputSnapshot,
 }
 
 pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Option<PpcImportAction> {
@@ -55,6 +57,8 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
         vfs_resources,
         current_resource_refnum,
         tick_count,
+        cycles_per_tick,
+        input,
     } = context;
 
     match binding.dispatcher_target {
@@ -421,6 +425,97 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
             let h = cpu.gpr[3] as u16 as i16;
             let modifiers = cpu.gpr[4] as u16;
             let mut double_click = false;
+            // LClick retains scrollbar tracking through release and scrolls
+            // without changing selection. More Macintosh Toolbox, pp. 4-84--4-85.
+            use crate::systems::macintosh::list_manager::ListScrollbarTracking;
+            use crate::systems::macintosh::window_manager::{
+                snapshot_local_rect_to_global, snapshot_port_bounds_origin,
+            };
+            let mut existing = list_manager.scroll_tracking.take();
+            let mut retained = None;
+            let mut handled = false;
+            list_manager.with_record_mut(cpu.gpr[5], |record| {
+                if record.definition_id != 0 {
+                    if existing.as_ref().is_some_and(|tracking| !tracking.classic
+                        && tracking.list == record.handle && tracking.frame == (cpu.gpr[1], cpu.lr)) {
+                        existing = None;
+                        handled = true;
+                    }
+                    return;
+                }
+                let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) else { return; };
+                let origin = snapshot_port_bounds_origin(&mut |address| memory.read_u8(address).unwrap_or(0), record.port);
+                let initial = existing.is_none();
+                let mut tracking = if let Some(tracking) = existing.take() {
+                    if tracking.classic || tracking.frame != (cpu.gpr[1], cpu.lr) || tracking.list != record.handle {
+                        existing = Some(tracking);
+                        return;
+                    }
+                    tracking
+                } else {
+                    if !record.active { return; }
+                    let mut found = None;
+                    for (offset, vertical) in [(PPC_LIST_VSCROLL_OFFSET, true), (PPC_LIST_HSCROLL_OFFSET, false)] {
+                        let handle = memory.read_u32_be(list_ptr + offset).unwrap_or(0);
+                        let Some(pointer) = ppc_control_ptr(memory, handle) else { continue; };
+                        let Some(control) = controls.iter().find(|control| control.handle == handle
+                            && control.pointer == pointer && control.active && control.proc_id == 16) else { continue; };
+                        if memory.read_u8(pointer + PPC_CONTROL_VISIBLE_OFFSET).unwrap_or(0) == 0
+                            || memory.read_u8(pointer + PPC_CONTROL_HILITE_OFFSET) == Some(255) { continue; }
+                        let Some(bounds) = ppc_read_rect(memory, pointer + PPC_CONTROL_RECT_OFFSET) else { continue; };
+                        let Some(direction) = ListScrollbarTracking::arrow(bounds, (v, h), vertical) else { continue; };
+                        found = Some(ListScrollbarTracking {
+                            list: record.handle, generation: record.generation, control: handle, pointer,
+                            control_generation: control.generation, vertical, classic: false,
+                            frame: (cpu.gpr[1], cpu.lr), bounds: snapshot_local_rect_to_global(bounds, origin),
+                            direction, last_tick: tick_count.wrapping_sub(crate::systems::macintosh::control_manager::SCROLLBAR_ACTION_REPEAT_TICKS),
+                        });
+                        break;
+                    }
+                    let Some(tracking) = found else { return; };
+                    tracking
+                };
+                handled = true;
+                let valid = record.generation == tracking.generation && record.active
+                    && ppc_control_ptr(memory, tracking.control) == Some(tracking.pointer)
+                    && controls.iter().any(|control| control.handle == tracking.control
+                        && control.pointer == tracking.pointer && control.generation == tracking.control_generation && control.active && control.proc_id == 16)
+                    && ppc_read_rect(memory, tracking.pointer + PPC_CONTROL_RECT_OFFSET)
+                        .is_some_and(|bounds| snapshot_local_rect_to_global(bounds, origin) == tracking.bounds)
+                    && memory.read_u8(tracking.pointer + PPC_CONTROL_VISIBLE_OFFSET).unwrap_or(0) != 0
+                    && memory.read_u8(tracking.pointer + PPC_CONTROL_HILITE_OFFSET) != Some(255);
+                let down = valid && input.mouse_button;
+                let mouse = if initial { (v.wrapping_sub(origin.0), h.wrapping_sub(origin.1)) }
+                    else { (input.mouse_v, input.mouse_h) };
+                let before = record.visible;
+                if valid && (initial || down) {
+                    if let Some(delta) = tracking.step(mouse, tick_count) {
+                        record.set_visible_origin(
+                            record.visible.0.saturating_add(if tracking.vertical { delta } else { 0 }),
+                            record.visible.1.saturating_add(if tracking.vertical { 0 } else { delta }),
+                        );
+                        *last_mem_error = ppc_list_sync_guest_visible(memory, record);
+                    }
+                }
+                if valid {
+                    let highlighted = down && ListScrollbarTracking::arrow(tracking.bounds, mouse, tracking.vertical) == Some(tracking.direction);
+                    let hilite = if highlighted { if tracking.direction < 0 { 20 } else { 21 } } else { 0 };
+                    let needs_draw = record.visible != before || memory.read_u8(tracking.pointer + PPC_CONTROL_HILITE_OFFSET) != Some(hilite);
+                    let _ = memory.write_u8(tracking.pointer + PPC_CONTROL_HILITE_OFFSET, hilite);
+                    if record.draw_enabled && needs_draw {
+                        ppc_list_redraw(memory, handles, controls, gworlds, vfs_resources, current_resource_refnum, record);
+                    }
+                }
+                if down { retained = Some(tracking); }
+            });
+            list_manager.scroll_tracking = retained.or(existing);
+            if handled {
+                return Some(if list_manager.scroll_tracking.is_some() {
+                    PpcImportAction::Yield(u64::from(cycles_per_tick.max(1)))
+                } else {
+                    PpcImportAction::Return(0)
+                });
+            }
             list_manager.with_record_mut(cpu.gpr[5], |record| {
                 if let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) {
                     let active = memory
