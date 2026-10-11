@@ -2105,6 +2105,13 @@ Foreground requests also wake a parked 68k WaitNextEvent through its existing
 Event Manager return path. A regression uses a 3,600-tick sleep and verifies
 immediate suspend delivery, event-mask filtering, interrupt-callback deferral,
 and foreground ownership until the application's next yield. The 27 runner
-event tests and 87 combined CPU Event Manager tests pass. PPC currently charges
-WaitNextEvent sleep as extra cycles rather than retaining the same parked
-return; this check must not be treated as PPC idle-scheduling qualification.
+event tests and 87 combined CPU Event Manager tests pass.
+
+PPC WaitNextEvent now retains its native import frame and yields bounded
+execution slices until a matching event or the original sleep deadline.
+It no longer charges an entire sleep on immediate return. The 34-test PPC
+Event Manager suite includes input wake-up, suspend wake-up, timeout expiry,
+unmodified arguments and EventRecord while waiting, and slice-budget bounds.
+All 18 WaitNextEvent regressions also pass. These checks do not establish
+background CPU eligibility, activation-click policy or complete native
+lifecycle equivalence.

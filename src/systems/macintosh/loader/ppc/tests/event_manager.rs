@@ -1102,9 +1102,10 @@ fn hle_import_runner_handles_event_button_and_exit_utilities() {
 
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
-    assert_eq!(loaded.cpu.gpr[3], 0);
-    assert_eq!(loaded.memory.read_u16_be(event_ptr), Some(0));
-    assert!(ppc_run_result_cycles(probe.result) >= PPC_Q3_IDLE_STATE_ONLY_FRAME_EXTRA_CYCLES);
+    assert_eq!(loaded.cpu.gpr[3], 0xffff, "sleep retains the import arguments");
+    assert_eq!(loaded.memory.read_u16_be(event_ptr), Some(0xaaaa), "no EventRecord is returned while asleep");
+    assert!(ppc_run_result_cycles(probe.result) <= 64);
+    assert_eq!(loaded.toolbox_startup.event_waits.len(), 1);
 
     let pef = synthetic_pef_with_import(b"Button");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -1792,6 +1793,70 @@ fn process_switch_waits_for_ordinary_modal_window_to_close() {
                     .event_queue
                     .with_ref(|queue| queue.activation.is_foreground()));
             }
+        }
+    }
+}
+
+
+#[test]
+fn sleeping_wait_next_event_wakes_for_input_activation_or_deadline() {
+    for wake in [0, 3, 15] {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_import(b"WaitNextEvent")).unwrap();
+        let event = PPC_DATA_BASE + 0x1900;
+        loaded.memory.add_region(event, vec![0xaa; 16]);
+        loaded.application_size.with_mut(|size| {
+            *size = Some(ApplicationSizeResource {
+                flags: 0x4800,
+                preferred_size: 0,
+                minimum_size: 0,
+            })
+        });
+        loaded.cpu.gpr[3] = 0x8008;
+        loaded.cpu.gpr[4] = event;
+        loaded.cpu.gpr[5] = 3600;
+        loaded.cpu.gpr[6] = 0;
+        let first = loaded.run_with_hle_imports(64);
+        assert!(ppc_run_result_cycles(first.result) <= 64);
+        assert_eq!(loaded.memory.read_u16_be(event), Some(0xaaaa));
+        let started = loaded
+            .toolbox_startup
+            .event_waits
+            .values()
+            .next()
+            .unwrap()
+            .0;
+        let frame = (loaded.cpu.pc, loaded.cpu.gpr[1], loaded.cpu.lr);
+        loaded.set_tick_count(started.wrapping_add(1));
+        if wake == 3 {
+            loaded.set_event_queue([PpcQueuedEvent {
+                what: 3,
+                message: 0x0061,
+                when: started.wrapping_add(1),
+                where_v: 0,
+                where_h: 0,
+                modifiers: 0,
+            }]);
+        } else if wake == 15 {
+            loaded
+                .event_queue
+                .with_mut(|queue| queue.activation.request(false));
+        } else {
+            let waiting = loaded.run_with_hle_imports(64);
+            assert!(ppc_run_result_cycles(waiting.result) <= 64);
+            assert_eq!((loaded.cpu.pc, loaded.cpu.gpr[1], loaded.cpu.lr), frame);
+            assert_eq!(loaded.memory.read_u16_be(event), Some(0xaaaa));
+            loaded.set_tick_count(started.wrapping_add(3600));
+        }
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.memory.read_u16_be(event), Some(wake));
+        assert_eq!(loaded.cpu.gpr[3], u32::from(wake != 0));
+        assert!(loaded.toolbox_startup.event_waits.is_empty());
+        if wake == 15 {
+            assert_eq!(loaded.memory.read_u32_be(event + 2), Some(0x0100_0000));
+            assert!(loaded
+                .event_queue
+                .with_ref(|queue| queue.activation.is_foreground()));
         }
     }
 }

@@ -802,6 +802,7 @@ pub(crate) fn dispatch_supported_import(
             input,
             tick_count: *tick_count,
             process_mode,
+            cycles_per_tick,
             window_list,
             dialog_callback_active: !dialog_callback_stack.is_empty(),
         })

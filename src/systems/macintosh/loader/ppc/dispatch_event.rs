@@ -550,6 +550,7 @@ pub(super) struct PpcEventDispatchContext<'a> {
     pub(super) input: PpcInputSnapshot,
     pub(super) tick_count: u32,
     pub(super) process_mode: u32,
+    pub(super) cycles_per_tick: u32,
     pub(super) window_list: &'a SharedProcessWindowList,
     pub(super) dialog_callback_active: bool,
 }
@@ -572,6 +573,7 @@ pub(super) fn dispatch_event_import(
         input,
         tick_count,
         process_mode,
+        cycles_per_tick,
         window_list,
         dialog_callback_active,
     } = context;
@@ -1293,6 +1295,23 @@ pub(super) fn dispatch_event_import(
                     binding.symbol_name, cpu.lr, sleep_ticks, has_event, what, where_v, where_h,
                 );
             }
+            if matches!(binding.dispatcher_target,
+                PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent)) {
+                let frame = (cpu.pc, cpu.gpr[1], cpu.lr);
+                let (started, duration) = toolbox_startup.event_waits.get(&frame)
+                    .copied().unwrap_or((tick_count, sleep_ticks));
+                // Toolbox Essentials (1992), pp. 2-21--2-22: sleep is a
+                // maximum wait, interrupted by an eligible event. Retain the
+                // ABI frame and poll in bounded slices so timers and host
+                // input can run without charging the entire sleep at once.
+                if !has_event && tick_count.wrapping_sub(started) < duration {
+                    toolbox_startup.event_waits.insert(frame, (started, duration));
+                    toolbox_startup.event_loop_poll_until_tick = Some(started.wrapping_add(duration));
+                    return Some(PpcImportAction::Yield(u64::from(cycles_per_tick.max(1))));
+                }
+                toolbox_startup.event_waits.remove(&frame);
+                toolbox_startup.event_loop_poll_until_tick = Some(tick_count.wrapping_add(1));
+            }
             if event_ptr != 0
                 && ppc_write_event_record(
                     memory, event_ptr, what, message, when, where_v, where_h, modifiers,
@@ -1313,21 +1332,7 @@ pub(super) fn dispatch_event_import(
                     has_event, what, message, when, where_v, where_h, modifiers,
                 ));
             }
-            let action = PpcImportAction::Return(u32::from(has_event));
-            if matches!(
-                binding.dispatcher_target,
-                PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent)
-            ) && !has_event
-                && sleep_ticks > 0
-            {
-                Some(ppc_import_action_with_extra_cycles(
-                    action,
-                    u64::from(sleep_ticks)
-                        .saturating_mul(PPC_Q3_IDLE_STATE_ONLY_FRAME_EXTRA_CYCLES),
-                ))
-            } else {
-                Some(action)
-            }
+            Some(PpcImportAction::Return(u32::from(has_event)))
         }
         PpcImportDispatcherTarget::EventAvail | PpcImportDispatcherTarget::OSEventAvail => {
             let event_mask = cpu.gpr[3] as u16;
