@@ -1927,7 +1927,7 @@ fn find_best_context_on_display_id_selects_main_display_only() {
         loaded.cpu.gpr[4] = PPC_DSP_BUFFER_KIND_NORMAL;
         loaded.cpu.gpr[5] = back_buffer_out_ptr;
         assert_eq!(
-            ppc_dsp_context_get_back_buffer(&loaded.cpu, &mut loaded.memory, &loaded.draw_sprocket,),
+            ppc_dsp_context_get_back_buffer(&loaded.cpu, &mut loaded.memory, &mut loaded.draw_sprocket, &loaded.gworlds),
             PPC_NO_ERR
         );
         assert_eq!(
@@ -2449,7 +2449,7 @@ fn find_best_context_on_display_id_selects_main_display_only() {
         let probe = loaded.run_with_hle_imports(64);
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
     }
 
     #[test]
@@ -2809,5 +2809,172 @@ fn draw_sprocket_monitor_frequency_errors_preserve_caller_output() {
         );
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(expected));
         assert_eq!(loaded.memory.read_u32_be(out), Some(0xA5A5_A5A5));
+    }
+}
+
+
+#[test]
+fn alternate_buffer_invalidation_updates_pixels_and_restores_sprites_after_presentation() {
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpAltBuffer_InvalRect");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut front = loaded.gworlds[0];
+    front.port = 0x03000100;
+    front.base_addr = 0x0A000000;
+    front.width = 4;
+    front.height = 4;
+    front.depth = 8;
+    front.row_bytes = ppc_row_bytes(front.width, front.depth).unwrap();
+    let mut back = front;
+    back.port = 0x03000200;
+    back.base_addr = 0x0A000100;
+    let mut underlay = front;
+    underlay.port = 0x03000300;
+    underlay.base_addr = 0x0A000200;
+    loaded.gworlds = vec![front, back, underlay];
+    for world in [front, back, underlay] {
+        loaded.memory.add_region(
+            world.base_addr,
+            vec![10; (world.row_bytes * world.height) as usize],
+        );
+    }
+    loaded.draw_sprocket.front_buffer_gworld = front.port;
+    loaded.draw_sprocket.back_buffer_gworld = back.port;
+    loaded.draw_sprocket.active_context = Some(PPC_DSP_CONTEXT);
+    loaded
+        .draw_sprocket
+        .alt_buffer_invalid_rects
+        .insert(underlay.port, Vec::new());
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = underlay.port;
+    assert_eq!(
+        ppc_dsp_context_set_underlay(&loaded.cpu, &mut loaded.draw_sprocket, &loaded.gworlds),
+        PPC_NO_ERR
+    );
+    let rect = PPC_DATA_BASE + 0x1100;
+    let output = PPC_DATA_BASE + 0x1200;
+    loaded.memory.add_region(rect, vec![0; 8]);
+    loaded.memory.add_region(output, vec![0; 4]);
+    ppc_write_rect(&mut loaded.memory, rect, 1, 1, 2, 2).unwrap();
+    loaded.memory.write_u8(underlay.base_addr + 17, 20).unwrap();
+    loaded.memory.write_u8(back.base_addr + 51, 99).unwrap();
+    loaded.cpu.gpr[3] = underlay.port;
+    loaded.cpu.gpr[4] = rect;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded.memory.read_u8(back.base_addr + 17),
+        Some(10),
+        "invalidation is retained until buffer acquisition"
+    );
+    // A second disjoint invalidation must not erase the unchanged gap.
+    loaded.memory.write_u8(back.base_addr + 18, 77).unwrap();
+    loaded.memory.write_u8(underlay.base_addr + 19, 30).unwrap();
+    ppc_write_rect(&mut loaded.memory, rect, 1, 3, 2, 4).unwrap();
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = underlay.port;
+    loaded.cpu.gpr[4] = rect;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = PPC_DSP_BUFFER_KIND_NORMAL;
+    loaded.cpu.gpr[5] = output;
+    assert_eq!(
+        ppc_dsp_context_get_back_buffer(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.draw_sprocket,
+            &loaded.gworlds
+        ),
+        PPC_NO_ERR
+    );
+    assert_eq!(loaded.memory.read_u8(back.base_addr + 17), Some(20));
+    assert_eq!(loaded.memory.read_u8(back.base_addr + 19), Some(30));
+    assert_eq!(
+        loaded.memory.read_u8(back.base_addr + 18),
+        Some(77),
+        "disjoint invalidation must preserve its gap"
+    );
+    ppc_write_rect(&mut loaded.memory, rect, 1, 1, 2, 2).unwrap();
+    assert_eq!(
+        loaded.memory.read_u8(back.base_addr + 51),
+        Some(99),
+        "pixels outside explicit invalidation stay intact"
+    );
+    loaded.memory.write_u8(back.base_addr + 17, 42).unwrap(); // draw sprite
+    loaded.cpu.gpr[4] = rect;
+    assert_eq!(
+        ppc_dsp_context_inval_back_rect(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.draw_sprocket,
+            &loaded.gworlds
+        ),
+        PPC_NO_ERR
+    );
+    assert_eq!(
+        ppc_dsp_context_swap_buffers(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.draw_sprocket,
+            &loaded.gworlds
+        ),
+        PPC_NO_ERR
+    );
+    assert_eq!(
+        loaded.memory.read_u8(front.base_addr + 17),
+        Some(42),
+        "sprite must be presented before restoration"
+    );
+    loaded.cpu.gpr[4] = PPC_DSP_BUFFER_KIND_NORMAL;
+    assert_eq!(
+        ppc_dsp_context_get_back_buffer(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.draw_sprocket,
+            &loaded.gworlds
+        ),
+        PPC_NO_ERR
+    );
+    assert_eq!(
+        loaded.memory.read_u8(back.base_addr + 17),
+        Some(20),
+        "next frame erases sprite from underlay"
+    );
+    assert_eq!(
+        loaded.memory.read_u8(front.base_addr + 17),
+        Some(42),
+        "restoration must not rewrite the displayed frame"
+    );
+    assert_eq!(loaded.memory.read_u8(back.base_addr + 51), Some(99));
+}
+
+#[test]
+fn alternate_buffer_invalidation_rejects_unknown_and_truncated_inputs_atomically() {
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpAltBuffer_InvalRect");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let world = loaded.gworlds[0];
+    loaded
+        .draw_sprocket
+        .alt_buffer_invalid_rects
+        .insert(world.port, Vec::new());
+    let rect = 0x0A000000;
+    loaded.memory.add_region(rect, vec![0; 6]);
+    for (port, ptr) in [
+        (0, rect),
+        (world.port + 1, rect),
+        (world.port, 0),
+        (world.port, rect),
+    ] {
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.gpr[3] = port;
+        loaded.cpu.gpr[4] = ptr;
+        let before = loaded.draw_sprocket.clone();
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+        assert_eq!(loaded.draw_sprocket, before);
     }
 }
