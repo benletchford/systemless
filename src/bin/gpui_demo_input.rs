@@ -191,7 +191,7 @@ pub(crate) struct Preedit {
 #[derive(Default)]
 pub(crate) struct GuestComposition {
     owner: Option<TextInputOwner>,
-    awaiting_guest_change: Option<TextInputOwner>,
+    pending_commits: Vec<(TextInputOwner, Vec<u8>)>,
     pub preedit: Option<Preedit>,
 }
 
@@ -203,14 +203,41 @@ impl GuestComposition {
     pub fn synchronize(&mut self, owner: Option<TextInputOwner>) {
         let owner = owner.filter(|owner| owner.selection.start <= owner.selection.end
             && owner.selection.end <= owner.text.len());
-        if owner.is_some() && owner == self.awaiting_guest_change {
-            // Rendering may still hold the pre-commit snapshot. It cannot
-            // authorize another replacement of that stale selection.
-            return;
+        if let Some(actual) = &owner {
+            if !self.pending_commits.is_empty() {
+                if self.owner.as_ref() == Some(actual) {
+                    self.pending_commits.clear();
+                    return;
+                }
+                // A frame can show the old snapshot or a partially consumed
+                // commit. Retain the host's future caret instead of restarting
+                // the next commit at that stale guest selection.
+                if self.pending_commits.iter().any(|(base, bytes)| {
+                    if actual == base { return true; }
+                    if actual.identity != base.identity || actual.port != base.port { return false; }
+                    let retained = base.text.len() - base.selection.len();
+                    let Some(inserted) = actual.text.len().checked_sub(retained) else { return false; };
+                    inserted <= bytes.len()
+                        && actual.selection == (base.selection.start + inserted..base.selection.start + inserted)
+                        && actual.text[..base.selection.start] == base.text[..base.selection.start]
+                        && actual.text[base.selection.start..base.selection.start + inserted] == bytes[..inserted]
+                        && actual.text[base.selection.start + inserted..] == base.text[base.selection.end..]
+                }) { return; }
+            }
         }
-        self.awaiting_guest_change = None;
+        self.pending_commits.clear();
         if self.owner != owner { self.preedit = None; }
         self.owner = owner;
+    }
+
+    /// A rejected request invalidates dependent predicted ranges. Ignore delayed
+    /// rejections from an older field or an already acknowledged request.
+    pub fn reject(&mut self, rejected: &TextInputOwner) {
+        if self.pending_commits.iter().any(|(base, _)| base == rejected) {
+            self.pending_commits.clear();
+            self.owner = None;
+            self.preedit = None;
+        }
     }
 
     pub fn mark(&mut self, text: &str, selected: std::ops::Range<usize>) -> bool {
@@ -237,12 +264,15 @@ impl GuestComposition {
         let bytes = normalized.chars()
             .map(systemless::systems::macintosh::mac_roman::encode_mac_roman_char)
             .collect::<Option<Vec<_>>>()?;
+        if bytes.iter().any(|byte| *byte < 32 && !matches!(*byte, b'\r' | b'\t')) { return None; }
         self.preedit = None;
         if bytes.is_empty() && owner.selection.is_empty() { return Some((owner, bytes)); }
-        // A new guest snapshot must establish ownership before another commit;
-        // otherwise asynchronous commits could reuse a stale selection.
-        self.awaiting_guest_change = Some(owner.clone());
-        self.owner = None;
+        let mut predicted = owner.clone();
+        predicted.text.splice(owner.selection.clone(), bytes.iter().copied());
+        let caret = owner.selection.start + bytes.len();
+        predicted.selection = caret..caret;
+        self.pending_commits.push((owner.clone(), bytes.clone()));
+        self.owner = Some(predicted);
         Some((owner, bytes))
     }
 }
@@ -263,19 +293,47 @@ mod composition_tests {
         assert!(state.mark("日😀", 1..3));
         assert!(!state.mark("日😀", 1..2));
         assert!(state.commit("é😀").is_none());
+        assert!(state.commit("é\u{1b}").is_none());
         assert_eq!(state.preedit.as_ref().unwrap().text, "日😀");
         let (pinned, bytes) = state.commit("é\r\nx\ny").unwrap();
         assert_eq!(pinned, owner());
         assert_eq!(bytes, [0x8e, b'\r', b'x', b'\r', b'y']);
         assert!(state.preedit.is_none());
-        assert!(state.commit("z").is_none());
+        let predicted = state.owner().unwrap().clone();
+        assert_eq!(predicted.text, [b'a', 0x8e, b'\r', b'x', b'\r', b'y', b'b']);
+        assert_eq!(predicted.selection, 6..6);
         state.synchronize(Some(owner()));
-        assert!(state.commit("z").is_none(), "old snapshot cannot reopen stale selection");
-        let mut updated = owner();
-        updated.text = bytes;
-        updated.selection = 5..5;
-        state.synchronize(Some(updated));
-        assert!(state.commit("z").is_some());
+        assert_eq!(state.owner(), Some(&predicted), "old snapshot cannot reopen stale selection");
+        let (second_owner, second_bytes) = state.commit("z").unwrap();
+        assert_eq!(second_owner, predicted);
+        assert_eq!(second_bytes, b"z");
+        let final_owner = state.owner().unwrap().clone();
+        state.synchronize(Some(predicted));
+        assert_eq!(state.owner(), Some(&final_owner), "partial acknowledgement preserves queued caret");
+        state.synchronize(Some(final_owner.clone()));
+        assert_eq!(state.owner(), Some(&final_owner));
+        assert!(state.pending_commits.is_empty());
+    }
+
+    #[test]
+    fn composition_rejection_recovers_guest_selection_without_inheriting_stale_feedback() {
+        let mut state = GuestComposition::default();
+        state.synchronize(Some(owner()));
+        let (first, _) = state.commit("x").unwrap();
+        let (second, _) = state.commit("y").unwrap();
+        assert!(state.mark("日", 1..1));
+        state.reject(&second);
+        assert!(state.owner().is_none());
+        assert!(state.preedit.is_none());
+        state.synchronize(Some(owner()));
+        assert_eq!(state.owner(), Some(&owner()));
+        let mut reused = owner();
+        reused.identity.1 += 1;
+        state.synchronize(Some(reused.clone()));
+        state.commit("z").unwrap();
+        let predicted = state.owner().cloned();
+        state.reject(&first);
+        assert_eq!(state.owner().cloned(), predicted);
     }
 
     #[test]
