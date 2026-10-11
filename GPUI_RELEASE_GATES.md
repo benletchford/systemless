@@ -1,5 +1,9 @@
 # GPUI production release gates
 
+### Volume-popup accessibility contracts
+
+Popup choices expose full volume names, list-box/option roles and selected state. Weak Demo callbacks reject inactive, changed-owner, changed-popup and non-visible requests before restoring guest focus and sending one guest mouse-down/up pair. The expanded shared GPUI regression passes3.87s; its initial missing-observer failure is preserved. Evidence: `reference/gpui-demo/volume-accessibility`. This proves helper metadata and synthetic dispatch contracts; native assistive navigation and complete modal accessibility remain open. No production gate closes.
+
 ### Ordinary guest Tab routing
 
 The window-scoped interceptor now preserves Tab/Shift-Tab when the guest root has focus, before Base Root bindings consume them. Host menu/control focus retains GPUI handling; notification and volume-popup ownership retain their boundaries. The shared Open pointer/keyboard regression passes3.30s. Actual GPUI-to-session plain TextEdit editing passes four CPU/depth modes6.73s, verifying exactly one Tab insertion and guest caret advancement. Five notification regressions pass29.50s. Evidence: `reference/gpui-demo/guest-root-tab`. Physical keyboard, broader focus transitions and native accessibility remain open; no broad release gate closes.

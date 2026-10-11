@@ -1140,6 +1140,23 @@ mod desktop {
             let _ = self.commands.send(Command::ActivateFileEntry(id, generation, index, expected.clone()));
         }
 
+        fn queue_volume_choice(&mut self, id: u32, generation: u64, index: usize,
+            expected: &systemless::runner::StandardFileVolumePopup, window: &mut Window, cx: &mut Context<Self>) {
+            if self.host_active == Some(false) || self.notification_alert.is_some()
+                || !self.standard_file.as_ref().is_some_and(|panel| panel.guest_id == id
+                    && panel.generation == generation && panel.volume_popup.as_ref() == Some(expected)) { return; }
+            if index < expected.first_visible || index >= expected.first_visible + expected.visible_rows
+                || expected.choices.get(index).is_none() { return; }
+            let vertical = expected.bounds.0 + (index - expected.first_visible) as i16 * expected.row_height
+                + expected.row_height / 2;
+            let horizontal = expected.bounds.1 + (expected.bounds.3 - expected.bounds.1) / 2;
+            self.focus.focus(window, cx);
+            for input in [MacintoshInput::MouseDown { vertical, horizontal },
+                MacintoshInput::MouseUp { vertical, horizontal }] {
+                let _ = self.commands.send(Command::Input(input));
+            }
+        }
+
         fn read_host_clipboard_with_stamp(
             cx: &App,
             mut stamp: impl FnMut() -> Option<(isize, bool)>,
@@ -3002,12 +3019,22 @@ mod desktop {
                             let mut menu = at(popup.bounds)
                                 .left(guest_px(f32::from(popup.bounds.1 - panel.bounds.1)) - px(2.))
                                 .top(guest_px(f32::from(popup.bounds.0 - panel.bounds.0)) - px(2.))
-                                .id("guest-standard-volume-popup")
+                                .id("guest-standard-volume-popup").test_support()
+                                .role(Role::ListBox).aria_label("Volumes")
                                 .overflow_hidden().bg(cx.theme().background).border_1().border_color(cx.theme().border);
-                            for (row, (index, _choice)) in popup.choices.iter().enumerate().skip(popup.first_visible).take(popup.visible_rows).enumerate() {
+                            for (row, (index, choice)) in popup.choices.iter().enumerate().skip(popup.first_visible).take(popup.visible_rows).enumerate() {
                                 let selected = popup.highlighted == Some(index);
                                 let label = popup.display_name(index).unwrap_or_default();
-                                menu = menu.child(div().absolute().left(guest_px(1.) - px(1.))
+                                let accessibility_view = cx.entity().downgrade();
+                                let (id, generation, expected) = (panel.guest_id, panel.generation, popup.clone());
+                                menu = menu.child(div().id(format!("guest-volume-{id}-{generation}-{index}")).test_support()
+                                    .role(Role::ListBoxOption).aria_label(choice.name.clone()).aria_selected(selected)
+                                    .when(self.host_active != Some(false), |row| row.on_a11y_action(
+                                        gpui_kit::accesskit::Action::Click, move |_, window, cx| {
+                                            let _ = accessibility_view.update(cx, |this, cx|
+                                                this.queue_volume_choice(id, generation, index, &expected, window, cx));
+                                        }))
+                                    .absolute().left(guest_px(1.) - px(1.))
                                     .top(guest_px(row as f32 * f32::from(popup.row_height)) - px(1.))
                                     .w(guest_px(f32::from(popup.bounds.3 - popup.bounds.1 - 2)))
                                     .h(guest_px(f32::from(popup.row_height))).overflow_hidden()
@@ -17658,7 +17685,27 @@ mod desktop {
                     cx.notify();
                 });
                 window.render_frame(cx);
+                assert_eq!(window.find("guest-standard-volume-popup").role(), Some(gpui_kit::Role::ListBox));
+                assert_eq!(window.find("guest-volume-7-1-0").role(), Some(gpui_kit::Role::ListBoxOption));
+                assert_eq!(window.find("guest-volume-7-1-0").selected(), Some(true));
                 view.update(cx, |demo, _| { demo.host_active = Some(true); demo.release_host_input(); });
+                receiver.try_iter().for_each(drop);
+                view.update(cx, |demo, cx| {
+                    let expected = demo.standard_file.as_ref().unwrap().volume_popup.clone().unwrap();
+                    demo.host_active = Some(false);
+                    demo.queue_volume_choice(7, 1, 0, &expected, window, cx);
+                    demo.host_active = Some(true);
+                    demo.queue_volume_choice(7, 2, 0, &expected, window, cx);
+                    let mut stale = expected.clone(); stale.choices[0].name.push_str(" obsolete");
+                    demo.queue_volume_choice(7, 1, 0, &stale, window, cx);
+                    demo.queue_volume_choice(7, 1, 1, &expected, window, cx);
+                    demo.queue_volume_choice(7, 1, 0, &expected, window, cx);
+                });
+                let choices: Vec<_> = receiver.try_iter().filter_map(|command| match command {
+                    super::Command::Input(input) => Some(input), _ => None,
+                }).collect();
+                assert!(matches!(choices.as_slice(), [MacintoshInput::MouseDown { .. }, MacintoshInput::MouseUp { .. }]),
+                    "one valid accessibility choice must emit one guest pointer pair: {choices:?}");
                 for key in ["tab", "shift-tab", "enter"] {
                     window.press(key, cx);
                     assert_eq!(view.read(cx).host_active, Some(true), "{key}: simulated host activity");
