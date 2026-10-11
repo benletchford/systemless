@@ -18,7 +18,9 @@ pub enum PpcSystemCompatibilityOperation {
     Dequeue,
     Enqueue,
     FindNextComponent,
+    FindScriptRun,
     FindWord,
+    FindWordBreaks,
     Font2Script,
     FontScript,
     GetNextProcess,
@@ -53,6 +55,8 @@ pub enum PpcSystemCompatibilityOperation {
     NmRemove,
     ObscureCursor,
     OpenDefaultComponent,
+    ParseTable,
+    PortionText,
     ReplaceText,
     ResetAlertStage,
     SetFrontProcess,
@@ -651,10 +655,12 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             PpcImportAction::ReturnPreserve
         }
         PpcSystemCompatibilityOperation::FindWord
-        | PpcSystemCompatibilityOperation::NFindWord => {
+        | PpcSystemCompatibilityOperation::NFindWord
+        | PpcSystemCompatibilityOperation::FindWordBreaks => {
             // PROCEDURE FindWord(textPtr: Ptr; textLength, offset: Integer; leadingEdge: Boolean; breaksPtr: Ptr; VAR offsets: OffsetTable);
             // PROCEDURE NFindWord(textPtr: Ptr; textLength, offset: Integer; leadingEdge: Boolean; nbreaks: NBreakTablePtr; VAR offsets: OffsetTable);
-            // Inside Macintosh: Text (1993), pp. 5-69–5-72.
+            // PROCEDURE FindWordBreaks(textPtr: Ptr; textLength, offset: Integer; leadingEdge: Boolean; breaks: BreakTablePtr; VAR offsets: OffsetTable; script: ScriptCode);
+            // Inside Macintosh: Text (1993), pp. 5-68–5-72.
             let text_ptr = cpu.gpr[3];
             let text_len = (cpu.gpr[4] as i16).max(0) as usize;
             let offset = (cpu.gpr[5] as i16).max(0) as usize;
@@ -669,6 +675,47 @@ pub(crate) fn ppc_dispatch_system_compatibility(
                 let _ = ppc_write_offset_table(memory, offsets_ptr, table);
             }
             PpcImportAction::ReturnPreserve
+        }
+        PpcSystemCompatibilityOperation::FindScriptRun => {
+            // FUNCTION FindScriptRun(textPtr: Ptr; textLength: LongInt; VAR runLen: LongInt): ScriptCode;
+            // Inside Macintosh: Text (1993), pp. 5-71–5-73.
+            let text_len = (cpu.gpr[4] as i32).max(0) as usize;
+            let run_len_ptr = cpu.gpr[5];
+            let (script_code, run_len) = crate::text_utils::evaluate_find_script_run(
+                text_len,
+                crate::text_utils::SM_ROMAN,
+            );
+            if run_len_ptr != 0 {
+                let _ = memory.write_u32_be(run_len_ptr, run_len as u32);
+            }
+            PpcImportAction::Return(script_code as u32)
+        }
+        PpcSystemCompatibilityOperation::ParseTable => {
+            // FUNCTION ParseTable(VAR table: CharByteTable): Boolean;
+            // Inside Macintosh: Text (1993), pp. 6-77–6-78.
+            let table_ptr = cpu.gpr[3];
+            let mut table = [0u8; 256];
+            let has_2byte = crate::text_utils::evaluate_parse_table(
+                &mut table,
+                crate::text_utils::SM_ROMAN,
+            );
+            if table_ptr != 0 {
+                let _ = memory.write_bytes(table_ptr, &table);
+            }
+            PpcImportAction::Return(if has_2byte { 1 } else { 0 })
+        }
+        PpcSystemCompatibilityOperation::PortionText => {
+            // FUNCTION PortionText(textPtr: Ptr; textLength: LongInt): Fixed;
+            // Inside Macintosh: Text (1993), p. 5-73.
+            let text_ptr = cpu.gpr[3];
+            let text_len = (cpu.gpr[4] as i32).max(0) as usize;
+            let bytes = if text_ptr != 0 && text_len > 0 {
+                ppc_memory_read_bytes(memory, text_ptr, text_len as u32).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let portion = crate::text_utils::evaluate_portion_text(&bytes);
+            PpcImportAction::Return(portion as u32)
         }
         PpcSystemCompatibilityOperation::GetSysDirection => {
             // GetSysDirection returns the SysDirection global: zero for

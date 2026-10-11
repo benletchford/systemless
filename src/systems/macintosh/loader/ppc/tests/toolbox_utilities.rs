@@ -712,6 +712,30 @@ fn import_bindings_classify_text_and_conversion_imports() {
         dispatcher_target_for_import("InterfaceLib", "c2pstr"),
         PpcImportDispatcherTarget::C2PStr
     );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "ParseTable"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            crate::loader::ppc::PpcSystemCompatibilityOperation::ParseTable
+        )
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "PortionText"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            crate::loader::ppc::PpcSystemCompatibilityOperation::PortionText
+        )
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "FindScriptRun"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            crate::loader::ppc::PpcSystemCompatibilityOperation::FindScriptRun
+        )
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "FindWordBreaks"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            crate::loader::ppc::PpcSystemCompatibilityOperation::FindWordBreaks
+        )
+    );
 }
 
 #[test]

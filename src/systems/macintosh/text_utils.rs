@@ -993,6 +993,15 @@ pub const HILITE_TEXT_LEGACY_SELECTOR: i32 = 28;
 /// NFindWord ($8012FFE2) encoded selector.
 pub const NFIND_WORD_SELECTOR: u32 = 0x8012_FFE2;
 
+/// ParseTable ($82040022) encoded selector.
+pub const PARSE_TABLE_SELECTOR: u32 = 0x8204_0022;
+
+/// PortionText ($84080024) encoded selector.
+pub const PORTION_TEXT_SELECTOR: u32 = 0x8408_0024;
+
+/// FindScriptRun ($820C0026) encoded selector.
+pub const FIND_SCRIPT_RUN_SELECTOR: u32 = 0x820C_0026;
+
 /// FindWordBreaks ($C012001A) encoded selector.
 pub const FIND_WORD_BREAKS_SELECTOR: u32 = 0xC012_001A;
 
@@ -1409,6 +1418,80 @@ pub fn evaluate_find_word(text: &[u8], offset: usize) -> [(i16, i16); 3] {
     }
 
     [(start as i16, end as i16), (0, 0), (0, 0)]
+}
+
+/// Canonical architecture-neutral evaluation of classic Macintosh `ParseTable`.
+///
+/// Fills a 256-byte table indicating for each byte value whether it can be a single byte,
+/// a first byte, or a second byte of a 2-byte character.
+///
+/// Returns `false` for 1-byte script systems (e.g. `smRoman`), and `true` for 2-byte script systems.
+///
+/// References:
+/// - Inside Macintosh Volume VI (1991), pp. 14-131 to 14-132.
+/// - Inside Macintosh: Text (1993), pp. 6-77 to 6-78.
+pub fn evaluate_parse_table(table: &mut [u8; 256], script: u8) -> bool {
+    if !script_is_multibyte(script) {
+        table.fill(SM_SINGLE_BYTE as u8);
+        false
+    } else {
+        for (byte, entry) in table.iter_mut().enumerate() {
+            if script_is_lead_byte(script, byte as u8) {
+                *entry = SM_FIRST_BYTE as u8;
+            } else {
+                *entry = SM_SINGLE_BYTE as u8;
+            }
+        }
+        true
+    }
+}
+
+/// Canonical architecture-neutral evaluation of classic Macintosh `PortionText`.
+///
+/// Indicates the proportion of total extra space allocated to the specified text run
+/// when drawing justified text, returned as a `Fixed` point number (16.16).
+///
+/// For Roman text, returns the count of space characters (`0x20`) as a Fixed number
+/// (e.g. 3 spaces returns `$00030000`). If the run contains no spaces and is non-empty,
+/// returns 1.0 (`$00010000`) so slop is distributed among the characters. If empty, returns 0.
+///
+/// References:
+/// - Inside Macintosh: Text (1993), p. 5-73.
+pub fn evaluate_portion_text(text: &[u8]) -> i32 {
+    if text.is_empty() {
+        return 0;
+    }
+    let spaces = text.iter().filter(|&&b| b == b' ').count();
+    if spaces > 0 {
+        (spaces as i32) << 16
+    } else {
+        0x0001_0000
+    }
+}
+
+/// Canonical architecture-neutral evaluation of classic Macintosh `FindScriptRun`.
+///
+/// Finds the next run of text belonging to a single script.
+///
+/// Returns `(script_code, run_length)`. In an environment where Roman is the active script,
+/// the entire text run belongs to `script`.
+///
+/// References:
+/// - Inside Macintosh: Text (1993), pp. 5-71 to 5-73.
+#[inline]
+pub fn evaluate_find_script_run(text_len: usize, script: u8) -> (u8, usize) {
+    (script, text_len)
+}
+
+/// Canonical architecture-neutral evaluation of classic Macintosh `FindWordBreaks`.
+///
+/// Determines the word boundaries surrounding `offset` in `text` using word break tables.
+///
+/// References:
+/// - Inside Macintosh: Text (1993), pp. 5-68 to 5-70.
+#[inline]
+pub fn evaluate_find_word_breaks(text: &[u8], offset: usize) -> [(i16, i16); 3] {
+    evaluate_find_word(text, offset)
 }
 
 /// Canonical architecture-neutral evaluation of classic Macintosh `CharType`.
@@ -2464,5 +2547,43 @@ mod tests {
     fn test_get_sys_direction() {
         assert_eq!(evaluate_get_sys_direction(0), 0); // left to right
         assert_eq!(evaluate_get_sys_direction(0xFFFF), -1); // right to left
+    }
+
+    #[test]
+    fn test_parse_table() {
+        let mut table = [0xFF; 256];
+        // Roman script (single-byte): all 0, returns false
+        let is_2byte = evaluate_parse_table(&mut table, SM_ROMAN);
+        assert!(!is_2byte);
+        assert!(table.iter().all(|&b| b == SM_SINGLE_BYTE as u8));
+
+        // Japanese script (multi-byte Shift-JIS): lead bytes 0x81..0x9F, 0xE0..0xFC are SM_FIRST_BYTE
+        let mut sjis_table = [0xFF; 256];
+        let is_2byte_jp = evaluate_parse_table(&mut sjis_table, SM_JAPANESE);
+        assert!(is_2byte_jp);
+        assert_eq!(sjis_table[0x41], SM_SINGLE_BYTE as u8); // 'A'
+        assert_eq!(sjis_table[0x81], SM_FIRST_BYTE as u8);
+        assert_eq!(sjis_table[0xE0], SM_FIRST_BYTE as u8);
+    }
+
+    #[test]
+    fn test_portion_text() {
+        assert_eq!(evaluate_portion_text(b""), 0);
+        assert_eq!(evaluate_portion_text(b"Hello"), 0x0001_0000); // 1.0 Fixed (no spaces)
+        assert_eq!(evaluate_portion_text(b"Hello World"), 0x0001_0000); // 1 space -> 1.0 Fixed
+        assert_eq!(evaluate_portion_text(b"A B C D"), 0x0003_0000); // 3 spaces -> 3.0 Fixed
+    }
+
+    #[test]
+    fn test_find_script_run() {
+        assert_eq!(evaluate_find_script_run(10, SM_ROMAN), (SM_ROMAN, 10));
+        assert_eq!(evaluate_find_script_run(0, SM_ROMAN), (SM_ROMAN, 0));
+    }
+
+    #[test]
+    fn test_find_word_breaks() {
+        let text = b"The quick brown fox";
+        let breaks = evaluate_find_word_breaks(text, 5); // inside "quick"
+        assert_eq!(breaks[0], (4, 9));
     }
 }

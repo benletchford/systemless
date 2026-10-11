@@ -5780,8 +5780,14 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "FindNextComponent") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::FindNextComponent,
         ),
+        ("InterfaceLib", "FindScriptRun") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::FindScriptRun,
+        ),
         ("InterfaceLib", "FindWord") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::FindWord,
+        ),
+        ("InterfaceLib", "FindWordBreaks") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::FindWordBreaks,
         ),
         ("InterfaceLib", "Font2Script") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::Font2Script,
@@ -5899,6 +5905,12 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         ("InterfaceLib", "OpenDefaultComponent") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::OpenDefaultComponent,
+        ),
+        ("InterfaceLib", "ParseTable") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::ParseTable,
+        ),
+        ("InterfaceLib", "PortionText") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::PortionText,
         ),
         ("InterfaceLib", "ReplaceText") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::ReplaceText,
