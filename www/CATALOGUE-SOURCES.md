@@ -1468,8 +1468,20 @@ Unchanged original native source `fbd12e1e33941e1da82b9ceb61ed28966571ed81`,
 selector Rogue, explicit 68K/depth 8, reaches the original dungeon. Ordinary h
 moves one cell left. Eight measured before/after pixel assertions pass at
 662 frontend / 1,262 guest ticks with zero exhaustion; captures inspected.
-[Catalogue draft #4613](https://github.com/benletchford/systemless/pull/4613)
-includes original archive, retained notices and actual content-only screenshot;
-preview validation passes. Promotion, hosted receipts, browser qualification,
-launch approval, human release and public replay remain pending. Broader dungeon
-progression, combat, saving and audio remain unverified. No qualified-live increment.
+Normal promotion initially received HTTP 406 from the publisher archive URL.
+The byte-identical [original-format mirror](https://www.gryphel.com/d/sw/games/rogue/c/Rogue.sea.hqx)
+then promoted successfully without repacking. Independent hosted download and
+untouched browser managed response match the original 127,671 bytes and SHA-256.
+
+Production-origin browser preview supplies only frontend assets locally;
+cross-origin isolation, runtime worker and an 800x600 canvas are verified.
+Ordinary H moves the original player one cell left; eight measured before/after
+pixel checks pass with the pointer outside the canvas. Captures inspected.
+[Browser evidence](https://github.com/benletchford/systemless/issues/4612#issuecomment-6109772451).
+
+[Catalogue #4613](https://github.com/benletchford/systemless/pull/4613) merged at
+`d06cd35e3aebf07165658b8e8c3352598543ef7a`, with all final checks passing on
+`8ed7ca559d4491710f02e32febdd9fb12ec52109`. Original archive and actual content-only
+screenshot are promoted; launch is approved. Human release and public replay
+remain pending. Broader dungeon progression, combat, saving and audio remain
+unverified. No qualified-live increment or agent release action.
