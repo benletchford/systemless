@@ -982,3 +982,22 @@ The separate longest-text diagnostic overlapped existing page text, so these
 captures do not establish its numeric value. Do not infer an exact padding
 formula from them. Narrow-rectangle clamping, exact font measurement, title
 placement and hit testing outside the displayed box remain to be qualified.
+
+
+### Native narrow-boundary popup probe
+
+The font/mutation fixture was rebuilt with only Theme's supplied right edge
+changed from 500 to 350, and its text-width diagnostic moved clear of other
+text. Both native runners completed. Closed and open screenshots agree on
+68k and PPC: the closed box stays approximately x=282..390 before and after
+mutation, while the final open dropdown spans approximately x=282..486.
+The readable diagnostics report Geneva-12 text widths 116 before mutation
+and 175 after mutation; the control record remains 190/350 and the menu
+width changes from 143 to 205.
+
+This proves closed-box clamping and open-dropdown geometry must remain
+separate. It also prevents a premature formula: the preceding wide-boundary
+probe's final dropdown reached approximately x=500, whereas this otherwise
+equivalent narrow probe reaches x=486. Reconcile that native difference
+before treating measured text plus constant padding as the full open-menu
+rule. No guessed sizing rule has been added to the runtime.
