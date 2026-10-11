@@ -3591,6 +3591,15 @@ impl super::TrapDispatcher {
             tracking.sel_end = encode_mac_roman_lossy(&tracking.name).len().min(i16::MAX as usize) as i16;
             return None;
         }
+        if !command_down && matches!(char_code, 0x1c | 0x1d) {
+            let (start, end) = Self::standard_file_selection_range(tracking);
+            let mut edit = crate::text_edit::TextEditBuffer::new(encode_mac_roman_lossy(&tracking.name), start, end);
+            edit.apply_key(char_code);
+            let selection = edit.selection();
+            tracking.sel_start = selection.start as i16;
+            tracking.sel_end = selection.end as i16;
+            return None;
+        }
         if char_code == 0x08 || key_code == 0x33 {
             Self::standard_file_backspace(tracking);
             return None;

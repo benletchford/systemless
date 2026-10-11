@@ -344,6 +344,21 @@ impl GuestComposition {
         Some((prefix + text + &suffix, start))
     }
 
+    /// Commit a staged correction while retaining the insertion endpoint,
+    /// independently of any staged suffix that must also enter guest storage.
+    pub fn commit_replacement(&mut self, range: Option<&std::ops::Range<usize>>, text: &str)
+        -> Option<(TextInputOwner, Vec<u8>, usize)> {
+        let (payload, offset) = self.replacement_text(range, text)?;
+        let units: Vec<_> = payload.encode_utf16().collect();
+        let prefix = String::from_utf16(units.get(..offset)?).ok()?;
+        let inserted = (prefix + text).replace("\r\n", "\r").replace('\n', "\r").chars().count();
+        let (owner, bytes) = self.commit(&payload)?;
+        let caret = owner.selection.start + inserted;
+        if let Some(pending) = self.pending_commits.last_mut() { pending.3 = Some(caret); }
+        self.owner.as_mut()?.selection = caret..caret;
+        Some((owner, bytes, caret))
+    }
+
     /// Commit a range crossing an active stage boundary without rewriting
     /// untouched guest text between disjoint edits. Retain staged fragments.
     pub fn commit_overlapping_range(&mut self, range: std::ops::Range<usize>, text: &str)
@@ -480,6 +495,21 @@ mod composition_tests {
         for range in [0..2, 0..3, 0..9, 4..5] {
             assert!(state.commit_overlapping_range(range, "Q").is_none());
             assert_eq!(state.owner(), Some(&owner())); assert_eq!(state.preedit, before);
+        }
+    }
+
+    #[test]
+    fn modal_stage_correction_keeps_caret_before_retained_suffix() {
+        for target in [TextInputTarget::Dialog { item: 8, content_revision: 2 },
+            TextInputTarget::StandardFile { new_folder: false }, TextInputTarget::StandardFile { new_folder: true }] {
+            let mut current = owner(); current.target = target;
+            let mut state = GuestComposition::default(); state.synchronize(Some(current.clone()));
+            assert!(state.mark("éZ", 0..1));
+            let (request, bytes, caret) = state.commit_replacement(Some(&(1..2)), "Q").unwrap();
+            assert_eq!(request, current); assert_eq!(bytes, b"QZ"); assert_eq!(caret, 2);
+            let future = state.owner().unwrap().clone(); assert_eq!(future.selection, 2..2);
+            let mut intermediate = future.clone(); intermediate.selection = 3..3;
+            state.synchronize(Some(intermediate)); assert_eq!(state.owner(), Some(&future));
         }
     }
 
