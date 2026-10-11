@@ -4896,3 +4896,14 @@ and failure provenance are archived in
 `reference/gpui-demo/disjoint-document-replacement`. Modal disjoint behavior and
 frontend emitted-request qualification remain open, along with physical IME and
 visual/native qualification. This does not close a production gate.
+
+
+### Disjoint dialog-stage replacement qualification
+
+Dialog worker checks now complete disjoint staging/replacement through guest
+events across four CPU/depth modes and wrapped PPC8/PPC16 (30.55s), preserving
+final text, caret and sibling fields. Four-mode GPUI platform checks pass
+(10.27s), verifying two ordered pinned requests and the exact intermediate
+text. Evidence is archived in `reference/gpui-demo/disjoint-dialog-replacement`.
+Save/New Folder disjoint workflows, physical input and visual/native
+qualification remain open. No broad production gate is closed.

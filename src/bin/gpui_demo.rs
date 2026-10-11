@@ -9924,6 +9924,25 @@ mod desktop {
                     .is_some_and(|(_, rejected)| rejected == &replacement_owner));
                 assert_eq!(rejected.dialogs.iter().find(|dialog| dialog.guest_id == owner.identity.0).unwrap().items[8].text, expected);
                 eprintln!("PASS worker-modal-explicit-replacement powerpc={powerpc} depth={actual_depth} wrapped={wrapped}");
+                let current = super::super::input::dialog_text_owner_with_records(
+                    &rejected.dialogs, &rejected.windows, &rejected.text_edits, &rejected.controls).unwrap();
+                let pinned = super::super::input::TextInputOwner { identity: current.identity,
+                    target: super::super::input::TextInputTarget::Dialog { item: current.item, content_revision: current.content_revision },
+                    text: current.text.clone(), selection: current.selection.clone() };
+                let mut stage = super::super::input::GuestComposition::default();
+                stage.synchronize(Some(pinned.clone())); assert!(stage.mark("é", 1..1));
+                let (first, (expected, request, bytes)) = stage.commit_disjoint_range(3..4, "K").unwrap();
+                let mut expected_text = current.text.clone(); expected_text.splice(current.selection.clone(), [0x8e]);
+                expected_text.splice(3..4, [b'K']);
+                let expected_text = systemless::systems::macintosh::mac_roman::decode_mac_roman(&expected_text);
+                worker.0.send(Command::CommitText(first.0, first.1)).unwrap();
+                worker.0.send(Command::ReplaceText(expected, request.selection, bytes, None)).unwrap();
+                let completed = wait("modal disjoint staged replacement", &updates, |update| update.dialogs.iter().any(|dialog|
+                    (dialog.guest_id, dialog.generation) == pinned.identity && dialog.items[8].text == expected_text
+                        && dialog.items[8].selection == Some((4, 4))));
+                assert_eq!(completed.dialogs.iter().find(|dialog| dialog.guest_id == pinned.identity.0).unwrap().items[6].text, before.items[6].text);
+                eprintln!("PASS worker-modal-disjoint-replacement powerpc={powerpc} depth={actual_depth} wrapped={wrapped}");
+
 
                 eprintln!("PASS worker-modal-rapid-composition-and-rejection powerpc={powerpc} depth={actual_depth}");
                 drop(worker);
@@ -12544,6 +12563,22 @@ mod desktop {
                 assert_eq!(bytes, b"QZ"); assert_eq!(caret, owner.selection.start + 1);
                 assert_eq!(systemless::systems::macintosh::mac_roman::decode_mac_roman(&owner.text), after.items[8].text);
                 eprintln!("PASS modal-platform-retained-suffix-request powerpc={powerpc} depth={depth}");
+                cx.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                    demo.dialogs = session.runner_mut().dialog_snapshot();
+                    demo.text_edits = session.runner_mut().text_edit_snapshot().records;
+                    demo.synchronize_composition(window, cx);
+                    demo.replace_and_mark_text_in_range(None, "é", Some(1..1), window, cx);
+                    demo.replace_text_in_range(Some(0..1), "K", window, cx);
+                })).unwrap();
+                let requests: Vec<_> = receiver.try_iter().collect(); assert_eq!(requests.len(), 2);
+                let super::Command::CommitText(first, stage) = &requests[0] else { panic!("stage must enter guest first"); };
+                let super::Command::ReplaceText(second, range, replacement, caret) = &requests[1] else { panic!("disjoint edit must remain separate"); };
+                assert_eq!(first.identity, (after.guest_id, after.generation));
+                assert_eq!(stage, &[0x8e]); assert_eq!(*range, 0..1); assert_eq!(replacement, b"K"); assert_eq!(*caret, None);
+                let mut intermediate = first.text.clone(); intermediate.splice(first.selection.clone(), stage.iter().copied());
+                assert_eq!(second.text, intermediate); assert_eq!(second.identity, first.identity);
+                eprintln!("PASS modal-platform-disjoint-requests powerpc={powerpc} depth={depth}");
+
                 eprintln!("PASS modal-platform-composition powerpc={powerpc} depth={depth}");
                 cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
             }
