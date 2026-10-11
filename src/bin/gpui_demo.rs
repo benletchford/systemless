@@ -5890,6 +5890,153 @@ mod desktop {
 
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
+        fn gpui_popup_pointer_events_reach_guest_tracker(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::{
+                test::TestWindowExt, AppContext, InputEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+                MouseUpEvent,
+            };
+            cx.update(gpui_kit::init);
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session
+                    .load_path(
+                        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("tests/toolbox-showcase/toolbox-showcase.sit"),
+                    )
+                    .unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 16));
+                wait_for_menu(&mut session, 129, 16, true);
+                settle(&mut session);
+                let (sender, receiver) = std::sync::mpsc::channel();
+                let (window, view) = cx.update(|cx| {
+                    gpui_kit::open_window(Default::default(), cx, |_, cx| {
+                        cx.new(|cx| super::Demo::new(sender, Default::default(), cx))
+                    })
+                    .unwrap()
+                });
+                let (top, left, _, _) = session.runner_mut().window_bounds();
+                let mut point = (top + 112, left + 280);
+                for phase in 0..3 {
+                    let popup = session.runner_mut().guest_popup_snapshot();
+                    if phase > 0 {
+                        let popup = popup
+                            .as_ref()
+                            .expect("guest popup should remain open while held");
+                        point = (
+                            popup.content_top
+                                + popup.row_heights[..3].iter().sum::<i16>()
+                                + popup.row_heights[3] / 2,
+                            popup.bounds.1 + 30,
+                        );
+                    }
+                    cx.update_window(window.into(), |_, window, cx| {
+                        view.update(cx, |demo, _| {
+                            demo.width = 800;
+                            demo.height = 600;
+                            demo.controls = session.runner_mut().control_snapshot();
+                            demo.windows = session.runner_mut().window_frame_snapshot();
+                            demo.menus = session.runner_mut().guest_menu_snapshot();
+                            demo.guest_popup = popup;
+                        });
+                        window.render_frame(cx);
+                        let position = view.update(cx, |demo, _| {
+                            gpui_kit::point(
+                                gpui_kit::px(
+                                    demo.display_origin.0
+                                        + (f32::from(point.1) + 0.25) * demo.display_scale,
+                                ),
+                                gpui_kit::px(
+                                    demo.display_origin.1
+                                        + (f32::from(point.0) + 0.25) * demo.display_scale,
+                                ),
+                            )
+                        });
+                        let event = match phase {
+                            0 => MouseDownEvent {
+                                position,
+                                button: MouseButton::Left,
+                                click_count: 1,
+                                ..Default::default()
+                            }
+                            .to_platform_input(),
+                            1 => MouseMoveEvent {
+                                position,
+                                pressed_button: Some(MouseButton::Left),
+                                ..Default::default()
+                            }
+                            .to_platform_input(),
+                            _ => MouseUpEvent {
+                                position,
+                                button: MouseButton::Left,
+                                click_count: 1,
+                                ..Default::default()
+                            }
+                            .to_platform_input(),
+                        };
+                        window.dispatch_event(event, cx);
+                    })
+                    .unwrap();
+                    let inputs: Vec<_> = receiver
+                        .try_iter()
+                        .filter_map(|command| match command {
+                            super::Command::Input(input) => Some(input),
+                            _ => None,
+                        })
+                        .collect();
+                    assert!(
+                        inputs.iter().any(|input| match input {
+                            MacintoshInput::MouseDown {
+                                vertical,
+                                horizontal,
+                            } if phase == 0 => (*vertical, *horizontal) == point,
+                            MacintoshInput::MouseMove {
+                                vertical,
+                                horizontal,
+                            } if phase == 1 => (*vertical, *horizontal) == point,
+                            MacintoshInput::MouseUp {
+                                vertical,
+                                horizontal,
+                            } if phase == 2 => (*vertical, *horizontal) == point,
+                            _ => false,
+                        }),
+                        "GPUI phase {phase} must reach guest coordinates on {powerpc:?}/{depth:?}"
+                    );
+                    for input in inputs {
+                        session.deliver_input(input);
+                    }
+                    for _ in 0..20 {
+                        session.runner_mut().run_steps(50_000, None);
+                    }
+                    if phase == 1 {
+                        assert_eq!(
+                            session
+                                .runner_mut()
+                                .guest_popup_snapshot()
+                                .unwrap()
+                                .highlighted_item,
+                            4
+                        );
+                    }
+                }
+                assert!((0..100).any(|_| {
+                    session.runner_mut().run_steps(50_000, None);
+                    session
+                        .runner_mut()
+                        .control_snapshot()
+                        .iter()
+                        .any(|control| {
+                            control.visible && control.popup_menu_id == Some(143) && control.value == 4
+                        })
+                }));
+                assert!(session.runner_mut().guest_popup_snapshot().is_none());
+            }
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
         fn gpui_wheel_event_reaches_guest_scrollbar(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::{test::TestWindowExt, AppContext, InputEvent, ScrollDelta, ScrollWheelEvent, TouchPhase};
             let mut session = MacintoshSession::new(true, Some(8));
