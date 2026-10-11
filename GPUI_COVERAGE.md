@@ -104,6 +104,24 @@ and delivers all 14 actions with zero readiness delay at 2,800 publications
 120 production intervals average 17.21 ms, p95 30.69 ms, maximum 32.84 ms: late
 frames remain, and this is not device-audio continuity or native smoothness proof.
 
+Small worker overruns (2026-10-12): finishing just past a scheduled deadline
+previously added an entire idle interval. The worker now recovers one deadline
+immediately when late by less than a period; its following deadline remains in
+the future. Long stalls still skip expired deadlines. Frontend polling keeps
+its existing strict skip policy. CPU/audio budgets and guest event routes are
+unchanged. Four cadence regressions pass; all 150 ordinary desktop/headless tests
+pass (2.95s), as do cross-CPU semantic dialog activation (0.54s), three rapid text
+commit regressions (15.77s), and notification/audio workflows (5.18s).
+
+Two reviewed original EV colour68k trials complete all 14 dialog/flight actions
+with no readiness delay, reaching 2,800 observations in 45.92/46.56s. The final
+120 production worker intervals average 16.00 ms in both trials, with p95
+21.28/21.07 ms and maxima 23.38/21.98 ms. No compiler or tests started by this task
+overlap these captures. Prior elapsed-audio evidence had p95 30.69 ms; these are
+repeat trials, not a controlled native-display comparison or FPS measurement.
+Source/executable/image hashes remain in ignored qualification output. Late
+intervals, physical input and device-audio continuity remain unqualified.
+
 Application captures release the shared worker update lock before scene rendering
 and scripted input, matching live polling. The previous if-let temporary retained
 the lock through Metal submission and could delay publication; those observation
