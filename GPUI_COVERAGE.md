@@ -6698,3 +6698,26 @@ PPC16 at scales0.75/1/1.5/2 (17.45 seconds). Source, binary and log hashes are i
 Smooth destination-aware modes and native appearance remain unqualified. No
 production gate closes; native gameplay performance and broader qualification
 remain required.
+
+### Current original-EV appearance and resource observation (2026-10-12)
+
+The optimised CI executable at `9c1e7d1e` builds (13m43s). Original EV
+colour68k completes all 14 actions and 2,800 shared-compositor updates with
+zero readiness delay (54.83 seconds). The original full flight image was
+reviewed: complete scene/custom HUD, ship, stars and asteroids, with the guest
+menu hidden. A separate 720-update pilot capture passes both startup actions
+and was reviewed: smooth GPUI standard prompt, selected name, checkbox and
+Cancel/OK. Picture-resource instruction text and game artwork retain guest paint.
+
+Final-flight scene/submission elapsed mean/p95/max is 2.00/5.69/15.06 ms
+(601 samples). Last 120 worker intervals have mean/p95/max
+16.98/24.28/52.30 ms; substantial timing variation remains. Process timing
+reports maximum RSS 107.25 MiB and peak footprint 2.39 GiB. These distinct
+measures do not establish stable resource use; the high footprint needs
+investigation. Concurrent unrelated builds prevent a controlled comparison.
+This is a behavioural pass, not a native gameplay smoothness, GPU-completion,
+audio or persistence qualification. The executable, archive, producing source,
+logs and reviewed images are pinned in ignored
+`target/gpui-qualification/escape-velocity/port-attributes-flight-review.json`.
+The later uncommitted native-accessibility probe is not in that executable.
+All broad production gates remain open.
