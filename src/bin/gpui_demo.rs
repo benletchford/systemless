@@ -1193,6 +1193,9 @@ mod desktop {
                             }
                             cx.notify();
                         }
+                        // Retry after guest tracking ends or host ownership returns.
+                        // The worker validates the exact record before pausing guest work.
+                        this.request_notification_alert();
                     })
                     .is_err()
                 {
@@ -1313,8 +1316,8 @@ mod desktop {
             (point.0, map.horizontal(f32::from(position.x)).unwrap_or(point.1))
         }
 
-        // Called only by explicit acquisition tests until the real-worker and
-        // composed delivery path is qualified for automatic acquisition.
+        // Acquisition is a request; only the worker's owned snapshot authorizes
+        // painting and input exclusion. Held guest keys release before the request.
         fn request_notification_alert(&mut self) -> bool {
             if self.notification_alert.is_some() || self.mouse_down
                 || self.host_active == Some(false) || !self.open_menus.is_empty()
@@ -16478,7 +16481,9 @@ mod desktop {
                 demo.press_host_key(0, b'a');
             });
             receiver.try_iter().for_each(drop);
-            view.update(cx, |demo, _| assert!(demo.request_notification_alert()));
+            cx.run_until_parked();
+            cx.executor().advance_clock(std::time::Duration::from_millis(16));
+            cx.run_until_parked();
             let commands = receiver.try_iter().collect::<Vec<_>>();
             let release = commands.iter().position(|command| matches!(command,
                 super::Command::Input(MacintoshInput::KeyUp { .. }))).expect("release held guest key");
