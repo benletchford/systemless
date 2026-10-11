@@ -69,7 +69,10 @@ a real resource-backed modeless dialog through its Options menu. A focused
 reactivation, and close lifecycle; `--capture-modeless-dialog` records the
 composed guest and GPUI surface on both CPUs. PowerPC newly shown windows
 paint the default white content background when they have no WCTab, avoiding
-stale artwork beneath the dialog items.
+stale artwork beneath the dialog items. Deterministic guest-input replays on
+both CPUs also cover checkbox tracking and reactivation after full occlusion;
+the 68K standard-dialog redraw clears newly exposed content while retaining
+application-painted custom dialog content.
 
 The dependency order is menus, frames, dialogs, controls, lists/TextEdit, then
 Standard File. The first end-to-end gate is one standard modal dialog on each

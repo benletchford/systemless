@@ -790,7 +790,9 @@ impl super::TrapDispatcher {
             let proc_id = self.dialog_window_proc_id(bus, dialog_ptr);
             let (edit_text, edit_item, default_item) =
                 Self::dialog_edit_state(bus, dialog_ptr, &items);
-            if self.dialogs_drawn_by_app.contains(&dialog_ptr) {
+            if self.dialogs_drawn_by_app.contains(&dialog_ptr)
+                && Self::dialog_is_game_managed(bounds, &items)
+            {
                 // ShowWindow may follow a complete application composition
                 // into a still-hidden dialog port. Preserve those pixels and
                 // repaint only manager-owned controls instead of synthesizing
