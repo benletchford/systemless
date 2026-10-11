@@ -1813,3 +1813,67 @@ test (74 tests, zero failures, 227.25s); the added test passed separately. The
 ordinary library Mac Roman geometry test also passed. These results qualify
 single-click and drag alignment for the exercised short New Folder names, not
 all TextEdit surfaces or complete GPUI readiness.
+
+### Long New Folder names: confirmed remaining defect
+
+A rendered regression using a 31-byte name (27 `w` characters followed by
+`abcd`) fails the caret-visibility requirement: at the exercised scene scale,
+the caret is at host x=491.02 while the field spans x=211.5..416.25. The new
+local assertion intentionally exposes this unresolved overflow; it is not a
+passing qualification. Text (1993), TEAutoView/TESelView and the automatic
+scrolling discussion specify selection visibility and held-drag scrolling.
+The dedicated native replay completed on Mac OS 8.1 in BasiliskII and
+SheepShaver. All six long-name checkpoints were reviewed: both CPUs scroll to
+show the trailing `abcd`, show the leading text after Up, and restore the tail
+after Down. All 34 retained capture files and both scenario identities match
+the capture manifests. BasiliskII used its live guest clock; SheepShaver used
+60.15 Hz wall-clock pacing; audio was disabled for this UI replay.
+
+This confirms that a fix must coordinate the guest field's scroll origin,
+visible selection/caret, guest hit testing and themed text positioning. Moving
+only the host text is insufficient: exported guest insertion positions could
+otherwise lie outside the editable field and fail to begin a click gesture.
+The scrolling implementation remains pending; no long-name fix is claimed.
+
+The local scrolling implementation now retains a guest horizontal offset in
+shared New Folder state. Both CPU adapters update it after editing and pointer
+tracking, include it in hit testing, and subtract it from exported insertion
+positions. Guest drawing uses the same offset and clips the name to its field.
+The focused state test passes (retained visible caret, start/end movement,
+scrolled hit testing and shortening the name); the existing six-scenario guest
+workflow passes in 38.94s. GPUI still needs its corresponding host-font scroll
+layout, so the rendered long-name regression remains unresolved. Native-versus-
+Systemless long-name captures and broader drawing regression checks remain due.
+
+The GPUI single-line renderer now shapes the name once, retains its host-font
+scroll origin while the active offset remains visible, and derives painting,
+selection, caret and pointer mapping from that layout. The previously failing
+31-byte caret-visibility regression passes (0.11s). The live host-to-guest test
+now types both short and long names through guest keyboard events and verifies
+scrolled tail clicks and dragging across all three CPU/display modes and three
+scene scales (32.14s). Each viewport restores the tail through Down before
+clicking it; the first test revision incorrectly attempted to click a hidden
+tail after leaving a different selection endpoint visible.
+
+A new long-name composed capture uses real guest typing. Its colour-68k guest
+and GPUI frames were reviewed: both clip the leading text and expose the final
+`abcd` and caret within the field. PPC/monochrome capture review, start/end
+navigation qualification, held out-of-field auto-scroll and broader drawing
+regressions remain outstanding before staging this change.
+
+PPC and monochrome 68k long-name guest/composed captures were also reviewed.
+All GPUI modes expose the tail and caret inside the field. Both guest renderers
+clip and scroll the tail; the PPC guest capture still lacks visible caret
+feedback, unlike the 68k guest frame. Caret rendering/blink equivalence remains
+an explicit qualification gap rather than being inferred from themed output.
+The live integration test additionally sends Up/Down through GPUI and clicks
+the newly revealed first/last glyph boundaries; it passes in 72.74s.
+
+The full GPUI regression suite passes with the scrolling implementation: 75
+tests, zero failures, 258.12s. After that run, the PPC guest field gained the
+missing empty-selection caret; the example rebuild passes and its fresh guest
+capture was reviewed with the caret at the scrolled tail. This final drawing
+change does not yet establish blink timing equivalence. Held outside-field
+auto-scroll, double-click selection, composition and accessibility editing
+remain open, as do text surfaces outside New Folder. The broader readiness
+goal remains incomplete.

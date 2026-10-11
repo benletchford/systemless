@@ -8946,6 +8946,23 @@ impl super::TrapDispatcher {
         cursor_offset: Option<usize>,
         enabled: bool,
     ) {
+        self.draw_edit_text_scrolled(bus, top, left, bottom, right, text,
+            selection_range, cursor_offset, enabled, 0);
+    }
+
+    pub(crate) fn draw_edit_text_scrolled(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        text: &str,
+        selection_range: Option<(usize, usize)>,
+        cursor_offset: Option<usize>,
+        enabled: bool,
+        scroll_x: i16,
+    ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
         // IM:I I-414 and HIG 1992 p. 184: the active editText item is a
@@ -8987,18 +9004,19 @@ impl super::TrapDispatcher {
         let font_size = Self::font_lookup_size(self.tx_size);
         let metrics = get_font_metrics(font_id, font_size);
         let text_y = top + metrics.ascent;
-        Self::fb_draw_string(
+        Self::fb_draw_string_clipped(
             bus,
             screen_base,
             row_bytes,
             pixel_size,
             screen_width,
             screen_height,
-            left + 1,
+            left + 1 - scroll_x,
             text_y,
             text,
             font_id,
             font_size,
+            (top, left, bottom, right),
         );
         if let Some((selection_start, selection_end)) = selection_range {
             // IM:I I-422 and MTE 1992 p. 6-131: SelIText /
@@ -9032,6 +9050,8 @@ impl super::TrapDispatcher {
                         left + Self::TE_LINE_LEFT_INSET
                             + self.te_measure_text_width(font_id, self.tx_size, &text_bytes, 0, end)
                     };
+                    let selection_left = (selection_left - scroll_x).max(left);
+                    let selection_right = if end >= text_bytes.len() { right } else { (selection_right - scroll_x).min(right) };
                     if selection_left < selection_right && selection_top < selection_bottom {
                         if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
                             self.invert_rect_exact(
@@ -9058,8 +9078,8 @@ impl super::TrapDispatcher {
             // Roman text offsets are guest bytes, each decoding to one character.
             let prefix: String = text.chars().take(offset).collect();
             let text_width = Self::fb_measure_string(&prefix, font_id, font_size);
-            let cursor_x = left + 1 + text_width;
-            if cursor_x < right - 1
+            let cursor_x = left + 1 + text_width - scroll_x;
+            if cursor_x >= left && cursor_x < right - 1
                 && !self.draw_theme_caret(bus, top + 2, cursor_x, bottom - 1, cursor_x + 1)
             {
                 for y in (top + 2)..=(bottom - 2) {
