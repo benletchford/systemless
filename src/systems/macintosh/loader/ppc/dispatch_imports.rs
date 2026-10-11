@@ -1752,6 +1752,7 @@ pub(crate) fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::InitGraf
         | PpcImportDispatcherTarget::GetQDGlobalsScreenBits
+        | PpcImportDispatcherTarget::GetQDGlobalsWhite
         | PpcImportDispatcherTarget::GetForeColor
         | PpcImportDispatcherTarget::GetBackColor
         | PpcImportDispatcherTarget::GetGray

@@ -126,6 +126,7 @@ pub enum PpcImportDispatcherTarget {
     InitCursor,
     GetQDGlobalsArrow,
     GetQDGlobalsScreenBits,
+    GetQDGlobalsWhite,
     HideCursor,
     ShowCursor,
     ShieldCursor,
@@ -2741,6 +2742,8 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetQDGlobalsArrow") => PpcImportDispatcherTarget::GetQDGlobalsArrow,
         ("InterfaceLib" | "CarbonLib", "GetQDGlobalsScreenBits" | "getqdglobalsscreenbits") =>
             PpcImportDispatcherTarget::GetQDGlobalsScreenBits,
+        ("InterfaceLib" | "CarbonLib", "GetQDGlobalsWhite" | "getqdglobalswhite") =>
+            PpcImportDispatcherTarget::GetQDGlobalsWhite,
         ("CarbonLib", "QDIsPortBuffered" | "qdisportbuffered") =>
             PpcImportDispatcherTarget::QuickDrawCompatibility(
                 PpcQuickDrawCompatibilityOperation::IsPortBuffered,
