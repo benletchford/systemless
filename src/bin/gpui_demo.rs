@@ -106,6 +106,9 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_standard_file_save_edited_composed: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_custom_menu_fallback: Option<PathBuf>,
     }
 
     fn parse_depth(value: &str) -> Result<u16, String> {
@@ -636,587 +639,174 @@ mod desktop {
             if let Some(image) = &self.image {
                 screen = screen.child(img(image.clone()).absolute().top_0().left_0().size_full());
             }
-            let viewport = super::frames::Rect {
-                top: self.crop_top as i32,
-                left: 0,
-                bottom: (self.crop_top + self.height) as i32,
-                right: self.width as i32,
-            };
-            for piece in super::frames::frame_pieces(&self.windows, viewport) {
-                let frame = &self.windows[piece.window];
-                let source = piece.source;
-                let clip = piece.clip;
-                let mut strip = div()
-                    .absolute()
-                    .left(px((source.left - clip.left) as f32))
-                    .top(px((source.top - clip.top) as f32))
-                    .w(px(source.width() as f32))
-                    .h(px(source.height() as f32))
-                    .bg(cx.theme().border);
-                if piece.title {
-                    let foreground = if frame.window.active {
-                        cx.theme().foreground
-                    } else {
-                        cx.theme().muted_foreground
-                    };
-                    strip = strip
-                        .bg(if frame.window.active {
-                            cx.theme().secondary
+            // A custom MDEF may draw its dropdown over any window. Preserve
+            // the complete guest framebuffer so GPUI chrome cannot cover it.
+            // Macintosh Toolbox Essentials (1992), pp. 3-3, 3-87.
+            if !self.guest_menu_fallback() {
+                let viewport = super::frames::Rect {
+                    top: self.crop_top as i32,
+                    left: 0,
+                    bottom: (self.crop_top + self.height) as i32,
+                    right: self.width as i32,
+                };
+                for piece in super::frames::frame_pieces(&self.windows, viewport) {
+                    let frame = &self.windows[piece.window];
+                    let source = piece.source;
+                    let clip = piece.clip;
+                    let mut strip = div()
+                        .absolute()
+                        .left(px((source.left - clip.left) as f32))
+                        .top(px((source.top - clip.top) as f32))
+                        .w(px(source.width() as f32))
+                        .h(px(source.height() as f32))
+                        .bg(cx.theme().border);
+                    if piece.title {
+                        let foreground = if frame.window.active {
+                            cx.theme().foreground
                         } else {
-                            cx.theme().background
-                        })
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .text_color(foreground)
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_size(px(12.))
-                        .child(
-                            div()
-                                .px(px(26.))
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .child(frame.window.title.clone()),
-                        );
-                    // Keep controls over the standard WDEF hit cells. Input still
-                    // reaches FindWindow/TrackGoAway/DragWindow in the guest.
-                    // Inside Macintosh I, I-287--I-289.
-                    if frame.close_box
-                        && frame.window.active
-                        && matches!(frame.definition_id, Some(0 | 4 | 8 | 12 | 16))
-                    {
-                        let (v, h) = self.mouse_position;
-                        let close_pressed = self.mouse_down
-                            && i32::from(v) >= source.top
-                            && v < frame.window.bounds.0
-                            && h >= frame.window.bounds.1
-                            && i32::from(h) < i32::from(frame.window.bounds.1) + 18;
-                        strip = strip.child(
-                            div()
-                                .absolute()
-                                .left(px((i32::from(frame.window.bounds.1) - source.left) as f32))
-                                .top_0()
-                                .w(px(18.))
-                                .h_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .when(close_pressed, |control| control.bg(cx.theme().accent))
-                                .child("×"),
-                        );
-                    }
-                    if frame.window.active && matches!(frame.definition_id, Some(8 | 12)) {
-                        strip = strip.child(
-                            div()
-                                .absolute()
-                                .left(px(
-                                    (i32::from(frame.window.bounds.3) - 15 - source.left) as f32
-                                ))
-                                .top_0()
-                                .w(px(15.))
-                                .h_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child("□"),
-                        );
-                    }
-                }
-                screen = screen.child(
-                    div()
-                        .absolute()
-                        .overflow_hidden()
-                        .left(px(clip.left as f32))
-                        .top(px((clip.top - self.crop_top as i32) as f32))
-                        .w(px(clip.width() as f32))
-                        .h(px(clip.height() as f32))
-                        .child(strip),
-                );
-            }
-            for piece in super::frames::gutter_pieces(&self.windows, viewport) {
-                let source = piece.source;
-                let clip = piece.clip;
-                let mut gutter = div()
-                    .absolute()
-                    .left(px((source.left - clip.left) as f32))
-                    .top(px((source.top - clip.top) as f32))
-                    .w(px(source.width() as f32))
-                    .h(px(source.height() as f32))
-                    .bg(cx.theme().secondary)
-                    .border_color(cx.theme().border);
-                gutter = match piece.kind {
-                    super::frames::GutterKind::Vertical => gutter.border_l_1(),
-                    super::frames::GutterKind::Horizontal => gutter.border_t_1(),
-                    super::frames::GutterKind::GrowBox => {
-                        let mut corner = gutter.border_l_1().border_t_1();
-                        if self.windows[piece.window].window.active {
-                            for (left, top) in [
-                                (4., 10.),
-                                (7., 7.),
-                                (7., 10.),
-                                (10., 4.),
-                                (10., 7.),
-                                (10., 10.),
-                            ] {
-                                corner = corner.child(
-                                    div()
-                                        .absolute()
-                                        .left(px(left))
-                                        .top(px(top))
-                                        .w(px(2.))
-                                        .h(px(2.))
-                                        .bg(cx.theme().muted_foreground),
-                                );
-                            }
-                        }
-                        corner
-                    }
-                };
-                screen = screen.child(
-                    div()
-                        .absolute()
-                        .overflow_hidden()
-                        .left(px(clip.left as f32))
-                        .top(px((clip.top - self.crop_top as i32) as f32))
-                        .w(px(clip.width() as f32))
-                        .h(px(clip.height() as f32))
-                        .child(gutter),
-                );
-            }
-            // A standard LDEF's unstyled text rows can use Kit list items.
-            // The list's guest-visible cells, selection, and view origin remain
-            // authoritative, and unknown LDEFs retain their framebuffer pixels.
-            // More Macintosh Toolbox (1993), pp. 4-70--4-76.
-            for piece in super::frames::list_pieces(
-                &self.lists,
-                &self.controls,
-                &self.windows,
-                viewport,
-            ) {
-                let list = &self.lists[piece.list];
-                let Some(cells) = list.text_cells.as_ref() else {
-                    continue;
-                };
-                let source = piece.source;
-                let clip = piece.clip;
-                let mut overlay = div()
-                    .absolute()
-                    .left(px((source.left - clip.left) as f32))
-                    .top(px((source.top - clip.top) as f32))
-                    .w(px(source.width() as f32))
-                    .h(px(source.height() as f32))
-                    .bg(cx.theme().background);
-                for (&(row, column), text) in cells {
-                    if row < list.visible.0
-                        || row >= list.visible.2
-                        || column < list.visible.1
-                        || column >= list.visible.3
-                    {
-                        continue;
-                    }
-                    let top = i32::from(row - list.visible.0) * i32::from(list.cell_size.0.max(1));
-                    let left =
-                        i32::from(column - list.visible.1) * i32::from(list.cell_size.1.max(1));
-                    let selected = list.selected.contains(&(row, column));
-                    overlay = overlay.child(
-                        div()
-                        .id(format!(
-                            "guest-list-cell-{}-{}-{}-{}",
-                            list.guest_id, list.generation, row, column
-                        ))
-                        .test_support()
-                        .role(Role::ListItem)
-                        .aria_label(text.clone())
-                        .aria_selected(selected)
-                        .absolute()
-                        .left(px(left as f32))
-                        .top(px(top as f32))
-                        .w(px(f32::from(list.cell_size.1.max(1))))
-                        .h(px(f32::from(list.cell_size.0.max(1))))
-                        .overflow_hidden()
-                        .flex()
-                        .items_center()
-                        .bg(if selected && list.active {
-                            cx.theme().accent
-                        } else {
-                            cx.theme().background
-                        })
-                        .px_1()
-                        .text_size(px(13.))
-                        .child(text.clone()),
-                    );
-                }
-                screen = screen.child(
-                    div()
-                        .absolute()
-                        .overflow_hidden()
-                        .left(px(clip.left as f32))
-                        .top(px((clip.top - self.crop_top as i32) as f32))
-                        .w(px(clip.width() as f32))
-                        .h(px(clip.height() as f32))
-                        .child(overlay),
-                );
-            }
-            // TextEdit supplies the guest line breaks and scroll origin. Keep
-            // keyboard and pointer events on the normal guest path.
-            // Inside Macintosh: Text (1993), pp. 2-64--2-69.
-            for piece in super::frames::text_edit_pieces(
-                &self.text_edits,
-                &self.dialogs,
-                &self.controls,
-                &self.windows,
-                viewport,
-            ) {
-                let record = &self.text_edits[piece.record];
-                let Some(lines) = record.display_lines() else {
-                    continue;
-                };
-                let Some(dest) = record.global_dest_rect.map(super::frames::Rect::from) else {
-                    continue;
-                };
-                let source = piece.source;
-                let clip = piece.clip;
-                let mut overlay = div()
-                    .absolute()
-                    .left(px((source.left - clip.left) as f32))
-                    .top(px((source.top - clip.top) as f32))
-                    .w(px(source.width() as f32))
-                    .h(px(source.height() as f32))
-                    .bg(cx.theme().background);
-                for (index, line) in lines.into_iter().enumerate() {
-                    let top = dest.top + index as i32 * i32::from(record.line_height) - source.top;
-                    if top >= source.height() || top + i32::from(record.line_height) <= 0 {
-                        continue;
-                    }
-                    let starts = record.line_starts.as_ref().unwrap();
-                    let line_start = starts[index];
-                    let line_end = line_start + line.chars().count();
-                    let selection = (
-                        record.selection.0.saturating_sub(line_start).min(line_end - line_start),
-                        record.selection.1.saturating_sub(line_start).min(line_end - line_start),
-                    );
-                    let (before, selected, after) = save_name_segments(&line, selection, true);
-                    let soft_wrap_end = index + 2 < starts.len() && starts[index + 1] == line_end;
-                    let caret = record.active && record.selection.0 == record.selection.1
-                        && record.selection.0 >= line_start
-                        && (record.selection.0 < line_end
-                            || record.selection.0 == line_end && !soft_wrap_end);
-                    overlay = overlay.child(
-                        div()
-                            .id(format!("guest-text-edit-line-{}-{}-{index}", record.guest_id, record.generation))
-                            .absolute()
-                            .left(px((dest.left - source.left) as f32))
-                            .top(px(top as f32))
-                            .w(px(dest.width().max(1) as f32))
-                            .h(px(f32::from(record.line_height)))
-                            .overflow_hidden()
-                            .flex()
-                            .items_center()
-                            .text_size(px(f32::from(record.size.clamp(9, 18))))
-                            .child(before)
-                            .when(caret, |row| row.child(
-                                div().w(px(1.)).h(px(f32::from(record.line_height.max(1)))).bg(cx.theme().foreground)
-                            ))
-                            .when(!selected.is_empty(), |row| row.child(
-                                div().bg(cx.theme().selection).child(selected)
-                            ))
-                            .child(after),
-                    );
-                }
-                screen = screen.child(
-                    div()
-                        .absolute()
-                        .overflow_hidden()
-                        .left(px(clip.left as f32))
-                        .top(px((clip.top - self.crop_top as i32) as f32))
-                        .w(px(clip.width() as f32))
-                        .h(px(clip.height() as f32))
-                        .child(overlay),
-                );
-            }
-            // CDEF-owned standard controls can use Kit components while their
-            // ControlRecord state and tracking remain guest-owned.
-            // Macintosh Toolbox Essentials (1992), pp. 5-58--5-64.
-            for piece in super::frames::control_pieces(&self.controls, &self.menus, &self.windows, viewport) {
-                let control = &self.controls[piece.control];
-                if (1008..=1023).contains(&control.proc_id)
-                    && (self.popup_tracking == Some((control.guest_id, control.generation))
-                        || control.hilite == 1)
-                {
-                    // Let the guest's live popup tracking and MDEF paint the
-                    // open state until release. MTE (1992), pp. 3-34--3-35.
-                    continue;
-                }
-                let source = piece.source;
-                let clip = piece.clip;
-                let mut overlay = div()
-                    .absolute()
-                    .left(px((source.left - clip.left) as f32))
-                    .top(px((source.top - clip.top) as f32))
-                    .w(px(source.width() as f32))
-                    .h(px(source.height() as f32))
-                    .bg(cx.theme().background);
-                match control.proc_id {
-                    proc_id if (1008..=1023).contains(&proc_id) => {
-                        let Some(selected) = super::frames::popup_control_label(control, &self.menus) else {
-                            continue;
+                            cx.theme().muted_foreground
                         };
-                        let title_width = i32::from(control.popup_title_width.unwrap_or(0))
-                            .clamp(0, source.width().saturating_sub(20));
-                        overlay = overlay
-                            .flex()
-                            .items_center()
-                            .child(
-                                div()
-                                    .w(px(title_width as f32))
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .text_size(px(12.))
-                                    .text_color(if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })
-                                    .child(control.title.clone()),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .h_full()
-                                    .min_w(px(1.))
-                                    .border_1()
-                                    .border_color(cx.theme().border)
-                                    .bg(cx.theme().secondary)
-                                    .flex()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w(px(1.))
-                                            .overflow_hidden()
-                                            .text_ellipsis()
-                                            .px_1()
-                                            .text_size(px(12.))
-                                            .text_color(if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })
-                                            .child(selected.to_owned()),
-                                    )
-                                    .child(div().w(px(18.)).flex().items_center().justify_center().child("▾")),
-                            );
-                    }
-                    0 => {
-                        overlay = overlay.child(
-                            Button::new(format!(
-                                "guest-control-button-{}-{}",
-                                control.guest_id, control.generation
-                            ))
-                                .label(control.title.clone())
-                                .small()
-                                .compact()
-                                .tab_stop(false)
-                                .disabled(!control.enabled)
-                                .w_full()
-                                .h_full(),
-                        );
-                    }
-                    1 => {
-                        overlay = overlay.child(
-                            Checkbox::new(format!(
-                                "guest-control-checkbox-{}-{}",
-                                control.guest_id, control.generation
-                            ))
-                                .label(control.title.clone())
-                                .checked(control.value != 0)
-                                .disabled(!control.enabled)
-                                .tab_stop(false)
-                                .small()
-                                .w_full()
-                                .h_full(),
-                        );
-                    }
-                    2 => {
-                        overlay = overlay.child(
-                            Radio::new(format!(
-                                "guest-control-radio-{}-{}",
-                                control.guest_id, control.generation
-                            ))
-                                .label(control.title.clone())
-                                .checked(control.value != 0)
-                                .disabled(!control.enabled)
-                                .tab_stop(false)
-                                .small()
-                                .w_full()
-                                .h_full(),
-                        );
-                    }
-                    16 => {
-                        let geometry = super::frames::scrollbar_geometry(control);
-                        let active = control.enabled && control.minimum < control.maximum;
-                        let arrow = geometry.arrow_extent as f32;
-                        let (arrow_width, arrow_height, end_left, end_top) = if geometry.vertical {
-                            (
-                                source.width() as f32,
-                                arrow,
-                                0.,
-                                source.height() as f32 - arrow,
-                            )
-                        } else {
-                            (
-                                arrow,
-                                source.height() as f32,
-                                source.width() as f32 - arrow,
-                                0.,
-                            )
-                        };
-                        let (thumb_left, thumb_top, thumb_width, thumb_height) =
-                            if geometry.vertical {
-                                (
-                                    0.,
-                                    geometry.thumb_start as f32,
-                                    source.width() as f32,
-                                    geometry.thumb_extent as f32,
-                                )
+                        strip = strip
+                            .bg(if frame.window.active {
+                                cx.theme().secondary
                             } else {
-                                (
-                                    geometry.thumb_start as f32,
-                                    0.,
-                                    geometry.thumb_extent as f32,
-                                    source.height() as f32,
-                                )
-                            };
-                        let (before, after) = if geometry.vertical {
-                            ("▴", "▾")
-                        } else {
-                            ("◂", "▸")
-                        };
-                        overlay = overlay
-                            .bg(cx.theme().secondary)
+                                cx.theme().background
+                            })
                             .border_1()
                             .border_color(cx.theme().border)
+                            .text_color(foreground)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(12.))
                             .child(
                                 div()
+                                    .px(px(26.))
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(frame.window.title.clone()),
+                            );
+                        // Keep controls over the standard WDEF hit cells. Input still
+                        // reaches FindWindow/TrackGoAway/DragWindow in the guest.
+                        // Inside Macintosh I, I-287--I-289.
+                        if frame.close_box
+                            && frame.window.active
+                            && matches!(frame.definition_id, Some(0 | 4 | 8 | 12 | 16))
+                        {
+                            let (v, h) = self.mouse_position;
+                            let close_pressed = self.mouse_down
+                                && i32::from(v) >= source.top
+                                && v < frame.window.bounds.0
+                                && h >= frame.window.bounds.1
+                                && i32::from(h) < i32::from(frame.window.bounds.1) + 18;
+                            strip = strip.child(
+                                div()
                                     .absolute()
+                                    .left(px((i32::from(frame.window.bounds.1) - source.left) as f32))
                                     .top_0()
-                                    .left_0()
-                                    .w(px(arrow_width))
-                                    .h(px(arrow_height))
+                                    .w(px(18.))
+                                    .h_full()
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .text_color(if active {
-                                        cx.theme().foreground
-                                    } else {
-                                        cx.theme().muted_foreground
-                                    })
-                                    .child(before),
-                            )
-                            .child(
+                                    .when(close_pressed, |control| control.bg(cx.theme().accent))
+                                    .child("×"),
+                            );
+                        }
+                        if frame.window.active && matches!(frame.definition_id, Some(8 | 12)) {
+                            strip = strip.child(
                                 div()
                                     .absolute()
-                                    .left(px(end_left))
-                                    .top(px(end_top))
-                                    .w(px(arrow_width))
-                                    .h(px(arrow_height))
+                                    .left(px(
+                                        (i32::from(frame.window.bounds.3) - 15 - source.left) as f32
+                                    ))
+                                    .top_0()
+                                    .w(px(15.))
+                                    .h_full()
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .text_color(if active {
-                                        cx.theme().foreground
-                                    } else {
-                                        cx.theme().muted_foreground
-                                    })
-                                    .child(after),
+                                    .child("□"),
                             );
-                        if active && geometry.thumb_extent > 0 {
-                            overlay = overlay.child(
-                                div()
-                                    .absolute()
-                                    .left(px(thumb_left))
-                                    .top(px(thumb_top))
-                                    .w(px(thumb_width))
-                                    .h(px(thumb_height))
-                                    .bg(cx.theme().accent)
-                                    .border_1()
-                                    .border_color(cx.theme().border),
-                            );
-                            if let Some((id, generation, start)) = self.scrollbar_drag {
-                                if control.guest_id == id && control.generation == generation {
-                                    if let Some(position) = super::frames::scrollbar_drag_outline(
-                                        control,
-                                        start,
-                                        self.mouse_position,
-                                    ) {
-                                        let (left, top) = if geometry.vertical {
-                                            (0., position as f32)
-                                        } else {
-                                            (position as f32, 0.)
-                                        };
-                                        overlay = overlay.child(
-                                            div()
-                                                .absolute()
-                                                .left(px(left))
-                                                .top(px(top))
-                                                .w(px(thumb_width))
-                                                .h(px(thumb_height))
-                                                .border_2()
-                                                .border_color(cx.theme().foreground),
-                                        );
-                                    }
+                        }
+                    }
+                    screen = screen.child(
+                        div()
+                            .absolute()
+                            .overflow_hidden()
+                            .left(px(clip.left as f32))
+                            .top(px((clip.top - self.crop_top as i32) as f32))
+                            .w(px(clip.width() as f32))
+                            .h(px(clip.height() as f32))
+                            .child(strip),
+                    );
+                }
+                for piece in super::frames::gutter_pieces(&self.windows, viewport) {
+                    let source = piece.source;
+                    let clip = piece.clip;
+                    let mut gutter = div()
+                        .absolute()
+                        .left(px((source.left - clip.left) as f32))
+                        .top(px((source.top - clip.top) as f32))
+                        .w(px(source.width() as f32))
+                        .h(px(source.height() as f32))
+                        .bg(cx.theme().secondary)
+                        .border_color(cx.theme().border);
+                    gutter = match piece.kind {
+                        super::frames::GutterKind::Vertical => gutter.border_l_1(),
+                        super::frames::GutterKind::Horizontal => gutter.border_t_1(),
+                        super::frames::GutterKind::GrowBox => {
+                            let mut corner = gutter.border_l_1().border_t_1();
+                            if self.windows[piece.window].window.active {
+                                for (left, top) in [
+                                    (4., 10.),
+                                    (7., 7.),
+                                    (7., 10.),
+                                    (10., 4.),
+                                    (10., 7.),
+                                    (10., 10.),
+                                ] {
+                                    corner = corner.child(
+                                        div()
+                                            .absolute()
+                                            .left(px(left))
+                                            .top(px(top))
+                                            .w(px(2.))
+                                            .h(px(2.))
+                                            .bg(cx.theme().muted_foreground),
+                                    );
                                 }
                             }
+                            corner
                         }
-                    }
-                    _ => unreachable!(),
+                    };
+                    screen = screen.child(
+                        div()
+                            .absolute()
+                            .overflow_hidden()
+                            .left(px(clip.left as f32))
+                            .top(px((clip.top - self.crop_top as i32) as f32))
+                            .w(px(clip.width() as f32))
+                            .h(px(clip.height() as f32))
+                            .child(gutter),
+                    );
                 }
-                screen = screen.child(
-                    div()
-                        .absolute()
-                        .overflow_hidden()
-                        .left(px(clip.left as f32))
-                        .top(px((clip.top - self.crop_top as i32) as f32))
-                        .w(px(clip.width() as f32))
-                        .h(px(clip.height() as f32))
-                        .child(overlay),
-                );
-            }
-            // Standard DITL items use guest geometry and live guest state.
-            // The single-line edit field is a read-only GPUI presentation;
-            // pointer and keyboard events still enter the guest Dialog Manager.
-            // Macintosh Toolbox Essentials (1992), pp. 6-13--6-15, 6-79--6-80.
-            if let Some(dialog) = standard_dbox_dialog(&self.dialogs, &self.windows) {
-                for item in &dialog.items {
-                    if !item.visible {
-                        continue;
-                    }
-                    if item.kind == DialogItemKind::EditText
-                        && (item.text.contains('\r') || item.bounds.2 - item.bounds.0 > 24)
-                    {
-                        continue;
-                    }
-                    let item_rect = super::frames::Rect::from(item.bounds);
-                    // The Dialog Manager draws the default button outline
-                    // outside its DITL rectangle. Cover those pixels too.
-                    let source = if item.kind == DialogItemKind::Button
-                        && dialog.default_item == Some(item.number)
-                    {
-                        super::frames::Rect {
-                            top: item_rect.top - 4,
-                            left: item_rect.left - 4,
-                            bottom: item_rect.bottom + 4,
-                            right: item_rect.right + 4,
-                        }
-                    } else if item.kind == DialogItemKind::EditText {
-                        super::frames::Rect {
-                            top: item_rect.top - 4,
-                            left: item_rect.left - 4,
-                            bottom: item_rect.bottom + 4,
-                            right: item_rect.right + 4,
-                        }
-                    } else {
-                        item_rect
-                    };
-                    let Some(clip) = source
-                        .intersection(dialog.bounds.into())
-                        .and_then(|rect| rect.intersection(viewport))
-                    else {
+                // A standard LDEF's unstyled text rows can use Kit list items.
+                // The list's guest-visible cells, selection, and view origin remain
+                // authoritative, and unknown LDEFs retain their framebuffer pixels.
+                // More Macintosh Toolbox (1993), pp. 4-70--4-76.
+                for piece in super::frames::list_pieces(
+                    &self.lists,
+                    &self.controls,
+                    &self.windows,
+                    viewport,
+                ) {
+                    let list = &self.lists[piece.list];
+                    let Some(cells) = list.text_cells.as_ref() else {
                         continue;
                     };
+                    let source = piece.source;
+                    let clip = piece.clip;
                     let mut overlay = div()
                         .absolute()
                         .left(px((source.left - clip.left) as f32))
@@ -1224,108 +814,46 @@ mod desktop {
                         .w(px(source.width() as f32))
                         .h(px(source.height() as f32))
                         .bg(cx.theme().background);
-                    overlay = match item.kind {
-                        DialogItemKind::Button => overlay.child(
-                            Button::new(format!(
-                                "guest-dialog-button-{}-{}-{}",
-                                dialog.guest_id, dialog.generation, item.number
-                            ))
-                            .label(item.text.clone())
-                            .small()
-                            .compact()
-                            .tab_stop(false)
-                            .disabled(!item.enabled)
-                            .absolute()
-                            .left(px((item_rect.left - source.left) as f32))
-                            .top(px((item_rect.top - source.top) as f32))
-                            .w(px(item_rect.width() as f32))
-                            .h(px(item_rect.height() as f32)),
-                        ),
-                        DialogItemKind::StaticText => overlay
-                            .text_size(px(13.))
-                            .text_color(cx.theme().foreground)
-                            .child(item.text.replace('\r', "\n")),
-                        DialogItemKind::EditText => {
-                            let focused = dialog.edit_field == Some(item.number)
-                                && item.enabled
-                                && item.selection.is_some();
-                            let selection = item.selection.unwrap_or((0, 0));
-                            let (prefix, selected, suffix) = save_name_segments(
-                                &item.text,
-                                (selection.0.max(0) as usize, selection.1.max(0) as usize),
-                                focused,
-                            );
-                            let mut field = div()
-                                .id(format!(
-                                    "guest-dialog-edit-{}-{}-{}",
-                                    dialog.guest_id, dialog.generation, item.number
-                                ))
-                                .test_support()
-                                .absolute()
-                                .left(px((item_rect.left - source.left) as f32))
-                                .top(px((item_rect.top - source.top) as f32))
-                                .w(px(item_rect.width() as f32))
-                                .h(px(item_rect.height() as f32))
-                                .overflow_hidden()
-                                .flex()
-                                .items_center()
-                                .px_1()
-                                .border_1()
-                                .border_color(if focused {
-                                    cx.theme().accent
-                                } else {
-                                    cx.theme().border
-                                })
-                                .bg(cx.theme().background)
-                                .text_size(px(13.))
-                                .text_color(if item.enabled {
-                                    cx.theme().foreground
-                                } else {
-                                    cx.theme().muted_foreground
-                                })
-                                .child(prefix);
-                            if focused && !selected.is_empty() {
-                                field = field.child(
-                                    div()
-                                        .bg(cx.theme().selection)
-                                        .text_color(cx.theme().foreground)
-                                        .child(selected),
-                                );
-                            } else if focused {
-                                field = field.child(
-                                    div().w(px(1.)).h(px(14.)).bg(cx.theme().foreground),
-                                );
-                            }
-                            overlay.child(field.child(suffix))
+                    for (&(row, column), text) in cells {
+                        if row < list.visible.0
+                            || row >= list.visible.2
+                            || column < list.visible.1
+                            || column >= list.visible.3
+                        {
+                            continue;
                         }
-                        DialogItemKind::Checkbox => overlay.child(
-                            Checkbox::new(format!(
-                                "guest-dialog-checkbox-{}-{}-{}",
-                                dialog.guest_id, dialog.generation, item.number
+                        let top = i32::from(row - list.visible.0) * i32::from(list.cell_size.0.max(1));
+                        let left =
+                            i32::from(column - list.visible.1) * i32::from(list.cell_size.1.max(1));
+                        let selected = list.selected.contains(&(row, column));
+                        overlay = overlay.child(
+                            div()
+                            .id(format!(
+                                "guest-list-cell-{}-{}-{}-{}",
+                                list.guest_id, list.generation, row, column
                             ))
-                            .label(item.text.clone())
-                            .checked(item.value.unwrap() != 0)
-                            .disabled(!item.enabled)
-                            .tab_stop(false)
-                            .small()
-                            .w_full()
-                            .h_full(),
-                        ),
-                        DialogItemKind::RadioButton => overlay.child(
-                            Radio::new(format!(
-                                "guest-dialog-radio-{}-{}-{}",
-                                dialog.guest_id, dialog.generation, item.number
-                            ))
-                            .label(item.text.clone())
-                            .checked(item.value.unwrap() != 0)
-                            .disabled(!item.enabled)
-                            .tab_stop(false)
-                            .small()
-                            .w_full()
-                            .h_full(),
-                        ),
-                        _ => unreachable!(),
-                    };
+                            .test_support()
+                            .role(Role::ListItem)
+                            .aria_label(text.clone())
+                            .aria_selected(selected)
+                            .absolute()
+                            .left(px(left as f32))
+                            .top(px(top as f32))
+                            .w(px(f32::from(list.cell_size.1.max(1))))
+                            .h(px(f32::from(list.cell_size.0.max(1))))
+                            .overflow_hidden()
+                            .flex()
+                            .items_center()
+                            .bg(if selected && list.active {
+                                cx.theme().accent
+                            } else {
+                                cx.theme().background
+                            })
+                            .px_1()
+                            .text_size(px(13.))
+                            .child(text.clone()),
+                        );
+                    }
                     screen = screen.child(
                         div()
                             .absolute()
@@ -1337,404 +865,884 @@ mod desktop {
                             .child(overlay),
                     );
                 }
-            }
-            if let Some(panel) = self.standard_file.as_ref().filter(|panel| {
-                panel.kind == StandardFileKind::Get
-                    && panel.standard_entry_point
-                    && panel.get_layout.is_some()
-                    && panel.entries.is_some()
-            }) {
-                let layout = panel.get_layout.as_ref().unwrap();
-                let bounds = super::frames::Rect::from(panel.bounds);
-                if bounds.intersection(viewport).is_some() {
-                    let at = |rect: (i16, i16, i16, i16)| {
-                        let rect = super::frames::Rect::from(rect);
-                        div()
-                            .absolute()
-                            .top(px((rect.top - bounds.top) as f32))
-                            .left(px((rect.left - bounds.left) as f32))
-                            .w(px(rect.width() as f32))
-                            .h(px(rect.height() as f32))
+                // TextEdit supplies the guest line breaks and scroll origin. Keep
+                // keyboard and pointer events on the normal guest path.
+                // Inside Macintosh: Text (1993), pp. 2-64--2-69.
+                for piece in super::frames::text_edit_pieces(
+                    &self.text_edits,
+                    &self.dialogs,
+                    &self.controls,
+                    &self.windows,
+                    viewport,
+                ) {
+                    let record = &self.text_edits[piece.record];
+                    let Some(lines) = record.display_lines() else {
+                        continue;
                     };
+                    let Some(dest) = record.global_dest_rect.map(super::frames::Rect::from) else {
+                        continue;
+                    };
+                    let source = piece.source;
+                    let clip = piece.clip;
                     let mut overlay = div()
-                        .id(format!("guest-standard-open-{}-{}", panel.guest_id, panel.generation))
-                        .test_support()
                         .absolute()
-                        .top(px((bounds.top - self.crop_top as i32) as f32))
-                        .left(px(bounds.left as f32))
-                        .w(px(bounds.width() as f32))
-                        .h(px(bounds.height() as f32))
-                        .bg(cx.theme().background)
-                        .border_2()
-                        .border_color(cx.theme().border)
-                        .text_color(cx.theme().foreground)
-                        .text_size(px(13.));
-                    let volume_abbreviation: String = panel
-                        .directory_label
-                        .as_deref()
-                        .unwrap_or_default()
-                        .chars()
-                        .take(4)
-                        .collect();
-                    overlay = overlay.child(
-                        at(layout.volume)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .bg(cx.theme().secondary)
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .child(format!("{volume_abbreviation}…")),
-                    );
-                    overlay = overlay.child(
-                        at(layout.directory_label)
-                            .flex()
-                            .items_center()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .child(panel.directory_label.clone().unwrap_or_default()),
-                    );
-                    let entries = panel.entries.as_ref().unwrap();
-                    let list_width = i32::from(layout.list.3 - layout.list.1);
-                    let mut list = at(layout.list)
-                        .overflow_hidden()
-                        .bg(cx.theme().background)
-                        .border_1()
-                        .border_color(cx.theme().border);
-                    for (row, (index, entry)) in entries
-                        .iter()
-                        .enumerate()
-                        .skip(layout.first_visible)
-                        .take(layout.visible_rows)
-                        .enumerate()
-                    {
-                        let selected = panel.selected == Some(index);
-                        list = list.child(
+                        .left(px((source.left - clip.left) as f32))
+                        .top(px((source.top - clip.top) as f32))
+                        .w(px(source.width() as f32))
+                        .h(px(source.height() as f32))
+                        .bg(cx.theme().background);
+                    for (index, line) in lines.into_iter().enumerate() {
+                        let top = dest.top + index as i32 * i32::from(record.line_height) - source.top;
+                        if top >= source.height() || top + i32::from(record.line_height) <= 0 {
+                            continue;
+                        }
+                        let starts = record.line_starts.as_ref().unwrap();
+                        let line_start = starts[index];
+                        let line_end = line_start + line.chars().count();
+                        let selection = (
+                            record.selection.0.saturating_sub(line_start).min(line_end - line_start),
+                            record.selection.1.saturating_sub(line_start).min(line_end - line_start),
+                        );
+                        let (before, selected, after) = save_name_segments(&line, selection, true);
+                        let soft_wrap_end = index + 2 < starts.len() && starts[index + 1] == line_end;
+                        let caret = record.active && record.selection.0 == record.selection.1
+                            && record.selection.0 >= line_start
+                            && (record.selection.0 < line_end
+                                || record.selection.0 == line_end && !soft_wrap_end);
+                        overlay = overlay.child(
                             div()
-                                .id(format!(
-                                    "guest-standard-open-entry-{}-{}-{}",
-                                    panel.guest_id, panel.generation, index
-                                ))
-                                .test_support()
-                                .role(Role::ListItem)
-                                .aria_label(entry.name.clone())
-                                .aria_selected(selected)
+                                .id(format!("guest-text-edit-line-{}-{}-{index}", record.guest_id, record.generation))
                                 .absolute()
-                                .top(px(2. + row as f32 * f32::from(layout.row_height)))
-                                .left(px(2.))
-                                .w(px((list_width - 4).max(1) as f32))
-                                .h(px(f32::from(layout.row_height)))
+                                .left(px((dest.left - source.left) as f32))
+                                .top(px(top as f32))
+                                .w(px(dest.width().max(1) as f32))
+                                .h(px(f32::from(record.line_height)))
                                 .overflow_hidden()
                                 .flex()
                                 .items_center()
-                                .px_1()
-                                .bg(if selected {
-                                    cx.theme().accent
-                                } else {
-                                    cx.theme().background
-                                })
-                                .child(if entry.is_directory {
-                                    format!("{} ▸", entry.name)
-                                } else {
-                                    entry.name.clone()
-                                }),
-                        );
-                    }
-                    overlay = overlay.child(list);
-                    let scroll_max = entries.len().saturating_sub(layout.visible_rows);
-                    let scroll_height = i32::from(layout.scroll.2 - layout.scroll.0);
-                    let track_height = (scroll_height - 32).max(0);
-                    let thumb_height = if scroll_max == 0 {
-                        track_height
-                    } else {
-                        16.min(track_height)
-                    };
-                    let thumb_top = 16
-                        + if scroll_max == 0 {
-                            0
-                        } else {
-                            ((track_height - thumb_height) as i64
-                                * layout.first_visible.min(scroll_max) as i64
-                                / scroll_max as i64) as i32
-                        };
-                    overlay = overlay.child(
-                        at(layout.scroll)
-                            .bg(cx.theme().secondary)
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .child(
-                                div()
-                                    .absolute()
-                                    .top_0()
-                                    .w_full()
-                                    .h(px(16.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child("▴"),
-                            )
-                            .child(
-                                div()
-                                    .absolute()
-                                    .bottom_0()
-                                    .w_full()
-                                    .h(px(16.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child("▾"),
-                            )
-                            .child(
-                                div()
-                                    .absolute()
-                                    .top(px(thumb_top as f32))
-                                    .w_full()
-                                    .h(px(thumb_height as f32))
-                                    .bg(cx.theme().accent)
-                                    .border_1()
-                                    .border_color(cx.theme().border),
-                            ),
-                    );
-                    for (label, rect, enabled) in [
-                        ("Eject", layout.eject, false),
-                        ("Desktop", layout.desktop, true),
-                        ("Cancel", layout.cancel, true),
-                        (
-                            "Open",
-                            layout.open,
-                            panel.selected.and_then(|index| entries.get(index)).is_some_and(
-                                |entry| entry.is_directory || entry.file_type != 0,
-                            ),
-                        ),
-                    ] {
-                        overlay = overlay.child(
-                            at(rect).child(
-                                Button::new(format!(
-                                    "guest-standard-open-{}-{}-{}",
-                                    panel.guest_id, panel.generation, label
+                                .text_size(px(f32::from(record.size.clamp(9, 18))))
+                                .child(before)
+                                .when(caret, |row| row.child(
+                                    div().w(px(1.)).h(px(f32::from(record.line_height.max(1)))).bg(cx.theme().foreground)
                                 ))
-                                .label(label)
-                                .small()
-                                .compact()
-                                .disabled(!enabled)
-                                .tab_stop(false)
-                                .w_full()
-                                .h_full(),
-                            ),
+                                .when(!selected.is_empty(), |row| row.child(
+                                    div().bg(cx.theme().selection).child(selected)
+                                ))
+                                .child(after),
                         );
                     }
-                    screen = screen.child(overlay);
+                    screen = screen.child(
+                        div()
+                            .absolute()
+                            .overflow_hidden()
+                            .left(px(clip.left as f32))
+                            .top(px((clip.top - self.crop_top as i32) as f32))
+                            .w(px(clip.width() as f32))
+                            .h(px(clip.height() as f32))
+                            .child(overlay),
+                    );
                 }
-            }
-            if let Some(panel) = self.standard_file.as_ref().filter(|panel| {
-                panel.kind == StandardFileKind::Put
-                    && panel.standard_entry_point
-                    && panel.put_layout.is_some()
-                    && panel.entries.is_some()
-                    && panel.name.is_some()
-            }) {
-                let layout = panel.put_layout.as_ref().unwrap();
-                let bounds = super::frames::Rect::from(panel.bounds);
-                if bounds.intersection(viewport).is_some() {
-                    let at = |rect: (i16, i16, i16, i16)| {
-                        let rect = super::frames::Rect::from(rect);
-                        div()
-                            .absolute()
-                            .top(px((rect.top - bounds.top) as f32))
-                            .left(px((rect.left - bounds.left) as f32))
-                            .w(px(rect.width() as f32))
-                            .h(px(rect.height() as f32))
-                    };
-                    let mut overlay = div()
-                        .id(format!("guest-standard-save-{}-{}", panel.guest_id, panel.generation))
-                        .test_support()
-                        .absolute()
-                        .top(px((bounds.top - self.crop_top as i32) as f32))
-                        .left(px(bounds.left as f32))
-                        .w(px(bounds.width() as f32))
-                        .h(px(bounds.height() as f32))
-                        .bg(cx.theme().background)
-                        .border_2()
-                        .border_color(cx.theme().border)
-                        .text_color(cx.theme().foreground)
-                        .text_size(px(13.));
-                    overlay = overlay.child(
-                        at(layout.directory_label)
-                            .flex()
-                            .items_center()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .child(panel.directory_label.clone().unwrap_or_default()),
-                    );
-                    let entries = panel.entries.as_ref().unwrap();
-                    let list_width = i32::from(layout.list.3 - layout.list.1);
-                    let mut list = at(layout.list)
-                        .overflow_hidden()
-                        .bg(cx.theme().background)
-                        .border_1()
-                        .border_color(cx.theme().border);
-                    for (row, (index, entry)) in entries
-                        .iter()
-                        .enumerate()
-                        .skip(layout.first_visible)
-                        .take(layout.visible_rows)
-                        .enumerate()
+                // CDEF-owned standard controls can use Kit components while their
+                // ControlRecord state and tracking remain guest-owned.
+                // Macintosh Toolbox Essentials (1992), pp. 5-58--5-64.
+                for piece in super::frames::control_pieces(&self.controls, &self.menus, &self.windows, viewport) {
+                    let control = &self.controls[piece.control];
+                    if (1008..=1023).contains(&control.proc_id)
+                        && (self.popup_tracking == Some((control.guest_id, control.generation))
+                            || control.hilite == 1)
                     {
-                        let selected = panel.selected == Some(index);
-                        list = list.child(
-                            div()
-                                .id(format!(
-                                    "guest-standard-save-entry-{}-{}-{}",
-                                    panel.guest_id, panel.generation, index
-                                ))
-                                .test_support()
-                                .role(Role::ListItem)
-                                .aria_label(entry.name.clone())
-                                .aria_selected(selected)
-                                .absolute()
-                                .top(px(2. + row as f32 * f32::from(layout.row_height)))
-                                .left(px(2.))
-                                .w(px((list_width - 4).max(1) as f32))
-                                .h(px(f32::from(layout.row_height)))
-                                .overflow_hidden()
+                        // Let the guest's live popup tracking and MDEF paint the
+                        // open state until release. MTE (1992), pp. 3-34--3-35.
+                        continue;
+                    }
+                    let source = piece.source;
+                    let clip = piece.clip;
+                    let mut overlay = div()
+                        .absolute()
+                        .left(px((source.left - clip.left) as f32))
+                        .top(px((source.top - clip.top) as f32))
+                        .w(px(source.width() as f32))
+                        .h(px(source.height() as f32))
+                        .bg(cx.theme().background);
+                    match control.proc_id {
+                        proc_id if (1008..=1023).contains(&proc_id) => {
+                            let Some(selected) = super::frames::popup_control_label(control, &self.menus) else {
+                                continue;
+                            };
+                            let title_width = i32::from(control.popup_title_width.unwrap_or(0))
+                                .clamp(0, source.width().saturating_sub(20));
+                            overlay = overlay
                                 .flex()
                                 .items_center()
-                                .px_1()
-                                .bg(if selected {
-                                    cx.theme().accent
-                                } else {
-                                    cx.theme().background
-                                })
-                                .child(if entry.is_directory {
-                                    format!("{} ▸", entry.name)
-                                } else {
-                                    entry.name.clone()
-                                }),
-                        );
-                    }
-                    overlay = overlay.child(list);
-                    let scroll_max = entries.len().saturating_sub(layout.visible_rows);
-                    let scroll_height = i32::from(layout.scroll.2 - layout.scroll.0);
-                    let track_height = (scroll_height - 32).max(0);
-                    let thumb_height = if scroll_max == 0 {
-                        track_height
-                    } else {
-                        16.min(track_height)
-                    };
-                    let thumb_top = 16
-                        + if scroll_max == 0 {
-                            0
-                        } else {
-                            ((track_height - thumb_height) as i64
-                                * layout.first_visible.min(scroll_max) as i64
-                                / scroll_max as i64) as i32
-                        };
-                    overlay = overlay.child(
-                        at(layout.scroll)
-                            .bg(cx.theme().secondary)
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .child(
-                                div()
-                                    .absolute()
-                                    .top_0()
-                                    .w_full()
-                                    .h(px(16.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child("▴"),
-                            )
-                            .child(
-                                div()
-                                    .absolute()
-                                    .bottom_0()
-                                    .w_full()
-                                    .h(px(16.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child("▾"),
-                            )
-                            .child(
-                                div()
-                                    .absolute()
-                                    .top(px(thumb_top as f32))
-                                    .w_full()
-                                    .h(px(thumb_height as f32))
-                                    .bg(cx.theme().accent)
-                                    .border_1()
-                                    .border_color(cx.theme().border),
-                            ),
-                    );
-                    overlay = overlay.child(
-                        at(layout.prompt)
-                            .flex()
-                            .items_center()
-                            .overflow_hidden()
-                            .child(panel.prompt.clone().unwrap_or_default()),
-                    );
-                    let name = panel.name.as_deref().unwrap_or_default();
-                    let focused = panel.name_has_focus == Some(true);
-                    let (prefix, selected, suffix) = save_name_segments(
-                        name,
-                        panel.name_selection.unwrap_or((0, 0)),
-                        focused,
-                    );
-                    let mut name_field = at(layout.name)
-                        .id(format!(
-                            "guest-standard-save-name-{}-{}",
-                            panel.guest_id, panel.generation
-                        ))
-                        .test_support()
-                        .overflow_hidden()
-                        .flex()
-                        .items_center()
-                        .px_1()
-                        .border_1()
-                        .border_color(if focused {
-                            cx.theme().accent
-                        } else {
-                            cx.theme().border
-                        })
-                        .bg(cx.theme().background)
-                        .child(prefix);
-                    if focused && !selected.is_empty() {
-                        name_field = name_field.child(
-                            div()
-                                .bg(cx.theme().selection)
-                                .text_color(cx.theme().foreground)
-                                .child(selected),
-                        );
-                    } else if focused {
-                        name_field = name_field.child(
-                            div().w(px(1.)).h(px(14.)).bg(cx.theme().foreground),
-                        );
-                    }
-                    overlay = overlay.child(name_field.child(suffix));
-                    for (label, rect) in [
-                        ("Desktop", layout.desktop),
-                        ("Cancel", layout.cancel),
-                        ("Save", layout.save),
-                    ] {
-                        overlay = overlay.child(
-                            at(rect).child(
+                                .child(
+                                    div()
+                                        .w(px(title_width as f32))
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .text_size(px(12.))
+                                        .text_color(if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })
+                                        .child(control.title.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .h_full()
+                                        .min_w(px(1.))
+                                        .border_1()
+                                        .border_color(cx.theme().border)
+                                        .bg(cx.theme().secondary)
+                                        .flex()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w(px(1.))
+                                                .overflow_hidden()
+                                                .text_ellipsis()
+                                                .px_1()
+                                                .text_size(px(12.))
+                                                .text_color(if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })
+                                                .child(selected.to_owned()),
+                                        )
+                                        .child(div().w(px(18.)).flex().items_center().justify_center().child("▾")),
+                                );
+                        }
+                        0 => {
+                            overlay = overlay.child(
                                 Button::new(format!(
-                                    "guest-standard-save-{}-{}-{}",
-                                    panel.guest_id, panel.generation, label
+                                    "guest-control-button-{}-{}",
+                                    control.guest_id, control.generation
                                 ))
-                                .label(label)
+                                    .label(control.title.clone())
+                                    .small()
+                                    .compact()
+                                    .tab_stop(false)
+                                    .disabled(!control.enabled)
+                                    .w_full()
+                                    .h_full(),
+                            );
+                        }
+                        1 => {
+                            overlay = overlay.child(
+                                Checkbox::new(format!(
+                                    "guest-control-checkbox-{}-{}",
+                                    control.guest_id, control.generation
+                                ))
+                                    .label(control.title.clone())
+                                    .checked(control.value != 0)
+                                    .disabled(!control.enabled)
+                                    .tab_stop(false)
+                                    .small()
+                                    .w_full()
+                                    .h_full(),
+                            );
+                        }
+                        2 => {
+                            overlay = overlay.child(
+                                Radio::new(format!(
+                                    "guest-control-radio-{}-{}",
+                                    control.guest_id, control.generation
+                                ))
+                                    .label(control.title.clone())
+                                    .checked(control.value != 0)
+                                    .disabled(!control.enabled)
+                                    .tab_stop(false)
+                                    .small()
+                                    .w_full()
+                                    .h_full(),
+                            );
+                        }
+                        16 => {
+                            let geometry = super::frames::scrollbar_geometry(control);
+                            let active = control.enabled && control.minimum < control.maximum;
+                            let arrow = geometry.arrow_extent as f32;
+                            let (arrow_width, arrow_height, end_left, end_top) = if geometry.vertical {
+                                (
+                                    source.width() as f32,
+                                    arrow,
+                                    0.,
+                                    source.height() as f32 - arrow,
+                                )
+                            } else {
+                                (
+                                    arrow,
+                                    source.height() as f32,
+                                    source.width() as f32 - arrow,
+                                    0.,
+                                )
+                            };
+                            let (thumb_left, thumb_top, thumb_width, thumb_height) =
+                                if geometry.vertical {
+                                    (
+                                        0.,
+                                        geometry.thumb_start as f32,
+                                        source.width() as f32,
+                                        geometry.thumb_extent as f32,
+                                    )
+                                } else {
+                                    (
+                                        geometry.thumb_start as f32,
+                                        0.,
+                                        geometry.thumb_extent as f32,
+                                        source.height() as f32,
+                                    )
+                                };
+                            let (before, after) = if geometry.vertical {
+                                ("▴", "▾")
+                            } else {
+                                ("◂", "▸")
+                            };
+                            overlay = overlay
+                                .bg(cx.theme().secondary)
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .left_0()
+                                        .w(px(arrow_width))
+                                        .h(px(arrow_height))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_color(if active {
+                                            cx.theme().foreground
+                                        } else {
+                                            cx.theme().muted_foreground
+                                        })
+                                        .child(before),
+                                )
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .left(px(end_left))
+                                        .top(px(end_top))
+                                        .w(px(arrow_width))
+                                        .h(px(arrow_height))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_color(if active {
+                                            cx.theme().foreground
+                                        } else {
+                                            cx.theme().muted_foreground
+                                        })
+                                        .child(after),
+                                );
+                            if active && geometry.thumb_extent > 0 {
+                                overlay = overlay.child(
+                                    div()
+                                        .absolute()
+                                        .left(px(thumb_left))
+                                        .top(px(thumb_top))
+                                        .w(px(thumb_width))
+                                        .h(px(thumb_height))
+                                        .bg(cx.theme().accent)
+                                        .border_1()
+                                        .border_color(cx.theme().border),
+                                );
+                                if let Some((id, generation, start)) = self.scrollbar_drag {
+                                    if control.guest_id == id && control.generation == generation {
+                                        if let Some(position) = super::frames::scrollbar_drag_outline(
+                                            control,
+                                            start,
+                                            self.mouse_position,
+                                        ) {
+                                            let (left, top) = if geometry.vertical {
+                                                (0., position as f32)
+                                            } else {
+                                                (position as f32, 0.)
+                                            };
+                                            overlay = overlay.child(
+                                                div()
+                                                    .absolute()
+                                                    .left(px(left))
+                                                    .top(px(top))
+                                                    .w(px(thumb_width))
+                                                    .h(px(thumb_height))
+                                                    .border_2()
+                                                    .border_color(cx.theme().foreground),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => unreachable!(),
+                    }
+                    screen = screen.child(
+                        div()
+                            .absolute()
+                            .overflow_hidden()
+                            .left(px(clip.left as f32))
+                            .top(px((clip.top - self.crop_top as i32) as f32))
+                            .w(px(clip.width() as f32))
+                            .h(px(clip.height() as f32))
+                            .child(overlay),
+                    );
+                }
+                // Standard DITL items use guest geometry and live guest state.
+                // The single-line edit field is a read-only GPUI presentation;
+                // pointer and keyboard events still enter the guest Dialog Manager.
+                // Macintosh Toolbox Essentials (1992), pp. 6-13--6-15, 6-79--6-80.
+                if let Some(dialog) = standard_dbox_dialog(&self.dialogs, &self.windows) {
+                    for item in &dialog.items {
+                        if !item.visible {
+                            continue;
+                        }
+                        if item.kind == DialogItemKind::EditText
+                            && (item.text.contains('\r') || item.bounds.2 - item.bounds.0 > 24)
+                        {
+                            continue;
+                        }
+                        let item_rect = super::frames::Rect::from(item.bounds);
+                        // The Dialog Manager draws the default button outline
+                        // outside its DITL rectangle. Cover those pixels too.
+                        let source = if item.kind == DialogItemKind::Button
+                            && dialog.default_item == Some(item.number)
+                        {
+                            super::frames::Rect {
+                                top: item_rect.top - 4,
+                                left: item_rect.left - 4,
+                                bottom: item_rect.bottom + 4,
+                                right: item_rect.right + 4,
+                            }
+                        } else if item.kind == DialogItemKind::EditText {
+                            super::frames::Rect {
+                                top: item_rect.top - 4,
+                                left: item_rect.left - 4,
+                                bottom: item_rect.bottom + 4,
+                                right: item_rect.right + 4,
+                            }
+                        } else {
+                            item_rect
+                        };
+                        let Some(clip) = source
+                            .intersection(dialog.bounds.into())
+                            .and_then(|rect| rect.intersection(viewport))
+                        else {
+                            continue;
+                        };
+                        let mut overlay = div()
+                            .absolute()
+                            .left(px((source.left - clip.left) as f32))
+                            .top(px((source.top - clip.top) as f32))
+                            .w(px(source.width() as f32))
+                            .h(px(source.height() as f32))
+                            .bg(cx.theme().background);
+                        overlay = match item.kind {
+                            DialogItemKind::Button => overlay.child(
+                                Button::new(format!(
+                                    "guest-dialog-button-{}-{}-{}",
+                                    dialog.guest_id, dialog.generation, item.number
+                                ))
+                                .label(item.text.clone())
                                 .small()
                                 .compact()
                                 .tab_stop(false)
+                                .disabled(!item.enabled)
+                                .absolute()
+                                .left(px((item_rect.left - source.left) as f32))
+                                .top(px((item_rect.top - source.top) as f32))
+                                .w(px(item_rect.width() as f32))
+                                .h(px(item_rect.height() as f32)),
+                            ),
+                            DialogItemKind::StaticText => overlay
+                                .text_size(px(13.))
+                                .text_color(cx.theme().foreground)
+                                .child(item.text.replace('\r', "\n")),
+                            DialogItemKind::EditText => {
+                                let focused = dialog.edit_field == Some(item.number)
+                                    && item.enabled
+                                    && item.selection.is_some();
+                                let selection = item.selection.unwrap_or((0, 0));
+                                let (prefix, selected, suffix) = save_name_segments(
+                                    &item.text,
+                                    (selection.0.max(0) as usize, selection.1.max(0) as usize),
+                                    focused,
+                                );
+                                let mut field = div()
+                                    .id(format!(
+                                        "guest-dialog-edit-{}-{}-{}",
+                                        dialog.guest_id, dialog.generation, item.number
+                                    ))
+                                    .test_support()
+                                    .absolute()
+                                    .left(px((item_rect.left - source.left) as f32))
+                                    .top(px((item_rect.top - source.top) as f32))
+                                    .w(px(item_rect.width() as f32))
+                                    .h(px(item_rect.height() as f32))
+                                    .overflow_hidden()
+                                    .flex()
+                                    .items_center()
+                                    .px_1()
+                                    .border_1()
+                                    .border_color(if focused {
+                                        cx.theme().accent
+                                    } else {
+                                        cx.theme().border
+                                    })
+                                    .bg(cx.theme().background)
+                                    .text_size(px(13.))
+                                    .text_color(if item.enabled {
+                                        cx.theme().foreground
+                                    } else {
+                                        cx.theme().muted_foreground
+                                    })
+                                    .child(prefix);
+                                if focused && !selected.is_empty() {
+                                    field = field.child(
+                                        div()
+                                            .bg(cx.theme().selection)
+                                            .text_color(cx.theme().foreground)
+                                            .child(selected),
+                                    );
+                                } else if focused {
+                                    field = field.child(
+                                        div().w(px(1.)).h(px(14.)).bg(cx.theme().foreground),
+                                    );
+                                }
+                                overlay.child(field.child(suffix))
+                            }
+                            DialogItemKind::Checkbox => overlay.child(
+                                Checkbox::new(format!(
+                                    "guest-dialog-checkbox-{}-{}-{}",
+                                    dialog.guest_id, dialog.generation, item.number
+                                ))
+                                .label(item.text.clone())
+                                .checked(item.value.unwrap() != 0)
+                                .disabled(!item.enabled)
+                                .tab_stop(false)
+                                .small()
                                 .w_full()
                                 .h_full(),
                             ),
+                            DialogItemKind::RadioButton => overlay.child(
+                                Radio::new(format!(
+                                    "guest-dialog-radio-{}-{}-{}",
+                                    dialog.guest_id, dialog.generation, item.number
+                                ))
+                                .label(item.text.clone())
+                                .checked(item.value.unwrap() != 0)
+                                .disabled(!item.enabled)
+                                .tab_stop(false)
+                                .small()
+                                .w_full()
+                                .h_full(),
+                            ),
+                            _ => unreachable!(),
+                        };
+                        screen = screen.child(
+                            div()
+                                .absolute()
+                                .overflow_hidden()
+                                .left(px(clip.left as f32))
+                                .top(px((clip.top - self.crop_top as i32) as f32))
+                                .w(px(clip.width() as f32))
+                                .h(px(clip.height() as f32))
+                                .child(overlay),
                         );
                     }
-                    screen = screen.child(overlay);
+                }
+                if let Some(panel) = self.standard_file.as_ref().filter(|panel| {
+                    panel.kind == StandardFileKind::Get
+                        && panel.standard_entry_point
+                        && panel.get_layout.is_some()
+                        && panel.entries.is_some()
+                }) {
+                    let layout = panel.get_layout.as_ref().unwrap();
+                    let bounds = super::frames::Rect::from(panel.bounds);
+                    if bounds.intersection(viewport).is_some() {
+                        let at = |rect: (i16, i16, i16, i16)| {
+                            let rect = super::frames::Rect::from(rect);
+                            div()
+                                .absolute()
+                                .top(px((rect.top - bounds.top) as f32))
+                                .left(px((rect.left - bounds.left) as f32))
+                                .w(px(rect.width() as f32))
+                                .h(px(rect.height() as f32))
+                        };
+                        let mut overlay = div()
+                            .id(format!("guest-standard-open-{}-{}", panel.guest_id, panel.generation))
+                            .test_support()
+                            .absolute()
+                            .top(px((bounds.top - self.crop_top as i32) as f32))
+                            .left(px(bounds.left as f32))
+                            .w(px(bounds.width() as f32))
+                            .h(px(bounds.height() as f32))
+                            .bg(cx.theme().background)
+                            .border_2()
+                            .border_color(cx.theme().border)
+                            .text_color(cx.theme().foreground)
+                            .text_size(px(13.));
+                        let volume_abbreviation: String = panel
+                            .directory_label
+                            .as_deref()
+                            .unwrap_or_default()
+                            .chars()
+                            .take(4)
+                            .collect();
+                        overlay = overlay.child(
+                            at(layout.volume)
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .bg(cx.theme().secondary)
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .child(format!("{volume_abbreviation}…")),
+                        );
+                        overlay = overlay.child(
+                            at(layout.directory_label)
+                                .flex()
+                                .items_center()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(panel.directory_label.clone().unwrap_or_default()),
+                        );
+                        let entries = panel.entries.as_ref().unwrap();
+                        let list_width = i32::from(layout.list.3 - layout.list.1);
+                        let mut list = at(layout.list)
+                            .overflow_hidden()
+                            .bg(cx.theme().background)
+                            .border_1()
+                            .border_color(cx.theme().border);
+                        for (row, (index, entry)) in entries
+                            .iter()
+                            .enumerate()
+                            .skip(layout.first_visible)
+                            .take(layout.visible_rows)
+                            .enumerate()
+                        {
+                            let selected = panel.selected == Some(index);
+                            list = list.child(
+                                div()
+                                    .id(format!(
+                                        "guest-standard-open-entry-{}-{}-{}",
+                                        panel.guest_id, panel.generation, index
+                                    ))
+                                    .test_support()
+                                    .role(Role::ListItem)
+                                    .aria_label(entry.name.clone())
+                                    .aria_selected(selected)
+                                    .absolute()
+                                    .top(px(2. + row as f32 * f32::from(layout.row_height)))
+                                    .left(px(2.))
+                                    .w(px((list_width - 4).max(1) as f32))
+                                    .h(px(f32::from(layout.row_height)))
+                                    .overflow_hidden()
+                                    .flex()
+                                    .items_center()
+                                    .px_1()
+                                    .bg(if selected {
+                                        cx.theme().accent
+                                    } else {
+                                        cx.theme().background
+                                    })
+                                    .child(if entry.is_directory {
+                                        format!("{} ▸", entry.name)
+                                    } else {
+                                        entry.name.clone()
+                                    }),
+                            );
+                        }
+                        overlay = overlay.child(list);
+                        let scroll_max = entries.len().saturating_sub(layout.visible_rows);
+                        let scroll_height = i32::from(layout.scroll.2 - layout.scroll.0);
+                        let track_height = (scroll_height - 32).max(0);
+                        let thumb_height = if scroll_max == 0 {
+                            track_height
+                        } else {
+                            16.min(track_height)
+                        };
+                        let thumb_top = 16
+                            + if scroll_max == 0 {
+                                0
+                            } else {
+                                ((track_height - thumb_height) as i64
+                                    * layout.first_visible.min(scroll_max) as i64
+                                    / scroll_max as i64) as i32
+                            };
+                        overlay = overlay.child(
+                            at(layout.scroll)
+                                .bg(cx.theme().secondary)
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .w_full()
+                                        .h(px(16.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child("▴"),
+                                )
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .bottom_0()
+                                        .w_full()
+                                        .h(px(16.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child("▾"),
+                                )
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top(px(thumb_top as f32))
+                                        .w_full()
+                                        .h(px(thumb_height as f32))
+                                        .bg(cx.theme().accent)
+                                        .border_1()
+                                        .border_color(cx.theme().border),
+                                ),
+                        );
+                        for (label, rect, enabled) in [
+                            ("Eject", layout.eject, false),
+                            ("Desktop", layout.desktop, true),
+                            ("Cancel", layout.cancel, true),
+                            (
+                                "Open",
+                                layout.open,
+                                panel.selected.and_then(|index| entries.get(index)).is_some_and(
+                                    |entry| entry.is_directory || entry.file_type != 0,
+                                ),
+                            ),
+                        ] {
+                            overlay = overlay.child(
+                                at(rect).child(
+                                    Button::new(format!(
+                                        "guest-standard-open-{}-{}-{}",
+                                        panel.guest_id, panel.generation, label
+                                    ))
+                                    .label(label)
+                                    .small()
+                                    .compact()
+                                    .disabled(!enabled)
+                                    .tab_stop(false)
+                                    .w_full()
+                                    .h_full(),
+                                ),
+                            );
+                        }
+                        screen = screen.child(overlay);
+                    }
+                }
+                if let Some(panel) = self.standard_file.as_ref().filter(|panel| {
+                    panel.kind == StandardFileKind::Put
+                        && panel.standard_entry_point
+                        && panel.put_layout.is_some()
+                        && panel.entries.is_some()
+                        && panel.name.is_some()
+                }) {
+                    let layout = panel.put_layout.as_ref().unwrap();
+                    let bounds = super::frames::Rect::from(panel.bounds);
+                    if bounds.intersection(viewport).is_some() {
+                        let at = |rect: (i16, i16, i16, i16)| {
+                            let rect = super::frames::Rect::from(rect);
+                            div()
+                                .absolute()
+                                .top(px((rect.top - bounds.top) as f32))
+                                .left(px((rect.left - bounds.left) as f32))
+                                .w(px(rect.width() as f32))
+                                .h(px(rect.height() as f32))
+                        };
+                        let mut overlay = div()
+                            .id(format!("guest-standard-save-{}-{}", panel.guest_id, panel.generation))
+                            .test_support()
+                            .absolute()
+                            .top(px((bounds.top - self.crop_top as i32) as f32))
+                            .left(px(bounds.left as f32))
+                            .w(px(bounds.width() as f32))
+                            .h(px(bounds.height() as f32))
+                            .bg(cx.theme().background)
+                            .border_2()
+                            .border_color(cx.theme().border)
+                            .text_color(cx.theme().foreground)
+                            .text_size(px(13.));
+                        overlay = overlay.child(
+                            at(layout.directory_label)
+                                .flex()
+                                .items_center()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(panel.directory_label.clone().unwrap_or_default()),
+                        );
+                        let entries = panel.entries.as_ref().unwrap();
+                        let list_width = i32::from(layout.list.3 - layout.list.1);
+                        let mut list = at(layout.list)
+                            .overflow_hidden()
+                            .bg(cx.theme().background)
+                            .border_1()
+                            .border_color(cx.theme().border);
+                        for (row, (index, entry)) in entries
+                            .iter()
+                            .enumerate()
+                            .skip(layout.first_visible)
+                            .take(layout.visible_rows)
+                            .enumerate()
+                        {
+                            let selected = panel.selected == Some(index);
+                            list = list.child(
+                                div()
+                                    .id(format!(
+                                        "guest-standard-save-entry-{}-{}-{}",
+                                        panel.guest_id, panel.generation, index
+                                    ))
+                                    .test_support()
+                                    .role(Role::ListItem)
+                                    .aria_label(entry.name.clone())
+                                    .aria_selected(selected)
+                                    .absolute()
+                                    .top(px(2. + row as f32 * f32::from(layout.row_height)))
+                                    .left(px(2.))
+                                    .w(px((list_width - 4).max(1) as f32))
+                                    .h(px(f32::from(layout.row_height)))
+                                    .overflow_hidden()
+                                    .flex()
+                                    .items_center()
+                                    .px_1()
+                                    .bg(if selected {
+                                        cx.theme().accent
+                                    } else {
+                                        cx.theme().background
+                                    })
+                                    .child(if entry.is_directory {
+                                        format!("{} ▸", entry.name)
+                                    } else {
+                                        entry.name.clone()
+                                    }),
+                            );
+                        }
+                        overlay = overlay.child(list);
+                        let scroll_max = entries.len().saturating_sub(layout.visible_rows);
+                        let scroll_height = i32::from(layout.scroll.2 - layout.scroll.0);
+                        let track_height = (scroll_height - 32).max(0);
+                        let thumb_height = if scroll_max == 0 {
+                            track_height
+                        } else {
+                            16.min(track_height)
+                        };
+                        let thumb_top = 16
+                            + if scroll_max == 0 {
+                                0
+                            } else {
+                                ((track_height - thumb_height) as i64
+                                    * layout.first_visible.min(scroll_max) as i64
+                                    / scroll_max as i64) as i32
+                            };
+                        overlay = overlay.child(
+                            at(layout.scroll)
+                                .bg(cx.theme().secondary)
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .w_full()
+                                        .h(px(16.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child("▴"),
+                                )
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .bottom_0()
+                                        .w_full()
+                                        .h(px(16.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child("▾"),
+                                )
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top(px(thumb_top as f32))
+                                        .w_full()
+                                        .h(px(thumb_height as f32))
+                                        .bg(cx.theme().accent)
+                                        .border_1()
+                                        .border_color(cx.theme().border),
+                                ),
+                        );
+                        overlay = overlay.child(
+                            at(layout.prompt)
+                                .flex()
+                                .items_center()
+                                .overflow_hidden()
+                                .child(panel.prompt.clone().unwrap_or_default()),
+                        );
+                        let name = panel.name.as_deref().unwrap_or_default();
+                        let focused = panel.name_has_focus == Some(true);
+                        let (prefix, selected, suffix) = save_name_segments(
+                            name,
+                            panel.name_selection.unwrap_or((0, 0)),
+                            focused,
+                        );
+                        let mut name_field = at(layout.name)
+                            .id(format!(
+                                "guest-standard-save-name-{}-{}",
+                                panel.guest_id, panel.generation
+                            ))
+                            .test_support()
+                            .overflow_hidden()
+                            .flex()
+                            .items_center()
+                            .px_1()
+                            .border_1()
+                            .border_color(if focused {
+                                cx.theme().accent
+                            } else {
+                                cx.theme().border
+                            })
+                            .bg(cx.theme().background)
+                            .child(prefix);
+                        if focused && !selected.is_empty() {
+                            name_field = name_field.child(
+                                div()
+                                    .bg(cx.theme().selection)
+                                    .text_color(cx.theme().foreground)
+                                    .child(selected),
+                            );
+                        } else if focused {
+                            name_field = name_field.child(
+                                div().w(px(1.)).h(px(14.)).bg(cx.theme().foreground),
+                            );
+                        }
+                        overlay = overlay.child(name_field.child(suffix));
+                        for (label, rect) in [
+                            ("Desktop", layout.desktop),
+                            ("Cancel", layout.cancel),
+                            ("Save", layout.save),
+                        ] {
+                            overlay = overlay.child(
+                                at(rect).child(
+                                    Button::new(format!(
+                                        "guest-standard-save-{}-{}-{}",
+                                        panel.guest_id, panel.generation, label
+                                    ))
+                                    .label(label)
+                                    .small()
+                                    .compact()
+                                    .tab_stop(false)
+                                    .w_full()
+                                    .h_full(),
+                                ),
+                            );
+                        }
+                        screen = screen.child(overlay);
+                    }
                 }
             }
             let guest_menu_fallback = self.guest_menu_fallback();
@@ -2437,6 +2445,11 @@ mod desktop {
     pub(super) fn main() {
         let args = Args::parse();
         #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_custom_menu_fallback.as_ref() {
+            capture_custom_menu_fallback(output);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_about_alert.as_ref() {
             capture_fixture_screen(
                 &args.game,
@@ -2674,6 +2687,96 @@ mod desktop {
             });
     }
 
+    #[cfg(feature = "gpui-demo-test")]
+    fn capture_custom_menu_fallback(output: &std::path::Path) {
+        use gpui_kit::{platform, AppContext, HeadlessAppContext, RenderImage};
+        use std::sync::{mpsc, Arc, Mutex};
+        use systemless::menu_model::{GuestMenu, GuestMenuSnapshot};
+        use systemless::runner::WindowSnapshot;
+
+        let mut visual = HeadlessAppContext::with_platform(
+            platform::current_platform(true).text_system(),
+            Arc::new(gpui_kit::assets::Assets),
+            platform::current_headless_renderer,
+        );
+        visual.update(gpui_kit::init);
+        let (sender, _receiver) = mpsc::channel();
+        let updates = Arc::new(Mutex::new(None));
+        let mut view = None;
+        let window = visual
+            .open_window(
+                gpui_kit::size(gpui_kit::px(160.), gpui_kit::px(160.)),
+                |_, cx| {
+                    let entity = cx.new(|cx| Demo::new(sender, updates, cx));
+                    view = Some(entity.clone());
+                    entity
+                },
+            )
+            .unwrap();
+        let view = view.unwrap();
+        visual.update(|cx| {
+            view.update(cx, |demo, cx| {
+                demo.menus = GuestMenuSnapshot {
+                    menus: vec![GuestMenu {
+                        id: 128,
+                        title: "Custom".into(),
+                        enabled: true,
+                        standard_definition: false,
+                        hierarchical: false,
+                        visible_in_menu_bar: true,
+                        items: Vec::new(),
+                    }],
+                };
+                demo.width = 64;
+                demo.height = 64;
+                demo.crop_top = 0;
+                // This standard frame crosses the guest menu/content boundary.
+                // Fallback must keep its GPUI overlay off the guest pixels.
+                demo.windows = vec![WindowFrameSnapshot {
+                    guest_id: 7,
+                    generation: 1,
+                    window: WindowSnapshot {
+                        title: "Overlay".into(),
+                        bounds: (35, 5, 55, 55),
+                        structure_bounds: Some((16, 0, 60, 60)),
+                        visible_region: None,
+                        update_region: None,
+                        visible: true,
+                        active: true,
+                    },
+                    definition_id: Some(0),
+                    close_box: true,
+                }];
+                let mut pixels = image::RgbaImage::new(64, 64);
+                for (index, pixel) in pixels.pixels_mut().enumerate() {
+                    // Mark the guest's menu rows separately from its content rows.
+                    // The session returns RGBA; GPUI's macOS image upload consumes BGRA.
+                    *pixel = if index < 64 * 20 {
+                        image::Rgba([20, 20, 220, 255])
+                    } else {
+                        image::Rgba([220, 20, 20, 255])
+                    };
+                }
+                demo.image = Some(Arc::new(RenderImage::new(vec![image::Frame::new(pixels)])));
+                assert_eq!(
+                    demo.pointer(gpui_kit::point(gpui_kit::px(5.), gpui_kit::px(5.))),
+                    (5, 5)
+                );
+                assert!(
+                    demo.inside_guest_pane(gpui_kit::point(gpui_kit::px(5.), gpui_kit::px(5.),))
+                );
+                cx.notify();
+            });
+        });
+        visual.run_until_parked();
+        let capture = visual.capture_screenshot(window.into()).unwrap();
+        let pixel = capture.get_pixel(5, 5);
+        assert_eq!(*pixel, image::Rgba([220, 20, 20, 255]));
+        // The headless macOS renderer captures at 2x physical scale.
+        assert_eq!(*capture.get_pixel(5, 45), image::Rgba([20, 20, 220, 255]));
+        capture.save(output).unwrap();
+    }
+
     #[cfg(test)]
     mod tests {
         use super::{MacintoshInput, MacintoshSession, PathBuf};
@@ -2740,6 +2843,7 @@ mod desktop {
                         capture_standard_file_save_composed: None,
                         capture_standard_file_open_composed: None,
                         capture_standard_file_save_edited_composed: None,
+                        capture_custom_menu_fallback: None,
                     },
                     rx,
                     worker_updates,
