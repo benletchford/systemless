@@ -4046,3 +4046,13 @@ evidence and changed-cell guard tests use a synthetic empty cell; they are not
 proof of native list rendering. Actual per-cell paint metadata, lifecycle
 evidence, real native captures and compositor checks remain required before
 production ownership.
+
+The real-fixture `standard_list_first_row_qualification_preserves_native_cpu_pixels`
+regression passes in all four modes. Colour 68k and PPC8/PPC16 first-row
+interiors match the explicit application-font-9 native bitmap recipes, using
+their distinct insets/baselines. The fixture draws its own `FrameRect` over
+the list view: the regression excludes that application-owned top/side border
+without moving glyph anchors. Monochrome 68k instead asserts native black
+interior pixels and refused replacement, preserving the established one-bit
+custom-panel behavior. This is one unselected public-fixture row, not general
+list ownership, selected-state/lifecycle qualification or GPUI rendered output.
