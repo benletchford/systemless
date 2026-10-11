@@ -40,7 +40,8 @@ zoom hit region; resizing still uses the guest's original lower-right hit region
 
 - Real `GuestMenuSnapshot` titles, items, checkmarks, enabled states and separators.
 - GPUI Kit buttons and a Systemless-owned themed popup, including nested and
-  scrollable menus. Selected guest items survive live label and checkmark updates.
+  scrollable menus. Selected guest items survive live label and checkmark updates;
+  keyboard navigation scrolls long menus to keep the selected row visible.
 - Menu selection through `FixtureRunner::select_guest_menu_item`, which validates
   against current guest state and returns through the normal guest event loop.
 - Command-key equivalents while the game surface has focus.

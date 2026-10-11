@@ -18,6 +18,7 @@ struct GuestMenuPopup {
     snapshot: GuestMenuSnapshot,
     selection: Vec<Selection>,
     active_depth: usize,
+    scroll_handles: HashMap<(u32, u64), ScrollHandle>,
     focus: FocusHandle,
     commands: mpsc::Sender<Command>,
 }
@@ -34,6 +35,7 @@ impl GuestMenuPopup {
             snapshot,
             selection: Vec::new(),
             active_depth: 0,
+            scroll_handles: HashMap::new(),
             focus: cx.focus_handle(),
             commands,
         }
@@ -47,6 +49,12 @@ impl GuestMenuPopup {
     ) {
         self.root_id = root_id;
         self.snapshot = snapshot;
+        self.scroll_handles.retain(|&(guest_id, generation), _| {
+            self.snapshot
+                .menus
+                .iter()
+                .any(|menu| menu.guest_id == guest_id && menu.generation == generation)
+        });
         self.reconcile();
         cx.notify();
     }
@@ -122,9 +130,19 @@ impl GuestMenuPopup {
             generation: menu.generation,
             item_number,
         };
+        let index = menu
+            .items
+            .iter()
+            .position(|item| item.number == item_number);
         self.selection.truncate(depth);
         self.selection.push(selected);
         self.active_depth = depth;
+        if let Some(index) = index {
+            self.scroll_handles
+                .entry((selected.guest_id, selected.generation))
+                .or_default()
+                .scroll_to_item(index);
+        }
         cx.notify();
         true
     }
@@ -273,15 +291,25 @@ impl Render for GuestMenuPopup {
                 break;
             }
             visited.push(menu_id);
-            let Some(menu) = self.menu(menu_id) else {
+            let Some(menu) = self.snapshot.menus.iter().find(|menu| menu.id == menu_id) else {
                 break;
             };
+            let scroll = self
+                .scroll_handles
+                .entry((menu.guest_id, menu.generation))
+                .or_default()
+                .clone();
             let mut column = div()
+                .id(format!(
+                    "guest-menu-column-{}-{}",
+                    menu.guest_id, menu.generation
+                ))
                 .flex()
                 .flex_col()
                 .min_w(px(180.))
                 .max_h(px(420.))
-                .overflow_y_scrollbar()
+                .overflow_y_scroll()
+                .track_scroll(&scroll)
                 .when(depth > 0, |column| {
                     column.border_l_1().border_color(cx.theme().border)
                 })
@@ -314,22 +342,29 @@ impl Render for GuestMenuPopup {
                         .px(px(8.))
                         .when(selected, |row| row.bg(cx.theme().selection))
                         .when(!enabled, |row| row.text_color(cx.theme().muted_foreground))
-                        .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                            if *hovered {
-                                this.select(depth, row_menu_id, item_number, cx);
-                            }
-                        }))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if this.select(depth, row_menu_id, item_number, cx) {
-                                this.activate(true, cx);
-                            }
-                        }))
+                        .when(enabled, |row| {
+                            row.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                                if *hovered {
+                                    this.select(depth, row_menu_id, item_number, cx);
+                                }
+                            }))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    if this.select(depth, row_menu_id, item_number, cx) {
+                                        this.activate(true, cx);
+                                    }
+                                },
+                            ))
+                        })
                         .child(if item.checked { "✓ " } else { "  " })
                         .child(label)
                         .when(item.submenu_id.is_some(), |row| row.child("  ›")),
                 );
             }
-            panel = panel.child(column);
+            panel = panel.child(column.vertical_scrollbar(&scroll));
             let Some(next) = self.selection.get(depth).and_then(|selected| {
                 menu.items
                     .iter()
