@@ -1,5 +1,14 @@
-//! Fixed frontend polling cadence, without catch-up bursts after a late update.
+//! Guest worker cadence, without catch-up bursts after a late update.
 use std::time::{Duration, Instant};
+
+// Use the same rate for worker deadlines and the elapsed-time guest clock.
+// A fixed 16 ms period publishes 62.5 updates per second against a 60 Hz clock,
+// periodically scheduling an update before the next guest tick is due.
+pub(crate) const GUEST_TICKS_PER_SECOND: f64 = 60.;
+
+pub(crate) fn worker_period() -> Duration {
+    Duration::from_secs_f64(1. / GUEST_TICKS_PER_SECOND)
+}
 
 pub(crate) struct Cadence {
     next: Instant,
@@ -18,7 +27,8 @@ impl Cadence {
     pub fn delay(&mut self, now: Instant) -> Duration {
         if now > self.next {
             // Retain the original phase and skip expired intervals. The period
-            // is 16 ms; use u128 arithmetic even after a prolonged host suspend.
+            // can be fractional milliseconds; use u128 arithmetic even after
+            // a prolonged host suspend.
             let remainder = now.duration_since(self.next).as_nanos() % self.period.as_nanos();
             let delay = self.period
                 - Duration::new(
@@ -49,6 +59,21 @@ impl Cadence {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn worker_deadlines_follow_each_guest_tick_without_duplicate_ticks() {
+        let start = Instant::now();
+        let mut cadence = Cadence::new(start, worker_period());
+        let mut now = start;
+        for tick in 1..=600 {
+            now += cadence.worker_delay(now);
+            let due = (now.duration_since(start).as_secs_f64()
+                * GUEST_TICKS_PER_SECOND) as u32;
+            assert_eq!(due, tick, "a worker deadline must reach the next guest tick");
+        }
+        assert!(now.duration_since(start).abs_diff(Duration::from_secs(10))
+            < Duration::from_micros(1));
+    }
+
     #[test]
     fn worker_recovers_small_overrun_without_an_extra_idle_interval() {
         let start = Instant::now();

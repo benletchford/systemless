@@ -663,7 +663,7 @@ mod desktop {
             let mut epoch = Instant::now();
             let mut initial_tick = session.runner().guest_tick();
             let mut previous = epoch;
-            let mut worker_cadence = super::cadence::Cadence::new(epoch, Duration::from_millis(16));
+            let mut worker_cadence = super::cadence::Cadence::new(epoch, super::cadence::worker_period());
             let mut audio_clock = super::audio_clock::AudioClock::new(epoch);
             let mut queued = std::collections::VecDeque::new();
             let mut text_commit_wait: Option<Instant> = None;
@@ -967,7 +967,7 @@ mod desktop {
                 previous = start;
                 let current_tick = session.runner().guest_tick();
                 let mut due_tick = initial_tick
-                    .saturating_add((epoch.elapsed().as_secs_f64() * 60.) as u32)
+                    .saturating_add((epoch.elapsed().as_secs_f64() * super::cadence::GUEST_TICKS_PER_SECOND) as u32)
                     .saturating_add(1);
                 if due_tick.saturating_sub(current_tick) > 4 {
                     // A late frame must not make the worker chase an ever-growing

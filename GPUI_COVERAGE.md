@@ -6612,3 +6612,27 @@ Hashes are in `target/gpui-qualification/classic-wrapped-dialog/cross-cpu-review
 This preserves the selected guest metrics; it does not establish original Apple
 bitmap-font appearance equivalence. Native EV frame smoothness/audio and
 all broad release gates remain open.
+
+### Guest worker clock alignment and current EV compositor check (2026-10-12)
+
+Worker deadlines now use the same 60 Hz rate as the existing elapsed-time guest
+clock. The previous fixed 16 ms cadence published at 62.5 Hz, periodically
+requesting an update before a distinct guest tick was due. Overrun recovery and
+long-stall skipping stay intact. All five clock tests pass, including 600
+successive deadlines over 10 seconds with no duplicate due guest ticks.
+
+The optimized CI example builds. Original EV colour68k completes all 14 existing
+scripted actions and 2,800 shared-compositor updates with no readiness delays
+(48.93 seconds). The final 601 flight render samples average 0.65 ms, p95 0.93 ms,
+max 4.00 ms of compositor CPU work. The full 1600x1200 flight image was reviewed:
+full custom HUD/status text retained, guest menu hidden and 800x600 scene scale1.
+Native windowless publication probes pass 120 updates each for EV68k, mono68k,
+PPC8 and PPC16. Source/binary/log/image hashes and measurements are in
+`target/gpui-qualification/escape-velocity/clock-aligned-review.json`.
+
+These are optimized CI timings, not production release-LTO or native display
+FPS. The final worker interval averages approximately 16.67 ms but scheduling
+variation remains; this change corrects clock mismatch, not a verified cure for
+native stutter. Host audio and persistence are disabled in the captures, and
+no window is opened by the native delivery probe. Physical input, display
+presentation/audio continuity and all broad release gates remain open.
