@@ -346,6 +346,10 @@ mod desktop {
         capture_composition_surface: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_application: Option<PathBuf>,
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_windows_moved: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -4923,7 +4927,88 @@ mod desktop {
         run(args);
     }
 
+    /// Observe a real application through the production worker and render its
+    /// complete snapshot with the shared compositor. No fixture-specific input.
+    #[cfg(feature = "gpui-demo-test")]
+    fn capture_application(args: Args) {
+        use gpui_kit::{platform, HeadlessAppContext};
+        let output = args.capture_application.clone().unwrap();
+        let scale = args.capture_scale.unwrap_or(1.);
+        assert!(scale.is_finite() && scale > 0.);
+        let requested_depth = args.screen_depth;
+        let powerpc = args.prefer_powerpc;
+        let archive = args.game.clone();
+        let (sender, receiver) = mpsc::channel();
+        let updates = Arc::new(Mutex::new(None));
+        let worker_updates = updates.clone();
+        struct Worker(mpsc::Sender<Command>, Option<std::thread::JoinHandle<()>>);
+        impl Drop for Worker {
+            fn drop(&mut self) {
+                let _ = self.0.send(Command::Shutdown);
+                if let Some(handle) = self.1.take() { handle.join().unwrap(); }
+            }
+        }
+        let worker = Worker(sender, Some(std::thread::spawn(move || run_guest(args, receiver, worker_updates, false))));
+        let start = Instant::now();
+        let mut observations = 0;
+        let update = loop {
+            if let Some(update) = updates.lock().unwrap().take() {
+                assert!(update.frame.is_some(), "application worker failed: {}", update.status);
+                observations += 1;
+                if observations == 120 { break update; }
+            }
+            assert!(start.elapsed() < Duration::from_secs(30), "application did not produce 120 observed worker frames");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let observed_ms = start.elapsed().as_secs_f64() * 1000.;
+        let (width, height, pixels) = update.frame.as_ref().unwrap();
+        let (width, height) = (*width, *height);
+        image::save_buffer(output.with_extension("guest.png"), pixels, width, height, image::ColorType::Rgba8).unwrap();
+        let status = update.status.clone();
+        let menu_presented = update.menu_presented;
+        let menu_height = update.menu_height;
+        let mut visual = HeadlessAppContext::with_platform(platform::current_platform(true).text_system(),
+            Arc::new(gpui_kit::assets::Assets), platform::current_headless_renderer);
+        visual.update(gpui_kit::init);
+        let mut view = None;
+        let window = visual.open_window(size(px(width as f32 * scale), px(height as f32 * scale)), |_, cx| {
+            let entity = cx.new(|cx| Demo::new(worker.0.clone(), Default::default(), cx));
+            view = Some(entity.clone()); entity
+        }).unwrap();
+        let view = view.unwrap();
+        visual.update(|cx| view.update(cx, |demo, cx| {
+            demo.width = width; demo.height = height;
+            demo.menus = update.menus; demo.menu_presented = update.menu_presented; demo.menu_height = update.menu_height;
+            demo.guest_menu_tracking = update.guest_menu_tracking; demo.guest_popup = update.guest_popup;
+            demo.windows = update.windows; demo.dialogs = update.dialogs; demo.controls = update.controls;
+            demo.lists = update.lists; demo.list_text_plans = update.list_text_plans;
+            demo.text_edits = update.text_edits; demo.styled_text_plans = update.styled_text_plans;
+            demo.standard_file = update.standard_file; demo.status = update.status; demo.host_active = Some(true);
+            demo.image = Some(Arc::new(RenderImage::new(vec![image::Frame::new(
+                image::RgbaImage::from_raw(width, height, gpui_pixels(update.frame.unwrap().2)).unwrap())])));
+            cx.notify();
+        }));
+        visual.run_until_parked();
+        let screenshot = visual.capture_screenshot(window.into()).unwrap(); screenshot.save(&output).unwrap();
+        let (scene_scale, scene_origin) = visual.update(|cx| view.update(cx, |demo, _| (demo.display_scale, demo.display_origin)));
+        std::fs::write(output.with_extension("capture.json"), serde_json::to_vec_pretty(&serde_json::json!({
+            "compositor": "shared Demo renderer", "worker": "production run_guest with host services disabled",
+            "archive": archive, "prefer_powerpc": powerpc, "requested_depth": requested_depth,
+            "observed_worker_updates": observations, "observation_elapsed_ms": observed_ms,
+            "status": status, "guest_dimensions": [width,height], "scene_scale": scene_scale,
+            "scene_origin": scene_origin, "menu_presented": menu_presented, "menu_height": menu_height,
+            "scope": "Real application startup snapshot; observation time is not frame latency. No physical input, live frame delivery, audio continuity or persistence qualification."
+        })).unwrap()).unwrap();
+        drop(worker);
+        eprintln!("PASS application-shared-compositor capture={}", output.display());
+    }
+
     fn run(args: Args) {
+        #[cfg(feature = "gpui-demo-test")]
+        if args.capture_application.is_some() {
+            capture_application(args);
+            return;
+        }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_composition_surface.as_ref() {
             capture_composition_surface(output);
@@ -6113,6 +6198,7 @@ mod desktop {
                         capture_standard_menu_styled: false,
                         capture_windows: None,
                         capture_composition_surface: None,
+                        capture_application: None,
                         capture_windows_moved: None,
                         capture_windows_activated: None,
                         capture_windows_grown: None,
