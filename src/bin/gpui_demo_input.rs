@@ -196,6 +196,8 @@ pub(crate) struct GuestComposition {
 }
 
 impl GuestComposition {
+    pub fn owner(&self) -> Option<&TextInputOwner> { self.owner.as_ref() }
+
     /// Focus loss, modality changes, selection changes and disposal invalidate
     /// preedit. A recycled address cannot inherit another field's composition.
     pub fn synchronize(&mut self, owner: Option<TextInputOwner>) {

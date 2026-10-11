@@ -1,0 +1,41 @@
+{
+  "status": "passed",
+  "base_commit": "d44f8170779bb65d8c976853ecf520594ff07a5e",
+  "source_state": "base plus source.patch plus new-handler-source.rs",
+  "source_pins": "host-composition-handler-pins.txt checked unchanged after tests",
+  "post_execution_executable_sha256": "2282119ff21ede529ff9dcbb33954e4998d5c104bd8ca1dcd8eba856f4e7073b",
+  "platform_cases": [
+    [
+      "false",
+      "1"
+    ],
+    [
+      "false",
+      "8"
+    ],
+    [
+      "true",
+      "8"
+    ],
+    [
+      "true",
+      "16"
+    ]
+  ],
+  "platform_seconds": 0.41,
+  "state_tests": 2,
+  "guest_regression_seconds": 0.42,
+  "checks": [
+    "GPUI platform test dispatch invokes registered ElementInputHandler",
+    "exactly one CommitText request; no physical Input command duplicate",
+    "existing guest event path inserts exactly one z in four actual CPU/depth modes",
+    "composition state and guest-style preservation regressions still pass"
+  ],
+  "limits": [
+    "test window deliberately sets host_active=true; not native host observer proof",
+    "platform test sends one ASCII character, not physical macOS IME composition",
+    "worker commands manually applied using production guard and paired event recipe",
+    "preedit display, rapid commits, arbitrary replacement ranges, point queries and modal editors remain unfinished",
+    "bounds_for_range is currently a styled-document caret anchor and is not independently qualified"
+  ]
+}
