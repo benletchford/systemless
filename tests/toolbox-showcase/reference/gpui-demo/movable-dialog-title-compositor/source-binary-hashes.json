@@ -1,0 +1,10 @@
+{
+  "src/bin/gpui_demo.rs": "f0a629d454b4164ef82207dabb124e38ef76afd8690b7d9d69342440997fb283",
+  "src/systems/macintosh/window_manager.rs": "9a41f88159a71eddeb59f6398b5062032ce63a915a6a6da2ce9b19b5991ebc8d",
+  "tests/toolbox-showcase/showcase.c": "b3a7038cc43d090ae016ba9fcfd5022e58a7fb085b1e0283d1068e433135b9cf",
+  "tests/toolbox-showcase/showcase.r": "e0e656d136db50da35e6649e9ee7802ae2aa9f940b8ec88593bf746f6110a054",
+  "target/debug/examples/gpui-menu-demo": "f484fc6232161b1023b5fe07c79d8bb21c0bcd5065190c0e38c3a40a98733b07",
+  "tests/toolbox-showcase/build/showcase": "d06496816994d972d1ea335664465c5fc7e44c421c22643f2290afcfe5f80f16",
+  "tests/toolbox-showcase/build/showcase.rsrc": "affcfec3c84f1dc776bd5d01a54cfdd9d5ad32af23949590d2e8e25e82d69fba",
+  "/tmp/gpui-movable-dialog-captures/showcase-movable.sit": "9f95fc60a36b04c7c700719de26f7535b32792dc91095284c9728da34d7fa586"
+}
