@@ -868,3 +868,16 @@ Keep a rejected candidate and its evidence in this ledger; record the reserve ID
 Reserve R62 corrected on 2026-10-11: WadTyper for Doom is an icon/file-type helper, so it cannot contribute a distinct game. NetHack 3.3.1 replaces that reserve lead with checksum-verified original publisher binary/source, affirmative NetHack General Public License and both actual game slices. [Source/runtime evidence](CATALOGUE-SOURCES.md#nethack-331--reserve-r62), [intake #4568](https://github.com/benletchford/systemless/issues/4568). 68K halts at an illegal instruction; PPC reaches character creation then an original -50 alert on Play. Rights evidence is advanced, gameplay/production parity/browser/hosting/launch/release/public replay remain pending. Primary slots and live count unchanged.
 
 NetHack R62 further evidence: original 3.3.1 null/noErr SAVE lookup matches Apple’s absent-type contract; its original architecture failures remain open. The 3.4.3 PPC Carbon edition has verified publisher binary/source checksums, applicable licence, bundled port differences and all eight original files/sixteen forks plus Finder metadata matched through production packing. Callback, [caret-timing #4600](https://github.com/benletchford/systemless/pull/4600) and [working-directory HCreate #4603](https://github.com/benletchford/systemless/pull/4603) fixes are merged with all nine checks passing. Fresh integrated unchanged-game native replay reaches the dungeon through ordinary character creation and message acknowledgement; keypad 4 moves the player and displaces the dog. Eight measured pixel assertions pass at 1,532 frontend/guest ticks with zero exhaustion. This is bounded first-dungeon gameplay for 3.4.3 PPC, not qualification of the still-failing 3.3.1/68K edition. These editions remain one distinct target. Original game archive and actual map screenshot are promoted; hosted archive hash/size independently match. Isolated Chrome first-dungeon movement and dog displacement pass eight measured checks; the managed archive response is untouched and matches the original. [Catalogue #4608](https://github.com/benletchford/systemless/pull/4608) is merged at `84b9dd6e7213646fedcd4b0c54114d3a1a992d4c` with launch approved and all final checks passing. Human release and public replay remain pending. [Exact edition and runtime evidence](CATALOGUE-SOURCES.md#original-331-resource-probe-and-343-carbon-alternative). One merged NetHack entry; no qualified-live increase.
+
+
+Spacestation Pheta 2.7 is an additional reserve discovery, one distinct game,
+with [original conditional shareware-library permission, exact archive and all
+five files/ten forks plus Finder metadata matched](CATALOGUE-SOURCES.md#spacestation-pheta-27--additional-reserve-discovery).
+The unchanged About notice visibly shows the required UNREGISTERED state after
+merged modal fix #4622. Explicit 68K/8-bit fresh-start movement using original
+L passes eight measured assertions. Native PPC is N/A after resource inspection.
+The control snapshot candidate #4626 restores checkbox marks; blank options
+labels/help and damaged playfield after closing Options remain open. [Intake
+#4628](https://github.com/benletchford/systemless/issues/4628) tracks browser,
+promotion, launch, human release and public replay. Primary slots and qualified
+live count are unchanged.
