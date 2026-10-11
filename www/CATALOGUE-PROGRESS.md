@@ -126,7 +126,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 84 | Pac the Man | Freeware label; explicit hosting grant unverified | [4.0.1e receipt; eight files](CATALOGUE-SOURCES.md#pac-game-expansion-intake) | [Level 1; Right differs from matched idle](CATALOGUE-SOURCES.md#pac-game-expansion-intake) | [Level 1 and directional input after fix; audio unverified](CATALOGUE-SOURCES.md#pac-the-man-global-input-list-compatibility-fix) | Pending | Pending | Pending |
 | 85 | PacMac Deluxe | Collection permission and plugin terms unverified | [1.3 receipt; 141 files](CATALOGUE-SOURCES.md#pac-game-expansion-intake) | Fatal Sound Library error -5 | Pending | Pending | Pending | Pending |
 | 86 | MacSnake | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 87 | Tetris Max | Original terms pending | [Archive download blocker #4456](https://github.com/benletchford/systemless/issues/4456) | Pending | Pending | Pending | Pending | Pending |
+| 87 | Tetris Max | Original 2.8 shareware terms inspected; redistribution scope pending | [Original fat-game archive recovered #4456](https://github.com/benletchford/systemless/issues/4456#issuecomment-6108056579) | 68K initial falling-piece board reached; asserted play pending; PPC pending | Pending | Pending | Pending | Pending |
 | 88 | Oxyd | Documentation inspected; hosting grant unverified | [3.7 receipt; 12 files](CATALOGUE-SOURCES.md#oxyd-expansion-intake) | Serial read loop before capture; unqualified | Pending | Pending | Pending | Pending |
 | 89 | per-oxyd | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 90 | Lode Runner 2 | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
