@@ -2195,6 +2195,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::NumToString
         | PpcImportDispatcherTarget::StringToNum
         | PpcImportDispatcherTarget::Random
+        | PpcImportDispatcherTarget::SetQDGlobalsRandomSeed
         | PpcImportDispatcherTarget::BitAnd
         | PpcImportDispatcherTarget::BitOr
         | PpcImportDispatcherTarget::BitTst => {
