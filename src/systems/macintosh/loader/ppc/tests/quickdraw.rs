@@ -5947,3 +5947,58 @@ fn qd_global_white_weak_import_copies_live_pattern_and_guards_destination() {
         }
     }
 }
+
+#[test]
+fn port_visible_region_weak_import_copies_complete_live_shape_into_caller_handle() {
+    for library in ["InterfaceLib", "CarbonLib"] {
+        for symbol in ["GetPortVisibleRegion", "getportvisibleregion"] {
+            let loader = synthetic_loader_with_symbol_class(
+                library.as_bytes(), symbol.as_bytes(), 0x82, &[run_reloc(0x23, 1)],
+            );
+            let mut loaded = load_pef_application(&synthetic_pef_with_loader(loader)).unwrap();
+            let accessor = PpcImportDispatcherTarget::GetPortVisibleRegion;
+            assert_eq!(loaded.imports[0].dispatcher_target, accessor);
+            assert!(loaded.imports[0].weak);
+            assert_ne!(loaded.imports[0].address, 0);
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::NewRgn);
+            let source = loaded.cpu.gpr[3];
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::NewRgn);
+            let destination = loaded.cpu.gpr[3];
+            assert_ne!(source, destination);
+            let words: [i16; 18] = [36, 0, 0, 4, 8, 0, 0, 8, 32767,
+                2, 4, 8, 32767, 4, 0, 4, 32767, 32767];
+            let shape: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+            let port = PPC_DATA_BASE + 0x2800;
+            loaded.memory.add_region(port, vec![0; 40]);
+            loaded.memory.write_u32_be(port + PPC_CGRAF_PORT_VIS_RGN_OFFSET, source).unwrap();
+            for version in [0, 0xc000] {
+                assert_eq!(ppc_set_handle_size(
+                    &mut loaded.memory, test_heap_cursor!(loaded), test_heap_limit!(loaded),
+                    test_handles!(loaded), source, shape.len() as u32,
+                ), PPC_NO_ERR);
+                let source_ptr = loaded.memory.read_u32_be(source).unwrap();
+                loaded.memory.write_u16_be(port + 6, version).unwrap();
+                loaded.memory.write_bytes(source_ptr, &shape).unwrap();
+                loaded.cpu.gpr[3] = port;
+                loaded.cpu.gpr[4] = destination;
+                run_test_import(&mut loaded, accessor.clone());
+                assert_eq!(loaded.cpu.gpr[3], destination);
+                assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+                let destination_ptr = loaded.memory.read_u32_be(destination).unwrap();
+                assert_ne!(source_ptr, destination_ptr);
+                assert_eq!(ppc_memory_read_bytes(&mut loaded.memory, destination_ptr, 36).unwrap(), shape);
+                assert!(ppc_point_in_region(&mut loaded.memory, destination, 1, 6));
+                assert!(ppc_point_in_region(&mut loaded.memory, destination, 3, 2));
+                assert!(!ppc_point_in_region(&mut loaded.memory, destination, 3, 6));
+                loaded.cpu.gpr[3] = source;
+                run_test_import(&mut loaded, PpcImportDispatcherTarget::SetEmptyRgn);
+                assert!(ppc_point_in_region(&mut loaded.memory, destination, 1, 6));
+            }
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = destination;
+            run_test_import(&mut loaded, accessor.clone());
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            assert!(ppc_point_in_region(&mut loaded.memory, destination, 1, 6));
+        }
+    }
+}

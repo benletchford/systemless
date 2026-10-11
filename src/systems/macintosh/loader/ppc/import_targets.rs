@@ -224,6 +224,7 @@ pub enum PpcImportDispatcherTarget {
     EndUpdate,
     ClipRect,
     GetClip,
+    GetPortVisibleRegion,
     SetClip,
     GetPen,
     HidePen,
@@ -3139,6 +3140,8 @@ pub(crate) fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::EndUpdate,
         ("InterfaceLib", "ClipRect") => PpcImportDispatcherTarget::ClipRect,
         ("InterfaceLib", "GetClip") => PpcImportDispatcherTarget::GetClip,
+        ("InterfaceLib" | "CarbonLib", "GetPortVisibleRegion" | "getportvisibleregion") =>
+            PpcImportDispatcherTarget::GetPortVisibleRegion,
         ("InterfaceLib", "SetClip") => PpcImportDispatcherTarget::SetClip,
         ("InterfaceLib", "GetPen") => PpcImportDispatcherTarget::GetPen,
         ("InterfaceLib", "HidePen") => PpcImportDispatcherTarget::HidePen,
