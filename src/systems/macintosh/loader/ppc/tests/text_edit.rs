@@ -1207,3 +1207,30 @@ fn textedit_idle_uses_the_same_guest_caret_interval_as_get_caret_time() {
         );
     }
 }
+
+#[test]
+fn text_edit_snapshot_follows_guest_idle_blink_phase() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TENew")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 16]);
+    ppc_write_rect(&mut loaded.memory, scratch, 0, 0, 100, 200).unwrap();
+    ppc_write_rect(&mut loaded.memory, scratch + 8, 0, 0, 100, 200).unwrap();
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = scratch + 8;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TENew);
+    let handle = loaded.cpu.gpr[3];
+    loaded.set_tick_count(100);
+    loaded.cpu.gpr[3] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEActivate { active: true });
+    // Text (1993), p. 2-84: only guest idle calls advance the blink phase.
+    for (tick, visible) in [(131, true), (132, false), (163, false), (164, true)] {
+        loaded.set_tick_count(tick);
+        loaded.cpu.gpr[3] = handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TEIdle);
+        let snapshot = crate::text_edit::snapshot_guest_records(&[(handle, 1)],
+            &mut |addr| loaded.memory.read_u8(addr));
+        assert_eq!(snapshot.records[0].caret_visible, visible, "tick {tick}");
+        assert_eq!(snapshot.records[0].selection, (0, 0));
+        assert!(snapshot.records[0].active);
+    }
+}

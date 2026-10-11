@@ -832,6 +832,7 @@ mod tests {
             text: b"hello".to_vec(),
             selection: (0, 0),
             active: true,
+            caret_visible: true,
             justification: 0,
             line_count: 1,
             line_starts: Some(vec![0, 5]),

@@ -1296,7 +1296,7 @@ mod desktop {
                         );
                         let (before, selected, after) = save_name_segments(&line, selection, true);
                         let soft_wrap_end = index + 2 < starts.len() && starts[index + 1] == line_end;
-                        let caret = record.active && record.selection.0 == record.selection.1
+                        let caret = record.active && record.caret_visible && record.selection.0 == record.selection.1
                             && record.selection.0 >= line_start
                             && (record.selection.0 < line_end
                                 || record.selection.0 == line_end && !soft_wrap_end);
@@ -1314,7 +1314,9 @@ mod desktop {
                                 .text_size(guest_px(f32::from(record.size.clamp(9, 18))))
                                 .child(before)
                                 .when(caret, |row| row.child(
-                                    div().w(guest_px(1.)).h(guest_px(f32::from(record.line_height.max(1)))).bg(cx.theme().foreground)
+                                    div().relative().w(px(0.)).h(guest_px(f32::from(record.line_height.max(1))))
+                                        .child(div().absolute().left_0().top_0().w(guest_px(1.)).h_full()
+                                            .bg(cx.theme().foreground))
                                 ))
                                 .when(!selected.is_empty(), |row| row.child(
                                     div().bg(cx.theme().selection).child(selected)

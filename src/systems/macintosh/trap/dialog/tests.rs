@@ -18844,6 +18844,8 @@
         let result = disp.dispatch_dialog(true, 0x1D8, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(crate::text_edit::snapshot_guest_records(&[(te_handle, 1)],
+            &mut |addr| Some(bus.read_byte(addr))).records[0].caret_visible, true);
         assert!(
             screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
             "TEActivate should show the insertion caret before TEIdle"
@@ -18863,6 +18865,8 @@
         let result = disp.dispatch_dialog(true, 0x1DA, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(crate::text_edit::snapshot_guest_records(&[(te_handle, 1)],
+            &mut |addr| Some(bus.read_byte(addr))).records[0].caret_visible, true);
         assert!(
             screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
             "TEIdle before 32 ticks should leave the caret visible"
@@ -18878,6 +18882,8 @@
         let result = disp.dispatch_dialog(true, 0x1DA, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(crate::text_edit::snapshot_guest_records(&[(te_handle, 1)],
+            &mut |addr| Some(bus.read_byte(addr))).records[0].caret_visible, false);
         assert!(
             !screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
             "TEIdle at the 32-tick boundary should hide the caret"
@@ -18897,6 +18903,8 @@
         let result = disp.dispatch_dialog(true, 0x1DA, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(crate::text_edit::snapshot_guest_records(&[(te_handle, 1)],
+            &mut |addr| Some(bus.read_byte(addr))).records[0].caret_visible, true);
         assert!(
             screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
             "the next elapsed interval should show the caret again"

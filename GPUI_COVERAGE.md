@@ -326,3 +326,11 @@ children; painting the frame separately now preserves guest-coordinate layout.
 Reviewed held captures show all four outline edges in all three modes and on
 a horizontal PPC control. The focused drag geometry test also passes. This
 fix does not establish full thumb readiness or overlap/scaling qualification.
+
+The document TextEdit overlay now follows the guest TERec caret blink phase
+instead of painting every active insertion point continuously. Both CPU
+adapters expose the same canonical caretState field, with guest TEIdle timing
+remaining authoritative. The painted caret has zero layout width so toggling
+it does not shift adjacent text. Focused classic and PPC checks exercise the
+32-tick blink boundary; dialog and Standard File caret presentation, physical
+focus transitions and composed blink captures remain separate qualification.
