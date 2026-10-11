@@ -1,0 +1,4 @@
+d587deca8d4d5c008c5f023f296431277f70ad6c8ad065a7fb9ce2d7e17b4803  src/bin/gpui_demo.rs
+2138f1275248bd3ec5a26a3725f32443f69602330be497dcce597db4a9835ede  src/bin/gpui_demo_choices.rs
+a0980201f97d81866f6aa25da78fcfd28f6e34d4850e20877fc243c057e079d4  src/bin/gpui_demo_frames.rs
+a0b1fb85929761fa1338cad57f3cf86e33fbc9ca085026fc4c7dea57588c7f9e  src/bin/gpui_demo_text.rs

@@ -2100,6 +2100,8 @@ mod desktop {
                         // open state until release. MTE (1992), pp. 3-34--3-35.
                         continue;
                     }
+                    let title_font = control.font_style.map(|style|
+                        systemless::runner::resolve_control_title_style(control.proc_id, Some(&style)));
                     let source = piece.source;
                     let clip = piece.clip;
                     let mut overlay = div()
@@ -2158,10 +2160,10 @@ mod desktop {
                         }
                         0 => {
                             overlay = overlay.child(
-                                super::a11y::AccessibleComponent::new(super::choices::guest_button(
+                                super::a11y::AccessibleComponent::new(super::choices::guest_button_with_font(
                                     format!("guest-control-button-{}-{}", control.guest_id, control.generation),
                                     control.title.clone(), control.enabled, semantic_enabled,
-                                    semantic_enabled && control.hilite == 10, false, scene_scale, cx,
+                                    semantic_enabled && control.hilite == 10, false, scene_scale, title_font, cx,
                                 )
                                     .w_full()
                                     .h_full()
@@ -2185,10 +2187,10 @@ mod desktop {
                         }
                         1 => {
                             overlay = overlay.child(
-                                super::a11y::AccessibleComponent::new(super::choices::guest_checkbox(
+                                super::a11y::AccessibleComponent::new(super::choices::guest_checkbox_with_font(
                                     format!("guest-control-checkbox-{}-{}", control.guest_id, control.generation),
                                     control.title.clone(), control.value != 0, control.enabled,
-                                    control.hilite == 11, scene_scale, cx,
+                                    control.hilite == 11, scene_scale, title_font, cx,
                                 ).disabled(!semantic_enabled).on_change({
                                     let sender = self.commands.clone();
                                     let (id, generation) = (control.guest_id, control.generation);
@@ -2208,10 +2210,10 @@ mod desktop {
                         }
                         2 => {
                             overlay = overlay.child(
-                                super::a11y::AccessibleComponent::new(super::choices::guest_radio(
+                                super::a11y::AccessibleComponent::new(super::choices::guest_radio_with_font(
                                     format!("guest-control-radio-{}-{}", control.guest_id, control.generation),
                                     control.title.clone(), control.value != 0, control.enabled,
-                                    control.hilite == 11, scene_scale, cx,
+                                    control.hilite == 11, scene_scale, title_font, cx,
                                 ).disabled(!semantic_enabled).on_change({
                                     let sender = self.commands.clone();
                                     let (id, generation) = (control.guest_id, control.generation);

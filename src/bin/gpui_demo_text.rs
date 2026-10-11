@@ -2047,7 +2047,21 @@ fn classic_control_label(
     scale: f32,
     foreground: gpui_kit::Hsla,
 ) -> impl gpui_kit::IntoElement {
-    classic_label_canvas(ClassicLine::unicode(label, 0, 12), centered, scale, foreground)
+    classic_control_label_with_style(label, centered, scale, foreground, None)
+}
+
+pub(crate) fn classic_control_label_with_style(
+    label: &str, centered: bool, scale: f32, foreground: gpui_kit::Hsla,
+    style: Option<systemless::runner::ControlTitleStyle>,
+) -> impl gpui_kit::IntoElement {
+    let font = style.map_or((0, 12), |style| (style.font, style.size));
+    let line = if let Some(style) = style {
+        let bytes: Vec<_> = label.chars().map(|ch|
+            systemless::systems::macintosh::mac_roman::encode_mac_roman_char(ch)
+                .expect("guest control title is Macintosh Roman")).collect();
+        ClassicLine::styled(&bytes, style.font, style.size, style.face)
+    } else { ClassicLine::unicode(label, font.0, font.1) };
+    classic_label_canvas_with_font(line, centered, scale, foreground, font, None)
 }
 
 pub(crate) fn classic_menu_label(
