@@ -56,6 +56,7 @@ pub enum PpcSystemCompatibilityOperation {
     ReplaceText,
     ResetAlertStage,
     SetFrontProcess,
+    SetSysDirection,
     StyledLineBreak,
     SystemEdit,
     TruncText,
@@ -674,9 +675,19 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             // left-to-right or -1 for right-to-left text.
             // FUNCTION GetSysDirection: Integer;
             // Inside Macintosh: Text (1993), pp. 6-10 and 6-76.
+            let raw = memory
+                .read_u16_be(crate::text_utils::SYS_DIRECTION)
+                .unwrap_or(0);
             PpcImportAction::Return(ppc_i16_result(
-                memory.read_u16_be(0x0BAC).unwrap_or(0) as i16,
+                crate::text_utils::evaluate_get_sys_direction(raw),
             ))
+        }
+        PpcSystemCompatibilityOperation::SetSysDirection => {
+            // SetSysDirection sets the SysDirection low-memory global ($0BAC).
+            // PROCEDURE SetSysDirection(direction: Integer);
+            // Inside Macintosh: Text (1993), pp. 6-10 and 6-76.
+            let _ = memory.write_u16_be(crate::text_utils::SYS_DIRECTION, cpu.gpr[3] as u16);
+            PpcImportAction::ReturnPreserve
         }
         PpcSystemCompatibilityOperation::GetEvQHdr => {
             // GetEvQHdr returns the address of the EventQueue low-memory QHdr.
@@ -691,31 +702,34 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             // smKCHRCache (38) is the current KCHR data pointer, used by
             // KeyTranslate to map virtual keys through the keyboard layout.
             // Inside Macintosh: Text (1993), pp. 6-61 and C-18--C-20.
-            let result = if cpu.gpr[3] as u16 == 38 {
-                if *kchr_cache_ptr == 0 {
-                    let bytes = crate::trap::dispatch::standard_us_kchr_bytes();
-                    let ptr = ppc_process_heap_alloc(
-                        process_memory_manager,
-                        memory,
-                        heap_cursor,
-                        bytes.len() as u32,
-                        false,
-                    );
-                    if ptr != 0 && memory.write_bytes(ptr, &bytes).is_some() {
-                        *kchr_cache_ptr = ptr;
-                    } else {
-                        *last_mem_error = PPC_MEM_FULL_ERR;
-                    }
+            let selector = cpu.gpr[3] as i16;
+            if selector == crate::text_utils::SM_KCHR_CACHE && *kchr_cache_ptr == 0 {
+                let bytes = crate::trap::dispatch::standard_us_kchr_bytes();
+                let ptr = ppc_process_heap_alloc(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    bytes.len() as u32,
+                    false,
+                );
+                if ptr != 0 && memory.write_bytes(ptr, &bytes).is_some() {
+                    *kchr_cache_ptr = ptr;
+                } else {
+                    *last_mem_error = PPC_MEM_FULL_ERR;
                 }
-                *kchr_cache_ptr
-            } else {
-                0
-            };
+            }
+            let result =
+                crate::text_utils::evaluate_script_manager_variable(selector, *kchr_cache_ptr);
             PpcImportAction::Return(result)
         }
         PpcSystemCompatibilityOperation::GetScriptVariable
-        | PpcSystemCompatibilityOperation::GetScript
-        | PpcSystemCompatibilityOperation::CallComponentUpp => PpcImportAction::Return(0),
+        | PpcSystemCompatibilityOperation::GetScript => {
+            let script = cpu.gpr[3] as i16;
+            let selector = cpu.gpr[4] as i16;
+            let result = crate::text_utils::evaluate_script_variable(script, selector);
+            PpcImportAction::Return(result)
+        }
+        PpcSystemCompatibilityOperation::CallComponentUpp => PpcImportAction::Return(0),
         PpcSystemCompatibilityOperation::LaunchApplication => {
             PpcImportAction::Return(ppc_i16_result(PPC_PROC_NOT_FOUND_ERR))
         }

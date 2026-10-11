@@ -943,7 +943,10 @@ pub fn evaluate_num_to_string(number: i32) -> Vec<u8> {
 /// - Inside Macintosh: Text (1993), p. 5-73
 pub fn evaluate_string_to_num(bytes: &[u8]) -> i32 {
     let mut index = 0usize;
-    while bytes.get(index).is_some_and(|byte| byte.is_ascii_whitespace()) {
+    while bytes
+        .get(index)
+        .is_some_and(|byte| byte.is_ascii_whitespace())
+    {
         index += 1;
     }
     let mut sign = 1i64;
@@ -1019,6 +1022,99 @@ pub const SM_CHAR_LEFT: i16 = 0;
 
 /// Right-to-left text direction for CharType (`smCharRight = 1`).
 pub const SM_CHAR_RIGHT: i16 = 1;
+
+/// GetEnvirons / GetScriptManagerVariable selector (8).
+pub const GET_ENVIRONS_SELECTOR: i32 = 8;
+
+/// SetEnvirons / SetScriptManagerVariable selector (10).
+pub const SET_ENVIRONS_SELECTOR: i32 = 10;
+
+/// GetScript / GetScriptVariable selector (12).
+pub const GET_SCRIPT_SELECTOR: i32 = 12;
+
+/// SetScript / SetScriptVariable selector (14).
+pub const SET_SCRIPT_SELECTOR: i32 = 14;
+
+/// Low-memory global address for SysDirection ($0BAC).
+pub const SYS_DIRECTION: u32 = 0x0BAC;
+
+/// Script Manager variable selector: Script Manager version (`smVersion = 0`).
+pub const SM_VERSION: i16 = 0;
+
+/// Script Manager variable selector: number of enabled script systems (`smEnabled = 2`).
+pub const SM_ENABLED: i16 = 2;
+
+/// Script Manager variable selector: bidirectional script present (`smBidirect = 4`).
+pub const SM_BIDIRECT: i16 = 4;
+
+/// Script Manager variable selector: Roman default font ID (`smFont = 6`).
+pub const SM_FONT: i16 = 6;
+
+/// Script Manager variable selector: default intl resource ID (`smIntl = 8`).
+pub const SM_INTL: i16 = 8;
+
+/// Script Manager variable selector: print flags (`smPrint = 10`).
+pub const SM_PRINT: i16 = 10;
+
+/// Script Manager variable selector: system script code (`smSysScript = 12`).
+pub const SM_SYS_SCRIPT: i16 = 12;
+
+/// Script Manager variable selector: last keyboard script (`smLastScript = 14`).
+pub const SM_LAST_SCRIPT: i16 = 14;
+
+/// Script Manager variable selector: current keyboard script (`smKeyScript = 16`).
+pub const SM_KEY_SCRIPT: i16 = 16;
+
+/// Script Manager variable selector: system font family ID (`smSysFont = 18`).
+pub const SM_SYS_FONT: i16 = 18;
+
+/// Script Manager variable selector: application font family ID (`smAppFont = 20`).
+pub const SM_APP_FONT: i16 = 20;
+
+/// Script Manager variable selector: KCHR resource pointer cache (`smKCHRCache = 38`).
+pub const SM_KCHR_CACHE: i16 = 38;
+
+/// Script Manager variable selector: disable KCHR (`smKeyDisableKCHR = 40`).
+pub const SM_KEY_DISABLE_KCHR: i16 = 40;
+
+/// Script Manager variable selector: dual caret (`smDualCaret = 42`).
+pub const SM_DUAL_CARET: i16 = 42;
+
+/// Script variable selector: script system version (`smScriptVersion = 0`).
+pub const SM_SCRIPT_VERSION: i16 = 0;
+
+/// Script variable selector: script system enabled flag (`smScriptEnabled = 2`).
+pub const SM_SCRIPT_ENABLED: i16 = 2;
+
+/// Script variable selector: right-to-left text direction (`smScriptRight = 4`).
+pub const SM_SCRIPT_RIGHT: i16 = 4;
+
+/// Script variable selector: single-byte script flag (`smScriptSingle = 6`).
+pub const SM_SCRIPT_SINGLE: i16 = 6;
+
+/// Script variable selector: preferred system font (`smScriptPrefSys = 8`).
+pub const SM_SCRIPT_PREF_SYS: i16 = 8;
+
+/// Script variable selector: default font size (`smScriptDefFontSize = 12`).
+pub const SM_SCRIPT_DEF_FONT_SIZE: i16 = 12;
+
+/// Script variable selector: application font family ID (`smScriptAppFond = 14`).
+pub const SM_SCRIPT_APP_FOND: i16 = 14;
+
+/// Script variable selector: script bundle handle (`smScriptBundle = 16`).
+pub const SM_SCRIPT_BUNDLE: i16 = 16;
+
+/// Script variable selector: system font family ID (`smScriptSysFond = 20`).
+pub const SM_SCRIPT_SYS_FOND: i16 = 20;
+
+/// Script variable selector: punctuation specifications (`smScriptPunct = 22`).
+pub const SM_SCRIPT_PUNCT: i16 = 22;
+
+/// Script variable selector: keyboard layout (`smScriptKeys = 28`).
+pub const SM_SCRIPT_KEYS: i16 = 28;
+
+/// Script variable selector: script icon (`smScriptIcon = 30`).
+pub const SM_SCRIPT_ICON: i16 = 30;
 
 /// Classic nilHandleErr error code (-109).
 pub const NIL_HANDLE_ERR: i16 = -109;
@@ -1332,6 +1428,94 @@ pub fn evaluate_char_type(text: &[u8], offset: usize) -> i16 {
     } else {
         SM_CHAR_EURO << 8
     }
+}
+
+/// Canonical architecture-neutral evaluation of classic Macintosh `GetScriptManagerVariable` / `GetEnvirons`.
+///
+/// References:
+/// - Inside Macintosh: Text (1993), pp. 6-61 to 6-64, Table 6-7
+pub fn evaluate_script_manager_variable(selector: i16, kchr_ptr: u32) -> u32 {
+    match selector {
+        SM_VERSION => 0x0710, // System 7.1 Script Manager
+        SM_ENABLED => 1,      // Roman script system only
+        SM_BIDIRECT => 0,     // No bidirectional scripts enabled
+        SM_FONT => 0,         // Chicago (0) default font
+        SM_INTL => 0,         // 'itl0'/'itl1' ID 0
+        SM_PRINT => 0,
+        SM_SYS_SCRIPT => SM_ROMAN as u32,
+        SM_LAST_SCRIPT => SM_ROMAN as u32,
+        SM_KEY_SCRIPT => SM_ROMAN as u32,
+        SM_SYS_FONT => 0, // Chicago (0)
+        SM_APP_FONT => 1, // Geneva (1)
+        SM_KCHR_CACHE => kchr_ptr,
+        SM_KEY_DISABLE_KCHR => 0,
+        SM_DUAL_CARET => 0,
+        _ => 0,
+    }
+}
+
+/// Canonical architecture-neutral evaluation of classic Macintosh `GetScriptVariable` / `GetScript`.
+///
+/// References:
+/// - Inside Macintosh: Text (1993), pp. 6-65 to 6-69, Table 6-8
+pub fn evaluate_script_variable(script: i16, selector: i16) -> u32 {
+    let is_roman = script == SM_ROMAN as i16;
+    match selector {
+        SM_SCRIPT_VERSION => {
+            if is_roman {
+                0x0710
+            } else {
+                0
+            }
+        }
+        SM_SCRIPT_ENABLED => {
+            if is_roman {
+                1
+            } else {
+                0
+            }
+        }
+        SM_SCRIPT_RIGHT => 0, // Left-to-right
+        SM_SCRIPT_SINGLE => {
+            if is_roman {
+                1
+            } else {
+                0
+            }
+        }
+        SM_SCRIPT_PREF_SYS => 0,
+        SM_SCRIPT_DEF_FONT_SIZE => {
+            if is_roman {
+                12
+            } else {
+                0
+            }
+        }
+        SM_SCRIPT_APP_FOND => {
+            if is_roman {
+                1 // Geneva
+            } else {
+                0
+            }
+        }
+        SM_SCRIPT_BUNDLE => 0,
+        SM_SCRIPT_SYS_FOND => 0, // Chicago
+        SM_SCRIPT_PUNCT => 0,
+        SM_SCRIPT_KEYS => 0,
+        SM_SCRIPT_ICON => 0,
+        _ => 0,
+    }
+}
+
+/// Canonical architecture-neutral evaluation of classic Macintosh `GetSysDirection`.
+///
+/// Returns 0 for left-to-right text, or -1 (0xFFFF as signed 16-bit) for right-to-left text.
+///
+/// References:
+/// - Inside Macintosh: Text (1993), pp. 6-10, 6-76
+#[inline]
+pub fn evaluate_get_sys_direction(raw_direction: u16) -> i16 {
+    raw_direction as i16
 }
 
 #[cfg(test)]
@@ -1682,20 +1866,44 @@ mod tests {
         let plain_upper = [b'E'];
 
         // bare: case=false, diac=false
-        assert_eq!(evaluate_rel_string(&accented_lower, &plain_upper, false, false), 0);
-        assert_eq!(evaluate_rel_string(&plain_lower, &plain_upper, false, false), 0);
+        assert_eq!(
+            evaluate_rel_string(&accented_lower, &plain_upper, false, false),
+            0
+        );
+        assert_eq!(
+            evaluate_rel_string(&plain_lower, &plain_upper, false, false),
+            0
+        );
 
         // marks only: case=false, diac=true
-        assert_eq!(evaluate_rel_string(&accented_lower, &plain_upper, false, true), 1);
-        assert_eq!(evaluate_rel_string(&plain_lower, &plain_upper, false, true), 0);
+        assert_eq!(
+            evaluate_rel_string(&accented_lower, &plain_upper, false, true),
+            1
+        );
+        assert_eq!(
+            evaluate_rel_string(&plain_lower, &plain_upper, false, true),
+            0
+        );
 
         // case only: case=true, diac=false
-        assert_eq!(evaluate_rel_string(&accented_lower, &plain_upper, true, false), 1);
-        assert_eq!(evaluate_rel_string(&plain_lower, &plain_upper, true, false), 1);
+        assert_eq!(
+            evaluate_rel_string(&accented_lower, &plain_upper, true, false),
+            1
+        );
+        assert_eq!(
+            evaluate_rel_string(&plain_lower, &plain_upper, true, false),
+            1
+        );
 
         // both: case=true, diac=true
-        assert_eq!(evaluate_rel_string(&accented_lower, &plain_upper, true, true), 1);
-        assert_eq!(evaluate_rel_string(&plain_lower, &plain_upper, true, true), 1);
+        assert_eq!(
+            evaluate_rel_string(&accented_lower, &plain_upper, true, true),
+            1
+        );
+        assert_eq!(
+            evaluate_rel_string(&plain_lower, &plain_upper, true, true),
+            1
+        );
 
         // differing lengths
         assert_eq!(evaluate_rel_string(b"foo", b"foobar", false, false), -1);
@@ -1708,17 +1916,57 @@ mod tests {
         let plain_lower = [b'e'];
         let plain_upper = [b'E'];
 
-        assert!(evaluate_equal_string(&accented_lower, &plain_upper, false, false));
-        assert!(evaluate_equal_string(&plain_lower, &plain_upper, false, false));
+        assert!(evaluate_equal_string(
+            &accented_lower,
+            &plain_upper,
+            false,
+            false
+        ));
+        assert!(evaluate_equal_string(
+            &plain_lower,
+            &plain_upper,
+            false,
+            false
+        ));
 
-        assert!(!evaluate_equal_string(&accented_lower, &plain_upper, false, true));
-        assert!(evaluate_equal_string(&plain_lower, &plain_upper, false, true));
+        assert!(!evaluate_equal_string(
+            &accented_lower,
+            &plain_upper,
+            false,
+            true
+        ));
+        assert!(evaluate_equal_string(
+            &plain_lower,
+            &plain_upper,
+            false,
+            true
+        ));
 
-        assert!(!evaluate_equal_string(&accented_lower, &plain_upper, true, false));
-        assert!(!evaluate_equal_string(&plain_lower, &plain_upper, true, false));
+        assert!(!evaluate_equal_string(
+            &accented_lower,
+            &plain_upper,
+            true,
+            false
+        ));
+        assert!(!evaluate_equal_string(
+            &plain_lower,
+            &plain_upper,
+            true,
+            false
+        ));
 
-        assert!(!evaluate_equal_string(&accented_lower, &plain_upper, true, true));
-        assert!(!evaluate_equal_string(&plain_lower, &plain_upper, true, true));
+        assert!(!evaluate_equal_string(
+            &accented_lower,
+            &plain_upper,
+            true,
+            true
+        ));
+        assert!(!evaluate_equal_string(
+            &plain_lower,
+            &plain_upper,
+            true,
+            true
+        ));
 
         assert!(!evaluate_equal_string(b"short", b"longer", false, false));
     }
@@ -1769,7 +2017,10 @@ mod tests {
         // StripUpperText (uppercases and strips diacritics: 0x8E 'é' -> 'E')
         let mut strip_upper = text.clone();
         evaluate_transform_text(&mut strip_upper, TextTransformOperation::StripUpper);
-        assert_eq!(strip_upper, vec![b'C', b'A', b'F', b'E', b' ', b'1', b'2', b'3']);
+        assert_eq!(
+            strip_upper,
+            vec![b'C', b'A', b'F', b'E', b' ', b'1', b'2', b'3']
+        );
     }
 
     #[test]
@@ -1821,9 +2072,18 @@ mod tests {
 
     #[test]
     fn test_styled_line_break_code_conversions() {
-        assert_eq!(StyledLineBreakCode::from_code(0), Some(StyledLineBreakCode::Word));
-        assert_eq!(StyledLineBreakCode::from_code(1), Some(StyledLineBreakCode::Char));
-        assert_eq!(StyledLineBreakCode::from_code(2), Some(StyledLineBreakCode::Overflow));
+        assert_eq!(
+            StyledLineBreakCode::from_code(0),
+            Some(StyledLineBreakCode::Word)
+        );
+        assert_eq!(
+            StyledLineBreakCode::from_code(1),
+            Some(StyledLineBreakCode::Char)
+        );
+        assert_eq!(
+            StyledLineBreakCode::from_code(2),
+            Some(StyledLineBreakCode::Overflow)
+        );
         assert_eq!(StyledLineBreakCode::from_code(3), None);
 
         assert_eq!(StyledLineBreakCode::Word.to_code(), 0);
@@ -2110,5 +2370,99 @@ mod tests {
         assert_eq!(evaluate_char_type(&text, 3), SM_CHAR_EURO << 8);
         // Out of bounds
         assert_eq!(evaluate_char_type(&text, 4), 0);
+    }
+
+    #[test]
+    fn test_script_manager_variable_matrix() {
+        assert_eq!(evaluate_script_manager_variable(SM_VERSION, 0), 0x0710);
+        assert_eq!(evaluate_script_manager_variable(SM_ENABLED, 0), 1);
+        assert_eq!(evaluate_script_manager_variable(SM_BIDIRECT, 0), 0);
+        assert_eq!(evaluate_script_manager_variable(SM_FONT, 0), 0);
+        assert_eq!(evaluate_script_manager_variable(SM_INTL, 0), 0);
+        assert_eq!(evaluate_script_manager_variable(SM_PRINT, 0), 0);
+        assert_eq!(evaluate_script_manager_variable(SM_SYS_SCRIPT, 0), 0);
+        assert_eq!(evaluate_script_manager_variable(SM_LAST_SCRIPT, 0), 0);
+        assert_eq!(evaluate_script_manager_variable(SM_KEY_SCRIPT, 0), 0);
+        assert_eq!(evaluate_script_manager_variable(SM_SYS_FONT, 0), 0);
+        assert_eq!(evaluate_script_manager_variable(SM_APP_FONT, 0), 1);
+        assert_eq!(
+            evaluate_script_manager_variable(SM_KCHR_CACHE, 0x1234_5678),
+            0x1234_5678
+        );
+        assert_eq!(evaluate_script_manager_variable(SM_KEY_DISABLE_KCHR, 0), 0);
+        assert_eq!(evaluate_script_manager_variable(SM_DUAL_CARET, 0), 0);
+        // Unknown verb returns 0
+        assert_eq!(evaluate_script_manager_variable(999, 0), 0);
+    }
+
+    #[test]
+    fn test_script_variable_matrix() {
+        // Roman script (0)
+        assert_eq!(
+            evaluate_script_variable(SM_ROMAN as i16, SM_SCRIPT_VERSION),
+            0x0710
+        );
+        assert_eq!(
+            evaluate_script_variable(SM_ROMAN as i16, SM_SCRIPT_ENABLED),
+            1
+        );
+        assert_eq!(
+            evaluate_script_variable(SM_ROMAN as i16, SM_SCRIPT_RIGHT),
+            0
+        );
+        assert_eq!(
+            evaluate_script_variable(SM_ROMAN as i16, SM_SCRIPT_SINGLE),
+            1
+        );
+        assert_eq!(
+            evaluate_script_variable(SM_ROMAN as i16, SM_SCRIPT_PREF_SYS),
+            0
+        );
+        assert_eq!(
+            evaluate_script_variable(SM_ROMAN as i16, SM_SCRIPT_DEF_FONT_SIZE),
+            12
+        );
+        assert_eq!(
+            evaluate_script_variable(SM_ROMAN as i16, SM_SCRIPT_APP_FOND),
+            1
+        );
+        assert_eq!(
+            evaluate_script_variable(SM_ROMAN as i16, SM_SCRIPT_BUNDLE),
+            0
+        );
+        assert_eq!(
+            evaluate_script_variable(SM_ROMAN as i16, SM_SCRIPT_SYS_FOND),
+            0
+        );
+        assert_eq!(
+            evaluate_script_variable(SM_ROMAN as i16, SM_SCRIPT_PUNCT),
+            0
+        );
+        assert_eq!(evaluate_script_variable(SM_ROMAN as i16, SM_SCRIPT_KEYS), 0);
+        assert_eq!(evaluate_script_variable(SM_ROMAN as i16, SM_SCRIPT_ICON), 0);
+
+        // Non-Roman script (e.g. Japanese 1)
+        assert_eq!(
+            evaluate_script_variable(SM_JAPANESE as i16, SM_SCRIPT_VERSION),
+            0
+        );
+        assert_eq!(
+            evaluate_script_variable(SM_JAPANESE as i16, SM_SCRIPT_ENABLED),
+            0
+        );
+        assert_eq!(
+            evaluate_script_variable(SM_JAPANESE as i16, SM_SCRIPT_SINGLE),
+            0
+        );
+        assert_eq!(
+            evaluate_script_variable(SM_JAPANESE as i16, SM_SCRIPT_DEF_FONT_SIZE),
+            0
+        );
+    }
+
+    #[test]
+    fn test_get_sys_direction() {
+        assert_eq!(evaluate_get_sys_direction(0), 0); // left to right
+        assert_eq!(evaluate_get_sys_direction(0xFFFF), -1); // right to left
     }
 }

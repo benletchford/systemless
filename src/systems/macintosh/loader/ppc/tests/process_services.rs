@@ -1910,6 +1910,7 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
         ("ReplaceText", PpcSystemCompatibilityOperation::ReplaceText),
         ("ResetAlertStage", PpcSystemCompatibilityOperation::ResetAlertStage),
         ("SetFrontProcess", PpcSystemCompatibilityOperation::SetFrontProcess),
+        ("SetSysDirection", PpcSystemCompatibilityOperation::SetSysDirection),
         ("StyledLineBreak", PpcSystemCompatibilityOperation::StyledLineBreak),
         ("SystemEdit", PpcSystemCompatibilityOperation::SystemEdit),
         ("TruncText", PpcSystemCompatibilityOperation::TruncText),
@@ -2560,5 +2561,98 @@ fn ppc_findword_compatibility_finds_word_boundaries() {
 
     assert_eq!(loaded.memory.read_u16_be(offsets_ptr), Some(5));
     assert_eq!(loaded.memory.read_u16_be(offsets_ptr + 2), Some(7));
+}
+
+#[test]
+fn ppc_get_and_set_sys_direction_compatibility() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetSysDirection")).unwrap();
+    // Default system direction is 0 (left-to-right)
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::GetSysDirection,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i32 as i16, 0);
+
+    // SetSysDirection to -1 (0xFFFF, right-to-left)
+    loaded.cpu.gpr[3] = 0xFFFF;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::SetSysDirection,
+        ),
+    );
+
+    // Verify low-memory global and GetSysDirection readback
+    assert_eq!(
+        loaded.memory.read_u16_be(crate::text_utils::SYS_DIRECTION),
+        Some(0xFFFF)
+    );
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::GetSysDirection,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i32 as i16, -1);
+}
+
+#[test]
+fn ppc_script_manager_and_script_variable_compatibility() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"GetScriptManagerVariable")).unwrap();
+
+    // Query smVersion (0)
+    loaded.cpu.gpr[3] = crate::text_utils::SM_VERSION as u32;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::GetScriptManagerVariable,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0x0710);
+
+    // Query smEnabled (2)
+    loaded.cpu.gpr[3] = crate::text_utils::SM_ENABLED as u32;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::GetScriptManagerVariable,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 1);
+
+    // Query smKCHRCache (38): triggers heap allocation of standard KCHR
+    loaded.cpu.gpr[3] = crate::text_utils::SM_KCHR_CACHE as u32;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::GetScriptManagerVariable,
+        ),
+    );
+    assert_ne!(loaded.cpu.gpr[3], 0);
+
+    // Query GetScriptVariable: Roman script enabled flag
+    loaded.cpu.gpr[3] = crate::text_utils::SM_ROMAN as u32;
+    loaded.cpu.gpr[4] = crate::text_utils::SM_SCRIPT_ENABLED as u32;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::GetScriptVariable,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 1);
+
+    // Query GetScript: Japanese script enabled flag -> 0
+    loaded.cpu.gpr[3] = crate::text_utils::SM_JAPANESE as u32;
+    loaded.cpu.gpr[4] = crate::text_utils::SM_SCRIPT_ENABLED as u32;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::GetScript,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
 }
 
