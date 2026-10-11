@@ -5772,3 +5772,21 @@ wrapping invalid guest records. Final17 notification regressions pass. The
 runner test initializes a native application and injects the queue record;
 it does not establish visible frontend delivery. Native procedure scheduling,
 notification rendering/input, marks/icons and sound completion remain open.
+
+### Native notification response runner scheduling (2026-10-11)
+
+Procedure completion now enters the callback without executing guest instructions.
+The runner prioritizes retained native notification continuations over foreground
+application instructions across bounded slices. Normal callback return resumes
+the application; faults and ExitToShell retain terminal behavior. Existing parked
+Mixed Mode callbacks take priority over retained native continuations. The actual
+runner live-slice regression verifies foreground memory remains untouched and
+architectural CPU state remains restored until callback completion, then confirms
+foreground execution resumes. Final18 notification tests pass (0.18s); the GPUI capture-feature compile check
+passes (16.87s). The initial
+regression used the headless batch API, which legitimately resumes foreground
+within the same batch after callback return; the retained failed log documents
+that test-boundary correction. Evidence: `notification-runner-procedure`.
+This does not prove direct Mixed Mode runner delivery, nested interruptions,
+thread yields, visible GPUI notices, sound completion or composed dismissal.
+All eight release gates remain open.

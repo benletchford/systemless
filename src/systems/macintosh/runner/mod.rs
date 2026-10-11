@@ -2261,8 +2261,18 @@ impl FixtureRunner {
             return false;
         }
         if let Some(app) = self.native.application_mut() {
-            return app.complete_notification_without_procedure(expected.guest_id,
-                expected.instance_id, expected.response);
+            if matches!(expected.response, 0 | u32::MAX) {
+                return app.complete_notification_without_procedure(expected.guest_id,
+                    expected.instance_id, expected.response);
+            }
+            // Enter without executing guest instructions. Native continuations
+            // then take priority over foreground code in run_ppc_steps; direct
+            // Mixed Mode responses use the existing parked-callback path.
+            return self.process_context.with_memory_and_cfm(|memory_manager, cfm| {
+                app.run_notification_response_with_process_services(expected.guest_id,
+                    expected.instance_id, expected.response, 0, false, false,
+                    memory_manager, cfm).is_some()
+            });
         }
         let saved = self.capture_callback_context(ActiveInterruptCallbackSource::NotificationResponse);
         if !self.dispatcher.complete_notification_delivery(&mut self.m68k.cpu, &mut self.bus,
@@ -8616,13 +8626,31 @@ impl FixtureRunner {
         let probe = self
             .process_context
             .with_memory_and_cfm(|memory_manager, cfm| {
-                ppc_app.run_with_process_services(
-                    ppc_max_steps as u64,
-                    trace_ppc_imports,
-                    trace_ppc_fetches,
-                    memory_manager,
-                    cfm,
-                )
+                if let Some((request, instance, completion, _, _)) =
+                    ppc_app.notification_response_context.as_ref()
+                        .filter(|_| ppc_app.parked_interrupt_callback.is_none()) {
+                    let identity = (*request, *instance, *completion);
+                    let mut callback = ppc_app.run_notification_response_with_process_services(
+                        identity.0, identity.1, identity.2, ppc_max_steps as u64,
+                        trace_ppc_imports, trace_ppc_fetches, memory_manager, cfm)
+                        .expect("owned notification continuation must resume");
+                    // Returning to the private callback sentinel ends this
+                    // response, not the application. Preserve faults and
+                    // ExitToShell instead of treating those as successful return.
+                    if matches!(callback.result, PpcRunResult::Halted { pc, .. } if pc == ppc_app.halt_pc)
+                        && !ppc_halted_by_exit_to_shell(&ppc_app.imports, callback.result,
+                            callback.last_import_index, callback.unsupported_import_index) {
+                        callback.result = PpcRunResult::CycleLimit {
+                            cycles: ppc_run_result_cycles(callback.result),
+                        };
+                    }
+                    callback
+                } else {
+                    ppc_app.run_with_process_services(
+                        ppc_max_steps as u64, trace_ppc_imports, trace_ppc_fetches,
+                        memory_manager, cfm,
+                    )
+                }
             });
         let profile_run_us = elapsed_profile_micros(profile_run_start);
         let ppc_cycles = ppc_run_result_cycles(probe.result);

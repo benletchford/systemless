@@ -5,6 +5,60 @@ use crate::process_context::PendingFileCompletion;
 use crate::trap::dispatch::TrapTableProfile;
 
 #[test]
+fn notification_native_runner_finishes_response_before_foreground_instructions() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.init_app(&halted_ppc_app_with_sound(PpcSoundState::default()));
+    let request = PPC_DATA_BASE + 0x6000;
+    let callback = request + 128;
+    let descriptor = callback + 128;
+    let foreground_code = descriptor + 128;
+    let foreground;
+    {
+        let native = runner.native.application_mut().unwrap();
+        native.memory.add_region(request, vec![0; 512]);
+        native.memory.write_u16_be(request + 4, 8).unwrap();
+        native.memory.write_u32_be(request + 24, request + 64).unwrap();
+        native.memory.write_u32_be(request + 28, descriptor).unwrap();
+        native.memory.write_u32_be(request + 32, u32::MAX).unwrap();
+        native.memory.write_u32_be(descriptor, callback).unwrap();
+        native.memory.write_u32_be(descriptor + 4, native.rtoc).unwrap();
+        for (index, instruction) in [0x3880_00c8u32, 0x3884_ffff, 0x2c04_0000,
+            0x4082_fff8, 0x9083_0020, 0x4e80_0020].into_iter().enumerate() {
+            native.memory.write_u32_be(callback + index as u32 * 4, instruction).unwrap();
+        }
+        // Foreground code changes a separate marker as soon as it executes.
+        for (index, instruction) in [0x38a0_0001u32, 0x90a6_0000, 0x4800_0000]
+            .into_iter().enumerate() {
+            native.memory.write_u32_be(foreground_code + index as u32 * 4, instruction).unwrap();
+        }
+        native.cpu.pc = foreground_code;
+        native.cpu.gpr[6] = request + 40;
+        native.toolbox_startup.notification_requests.push(request);
+        foreground = native.cpu.capture_execution_context();
+    }
+    let notice = runner.notification_snapshot().pop().unwrap();
+    assert!(runner.complete_notification_delivery(&notice));
+    assert!(!runner.complete_notification_delivery(&notice));
+    assert!(runner.native.application_mut().unwrap().notification_response_context.is_some());
+    let mut completed = false;
+    for _ in 0..100 {
+        let (_, running) = runner.run_realtime_steps_with_audio(32, 0);
+        assert!(running);
+        let native = runner.native.application_mut().unwrap();
+        assert_eq!(native.memory.read_u32_be(request + 40), Some(0));
+        assert_eq!(native.cpu.capture_execution_context().architectural(), foreground.architectural());
+        if native.notification_response_context.is_none() {
+            assert_eq!(native.memory.read_u32_be(request + 32), Some(0));
+            completed = true;
+            break;
+        }
+    }
+    assert!(completed, "bounded notification response did not finish");
+    assert!(runner.run_realtime_steps_with_audio(32, 0).1);
+    assert_eq!(runner.native.application_mut().unwrap().memory.read_u32_be(request + 40), Some(1));
+}
+
+#[test]
 fn notification_native_runner_completes_null_and_auto_remove_without_cpu_changes() {
     for response in [0, u32::MAX] {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
