@@ -1321,3 +1321,13 @@ The full 70-test GPUI suite passed after the shared button changes (189.36s).
 The subsequent live-DITL stale-action assertions passed in their focused
 three-mode semantic-dialog regression. These results do not close the remaining
 readiness gaps listed above.
+
+
+### Standard File list accessibility structure
+
+Open and Save lists now expose a named ListBox containing ListBoxOption rows,
+with selection supplied only by the guest snapshot. The focused host regression
+checks Open selection, an empty Save list, populated Save selection changes,
+and no generated guest input when presenting those changes. Existing Open/Save
+button press/release assertions still pass. This qualifies metadata and input
+non-interference, not native screen-reader navigation or activation.
