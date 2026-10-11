@@ -1,5 +1,16 @@
 # GPUI production release gates
 
+Latest notification workflow evidence: the rebuilt dual-CPU guest fixture now
+calls NMInstall from normal key events and constructs its response with
+NewNMUPP. The actual production worker + shared GPUI polling/render/click
+regression passes eight cases across mono68k, colour68k, PPC8 and default PPC16
+(9.96s), covering autoremove and compiled callbacks, response-once and blocked
+background menu input. Evidence and source hashes are under
+`reference/gpui-demo/guest-notification-workflow`. This supersedes the earlier
+PPC-installation gap for text-only requests. Mixed mark/icon/sound delivery,
+reviewed notification images, physical input and native accessibility remain
+open; all eight broad production gates remain open.
+
 Last full gate audit: `d9324626` on 2026-10-10. Current progress reconciled
 through opaque cursor presentation and production-worker folder persistence on
 2026-10-11; all eight gates remain open. The production gate is the Systemless

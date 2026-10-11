@@ -1,5 +1,12 @@
 # Toolbox showcase fixture
 
+On the Graphics page, `n` installs a text-only Notification Manager request
+with automatic removal after acknowledgment; `r` installs the same Mac Roman
+message with a compiled response procedure that increments its NMRec refCon.
+Both CPU slices use the original NMInstall/NMRemove and NewNMUPP interfaces.
+The response uses only its supplied record. Repeating either trigger removes
+the previous request before reinstalling it.
+
 This directory contains the source and reproducible build for a classic
 Macintosh fat application. The same `showcase.c` is compiled into a 68K
 `CODE` slice and a native PowerPC PEF slice. The PEF remains in the data fork;
