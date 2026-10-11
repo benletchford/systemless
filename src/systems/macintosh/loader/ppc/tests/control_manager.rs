@@ -84,6 +84,39 @@ fn dialog_scrollbar_tracking_changes_the_value_for_arrow_clicks() {
 }
 
 #[test]
+fn scrollbar_thumb_hit_region_matches_the_painted_sixteen_pixels() {
+    let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+    let mut last_mem_error = loaded.last_mem_error();
+    let handle = with_test_controls!(loaded, |controls| ppc_new_control_record_values(
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+        controls,
+        PPC_MAIN_GWORLD,
+        (0, 0, 100, 16),
+        b"",
+        true,
+        0,
+        0,
+        25,
+        16,
+        0,
+    ));
+    let records = loaded.controls.records();
+    assert_eq!(
+        ppc_control_part_at_point(&mut loaded.memory, &records, handle, 30, 8),
+        Some(129)
+    );
+    assert_eq!(
+        ppc_control_part_at_point(&mut loaded.memory, &records, handle, 32, 8),
+        Some(23)
+    );
+}
+
+#[test]
 fn hle_import_runner_creates_and_links_a_classic_control_record() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewControl")).unwrap();
     let scratch = ppc_heap_alloc(

@@ -2,7 +2,8 @@
 
 This prototype presents a running Macintosh application's menu bar and standard window frames using
 [GPUI Kit 0.7.1](https://gpui-kit.com/). It is a separate experimental runner;
-the usual `systemless` runner and Toolbox drawing code are unchanged.
+the usual `systemless` runner remains independent of GPUI. The shared PowerPC
+scrollbar hit region was corrected to match its existing painted thumb.
 
 Frames use GPUI elements and GPUI Kit theme colours over the guest's existing
 frame rectangles. Standard document windows also receive matching content-edge
@@ -45,6 +46,9 @@ zoom hit region; resizing still uses the guest's original lower-right hit region
 - Original guest framebuffer content and unsupported dialogs below the new menu bar.
 - A standard `dBoxProc` dialog containing only DITL buttons and static text uses
   GPUI Kit components over the guest item rectangles, with guest input unchanged.
+- Standard document-window buttons, checkboxes, and radio buttons use GPUI Kit
+  controls over live Control Manager rectangles. A Systemless GPUI scrollbar
+  draws its arrows and thumb from the guest value and range.
 - GPUI-drawn standard title bars, frame edges, close and zoom glyphs, with
   active/inactive colours and close-button press feedback.
 - The Systemless logo in the menu bar, and GPUI-drawn document gutters and
@@ -64,16 +68,17 @@ against live state. Reopening a menu refreshes its checkmarks and enabled states
 Custom guest MDEF drawing is not reproduced.
 
 Frame overlays preserve the original compact guest geometry; they do not enlarge
-title bars, detach windows or restyle other controls inside windows. Unknown/custom
+title bars or detach windows. Unknown/custom
 WDEFs retain guest rendering. Occlusion by a custom nonrectangular window uses
 its bounding box conservatively, leaving original pixels in that area. Standard
 fullscreen takeover suppresses the frame overlays. Window movement keeps the
 guest's original drag outline rather than introducing live GPUI window movement.
 The gutter overlays are presentation only: scrollbar tracks do not invent a
-thumb or scroll state, and input in those areas still reaches the guest. The
-demo now receives live Control Manager snapshots for both CPUs, including
-scrollbar value/range and checkbox state; control rendering still uses guest
-pixels until clipping, tracking, and fallback behavior are qualified.
+thumb or scroll state, and input in those areas still reaches the guest. Real
+standard scrollbar controls in document windows now show a guest-value thumb;
+custom CDEFs and controls in unsupported windows retain guest pixels. Host
+keyboard and accessibility activation, scrollbar drag capture, and broader
+overlap/layout qualification remain unfinished.
 
 The dialog overlay is limited to standard `dBoxProc` windows with button/static-text
 items. Dialogs with custom items, editable text, or other definitions retain
@@ -95,7 +100,7 @@ cargo test --no-default-features --features gpui-demo --example gpui-menu-demo
 cargo test --no-default-features --features gpui-demo-test --example gpui-menu-demo
 ```
 
-The focused test loads the showcase in monochrome 68k, colour 68k and PPC modes,
+The focused tests load the showcase in monochrome 68k, colour 68k and PPC modes,
 selects a page and a nested difficulty item, verifies guest-updated checkmarks,
 rejects an invalid item, and checks that a nonempty guest image is exported.
 It also verifies frame metadata, title-bar dragging, close-box handling and
@@ -123,3 +128,11 @@ button's guest outline is covered along with its item rectangle.
 Committed captures from the 68K and PowerPC slices are available at
 [68K alert](tests/toolbox-showcase/reference/gpui-demo/08-alert-68k.png) and
 [PowerPC alert](tests/toolbox-showcase/reference/gpui-demo/08-alert-ppc.png).
+
+Use `--capture-controls` or `--capture-controls-changed` in place of
+`--capture-about-alert` to compare the standard control presentation before
+and after guest checkbox and scrollbar input. The four composed references
+cover [68K initial](tests/toolbox-showcase/reference/gpui-demo/02-controls-68k.png),
+[68K changed](tests/toolbox-showcase/reference/gpui-demo/02-controls-changed-68k.png),
+[PowerPC initial](tests/toolbox-showcase/reference/gpui-demo/02-controls-ppc.png), and
+[PowerPC changed](tests/toolbox-showcase/reference/gpui-demo/02-controls-changed-ppc.png).
