@@ -23,6 +23,27 @@ impl TextPointerMap {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn list_cell_qualification_requires_complete_native_evidence() {
+        use super::{ClassicListCellLayout, ClassicListCellPaintPlan};
+        let layout = ClassicListCellLayout { font: 3, size: 12, left: 3, baseline: 10,
+            clip: (0, 0, 12, 20), stop_before: None, char_extra: 0 };
+        let native = vec![255; 24 * 40 * 4];
+        let qualify = |intact, global, pixels: &[u8]| ClassicListCellPaintPlan::qualify(
+            layout, b"", intact, [0; 3], [255; 3], global, pixels, 40, 24);
+        assert!(qualify(true, (2, 3, 14, 23), &native).is_some());
+        assert!(qualify(false, (2, 3, 14, 23), &native).is_none());
+        assert!(qualify(true, (-1, 3, 11, 23), &native).is_none());
+        assert!(qualify(true, (2, 3, 15, 23), &native).is_none());
+        assert!(qualify(true, (2, 3, 14, 23), &native[..native.len() - 1]).is_none());
+        let mut modified = native.clone();
+        modified[(2 * 40 + 3) * 4] = 0;
+        assert!(qualify(true, (2, 3, 14, 23), &modified).is_none());
+        modified = native.clone();
+        modified[0] = 0;
+        assert!(qualify(true, (2, 3, 14, 23), &modified).is_some());
+    }
+
+    #[test]
     fn list_bitmap_recipe_preserves_guest_crop_and_stopping_boundary() {
         use super::ClassicListCellLayout;
         let full = ClassicListCellLayout { font: 3, size: 12, left: 3, baseline: 18,
@@ -664,6 +685,49 @@ pub(crate) struct ClassicListCellLayout {
     pub clip: (i16, i16, i16, i16),
     pub stop_before: Option<i16>,
     pub char_extra: i16,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ClassicListCellPaintPlan {
+    pub pixels: std::collections::BTreeMap<(i16, i16), [u8; 3]>,
+    pub background: [u8; 3],
+    pub clip: (i16, i16, i16, i16),
+}
+
+impl ClassicListCellPaintPlan {
+    /// The caller must establish standard painter ownership and intact drawing;
+    /// equality alone cannot establish that an application-drawn cell is ours.
+    pub fn qualify(
+        layout: ClassicListCellLayout, bytes: &[u8], drawing_intact: bool,
+        foreground: [u8; 3], background: [u8; 3],
+        global_clip: (i16, i16, i16, i16), native: &[u8], width: u32, height: u32,
+    ) -> Option<Self> {
+        if !drawing_intact { return None; }
+        let (top, left, bottom, right) = global_clip;
+        if top < 0 || left < 0 || top >= bottom || left >= right
+            || i32::from(bottom) > i32::try_from(height).ok()?
+            || i32::from(right) > i32::try_from(width).ok()?
+            || i32::from(bottom) - i32::from(top) != i32::from(layout.clip.2) - i32::from(layout.clip.0)
+            || i32::from(right) - i32::from(left) != i32::from(layout.clip.3) - i32::from(layout.clip.1)
+            || native.len() != (width as usize).checked_mul(height as usize)?.checked_mul(4)? { return None; }
+        let pixels: std::collections::BTreeMap<_, _> = layout.pixels(bytes)?.into_iter()
+            .map(|point| (point, foreground)).collect();
+        for y in layout.clip.0..layout.clip.2 { for x in layout.clip.1..layout.clip.3 {
+            let gx = i32::from(left) + i32::from(x) - i32::from(layout.clip.1);
+            let gy = i32::from(top) + i32::from(y) - i32::from(layout.clip.0);
+            let at = (gy as usize * width as usize + gx as usize) * 4;
+            if native[at..at + 3] != pixels.get(&(x, y)).copied().unwrap_or(background) { return None; }
+        } }
+        Some(Self { pixels, background, clip: layout.clip })
+    }
+}
+
+/// Use the shared device-snapped canvas for a fully qualified standard cell.
+pub(crate) fn classic_list_cell(
+    plan: ClassicListCellPaintPlan, scale: f32, port_origin: (f32, f32),
+) -> Option<impl gpui_kit::IntoElement> {
+    classic_styled_text_pixels_with_background(plan.pixels, scale, port_origin,
+        Some((plan.clip, plan.background)))
 }
 
 impl ClassicListCellLayout {
