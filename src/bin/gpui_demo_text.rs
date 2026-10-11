@@ -54,6 +54,39 @@ mod tests {
     }
 
     #[test]
+    fn smooth_textedit_bold_uses_native_smear_and_paint_advances_on_both_cpus() {
+        for ppc in [false, true] {
+            let positions = vec![0, 100, 200];
+            let (line, advance) = if ppc {
+                ClassicLine::ppc_styled_run_with_paint_advance(b"Wi", 3, 12, 1, positions.clone())
+            } else {
+                ClassicLine::classic_textedit_run_with_paint_advance(b"Wi", 3, 12, 1, positions.clone())
+            }.unwrap();
+            assert_eq!(line.positions, positions);
+            let (w, _) = systemless::quickdraw::text::get_glyph(3, 12, 'W').unwrap();
+            let (i, _) = systemless::quickdraw::text::get_glyph(3, 12, 'i').unwrap();
+            assert_eq!(advance, i32::from(w.advance) + i32::from(i.advance) + 2);
+            for raster in 1..=4 {
+                let resolved = resolve_smooth_run(&line, raster).unwrap();
+                assert_eq!(resolved[1].0, i32::from(w.advance) + 1);
+                for ((_, bold), &(_, glyph, data)) in resolved.iter().zip(&line.smooth_sources) {
+                    let plain = systemless::quickdraw::text::smooth_resolved_glyph(glyph, data, raster).unwrap();
+                    assert_eq!((bold.left, bold.top, bold.height), (plain.left, plain.top, plain.height));
+                    assert_eq!(bold.width, plain.width + raster as i32);
+                    assert_eq!(bold.guest_advance, plain.guest_advance + 1);
+                    assert!(bold.pixels.iter().any(|&alpha| alpha > 0 && alpha < 255));
+                    for y in 0..bold.height { for x in 0..bold.width {
+                        let sample = |x| if x < 0 || x >= plain.width { 0 }
+                            else { plain.pixels[(y * plain.width + x) as usize] };
+                        assert_eq!(bold.pixels[(y * bold.width + x) as usize],
+                            sample(x).max(sample(x - raster as i32)));
+                    } }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn smooth_field_preserves_physical_inversion_order_clipping_and_caret() {
         use super::{smooth_textedit_pixels, ClassicLine, StyledTextEditPaintOp as Op};
         use systemless::runner::TextEditInkSnapshot;
@@ -268,8 +301,8 @@ mod tests {
                 }
                 assert_eq!(painted, expected);
                 assert_eq!(paint_advance, pen);
-                if face != 0 { assert!(line.smooth_sources.is_empty()); }
-                if face == 0 && size == 12 {
+                if face > 1 { assert!(line.smooth_sources.is_empty()); }
+                if face <= 1 && size == 12 {
                     assert_eq!(line.smooth_sources.len(), bytes.len());
                     assert_eq!(line.smooth_sources[0].0, 0);
                     assert_ne!(line.smooth_sources[1].0, positions[1], "native paint pens must not be replaced by insertion metrics");
@@ -296,15 +329,15 @@ mod tests {
                 let (expected_advance, expected) = systemless::quickdraw::text::ppc_styled_run_ink(3, size, face, bytes);
                 assert_eq!(paint_advance, i32::from(expected_advance));
                 assert_eq!(painted, expected.into_iter().collect());
-                if face != 0 { assert!(line.smooth_sources.is_empty()); }
-                if face == 0 && size == 12 {
+                if face > 1 { assert!(line.smooth_sources.is_empty()); }
+                if face <= 1 && size == 12 {
                     assert_eq!(line.smooth_sources.len(), bytes.len());
                     let mut native_pen = 0;
                     for (source, byte) in line.smooth_sources.iter().zip(bytes) {
                         let (glyph, _) = systemless::quickdraw::text::get_glyph(3, size, *byte as char).unwrap();
                         assert_eq!(source.0, native_pen);
                         assert!(std::ptr::eq(source.1, glyph));
-                        native_pen += i32::from(glyph.advance);
+                        native_pen += i32::from(glyph.advance) + i32::from(face == 1);
                     }
                 }
             }
@@ -484,6 +517,7 @@ pub(crate) struct ClassicLine {
     // Horizontal spans of binary ink, relative to the baseline.
     pub ink: Vec<(i32, i32, i32)>,
     smooth_sources: Vec<(i32, &'static systemless::quickdraw::fonts::Glyph, &'static [u8])>,
+    smooth_bold: bool,
 }
 
 impl std::fmt::Debug for ClassicLine {
@@ -507,7 +541,7 @@ impl ClassicLine {
     /// Exact guest strike and QuickDraw style synthesis. Underline spans the
     /// complete line, including spaces, just as the framebuffer painter does.
     pub fn styled(bytes: &[u8], font: i16, point_size: i16, face: u8) -> Self {
-        let mut result = Self { positions: vec![0], ink: Vec::new(), smooth_sources: Vec::new() };
+        let mut result = Self { positions: vec![0], ink: Vec::new(), smooth_sources: Vec::new(), smooth_bold: false };
         let mut pen = 0;
         for &byte in bytes {
             let (advance, pixels) = systemless::quickdraw::text::classic_styled_glyph(
@@ -560,7 +594,7 @@ impl ClassicLine {
         let (_, strike_scale) = systemless::quickdraw::fonts::get_font_face_scaled(font, point_size);
         let mut pen: i32 = 0;
         for &byte in bytes {
-            if face == 0 && strike_scale == 1 {
+            if face <= 1 && strike_scale == 1 {
                 if let Some((glyph, data)) = systemless::quickdraw::text::get_glyph(font, point_size, byte as char) {
                     smooth_sources.push((pen, glyph, data));
                 }
@@ -571,7 +605,7 @@ impl ClassicLine {
         }
         pixels.sort_unstable_by_key(|&(x, y)| (y, x));
         pixels.dedup();
-        let mut result = Self { positions, ink: Vec::new(), smooth_sources };
+        let mut result = Self { positions, ink: Vec::new(), smooth_sources, smooth_bold: face == 1 };
         for (x, y) in pixels {
             if let Some(last) = result.ink.last_mut() {
                 if last.1 == y && last.0 + last.2 == x {
@@ -606,17 +640,17 @@ impl ClassicLine {
         let (paint_advance, mut pixels) = systemless::quickdraw::text::ppc_styled_run_ink(font, point_size, face, bytes);
         let mut smooth_sources = Vec::new();
         let (strike, numerator, denominator) = systemless::quickdraw::fonts::get_font_face_scale_ratio(font, point_size);
-        if face == 0 && numerator == denominator {
+        if face <= 1 && numerator == denominator {
             let mut pen = 0;
             for &byte in bytes {
                 if let Some((glyph, data)) = systemless::quickdraw::text::get_glyph(font, strike.size, byte as char) {
                     smooth_sources.push((pen, glyph, data));
-                    pen += i32::from(glyph.advance);
+                    pen += i32::from(glyph.advance) + i32::from(face == 1);
                 } else { pen += 6; }
             }
         }
         pixels.sort_unstable_by_key(|&(x, y)| (y, x));
-        let mut result = Self { positions, ink: Vec::new(), smooth_sources };
+        let mut result = Self { positions, ink: Vec::new(), smooth_sources, smooth_bold: face == 1 };
         for (x, y) in pixels {
             if let Some(last) = result.ink.last_mut() {
                 if last.1 == y && last.0 + last.2 == x {
@@ -654,6 +688,7 @@ impl ClassicLine {
             positions: vec![0],
             ink: Vec::new(),
             smooth_sources: Vec::new(),
+            smooth_bold: false,
         };
         let mut pen = 0;
         for resolved in glyphs {
@@ -1526,8 +1561,31 @@ fn resolve_smooth_run(
         return None;
     }
     line.smooth_sources.iter().map(|&(pen, glyph, data)| {
-        systemless::quickdraw::text::smooth_resolved_glyph(glyph, data, raster).map(|mask| (pen, mask))
+        let mut mask = systemless::quickdraw::text::smooth_resolved_glyph(glyph, data, raster)?;
+        if line.smooth_bold { mask = smooth_bold_mask(mask)?; }
+        Some((pen, mask))
     }).collect()
+}
+
+/// QuickDraw bold uses max(original, one guest pixel to the right), rather
+/// than substituting a host bold face with different outlines and metrics.
+fn smooth_bold_mask(
+    mut glyph: systemless::quickdraw::text::SmoothGlyphSnapshot,
+) -> Option<systemless::quickdraw::text::SmoothGlyphSnapshot> {
+    let shift = i32::try_from(glyph.raster_scale).ok()?;
+    let width = glyph.width.checked_add(shift)?;
+    let mut pixels = vec![0; usize::try_from(width.checked_mul(glyph.height)?).ok()?];
+    for y in 0..glyph.height { for x in 0..glyph.width {
+        let alpha = glyph.pixels[(y * glyph.width + x) as usize];
+        for dx in [0, shift] {
+            let at = (y * width + x + dx) as usize;
+            pixels[at] = pixels[at].max(alpha);
+        }
+    } }
+    glyph.pixels = pixels.into();
+    glyph.width = width;
+    glyph.guest_advance = glyph.guest_advance.checked_add(1)?;
+    Some(glyph)
 }
 
 /// Outline coverage changes ink only; guest advances and baseline remain authoritative.
