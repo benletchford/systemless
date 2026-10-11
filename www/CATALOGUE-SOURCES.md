@@ -1251,9 +1251,13 @@ faces and must not be confused with the scored roll. Fresh bounded replay
 passes 152 checks of original icon pixels and measured score changes at
 2535 frontend / 3119 guest ticks, zero exhausted frames; captures inspected.
 This qualifies one 68K scoring turn, not a full match, saves, audio or independent
-ROM fidelity. Compatibility CI/merge, distribution delivery review, hosted
-browser qualification, catalogue approval, human release and public replay
-remain pending. No hosted archive, catalogue entry or live-qualified increment.
+ROM fidelity. [Compatibility PR #4662](https://github.com/benletchford/systemless/pull/4662)
+passed all nine exact-head CI checks at `3802c17b90b77b0ed05313bbb3f80bfde7e100e4`
+and merged as `186841d43e139d94a775986325f039973d20cb1b` on 11 October 2026
+20:33:19 UTC. Both 4×/1× icon reference corrections were independently derived
+from the fixture bitmap, with no differences outside the blank icon pixels.
+Distribution delivery review, hosted browser qualification, catalogue approval,
+human release and public replay remain pending. No release was triggered. No hosted archive, catalogue entry or live-qualified increment.
 
 ## Bugdom — target 46, publisher free-use clarification
 
@@ -1897,5 +1901,120 @@ again verifies HTTP 200, 73,613 bytes and the publisher SHA-256 without intercep
 The score-3 capture is inspected and the pacing probe passes with no console
 errors. Newer default-branch changes are confined to PPC DrawSprocket and do not
 change this 68K runtime path. Launch is approved for the bounded native/browser
-memory rounds and the entry is enabled. Final catalogue CI/merge, human release
-and independent public replay remain pending; no qualified-live increment yet.
+memory rounds and the entry is enabled. [Catalogue PR #4656](https://github.com/benletchford/systemless/pull/4656)
+merged on 11 October 2026 as `3c29bd40572c2c61cbe266d30646bf166c1b7cb5` after
+all four checks passed on head `35911d56c75751ca66c3759a3ab3dd6a0894ac97`.
+Human release and independent public replay remain pending; no qualified-live
+increment yet.
+
+
+## On the Edge 3.1 — primary 508, complete original package
+
+Inspected 12 October 2026. The [preservation index](https://www.gryphel.com/c/sw/games/edge/)
+links the [original BinHex/StuffIt archive](https://www.gryphel.com/d/sw/games/edge/c/ontheedge.sit.hqx),
+not its repackaged HFS disk. Original download: 22,676 bytes, SHA-256
+`666d412e535e9be3d4b994be9ef1e04ec43ed77fa8a0820d7a877a9a4e80bde3`.
+Production packing preserves both original files / all four forks exactly
+against independent unar extraction, plus each file's Finder type, creator and
+flags. Application: 15,058 data / 21,540 resource bytes. Accompanying PICT readme:
+2,514 data / zero resource bytes. Complete production pack: 39,221 bytes.
+
+The original PICT readme's text records were inspected, and its unmodified
+file was independently rendered. It permits free copying and distribution
+without charge, retains the five-dollar shareware request and copyright, and
+reserves sold software libraries and commercial bundling for written consent.
+This proposed free preservation delivery keeps the full original archive and
+readme separate from the emulator binary. No sale, commercial-bundling or
+modified-software grant is inferred. Actual executable has CODE 0/1/3, a
+`Joy!peffpwpc` data fork and cfrg; vers identifies 3.1. Both game slices are
+present. The preserved edition is dated 1995 by the archive index.
+
+[Catalogue intake #4661](https://github.com/benletchford/systemless/issues/4661):
+immutable native `392e612c55387756ec217577f085b387948da491`, exact original archive,
+selector `On the Edge 3.1/On the Edge`, explicit 68K/depth 8. Command-N starts
+New game, then an ordinary inner-square click places the six of hearts, draws
+an ace of clubs and changes Score 0 to 100. A fresh bounded replay passes twelve
+measured before/after pixel checks at 786 frontend / 1,386 guest ticks, zero
+exhaustion; captures inspected. This proves one placement, not completed games,
+card removal, undo, saving or audio. A later Command-Z attempt made no visible
+change and does not qualify undo. A content-only crop of the successful placement
+is 3,228 bytes, SHA-256
+`379b25620693cd71d32c8bd3289cf1f4fbb19b93973df969c30276c67d46d724`.
+
+PPC baseline repeats on native `400a685b6365aa226cb220bf7b8da61d4600bbbb`: startup
+halts at frontend 1 / guest 0, PC 0 / LR 0, SP `07F6FFC0`, 41,206 cycles, zero
+assertions and no requested checkpoint; an empty framed window is inspected.
+Original instruction/register traces show zero-extended negative Random values
+produce negative shuffle indexes: result `0000EAC5` becomes `FFFF153B` after
+negation, then remainder -41. A memory-write watch observes the guest's shuffle
+store at `0100294C` repeatedly overwrite quit flag `0200047E`, ending with `1B`.
+The original event loop consequently returns. [Focused signed-result issue #4663](https://github.com/benletchford/systemless/issues/4663)
+tracks the fix; no guest archive or application state was patched. Corrected PPC
+replay, hosted browser qualification, launch approval, catalogue CI/merge, human
+release and independent public replay remain pending. Asset promotion in
+[catalogue PR #4664](https://github.com/benletchford/systemless/pull/4664) produced
+head `17b0de28ec3e663230a09a4f19feff29f4db0cad`. A fresh download of the
+[hosted original](https://assets.systemless.org/catalogue/objects/sha256/66/666d412e535e9be3d4b994be9ef1e04ec43ed77fa8a0820d7a877a9a4e80bde3.hqx)
+matches all 22,676 bytes and the original SHA-256. Canonical omission of the
+false launch flag retains the schema default of false. The proposed
+entry remains launch-disabled; no new live-qualified game is counted.
+
+
+On the Edge PPC follow-up: [PR #4665](https://github.com/benletchford/systemless/pull/4665)
+returns signed Random results through the existing INTEGER helper. All eight
+focused Random tests pass. Immutable optimized native
+`ed9db4de2310b638252f7d5d8f43158896e45598` with the unchanged original archive,
+selector and explicit PPC/depth 8 now completes startup at 600/600 ticks, four
+measured table-pixel assertions, zero exhaustion. Command-N plus an inner-square
+click completes 786/786 ticks without the prior halt. Captures inspected.
+Dealt-card artwork and score text remain incomplete, so this is startup evidence
+only. PR #4665 passed all nine checks at the exact native head and merged as
+`2cf2a6b8c4c8342f633b11dac26b5277d8405cdb` on 11 October 2026 20:23:55 UTC.
+No release was triggered. PPC rendering and browser qualification remain pending. The original halt trace above remains historical
+baseline evidence.
+
+
+Fresh 68K replay on native `ed9db4de2310b638252f7d5d8f43158896e45598`
+passes the same twelve placement assertions at 786/1,386 ticks, zero exhaustion;
+inspected six of hearts, next ace of clubs and Score 100 remain correct.
+Real Chrome 151 preview at integrated source `b3b61ca5510101a1eace9afb7e497d3a7bba65db` (promoted candidate plus
+signed Random fix), WebGL worker, 800×600/depth 8/default 25 MHz, completes the
+same turn through ordinary File/New Game and pointer input. Twelve fresh
+before/after browser pixel assertions pass. Production-origin frontend files are
+intercepted; the archive is not. Its direct hosted HTTP 200 response matches the
+22,676-byte original SHA-256 and permits Origin https://systemless.org.
+Cross-origin isolation is true. Captures account for document scroll and the
+798×598 CSS presentation of the 800×600 guest canvas.
+The separate unchanged pacing gate fails at approximately 19.33 guest ticks/sec
+(minimum 50), with approximately 60 host FPS, 13 ms CPU budget and no console
+errors. The supported 8 MHz configuration is prepared for testing; it has not
+been qualified yet. Launch remains disabled and no new live game is counted.
+
+[PPC rendering issue #4667](https://github.com/benletchford/systemless/issues/4667):
+a fresh original-game native probe passes six startup assertions, including two
+word reads showing QDGlobals.thePort at `020005AA` still names `02F00000`, while
+the font trace uses current window port `03000250`. CopyBits targets screen
+portBits `02F00002` with window-local rectangles; suit images appear outside
+cards. Original DrawString arguments include Score 100 and card labels, despite
+incomplete visible text. Explicit same-port reselection skips the global update
+because of the current import-boundary equality guard. Regression coverage is
+being tested before the fix; card/text rendering must be replayed independently.
+
+
+On the Edge browser approval follow-up: the rebuilt supported **8 MHz** preview
+at runtime source `b3b61ca5510101a1eace9afb7e497d3a7bba65db` has only local
+candidate launch/clock metadata overrides. All twelve unchanged before/after
+browser pixel checks pass, and the unchanged pacing gate passes at approximately
+57.98 guest ticks/sec (minimum 50), 60.01 host FPS, no console errors. Ordinary
+File/New Game deals **five of hearts** in this run; placing it draws **six of
+spades** and raises Score 0 to 100. These are this browser run's actual cards,
+not the earlier native/25 MHz run's six of hearts and ace of clubs. Captures
+inspected. Real untouched hosted archive HTTP 200/22,676-byte body and original
+SHA-256 match again, with production-origin CORS and isolation. Independently
+fetched hosted native content screenshot matches 3,228 bytes and
+`379b25620693cd71d32c8bd3289cf1f4fbb19b93973df969c30276c67d46d724`.
+Launch approved for the verified default 68K route at 8 MHz in catalogue PR #4664.
+The original fat package and PPC startup evidence remain intact; PPC rendering
+issue #4667 is still being fixed. Full matches, removal, undo, saves and audio
+remain unqualified. Final catalogue CI/merge, human release and public replay
+remain pending. No release is triggered or live-qualified game counted.
