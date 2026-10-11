@@ -12467,8 +12467,17 @@ impl super::TrapDispatcher {
                         let (dialog_ptr, edit_item, item_hit_ptr, stack_ptr) =
                             (tracking.dialog_ptr, tracking.edit_item, tracking.item_hit_ptr, tracking.stack_ptr);
                         let handle = bus.read_long(dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
-                        let held = self.track_text_edit_selection(cpu, bus, handle, (0, 0), false);
                         let ptr = Self::te_record_ptr(bus, handle);
+                        let previous_selection = (bus.read_word(ptr + Self::TE_SEL_START_OFFSET),
+                            bus.read_word(ptr + Self::TE_SEL_END_OFFSET));
+                        let held = self.track_text_edit_selection(cpu, bus, handle, (0, 0), false);
+                        let selection = (bus.read_word(ptr + Self::TE_SEL_START_OFFSET),
+                            bus.read_word(ptr + Self::TE_SEL_END_OFFSET));
+                        if selection != previous_selection {
+                            let bounds = self.dialog_tracking.as_ref().unwrap().bounds;
+                            let pixels = self.save_dialog_pixels(bus, bounds);
+                            self.dialog_tracking.as_mut().unwrap().rendered_pixels = pixels;
+                        }
                         if let Some(tracking) = self.dialog_tracking.as_mut() {
                             if let Some(item) = tracking.items.get_mut((edit_item - 1) as usize) {
                                 item.sel_start = bus.read_word(ptr + Self::TE_SEL_START_OFFSET) as i16;
@@ -13059,6 +13068,8 @@ impl super::TrapDispatcher {
                                                         }
                                                     }
                                                 }
+                                                let pixels = self.save_dialog_pixels(bus, bounds);
+                                                self.dialog_tracking.as_mut().unwrap().rendered_pixels = pixels;
                                                 if held { return Some(Ok(())); }
                                                 self.flush_dialog_edit_item_texts(
                                                     bus, dlg_ptr, &items, edit_item, &edit_text,
