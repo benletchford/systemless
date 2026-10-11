@@ -1436,3 +1436,40 @@ This is one qualified catalogue entry for the PPC 3.4.3 edition; the older
 3.3.1/68K failures remain unresolved. Full dungeon progression, combat, saves
 and audio remain unverified. Human release and exact public-route replay remain
 pending before any qualified-live increment. No release action was taken.
+
+
+## Rogue III Mac release 6 — primary slot 80
+
+[Intake #4612](https://github.com/benletchford/systemless/issues/4612).
+The [Macintosh publisher](https://www.semicolon.com/old/DownloadPage.html)
+supplies the unchanged [original BinHex self-extracting archive](https://www.semicolon.com/Downloads/Rogue.sea.hqx),
+127,671 bytes, SHA-256
+`9c1822d7ef48bd9de01cc186b0280df6f993d109de066c676fb7a5a4f206d173`.
+It is byte-identical to Gryphel's explicitly original-format copy; MD5
+`a4d26a1586c4fa7685092b1fe32c45d4` matches the preservation receipt. The
+Gryphel repackaged HFS ZIP is not the submitted game source.
+
+The complete original Rogue Manual starts with affirmative four-clause BSD
+source/binary redistribution terms, retained copyright, conditions, disclaimer,
+Berkeley advertising acknowledgement and no-endorsement condition. Preserve the
+manual, port README and game together; the catalogue includes the required
+acknowledgement. Original README identifies Rick Holzgrafe's Macintosh port
+of Timothy Stoehr's portable Rogue derived from Rogue 5.3.
+
+Independent unar expansion yields three original files: Rogue, Rogue Manual
+and Read Me First. Production packing independently matches all six original
+forks and supported Finder type/creator/flags. Complete pack is 141,895 bytes.
+Actual game data fork is empty; resource fork is 108,691 bytes, SHA-256
+`07f482d867dd323c36855bf6caac3219663bf3a23520717e2bcf020d028b8e0f`.
+Four CODE resources have sizes 24, 70,556, 12,817 and 1,266 bytes; no cfrg or
+PPC game slice. This original edition is genuinely 68K only.
+
+Unchanged original native source `fbd12e1e33941e1da82b9ceb61ed28966571ed81`,
+selector Rogue, explicit 68K/depth 8, reaches the original dungeon. Ordinary h
+moves one cell left. Eight measured before/after pixel assertions pass at
+662 frontend / 1,262 guest ticks with zero exhaustion; captures inspected.
+[Catalogue draft #4613](https://github.com/benletchford/systemless/pull/4613)
+includes original archive, retained notices and actual content-only screenshot;
+preview validation passes. Promotion, hosted receipts, browser qualification,
+launch approval, human release and public replay remain pending. Broader dungeon
+progression, combat, saving and audio remain unverified. No qualified-live increment.
