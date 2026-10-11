@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.97.0](https://github.com/benletchford/systemless/compare/v0.96.0...v0.97.0) (2026-10-11)
+
+
+### Features
+
+* **catalogue:** add playable original NS-SHAFT ([462e867](https://github.com/benletchford/systemless/commit/462e86784cea36bcfa3565f8ae893ced8650ac70))
+* **catalogue:** add playable original NS-TOWER ([#4481](https://github.com/benletchford/systemless/issues/4481)) ([75f9ee0](https://github.com/benletchford/systemless/commit/75f9ee06b47230091dea6237c34d119b2a59b707))
+* **catalogue:** approve verified NS-TOWER browser gameplay ([7112bed](https://github.com/benletchford/systemless/commit/7112bed62acfdf163c5665402b499bc0b4b92e00))
+
+
+### Bug Fixes
+
+* bind CarbonLib Apple-event object support ([bd5c0ca](https://github.com/benletchford/systemless/commit/bd5c0cab0826f6d8fc3e02a57bafbc7cb7b25004))
+* bind PowerPC grow-zone callback descriptors ([740f97f](https://github.com/benletchford/systemless/commit/740f97f86ffd44322094da1ab7b911134eed6d0b))
+* decode classic ShowHide byte arguments at the stack pointer ([abd4859](https://github.com/benletchford/systemless/commit/abd4859f940de50a5e3a5ec83216ad2c39a5593f))
+* format PowerPC international date strings ([9c42a2a](https://github.com/benletchford/systemless/commit/9c42a2ad85ab56898ba01f9777e2a13d2c9ddad7))
+* preserve HFS basenames through catalogue lookups ([af265ee](https://github.com/benletchford/systemless/commit/af265ee7c7bd5bc3f8f6f6aac28acaa455e117e7))
+* preserve original StuffIt filename components ([f37139f](https://github.com/benletchford/systemless/commit/f37139f5f37b595f13eedaf5ca3955ccffcfed76))
+* resolve PowerPC temporary memory boundary queries ([1ef89c4](https://github.com/benletchford/systemless/commit/1ef89c4c163b63a01f8c52acdad47588e7461298))
+* return visible Roman text lengths for classic callers ([72a41d7](https://github.com/benletchford/systemless/commit/72a41d73706ad2fac832f754bcbbef90298fbcdc))
+* support OSL callback routine descriptors ([6b804d3](https://github.com/benletchford/systemless/commit/6b804d31f5ccd3c08183257f48f0b78b16c25558))
+* support PowerPC Internet Config instance lifecycle ([def0a28](https://github.com/benletchford/systemless/commit/def0a28c488553b3843bf70eab52b06a3c2386f0))
+
 ## [0.96.0](https://github.com/benletchford/systemless/compare/v0.95.2...v0.96.0) (2026-10-11)
 
 
