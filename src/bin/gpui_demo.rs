@@ -1081,6 +1081,19 @@ mod desktop {
             Self::read_host_clipboard_with_stamp(cx, stamp)
         }
 
+        fn queue_accessible_text_action(&self, command: Command, window: &Window) {
+            let owner = match &command {
+                Command::ReplaceText(owner, range, _, _) | Command::SelectText(owner, range)
+                    if range.start <= range.end && range.end <= owner.text.len() => owner,
+                _ => return,
+            };
+            if self.host_active == Some(false) || self.notification_alert.is_some()
+                || self.composition.preedit.is_some() || !self.focus.is_focused(window)
+                || !self.open_menus.is_empty() || self.guest_menu_tracking || self.guest_popup.is_some()
+                || self.composition.owner() != Some(owner) { return; }
+            let _ = self.commands.send(command);
+        }
+
         fn queue_control_action(&self, id: u32, generation: u64) {
             if self.host_active == Some(false) || self.notification_alert.is_some()
                 || self.standard_file.is_some()
@@ -2204,20 +2217,20 @@ mod desktop {
                                 && self.focus.is_focused(window) && self.open_menus.is_empty() && !self.guest_menu_tracking && self.guest_popup.is_none(), |field| {
                                 let Some(owner) = self.accessible_record_owner(record) else { return field; };
                                 let multiline_commit = matches!(owner.target, super::input::TextInputTarget::Document { .. });
-                                let sender = self.commands.clone();
-                                let selection_sender = self.commands.clone();
+                                let value_view = cx.entity().downgrade();
+                                let selection_view = cx.entity().downgrade();
                                 let selection_owner = owner.clone();
                                 let selection_lines = accessible_line_ids.clone();
-                                field.on_a11y_action(gpui_kit::accesskit::Action::SetValue, move |data, _, _| {
+                                field.on_a11y_action(gpui_kit::accesskit::Action::SetValue, move |data, window, cx| {
                                     if let Some(gpui_kit::accesskit::ActionData::Value(value)) = data {
                                         if let Some((expected, range, bytes)) = super::input::accessibility_text_replacement(owner.clone(), value, multiline_commit) {
-                                            let _ = sender.send(Command::ReplaceText(expected, range, bytes, None));
+                                            let _ = value_view.update(cx, |this, _| this.queue_accessible_text_action(Command::ReplaceText(expected, range, bytes, None), window));
                                         }
                                     }
-                                }).on_a11y_action(gpui_kit::accesskit::Action::SetTextSelection, move |data, _, _| {
+                                }).on_a11y_action(gpui_kit::accesskit::Action::SetTextSelection, move |data, window, cx| {
                                     if let Some(gpui_kit::accesskit::ActionData::SetTextSelection(selection)) = data {
                                         if let Some(range) = super::a11y::guest_multiline_range(selection, &selection_lines.borrow(), selection_owner.text.len()) {
-                                            let _ = selection_sender.send(Command::SelectText(selection_owner.clone(), range));
+                                            let _ = selection_view.update(cx, |this, _| this.queue_accessible_text_action(Command::SelectText(selection_owner.clone(), range), window));
                                         }
                                     }
                                 })
@@ -2257,20 +2270,20 @@ mod desktop {
                                 && self.focus.is_focused(window) && self.open_menus.is_empty() && !self.guest_menu_tracking && self.guest_popup.is_none(), |field| {
                                 let Some(owner) = self.accessible_record_owner(record) else { return field; };
                                 let multiline_commit = matches!(owner.target, super::input::TextInputTarget::Document { .. });
-                                let sender = self.commands.clone();
-                                let selection_sender = self.commands.clone();
+                                let value_view = cx.entity().downgrade();
+                                let selection_view = cx.entity().downgrade();
                                 let selection_owner = owner.clone();
                                 let selection_lines = accessible_line_ids.clone();
-                                field.on_a11y_action(gpui_kit::accesskit::Action::SetValue, move |data, _, _| {
+                                field.on_a11y_action(gpui_kit::accesskit::Action::SetValue, move |data, window, cx| {
                                     if let Some(gpui_kit::accesskit::ActionData::Value(value)) = data {
                                         if let Some((expected, range, bytes)) = super::input::accessibility_text_replacement(owner.clone(), value, multiline_commit) {
-                                            let _ = sender.send(Command::ReplaceText(expected, range, bytes, None));
+                                            let _ = value_view.update(cx, |this, _| this.queue_accessible_text_action(Command::ReplaceText(expected, range, bytes, None), window));
                                         }
                                     }
-                                }).on_a11y_action(gpui_kit::accesskit::Action::SetTextSelection, move |data, _, _| {
+                                }).on_a11y_action(gpui_kit::accesskit::Action::SetTextSelection, move |data, window, cx| {
                                     if let Some(gpui_kit::accesskit::ActionData::SetTextSelection(selection)) = data {
                                         if let Some(range) = super::a11y::guest_multiline_range(selection, &selection_lines.borrow(), selection_owner.text.len()) {
-                                            let _ = selection_sender.send(Command::SelectText(selection_owner.clone(), range));
+                                            let _ = selection_view.update(cx, |this, _| this.queue_accessible_text_action(Command::SelectText(selection_owner.clone(), range), window));
                                         }
                                     }
                                 })
@@ -2648,21 +2661,21 @@ mod desktop {
                                     owner.identity == (dialog.guest_id, dialog.generation)
                                         && matches!(owner.target, super::input::TextInputTarget::Dialog { item: number, .. } if number == item.number)).cloned()
                                     else { return field; };
-                                let sender = self.commands.clone();
-                                let selection_sender = self.commands.clone();
+                                let value_view = cx.entity().downgrade();
+                                let selection_view = cx.entity().downgrade();
                                 let selection_owner = owner.clone();
                                 let selection_id = accessible_run_id.clone();
-                                field.on_a11y_action(gpui_kit::accesskit::Action::SetValue, move |data, _, _| {
+                                field.on_a11y_action(gpui_kit::accesskit::Action::SetValue, move |data, window, cx| {
                                     if let Some(gpui_kit::accesskit::ActionData::Value(value)) = data {
                                         if let Some((expected, range, bytes)) = super::input::accessibility_text_replacement(owner.clone(), value, false) {
-                                            let _ = sender.send(Command::ReplaceText(expected, range, bytes, None));
+                                            let _ = value_view.update(cx, |this, _| this.queue_accessible_text_action(Command::ReplaceText(expected, range, bytes, None), window));
                                         }
                                     }
                                 }).when(!item.edit_text_layout.as_ref().unwrap().wrap, |field| {
-                                    field.on_a11y_action(gpui_kit::accesskit::Action::SetTextSelection, move |data, _, _| {
+                                    field.on_a11y_action(gpui_kit::accesskit::Action::SetTextSelection, move |data, window, cx| {
                                         if let Some(gpui_kit::accesskit::ActionData::SetTextSelection(selection)) = data {
                                             if let Some(range) = super::a11y::guest_selection_range(selection, selection_id.get(), selection_owner.text.len()) {
-                                                let _ = selection_sender.send(Command::SelectText(selection_owner.clone(), range));
+                                                let _ = selection_view.update(cx, |this, _| this.queue_accessible_text_action(Command::SelectText(selection_owner.clone(), range), window));
                                             }
                                         }
                                     })
@@ -3142,20 +3155,20 @@ mod desktop {
                             let owner = super::input::TextInputOwner { identity: owner.identity,
                                 target: super::input::TextInputTarget::StandardFile { new_folder: false },
                                 text: owner.text, selection: owner.selection };
-                            let sender = self.commands.clone();
-                            let selection_sender = self.commands.clone();
+                            let value_view = cx.entity().downgrade();
+                            let selection_view = cx.entity().downgrade();
                             let selection_owner = owner.clone();
                             let selection_id = accessible_run_id.clone();
-                            field.on_a11y_action(gpui_kit::accesskit::Action::SetValue, move |data, _, _| {
+                            field.on_a11y_action(gpui_kit::accesskit::Action::SetValue, move |data, window, cx| {
                                 if let Some(gpui_kit::accesskit::ActionData::Value(value)) = data {
                                     if let Some((expected, range, bytes)) = super::input::accessibility_text_replacement(owner.clone(), value, false) {
-                                        let _ = sender.send(Command::ReplaceText(expected, range, bytes, None));
+                                        let _ = value_view.update(cx, |this, _| this.queue_accessible_text_action(Command::ReplaceText(expected, range, bytes, None), window));
                                     }
                                 }
-                            }).on_a11y_action(gpui_kit::accesskit::Action::SetTextSelection, move |data, _, _| {
+                            }).on_a11y_action(gpui_kit::accesskit::Action::SetTextSelection, move |data, window, cx| {
                                 if let Some(gpui_kit::accesskit::ActionData::SetTextSelection(selection)) = data {
                                     if let Some(range) = super::a11y::guest_selection_range(selection, selection_id.get(), selection_owner.text.len()) {
-                                        let _ = selection_sender.send(Command::SelectText(selection_owner.clone(), range));
+                                        let _ = selection_view.update(cx, |this, _| this.queue_accessible_text_action(Command::SelectText(selection_owner.clone(), range), window));
                                     }
                                 }
                             })
@@ -3239,20 +3252,20 @@ mod desktop {
                             let owner = super::input::TextInputOwner { identity: owner.identity,
                                 target: super::input::TextInputTarget::StandardFile { new_folder: true },
                                 text: owner.text, selection: owner.selection };
-                            let sender = self.commands.clone();
-                            let selection_sender = self.commands.clone();
+                            let value_view = cx.entity().downgrade();
+                            let selection_view = cx.entity().downgrade();
                             let selection_owner = owner.clone();
                             let selection_id = accessible_run_id.clone();
-                            field.on_a11y_action(gpui_kit::accesskit::Action::SetValue, move |data, _, _| {
+                            field.on_a11y_action(gpui_kit::accesskit::Action::SetValue, move |data, window, cx| {
                                 if let Some(gpui_kit::accesskit::ActionData::Value(value)) = data {
                                     if let Some((expected, range, bytes)) = super::input::accessibility_text_replacement(owner.clone(), value, false) {
-                                        let _ = sender.send(Command::ReplaceText(expected, range, bytes, None));
+                                        let _ = value_view.update(cx, |this, _| this.queue_accessible_text_action(Command::ReplaceText(expected, range, bytes, None), window));
                                     }
                                 }
-                            }).on_a11y_action(gpui_kit::accesskit::Action::SetTextSelection, move |data, _, _| {
+                            }).on_a11y_action(gpui_kit::accesskit::Action::SetTextSelection, move |data, window, cx| {
                                 if let Some(gpui_kit::accesskit::ActionData::SetTextSelection(selection)) = data {
                                     if let Some(range) = super::a11y::guest_selection_range(selection, selection_id.get(), selection_owner.text.len()) {
-                                        let _ = selection_sender.send(Command::SelectText(selection_owner.clone(), range));
+                                        let _ = selection_view.update(cx, |this, _| this.queue_accessible_text_action(Command::SelectText(selection_owner.clone(), range), window));
                                     }
                                 }
                             })
@@ -16871,6 +16884,62 @@ mod desktop {
                     horizontal: 137
                 }]
             ));
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn accessibility_text_dispatch_revalidates_current_focus_and_owner(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::AppContext;
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            cx.update(gpui_kit::init);
+            let (window, view) = cx.update(|cx| gpui_kit::open_window(
+                Default::default(), cx, |_, cx| cx.new(|cx| super::Demo::new(sender, updates, cx))).unwrap());
+            cx.update_window(window.into(), |_, window, cx| {
+                view.update(cx, |demo, cx| {
+                    demo.focus.focus(window, cx);
+                    for target in [super::super::input::TextInputTarget::Document { port: 100 },
+                        super::super::input::TextInputTarget::Dialog { item: 1, content_revision: 0 },
+                        super::super::input::TextInputTarget::StandardFile { new_folder: false },
+                        super::super::input::TextInputTarget::StandardFile { new_folder: true }] {
+                        let owner = super::super::input::TextInputOwner {
+                            identity: (42, 3), target, text: b"abc".to_vec(), selection: 1..2 };
+                        demo.composition.synchronize(Some(owner.clone()));
+                        for replace in [false, true] {
+                            let command = || if replace { super::Command::ReplaceText(owner.clone(), 0..3, b"new".to_vec(), None) }
+                                else { super::Command::SelectText(owner.clone(), 0..2) };
+                            demo.host_active = Some(false);
+                            demo.queue_accessible_text_action(command(), window);
+                            demo.host_active = Some(true);
+                            let mut stale = owner.clone(); stale.identity.1 += 1;
+                            demo.composition.synchronize(Some(stale));
+                            demo.queue_accessible_text_action(command(), window);
+                            demo.composition.synchronize(Some(owner.clone()));
+                            let mut changed = owner.clone(); changed.text.push(b'd');
+                            demo.composition.synchronize(Some(changed));
+                            demo.queue_accessible_text_action(command(), window);
+                            let mut changed = owner.clone(); changed.selection = 0..0;
+                            demo.composition.synchronize(Some(changed));
+                            demo.queue_accessible_text_action(command(), window);
+                            demo.composition.synchronize(Some(owner.clone()));
+                            demo.composition.preedit = Some(super::super::input::Preedit {
+                                text: "x".into(), selection_utf16: 0..1 });
+                            demo.queue_accessible_text_action(command(), window);
+                            demo.composition.preedit = None;
+                            demo.guest_menu_tracking = true;
+                            demo.queue_accessible_text_action(command(), window);
+                            demo.guest_menu_tracking = false;
+                            let other_focus = cx.focus_handle(); other_focus.focus(window, cx);
+                            demo.queue_accessible_text_action(command(), window);
+                            demo.focus.focus(window, cx);
+                            demo.queue_accessible_text_action(command(), window);
+                        }
+                    }
+                });
+            }).unwrap();
+            let requests: Vec<_> = receiver.try_iter().filter(|command|
+                matches!(command, super::Command::ReplaceText(..) | super::Command::SelectText(..))).collect();
+            assert_eq!(requests.len(), 8, "only current focused active owners may edit or select");
         }
 
         #[cfg(feature = "gpui-demo-test")]
