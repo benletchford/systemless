@@ -7024,6 +7024,54 @@ mod desktop {
                         assert_eq!(session.runner().standard_file_snapshot().unwrap().new_folder.unwrap().selection,
                             expected, "PPC={powerpc}, depth={depth:?}, scale={scale}, phase={phase}, offset={offset}");
                     }
+                    if name.len() == 31 {
+                        for toward_end in [false, true] {
+                            let (mac_key, character, anchor) = if toward_end { (0x7e, 0x1e, 0) } else { (0x7d, 0x1f, 31) };
+                            session.deliver_input(MacintoshInput::KeyDown { mac_key, character });
+                            step(&mut session);
+                            session.deliver_input(MacintoshInput::KeyUp { mac_key, character });
+                            for phase in 0..3 {
+                                cx.update_window(window.into(), |_, window, cx| {
+                                    view.update(cx, |demo, cx| {
+                                        demo.standard_file = session.runner().standard_file_snapshot();
+                                        cx.notify();
+                                    });
+                                    window.render_frame(cx);
+                                    let position = view.update(cx, |demo, _| {
+                                        let map = demo.text_pointer_map.borrow();
+                                        let map = map.as_ref().unwrap();
+                                        let x = if phase == 0 { map.positions[anchor].0 } else {
+                                            demo.display_origin.0 + f32::from(if toward_end {
+                                                map.guest_bounds.3 + 20
+                                            } else { map.guest_bounds.1 - 20 }) * scale
+                                        };
+                                        let y = demo.display_origin.1 + f32::from((map.guest_bounds.0 + map.guest_bounds.2) / 2) * scale;
+                                        gpui_kit::point(gpui_kit::px(x), gpui_kit::px(y))
+                                    });
+                                    let event = match phase {
+                                        0 => MouseDownEvent { position, button: MouseButton::Left, click_count: 1, ..Default::default() }.to_platform_input(),
+                                        1 => MouseMoveEvent { position, pressed_button: Some(MouseButton::Left), ..Default::default() }.to_platform_input(),
+                                        _ => MouseUpEvent { position, button: MouseButton::Left, click_count: 1, ..Default::default() }.to_platform_input(),
+                                    };
+                                    window.dispatch_event(event, cx);
+                                }).unwrap();
+                                let mut delivered = 0;
+                                for command in receiver.try_iter() {
+                                    if let super::Command::Input(input) = command {
+                                        session.deliver_input(input);
+                                        delivered += 1;
+                                    }
+                                }
+                                assert_eq!(delivered, 1);
+                                // No additional motion: the guest's retained click loop
+                                // must continue scrolling under a stationary held pointer.
+                                for _ in 0..if phase == 1 { 20 } else { 1 } { step(&mut session); }
+                                let folder = session.runner().standard_file_snapshot().unwrap().new_folder.unwrap();
+                                assert_eq!(folder.selection, if phase == 0 { (anchor, anchor) } else { (0, 31) },
+                                    "held scroll: PPC={powerpc}, depth={depth:?}, scale={scale}, toward_end={toward_end}, phase={phase}");
+                            }
+                        }
+                    }
                 }
                 }
             }

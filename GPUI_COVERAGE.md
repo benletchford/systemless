@@ -1877,3 +1877,20 @@ change does not yet establish blink timing equivalence. Held outside-field
 auto-scroll, double-click selection, composition and accessibility editing
 remain open, as do text surfaces outside New Folder. The broader readiness
 goal remains incomplete.
+
+The live integration test now holds a long-name selection outside each field
+edge, advances the guest without further mouse motion, and verifies complete
+selection plus release preservation across all three modes and three scales.
+It passes in 73.78s. A dedicated native autoscroll replay is being qualified:
+its initial PPC rightward checkpoints show retained selection, but the leftward
+gesture started on the field border and did not select text. The corrected
+replay moves that mouse-down inside the field; native parity for both directions
+is not yet claimed from the initial capture.
+
+The corrected native autoscroll replay completed on both CPUs. All eight held
+and released checkpoints were reviewed: leftward dragging reveals the leading
+text, rightward dragging reveals the trailing `abcd`, and release preserves the
+selection and view. All 50 capture files and both scenario identities match
+the manifests. These observations agree with the exercised Systemless held-
+selection paths. Scroll velocity, double-click selection, blink timing,
+composition and accessibility editing remain separate qualification items.
