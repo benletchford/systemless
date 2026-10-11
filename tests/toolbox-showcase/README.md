@@ -716,3 +716,12 @@ its clean-source requirement and pins that exact executable, fixture and
 renderer sources throughout the run. The profile retains debug assertions and
 overflow checks; using it does not establish production performance. Omitting
 `--multiline` requests the complete192-case single-line state matrix.
+
+For complete smooth single-line matrices, run
+`verify-gpui-styled-activation-pixels.py DIRECTORY --report REPORT` and
+`verify-gpui-styled-state-visibility.py DIRECTORY --report REPORT`. The latter
+checks nonempty selection/caret changes within native change bounds (one device
+pixel allowance), plus exact hidden-caret equality on suspend. Run
+`check-gpui-styled-state-visibility.py DIRECTORY --report REPORT` to verify five
+updated-hash pixel corruptions are rejected even when restoration equality
+passes. These checks qualify state visibility, not antialiased font appearance.

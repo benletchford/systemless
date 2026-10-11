@@ -1,0 +1,15 @@
+{
+  "scope": "Only these two full compositions per style were directly viewed. Scale1.5 and2 images were resized by the viewing tool; no native-pixel whole-matrix review is implied. Smooth mixed glyphs, selection/caret or hidden state, and retained guest application drawing are visible. No independent native font oracle or physical host observer qualification.",
+  "images": [
+    {
+      "file": "caret-ppc16-resumed-26-1.png",
+      "sha256": "e4a694d88a4090927f8f9cd11b5e0a2163e4167a308021a43815d251457dec7a",
+      "capture_sha256": "3c37453795c536d15f8ba72fed3e032a8f8d3622d68b18b3b8976bf66a30a7e2"
+    },
+    {
+      "file": "selection-colour-selected-none-1.5.png",
+      "sha256": "9e82a982744ec9c522fdb7f0418a54a9bd854c22026a9277326dd9c321ba4500",
+      "capture_sha256": "3346a07e8438201966549cd064e850fb629c9453c4581086fdc246e634f5ae0d"
+    }
+  ]
+}
