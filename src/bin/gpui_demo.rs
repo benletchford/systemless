@@ -213,6 +213,15 @@ mod desktop {
         capture_styled_text_edit_ink: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_styled_text_edit_selected: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_styled_text_edit_selected_suspended: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_styled_text_edit_selected_resumed: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_text_edit_selected: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -4153,7 +4162,7 @@ mod desktop {
     #[cfg(feature = "gpui-demo-test")]
     fn capture_styled_text_edit_ink(
         game: &std::path::Path, output: &std::path::Path,
-        prefer_powerpc: bool, depth: Option<u16>, scale: f32,
+        prefer_powerpc: bool, depth: Option<u16>, scale: f32, selected: bool, activation: &[bool],
     ) {
         use gpui_kit::{platform, HeadlessAppContext};
         struct Preview {
@@ -4171,7 +4180,12 @@ mod desktop {
                 let mut ink = div().absolute().size_full();
                 for index in 0..record.line_count {
                     let line = super::text::StyledTextEditLine::from_guest(record, index).unwrap();
-                    ink = ink.child(super::text::classic_styled_text_edit_ink(line, self.scale, origin).unwrap());
+                    if line.selection.is_some() {
+                        let background = systemless::runner::TextEditInkSnapshot { pixel: 0, rgb: [255; 3], inverted_rgb: [0; 3] };
+                        ink = ink.child(super::text::classic_styled_text_edit_selection(line, &background, self.scale, origin).unwrap());
+                    } else {
+                        ink = ink.child(super::text::classic_styled_text_edit_ink(line, self.scale, origin).unwrap());
+                    }
                 }
                 div().relative().size_full()
                     .child(img(self.image.clone()).absolute().size_full())
@@ -4191,14 +4205,46 @@ mod desktop {
             session.runner_mut().guest_menu_snapshot().menus.iter().any(|menu| menu.id == 129 && !menu.items.is_empty())
         }));
         assert!(session.runner_mut().select_guest_menu_item(129, 11));
-        let record = (0..300).find_map(|_| {
+        let mut record = (0..300).find_map(|_| {
             session.runner_mut().run_steps(100_000, None);
             let settled = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
             session.runner_mut().text_edit_snapshot().records.into_iter().find(|record|
                 settled && record.drawing_intact && record.styled && record.style_runs.as_ref()
                     .is_some_and(|runs| runs.iter().any(|run| run.start == 26)))
         }).expect("settled showcase styled field");
-        assert!(!record.active, "ink-only capture requires an inactive field");
+        assert!(!record.active, "styled fixture starts inactive");
+        if selected {
+            let dest = record.global_dest_rect.unwrap();
+            let geometry = record.guest_styled_line_geometry(0).unwrap().0;
+            let vertical = dest.0 - record.dest_rect.0 + geometry.top + geometry.ascent;
+            let left = dest.1 - record.dest_rect.1 + geometry.left;
+            let right = left + record.guest_styled_range_width(0..26).unwrap();
+            for input in [MacintoshInput::MouseDown { vertical, horizontal: left },
+                MacintoshInput::MouseMove { vertical, horizontal: right },
+                MacintoshInput::MouseUp { vertical, horizontal: right }] {
+                session.deliver_input(input);
+                for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
+            }
+            record = (0..300).find_map(|_| {
+                session.runner_mut().run_steps(10_000, None);
+                let settled = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
+                session.runner_mut().text_edit_snapshot().records.into_iter().find(|next|
+                    settled && next.guest_id == record.guest_id && next.active && next.selection == (0, 26))
+            }).expect("guest styled drag selects across font/face/colour runs");
+        }
+        let original = record.clone();
+        for &active in activation {
+            session.request_foreground(active);
+            record = (0..300).find_map(|_| {
+                session.runner_mut().run_steps(10_000, None);
+                let settled = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
+                session.runner_mut().text_edit_snapshot().records.into_iter().find(|next|
+                    settled && next.guest_id == original.guest_id && next.active == active)
+            }).expect("guest finishes styled suspend/resume repaint");
+            assert_eq!(record.selection, original.selection);
+            assert_eq!(record.text, original.text);
+            assert_eq!(record.style_runs, original.style_runs);
+        }
         let mut frame = session.video_frame().unwrap();
         image::save_buffer(output.with_extension("guest.png"), &frame.pixels, frame.width, frame.height,
             image::ColorType::Rgba8).unwrap();
@@ -4207,7 +4253,8 @@ mod desktop {
         let origin = (dest.0 - record.dest_rect.0, dest.1 - record.dest_rect.1);
         let mut native_ink = std::collections::BTreeMap::new();
         for index in 0..record.line_count {
-            native_ink.extend(super::text::StyledTextEditLine::from_guest(&record, index).unwrap().pixels().unwrap());
+            native_ink.extend(super::text::StyledTextEditLine::from_guest(&record, index).unwrap().pixels_with_selection(
+                &systemless::runner::TextEditInkSnapshot { pixel: 0, rgb: [255; 3], inverted_rgb: [0; 3] }).unwrap());
         }
         for y in view.0..view.2 { for x in view.1..view.3 {
             let at = ((y as u32 * frame.width + x as u32) * 4) as usize;
@@ -4599,9 +4646,27 @@ mod desktop {
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_styled_text_edit_selected_suspended.as_ref() {
+            capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, &[false]);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_styled_text_edit_selected_resumed.as_ref() {
+            capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, &[false, true]);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_styled_text_edit_selected.as_ref() {
+            capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
+                args.screen_depth, args.capture_scale.unwrap_or(1.), true, &[]);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_styled_text_edit_ink.as_ref() {
             capture_styled_text_edit_ink(&args.game, output, args.prefer_powerpc,
-                args.screen_depth, args.capture_scale.unwrap_or(1.));
+                args.screen_depth, args.capture_scale.unwrap_or(1.), false, &[]);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -5275,6 +5340,9 @@ mod desktop {
                         capture_scale: None,
                         capture_text_edit: None,
                         capture_styled_text_edit_ink: None,
+                        capture_styled_text_edit_selected: None,
+                        capture_styled_text_edit_selected_suspended: None,
+                        capture_styled_text_edit_selected_resumed: None,
                         capture_text_edit_selected: None,
                         capture_text_edit_edited: None,
                         capture_text_edit_inactive: None,

@@ -596,6 +596,8 @@ pub(crate) fn classic_line(
 #[derive(Clone, Debug)]
 pub(crate) struct StyledTextEditLine {
     pub geometry: systemless::runner::TextEditLineGeometry,
+    pub baseline: i16,
+    pub selection: Option<(i16, i16, i16, i16)>,
     pub runs: Vec<StyledTextEditRun>,
 }
 
@@ -636,7 +638,36 @@ impl StyledTextEditLine {
                 ink: paint.style_ink.get(style_index)?.clone() });
             left = next;
         }
-        Some(Self { geometry, runs })
+        let baseline = match record.line_layout_policy {
+            TextEditLineLayoutPolicy::CumulativeGuestMetrics => geometry.top.saturating_add(geometry.ascent),
+            TextEditLineLayoutPolicy::PpcRunMetrics => record.dest_rect.0.saturating_add(geometry.ascent)
+                .saturating_add(i16::try_from(index).ok()?.saturating_mul(geometry.height)),
+        };
+        Some(Self { geometry, baseline, selection: record.guest_styled_selection_rect(index)?, runs })
+    }
+
+    /// Apply classic pixel inversion after ordered run ink. Background ink
+    /// comes from the caller's qualified erase policy, not a host accent colour.
+    pub fn pixels_with_selection(
+        &self, background: &systemless::runner::TextEditInkSnapshot,
+    ) -> Option<std::collections::BTreeMap<(i16, i16), [u8; 3]>> {
+        let mut pixels = self.pixels()?;
+        let Some((top, left, bottom, right)) = self.selection else { return Some(pixels); };
+        let baseline = self.baseline;
+        let mut inverse_ink = std::collections::BTreeMap::new();
+        for run in &self.runs {
+            for &(x, y, width) in &run.glyphs.ink {
+                let y = i16::try_from(i32::from(baseline).checked_add(y)?).ok()?;
+                for dx in 0..width {
+                    let x = i16::try_from(i32::from(run.left).checked_add(x)?.checked_add(dx)?).ok()?;
+                    inverse_ink.insert((x, y), run.ink.inverted_rgb);
+                }
+            }
+        }
+        for y in top..bottom { for x in left..right {
+            pixels.insert((x, y), inverse_ink.get(&(x, y)).copied().unwrap_or(background.inverted_rgb));
+        } }
+        Some(pixels)
     }
 
     /// srcOr's set mask pixels replace foreground in both native CPU paths.
@@ -644,7 +675,7 @@ impl StyledTextEditLine {
     /// Background erasure and selection are separate presentation operations.
     pub fn pixels(&self) -> Option<std::collections::BTreeMap<(i16, i16), [u8; 3]>> {
         let mut pixels = std::collections::BTreeMap::new();
-        let baseline = self.geometry.top.saturating_add(self.geometry.ascent);
+        let baseline = self.baseline;
         for run in &self.runs {
             for &(x, y, width) in &run.glyphs.ink {
                 let top = i16::try_from(i32::from(baseline).checked_add(y)?).ok()?;
@@ -663,8 +694,21 @@ impl StyledTextEditLine {
 pub(crate) fn classic_styled_text_edit_ink(
     line: StyledTextEditLine, scale: f32, port_origin: (f32, f32),
 ) -> Option<impl gpui_kit::IntoElement> {
+    classic_styled_text_pixels(line.pixels()?, scale, port_origin)
+}
+
+pub(crate) fn classic_styled_text_edit_selection(
+    line: StyledTextEditLine, background: &systemless::runner::TextEditInkSnapshot,
+    scale: f32, port_origin: (f32, f32),
+) -> Option<impl gpui_kit::IntoElement> {
+    classic_styled_text_pixels(line.pixels_with_selection(background)?, scale, port_origin)
+}
+
+fn classic_styled_text_pixels(
+    pixels: std::collections::BTreeMap<(i16, i16), [u8; 3]>,
+    scale: f32, port_origin: (f32, f32),
+) -> Option<impl gpui_kit::IntoElement> {
     use gpui_kit::{prelude::*, *};
-    let pixels = line.pixels()?;
     let mut paths: std::collections::BTreeMap<[u8; 3], Vec<(i16, i16)>> = std::collections::BTreeMap::new();
     for (point, rgb) in pixels { paths.entry(rgb).or_default().push(point); }
     Some(canvas(|bounds, _, _| bounds, move |_, _, window, _| {
