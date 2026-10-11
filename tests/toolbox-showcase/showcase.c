@@ -2982,7 +2982,7 @@ void DoStandardFileSave(void)
 {
     OSErr err, closeErr;
     short refNum, i;
-    long count;
+    long count, length;
     static const char payload[] = "Systemless Standard File round trip\r";
     char restored[sizeof(payload)];
 
@@ -2997,11 +2997,13 @@ void DoStandardFileSave(void)
      * directory used by the other showcase scenarios. This is not a host
      * process restart or durable-save qualification. */
     err = FSpCreate(&gFileSaveReply.sfFile, 'SHWC', 'TEXT', smSystemScript);
+    if (err == dupFNErr && gFileSaveReply.sfReplacing) err = noErr;
     if (err == noErr) {
         err = FSpOpenDF(&gFileSaveReply.sfFile, fsWrPerm, &refNum);
         if (err == noErr) {
             count = sizeof(payload) - 1;
-            err = FSWrite(refNum, &count, payload);
+            err = SetEOF(refNum, 0);
+            if (err == noErr) err = FSWrite(refNum, &count, payload);
             if (err == noErr && count != sizeof(payload) - 1) err = ioErr;
             closeErr = FSClose(refNum);
             if (err == noErr) err = closeErr;
@@ -3010,7 +3012,9 @@ void DoStandardFileSave(void)
             err = FSpOpenDF(&gFileSaveReply.sfFile, fsRdPerm, &refNum);
             if (err == noErr) {
                 count = sizeof(payload) - 1;
-                err = FSRead(refNum, &count, restored);
+                err = GetEOF(refNum, &length);
+                if (err == noErr && length != sizeof(payload) - 1) err = ioErr;
+                if (err == noErr) err = FSRead(refNum, &count, restored);
                 if (err == noErr && count != sizeof(payload) - 1) err = ioErr;
                 if (err == noErr) {
                     for (i = 0; i < sizeof(payload) - 1; i++) {
@@ -3021,8 +3025,10 @@ void DoStandardFileSave(void)
                 if (err == noErr) err = closeErr;
             }
         }
-        closeErr = FSpDelete(&gFileSaveReply.sfFile);
-        if (err == noErr) err = closeErr;
+        if (!gFileSaveReply.sfReplacing) {
+            closeErr = FSpDelete(&gFileSaveReply.sfFile);
+            if (err == noErr) err = closeErr;
+        }
     }
     gFileSaveStatus = err == noErr ? fileStatusAccepted : fileStatusError;
     /* App-owned test checkpoint: status is published only after close/read/cleanup. */

@@ -1,0 +1,13 @@
+{
+  "source_base": "001d12a64f16ec3e8c1304dadac87c523e14d312",
+  "fixture_sha256": "821977302f51bfadc914f5c7dc15a5772072dbab61eb87ec854b86759d8ffde6",
+  "patch_sha256": "f10edc0bdb12b81cefedc216fc0d019013bee0dda74c1e3dbc09fc4af9fbed1e",
+  "result": "PASS, 7.13s",
+  "modes": [
+    "mono68k",
+    "colour68k",
+    "PPC8",
+    "PPC16"
+  ],
+  "scope": "Guest-confirmed replacement and new-name Save: truncate, write, close, reopen, exact length and byte comparison; completion checkpoint asserted. Replacement changes only the per-session guest file, not source archive. No host restart persistence or composed pointer qualification."
+}
