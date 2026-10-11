@@ -2752,7 +2752,9 @@ impl super::TrapDispatcher {
             // userState begins at the window's requested global content
             // bounds. The default standard state is the main device's gray
             // region inset by three pixels; applications commonly replace it
-            // with their own ideal bounds before zooming.
+            // with their own ideal bounds before zooming. The content top
+            // must also leave the title bar below the menu bar; see the
+            // standard-state rectangle in MTE (1992), Listing 4-12, p. 4-55.
             for (offset, value) in [
                 (0u32, global_content.0),
                 (2, global_content.1),
@@ -2763,8 +2765,12 @@ impl super::TrapDispatcher {
             }
             let (_, _, screen_width, screen_height, _) = self.screen_mode;
             let menu_bar_height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
+            let title_height = global_content
+                .0
+                .saturating_sub(1)
+                .saturating_sub(global_structure.0);
             let standard = (
-                menu_bar_height.saturating_add(3),
+                menu_bar_height.saturating_add(title_height).saturating_add(3),
                 3i16,
                 (screen_height as i16).saturating_sub(3),
                 (screen_width as i16).saturating_sub(3),
