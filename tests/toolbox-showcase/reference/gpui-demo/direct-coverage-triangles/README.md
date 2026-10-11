@@ -1,5 +1,27 @@
 # Direct coverage triangles
 
+## Overlap correction
+
+The initial unconditional optimization at `b9e1deeb` fails all four selected
+styled-menu comparisons against an exact pre-change control: overlapping glyph
+rectangles have even-odd fill cutouts that solid triangles do not preserve.
+The painter now conservatively retains general tessellation whenever original
+glyph ink boxes overlap. Disjoint glyphs still use direct triangles.
+
+The corrected painter passes exact decoded RGBA comparisons against the
+pre-optimization control for mono68k/0.75, colour68k/1.5, PPC8/2 and PPC16/1.
+The control changes only the text source back to its `7ec422c2` snapshot;
+production source is restored after building it. Source/executable provenance,
+both failed initial and passing corrected comparisons, and build/check logs
+are in `overlap-control`. Corrected production check passes in 4.38 seconds.
+
+The document glyph-click/drag test passes all four modes and scales on the
+initial optimization in 264.05 seconds. It predates this conservative overlap
+correction; no corrected interaction pass is claimed. Both versions preserve
+guest hit geometry. Broad regression and live performance remain open.
+
+## Initial nonoverlapping scene evidence
+
 The smooth recognized-label painter now submits each existing coverage
 rectangle as two solid GPUI path triangles instead of rebuilding a general
 polygon and tessellating it on every paint. Original glyph masks, alpha,

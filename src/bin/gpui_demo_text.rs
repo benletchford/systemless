@@ -2429,7 +2429,22 @@ fn paint_smooth_label(
     let raster = (scale * window.scale_factor()).ceil().max(1.) as u32;
     let Some(glyphs) = resolve_smooth_run(line, raster) else { return false; };
     let unit = scale / raster as f32;
+    // The general fill uses even-odd coverage for overlapping glyph spans.
+    // Solid triangles are equivalent only when glyph ink boxes are disjoint.
+    let overlapping = glyphs.iter().enumerate().any(|(index, (pen, glyph))| {
+        let left = i64::from(*pen) * i64::from(raster) + i64::from(glyph.left);
+        let right = left + i64::from(glyph.width);
+        let top = i64::from(glyph.top);
+        let bottom = top + i64::from(glyph.height);
+        glyphs[..index].iter().any(|(other_pen, other)| {
+            let other_left = i64::from(*other_pen) * i64::from(raster) + i64::from(other.left);
+            left < other_left + i64::from(other.width) && other_left < right
+                && top < i64::from(other.top) + i64::from(other.height)
+                && i64::from(other.top) < bottom
+        })
+    });
     let mut paths = std::collections::BTreeMap::new();
+    let mut overlapping_paths = std::collections::BTreeMap::new();
     for (pen, glyph) in glyphs {
         for y in 0..glyph.height {
             let mut x = 0;
@@ -2443,6 +2458,12 @@ fn paint_smooth_label(
                 let y0 = baseline + px((glyph.top + y) as f32 * unit);
                 let x1 = x0 + px((x - start) as f32 * unit);
                 let y1 = y0 + px(unit);
+                if overlapping {
+                    let path = overlapping_paths.entry(alpha).or_insert_with(PathBuilder::fill);
+                    path.move_to(point(x0, y0)); path.line_to(point(x1, y0));
+                    path.line_to(point(x1, y1)); path.line_to(point(x0, y1)); path.close();
+                    continue;
+                }
                 let path = paths.entry(alpha).or_insert_with(|| Path::new(point(x0, y0)));
                 // Coverage spans are already rectangles, so their two triangles
                 // need no general polygon tessellation. Keep the same coverage
@@ -2459,6 +2480,11 @@ fn paint_smooth_label(
         let mut ink = foreground;
         ink.a *= f32::from(alpha) / 255.;
         window.paint_path(path, ink);
+    }
+    for (alpha, path) in overlapping_paths {
+        let mut ink = foreground;
+        ink.a *= f32::from(alpha) / 255.;
+        window.paint_path(path.build().expect("overlapping resolved outline coverage spans"), ink);
     }
     true
 }
