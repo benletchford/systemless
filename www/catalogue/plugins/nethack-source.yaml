@@ -1,0 +1,29 @@
+schema_version: 1
+entry: nethack
+artifacts:
+- id: upstream-source
+  role: supplement
+  format: gz
+  source:
+    type: external
+    url: https://www.nethack.org/download/3.4.3/nethack-343-src.tgz
+  provenance:
+    redistribution: permitted
+    original: true
+    sources:
+    - https://www.nethack.org/v343/download-src.html
+    - https://github.com/benletchford/systemless/issues/4568
+    license: NetHack General Public License
+    rights_holder: The NetHack DevTeam and contributors
+    permission: Preserve the complete original source archive and all licence notices.
+    notes: >-
+      Unchanged publisher download: 3497458 bytes, SHA-256
+      bb39c3d2a9ee2df4a0c8fdde708fbc63740853a7608d2f4c560b488124866fe4.
+      Publisher MD5 21479c95990eefe7650df582426457f9 matches. Independent
+      extraction contains 658 source files. Combine with the original src-diff.txt
+      supplied inside the game archive for this Macintosh port's source.
+plugins:
+- id: corresponding-source
+  label: NetHack 3.4.3 source
+  description: Original upstream source; Macintosh port changes are in the game archive's src-diff.txt.
+  download_artifact: upstream-source
