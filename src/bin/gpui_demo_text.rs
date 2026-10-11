@@ -1275,6 +1275,12 @@ pub(crate) struct StyledTextEditPaintPlan {
 }
 
 impl StyledTextEditPaintPlan {
+    /// Capture diagnostics only: this preflight does not assert that the
+    /// composed field painted or that its appearance has been reviewed.
+    pub fn smooth_raster_support(&self) -> [bool; 8] {
+        std::array::from_fn(|index| StyledTextEditPaintOp::resolve_all(&self.ops, index as u32 + 1).is_some())
+    }
+
     pub fn qualify(
         record: &systemless::runner::TextEditSnapshot,
         background: &systemless::runner::TextEditInkSnapshot,

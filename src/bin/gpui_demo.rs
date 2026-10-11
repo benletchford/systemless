@@ -4535,7 +4535,7 @@ mod desktop {
         assert_eq!(record.text, original.text);
         assert_eq!(record.style_runs, original.style_runs);
         assert_eq!(record.generation, original.generation);
-        let evidence = serde_json::json!({
+        let mut evidence = serde_json::json!({
             "caret_state": if caret { caret_state } else { "not-requested" },
             "insertion_offset": caret_offset, "multiline": multiline, "selection": record.selection,
             "compositor": "shared Demo renderer",
@@ -4556,6 +4556,11 @@ mod desktop {
         let plan = super::text::StyledTextEditPaintPlan::qualify(
             &record, &background, caret_paint, &frame.pixels, frame.width, frame.height,
         ).expect("whole-field native styled recipe, background and caret");
+        evidence["smooth_raster_support_1_through_8"] = serde_json::json!(plan.smooth_raster_support());
+        evidence["style_runs"] = serde_json::json!(record.style_runs.as_ref().map(|runs|
+            runs.iter().map(|style| serde_json::json!({
+                "start": style.start, "font": style.font, "size": style.size, "face": style.face,
+            })).collect::<Vec<_>>()));
         for y in view.0..view.2 { for x in view.1..view.3 {
             let at = ((y as u32 * frame.width + x as u32) * 4) as usize;
             frame.pixels[at..at + 4].copy_from_slice(&[255; 4]);
