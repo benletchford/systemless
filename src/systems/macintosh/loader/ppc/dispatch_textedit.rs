@@ -749,20 +749,36 @@ pub(super) fn dispatch_textedit_import(
             cpu.gpr[4],
             cpu.gpr[3] as u16,
         ))),
-        PpcImportDispatcherTarget::TEScroll { pinned } => {
+        PpcImportDispatcherTarget::TEScroll { .. } | PpcImportDispatcherTarget::TESelView => {
+            let (te_handle, dh, dv, pinned) = match binding.dispatcher_target {
+                PpcImportDispatcherTarget::TEScroll { pinned } => (cpu.gpr[5], cpu.gpr[3] as u16 as i16, cpu.gpr[4] as u16 as i16, pinned),
+                _ => {
+                    let handle = cpu.gpr[3];
+                    if !scrap.text_edit.feature_bit(handle, 0) { return Some(PpcImportAction::ReturnPreserve); }
+                    let Some((dh, dv)) = ppc_te_selection_scroll_delta(memory, handles, handle) else {
+                        return Some(PpcImportAction::ReturnPreserve);
+                    };
+                    (handle, dh, dv, false)
+                }
+            };
             let moved = ppc_te_scroll(
                 memory,
-                cpu.gpr[5],
-                cpu.gpr[3] as u16 as i16,
-                cpu.gpr[4] as u16 as i16,
+                te_handle,
+                dh,
+                dv,
                 pinned,
             );
+            // TESelView has no painting effect when the selection is already
+            // visible; redrawing could invert an existing selection twice.
+            if !moved && matches!(binding.dispatcher_target, PpcImportDispatcherTarget::TESelView) {
+                return Some(PpcImportAction::ReturnPreserve);
+            }
             // Text (1993), p. 2-89: TEScroll scrolls the text within the
             // viewRect, leaving uncovered areas in the background color as
             // ScrollRect does. Erasing the viewRect before redrawing gives
             // the same image; redrawing over the old pixels would accumulate
             // srcOr text at every previous position.
-            if let Some(te_ptr) = ppc_te_record_ptr(memory, cpu.gpr[5]).filter(|_| moved) {
+            if let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle).filter(|_| moved) {
                 let port = memory
                     .read_u32_be(te_ptr + PPC_TE_IN_PORT_OFFSET)
                     .filter(|port| *port != 0 && gworlds.iter().any(|g| g.port == *port))
@@ -782,7 +798,7 @@ pub(super) fn dispatch_textedit_import(
                 memory,
                 handles,
                 gworlds,
-                cpu.gpr[5],
+                te_handle,
                 current_gworld,
                 *quickdraw_fore_color,
                 quickdraw_fore_indices,
