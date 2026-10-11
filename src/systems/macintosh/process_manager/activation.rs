@@ -68,6 +68,9 @@ impl Default for ProcessActivation {
 }
 
 impl ProcessActivation {
+    pub(crate) fn needs_event_service(&self) -> bool {
+        self.transition.is_some() || self.requested_foreground != self.foreground
+    }
     pub(crate) fn reset_for_launch(&mut self, policy: Option<ApplicationSizeResource>) {
         *self = Self::default();
         if policy.is_some_and(ApplicationSizeResource::is_background_only) {

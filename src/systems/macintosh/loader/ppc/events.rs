@@ -343,3 +343,47 @@ pub(crate) fn ppc_enqueue_window_activation_transition(
         ppc_enqueue_window_activation_event(memory, event_queue, next, true, when);
     }
 }
+
+pub(super) fn ppc_service_process_activation(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
+    startup: &mut PpcToolboxStartupState,
+    queue: &mut EventQueue,
+    process_mode: u32,
+    tick: u32,
+    yields: bool,
+    dialog_callback_active: bool,
+) {
+    if !queue.activation.needs_event_service() {
+        return;
+    }
+    let front = dispatch_window::ppc_front_visible_process_window(memory, window_list);
+    // Toolbox Essentials (1992), pp. 2-19--2-20: ordinary modality and
+    // tracking defer major switching, while movable modal windows permit it.
+    let allowed = front.is_none_or(|window| dispatch_window::ppc_window_proc_id(memory, window) != 1)
+        && !dialog_callback_active
+        && startup.execution.menu().snapshot().is_none()
+        && startup.standard_file_get_tracking.is_none()
+        && startup.standard_file_get_filtering.is_none()
+        && startup.standard_file_put_tracking.is_none()
+        && startup.go_away_tracking.is_none()
+        && startup.drag_window_tracking.is_none()
+        && startup.grow_window_tracking.is_none()
+        && startup.simple_control_tracking.is_none()
+        && startup.scrollbar_thumb_tracking.is_none();
+    let policy = Some(ApplicationSizeResource {
+        flags: process_mode as u16, preferred_size: 0, minimum_size: 0,
+    });
+    queue.activation.begin_event_call(policy, yields, allowed);
+    if allowed {
+        if let Some(crate::process_manager::activation::ActivationNotification::Window { active }) = queue.activation.peek() {
+            if let Some(window) = front {
+                dispatch_window::ppc_set_window_hilited(memory, window, active);
+                dispatch_window::ppc_redraw_visible_window_frame(memory, gworlds, window_list, window, startup.host_menu_bar_hidden);
+                ppc_enqueue_window_activation_event(memory, queue, window, active, tick);
+            }
+            queue.activation.consume();
+        }
+    }
+}
