@@ -289,6 +289,7 @@ pub enum PpcImportDispatcherTarget {
     CalcVisBehind,
     GetMouse,
     GetGlobalMouse,
+    GetCurrentKeyModifiers,
     ActivatePalette,
     NSetPalette,
     GetPalette,
@@ -3243,6 +3244,9 @@ pub(crate) fn dispatcher_target_for_import(
             "CalcVisBehind" | "calcvisbehind",
         ) => PpcImportDispatcherTarget::CalcVisBehind,
         ("InterfaceLib", "GetMouse") => PpcImportDispatcherTarget::GetMouse,
+        ("InterfaceLib", "GetCurrentKeyModifiers") => {
+            PpcImportDispatcherTarget::GetCurrentKeyModifiers
+        }
         ("InterfaceLib", "GetGlobalMouse") => PpcImportDispatcherTarget::GetGlobalMouse,
         ("InterfaceLib", "ActivatePalette") => PpcImportDispatcherTarget::ActivatePalette,
         ("InterfaceLib", "SetPalette") | ("InterfaceLib", "NSetPalette") => {
