@@ -3155,6 +3155,26 @@
     }
 
     #[test]
+    fn setport_preserves_undecoded_guest_record() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let port = 0x300000u32;
+        let mut original = vec![0x35; 88];
+        original[0..2].copy_from_slice(&0u16.to_be_bytes());
+        original[6..8].copy_from_slice(&0u16.to_be_bytes());
+        bus.write_bytes(port, &original);
+        bus.write_long(TEST_SP, port);
+
+        assert!(d
+            .dispatch_quickdraw(true, 0x073, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        assert_eq!(*d.current_port, port);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(bus.read_bytes(port, original.len()), original);
+    }
+
+    #[test]
     fn local_global_transforms_offset_by_port_bits_bounds() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let port = 0x181000u32;
