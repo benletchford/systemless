@@ -1219,3 +1219,14 @@ cover semantic dialog activation across all three guest modes and unchanged
 single-press/single-release pointer forwarding for dialog buttons, checkboxes
 and edit fields. These checks do not establish native screen-reader operation,
 keyboard traversal, or full dialog replacement qualification.
+
+
+### Host menu keyboard focus
+
+Ordinary key events reach the guest only while the guest scene owns keyboard
+focus. Host-focused menus retain their own keys; Command shortcuts retain the
+existing guest route. Closing the last host menu restores scene focus. The
+hierarchical menu test checks an unbound printable key while open, guest typing
+after selection, and typing after Escape cancellation (after delivery of the
+GPUI dismissal event). This does not qualify full control traversal or returning
+to an independently focused host text editor.
