@@ -354,6 +354,18 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_application: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, requires = "capture_application")]
+        capture_application_key: Option<u8>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, default_value_t = 0, requires = "capture_application_key")]
+        capture_application_character: u8,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, default_value_t = 120, value_parser = clap::value_parser!(u32).range(1..))]
+        capture_application_updates: u32,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=60))]
+        capture_application_timeout_seconds: u64,
 
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -5113,6 +5125,9 @@ mod desktop {
         let requested_depth = args.screen_depth;
         let powerpc = args.prefer_powerpc;
         let archive = args.game.clone();
+        let input = args.capture_application_key.map(|key| (key, args.capture_application_character));
+        let target_observations = args.capture_application_updates.max(if input.is_some() { 240 } else { 1 });
+        let observation_timeout = Duration::from_secs(args.capture_application_timeout_seconds);
         let (sender, receiver) = mpsc::channel();
         let updates = Arc::new(Mutex::new(None));
         let worker_updates = updates.clone();
@@ -5126,13 +5141,39 @@ mod desktop {
         let worker = Worker(sender, Some(std::thread::spawn(move || run_guest(args, receiver, worker_updates, false))));
         let start = Instant::now();
         let mut observations = 0;
+        let mut latest: Option<Update> = None;
         let update = loop {
             if let Some(update) = updates.lock().unwrap().take() {
                 assert!(update.frame.is_some(), "application worker failed: {}", update.status);
                 observations += 1;
-                if observations == 120 { break update; }
+                if let Some((mac_key, character)) = input {
+                    if observations == 120 {
+                        let (width, height, pixels) = update.frame.as_ref().unwrap();
+                        image::save_buffer(output.with_extension("before.guest.png"), pixels, *width, *height,
+                            image::ColorType::Rgba8).unwrap();
+                        worker.0.send(Command::Input(MacintoshInput::KeyDown { mac_key, character })).unwrap();
+                    } else if observations == 180 {
+                        worker.0.send(Command::Input(MacintoshInput::KeyUp { mac_key, character })).unwrap();
+                    }
+                }
+                if observations == target_observations { break update; }
+                latest = Some(update);
             }
-            assert!(start.elapsed() < Duration::from_secs(30), "application did not produce 120 observed worker frames");
+            if start.elapsed() >= observation_timeout {
+                if let Some(last) = latest.as_ref() {
+                    if let Some((width, height, pixels)) = &last.frame {
+                        image::save_buffer(output.with_extension("timeout.guest.png"), pixels, *width, *height,
+                            image::ColorType::Rgba8).unwrap();
+                    }
+                    std::fs::write(output.with_extension("timeout.json"), serde_json::to_vec_pretty(&serde_json::json!({
+                        "status": "failed", "worker_status": last.status,
+                        "observed_worker_updates": observations, "requested_worker_updates": target_observations,
+                        "guest_key_input": input, "observation_timeout_seconds": observation_timeout.as_secs(),
+                        "reason": "observation deadline exceeded",
+                    })).unwrap()).unwrap();
+                }
+                panic!("application did not produce the requested observed worker frames: {observations}/{target_observations}");
+            }
             std::thread::sleep(Duration::from_millis(5));
         };
         let observed_ms = start.elapsed().as_secs_f64() * 1000.;
@@ -5170,9 +5211,11 @@ mod desktop {
             "compositor": "shared Demo renderer", "worker": "production run_guest with host services disabled",
             "archive": archive, "prefer_powerpc": powerpc, "requested_depth": requested_depth,
             "observed_worker_updates": observations, "observation_elapsed_ms": observed_ms,
+            "guest_key_input": input,
+            "observation_timeout_seconds": observation_timeout.as_secs(),
             "status": status, "guest_dimensions": [width,height], "scene_scale": scene_scale,
             "scene_origin": scene_origin, "menu_presented": menu_presented, "menu_height": menu_height,
-            "scope": "Real application startup snapshot; observation time is not frame latency. No physical input, live frame delivery, audio continuity or persistence qualification."
+            "scope": "Real application worker snapshot, optionally after held guest key input. Observed updates are not frontend ticks or frame latency. No physical input, live frame delivery, audio continuity or persistence qualification."
         })).unwrap()).unwrap();
         drop(worker);
         eprintln!("PASS application-shared-compositor capture={}", output.display());
@@ -6386,6 +6429,10 @@ mod desktop {
                         capture_windows: None,
                         capture_composition_surface: None,
                         capture_application: None,
+                        capture_application_key: None,
+                        capture_application_character: 0,
+                        capture_application_updates: 120,
+                        capture_application_timeout_seconds: 30,
                         capture_windows_moved: None,
                         capture_windows_activated: None,
                         capture_windows_grown: None,
