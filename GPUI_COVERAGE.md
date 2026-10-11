@@ -3183,3 +3183,62 @@ popup capture passes its owner-state and retained-value assertions; visual
 review confirms an inactive title and retained/clipped selected guest text.
 The complete twelve-capture suspended matrix is still pending. These checks
 do not establish native host observer or native Macintosh parity.
+
+### Suspended popup fractional-scale review failure
+
+The running `4cd6b1fc` capture matrix in
+`/tmp/gpui-popup-host-suspended-fixed-scales` completed the four monochrome
+scales, which were reviewed with preserved inactive title and popup labels.
+Colour 68K 0.75 composition has a blank title bar, while its raw guest frame
+contains “Toolbox Showcase”; colour 1.0 composition contains the title. This
+is a failed presentation result, not a qualified matrix. Investigate title
+snapshot/layout and fractional-scale clipping before accepting these captures.
+The rest of the matrix and its final binary/hash check are still pending.
+
+Disabled popup text is a separate unresolved fidelity defect: classic CDEF
+`draw_control_label_text` uses a screen-coordinate checkerboard except on
+8-bit devices, where it resolves dimmed ink through the live screen CLUT.
+PPC selected text instead uses its theme frame ink; Appearance deactivation
+changes that palette independently of contrlHilite. The GPUI closed labels
+currently substitute host muted foreground for hilite-disabled text. A faithful
+replacement needs resolved guest ink/pattern metadata, including global pattern
+phase, instead of CPU or font heuristics. These source observations are not
+native-oracle verification.
+
+The twelve-capture matrix completed with a stable binary hash, correct scene
+scale/aspect checks, and verified artifact hashes. All compositions were
+reviewed. Both colour 68K and PPC 0.75 omit the inactive window title; the other
+reviewed scales show it. Original compositions and the two failed guest frames
+are archived as `popup-suspended-*`, with source-commit hashes and explicitly
+failed review status in `popup-suspended-review.json`. No inactive-title
+qualification follows from this matrix. Capture-only title snapshot/layout
+diagnostics have been added for the next reproduction; their build is pending.
+
+The diagnostic build passes (10.53 s). Its first PPC 0.75 reproduction logs
+title “Toolbox Showcase”, inactive owner bounds (50,40,420,600), title origin
+(266,45), clip (31,39,47,601), width 107 and ascent/descent 12/3. This time
+composition visibly contains the title. No semantic rendering change was
+made; the original failure remains unresolved and may be intermittent. Three
+further identical diagnostic captures are running to investigate that result.
+
+All three further PPC 0.75 diagnostic captures omit the title despite identical
+correct owner/title/layout logs; their original captures and logs remain in
+`/tmp/gpui-popup-suspended-ppc-title-repeats`. Added test-feature-only
+`SYSTEMLESS_GPUI_TEXT_TRACE` logging for title canvas paint bounds, scale and
+ink-run count to distinguish missing paint from clipping. Its build and traced
+reproduction remain pending.
+
+The paint-trace build passes (6.59 s). PPC 0.75 tracing reproduces the blank
+title while logging two title paint calls with 180 ink runs, scale 0.75 and
+bounds origin (199,24.5), size (80,11). The title snapshot is correct. This
+narrows the unresolved failure to GPUI paint clipping/composition rather than
+missing guest text or skipped title painting. The traced original PNG, raw
+guest frame and log remain at `/tmp/gpui-popup-suspended-ppc-title-paint-trace.*`.
+
+Expanded tracing confirms a valid mask at (29,23), size (421.5,12), and
+opaque grey foreground (lightness 0.451, alpha 1), while the PPC 0.75 title
+remains blank. An explicit title paint-layer experiment built successfully
+(9.45 s) but the first repeated capture still omitted the title; the experiment
+was removed. No rendering fix is established. Remaining investigation should
+isolate the title in a minimal shared-compositor scene and inspect primitive
+ordering/rendering without changing guest font metrics or hit coordinates.

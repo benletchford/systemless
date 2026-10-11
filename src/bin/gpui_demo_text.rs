@@ -394,6 +394,12 @@ pub(crate) fn classic_line(
     canvas(
         move |bounds, _, _| bounds,
         move |_, bounds, window, _| {
+            #[cfg(feature = "gpui-demo-test")]
+            if matches!(geometry, ClassicLineGeometry::Title)
+                && std::env::var_os("SYSTEMLESS_GPUI_TEXT_TRACE").is_some()
+            {
+                eprintln!("GPUI title paint: bounds={bounds:?}, mask={:?}, foreground={foreground:?}, scale={scale}, ascent={ascent}, height={line_height}, ink_runs={}", window.content_mask(), line.ink.len());
+            }
             let position =
                 |offset: usize| line.positions[offset.min(line.positions.len() - 1)];
             let origin = bounds.origin;

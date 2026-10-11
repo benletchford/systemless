@@ -3996,6 +3996,13 @@ mod desktop {
         let activation_capture = activation_capture || host_activation_capture || popup_host_suspended;
         let windows = if activation_capture { session.runner_mut().window_frame_snapshot() } else { windows };
         let dialogs = if activation_capture { session.runner_mut().dialog_snapshot() } else { dialogs };
+        if popup_host_suspended {
+            for frame in &windows {
+                eprintln!("suspended popup owner: id={:#x}, title={:?}, active={}, bounds={:?}, title_layout={:?}",
+                    frame.guest_id, frame.window.title, frame.window.active, frame.window.bounds,
+                    frame.title_layout(session.runner().bus().read_word(MBAR_HEIGHT) as i16));
+            }
+        }
         let text_edits = session.runner_mut().text_edit_snapshot().records;
         let standard_file = session.runner_mut().standard_file_snapshot();
         let menus = session.runner_mut().guest_menu_snapshot();
