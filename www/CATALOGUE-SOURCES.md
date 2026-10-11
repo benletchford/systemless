@@ -1227,6 +1227,34 @@ Native with merged date/TempTopMem/archive-component support, selector `Yahtzee!
 
 Original ICON 2001–2006 and 2011–2016 contain distinct correct normal/selected face images. CODE 1's roll/draw routine stores its returned die value and directly calls PlotIcon at `$2BB4`, without an intervening erase; its redraw loop calls PlotIcon at `$2FF0`. A bounded CopyBits trace reports no CopyBits calls; an EraseRect trace logs status/title/scorepad rectangles without proving every drawing operation. [Original drawing evidence](https://github.com/benletchford/systemless/issues/4492#issuecomment-6104695068) narrows diagnosis without establishing its cause. Apple Technical Note 055 describes srcOr, while Inside Macintosh I I-473 and the current source comment describe srcCopy; resolve this discrepancy before changing transfer semantics. The stopped entropy trace never reached Roll and supplies no random-call evidence. Distribution review, corrected visible gameplay, bounded assertions and browser validation remain pending; unhosted.
 
+
+12 October 2026 icon-redraw follow-up: a fresh original-archive baseline from
+native source `392e612c55387756ec217577f085b387948da491` reproduces the same
+22-point mismatch at 2535 frontend / 3119 guest ticks. The original
+[Inside Macintosh I scan](https://www.vintageapple.org/inside_o/pdf/Inside_Macintosh_Volume_I_1985.pdf),
+printed I-473 / PDF page 485, was downloaded and visually inspected: it explicitly
+specifies srcCopy. The conflicting older Technical Note 055 remains documented;
+no independent Macintosh ROM oracle is claimed. The existing trap's comment
+already promised srcCopy, but its body skipped blank source pixels and ORed
+packed destination bits, accumulating earlier die markings.
+
+Trial native source `400a685b6365aa226cb220bf7b8da61d4600bbbb` replaces blank
+pixels in the existing 1-bit and 8-bit icon paths. All four focused icon tests
+pass, including repeated filled-to-blank redraws and unchanged adjacent pixels
+in both formats; the optimized executable build passes. The unchanged original
+scenario now displays the correct disabled-face ICONs 2025/2026/2024/2025/2022
+before scoring: faces 5+6+4+5+2 total 22. Every pixel of those five 32×32 icons
+matches the corresponding original resource bitmap. Chance, Lower Total and
+Grand Total then show 22. The next turn displays normal ICONs
+2006/2005/2001/2004/2006, also independently bitmap-matched; these are new-turn
+faces and must not be confused with the scored roll. Fresh bounded replay
+passes 152 checks of original icon pixels and measured score changes at
+2535 frontend / 3119 guest ticks, zero exhausted frames; captures inspected.
+This qualifies one 68K scoring turn, not a full match, saves, audio or independent
+ROM fidelity. Compatibility CI/merge, distribution delivery review, hosted
+browser qualification, catalogue approval, human release and public replay
+remain pending. No hosted archive, catalogue entry or live-qualified increment.
+
 ## Bugdom — target 46, publisher free-use clarification
 
 Publisher-source recheck on 11 October 2026: [Pangea's registration page](https://www.pangeasoft.net/bug/register.html) announces the original Mac OS 9 game is now free and supplies its own registration instructions. Its older [download page](https://www.pangeasoft.net/bug/downloads.html) still describes demo-limited shareware. The free announcement supersedes an assumption that original Mac OS 9 use still requires purchase; it does not itself grant third-party archive hosting. Existing exact-package, distribution and PPC gameplay gates remain pending, and no key was entered in this follow-up.

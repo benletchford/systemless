@@ -11372,6 +11372,95 @@ fn ploticon_pascal_procedure_preserves_stack_across_five_calls() {
 }
 
 #[test]
+fn ploticon_replaces_previous_face_instead_of_accumulating_marks() {
+    // IM:I I-473 specifies srcCopy. A blank second icon must remove the
+    // previous face, including packed bits, without changing adjacent pixels.
+    let (mut disp, mut cpu, mut bus) = setup_with_port();
+    let port = 0x181000;
+    disp.set_current_port_state(&mut bus, &mut cpu, port, None);
+    let base = bus.read_long(port + 2);
+    disp.set_screen_mode_for_test(base, 64, 512, 342, 1);
+    let icon = bus.alloc(128);
+    let handle = bus.alloc(4);
+    bus.write_long(handle, icon);
+    let rect = bus.alloc(8);
+    for (offset, value) in [(0, 2), (2, 3), (4, 34), (6, 35)] {
+        bus.write_word(rect + offset, value);
+    }
+    bus.write_bytes(base, &vec![0xff; 64 * 342]);
+    for filled in [true, false] {
+        bus.write_bytes(icon, &[if filled { 0xff } else { 0 }; 128]);
+        let sp = cpu.read_reg(Register::A7);
+        cpu.write_reg(Register::A7, sp - 8);
+        bus.write_long(sp - 8, handle);
+        bus.write_long(sp - 4, rect);
+        disp.dispatch_menu(true, 0x14B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        for y in 2..34 {
+            for x in 3..35 {
+                assert_eq!(screen_pixel_is_set(&bus, base, 64, x, y), filled);
+            }
+            assert!(screen_pixel_is_set(&bus, base, 64, 2, y));
+            assert!(screen_pixel_is_set(&bus, base, 64, 35, y));
+        }
+        assert!(screen_pixel_is_set(&bus, base, 64, 3, 1));
+        assert!(screen_pixel_is_set(&bus, base, 64, 3, 34));
+    }
+}
+
+#[test]
+fn ploticon_indexed_redraw_replaces_only_the_destination_rectangle() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let base = bus.alloc(40 * 40);
+    bus.write_bytes(base, &[73; 40 * 40]);
+    let pixmap = bus.alloc(50);
+    bus.write_long(pixmap, base);
+    bus.write_word(pixmap + 4, 0x8000 | 40);
+    bus.write_word(pixmap + 10, 40);
+    bus.write_word(pixmap + 12, 40);
+    bus.write_word(pixmap + 32, 8);
+    let handle = bus.alloc(4);
+    bus.write_long(handle, pixmap);
+    let port = bus.alloc(108);
+    bus.write_long(port + 2, handle);
+    bus.write_word(port + 6, 0xc000);
+    disp.set_current_port_state(&mut bus, &mut cpu, port, None);
+    let icon = bus.alloc(128);
+    let icon_handle = bus.alloc(4);
+    bus.write_long(icon_handle, icon);
+    let rect = bus.alloc(8);
+    for (offset, value) in [(0, 4), (2, 4), (4, 36), (6, 36)] {
+        bus.write_word(rect + offset, value);
+    }
+    for filled in [true, false] {
+        bus.write_bytes(icon, &[if filled { 0xff } else { 0 }; 128]);
+        let sp = cpu.read_reg(Register::A7);
+        cpu.write_reg(Register::A7, sp - 8);
+        bus.write_long(sp - 8, icon_handle);
+        bus.write_long(sp - 4, rect);
+        disp.dispatch_menu(true, 0x14B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        for y in 0..40 {
+            for x in 0..40 {
+                let expected = if (4..36).contains(&x) && (4..36).contains(&y) {
+                    if filled {
+                        255
+                    } else {
+                        0
+                    }
+                } else {
+                    73
+                };
+                assert_eq!(bus.read_byte(base + y * 40 + x), expected);
+            }
+        }
+    }
+}
+
+#[test]
 fn ploticon_current_port_zero_short_circuits_before_touching_memory() {
     // The current-port-zero path is a defensive no-op. It should
     // pop the 8-byte Pascal frame without touching the icon or

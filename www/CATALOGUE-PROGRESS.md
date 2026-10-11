@@ -146,7 +146,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 97 | Clue | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 98 | Game of Life | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 99 | Battleship | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 100 | Yahtzee! | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 100 | Yahtzee! | Conditional original-package grant; delivery review pending | [2 files / 4 original forks matched](CATALOGUE-SOURCES.md#yahtzee-320--target-100-original-package-intake) | [One scoring turn, 152 checks](CATALOGUE-SOURCES.md#yahtzee-320--target-100-original-package-intake) | N/A: CODE-only original | Pending | [Rendering fix #4492](https://github.com/benletchford/systemless/issues/4492); CI pending | Pending |
 | 101 | Shanghai Dynasty | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 102 | Mahjong | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 103 | MacTaipei | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
