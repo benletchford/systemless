@@ -567,6 +567,13 @@ mod desktop {
         updates: Arc<Mutex<Option<Update>>>,
         host_services: bool,
     ) {
+        run_guest_with_setup(args, commands, updates, host_services, |_| {});
+    }
+
+    fn run_guest_with_setup(
+        args: Args, commands: mpsc::Receiver<Command>, updates: Arc<Mutex<Option<Update>>>,
+        host_services: bool, setup: impl FnOnce(&mut MacintoshSession) + std::panic::UnwindSafe,
+    ) {
         let result = std::panic::catch_unwind(|| {
             let mut session = MacintoshSession::new(
                 !args.options.as_ref().is_some_and(|options| options.addressing_24_bit),
@@ -587,6 +594,7 @@ mod desktop {
                 store
             });
             session.initialize(&app);
+            setup(&mut session);
             let identity = host_services.then(|| game::loaded_application_identity(session.runner()))
                 .flatten().filter(|_| args.options.as_ref().is_none_or(|options| options.native_integrations)).map(Arc::new);
             #[cfg(feature = "debug-server")]
@@ -9004,6 +9012,89 @@ mod desktop {
                     print!("{}", String::from_utf8_lossy(&output.stdout));
                     assert!(output.status.success(), "separate-process New Folder restart: PPC={powerpc}, depth={depth:?}");
                 }
+            }
+        }
+
+        #[test]
+        fn worker_delivers_guest_installed_notification_alert_on_classic_depths() {
+            use super::{Args, Command, Update};
+            use std::{sync::{mpsc, Arc, Mutex}, time::{Duration, Instant}};
+            use clap::Parser;
+            use systemless::cpu::{CpuOps, Register};
+            use systemless::memory::MemoryBus;
+            struct Worker(mpsc::Sender<Command>, Option<std::thread::JoinHandle<()>>);
+            impl Drop for Worker {
+                fn drop(&mut self) {
+                    let _ = self.0.send(Command::Shutdown);
+                    if let Some(handle) = self.1.take() { let _ = handle.join(); }
+                }
+            }
+            fn wait(updates: &Mutex<Option<Update>>, ready: impl Fn(&Update) -> bool) -> Update {
+                let start = Instant::now();
+                loop {
+                    if let Some(update) = updates.lock().unwrap().take() {
+                        if ready(&update) { return update; }
+                    }
+                    assert!(start.elapsed() < Duration::from_secs(20), "notification worker timeout");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            for depth in [1u16, 8] {
+                let args = Args::try_parse_from(["gpui-menu-demo".to_string(),
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("tests/toolbox-showcase/toolbox-showcase.sit").to_string_lossy().into_owned(),
+                    "--screen-depth".into(), depth.to_string()]).unwrap();
+                let (sender, receiver) = mpsc::channel();
+                let updates = Arc::new(Mutex::new(None)); let output = updates.clone();
+                let worker = Worker(sender, Some(std::thread::spawn(move ||
+                    super::run_guest_with_setup(args, receiver, output, false, |session| {
+                        let runner = session.runner_mut();
+                        let registers = [Register::D0, Register::D1, Register::D2, Register::D3,
+                            Register::D4, Register::D5, Register::D6, Register::D7,
+                            Register::A0, Register::A1, Register::A2, Register::A3,
+                            Register::A4, Register::A5, Register::A6, Register::A7, Register::PC];
+                        let saved = registers.map(|register| runner.cpu().read_reg(register));
+                        let sr = runner.cpu().core.get_sr();
+                        let request = runner.bus_mut().alloc(128);
+                        runner.bus_mut().fill_bytes(request, 128, 0);
+                        runner.bus_mut().write_word(request + 4, 8);
+                        runner.bus_mut().write_long(request + 24, request + 64);
+                        runner.bus_mut().write_long(request + 28, u32::MAX);
+                        runner.bus_mut().write_byte(request + 64, 4);
+                        for (index, byte) in b"Caf\x8e".iter().enumerate() {
+                            runner.bus_mut().write_byte(request + 65 + index as u32, *byte);
+                        }
+                        let code = runner.bus_mut().alloc(16);
+                        for (index, word) in [0x41f9u16, (request >> 16) as u16,
+                            request as u16, 0xa05e, 0x60fe].into_iter().enumerate() {
+                            runner.bus_mut().write_word(code + index as u32 * 2, word);
+                        }
+                        runner.cpu_mut().write_reg(Register::PC, code);
+                        assert!(runner.run_steps(3, None).1);
+                        assert_eq!(runner.cpu().read_reg(Register::D0), 0);
+                        assert_eq!(runner.notification_snapshot().len(), 1);
+                        for (register, value) in registers.into_iter().zip(saved) {
+                            runner.cpu_mut().write_reg(register, value);
+                        }
+                        runner.cpu_mut().core.set_sr_noint_nosp(sr);
+                    }))));
+                let mut initial = wait(&updates, |update| update.notifications.len() == 1
+                    && update.menus.menus.iter().any(|menu| menu.id == 129));
+                let menu = initial.menus.menus.iter().find(|menu| menu.id == 129).unwrap();
+                let blocked_menu = Command::Menu(129, 7, menu.guest_id, menu.generation);
+                let notice = initial.notifications.pop().unwrap();
+                assert_eq!(notice.text.as_deref(), Some(b"Caf\x8e".as_slice()));
+                worker.0.send(Command::BeginNotificationAlert(notice.clone())).unwrap();
+                let owned = wait(&updates, |update| update.notification_alert.as_ref() == Some(&notice));
+                assert!(!owned.notifications[0].response_started);
+                worker.0.send(blocked_menu).unwrap();
+                worker.0.send(Command::DismissNotificationAlert(notice)).unwrap();
+                let completed = wait(&updates, |update| update.notification_alert.is_none()
+                    && update.notifications.is_empty());
+                assert!(!completed.status.contains("Guest stopped"));
+                assert!(!completed.menus.menus.iter().find(|menu| menu.id == 129).unwrap()
+                    .items.iter().find(|item| item.number == 7).unwrap().checked,
+                    "background menu command must not replay after dismissal");
             }
         }
 

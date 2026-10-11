@@ -5917,3 +5917,19 @@ on the modified source. Evidence: `reference/gpui-demo/notification-acquisition`
 Automatic polling remains disconnected pending real-worker and composed delivery
 qualification. This is acquisition-order evidence, not completed notification
 presentation or complete tracking coverage. All eight production gates stay open.
+
+### Guest-installed classic notification through the real worker (2026-10-11)
+
+The worker now supports an initialization prelude; ordinary launches use a no-op.
+The regression initializes the real Showcase application, executes actual 68k
+NMInstall instructions in guest memory and restores the application's registers
+and status before normal worker execution. Mono68k and colour68k notices retain
+exact accented Mac Roman bytes, acquire through the real command queue, remain
+pending until acknowledgment, then automatically remove via response -1 while
+the guest remains running. A menu command queued during alert ownership is
+discarded and does not select TextEdit after dismissal. Final regression passes
+(1.91s); evidence: `reference/gpui-demo/notification-real-worker`.
+This is explicit classic worker delivery with host services disabled. PPC guest
+installation, response procedures in this worker workflow, automatic acquisition,
+shared composed captures, physical input and native fidelity remain unfinished.
+All eight production gates remain open.
