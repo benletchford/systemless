@@ -973,18 +973,8 @@ let check_pixel = |r: i16, c: i16| -> u8 {
                         // Note: Fallback doesn't support complex per-row/smart breaks yet,
                         // but Geneva 24 shouldn't be using fallback heavily in contiguous strings.
                         // If it does, we assume simplified break logic for now.
-                        let mut has_descender = false;
-                        for dy_desc in 0..=metrics.descent {
-                            // We use check_bold_pixel here since we don't have check_effective_pixel in scope
-                            // But wait, get_bold_pixel IS defined here.
-                            if get_bold_pixel(v + dy_desc, curr_x - 1) >= 128
-                                || get_bold_pixel(v + dy_desc, curr_x) >= 128
-                                || get_bold_pixel(v + dy_desc, curr_x + 1) >= 128
-                            {
-                                has_descender = true;
-                                break;
-                            }
-                        }
+                        let has_descender = classic_underline_has_descender(
+                            v, curr_x, metrics.descent, &get_bold_pixel);
                         if !has_descender {
                             p = 255;
                         }
@@ -1092,6 +1082,49 @@ let check_pixel = |r: i16, c: i16| -> u8 {
     }
 
     pixel
+}
+
+fn classic_underline_has_descender(
+    baseline: i16, x: i16, descent: i16, coverage: impl Fn(i16, i16) -> u8,
+) -> bool {
+    (0..=descent).any(|dy| [-1, 0, 1].into_iter()
+        .any(|dx| coverage(baseline + dy, x + dx) >= 128))
+}
+
+/// Native per-character underline strokes, independent of glyph coverage.
+/// Presentation can smooth the glyph without changing descender gaps or making
+/// overlapping underline pixels translucent. Only unscaled basic faces qualify.
+#[doc(hidden)]
+pub fn classic_textedit_underline_ink(
+    font: i16, size: i16, byte: u8, face: u8,
+) -> Option<Vec<(i16, i16)>> {
+    if face > 7 { return None; }
+    if face & 4 == 0 { return Some(Vec::new()); }
+    let (_, scale) = crate::quickdraw::fonts::get_font_face_scaled(font, size);
+    if scale != 1 { return None; }
+    let (hit, precaptured) = if face & 2 != 0 {
+        get_glyph_italic(font, size, byte as char).map(|hit| (Some(hit), true))
+            .unwrap_or_else(|| (get_glyph(font, size, byte as char), false))
+    } else { (get_glyph(font, size, byte as char), false) };
+    let Some((glyph, data)) = hit else { return Some(Vec::new()); };
+    let metrics = get_font_metrics(font, size);
+    let synthetic = face & 2 != 0 && !precaptured;
+    let extend = if synthetic {
+        crate::quickdraw::fonts::style::get_italic_underline_extend_left(font, size, face & 1 != 0, precaptured)
+    } else { 0 };
+    let offset = crate::quickdraw::fonts::style::get_underline_offset(font, size, glyph, false);
+    let right_extend = if synthetic {
+        crate::quickdraw::fonts::style::get_italic_underline_extend_right(font, size)
+    } else { 0 };
+    let coverage = |y, x| classic_glyph_coverage(glyph, data, font, size, &metrics,
+        1, precaptured, face & !4, (0, 0), None, y, x);
+    let mut ink = Vec::new();
+    for x in -extend + offset..i16::from(glyph.advance) + i16::from(face & 1 != 0) + offset + right_extend {
+        if !classic_underline_has_descender(0, x, metrics.descent, coverage) {
+            for y in 1..=get_underline_thickness(font, size) { ink.push((x, y)); }
+        }
+    }
+    Some(ink)
 }
 
 /// Classic 68k TextEdit's per-character binary ink at a zero pen baseline.
