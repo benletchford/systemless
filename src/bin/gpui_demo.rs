@@ -440,6 +440,7 @@ mod desktop {
         scrollbar_drag: Option<(u32, u64, (i16, i16))>,
         popup_tracking: Option<(u32, u64)>,
         host_modifiers: Modifiers,
+        caps_lock_on: bool,
         held_keys: HashMap<u8, u8>,
         _focus_out: Option<Subscription>,
         _focus_lost: Option<Subscription>,
@@ -530,6 +531,7 @@ mod desktop {
                 scrollbar_drag: None,
                 popup_tracking: None,
                 host_modifiers: Modifiers::default(),
+                caps_lock_on: false,
                 held_keys: HashMap::new(),
                 _focus_out: None,
                 _focus_lost: None,
@@ -558,6 +560,20 @@ mod desktop {
 
         fn guest_menu_fallback(&self) -> bool {
             self.menus.requires_guest_menu_rendering()
+        }
+
+        fn sync_caps_lock(&mut self, on: bool) {
+            if self.caps_lock_on == on {
+                return;
+            }
+            self.caps_lock_on = on;
+            // Guest Caps Lock latches on key-down and survives physical release.
+            for input in [
+                MacintoshInput::KeyDown { mac_key: 0x39, character: 0 },
+                MacintoshInput::KeyUp { mac_key: 0x39, character: 0 },
+            ] {
+                let _ = self.commands.send(Command::Input(input));
+            }
         }
 
         fn sync_host_modifiers(&mut self, modifiers: Modifiers) {
@@ -2084,7 +2100,8 @@ mod desktop {
                         cx.notify();
                     }
                 }))
-                .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                    this.sync_caps_lock(window.capslock().on);
                     this.sync_host_modifiers(event.keystroke.modifiers);
                     if event.keystroke.modifiers.platform {
                         if let Some((mac_key, character)) = guest_key(&event.keystroke) {
@@ -2104,6 +2121,7 @@ mod desktop {
                     this.sync_host_modifiers(event.keystroke.modifiers);
                 }))
                 .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, _| {
+                    this.sync_caps_lock(event.capslock.on);
                     this.sync_host_modifiers(event.modifiers);
                 }))
                 .child(super::metrics::SceneMetrics::new(screen, window.rem_size() * scene_scale))
@@ -4151,6 +4169,12 @@ mod desktop {
                     .unwrap();
                 session.initialize(&app);
                 wait_for_menu(&mut session, 129, 1, true);
+                for on in [true, false] {
+                    session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x39, character: 0 });
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x39, character: 0 });
+                    session.runner_mut().run_steps(100_000, None);
+                    assert_eq!(key_is_down(&session, 0x39), on, "Caps Lock latch, powerpc={powerpc}");
+                }
                 for mac_key in [0x38, 0x3a, 0x3b] {
                     session.deliver_input(MacintoshInput::KeyDown { mac_key, character: 0 });
                     session.runner_mut().run_steps(100_000, None);
@@ -4731,6 +4755,24 @@ mod desktop {
                     })
                     .expect("guest TEKey should replace the selection and move the caret");
                 assert_eq!(replaced.text.len(), first.text.len() - 13);
+                let mut expected = replaced.text.clone();
+                for (offset, text) in ["é", "£", "π"].into_iter().enumerate() {
+                    let key = gpui_kit::Keystroke {
+                        key: "e".into(), key_char: Some(text.into()),
+                        ..Default::default()
+                    };
+                    let (mac_key, character) = super::guest_key(&key).unwrap();
+                    session.deliver_input(MacintoshInput::KeyDown { mac_key, character });
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key, character });
+                    expected.insert(offset + 1, character);
+                    let typed = (0..100).find_map(|_| {
+                        session.runner_mut().run_steps(100_000, None);
+                        session.runner_mut().text_edit_snapshot().records.into_iter().find(|record| {
+                            record.guest_id == first.guest_id && record.text == expected
+                        })
+                    }).expect("guest TextEdit should retain the exact Mac Roman byte");
+                    assert_eq!(typed.selection, (offset + 2, offset + 2));
+                }
                 assert!(session.runner_mut().select_guest_menu_item(129, 1));
                 wait_for_menu(&mut session, 129, 1, true);
                 settle(&mut session);
@@ -5334,6 +5376,24 @@ mod desktop {
                 MacintoshInput::KeyUp { mac_key: 0x38, character: 0 },
                 MacintoshInput::KeyUp { mac_key: 0x3a, character: 0 },
                 MacintoshInput::KeyUp { mac_key: 0x3b, character: 0 },
+            ]));
+            cx.update_window(window.into(), |_, window, cx| {
+                for on in [true, true, false] {
+                    window.dispatch_event(ModifiersChangedEvent {
+                        modifiers: Default::default(),
+                        capslock: gpui_kit::Capslock { on },
+                    }.to_platform_input(), cx);
+                    view.update(cx, |demo, _| demo.release_host_input());
+                }
+            }).unwrap();
+            let caps: Vec<_> = receiver.try_iter().filter_map(|command| match command {
+                super::Command::Input(input) => Some(input), _ => None,
+            }).collect();
+            assert!(matches!(caps.as_slice(), [
+                MacintoshInput::KeyDown { mac_key: 0x39, character: 0 },
+                MacintoshInput::KeyUp { mac_key: 0x39, character: 0 },
+                MacintoshInput::KeyDown { mac_key: 0x39, character: 0 },
+                MacintoshInput::KeyUp { mac_key: 0x39, character: 0 },
             ]));
             cx.update(|cx| {
                 view.update(cx, |demo, cx| {
